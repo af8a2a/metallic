@@ -189,22 +189,6 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
 #endif
 #endif
 #endif
-    SurfaceSamplingContext sampling;
-    sampling.throughput = throughput;
-    sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
-    sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
-    let prepared = prepareRaySurface(materialEval, work, sampling);
-
-    float3 emission = max(prepared.emission(), float3(0.0));
-    float3 localRadiance = emission;
-    if (material.emissive.w != 0.0) {
-        radiance += throughput * localRadiance;
-#if (SHARC_UPDATE || SHARC_QUERY)
-        openPbrCacheAddLighting(cache, localRadiance);
-#endif
-        return OpenPBRPathControl.Stop;
-    }
-
     PathSurfaceLights lights;
     lights.push = push;
     lights.hit = hit;
@@ -213,60 +197,54 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     lights.interiorStack = interiorStack;
     lights.viewDirection = viewDirection;
     lights.seed = seed;
-    // The environment proposal and ordinary secondary BSDF miss exclude
-    // celestial disks, so their separate finite NEE estimator has weight one.
-    // Local delta sources retain their source-selection PDF.
-    OpenPBRDiffuseSpecular localComponents = openPbrDirectComponents(prepared, lights, replacedMask);
-    seed = lights.seed;
-
+    OpenPBRDirectLighting directLighting;
+    float3 emission;
     EnvironmentLightSample lightSample;
-    bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
-    bool sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
-#if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
+    bool sampledEnvironment;
     float lightBsdfPdf = 0.0;
     OpenPBRDiffuseSpecular lightComponents = openPBRMakeZeroDiffuseSpecular();
     OpenPBRDiffuseSpecular scatterComponents = openPBRMakeZeroDiffuseSpecular();
     BSDFWeightSample scatter = (BSDFWeightSample)0;
-    // Visibility does not consume the path RNG. Finish all remaining BSDF work
-    // after the environment proposal, so the prepared closure need not survive
-    // its nested transparent-shadow traversal. Keep lighting/termination order.
+    {
+        SurfaceSamplingContext sampling;
+        sampling.throughput = throughput;
+        sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
+        sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
+        let prepared = prepareRaySurface(materialEval, work, sampling);
+
+        emission = max(prepared.emission(), float3(0.0));
+        if (material.emissive.w != 0.0) {
+            radiance += throughput * emission;
+#if (SHARC_UPDATE || SHARC_QUERY)
+            openPbrCacheAddLighting(cache, emission);
+#endif
+            return OpenPBRPathControl.Stop;
+        }
+
+        // The environment proposal and ordinary secondary BSDF miss exclude
+        // celestial disks, so their separate finite NEE estimator has weight one.
+        // Local delta sources retain their source-selection PDF.
+        directLighting = openPbrPrepareDirectComponents(prepared, lights, replacedMask);
+        seed = lights.seed;
+        bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
+        sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
+        if (sampledEnvironment) {
+            lightBsdfPdf = prepared.pdf(lightSample.direction);
+            lightComponents = openPbrSelectComponents(
+                prepared.evalProjectedComponents(lightSample.direction), replacedMask);
+        }
+        // Visibility consumes no path RNG. Finish the continuation after all
+        // light proposals, before any shadow traversal, for every cache policy.
+        // The primary diagnostic returns without continuation random numbers.
+        if (depth != 0u || push.debugView != kOpenPBRDebugViewShadowTransmittance) {
+            scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
+        }
+    }
+
+    // Only sampled light data and continuation results cross these traversals.
+    // Resolve shadows and accumulate direct sources in their original order.
+    OpenPBRDiffuseSpecular localComponents = openPbrResolveDirectComponents(directLighting, lights);
     if (sampledEnvironment) {
-        lightBsdfPdf = prepared.pdf(lightSample.direction);
-        lightComponents = openPbrSelectComponents(
-            prepared.evalProjectedComponents(lightSample.direction), replacedMask);
-    }
-    // This diagnostic returns before sampling in the general path as well.
-    if (depth != 0u || push.debugView != kOpenPBRDebugViewShadowTransmittance) {
-        scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
-    }
-#else
-#if SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE
-    // Visibility does not consume the path RNG. Finish all remaining BSDF work
-    // after the environment proposal, so the prepared closure need not survive
-    // its nested transparent-shadow traversal. Keep lighting/termination order.
-    float lightBsdfPdf = 0.0;
-    OpenPBRDiffuseSpecular lightComponents = openPBRMakeZeroDiffuseSpecular();
-    if (sampledEnvironment) {
-        lightBsdfPdf = prepared.pdf(lightSample.direction);
-        lightComponents = openPbrSelectComponents(
-            prepared.evalProjectedComponents(lightSample.direction), replacedMask);
-    }
-    OpenPBRDiffuseSpecular scatterComponents;
-    BSDFWeightSample scatter = (BSDFWeightSample)0;
-    // This diagnostic returns before sampling in the general path as well.
-    if (depth != 0u || push.debugView != kOpenPBRDebugViewShadowTransmittance) {
-        scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
-    }
-#endif
-#endif
-    if (sampledEnvironment) {
-#if !METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
-#if !(SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE)
-        float lightBsdfPdf = prepared.pdf(lightSample.direction);
-        OpenPBRDiffuseSpecular lightComponents = openPbrSelectComponents(
-            prepared.evalProjectedComponents(lightSample.direction), replacedMask);
-#endif
-#endif
         float3 lightWeight = openPBRGetSumOfDiffuseSpecular(lightComponents);
         float3 shadowTransmittance = float3(0.0, 0.0, 0.0);
         if (lightBsdfPdf > 0.0 && luminanceMax(lightWeight) > 0.0) {
@@ -323,18 +301,12 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
         return OpenPBRPathControl.Return;
     }
 
-    localRadiance = emission + openPBRGetSumOfDiffuseSpecular(localComponents);
+    float3 localRadiance = emission + openPBRGetSumOfDiffuseSpecular(localComponents);
     radiance += throughput * localRadiance;
 #if (SHARC_UPDATE || SHARC_QUERY)
     bool cacheRegistered = openPbrCacheRecordHit(cache, cacheAddress, localComponents, emission);
 #endif
 
-#if !METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
-#if !(SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE)
-    OpenPBRDiffuseSpecular scatterComponents;
-    BSDFWeightSample scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
-#endif
-#endif
     scatterComponents = openPbrSelectComponents(scatterComponents, replacedMask);
     scatter.weight = openPBRGetSumOfDiffuseSpecular(scatterComponents);
     if (scatter.pdf <= 0.0 || scatter.flags == 0u) { return OpenPBRPathControl.Stop; }

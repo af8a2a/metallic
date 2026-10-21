@@ -145,18 +145,19 @@ class MaterialBindingGeneration final
 {
 public:
     MaterialBindingGeneration(std::shared_ptr<const MaterialGeneration> generation, std::unique_ptr<Buffer> buffer,
-        std::shared_ptr<const MaterialValueProgramSet> values = {}, std::unique_ptr<Buffer> valueBuffer = {})
-        : generation_(std::move(generation)), buffer_(std::move(buffer)),
-          values_(std::move(values)), valueBuffer_(std::move(valueBuffer)) {}
+        std::shared_ptr<const MaterialValueProgramSet> values = {}, std::unique_ptr<Buffer> valueBuffer = {});
     const std::shared_ptr<const MaterialGeneration>& generation() const { return generation_; }
     Buffer* buffer() const { return buffer_.get(); }
     const std::shared_ptr<const MaterialValueProgramSet>& values() const { return values_; }
     Buffer* valueBuffer() const { return valueBuffer_.get(); }
+    // Derived once from this exact immutable GPU publication, including custom programs.
+    bool strictlyOpaqueShadows() const { return strictlyOpaqueShadows_; }
 private:
     std::shared_ptr<const MaterialGeneration> generation_;
     std::unique_ptr<Buffer> buffer_;
     std::shared_ptr<const MaterialValueProgramSet> values_;
     std::unique_ptr<Buffer> valueBuffer_;
+    bool strictlyOpaqueShadows_ = false;
 };
 
 } // namespace metallic::render

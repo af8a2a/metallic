@@ -145,7 +145,7 @@ public:
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureDemandMip)},
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureDemandHits)}};
         builtin_pass::appendStreamRayLayout(bindings);
-        return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = sizeof(uint32_t), .bindings = bindings,
+        return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = 2 * sizeof(uint32_t), .bindings = bindings,
             .requiresRayQuery = true, .resourceParameterSize = sizeof(render::SceneResourceParameters)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -153,6 +153,9 @@ public:
         const auto& geometry = *context.preparedScene()->snapshot->pathTraceResources;
         const auto inputs = geometry.materialBinding();
         if (inputs->generation()->sourceRevision() != context.runtimeScene()->materialRevision()) { return makeError(Error::Failure); }
+        if (inputs->strictlyOpaqueShadows() != context.properties().value("expectStrictOpaque", false)) {
+            return makeError(Error::Failure);
+        }
         const auto* prepared = context.preparedScene();
         if (!prepared->geometry) { return makeError(Error::InvalidArgument); }
         if (prepared->geometry->topLevelBuildPending()) {
@@ -172,7 +175,7 @@ public:
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = prepared->textureFeedback.demandMip});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = prepared->textureFeedback.demandHits});
         builtin_pass::appendStreamRayBindings(bindings, stream, prepared->geometry->shadingChangeBuffer());
-        const uint32_t push = geometry.materialTextureCount();
+        const uint32_t push[]{geometry.materialTextureCount(), inputs->strictlyOpaqueShadows() ? 1u : 0u};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
             .pushData = &push, .pushDataSize = sizeof(push), .groupCountX = 8, .groupCountY = 8});
     }
@@ -372,6 +375,7 @@ public:
                     return RHITestResult::fail("Shadow material edit did not establish requested state");
                 }
             }
+            sample.graph.setNodeRuntimeProperty(sample.graph.findNode("CoverageProbe")->id, "expectStrictOpaque", transmission == 0.0f);
             if (!preview.render(sample.graph, 64, 64, "CoverageProbe.color")) { return RHITestResult::fail(preview.lastLog()); }
             if (preview.readbackFormat() != Format::RGBA32Sfloat || preview.readbackBytes().size() != 64 * 64 * 16) {
                 return RHITestResult::fail("Shadow probe readback format");
@@ -422,7 +426,53 @@ public:
                 }
                 report << "opaque-to-mask-step=" << step << " frontWinners=" << winners << " checked=3844 NONE vs forced-nonopaque full-surface reference" << '\n';
             }
-            return RHITestResult::pass("249860 MASK/BLEND/opaque/glass closest-shadow comparisons match full-hit classification; 49972 NONE vs forced-nonopaque full-surface traversal comparisons, opaque callbacks zero, Coverage-only install/hot edit/removal and opaque-to-MASK lifecycle verified (ray query)");
+            // Publication must revoke the fast query immediately for every
+            // unsupported material kind, then recover after removing that edit.
+            const char* states[]{"opaque", "surface-program", "program-removed", "diffuse-transmission",
+                "diffuse-transmission-removed", "mask", "blend", "opaque-restored"};
+            for (uint32_t step = 0; step < 8; ++step) {
+                for (uint32_t materialIndex = 0; materialIndex < 2; ++materialIndex) {
+                    auto edited = scene.materials()[materialIndex];
+                    edited.alphaMode = materialIndex == 0 && step == 5 ? "MASK" :
+                        materialIndex == 0 && step == 6 ? "BLEND" : "OPAQUE";
+                    edited.transmissionFactor = 0.0f;
+                    edited.diffuseTransmissionFactor = materialIndex == 0 && step == 3 ? 0.5f : 0.0f;
+                    edited.baseColorFactor.w = 1.0f;
+                    edited.valueProgram = materialIndex == 0 && step == 1 ?
+                        R"({"version":1,"baseColor":{"op":"parameter","index":0}})" : std::string{};
+                    (void)scene.setMaterialProperties(materialIndex, edited);
+                    const auto& applied = scene.materials()[materialIndex];
+                    if (applied.alphaMode != edited.alphaMode || applied.transmissionFactor != edited.transmissionFactor ||
+                        applied.diffuseTransmissionFactor != edited.diffuseTransmissionFactor || applied.valueProgram != edited.valueProgram) {
+                        return RHITestResult::fail("Strict shadow lifecycle edit failed: " + std::string(states[step]));
+                    }
+                }
+                const bool expectStrict = step == 0 || step == 2 || step == 4 || step == 7;
+                sample.graph.setNodeRuntimeProperty(sample.graph.findNode("CoverageProbe")->id, "expectStrictOpaque", expectStrict);
+                if (!preview.render(sample.graph, 64, 64, "CoverageProbe.color")) {
+                    return RHITestResult::fail("Strict shadow lifecycle " + std::string(states[step]) + ": " + preview.lastLog());
+                }
+                if (preview.readbackFormat() != Format::RGBA32Sfloat || preview.readbackBytes().size() != 64 * 64 * 16) {
+                    return RHITestResult::fail("Strict shadow lifecycle readback format");
+                }
+                std::vector<float> rays(preview.readbackBytes().size() / 4);
+                std::memcpy(rays.data(), preview.readbackBytes().data(), preview.readbackBytes().size());
+                for (uint32_t y = 1; y < 63; ++y) {
+                    for (uint32_t x = 1; x < 63; ++x) {
+                        const size_t i = (y * 64 + x) * 4;
+                        if (!std::isfinite(rays[i]) || std::abs(rays[i] - 2.0f) > 1e-5f || rays[i + 3] != 0.0f) {
+                            return RHITestResult::fail("Strict shadow lifecycle mismatch " + std::string(states[step]) +
+                                " x=" + std::to_string(x) + " y=" + std::to_string(y) + " failures=" + std::to_string(rays[i + 3]));
+                        }
+                    }
+                }
+                report << "strict-shadow-state=" << states[step] << " publishedStrict=" << expectStrict <<
+                    " checked=3844 closest-shadow x5; strict boolean comparisons=" << (expectStrict ? 3844 * 14 : 0) << '\n';
+            }
+            report << "strict-opaque total=269080 boolean comparisons (5 states x3844 pixels x14 rays); "
+                "forward/back/miss/multiple occluders/near and far exact and adjacent-float endpoints/nonunit rays; "
+                "dedicated helper never invoked for MASK/BLEND/glass/custom Surface/diffuse transmission\n";
+            return RHITestResult::pass("403620 closest-shadow full-hit and 80724 traversal comparisons; 269080 strict-opaque any-hit boolean comparisons including endpoints/nonunit/multiple occluders; published material classification revoked/restored across glass, MASK, BLEND, custom Surface and diffuse-transmission edits");
         }
         return RHITestResult::pass("42284 MASK raster/RT/shadow pixels agree; MASK/BLEND/opaque/glass closest-shadow matches full-hit classification and consumed attributes for forward/backward/miss/clipped/nonunit rays (ray query)");
     }

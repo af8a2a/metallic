@@ -68,6 +68,39 @@ public bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint trian
     return evaluateSceneCoverage(materialIndex, material, texcoord, push).accepted;
 }
 
+#if !METALLIC_PT_RAY_PIPELINE
+// The host flag belongs to the same immutable material publication as the
+// bound material buffer. All materials use builtin opaque, nontransmitting
+// transport; no Coverage callbacks or ordered material hits are needed.
+public bool traceStrictOpaqueShadow(Ray ray, float nearDistance, float farDistance)
+{
+    // The transport caller accepts t < farDistance. Keep the original interval:
+    // shrinking TMax by one ULP can reject an intersection accepted by the
+    // original traversal even when its reported float t is below farDistance.
+    if (farDistance <= nearDistance) { return false; }
+    RayDesc desc;
+    desc.Origin = ray.origin;
+    desc.Direction = ray.direction;
+    desc.TMin = nearDistance;
+    desc.TMax = farDistance;
+    {
+        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+        query.TraceRayInline(sceneAccelerationStructure(),
+            RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, desc);
+        while (query.Proceed()) {}
+        if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
+        if (query.CommittedRayT() < farDistance) { return true; }
+    }
+    // An endpoint chosen by first-hit traversal must not hide a nearer blocker.
+    // Only this boundary case repeats closest traversal; no surface is decoded.
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> boundaryQuery;
+    boundaryQuery.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_FORCE_OPAQUE, 0xff, desc);
+    while (boundaryQuery.Proceed()) {}
+    return boundaryQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT &&
+        boundaryQuery.CommittedRayT() < farDistance;
+}
+#endif
+
 public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,
     out HitInfo hit, out bool opaqueShadow, bool classifyShadow, bool occlusionOnly = false)
 {

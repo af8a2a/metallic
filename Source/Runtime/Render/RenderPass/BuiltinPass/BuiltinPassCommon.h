@@ -748,6 +748,9 @@ static_assert((kScenePathTraceUseGlobalView & (0x03ffffffu | kScenePathTraceExpo
 inline constexpr uint32_t kScenePathTraceUseFP16Precision = 1u << 28u;
 static_assert((kScenePathTraceUseFP16Precision &
     (0x03ffffffu | kScenePathTraceExportUpscalerGuides | kScenePathTraceUseGlobalView)) == 0u);
+inline constexpr uint32_t kScenePathTraceStrictOpaqueShadows = 1u << 29u;
+static_assert((kScenePathTraceStrictOpaqueShadows &
+    (0x03ffffffu | kScenePathTraceExportUpscalerGuides | kScenePathTraceUseGlobalView | kScenePathTraceUseFP16Precision)) == 0u);
 
 struct ScenePathTracePush {
     float eye[4] = {};
@@ -785,7 +788,8 @@ struct ScenePathTracePush {
     uint32_t temporalJitter = 0;
     // Keep the shared push ABI within the descriptor heap's 256-byte limit.
     // Bits 0:15 material bin, 16:20 transmission samples, 21:25 ray depth,
-    // Bit 26 Deferred upscaler guides, bit 27 global view, bit 28 FP16 precision; bits 29:31 remain unassigned.
+    // Bit 26 Deferred upscaler guides, bit 27 global view, bit 28 FP16 precision,
+    // bit 29 strictly opaque shadow scene; bits 30:31 remain unassigned.
     uint32_t deferredSettings = (2u << 16u) | (8u << 21u);
     // Frame-level demand collection; sampling LOD metadata remains valid when disabled.
     uint32_t textureFeedbackEnabled = 0;

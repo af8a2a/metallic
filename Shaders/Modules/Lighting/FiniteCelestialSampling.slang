@@ -63,7 +63,11 @@ public PunctualLightSample samplePathCelestialLightAtPosition(StructuredBuffer<G
 {
     let result = sampleCelestialLight(lights, slot);
     if (!any(result.illuminance > 0.0)) { return result; }
+#if SHARC_UPDATE
     let resources = getSceneResourceParameters().environment;
+#else
+    let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
+#endif
     GPUAtmosphereParameters atmosphere;
     if (resources.transmittance.index == 0xffffffffu || !loadPhysicalAtmosphere(resources, atmosphere)) {
         // HDRI compatibility retains both the authored delta source and RNG.

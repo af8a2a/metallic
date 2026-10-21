@@ -26,7 +26,11 @@ public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCe
 {
     PunctualLightSample result = sampleCelestialLight(lights, slot);
     GPUAtmosphereParameters atmosphere;
+#if SHARC_UPDATE
     let resources = getSceneResourceParameters().environment;
+#else
+    let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
+#endif
     if (resources.transmittance.index != 0xffffffffu && loadPhysicalAtmosphere(resources, atmosphere)) {
         float3 positionKm = Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, worldPosition);
         float cloudT = resources.cloudShadow.index != 0xffffffffu ?
@@ -118,7 +122,12 @@ public Metallic.Atmosphere::AtmosphereSegment physicalAerialSegment(EnvironmentR
 
 public float3 applyPrimaryAerialPerspective(float3 radiance, float3 worldEndpoint, float3 primaryWorldOrigin)
 {
-    let segment = physicalAerialSegment(getSceneResourceParameters().environment, worldEndpoint, primaryWorldOrigin);
+#if SHARC_UPDATE
+    let resources = getSceneResourceParameters().environment;
+#else
+    let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
+#endif
+    let segment = physicalAerialSegment(resources, worldEndpoint, primaryWorldOrigin);
     return segment.transmittance * radiance + segment.radiance;
 }
 } // namespace Metallic.Lighting

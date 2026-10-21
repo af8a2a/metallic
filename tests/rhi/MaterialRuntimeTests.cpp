@@ -112,6 +112,85 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MaterialRuntimeTest);
 
+class MaterialStrictOpaqueShadowTest final : public RHITest
+{
+public:
+    MaterialStrictOpaqueShadowTest() { name = "material_strict_opaque_shadow_classification"; type = RHITestType::Resource; }
+
+    RHITestResult run(RHITestContext&) override
+    {
+        using namespace render;
+        std::string log;
+        uint64_t revision = 0;
+        const auto bind = [&](std::span<const SceneMaterialData> parameters,
+                              std::shared_ptr<const MaterialValueProgramSet> values = {}) {
+            auto generation = MaterialGeneration::create(parameters, ++revision, log);
+            return generation ? std::make_shared<MaterialBindingGeneration>(std::move(generation), nullptr,
+                std::move(values)) : std::shared_ptr<MaterialBindingGeneration>{};
+        };
+        std::array<SceneMaterialData, 3> parameters;
+        parameters[1].baseColor[3] = 0.25f;
+        parameters[1].baseColorTexture.textureIndex = 1u;
+        parameters[2].params[3] = 1.0f;
+        const auto opaque = bind(parameters);
+        if (!opaque || !opaque->strictlyOpaqueShadows()) {
+            return RHITestResult::fail("Builtin OPAQUE materials lost the strict shadow proof: " + log);
+        }
+        std::array<SceneMaterialData, 6> excluded;
+        excluded[0].textureParams[3] = 1.0f;
+        excluded[1].textureParams[3] = 2.0f;
+        excluded[2].glassParams[0] = 0.01f;
+        excluded[3].diffuseTransmission[3] = 0.01f;
+        excluded[4].rtxcrHairBaseColor[3] = 1.0f;
+        excluded[5].glassParams[0] = std::numeric_limits<float>::quiet_NaN();
+        for (size_t index = 0; index < excluded.size(); ++index) {
+            parameters[2] = excluded[index];
+            const auto changed = bind(parameters);
+            if (!changed || changed->strictlyOpaqueShadows() || !opaque->strictlyOpaqueShadows()) {
+                return RHITestResult::fail("Excluded material or immutable old binding failed at " +
+                    std::to_string(index) + ": " + log);
+            }
+        }
+        parameters[2] = SceneMaterialData{};
+        const auto restored = bind(parameters);
+        if (!restored || !restored->strictlyOpaqueShadows() ||
+            restored->generation()->serial() == opaque->generation()->serial()) {
+            return RHITestResult::fail("Restored publication retained stale opaque classification");
+        }
+        scene::RenderMaterial custom;
+        custom.valueProgram = R"({"version":1,"roughness":{"op":"parameter","index":0}})";
+        const auto surface = MaterialValueProgramSet::create({&custom, 1}, log);
+        if (!surface || surface->programCount() == 0u) { return RHITestResult::fail("Surface fixture failed: " + log); }
+        custom.alphaMode = "MASK";
+        custom.valueProgram = R"({"version":1,"coverage":{"op":"parameter","index":0}})";
+        const auto coverage = MaterialValueProgramSet::create({&custom, 1}, log);
+        if (!coverage || coverage->coverageProgramCount() == 0u) { return RHITestResult::fail("Coverage fixture failed: " + log); }
+        const SceneMaterialData builtin;
+        const char* slabs[]{
+            R"({"version":3,"nodes":{},"outputs":{},"closure":{"op":"slab","reflectance":{"op":"parameter","index":0}}})",
+            R"({"version":3,"nodes":{},"outputs":{},"closure":{"op":"mix","a":{"op":"slab","reflectance":{"op":"parameter","index":0}},"b":{"op":"slab","reflectance":{"op":"parameter","index":1}},"weight":0.5}})"};
+        for (uint32_t index = 0; index < 2; ++index) {
+            scene::RenderMaterial authored;
+            authored.valueProgram = slabs[index];
+            auto generation = MaterialGeneration::create({&builtin, 1}, ++revision, log, {&authored, 1});
+            const auto expected = index == 0 ? MaterialProgramId::SingleSlab : MaterialProgramId::DualSlab;
+            if (!generation || generation->instances()[0].program->definition->id != expected) {
+                return RHITestResult::fail("Authored Slab fixture failed: " + log);
+            }
+            const MaterialBindingGeneration slab(std::move(generation), nullptr);
+            if (slab.strictlyOpaqueShadows()) { return RHITestResult::fail("Authored Slab received strict opaque proof"); }
+        }
+        for (const auto& values : {surface, coverage}) {
+            const auto programmed = bind({&builtin, 1}, values);
+            if (!programmed || programmed->strictlyOpaqueShadows()) {
+                return RHITestResult::fail("Custom program bypassed strict opaque scene classification");
+            }
+        }
+        return RHITestResult::pass("Opaque proof, eight excluded cases, custom Surface/Coverage and immutable publication edits");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialStrictOpaqueShadowTest);
+
 class MaterialMigrationTest final : public RHITest
 {
 public:

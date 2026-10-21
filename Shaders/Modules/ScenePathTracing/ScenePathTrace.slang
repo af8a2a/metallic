@@ -208,7 +208,7 @@ public float3 pathTrace(
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
             float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
             if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
-                missRadiance += physicalDeltaMissDisks(getSceneResourceParameters().environment,
+                missRadiance += physicalDeltaMissDisks(getSceneEnvironmentResources(),
                     ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
             }
             radiance += throughput * missRadiance;
@@ -415,7 +415,7 @@ public float3 pathTrace(
         // samples each finite disk before its projected BSDF and visibility.
         for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
             let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getSceneResourceParameters().environment.celestialLights);
+                getSceneEnvironmentResources().celestialLights);
             PunctualLightSample light = samplePathCelestialLightAtPosition(celestial, celestialSlot, hit.position, seed);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
@@ -430,8 +430,10 @@ public float3 pathTrace(
         }
         uint punctualLightIndex;
         float punctualInverseSourcePdf;
-        if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights), resolveBuffer<StructuredBuffer<uint4>>(getSceneResourceParameters().regirGrid), resolveUniform(getSceneResourceParameters().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-            PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights), punctualLightIndex, hit.position);
+        let punctualLights = sceneLights();
+        if (selectPunctualLight(PunctualSamplingResources(punctualLights, sceneReGIRGrid(), sceneLightsPdf()),
+                hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+            PunctualLightSample light = samplePunctualLight(punctualLights, punctualLightIndex, hit.position);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
             if (luminanceMax(bsdf * light.illuminance) > 0.0) {
@@ -558,7 +560,7 @@ public float3 pathTrace(
     }
 
     if (primarySurface) {
-        primaryAerial = physicalAerialSegment(getSceneResourceParameters().environment, primaryEndpoint, primaryOrigin);
+        primaryAerial = physicalAerialSegment(getSceneEnvironmentResources(), primaryEndpoint, primaryOrigin);
     }
 #if SHARC_UPDATE
     // Cache radiance stays local to the shaded point.
@@ -792,14 +794,14 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
         color = accumulateStreamPathTrace(pixel, color, push);
     }
 
-    sceneOutput()[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights))), 1.0);
+    sceneOutput()[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(sceneLights())), 1.0);
     writeDlssRrGuides(pixel, guides, push);
     }
     if (!kStandardPathGuideEnabled) {
 #endif
     if (push.outputLinear == 0u) {
         color = Metallic.WorkingColor::toLinearRec709(color);
-        color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights));
+        color *= lightingExposure(sceneLights());
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

@@ -44,19 +44,52 @@ public OpenPBRDiffuseSpecular openPbrSelectComponents(OpenPBRDiffuseSpecular val
     return value;
 }
 
-public OpenPBRDiffuseSpecular openPbrDirectComponents<TLights : ISurfaceLightProvider>(
-    SceneOpenPBRPreparedClosure prepared, inout TLights lights, uint replacedMask)
+// PathSurfaceLights samples two celestial sources and one local source. Keep
+// their factors separate to preserve the original multiplication order when
+// visibility is evaluated after the prepared BSDF's last use.
+public static const uint kOpenPBRPathDirectLightCount = kCelestialLightCount + 1u;
+
+public struct OpenPBRDirectLight
 {
-    OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
+    public SurfaceLightSample light;
+    public OpenPBRDiffuseSpecular weight;
+};
+
+public struct OpenPBRDirectLighting
+{
+    public OpenPBRDirectLight samples[kOpenPBRPathDirectLightCount];
+    public uint activeMask;
+};
+
+public OpenPBRDirectLighting openPbrPrepareDirectComponents(
+    SceneOpenPBRPreparedClosure prepared, inout PathSurfaceLights lights, uint replacedMask)
+{
+    OpenPBRDirectLighting result = (OpenPBRDirectLighting)0;
     uint count = lights.count();
-    for (uint index = 0u; index < count; ++index) {
+    [unroll]
+    for (uint index = 0u; index < kOpenPBRPathDirectLightCount; ++index) {
+        if (index >= count) { break; }
         SurfaceLightSample light = lights.sample(index);
         if (light.inverseSourcePdf <= 0.0) { continue; }
         OpenPBRDiffuseSpecular weight = openPbrSelectComponents(prepared.evalProjectedComponents(light.direction), replacedMask);
         float3 contribution = openPBRGetSumOfDiffuseSpecular(weight) * light.illuminance;
         if (max(contribution.x, max(contribution.y, contribution.z)) <= 0.0) { continue; }
+        result.samples[index].light = light;
+        result.samples[index].weight = weight;
+        result.activeMask |= 1u << index;
+    }
+    return result;
+}
+
+public OpenPBRDiffuseSpecular openPbrResolveDirectComponents(
+    OpenPBRDirectLighting lighting, PathSurfaceLights lights)
+{
+    OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
+    for (uint index = 0u; index < kOpenPBRPathDirectLightCount; ++index) {
+        if ((lighting.activeMask & (1u << index)) == 0u) { continue; }
+        SurfaceLightSample light = lighting.samples[index].light;
         float3 incident = light.illuminance * lights.visibility(light) * light.inverseSourcePdf;
-        result = openPBRAddDiffuseSpecular(result, openPBRScaleDiffuseSpecular(weight, incident));
+        result = openPBRAddDiffuseSpecular(result, openPBRScaleDiffuseSpecular(lighting.samples[index].weight, incident));
     }
     return result;
 }

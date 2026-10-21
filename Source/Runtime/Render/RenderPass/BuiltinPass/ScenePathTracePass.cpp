@@ -1700,6 +1700,9 @@ public:
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .buffer = lights_.reGIRBuffer()});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .textureViews = {punctualPdfViews, 1}});
         }
+        if (sceneResources_.materialBinding()->strictlyOpaqueShadows()) {
+            push.deferredSettings |= kScenePathTraceStrictOpaqueShadows;
+        }
         MaterialBinningResult materialBins;
         ScreenSpaceShadowResult shadow;
         if (visibilityDeferred_) {

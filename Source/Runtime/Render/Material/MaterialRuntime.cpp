@@ -265,4 +265,22 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
     return candidate;
 }
 
+MaterialBindingGeneration::MaterialBindingGeneration(
+    std::shared_ptr<const MaterialGeneration> generation, std::unique_ptr<Buffer> buffer,
+    std::shared_ptr<const MaterialValueProgramSet> values, std::unique_ptr<Buffer> valueBuffer)
+    : generation_(std::move(generation)), buffer_(std::move(buffer)),
+      values_(std::move(values)), valueBuffer_(std::move(valueBuffer))
+{
+    // Conservative scene-wide proof: custom Surface/Coverage, alpha masking,
+    // blending and transmission retain ordered shadow transport.
+    strictlyOpaqueShadows_ = (!values_ ||
+        (values_->programCount() == 0u && values_->coverageProgramCount() == 0u)) &&
+        std::all_of(generation_->parameters().begin(), generation_->parameters().end(),
+            [](const SceneMaterialData& material) {
+                return material.textureParams[2] == static_cast<float>(MaterialProgramId::OpenPBRComposite) &&
+                    material.textureParams[3] == 0.0f && material.glassParams[0] == 0.0f &&
+                    material.diffuseTransmission[3] == 0.0f;
+            });
+}
+
 } // namespace metallic::render

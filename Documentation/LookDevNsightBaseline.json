@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "status": "default-analysis-baseline",
+  "establishedDate": "2026-10-21",
+  "id": "LookDev_2026_10_21_21_27_23-strict-opaque-shadow",
+  "supersedes": "Captures/NsightGraphics/LookDev_2026_10_20_20_40_25.ngfx-gputrace",
+  "trace": "Captures/NsightGraphics/StrictOpaqueShadow-20261021-212547/LookDev_2026_10_21_21_27_23.ngfx-gputrace",
+  "traceSha256": "92eb73396edcb676662d34e47babdc226fc309b6109bbc2d2010c0e5535aa5bc",
+  "manifest": "Captures/NsightGraphics/StrictOpaqueShadow-20261021-212547/Manifest.json",
+  "validation": "Captures/NsightGraphics/StrictOpaqueShadow-20261021-212547/Validation.json",
+  "screenshot": "Captures/NsightGraphics/StrictOpaqueShadow-20261021-212547/BaselineScreenshot.png",
+  "workload": {
+    "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+    "camera": "default",
+    "renderExtent": [
+      1920,
+      1080
+    ],
+    "samplesPerPixel": 1,
+    "accumulate": true,
+    "maxDepth": 12,
+    "build": "RelWithDebInfo",
+    "shaderSymbols": "CaptureSymbols",
+    "optimization": "O1",
+    "warmupRenderedFrames": 256,
+    "captureFrames": 1,
+    "gpu": "RTX5070Ti",
+    "driver": "617.42",
+    "nsight": "Nsight Graphics 2026.3.1",
+    "gpuClocks": "unaltered"
+  },
+  "sourceIdentity": {
+    "baseCommit": "e525caee87c0bec5108c92060fad3ce3d56147d5",
+    "patch": ".cache/strict-opaque-shadow-20261021/Candidate.patch",
+    "patchSha256": "0d06b805ff90c2b87a18bd19441030b2814a3605be74a8af86665e4e82fb2f92",
+    "sourceSha256": {
+      "Shaders/Modules/OpenPBRPathTracing/OpenPBRPathTrace.slang": "becdc4a90cd6a282714c73aa7c21d58c2da0340edf51e1613e220a912bb4efb2",
+      "Shaders/Modules/ScenePathTracing/StreamSceneRayQuery.slang": "92bee8deb8170b7837211c9ca24a2dc73b34e3420c4f4acf79b77d17729dd3d4",
+      "Shaders/Modules/ScenePathTypes.slang": "de6cbb1e8643aa4a0f4963f92bd58eadff99b69bccaf2bcec0ed52d94a582604",
+      "Source/Runtime/Render/Material/MaterialRuntime.cpp": "7091051675ca47cf0c25b3a0d93f82c588f94d1f1e05b4993fe816b3c9aa9b70",
+      "Source/Runtime/Render/Material/MaterialRuntime.h": "ce3265548e913e2149ed27a5edd1d6bcaf9351e6a2aa6f61991e670b4c1c6904",
+      "Source/Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h": "8870474ff56ca0be7789a9c4f7fc1a6fdaa701b404c531c35deda85a0e598fea",
+      "Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp": "8ed5dc16444a1a0a7ba204d6b211cf80f590ea3b62fdbc42f913a0a08d6f2987"
+    },
+    "exeSha256": "fc28e4c74db61ec566055e816345f0b668699f1aa5412197a9ba44c5722218e9",
+    "sourceSnapshot": ".cache/strict-opaque-shadow-capture-20261021/Candidate",
+    "candidateExe": ".cache/strict-opaque-shadow-capture-20261021/CandidateBinary/LookDev.exe",
+    "captureIncludesStrictOpaqueShadowPatch": true,
+    "patchAppliedToWorkingTreeAtEstablishment": false,
+    "retention": {
+      "date": "2026-10-21",
+      "status": "retained-by-user",
+      "productionAndRegressionTestsApplied": true
+    }
+  },
+  "timingsMsFromD3DPERFEvents": {
+    "frame": 5.18438,
+    "pathTracePass": 4.08771,
+    "pathTraceShading": 3.65434
+  },
+  "screenshotMetrics": {
+    "provenance": "User-provided Nsight screenshot; displayed rounded values, selected Path trace shading range.",
+    "throughputPercent": {
+      "VidL2": 38.1,
+      "VRAM": 17.3,
+      "L1TEX": 12.7,
+      "SM": 11.4,
+      "RTCORE": 6.0
+    },
+    "activeThreadsPerWarp": 16.9,
+    "predicatedOnThreadsPerWarp": 16.5,
+    "computeWarps": 5.3,
+    "computeOccupancyPercent": 11.0,
+    "shader": "openPbrRayQueryPathTraceMain",
+    "shaderSamplesPercentOfTotal": 77.8,
+    "shaderSamplesApprox": 120000,
+    "vulkanSamplesTotal": 154499,
+    "stallPercentWithinShaderSamples": {
+      "Long Scoreboard": 49.43,
+      "Wait": 16.44,
+      "No Instructions": 15.05,
+      "Selected": 8.73,
+      "Short Scoreboard": 4.69,
+      "Branch Resolving": 2.13,
+      "MIO Throttle": 1.68
+    },
+    "globalTimelineFrameMs": 15.25
+  },
+  "comparisonPolicy": [
+    "Use this capture as the default source/stall analysis reference; preserve older captures as history.",
+    "New A/B reference retains the strict opaque shadow patch and its regression tests. Verify the recorded production source identity; later BSDF candidates differ only in declared experiment files.",
+    "Use Path trace shading and PathTrace pass scopes consistently. D3DPERF Frame 5.18438 ms is distinct from the screenshot global timeline frame 15.25 ms, which includes other process GPU activity.",
+    "Stall percentages are within shader samples, not elapsed-time percentages. Screenshot counters are rounded.",
+    "One diagnostic capture does not establish a new controlled A/B speedup; performance acceptance still requires matched repeated process-level measurements."
+  ]
+}

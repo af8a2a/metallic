@@ -2,6 +2,13 @@
 
 See [Color Pipeline](ColorPipeline.md) for ACEScg working-space and source/display contracts.
 
+后续默认场景的 Nsight 分析使用 [当前基线登记](LookDevNsightBaseline.json)：
+`LookDev_2026_10_21_21_27_23.ngfx-gputrace`，1920×1080、1 spp 累积、深度 12，
+Path trace shading 3.65434 ms、PathTrace pass 4.08771 ms。
+该捕获包含严格不透明场景专用阴影查询补丁；2026-10-21 经用户确认保留，
+后续实验的参考侧包含该补丁及回归测试，并核对登记中的源码身份。它替代 2026-10-20 20:40:25 捕获作为
+默认分析参考，单次捕获耗时不替代同配置的重复 A/B 测量。
+
 独立 CMake 目标 **LookDev** 生成 `LookDev.exe`，无参数启动时默认加载
 **LookDev / OpenPBR Default** 的场景、相机和渲染图。程序复用编辑器外壳，
 可通过 RenderGraph 面板的 **Built-in Sample** 切换示例，或从命令行

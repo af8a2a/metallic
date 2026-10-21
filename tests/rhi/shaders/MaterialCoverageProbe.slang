@@ -14,6 +14,12 @@ using Metallic.ScenePathTracing;
 using Metallic.StreamGeometry;
 using Metallic.SceneShadowQueries;
 
+struct CoverageProbePush
+{
+    uint materialTextureCount;
+    uint strictlyOpaqueShadows;
+};
+
 uint referenceClusterStride()
 {
     return resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamHeader)[2];
@@ -98,6 +104,19 @@ uint compareShadowHit(Ray ray, ScenePathTracePush push, float expectedDistance)
     return failures;
 }
 
+uint compareStrictOpaqueShadow(Ray ray, ScenePathTracePush push, float nearDistance, float farDistance)
+{
+    push.clipOrtho.xy = float2(nearDistance, farDistance);
+    HitInfo reference;
+    bool opaque;
+    bool found = traceClosestShadow(ray, push, opaque, reference);
+    bool blocked = found && reference.t < farDistance;
+    // The fixture contains two occluders. An any-hit query need not select the
+    // closest one; only its boolean visibility result is part of the contract.
+    bool actual = traceStrictOpaqueShadow(ray, nearDistance, farDistance);
+    return actual != blocked ? 1u : 0u;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void materialCoverageProbeMain(uint3 id : SV_DispatchThreadID)
@@ -107,7 +126,9 @@ void materialCoverageProbeMain(uint3 id : SV_DispatchThreadID)
     ray.Origin = float3(uv, 0); ray.Direction = float3(0, 0, 1);
     ray.TMin = 0.001; ray.TMax = 4;
     ScenePathTracePush push = (ScenePathTracePush)0;
-    push.materialTextureCount = getConstants<ShadowGeometryPush>().materialTextureCount;
+    CoverageProbePush probe = getConstants<CoverageProbePush>();
+    push.materialTextureCount = probe.materialTextureCount;
+    push.deferredSettings = probe.strictlyOpaqueShadows != 0u ? kScenePathTraceStrictOpaqueShadows : 0u;
     Ray surfaceRay; surfaceRay.origin = ray.Origin; surfaceRay.direction = ray.Direction;
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
     query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, ray);
@@ -173,5 +194,25 @@ void materialCoverageProbeMain(uint3 id : SV_DispatchThreadID)
     push.clipOrtho.y = 4.0;
     surfaceRay.direction *= 2.0;
     failures |= compareShadowHit(surfaceRay, push, t * 0.5);
+    if ((push.deferredSettings & kScenePathTraceStrictOpaqueShadows) != 0u) {
+        uint strictFailures = 0u;
+        surfaceRay.direction = float3(0, 0, 1);
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, 4.0) << 0u;
+        strictFailures |= compareStrictOpaqueShadow(backRay, push, 0.001, 4.0) << 1u;
+        strictFailures |= compareStrictOpaqueShadow(missRay, push, 0.001, 4.0) << 2u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 2.0, 4.0) << 3u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, asfloat(asuint(2.0) + 1u), 4.0) << 4u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, 2.0) << 5u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, asfloat(asuint(2.0) + 1u)) << 6u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, asfloat(asuint(2.0) - 1u)) << 7u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, 3.0) << 8u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, asfloat(asuint(3.0) + 1u), 4.0) << 9u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, 0.001) << 10u;
+        surfaceRay.direction *= 2.0;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, 1.0) << 11u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, asfloat(asuint(1.0) + 1u)) << 12u;
+        strictFailures |= compareStrictOpaqueShadow(surfaceRay, push, 0.001, 4.0) << 13u;
+        failures |= strictFailures != 0u ? (2097152u | strictFailures) : 0u;
+    }
     resolveUniform(getResourceParameters<SceneResourceParameters>().output)[id.xy] = float4(t, shadow, opacity, float(failures));
 }

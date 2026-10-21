@@ -81,12 +81,10 @@ public uint punctualZCurveToLinearIndex(uint2 position)
 
 
 
-internal float punctualPdfWeight(PunctualSamplingResources resources, uint2 position, uint mipLevel)
+internal float punctualPdfWeight(Texture2D<float> pdfTex, uint2 position, uint mipLevel, uint2 dimensions)
 {
-    uint width, height, mipCount;
-    resources.pdf.GetDimensions(mipLevel, width, height, mipCount);
-    if (position.x >= width || position.y >= height) { return 0.0; }
-    float value = resources.pdf.Load(int3(position, mipLevel));
+    if (position.x >= dimensions.x || position.y >= dimensions.y) { return 0.0; }
+    float value = pdfTex.Load(int3(position, mipLevel));
     return isfinite(value) ? max(value, 0.0) : 0.0;
 }
 
@@ -96,19 +94,24 @@ public bool selectPunctualLightGlobal(PunctualSamplingResources resources, inout
     inverseSourcePdf = 0.0;
     uint count = punctualLightCount(resources.lights);
     if (count == 0u) { return false; }
+    let pdfTex = resources.pdf;
     uint width, height, mipCount;
-    resources.pdf.GetDimensions(0u, width, height, mipCount);
+    pdfTex.GetDimensions(0u, width, height, mipCount);
     if (width > 0u && height > 0u && mipCount > 0u &&
-        punctualPdfWeight(resources, uint2(0u), mipCount - 1u) > 0.0) {
+        punctualPdfWeight(pdfTex, uint2(0u), mipCount - 1u,
+            max(uint2(width, height) >> (mipCount - 1u), uint2(1u))) > 0.0) {
         uint2 position = uint2(0u);
         float pdf = 1.0;
         for (int mip = int(mipCount) - 2; mip >= 0; --mip) {
             position *= 2u;
+            // Texture mip extents halve independently; absent children stay zero
+            // on rectangular/one-texel axes, just as in the per-load query path.
+            uint2 dimensions = max(uint2(width, height) >> uint(mip), uint2(1u));
             float4 weights = float4(
-                punctualPdfWeight(resources, position + uint2(0u, 0u), uint(mip)),
-                punctualPdfWeight(resources, position + uint2(0u, 1u), uint(mip)),
-                punctualPdfWeight(resources, position + uint2(1u, 0u), uint(mip)),
-                punctualPdfWeight(resources, position + uint2(1u, 1u), uint(mip)));
+                punctualPdfWeight(pdfTex, position + uint2(0u, 0u), uint(mip), dimensions),
+                punctualPdfWeight(pdfTex, position + uint2(0u, 1u), uint(mip), dimensions),
+                punctualPdfWeight(pdfTex, position + uint2(1u, 0u), uint(mip), dimensions),
+                punctualPdfWeight(pdfTex, position + uint2(1u, 1u), uint(mip), dimensions));
             float largest = max(max(weights.x, weights.y), max(weights.z, weights.w));
             if (!(largest > 0.0)) { return false; }
             weights /= largest;

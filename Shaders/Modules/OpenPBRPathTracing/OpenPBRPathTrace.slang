@@ -178,6 +178,12 @@ public float3 openPbrShadowTransmittance(
     float remainingDistance = max(maxDistance, 0.001);
     float3 transmittance = float3(1.0, 1.0, 1.0);
 
+#if !METALLIC_PT_RAY_PIPELINE && !METALLIC_REALTIME_DEFERRED
+    if ((push.deferredSettings & kScenePathTraceStrictOpaqueShadows) != 0u) {
+        return traceStrictOpaqueShadow(ray, 0.001, remainingDistance) ? float3(0.0) : float3(1.0);
+    }
+#endif
+
     for (uint hitIndex = 0u; hitIndex < kOpenPBRShadowTransmissionMaxHits; ++hitIndex) {
         ScenePathTracePush shadowPush = push;
         shadowPush.clipOrtho.x = 0.001;
