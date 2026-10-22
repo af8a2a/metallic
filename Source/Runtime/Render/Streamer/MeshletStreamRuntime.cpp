@@ -1534,7 +1534,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             kMeshletStreamRTRepresentationsPerPrimitive;
         const uint64_t representationStateWords = uint64_t(asset_.groupCount()) * 3u +
             uint64_t(asset_.lodLevelCount()) * 4u + uint64_t(asset_.primitiveCount()) * 12u +
-            uint64_t(asset_.instanceCount()) * 4u;
+            uint64_t(asset_.instanceCount()) * 4u + representationCount * kMeshletStreamRTImportanceWords;
         if (blasRepresentationsEnabled_ &&
             (representationCount > UINT32_MAX || representationStateWords > UINT32_MAX)) {
             log = "MeshletStreamRuntime RT representation metadata exceeds GPU addressing limits";
@@ -1721,23 +1721,47 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 rtRepresentationCacheBuffer_, "MeshletStreamRuntime RT representation cache");
             if (!result) { return result; }
 
-            std::vector<MeshletStreamGPURTRepresentationLODMetadata> metadata(asset_.lodLevelCount());
-            std::vector<std::array<double, 6>> bounds(asset_.lodLevelCount(), {
+            // LOD classification records followed by one actual terminal-cut
+            // approximation record per primitive for owner demand importance.
+            std::vector<MeshletStreamGPURTRepresentationLODMetadata> metadata(
+                size_t(asset_.lodLevelCount()) + asset_.primitiveCount());
+            std::vector<std::array<double, 6>> bounds(metadata.size(), {
                 std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
                 std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
                 -std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()});
-            for (const auto& group : asset_.groups()) {
-                const uint32_t level = asset_.primitives()[group.primitiveIndex].lodLevelOffset + group.lodLevel;
+            const auto includeBounds = [&](size_t level, const auto& group) {
                 for (uint32_t axis = 0; axis < 3; ++axis) {
                     bounds[level][axis] = std::min(bounds[level][axis],
                         double(group.boundsCenterRadius[axis]) - group.boundsCenterRadius[3]);
                     bounds[level][axis + 3] = std::max(bounds[level][axis + 3],
                         double(group.boundsCenterRadius[axis]) + group.boundsCenterRadius[3]);
                 }
+            };
+            for (const auto& group : asset_.groups()) {
+                const uint32_t level = asset_.primitives()[group.primitiveIndex].lodLevelOffset + group.lodLevel;
+                includeBounds(level, group);
                 metadata[level].errorAndPadding[0] = std::max(metadata[level].errorAndPadding[0], group.maxQuadricError);
             }
-            for (uint32_t level = 0; level < metadata.size(); ++level) {
-                if (asset_.lodLevels()[level].pageCount == 0) { continue; }
+            for (uint32_t primitive = 0; primitive < asset_.primitiveCount(); ++primitive) {
+                const size_t output = size_t(asset_.lodLevelCount()) + primitive;
+                // A terminal group's own error is the FLT_MAX stop sentinel.
+                // Its clusters carry the approximation error of the groups
+                // which generated them; original clusters have no such error.
+                for (uint32_t terminal : asset_.primitiveTerminalGroups(primitive)) {
+                    const auto& group = asset_.groups()[terminal];
+                    includeBounds(output, group);
+                    for (uint32_t cluster = 0; cluster < group.clusterCount; ++cluster) {
+                        const uint32_t refined = asset_.refinedGroups()[group.clusterRefinedOffset + cluster];
+                        if (refined == UINT32_MAX) { continue; }
+                        const auto& source = asset_.groups()[refined];
+                        includeBounds(output, source);
+                        metadata[output].errorAndPadding[0] = std::max(
+                            metadata[output].errorAndPadding[0], source.maxQuadricError);
+                    }
+                }
+            }
+            for (size_t level = 0; level < metadata.size(); ++level) {
+                if (bounds[level][0] == std::numeric_limits<double>::infinity()) { continue; }
                 double radiusSquared = 0.0;
                 for (uint32_t axis = 0; axis < 3; ++axis) {
                     const double center = (bounds[level][axis] + bounds[level][axis + 3]) * 0.5;
@@ -1754,8 +1778,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             }
             result = createAndPopulateHostStorageBuffer<MeshletStreamGPURTRepresentationLODMetadata>(
                 device, metadata.size(), rtRepresentationMetadataBuffer_, log,
-                "MeshletStreamRuntime RT LOD classification metadata",
-                [&metadata](MeshletStreamGPURTRepresentationLODMetadata& output, size_t index) { output = metadata[index]; });
+                "MeshletStreamRuntime RT LOD and fallback metadata",
+                [&metadata](MeshletStreamGPURTRepresentationLODMetadata& output, size_t index) { output = metadata[index]; },
+                BufferUsageBits::TransferSource);
             if (!result) { return result; }
         }
 

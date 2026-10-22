@@ -3454,6 +3454,70 @@ uint streamRTInstanceBase(GPUDrivenStreamAssetParams p, uint instance)
     return streamRTPrimitiveBase(p, p.scenePrimitiveCount) + instance * 4u;
 }
 
+uint streamRTOwnerImportanceBase(GPUDrivenStreamAssetParams p, uint owner)
+{
+    return streamRTInstanceBase(p, p.sceneInstanceCount) + owner * 6u;
+}
+
+void streamAccumulateRTOwnerImportance(RWStructuredBuffer<uint> state, uint owner,
+    GPUDrivenStreamAssetInstance instance, GPUDrivenStreamAssetParams params)
+{
+    // Primary-view estimates of terminal fallback error in render pixels, not
+    // secondary-ray importance or admission priority. Each aggregate is independent.
+    StructuredBuffer<float4> metadata = resolveUniform(
+        ResourceHandle<StructuredBuffer<float4>>(params.rtRepresentationMetadataBuffer));
+    uint metadataIndex = (params.sceneLodLevelCount + instance.primitiveIndex) * 2u;
+    float4 sphere = metadata[metadataIndex];
+    float error = metadata[metadataIndex + 1u].x;
+    float3 extent = abs(sphere.xyz) + sphere.www;
+    float3 magnitude = abs(instance.world0.xyz) * extent.x + abs(instance.world1.xyz) * extent.y +
+        abs(instance.world2.xyz) * extent.z + abs(instance.world3.xyz) + abs(params.eye.xyz);
+    float padding = dot(magnitude, float3(1, 1, 1)) * (32.0 * 1.1920928955078125e-7);
+    float scale = conservativeTransformScale(instance.world0.xyz, instance.world1.xyz, instance.world2.xyz);
+    float3 center = instance.world0.xyz * sphere.x + instance.world1.xyz * sphere.y +
+        instance.world2.xyz * sphere.z + instance.world3.xyz;
+    float radius = sphere.w * scale + padding;
+    bool finiteBounds = all(isfinite(center)) && isfinite(radius);
+    GPUDrivenStreamAssetCameraData camera = currentStreamCamera(params);
+    float guard = 1.0 + 2.0 / max(min(params.viewport.y, params.viewport.z), 1.0);
+    camera.viewport.w = 2.0 * atan(tan(params.viewport.w * 0.5) * guard);
+    camera.clipOrtho.z *= guard;
+    bool frustumVisible = !finiteBounds || streamSphereInsideFrustum(center, radius, camera);
+    float3 forward = safeNormalize(params.center.xyz - params.eye.xyz, float3(0, 0, -1));
+    float4 eye = float4(params.eye.xyz, params.clipOrtho.x);
+    float4 direction = float4(forward, params.upProjection.w);
+    float4 projection = float4(params.viewport.z, tan(params.viewport.w * 0.5), params.clipOrtho.z, 0.0);
+    float maxFinite = asfloat(0x7f7fffffu);
+    float projected = meshletLodRayProjectedError(sphere, error, instance.world0, instance.world1,
+        instance.world2, instance.world3, eye, direction, projection, padding);
+    projected = isfinite(projected) ? (projected > 0.0 ? projected : 0.0) : maxFinite;
+    if (frustumVisible) {
+        float raster = meshletLodProjectedError(sphere, error, instance.world0, instance.world1,
+            instance.world2, instance.world3, eye, direction, projection, padding);
+        raster = isfinite(raster) ? (raster > 0.0 ? raster : 0.0) : maxFinite;
+        projected = max(projected, raster);
+    }
+    float distance = length(center - params.eye.xyz) - radius;
+    distance = finiteBounds && isfinite(distance) && distance > 0.0 ? distance : 0.0;
+    float coverage = 0.0;
+    if (frustumVisible) {
+        float4 rect;
+        float2 size = params.viewport.yz;
+        bool bounded = conservativeSphereScreenRect(streamWorldToView(center, currentStreamCamera(params)),
+            radius, size, params.viewport.x, params.viewport.w,
+            params.upProjection.w != 0.0 ? params.clipOrtho.z : 0.0, params.clipOrtho.x, rect);
+        coverage = bounded ? saturate(((rect.z - rect.x + 1.0) * (rect.w - rect.y + 1.0)) /
+            (size.x * size.y)) : 1.0;
+    }
+    uint base = streamRTOwnerImportanceBase(params, owner);
+    // Zero means no consumer. A real zero approximation error retains key 1.
+    InterlockedMax(state[base], asuint(projected) + 1u);
+    InterlockedMin(state[base + 1u], asuint(distance));
+    InterlockedMax(state[base + 2u], asuint(coverage));
+    InterlockedAdd(state[base + 3u], 1u);
+    InterlockedAdd(state[base + (frustumVisible ? 4u : 5u)], 1u);
+}
+
 GPUDrivenStreamAssetActiveGroup streamBlasGroup(uint index,
     StructuredBuffer<GPUDrivenStreamAssetActiveGroup> rasterGroups,
     GPUDrivenStreamAssetParams params)
@@ -3527,6 +3591,15 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         }
         if (item < params.scenePrimitiveCount) {
             uint base = streamRTPrimitiveBase(params, item);
+            for (uint mode = 0u; mode < 3u; ++mode) {
+                uint importance = streamRTOwnerImportanceBase(params, item * 3u + mode);
+                state[importance] = 0u;
+                state[importance + 1u] = 0x7f7fffffu;
+                state[importance + 2u] = 0u;
+                state[importance + 3u] = 0u;
+                state[importance + 4u] = 0u;
+                state[importance + 5u] = 0u;
+            }
             // Each primitive owns 16 cache words: merged epochs/counts (4),
             // discrete epochs/counts (4), discrete LOD, shared owner/counts (3),
             // shared valid, current shared difference/count, frame reuse bits.
@@ -3704,8 +3777,10 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         // The representative itself retains its own view cut even when its
         // interval spans several levels. Other users satisfy the conservative test.
         if (mode == 0u && item == state[base]) { mode = 1u; }
-        state[output + 2u] = instance.primitiveIndex * 3u + mode;
+        uint owner = instance.primitiveIndex * 3u + mode;
+        state[output + 2u] = owner;
         InterlockedAdd(state[base + 3u + mode], 1u);
+        streamAccumulateRTOwnerImportance(state, owner, instance, params);
         return;
     }
     if (push.activeBuildPhase == 25u) {

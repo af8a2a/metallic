@@ -544,6 +544,7 @@ add_executable(MetallicRHITests
     rhi/StreamBLASAllocatorTests.cpp
     rhi/StreamRTRepresentationTests.cpp
     rhi/StreamRTRepresentationAdmissionTests.cpp
+    rhi/StreamRTRepresentationImportanceTests.cpp
     rhi/GPUDecompressionTests.cpp
     rhi/TestOutput.cpp
     rhi/ValidationTests.cpp

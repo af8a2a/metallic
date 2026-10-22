@@ -326,6 +326,23 @@ struct MeshletStreamGPURTRepresentationLODMetadata {
     float errorAndPadding[4] = {};
 };
 
+// Demand metadata, independent of owner identity, cached cuts and admission.
+// Stored after the instance records in rtRepresentationState, one per owner.
+// Positive float bits preserve ordering for GPU atomic max/min. Error key zero
+// means no consumers; otherwise asfloat(key - 1) is the estimated terminal
+// fallback error in render pixels (including an eligible, exact zero error).
+struct MeshletStreamGPURTRepresentationImportance {
+    uint32_t fallbackErrorKey = 0;
+    uint32_t nearestSurfaceDistanceBits = 0x7f7fffffu;
+    uint32_t maxCoverageBits = 0;
+    uint32_t consumerCount = 0;
+    uint32_t frustumVisibleConsumerCount = 0;
+    uint32_t offscreenConsumerCount = 0;
+};
+inline constexpr uint32_t kMeshletStreamRTImportanceWords = 6;
+static_assert(sizeof(MeshletStreamGPURTRepresentationImportance) ==
+    kMeshletStreamRTImportanceWords * sizeof(uint32_t));
+
 struct MeshletStreamGPUParams {
     float eye[4] = {};
     float center[4] = {};

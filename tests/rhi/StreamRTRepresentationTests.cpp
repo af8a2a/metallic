@@ -15,12 +15,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -38,6 +40,8 @@ struct ProbeObservation {
     uint32_t directInstance, reflectedInstance;
     float directDistance, reflectedDistance;
 };
+constexpr uint32_t kRayObservationCount = kInstanceCount * 256;
+constexpr uint64_t kRayReadbackBytes = uint64_t(kRayObservationCount) * sizeof(ProbeObservation);
 struct NativeInstance {
     float transform[3][4];
     uint32_t customIndexMask, flags;
@@ -49,7 +53,11 @@ struct Snapshot {
     std::array<NativeInstance, kInstanceCount> instances;
     std::array<MeshletStreamGPUInstanceBLAS, kInstanceCount> allocations;
     std::array<uint32_t, 16> cutCache;
-    std::array<ProbeObservation, kInstanceCount * 256> rays;
+    std::array<MeshletStreamGPURTRepresentationImportance, 3> importance;
+    MeshletStreamGPURTRepresentationLODMetadata fallbackMetadata;
+    // Keep retained versions and returned-frame temporaries off the Windows
+    // thread stack. Each snapshot still owns an independent copy of its rays.
+    std::vector<ProbeObservation> rays = std::vector<ProbeObservation>(kRayObservationCount);
     std::vector<MeshletStreamGPURTRepresentationGroup> groups;
 };
 
@@ -167,6 +175,30 @@ public:
             require(asset.groupCount() > 64 && asset.groupCount() % 64 != 0,
                 "Fixture must exercise multiple group tiles and a partial final tile");
 
+            // Terminal group errors are traversal sentinels. The approximation
+            // actually used by fallback comes from each cluster's generating
+            // group, while original clusters have exactly zero geometric error.
+            float expectedFallbackError = 0.0f;
+            bool hasTerminalSentinel = false;
+            std::set<uint32_t> fallbackBoundGroups;
+            for (const uint32_t terminal : asset.primitiveTerminalGroups(0)) {
+                const auto& group = asset.groups()[terminal];
+                fallbackBoundGroups.insert(terminal);
+                hasTerminalSentinel |= group.maxQuadricError == scene::kMeshletStreamTerminalGroupError;
+                for (uint32_t cluster = 0; cluster < group.clusterCount; ++cluster) {
+                    const uint32_t refined = asset.refinedGroups()[group.clusterRefinedOffset + cluster];
+                    if (refined == scene::kMeshletStreamInvalidGroupIndex) { continue; }
+                    const auto& sourceGroup = asset.groups()[refined];
+                    require(std::isfinite(sourceGroup.maxQuadricError) &&
+                        sourceGroup.maxQuadricError < scene::kMeshletStreamTerminalGroupError,
+                        "Fallback cluster references a terminal error sentinel");
+                    expectedFallbackError = std::max(expectedFallbackError, sourceGroup.maxQuadricError);
+                    fallbackBoundGroups.insert(refined);
+                }
+            }
+            require(hasTerminalSentinel && expectedFallbackError > 0.0f,
+                "Fixture must distinguish terminal sentinels from finite fallback approximation error");
+
             MeshletStreamRuntime runtime;
             runtime.setDebugReadbackEnabled(true);
             MeshletStreamRuntimeDesc runtimeDesc{.sourcePath = source, .streamAssetPath = assetPath,
@@ -232,12 +264,16 @@ public:
             constexpr uint64_t kReadbackBytes = sizeof(MeshletStreamGPUBLASHeader) +
                 kInstanceCount * (sizeof(NativeInstance) + sizeof(MeshletStreamGPUInstanceBLAS)) + sizeof(Snapshot::cutCache);
             const uint64_t representationReadbackBytes = uint64_t(asset.groupCount()) * 3 * sizeof(MeshletStreamGPURTRepresentationGroup);
+            const uint64_t importanceReadbackOffset = kReadbackBytes + representationReadbackBytes;
+            const uint64_t fallbackMetadataReadbackOffset = importanceReadbackOffset + sizeof(Snapshot::importance);
+            const uint64_t importanceStateOffset = sizeof(uint32_t) * (uint64_t(asset.groupCount()) * 3 +
+                uint64_t(asset.lodLevelCount()) * 4 + uint64_t(asset.primitiveCount()) * 12 + uint64_t(asset.instanceCount()) * 4);
             for (auto& slot : slots) {
                 require(bool(device->createCommandPool(*queue).transform([&](auto value) { slot.pool = std::move(value); })) &&
                     bool(slot.pool->createCommandBuffer().transform([&](auto value) { slot.commands = std::move(value); })) &&
-                    bool(device->createBuffer({.size = kReadbackBytes + representationReadbackBytes, .usage = BufferUsageBits::TransferDestination,
+                    bool(device->createBuffer({.size = fallbackMetadataReadbackOffset + sizeof(Snapshot::fallbackMetadata), .usage = BufferUsageBits::TransferDestination,
                         .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { slot.readback = std::move(value); })) &&
-                    bool(device->createBuffer({.size = sizeof(Snapshot::rays), .structureStride = sizeof(ProbeObservation),
+                    bool(device->createBuffer({.size = kRayReadbackBytes, .structureStride = sizeof(ProbeObservation),
                         .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
                         .transform([&](auto value) { slot.rays = std::move(value); })), "Slot resources");
             }
@@ -327,6 +363,8 @@ public:
                 std::memcpy(snapshot.allocations.data(), data + sizeof(snapshot.header) + sizeof(snapshot.instances), sizeof(snapshot.allocations));
                 if (slot.hasCutCache) {
                     std::memcpy(snapshot.cutCache.data(), data + kReadbackBytes - sizeof(snapshot.cutCache), sizeof(snapshot.cutCache));
+                    std::memcpy(snapshot.importance.data(), data + importanceReadbackOffset, sizeof(snapshot.importance));
+                    std::memcpy(&snapshot.fallbackMetadata, data + fallbackMetadataReadbackOffset, sizeof(snapshot.fallbackMetadata));
                 }
                 require(uint64_t(snapshot.header.representationGroupCount) * sizeof(MeshletStreamGPURTRepresentationGroup) <= slot.representationBytes,
                     "Representation count exceeded the output allocation");
@@ -336,10 +374,45 @@ public:
                         snapshot.groups.size() * sizeof(MeshletStreamGPURTRepresentationGroup));
                 }
                 slot.readback->unmap();
+                if (slot.hasCutCache) {
+                    require(snapshot.fallbackMetadata.errorAndPadding[0] == expectedFallbackError,
+                        "Runtime fallback metadata used a terminal sentinel or omitted a generating group");
+                    const auto& envelope = snapshot.fallbackMetadata.boundsCenterRadius;
+                    require(std::isfinite(envelope[3]) && envelope[3] >= 0.0f, "Fallback envelope must be finite");
+                    for (uint32_t index : fallbackBoundGroups) {
+                        const auto& sphere = asset.groups()[index].boundsCenterRadius;
+                        double distanceSquared = 0.0;
+                        for (uint32_t axis = 0; axis < 3; ++axis) {
+                            const double delta = double(sphere[axis]) - envelope[axis];
+                            distanceSquared += delta * delta;
+                        }
+                        require(std::sqrt(distanceSquared) + sphere[3] <= double(envelope[3]) * (1.0 + 1e-5) + 1e-6,
+                            "Fallback envelope omitted a terminal or generating-group sphere");
+                    }
+                    uint32_t consumers = 0;
+                    for (const auto& importance : snapshot.importance) {
+                        require(importance.consumerCount == importance.frustumVisibleConsumerCount + importance.offscreenConsumerCount,
+                            "Owner importance lost consumers during visibility aggregation");
+                        consumers += importance.consumerCount;
+                        if (importance.consumerCount == 0) {
+                            require(importance.fallbackErrorKey == 0 && importance.maxCoverageBits == 0 &&
+                                importance.nearestSurfaceDistanceBits == std::bit_cast<uint32_t>(std::numeric_limits<float>::max()),
+                                "Unused owner retained importance from a previous frame");
+                            continue;
+                        }
+                        const float error = std::bit_cast<float>(importance.fallbackErrorKey - 1u);
+                        const float distance = std::bit_cast<float>(importance.nearestSurfaceDistanceBits);
+                        const float coverage = std::bit_cast<float>(importance.maxCoverageBits);
+                        require(importance.fallbackErrorKey != 0 && std::isfinite(error) && error >= 0.0f &&
+                            std::isfinite(distance) && distance >= 0.0f && std::isfinite(coverage) && coverage >= 0.0f && coverage <= 1.0f,
+                            "Owner importance contains invalid error, distance or coverage");
+                    }
+                    require(consumers <= kInstanceCount, "Owner importance charged a consumer more than once");
+                }
                 checkLegalCuts(snapshot);
                 if (slot.traced) {
                     slot.rays->invalidate(); const void* rays = slot.rays->map(); require(rays != nullptr, "Ray readback");
-                    std::memcpy(snapshot.rays.data(), rays, sizeof(snapshot.rays)); slot.rays->unmap();
+                    std::memcpy(snapshot.rays.data(), rays, kRayReadbackBytes); slot.rays->unmap();
                 }
                 frames.push_back({{"phase", phase}, {"builds", snapshot.header.blasBuildCount},
                     {"representations", snapshot.header.representationCount},
@@ -411,6 +484,25 @@ public:
                     std::swap(barrier.before, barrier.after);
                     checked(slot.commands->synchronize({.buffers = {&barrier, 1}}), "Representation restore barrier");
                 }
+                if (slot.hasCutCache) {
+                    const auto copyMetadata = [&](const char* name, uint64_t sourceOffset, uint64_t destinationOffset, uint64_t bytes) {
+                        const auto found = std::find_if(bindings.begin(), bindings.end(), [&](const auto& entry) { return entry.id == name; });
+                        require(found != bindings.end(), std::string("Missing importance debug binding ") + name);
+                        BufferBarrierDesc barrier{.buffer = found->buffer,
+                            .before = resourceSyncScope(found->state, PipelineStageBits::AllCommands),
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                        checked(slot.commands->synchronize({.buffers = {&barrier, 1}}), "Importance readback barrier");
+                        auto src = found->buffer->slice({sourceOffset, bytes});
+                        auto dst = slot.readback->slice({destinationOffset, bytes});
+                        require(bool(src) && bool(dst), "Importance readback slices");
+                        checked(slot.commands->copyBuffer(*src, *dst), "Importance readback copy");
+                        std::swap(barrier.before, barrier.after);
+                        checked(slot.commands->synchronize({.buffers = {&barrier, 1}}), "Importance restore barrier");
+                    };
+                    copyMetadata("test.rtRepresentationState", importanceStateOffset, importanceReadbackOffset, sizeof(Snapshot::importance));
+                    copyMetadata("test.rtRepresentationMetadata", uint64_t(asset.lodLevelCount()) * sizeof(Snapshot::fallbackMetadata),
+                        fallbackMetadataReadbackOffset, sizeof(Snapshot::fallbackMetadata));
+                }
                 slot.traced = trace && runtime.tlasReady();
                 if (slot.traced) {
                     const ComputeDispatchBinding resources[] = {
@@ -459,6 +551,10 @@ public:
             }
             require(built > 0 && runtime.sceneReady() && runtime.tlasReady(), "Representations never built");
             const auto convergedGroups = stable.groups;
+            const auto convergedImportance = stable.importance;
+            uint32_t convergedConsumers = 0;
+            for (const auto& importance : convergedImportance) { convergedConsumers += importance.consumerCount; }
+            require(convergedConsumers == kInstanceCount, "Importance omitted consumers of the converged shared primitive");
             uint32_t stableAllocatorSamples = 0;
             for (uint32_t i = 0; i < 32; ++i) {
                 record(slots[i % 2]); stable = complete(slots[i % 2]);
@@ -471,6 +567,8 @@ public:
                 require(stable.groups.size() == convergedGroups.size() &&
                     std::memcmp(stable.groups.data(), convergedGroups.data(), stable.groups.size() * sizeof(MeshletStreamGPURTRepresentationGroup)) == 0,
                     "Parallel representation output is not deterministic across stable frames");
+                require(std::memcmp(stable.importance.data(), convergedImportance.data(), sizeof(stable.importance)) == 0,
+                    "Owner importance changed across stationary frames without a demand change");
                 checkIdentity(stable);
                 const auto statistics = runtime.profilingStats();
                 require(statistics.blasGPUAllocatorEnabled, "Candidate runtime did not enable the GPU BLAS allocator");
@@ -511,6 +609,9 @@ public:
             require(stable.header.cachedInstanceCount == kInstanceCount && stable.header.blasBuildCount == 0,
                 "Fully resident discrete level failed to converge to the persistent cache");
             require((stable.cutCache[15] & 4u) != 0, "Stable discrete representation missed its cut cache");
+            require(stable.importance[2].consumerCount == kInstanceCount &&
+                stable.importance[0].consumerCount == 0 && stable.importance[1].consumerCount == 0,
+                "Importance did not move every consumer to the discrete cache owner");
             checkIdentity(stable);
             const Snapshot discreteCandidate = stable;
             view.selectedLodLevel = 0;
@@ -549,7 +650,8 @@ public:
             view.camera.eye = {1.f, .11f, 2.f};
             view.camera.center = {1.f, .11f, 0.f};
             view.lodPixelError = 1.5f;
-            for (uint32_t i = 0; i < 4; ++i) { record(slots[i % 2]); complete(slots[i % 2]); }
+            for (uint32_t i = 0; i < 4; ++i) { record(slots[i % 2]); stable = complete(slots[i % 2]); }
+            const auto preCancellationImportance = stable.importance;
 
             phase = "candidate cancellation and in-flight dependencies";
             // A canceled coarse selection must not replace the last submitted
@@ -564,6 +666,9 @@ public:
             require(first.header.blasBuildCount == 0 && second.header.blasBuildCount == 0 &&
                 first.header.semanticChangeCount == 0 && second.header.semanticChangeCount == 0,
                 "Canceled selection or a later in-flight frame invalidated the retained representation");
+            require(std::memcmp(first.importance.data(), preCancellationImportance.data(), sizeof(first.importance)) == 0 &&
+                std::memcmp(second.importance.data(), preCancellationImportance.data(), sizeof(second.importance)) == 0,
+                "Canceled recording or an in-flight slot changed the submitted owner importance");
             checkIdentity(first); checkIdentity(second);
 
             // Retry the exact selection whose recording was cancelled. Restoring
@@ -579,6 +684,8 @@ public:
                 std::memcmp(retriedDiscrete.groups.data(), discreteCandidate.groups.data(),
                     retriedDiscrete.groups.size() * sizeof(MeshletStreamGPURTRepresentationGroup)) == 0,
                 "Cancelled cut-cache selection changed the retried discrete representation");
+            require(std::memcmp(retriedDiscrete.importance.data(), discreteCandidate.importance.data(), sizeof(retriedDiscrete.importance)) == 0,
+                "Retry after cancellation retained stale consumers or a different importance value");
             for (uint32_t ray = 0; ray < retriedDiscrete.rays.size(); ++ray) {
                 const auto& actual = retriedDiscrete.rays[ray];
                 const auto& expected = discreteCandidate.rays[ray];
@@ -726,11 +833,13 @@ public:
                 {"sharingFrames", sharingFrames}, {"mergedFrames", mergedFrames}, {"sharedCutCacheHits", sharedCutCacheHits},
                 {"candidateBuildBudget", 3}, {"legacyBuildBudget", kInstanceCount},
                 {"candidateAllocator", "gpu"}, {"legacyAllocator", "legacy"},
-                {"stableAllocatorSamples", stableAllocatorSamples}, {"stagingCapFailureRejected", true}}).dump(2); }
+                {"stableAllocatorSamples", stableAllocatorSamples}, {"stagingCapFailureRejected", true},
+                {"fallbackApproximationError", expectedFallbackError}, {"terminalSentinelExcluded", hasTerminalSentinel},
+                {"importanceStableFrames", 32}, {"importanceCancellationRestored", true}}).dump(2); }
             for (const auto& [name, snapshot] : {std::pair{"CandidateRays.bin", &finestCandidate},
                     std::pair{"LegacyRays.bin", &finestLegacy}}) {
                 std::ofstream output(directory / name, std::ios::binary);
-                output.write(reinterpret_cast<const char*>(snapshot->rays.data()), sizeof(snapshot->rays));
+                output.write(reinterpret_cast<const char*>(snapshot->rays.data()), kRayReadbackBytes);
             }
             return RHITestResult::pass("Eight instances; Sharing/Merging/Discrete Caching; 32 stable frames; unique budgets; cancellation; in-flight CLAS retirement; 4096 direct/secondary rays against legacy hit coverage, identity and distance");
         } catch (const std::exception& error) {

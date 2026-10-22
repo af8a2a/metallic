@@ -32,6 +32,44 @@ storage gives way to active demand. A rejected shared/cache selection may use
 an already-ready merged representation of the same primitive; otherwise it
 uses the existing terminal fallback.
 
+## Owner demand importance
+
+Each owner also carries demand metadata aggregated from **all** instances that
+request it, before budget rejection. A shared cut's representative is not its
+importance proxy. The primary metric is the maximum estimated terminal-fallback
+error in render pixels; minimum surface distance and maximum projected viewport
+coverage are independent auxiliary metrics and may come from different instances.
+These estimates describe the cost of the terminal fallback, not a measured
+image difference or an exact error delta against the current representation.
+
+The immutable metadata buffer appends one fallback sphere/error record per
+primitive after its LOD records. It covers the complete terminal cut, including
+branches that terminate early. Terminal groups' own errors are stop sentinels;
+the approximation error comes from each terminal cluster's generating group,
+with zero error for original clusters. The envelope includes both terminal and
+generating groups and is rounded outward.
+
+Projection uses a conservative affine scale bound, including shear. Every
+consumer contributes a direction-independent ray error; primary-frustum
+consumers additionally use the raster projection bound. Orthographic error is
+distance-independent. Offscreen and behind-camera consumers remain eligible for
+shadow/reflection use, with zero primary-view coverage rather than zero demand.
+This is a camera-based proxy, not an estimate of an individual shadow or reflected
+ray's footprint.
+
+`rtRepresentationState` appends six words per owner after the instance records:
+`fallbackErrorKey`, `nearestSurfaceDistanceBits`, `maxCoverageBits`,
+`consumerCount`, `frustumVisibleConsumerCount`, `offscreenConsumerCount`.
+Nonnegative finite float bits support atomic max/min. Error key zero means no
+consumers; otherwise `asfloat(key - 1)` is the error, so even exact-zero-error
+consumers have a nonzero key. Empty owners have maximum finite distance and zero
+coverage/counts. The fields reset and aggregate every executed frame; they do
+not invalidate cached cuts or change owner identities.
+
+This stage exposes importance only. Group, reference, build-slot and storage
+admission still use their existing order; nonzero offscreen demand does not yet
+guarantee admission or prevent starvation under capacity pressure.
+
 ## Residency and submitted work
 
 Every selected cluster must have a drawable page and a published CLAS. Cache
@@ -54,9 +92,16 @@ transactions; cancelling unsubmitted work preserves the last submitted cut.
 
 ## Validation
 
+`stream_rt_representation_importance` dispatches production reset and aggregation
+over 137 instances across three workgroups, with classified LOD inputs supplied
+by the fixture. It checks shared-consumer maxima, permutation invariance,
+offscreen/behind-camera demand, orthographic/affine/near-plane cases and 32 frames
+of removal and owner migration. It does not test priority admission.
+
 `stream_rt_representation_lifecycle` exercises stable frames, sharing, merging,
 cache return after temporary disuse, tight budgets, cancellation and retirement
-with two frames in flight. Direct and reflected secondary-ray probes compare
+with two frames in flight. It also reads actual fallback/importance metadata and
+checks stable values and cancelled-frame recovery. Direct and reflected secondary-ray probes compare
 coverage, instance identity and distance with the per-instance oracle. These
 probes establish geometric correctness for their fixture, not full-scene
 reflection-image quality.
