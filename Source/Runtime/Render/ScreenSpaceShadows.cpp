@@ -124,6 +124,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     uint64_t transformRevision,
     const ScreenSpaceShadowSettings& settings,
     std::string& log,
+    Buffer& textureSamplingMetadata,
     ScenePathTraceResources* geometry,
     const MeshletStreamDeferredGPUResourcesView* streamGeometry,
     CPUProfileRecorder* profiler,
@@ -192,6 +193,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         }
         {
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials)});
+            layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata)});
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
             for (const auto member : {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount)}) { layout.push_back({.binding = member}); }
         }
@@ -329,6 +331,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
             .accelerationStructure = streamGeometry->accelerationStructure});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .buffer = geometry->materialBuffer()});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = &textureSamplingMetadata});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = {geometry->materialTextureViews().data(), textureCount}, .sampledImages = geometry->materialTextureSnapshot()});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), .buffer = streamGeometry->pageBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), .buffer = streamGeometry->pageTableBuffer});

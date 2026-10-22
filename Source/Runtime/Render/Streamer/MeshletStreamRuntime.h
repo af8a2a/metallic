@@ -274,6 +274,14 @@ struct MeshletStreamGPUBLASHeader {
     uint32_t arenaBase = 0;
     uint32_t admittedInstances = 0;
     uint32_t publicationInvalidated = 0;
+    uint32_t representationCount = 0;
+    uint32_t sharingInstanceCount = 0;
+    uint32_t mergedInstanceCount = 0;
+    uint32_t cachedInstanceCount = 0;
+    uint32_t representationGroupCount = 0;
+    uint32_t representationGroupOverflow = 0;
+    uint32_t cacheDependencyInvalidations = 0;
+    uint32_t representationPadding = 0;
 };
 
 struct MeshletStreamGPUInstanceBLAS {
@@ -300,6 +308,21 @@ struct MeshletStreamGPUBLASBuildInfo {
     uint32_t clusterReferencesStride = sizeof(uint64_t);
     uint32_t clusterReferencesAddressLow = 0;
     uint32_t clusterReferencesAddressHigh = 0;
+};
+
+// RT cuts are independent of raster instances. A record owns one complete
+// primitive cut; the three slots are merged, shared and discrete cached cuts.
+inline constexpr uint32_t kMeshletStreamRTRepresentationsPerPrimitive = 3;
+struct MeshletStreamGPURTRepresentationGroup {
+    uint32_t pageIndex = 0;
+    uint32_t clusterMask = 0;
+    uint32_t clusterCount = 0;
+    uint32_t representationIndex = 0;
+};
+
+struct MeshletStreamGPURTRepresentationLODMetadata {
+    float boundsCenterRadius[4] = {};
+    float errorAndPadding[4] = {};
 };
 
 struct MeshletStreamGPUParams {
@@ -373,6 +396,16 @@ struct MeshletStreamGPUParams {
     float rtLodHysteresis = 0.2f;
     uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: preserve visible raster quality.
     uint32_t rtLodPolicyRevision = 1;
+    uint32_t rtRepresentationBuffer = UINT32_MAX;
+    uint32_t rtRepresentationGroupBuffer = UINT32_MAX;
+    uint32_t rtRepresentationHeaderBuffer = UINT32_MAX;
+    uint32_t rtRepresentationStateBuffer = UINT32_MAX;
+    uint32_t rtRepresentationMetadataBuffer = UINT32_MAX;
+    uint32_t rtRepresentationCount = 0;
+    uint32_t rtRepresentationGroupCapacity = 0;
+    uint32_t enableBlasRepresentations = 0;
+    uint32_t rtRepresentationCacheBuffer = UINT32_MAX;
+    uint32_t rtRepresentationCachePadding[3] = {};
 };
 
 struct MeshletStreamGPURasterBindings {
@@ -466,6 +499,7 @@ struct MeshletStreamUserPush {
     float tessellationEdgePixels = 8.0f;
     uint32_t tessellationMaxFactor = 4;
     uint32_t tessellationMaxSplitDepth = 2;
+    uint32_t pageTableMutationSerial = 1;
 };
 
 static_assert(sizeof(MeshletStreamGPUActiveHeader) == 32);
@@ -478,18 +512,20 @@ static_assert(sizeof(MeshletStreamGPUNode) == 48);
 static_assert(sizeof(MeshletStreamGPUDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGPUTraversalHeader) == 32);
 static_assert(sizeof(MeshletStreamGPUTraversalWorkItem) == 16);
-static_assert(sizeof(MeshletStreamGPUBLASHeader) == 96);
+static_assert(sizeof(MeshletStreamGPUBLASHeader) == 128);
 static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
     METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD * sizeof(uint32_t));
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGPUParams) == 640);
+static_assert(sizeof(MeshletStreamGPUParams) == 688);
+static_assert(sizeof(MeshletStreamGPURTRepresentationGroup) == 16);
+static_assert(sizeof(MeshletStreamGPURTRepresentationLODMetadata) == 32);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
 static_assert(offsetof(MeshletStreamGPUParams, gpuSceneInstanceBufferIndexPlusOne) == 428);
 static_assert(sizeof(MeshletStreamGPURasterBindings) == 96);
-static_assert(sizeof(MeshletStreamUserPush) == 136);
+static_assert(sizeof(MeshletStreamUserPush) == 140);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -526,6 +562,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxBlasClusterReferences = 0;
     uint64_t maxBlasBytes = 512ull * 1024ull * 1024ull;
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBLASBuilds;
+    bool enableBlasRepresentations = true;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
     bool screenSpacePagePriority = true;
     bool viewDrivenPageDemand = true;
@@ -627,6 +664,10 @@ public:
     bool topLevelBuildPending() const { return topLevelBuildPending_; }
     RayTracingAccelerationStructure* accelerationStructure() const;
 
+    // Frame submissions share persistent CLAS/BLAS/TLAS storage and must be
+    // ordered after all consumers of the preceding frame. RenderGraphExecutor
+    // supplies that completion dependency; direct callers provide equivalent
+    // queue ordering (including any asynchronous ray consumers).
     Result<> cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
         const std::function<Result<>()>& flushUploads = {});
     // Record one bounded root-only batch in a dedicated, completion-tracked
@@ -720,6 +761,7 @@ private:
     Result<> uploadImmutableMetadata(CommandBuffer& commandBuffer);
     Result<> prepareImmutableMetadataRead(CommandBuffer& commandBuffer) const;
 
+    void advancePageTableMutationSerial();
     Result<> initializePageTableIfNeeded(CommandBuffer& commandBuffer);
     Result<> applyPageTablePatches(CommandBuffer& commandBuffer);
     Result<> clearRequestBuffer(CommandBuffer& commandBuffer);
@@ -790,6 +832,12 @@ private:
     std::unique_ptr<Buffer> traversalWorkBuffer_;
     std::unique_ptr<Buffer> blasHeaderBuffer_;
     std::unique_ptr<Buffer> instanceBlasBuffer_;
+    std::unique_ptr<Buffer> rtRepresentationBuffer_;
+    std::unique_ptr<Buffer> rtRepresentationGroupBuffer_;
+    std::unique_ptr<Buffer> rtRepresentationHeaderBuffer_;
+    std::unique_ptr<Buffer> rtRepresentationStateBuffer_;
+    std::unique_ptr<Buffer> rtRepresentationCacheBuffer_;
+    std::unique_ptr<Buffer> rtRepresentationMetadataBuffer_;
     std::unique_ptr<Buffer> blasBuildInfoBuffer_;
     std::unique_ptr<Buffer> blasClusterReferenceBuffer_;
     std::unique_ptr<Buffer> blasStorageBuffer_;
@@ -857,6 +905,12 @@ private:
     ResourceLease clasPageTableHandle_;
     ResourceLease blasHeaderHandle_;
     ResourceLease instanceBlasHandle_;
+    ResourceLease rtRepresentationHandle_;
+    ResourceLease rtRepresentationGroupHandle_;
+    ResourceLease rtRepresentationHeaderHandle_;
+    ResourceLease rtRepresentationStateHandle_;
+    ResourceLease rtRepresentationCacheHandle_;
+    ResourceLease rtRepresentationMetadataHandle_;
     ResourceLease blasBuildInfoHandle_;
     ResourceLease blasClusterReferenceHandle_;
     ResourceLease fallbackBlasAddressHandle_;
@@ -873,10 +927,16 @@ private:
     ResourceState traversalWorkBufferState_ = ResourceState::Undefined;
     ResourceState blasHeaderBufferState_ = ResourceState::Undefined;
     ResourceState instanceBlasBufferState_ = ResourceState::Undefined;
+    ResourceState rtRepresentationBufferState_ = ResourceState::Undefined;
+    ResourceState rtRepresentationGroupBufferState_ = ResourceState::Undefined;
+    ResourceState rtRepresentationHeaderBufferState_ = ResourceState::Undefined;
+    ResourceState rtRepresentationStateBufferState_ = ResourceState::Undefined;
+    ResourceState rtRepresentationCacheBufferState_ = ResourceState::Undefined;
     ResourceState blasBuildInfoBufferState_ = ResourceState::Undefined;
     ResourceState blasClusterReferenceBufferState_ = ResourceState::Undefined;
     ResourceState tlasInstanceBufferState_ = ResourceState::Undefined;
     std::shared_ptr<bool> pageTableInitialized_ = std::make_shared<bool>(false);
+    uint32_t pageTableMutationSerial_ = 1;
     uint32_t currentFrameOrderedUploadCount_ = 0;
     bool requestReadbackValid_ = false;
     uint32_t frameIndex_ = 0;
@@ -922,6 +982,10 @@ private:
     uint32_t maxBlasClustersPerBuild_ = 0;
     std::array<uint32_t, 32> blasSizeClasses_{};
     bool blasInstanceReuse_ = true;
+    bool blasRepresentationsEnabled_ = false;
+    uint32_t rtRepresentationCount_ = 0;
+    uint32_t rtRepresentationGroupCapacity_ = 0;
+    uint32_t rtRepresentationStateWordCount_ = 0;
     std::shared_ptr<uint32_t> blasPublicationEpoch_ = std::make_shared<uint32_t>(0);
     ResourceState blasAddressBufferState_ = ResourceState::Undefined;
     uint64_t blasClusterReferenceAddress_ = 0;

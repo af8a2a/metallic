@@ -366,6 +366,8 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             else if (point == "BeforeStreamClasBuild") { phaseProfile.next("CLAS build"); }
             else if (point == "AfterStreamClasBuild") { phaseProfile.end(); }
             else if (point == "BeforeFallbackBlas") { phaseProfile.next("Fallback BLAS"); }
+            else if (point == "BeforeRTRepresentationClassify") { phaseProfile.next("RT representation classify"); }
+            else if (point == "BeforeRTRepresentationCut") { phaseProfile.next("RT representation cut"); }
             else if (point == "BeforeBlasReset") { phaseProfile.next("BLAS reset"); }
             else if (point == "BeforeBlasCompare") { phaseProfile.next("BLAS cut compare"); }
             else if (point == "BeforeBlasCount") { phaseProfile.next("BLAS count"); }

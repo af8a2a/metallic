@@ -24,6 +24,7 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -121,14 +122,15 @@ Result<> createHostStorageBuffer(
     uint64_t byteSize,
     std::unique_ptr<Buffer>& outBuffer,
     std::string& log,
-    std::string_view label)
+    std::string_view label,
+    BufferUsageBits additionalUsage = BufferUsageBits::None)
 {
     return createNamedBuffer(
         device,
         BufferDesc{
             .size = byteSize,
             .structureStride = 0,
-            .usage = BufferUsageBits::Storage,
+            .usage = BufferUsageBits::Storage | additionalUsage,
             .memoryLocation = MemoryLocation::HostUpload,
         },
         outBuffer,
@@ -160,7 +162,8 @@ Result<> createAndPopulateHostStorageBuffer(
     std::unique_ptr<Buffer>& outBuffer,
     std::string& log,
     std::string_view label,
-    Populate&& populate)
+    Populate&& populate,
+    BufferUsageBits additionalUsage = BufferUsageBits::None)
 {
     const uint64_t allocationCount = std::max<uint64_t>(valueCount, 1u);
     if (allocationCount > std::numeric_limits<uint64_t>::max() / sizeof(ValueType)) {
@@ -168,7 +171,7 @@ Result<> createAndPopulateHostStorageBuffer(
         return makeError(Error::OutOfMemory);
     }
     const uint64_t byteSize = allocationCount * sizeof(ValueType);
-    Result<> result = createHostStorageBuffer(device, byteSize, outBuffer, log, label);
+    Result<> result = createHostStorageBuffer(device, byteSize, outBuffer, log, label, additionalUsage);
     if (!result) {
         return result;
     }
@@ -694,7 +697,8 @@ public:
         Buffer& blasBuildInfoBuffer,
         ResourceState& blasBuildInfoBufferState,
         Buffer& blasClusterReferenceBuffer,
-        ResourceState& blasClusterReferenceBufferState)
+        ResourceState& blasClusterReferenceBufferState,
+        bool oneWorkgroupPerItem = false)
     {
         if (threadCount == 0) {
             return {};
@@ -715,7 +719,12 @@ public:
             ResourceState::General); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.bindBindlessHeap(bindlessHeap); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.bindExecution((blasInputPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
-        if (auto commandResult = commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1); !commandResult) { return commandResult; }
+        const uint32_t workgroupCount = oneWorkgroupPerItem ? threadCount : (threadCount + 63u) / 64u;
+        // Cooperative RT phases flatten this guaranteed Vulkan-sized X grid;
+        // large unique-primitive scenes therefore do not exceed dispatch limits.
+        const uint32_t workgroupCountX = oneWorkgroupPerItem ? std::min(workgroupCount, 65535u) : workgroupCount;
+        const uint32_t workgroupCountY = oneWorkgroupPerItem ? (workgroupCount - 1u) / 65535u + 1u : 1u;
+        if (auto commandResult = commandBuffer.dispatch(workgroupCountX, workgroupCountY, 1); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
@@ -1210,6 +1219,22 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     }
     traversalWorkBufferState_ = ResourceState::Undefined;
     if (desc.enableClusterRtx) {
+        blasRepresentationsEnabled_ = desc.enableBlasRepresentations;
+        if (const char* value = std::getenv("METALLIC_BLAS_REPRESENTATIONS")) {
+            blasRepresentationsEnabled_ = std::strcmp(value, "0") != 0;
+        }
+        const uint64_t representationCount = uint64_t(asset_.primitiveCount()) *
+            kMeshletStreamRTRepresentationsPerPrimitive;
+        const uint64_t representationStateWords = uint64_t(asset_.groupCount()) * 3u +
+            uint64_t(asset_.lodLevelCount()) * 4u + uint64_t(asset_.primitiveCount()) * 12u +
+            uint64_t(asset_.instanceCount()) * 4u;
+        if (blasRepresentationsEnabled_ &&
+            (representationCount > UINT32_MAX || representationStateWords > UINT32_MAX)) {
+            log = "MeshletStreamRuntime RT representation metadata exceeds GPU addressing limits";
+            return makeError(Error::OutOfMemory);
+        }
+        rtRepresentationCount_ = blasRepresentationsEnabled_ ? static_cast<uint32_t>(representationCount) : 0u;
+        rtRepresentationStateWordCount_ = blasRepresentationsEnabled_ ? static_cast<uint32_t>(representationStateWords) : 0u;
         ClusterAccelerationStructureProperties clusterProperties;
         result = device.queryClusterAccelerationStructureProperties().transform([&](auto rhiValue) { clusterProperties = std::move(rhiValue); });
         if (!result) {
@@ -1221,7 +1246,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             device,
             BufferDesc{
                 .size = sizeof(MeshletStreamGPUBLASHeader) +
-                    (uint64_t(maxActiveGroups_) + (uint64_t(asset_.instanceCount()) + 63u) / 64u) * 16u,
+                    (blasRepresentationsEnabled_
+                        ? std::min(uint64_t(asset_.groupCount()) * 3u, uint64_t(blasClusterReferenceCapacity_)) +
+                            (uint64_t(rtRepresentationCount_) + 63u) / 64u
+                        : uint64_t(maxActiveGroups_) + (uint64_t(asset_.instanceCount()) + 63u) / 64u) * 16u,
                 .structureStride = sizeof(MeshletStreamGPUBLASHeader),
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                     BufferUsageBits::Indirect |
@@ -1249,7 +1277,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 static_cast<uint32_t>(std::min<uint64_t>(count, blasClusterReferenceCapacity_)));
         }
         // Hidden instances may become visible without recreating this session.
-        const uint32_t instanceCapacity = asset_.instanceCount();
+        const uint32_t instanceCapacity = blasRepresentationsEnabled_ ? rtRepresentationCount_ : asset_.instanceCount();
         if (desc.maxBlasBytes == 0 || desc.maxBlasBuilds == 0 ||
             instanceCapacity == 0 || maximumPrimitiveClusters == 0) {
             log = "MeshletStreamRuntime cluster RTX requires non-zero BLAS budgets and geometry";
@@ -1288,7 +1316,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             referenceLimit = std::max(referenceLimit / 2u, 1u);
         }
         // Explicit destinations reserve a queried, aligned size class per
-        // instance. Growth appends; exhaustion triggers a bounded GPU repack.
+        // representation (per instance in the baseline). Growth appends;
+        // exhaustion triggers a bounded GPU repack after complete-cut admission.
         for (uint32_t bucket = 0; bucket < blasSizeClasses_.size(); ++bucket) {
             const uint32_t clusters = static_cast<uint32_t>(std::min<uint64_t>(
                 uint64_t(1) << bucket, maxBlasClustersPerBuild_));
@@ -1309,16 +1338,86 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             blasInstanceReuse_ = std::strcmp(value, "0") != 0;
         }
         if (blasSizes.accelerationStructureSize > UINT32_MAX) { return makeError(Error::OutOfMemory); }
-        spdlog::info("[MeshletStreamRuntime] BLAS instance reuse={} storageBytes={} referenceCapacity={} buildCapacity={}",
-            blasInstanceReuse_, blasSizes.accelerationStructureSize, blasClusterReferenceCapacity_, blasBuildCapacity_);
+        spdlog::info("[MeshletStreamRuntime] BLAS instance reuse={} representations={} storageBytes={} referenceCapacity={} buildCapacity={}",
+            blasInstanceReuse_, blasRepresentationsEnabled_, blasSizes.accelerationStructureSize,
+            blasClusterReferenceCapacity_, blasBuildCapacity_);
         result = createAndPopulateHostStorageBuffer<MeshletStreamGPUInstanceBLAS>(
             device, asset_.instanceCount(), instanceBlasBuffer_, log,
             "MeshletStreamRuntime instance BLAS inputs",
             [](MeshletStreamGPUInstanceBLAS& instanceBlas, size_t) {
                 instanceBlas = MeshletStreamGPUInstanceBLAS{};
-            });
+            }, BufferUsageBits::TransferSource);
         if (!result) { return result; }
         instanceBlasBufferState_ = ResourceState::Undefined;
+
+        if (blasRepresentationsEnabled_) {
+            rtRepresentationGroupCapacity_ = static_cast<uint32_t>(std::min(
+                uint64_t(asset_.groupCount()) * 3u, uint64_t(blasClusterReferenceCapacity_)));
+            result = createAndPopulateHostStorageBuffer<MeshletStreamGPUInstanceBLAS>(
+                device, rtRepresentationCount_, rtRepresentationBuffer_, log,
+                "MeshletStreamRuntime RT representations",
+                [](MeshletStreamGPUInstanceBLAS& representation, size_t) { representation = {}; },
+                BufferUsageBits::TransferSource);
+            if (!result) { return result; }
+            const auto createRTBuffer = [&](uint64_t bytes, uint32_t stride,
+                                            std::unique_ptr<Buffer>& buffer, std::string_view label) {
+                return createNamedBuffer(device, BufferDesc{
+                    .size = bytes, .structureStride = stride,
+                    .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                    .memoryLocation = MemoryLocation::Device,
+                }, buffer, log, label);
+            };
+            result = createRTBuffer(uint64_t(rtRepresentationGroupCapacity_) * sizeof(MeshletStreamGPURTRepresentationGroup),
+                sizeof(MeshletStreamGPURTRepresentationGroup), rtRepresentationGroupBuffer_,
+                "MeshletStreamRuntime RT representation groups");
+            if (!result) { return result; }
+            result = createRTBuffer(sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUActiveHeader),
+                rtRepresentationHeaderBuffer_, "MeshletStreamRuntime RT representation header");
+            if (!result) { return result; }
+            result = createRTBuffer(uint64_t(rtRepresentationStateWordCount_) * sizeof(uint32_t), sizeof(uint32_t),
+                rtRepresentationStateBuffer_, "MeshletStreamRuntime RT representation state");
+            if (!result) { return result; }
+            result = createRTBuffer(uint64_t(asset_.primitiveCount()) * 16u * sizeof(uint32_t), sizeof(uint32_t),
+                rtRepresentationCacheBuffer_, "MeshletStreamRuntime RT representation cache");
+            if (!result) { return result; }
+
+            std::vector<MeshletStreamGPURTRepresentationLODMetadata> metadata(asset_.lodLevelCount());
+            std::vector<std::array<double, 6>> bounds(asset_.lodLevelCount(), {
+                std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                -std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()});
+            for (const auto& group : asset_.groups()) {
+                const uint32_t level = asset_.primitives()[group.primitiveIndex].lodLevelOffset + group.lodLevel;
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    bounds[level][axis] = std::min(bounds[level][axis],
+                        double(group.boundsCenterRadius[axis]) - group.boundsCenterRadius[3]);
+                    bounds[level][axis + 3] = std::max(bounds[level][axis + 3],
+                        double(group.boundsCenterRadius[axis]) + group.boundsCenterRadius[3]);
+                }
+                metadata[level].errorAndPadding[0] = std::max(metadata[level].errorAndPadding[0], group.maxQuadricError);
+            }
+            for (uint32_t level = 0; level < metadata.size(); ++level) {
+                if (asset_.lodLevels()[level].pageCount == 0) { continue; }
+                double radiusSquared = 0.0;
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    const double center = (bounds[level][axis] + bounds[level][axis + 3]) * 0.5;
+                    metadata[level].boundsCenterRadius[axis] = static_cast<float>(center);
+                    // Account for rounding the center, then round the enclosing
+                    // radius outward so classification remains conservative.
+                    const double extent = std::max(
+                        std::abs(bounds[level][axis] - metadata[level].boundsCenterRadius[axis]),
+                        std::abs(bounds[level][axis + 3] - metadata[level].boundsCenterRadius[axis]));
+                    radiusSquared += extent * extent;
+                }
+                metadata[level].boundsCenterRadius[3] = std::nextafter(
+                    static_cast<float>(std::sqrt(radiusSquared)), std::numeric_limits<float>::infinity());
+            }
+            result = createAndPopulateHostStorageBuffer<MeshletStreamGPURTRepresentationLODMetadata>(
+                device, metadata.size(), rtRepresentationMetadataBuffer_, log,
+                "MeshletStreamRuntime RT LOD classification metadata",
+                [&metadata](MeshletStreamGPURTRepresentationLODMetadata& output, size_t index) { output = metadata[index]; });
+            if (!result) { return result; }
+        }
 
         result = createNamedBuffer(
             device,
@@ -1679,6 +1778,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                     sizeof(RayTracingGPUInstance),
                 .structureStride = sizeof(RayTracingGPUInstance),
                 .usage = BufferUsageBits::Storage |
+                    BufferUsageBits::TransferSource |
                     BufferUsageBits::AccelerationStructureBuildInput |
                     BufferUsageBits::ShaderDeviceAddress,
                 .memoryLocation = MemoryLocation::Device,
@@ -2019,6 +2119,18 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         if (!result) {
             return result;
         }
+        if (blasRepresentationsEnabled_) {
+            for (auto [buffer, handle, label] : {
+                     std::tuple{rtRepresentationBuffer_.get(), &rtRepresentationHandle_, "meshlet RT representations"},
+                     std::tuple{rtRepresentationGroupBuffer_.get(), &rtRepresentationGroupHandle_, "meshlet RT representation groups"},
+                     std::tuple{rtRepresentationHeaderBuffer_.get(), &rtRepresentationHeaderHandle_, "meshlet RT representation header"},
+                     std::tuple{rtRepresentationStateBuffer_.get(), &rtRepresentationStateHandle_, "meshlet RT representation state"},
+                     std::tuple{rtRepresentationCacheBuffer_.get(), &rtRepresentationCacheHandle_, "meshlet RT representation cache"},
+                     std::tuple{rtRepresentationMetadataBuffer_.get(), &rtRepresentationMetadataHandle_, "meshlet RT representation metadata"}}) {
+                result = allocateAndWriteBuffer(*registry_, *buffer, *handle, log, label);
+                if (!result) { return result; }
+            }
+        }
         result = allocateAndWriteBuffer(
             *registry_,
             *blasBuildInfoBuffer_,
@@ -2179,6 +2291,12 @@ void MeshletStreamRuntime::reset()
     blasHeaderBuffer_.reset();
     blasCacheInitialized_ = std::make_shared<bool>(false);
     instanceBlasBuffer_.reset();
+    rtRepresentationBuffer_.reset();
+    rtRepresentationGroupBuffer_.reset();
+    rtRepresentationHeaderBuffer_.reset();
+    rtRepresentationStateBuffer_.reset();
+    rtRepresentationCacheBuffer_.reset();
+    rtRepresentationMetadataBuffer_.reset();
     blasBuildInfoBuffer_.reset();
     blasClusterReferenceBuffer_.reset();
     blasStorageBuffer_.reset();
@@ -2234,6 +2352,12 @@ void MeshletStreamRuntime::reset()
     clasPageTableHandle_ = {};
     blasHeaderHandle_ = {};
     instanceBlasHandle_ = {};
+    rtRepresentationHandle_ = {};
+    rtRepresentationGroupHandle_ = {};
+    rtRepresentationHeaderHandle_ = {};
+    rtRepresentationStateHandle_ = {};
+    rtRepresentationCacheHandle_ = {};
+    rtRepresentationMetadataHandle_ = {};
     blasBuildInfoHandle_ = {};
     blasClusterReferenceHandle_ = {};
     fallbackBlasAddressHandle_ = {};
@@ -2250,6 +2374,11 @@ void MeshletStreamRuntime::reset()
     traversalWorkBufferState_ = ResourceState::Undefined;
     blasHeaderBufferState_ = ResourceState::Undefined;
     instanceBlasBufferState_ = ResourceState::Undefined;
+    rtRepresentationBufferState_ = ResourceState::Undefined;
+    rtRepresentationGroupBufferState_ = ResourceState::Undefined;
+    rtRepresentationHeaderBufferState_ = ResourceState::Undefined;
+    rtRepresentationStateBufferState_ = ResourceState::Undefined;
+    rtRepresentationCacheBufferState_ = ResourceState::Undefined;
     blasBuildInfoBufferState_ = ResourceState::Undefined;
     blasClusterReferenceBufferState_ = ResourceState::Undefined;
     tlasInstanceBufferState_ = ResourceState::Undefined;
@@ -2286,6 +2415,11 @@ void MeshletStreamRuntime::reset()
     traversalWorkCapacity_ = 0;
     blasClusterReferenceCapacity_ = 0;
     blasBuildCapacity_ = 0;
+    blasRepresentationsEnabled_ = false;
+    rtRepresentationCount_ = 0;
+    rtRepresentationGroupCapacity_ = 0;
+    rtRepresentationStateWordCount_ = 0;
+    pageTableMutationSerial_ = 1;
     maxBlasClustersPerBuild_ = 0;
     blasSizeClasses_ = {};
     blasPublicationEpoch_ = std::make_shared<uint32_t>(0);
@@ -2576,6 +2710,8 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         lodTopologyHandle_, lodStateHandle_, demandHandle_, nodeHandle_,
         drawIndirectHandle_, traversalHeaderHandle_, traversalWorkHandle_, clasAddressHandle_,
         clasPageTableHandle_, blasHeaderHandle_, instanceBlasHandle_, blasBuildInfoHandle_,
+        rtRepresentationHandle_, rtRepresentationGroupHandle_, rtRepresentationHeaderHandle_,
+        rtRepresentationStateHandle_, rtRepresentationMetadataHandle_, rtRepresentationCacheHandle_,
         blasClusterReferenceHandle_, fallbackBlasAddressHandle_, dynamicBlasAddressHandle_, tlasInstanceHandle_}) {
         if (lease.valid()) {
             auto retained = registry_->retain(commandBuffer, lease);
@@ -2985,6 +3121,7 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
         .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.shaderIndex() : 0u,
         .rasterBindingsBuffer = rasterBindingsHandle_.shaderIndex(),
         .clasPublicationRevision = clasPool_ ? uint32_t(clasPool_->stats().publicationRevision) : 0u,
+        .pageTableMutationSerial = pageTableMutationSerial_,
     };
 }
 
@@ -3584,12 +3721,23 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     return {};
 }
 
+void MeshletStreamRuntime::advancePageTableMutationSerial()
+{
+    // A recorded mutation may be cancelled or partially submitted. Never roll
+    // back its serial: the next GPU cut must distinguish that recording too.
+    if (++pageTableMutationSerial_ == 0u) {
+        pageTableMutationSerial_ = 1;
+        *blasCacheInitialized_ = false;
+    }
+}
+
 Result<> MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandBuffer)
 {
     if (*pageTableInitialized_) {
         return {};
     }
 
+    advancePageTableMutationSerial();
     Result<> result = updatePass_->initializePageTable(
         commandBuffer,
         userPush(),
@@ -3626,6 +3774,7 @@ Result<> MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffe
                 cache->value.ready = false;
             }));
         if (!tracked) { return tracked; }
+        advancePageTableMutationSerial();
     }
     Result<> result = updatePass_->apply(
         commandBuffer,
@@ -3821,6 +3970,15 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     const uint64_t blasStorageAddress = blasStorageBuffer_ ? blasStorageBuffer_->deviceAddress() : 0u;
     params.blasStorageAddressLow = static_cast<uint32_t>(blasStorageAddress);
     params.blasStorageAddressHigh = static_cast<uint32_t>(blasStorageAddress >> 32u);
+    params.rtRepresentationBuffer = rtRepresentationHandle_.shaderIndex();
+    params.rtRepresentationGroupBuffer = rtRepresentationGroupHandle_.shaderIndex();
+    params.rtRepresentationHeaderBuffer = rtRepresentationHeaderHandle_.shaderIndex();
+    params.rtRepresentationStateBuffer = rtRepresentationStateHandle_.shaderIndex();
+    params.rtRepresentationMetadataBuffer = rtRepresentationMetadataHandle_.shaderIndex();
+    params.rtRepresentationCacheBuffer = rtRepresentationCacheHandle_.shaderIndex();
+    params.rtRepresentationCount = rtRepresentationCount_;
+    params.rtRepresentationGroupCapacity = rtRepresentationGroupCapacity_;
+    params.enableBlasRepresentations = blasRepresentationsEnabled_ ? 1u : 0u;
     params.enableBlasInstanceReuse = blasInstanceReuse_ ? 1u : 0u;
     params.gpuSceneInstanceBufferIndexPlusOne = gpuSceneInstanceHandle_.valid() ? gpuSceneInstanceHandle_.shaderIndex() + 1u : 0u;
     std::copy(blasSizeClasses_.begin(), blasSizeClasses_.end(), params.blasSizeClasses);
@@ -4024,7 +4182,22 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
         MeshletStreamUserPush push = userPush();
         push.activeBuildPhase = phase;
         push.traversalPhase = (*blasCacheInitialized_ ? 0u : 1u) | (publicationWrapped ? 2u : 0u);
-        return blasInputPass_->dispatch(
+        const auto transitionRT = [&](bool force) -> Result<> {
+            if (!blasRepresentationsEnabled_) { return {}; }
+            for (auto [buffer, state] : {
+                     std::pair{rtRepresentationBuffer_.get(), &rtRepresentationBufferState_},
+                     std::pair{rtRepresentationGroupBuffer_.get(), &rtRepresentationGroupBufferState_},
+                     std::pair{rtRepresentationHeaderBuffer_.get(), &rtRepresentationHeaderBufferState_},
+                     std::pair{rtRepresentationStateBuffer_.get(), &rtRepresentationStateBufferState_},
+                     std::pair{rtRepresentationCacheBuffer_.get(), &rtRepresentationCacheBufferState_}}) {
+                if (auto result = transitionBuffer(commandBuffer, *buffer, *state, ResourceState::General, force); !result) {
+                    return result;
+                }
+            }
+            return {};
+        };
+        if (auto result = transitionRT(false); !result) { return result; }
+        auto result = blasInputPass_->dispatch(
             commandBuffer,
             *registry_->heap(),
             push,
@@ -4040,17 +4213,47 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
             *blasBuildInfoBuffer_,
             blasBuildInfoBufferState_,
             *blasClusterReferenceBuffer_,
-            blasClusterReferenceBufferState_);
+            blasClusterReferenceBufferState_,
+            blasRepresentationsEnabled_ && (phase == 22u || phase == 25u || phase == 27u));
+        if (result) { result = transitionRT(true); }
+        return result;
     };
 
+    // These cuts own BLAS allocation and history independently of raster groups.
+    // All writes stay on the existing ordered traversal/build submission. The
+    // downstream TLAS fork is joined before ray consumers, and the next frame's
+    // AS build waits for prior AS reads before reusing this arena. Page/CLAS
+    // generations are checked before publication; retired allocations retain
+    // the existing queued-frame grace period for in-flight ray consumers.
+    if (blasRepresentationsEnabled_) {
+        if (checkpoint) { checkpoint("BeforeRTRepresentationClassify"); }
+        auto result = dispatchPhase(20u, std::max({asset_.instanceCount(), asset_.primitiveCount(), asset_.lodLevelCount(), 1u}));
+        if (result) { result = dispatchPhase(21u, asset_.instanceCount()); }
+        if (result) { result = dispatchPhase(28u, maxActiveGroups_); }
+        if (result) { result = dispatchPhase(29u, asset_.instanceCount()); }
+        if (result) { result = dispatchPhase(22u, asset_.primitiveCount()); }
+        if (result) { result = dispatchPhase(23u, asset_.instanceCount()); }
+        if (!result) { return result; }
+        if (checkpoint) { checkpoint("BeforeRTRepresentationCut"); }
+        result = dispatchPhase(25u, asset_.primitiveCount());
+        if (result) { result = dispatchPhase(31u, asset_.primitiveCount()); }
+        if (result) { result = dispatchPhase(26u, 1u); }
+        if (result) { result = dispatchPhase(32u, asset_.primitiveCount()); }
+        if (result) { result = dispatchPhase(33u, 1u); }
+        if (result) { result = dispatchPhase(34u, asset_.primitiveCount()); }
+        if (result) { result = dispatchPhase(27u, asset_.primitiveCount()); }
+        if (!result) { return result; }
+    }
+    const uint32_t allocationCount = blasRepresentationsEnabled_ ? rtRepresentationCount_ : asset_.instanceCount();
+    const uint32_t groupCapacity = blasRepresentationsEnabled_ ? rtRepresentationGroupCapacity_ : maxActiveGroups_;
     if (checkpoint) { checkpoint("BeforeBlasReset"); }
     Result<> result = dispatchPhase(
         kMeshletStreamBLASInputResetPhase,
-        std::max(asset_.instanceCount(), 1u));
+        std::max(allocationCount, 1u));
     if (!result) {
         return result;
     }
-    result = dispatchPhase(5u, std::max(asset_.instanceCount(), 1u));
+    result = dispatchPhase(5u, std::max(allocationCount, 1u));
     if (!result) { return result; }
     // Only an accepted recording initializes the GPU cache. Cancelling a later
     // frame leaves its previous cut and semantic history intact on the GPU.
@@ -4061,44 +4264,48 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
         }, nullptr));
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasCount"); }
-    result = dispatchPhase(kMeshletStreamBLASInputCountPhase, maxActiveGroups_);
+    result = dispatchPhase(kMeshletStreamBLASInputCountPhase, groupCapacity);
     if (!result) {
         return result;
     }
     // Count current per-instance ranges before comparing against the previous
     // compact cut. Changes in other instances' offsets do not invalidate reuse.
     if (checkpoint) { checkpoint("BeforeBlasCompare"); }
-    result = dispatchPhase(4u, maxActiveGroups_);
+    result = dispatchPhase(4u, groupCapacity);
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasPrefix"); }
-    result = dispatchPhase(kMeshletStreamBLASInputPrefixPhase, std::max(asset_.instanceCount(), 1u));
+    result = dispatchPhase(kMeshletStreamBLASInputPrefixPhase, std::max(allocationCount, 1u));
     if (!result) { return result; }
     result = dispatchPhase(kMeshletStreamBLASInputBlockPrefixPhase, 1u);
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasSetup"); }
     result = dispatchPhase(
         kMeshletStreamBLASInputSetupPhase,
-        std::max(asset_.instanceCount(), 1u));
+        std::max(allocationCount, 1u));
     if (!result) {
         return result;
     }
     if (checkpoint) { checkpoint("BeforeBlasAllocate"); }
-    result = dispatchPhase(8u, std::max(asset_.instanceCount(), 1u));
+    result = dispatchPhase(8u, std::max(allocationCount, 1u));
     if (!result) { return result; }
     result = dispatchPhase(9u, 1u);
     if (!result) { return result; }
     // Admit complete size-class allocations before growth can trigger a repack.
-    result = dispatchPhase(12u, std::max(asset_.instanceCount(), 1u));
+    result = dispatchPhase(12u, std::max(allocationCount, 1u));
     if (!result) { return result; }
     result = dispatchPhase(13u, 1u);
     if (!result) { return result; }
-    result = dispatchPhase(10u, std::max(asset_.instanceCount(), 1u));
+    result = dispatchPhase(10u, std::max(allocationCount, 1u));
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasInsert"); }
-    result = dispatchPhase(kMeshletStreamBLASInputInsertPhase, maxActiveGroups_);
+    result = dispatchPhase(kMeshletStreamBLASInputInsertPhase, groupCapacity);
     if (!result) { return result; }
-    result = dispatchPhase(11u, std::max(maxActiveGroups_, asset_.instanceCount()));
+    result = dispatchPhase(11u, std::max(groupCapacity, allocationCount));
     if (!result) { return result; }
+    if (blasRepresentationsEnabled_) {
+        result = dispatchPhase(24u, asset_.instanceCount());
+        if (!result) { return result; }
+    }
     return transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true);
 }
 
@@ -4437,6 +4644,14 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("blasHeader", blasHeaderBuffer_.get(), blasHeaderBufferState_, "MeshletStreamGPUBLASHeader", 0,
         sizeof(MeshletStreamGPUBLASHeader));
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGPUActiveGroup");
+    add("instanceBlas", instanceBlasBuffer_.get(), instanceBlasBufferState_, "MeshletStreamGPUInstanceBLAS");
+    add("tlasInstances", tlasInstanceBuffer_.get(), tlasInstanceBufferState_, "RayTracingGPUInstance");
+    add("rtRepresentations", rtRepresentationBuffer_.get(), rtRepresentationBufferState_, "MeshletStreamGPUInstanceBLAS");
+    add("rtRepresentationGroups", rtRepresentationGroupBuffer_.get(), rtRepresentationGroupBufferState_, "MeshletStreamGPURTRepresentationGroup");
+    add("rtRepresentationHeader", rtRepresentationHeaderBuffer_.get(), rtRepresentationHeaderBufferState_, "MeshletStreamGPUActiveHeader");
+    add("rtRepresentationState", rtRepresentationStateBuffer_.get(), rtRepresentationStateBufferState_, "u32");
+    add("rtRepresentationCache", rtRepresentationCacheBuffer_.get(), rtRepresentationCacheBufferState_, "u32");
+    add("rtRepresentationMetadata", rtRepresentationMetadataBuffer_.get(), ResourceState::ShaderRead, "MeshletStreamGPURTRepresentationLODMetadata");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
     if (distributedPageDemand_ || lodTransitionTelemetry_) { add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)); }
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "CompactStreamVisibleRecord");
@@ -4520,6 +4735,14 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.blasArenaUsedBytes = recentBlasHeader_.arenaUsedBytes;
     result.blasArenaRepack = recentBlasHeader_.arenaRepack;
     result.blasPublicationInvalidated = recentBlasHeader_.publicationInvalidated;
+    result.blasRepresentationsEnabled = blasRepresentationsEnabled_;
+    result.blasRepresentationCount = recentBlasHeader_.representationCount;
+    result.blasSharingInstances = recentBlasHeader_.sharingInstanceCount;
+    result.blasMergedInstances = recentBlasHeader_.mergedInstanceCount;
+    result.blasCachedInstances = recentBlasHeader_.cachedInstanceCount;
+    result.blasRepresentationGroupCount = recentBlasHeader_.representationGroupCount;
+    result.blasRepresentationGroupOverflow = recentBlasHeader_.representationGroupOverflow;
+    result.blasCacheDependencyInvalidations = recentBlasHeader_.cacheDependencyInvalidations;
     result.blasSemanticChangeCount = recentBlasHeader_.semanticChangeCount;
 
 
@@ -4682,6 +4905,21 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"consumedRequestFrame", consumedRequestFrame_}, {"maintenancePrepared", maintenancePrepared_},
         {"lodTopologyBytes", lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0},
         {"groupsBytes", groupBuffer_ ? groupBuffer_->desc().size : 0},
+        {"rtRepresentations", {{"enabled", blasRepresentationsEnabled_},
+            {"capacity", rtRepresentationCount_}, {"groupCapacity", rtRepresentationGroupCapacity_},
+            {"recordBytes", rtRepresentationBuffer_ ? rtRepresentationBuffer_->desc().size : 0},
+            {"groupBytes", rtRepresentationGroupBuffer_ ? rtRepresentationGroupBuffer_->desc().size : 0},
+            {"stateBytes", rtRepresentationStateBuffer_ ? rtRepresentationStateBuffer_->desc().size : 0},
+            {"cacheBytes", rtRepresentationCacheBuffer_ ? rtRepresentationCacheBuffer_->desc().size : 0},
+            {"pageTableMutationSerial", pageTableMutationSerial_},
+            {"metadataBytes", rtRepresentationMetadataBuffer_ ? rtRepresentationMetadataBuffer_->desc().size : 0},
+            {"active", recentBlasHeader_.representationCount},
+            {"sharingInstances", recentBlasHeader_.sharingInstanceCount},
+            {"mergedInstances", recentBlasHeader_.mergedInstanceCount},
+            {"cachedInstances", recentBlasHeader_.cachedInstanceCount},
+            {"groups", recentBlasHeader_.representationGroupCount},
+            {"groupOverflow", recentBlasHeader_.representationGroupOverflow},
+            {"cacheDependencyInvalidations", recentBlasHeader_.cacheDependencyInvalidations}}},
         {"immutableMetadataDeviceRequested", deviceImmutableMetadata_},
         {"immutableMetadataReady", immutableMetadataReady()},
         {"immutableMetadataBytes", (groupBuffer_ ? groupBuffer_->desc().size : 0) +

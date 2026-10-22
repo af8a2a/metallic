@@ -3,6 +3,7 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Profiling/PacingTrace.h"
 #include "Editor/EditorRasterWorkload.h"
+#include "Editor/EditorRayQualityCapture.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
@@ -95,8 +96,14 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"blasArenaRepack",s.blasArenaRepack},
         {"blasPublicationInvalidated",s.blasPublicationInvalidated},
         {"blasSemanticChangeCount",s.blasSemanticChangeCount},
-
-
+        {"blasRepresentationsEnabled",s.blasRepresentationsEnabled},
+        {"blasRepresentationCount",s.blasRepresentationCount},
+        {"blasSharingInstances",s.blasSharingInstances},
+        {"blasMergedInstances",s.blasMergedInstances},
+        {"blasCachedInstances",s.blasCachedInstances},
+        {"blasRepresentationGroupCount",s.blasRepresentationGroupCount},
+        {"blasRepresentationGroupOverflow",s.blasRepresentationGroupOverflow},
+        {"blasCacheDependencyInvalidations",s.blasCacheDependencyInvalidations},
         {"textureStreaming",s.textureStreaming},
         {"textureResidentBytes",s.textureResidentBytes},{"textureRetiredBytes",s.textureRetiredBytes},
         {"texturePendingBytes",s.texturePendingBytes},{"textureBudgetBytes",s.textureBudgetBytes},
@@ -172,6 +179,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     fullRoamHeight_ = viewportTextureHeight_;
     bool passed = false;
     RasterWorkloadObserver workloadObserver;
+    RayQualityCapture qualityCapture;
     struct FrozenProperty { uint32_t node; bool existed; Json value; };
     std::vector<FrozenProperty> frozenProperties;
     const auto drain = [&]() {
@@ -212,6 +220,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["profilerOpen"] = profilerOpen_;
         report["focusProfiler"] = focusProfiler;
         const uint32_t workloadEvery = config.value("workloadEvery", 0u);
+        const bool captureQuality = config.value("captureQuality", false);
+        if (captureQuality && workloadEvery) { throw std::runtime_error("Quality and workload captures require separate runs"); }
+        report["captureQuality"] = captureQuality;
         workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
@@ -219,7 +230,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const auto shaderDebugMode = render::slangShaderDebugMode();
         report["shaderDebugMode"] = shaderDebugMode == render::SlangShaderDebugMode::ShaderDebug ? "unoptimized-debug"
             : shaderDebugMode == render::SlangShaderDebugMode::CaptureSymbols ? "capture-symbols" : "disabled";
-        report["diagnosticRun"] = freezeStreaming || !deferredOverrides.empty() || workloadEvery != 0 || config.value("enableLodTransitionTelemetry", false) ||
+        report["diagnosticRun"] = captureQuality || freezeStreaming || !deferredOverrides.empty() || workloadEvery != 0 || config.value("enableLodTransitionTelemetry", false) ||
             report["graphicsCaptureInjected"].get<bool>() || shaderDebugMode != render::SlangShaderDebugMode::Disabled;
         report["lodTransitionDefinition"] = "Instance-groups in the emitted geometry cut, before raster occlusion and independent of CLAS. Threshold requires continuous auto-visible frames and newly demanded SSE; catchup requires prior-frame demand blocked by own geometry page or dependency. First/reentry and other selected changes are unclassified. History adds 8 bytes per instance-group plus 4 per instance; feedback may lag.";
         const double duration = config.value("durationSeconds",180.0);
@@ -255,9 +266,33 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             lastT=t;
         }
         if (workloadEvery) { graphExecutor_->setDebugObserver(&workloadObserver); }
+        if (captureQuality) { graphExecutor_->setDebugObserver(&qualityCapture); }
         const std::string sampleId = config.value("sample", std::string(render::kGPUDrivenZorahFullSampleId));
         if (!render::isGPUDrivenSceneSample(sampleId)) { throw std::runtime_error("Roam requires MiniZorah or ZorahFull sample"); }
         loadBuiltInSample(sampleId.c_str());
+        if (config.contains("shadowPointLight")) {
+            const auto& source = config.at("shadowPointLight");
+            const auto position = source.at("position").get<std::array<float, 3>>();
+            scene::PunctualLight light;
+            light.name = "RT representation benchmark light";
+            light.position = {position[0], position[1], position[2]};
+            light.properties.intensity = source.at("intensity").get<double>();
+            auto lighting = renderWorld_.lighting();
+            lighting.lights.push_back(std::move(light));
+            if (!scene::validLightingSettings(lighting)) { throw std::runtime_error("Invalid shadowPointLight"); }
+            renderWorld_.setLighting(std::move(lighting));
+            report["shadowPointLight"] = source;
+        }
+        if (config.contains("shadowOverrides")) {
+            const auto* shadows = renderGraph_.findNode("Shadows");
+            if (!shadows || !config.at("shadowOverrides").is_object()) { throw std::runtime_error("Invalid shadowOverrides"); }
+            for (auto it = config.at("shadowOverrides").begin(); it != config.at("shadowOverrides").end(); ++it) {
+                if (!renderGraph_.setNodeRuntimeProperty(shadows->id, it.key(), it.value())) {
+                    throw std::runtime_error("Failed to apply shadow override: " + it.key());
+                }
+            }
+            report["shadowOverrides"] = config.at("shadowOverrides");
+        }
         const auto* vbuffer = renderGraph_.findNode("VBuffer");
         if (!vbuffer) { throw std::runtime_error("Missing VBuffer"); }
         const uint32_t groupSize = config.value("softwareGroupSize", 0u);
@@ -545,6 +580,17 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["uploadSamples"]=uploads.size(); report["graphGeneration"]=graphGeneration;
         if (freezeStreaming) { report["streamingFreeze"]["captureCounterRanges"] = std::move(frozenCounters); }
         if (missingGpu) { throw std::runtime_error("Incomplete GPU timing coverage"); }
+        if (captureQuality) {
+            // Readback is deliberately a separate, untimed execution after the
+            // measured route. Its completion owns all exported image bytes.
+            qualityCapture.capture = true;
+            if (!draw()) { throw std::runtime_error("Quality capture rendering failed"); }
+            qualityCapture.capture = false;
+            drain();
+            report["qualityCamera"] = viewportCameraProperties();
+            report["qualityImages"] = qualityCapture.exportAfterDrain(output / "Quality");
+            report["qualityScope"] = "One untimed final-route frame; shadow mask, deferred lighting and final output. This scene has no secondary reflection pass.";
+        }
         report["status"]="capture_complete";
         passed=true;
     } catch (const std::exception& error) {

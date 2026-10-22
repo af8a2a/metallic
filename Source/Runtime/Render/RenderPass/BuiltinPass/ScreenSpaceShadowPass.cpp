@@ -17,7 +17,8 @@ public:
     {
         // Geometry and its CLAS publication belong to the visibility producer.
         // Preparing geometry here would create an unrelated streaming session.
-        return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures};
+        return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,
+            .textureFeedback = true};
     }
 
     bool supportsFrameOverlap() const override { return !METALLIC_HAS_NRD; }
@@ -153,7 +154,8 @@ public:
         ScreenSpaceShadowResult shadow;
         std::string log;
         profile.next("Prepare and record shadows");
-        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, &geometry_, stream, &profiler, accelerationStructure).transform([&](auto value) { shadow = std::move(value); });
+        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, *context.preparedScene()->textureFeedback.samplingMetadata,
+            &geometry_, stream, &profiler, accelerationStructure).transform([&](auto value) { shadow = std::move(value); });
         if (!result) {
             spdlog::error("RayTracedShadowPass: {} ({})", log, resultToString(result));
             return result;

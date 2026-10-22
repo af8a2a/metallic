@@ -858,6 +858,7 @@ public:
                 .enableClusterRtx = true, .enableClas = true, .compactClas = true,
                 .maxClasBytes = 16ull << 20, .maxClasBuildClusters = 4096,
                 .maxBlasClusterReferences = 4096, .maxBlasBytes = 16ull << 20, .maxBlasBuilds = 4,
+                .enableBlasRepresentations = false,
                 .maxFallbackBlasBytes = 4ull << 20, .prefetchPages = false}, log)), log);
             auto* queue = device->getQueue(QueueType::Graphics);
             QueueSubmissionTracker tracker;

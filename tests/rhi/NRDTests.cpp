@@ -7,6 +7,7 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/TextureStreamingResources.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -16,6 +17,7 @@
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include <fstream>
 #include <limits>
+#include <span>
 
 #include <gtest/gtest.h>
 #include <SDL3/SDL.h>
@@ -918,43 +920,69 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     }
     // The blocker is behind the camera (z=-1), so it never appears in the depth
     // buffer. It casts onto the visible z=3 plane along the celestial-light ray.
-    const auto fixtureDirectory = std::filesystem::path(PROJECT_SOURCE_DIR) / ".tmp/NRDRayTracedShadowGeometry";
+    const auto fixtureDirectory = std::filesystem::path(PROJECT_SOURCE_DIR) / ".tmp/NRDRayTracedShadowTextureMetadata";
     std::filesystem::create_directories(fixtureDirectory);
     const float vertices[] = {
         -10, -10, 3, 10, -10, 3, 10, 10, 3, -10, 10, 3,
         4, -10, -1, 7, -10, -1, 7, 10, -1, 4, 10, -1,
     };
     const uint32_t indices[] = {0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3};
+    const float texcoords[] = {0, 0, 1, 0, 1, 1, 0, 1};
     {
         std::ofstream mesh(fixtureDirectory / "Geometry.bin", std::ios::binary);
         mesh.write(reinterpret_cast<const char*>(vertices), sizeof(vertices));
         mesh.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+        mesh.write(reinterpret_cast<const char*>(texcoords), sizeof(texcoords));
         ASSERT_TRUE(mesh.good());
     }
-    std::array<scene::SceneDocument, 3> scenes;
-    std::array<render::ScenePathTraceResources, 3> geometry;
-    std::array<render::MeshletStreamRuntime, 3> streams;
+    // One-pixel RGBA PNGs, white with alpha 0 and 255. Keep the native NRD
+    // target independent of the RHI test harness's image-writing helpers.
+    const uint8_t transparentPng[] = {
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,1,0,0,0,1,8,6,0,0,0,0x1f,0x15,0xc4,0x89,
+        0,0,0,0x0d,0x49,0x44,0x41,0x54,0x78,0x9c,0x63,0xf8,0xff,0xff,0x3f,0x03,
+        0,0x08,0xfc,0x02,0xfe,0xa7,0x9a,0xa0,0xa0,0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    const uint8_t opaquePng[] = {
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,1,0,0,0,1,8,6,0,0,0,0x1f,0x15,0xc4,0x89,
+        0,0,0,0x0b,0x49,0x44,0x41,0x54,0x78,0x9c,0x63,0xf8,0x0f,0x04,
+        0,0x09,0xfb,0x03,0xfd,0xfb,0x5e,0x6b,0x2b,0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    const std::span<const uint8_t> alphaImages[]{transparentPng, opaquePng};
+    for (uint32_t i = 0; i < 2; ++i) {
+        std::ofstream file(fixtureDirectory / (i == 0 ? "Alpha0.png" : "Alpha255.png"), std::ios::binary);
+        file.write(reinterpret_cast<const char*>(alphaImages[i].data()), alphaImages[i].size());
+        ASSERT_TRUE(file.good());
+    }
+    std::array<scene::SceneDocument, 4> scenes;
+    std::array<render::ScenePathTraceResources, 4> geometry;
+    std::array<render::MeshletStreamRuntime, 4> streams;
     render::SceneResourceManager sceneResources;
     for (size_t i = 0; i < geometry.size(); ++i) {
         auto document = render::RenderGraphProperties::parse(R"json({
             "asset":{"version":"2.0"}, "scene":0, "scenes":[{"nodes":[0,1]}],
             "nodes":[{"mesh":0},{"mesh":1}],
-            "buffers":[{"uri":"Geometry.bin","byteLength":144}],
+            "buffers":[{"uri":"Geometry.bin","byteLength":176}],
             "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},
-                           {"buffer":0,"byteOffset":96,"byteLength":48}],
+                           {"buffer":0,"byteOffset":96,"byteLength":48},
+                           {"buffer":0,"byteOffset":144,"byteLength":32}],
             "accessors":[
                 {"bufferView":0,"byteOffset":0,"componentType":5126,"count":4,"type":"VEC3","min":[-10,-10,3],"max":[10,10,3]},
                 {"bufferView":0,"byteOffset":48,"componentType":5126,"count":4,"type":"VEC3","min":[4,-10,-1],"max":[7,10,-1]},
                 {"bufferView":1,"byteOffset":0,"componentType":5125,"count":6,"type":"SCALAR"},
-                {"bufferView":1,"byteOffset":24,"componentType":5125,"count":6,"type":"SCALAR"}],
+                {"bufferView":1,"byteOffset":24,"componentType":5125,"count":6,"type":"SCALAR"},
+                {"bufferView":2,"componentType":5126,"count":4,"type":"VEC2"}],
             "materials":[{"doubleSided":true},{"doubleSided":true}],
             "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":2,"material":0}]},
                       {"primitives":[{"attributes":{"POSITION":1},"indices":3,"material":1}]}]
         })json");
         if (i == 0) { document["scenes"][0]["nodes"] = {0}; }
-        if (i == 2) {
+        if (i >= 2) {
             document["materials"][1]["alphaMode"] = "MASK";
-            document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"] = {1, 1, 1, 0};
+            document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"] = {1, 1, 1, 1};
+            document["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"] = {{"index", 0}};
+            document["meshes"][1]["primitives"][0]["attributes"]["TEXCOORD_0"] = 4;
+            document["images"] = {{{"uri", i == 2 ? "Alpha0.png" : "Alpha255.png"}}};
+            document["textures"] = {{{"source", 0}}};
         }
         const auto path = fixtureDirectory / ("Scene" + std::to_string(i) + ".gltf");
         { std::ofstream file(path); file << document.dump(); ASSERT_TRUE(file.good()); }
@@ -967,6 +995,9 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         ASSERT_NE(snapshot->pathTraceResources, nullptr);
         geometry[i] = *snapshot->pathTraceResources;
         ASSERT_TRUE(geometry[i].valid());
+        if (i >= 2) {
+            ASSERT_GT(geometry[i].materialTextureCount(), 1u) << "Alpha fixture did not load its authored texture";
+        }
         const auto assetPath = fixtureDirectory / ("Scene" + std::to_string(i) + ".meshstream.bin");
         ASSERT_TRUE(scene::buildMeshletStreamAssetOffline({.sourcePath = path, .outputPath = assetPath}, log)) << log;
         ASSERT_TRUE(streams[i].initialize(*device, {.sourcePath = path, .streamAssetPath = assetPath,
@@ -996,6 +1027,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
 
     }
     bool alphaCutout = false;
+    bool opaqueAlphaTexture = false;
     render::RenderView camera;
     render::ViewCamera pose;
     pose.eye = {0, 0, 0};
@@ -1040,7 +1072,21 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         require(commands->reset());
         require(command->begin(recording.submissionContext()));
         require(streamer->beginFrame(recording));
-        auto& runtime = streams[blocker ? (alphaCutout ? 2 : 1) : 0];
+        const uint32_t sceneIndex = blocker ? (alphaCutout ? (opaqueAlphaTexture ? 3 : 2) : 1) : 0;
+        auto& runtime = streams[sceneIndex];
+        auto& materials = geometry[sceneIndex];
+        render::TextureFeedbackResources textureFeedback;
+        require(materials.beginTextureStreaming(*command, frameIndex, textureFeedback));
+        require(materials.uploadMaterialTextures(*command));
+        // Repeated consumers of a frame must use the same immutable metadata,
+        // including a pinned alpha texture whose demand collection is disabled.
+        render::TextureFeedbackResources repeatedFeedback;
+        require(materials.beginTextureStreaming(*command, frameIndex, repeatedFeedback));
+        if (textureFeedback.samplingMetadata == nullptr ||
+            textureFeedback.textureCount != materials.materialTextureCount() ||
+            repeatedFeedback.samplingMetadata != textureFeedback.samplingMetadata) {
+            throw std::runtime_error("Shadow consumers did not share the frame's texture metadata");
+        }
         render::MeshletStreamFrameDesc frame{.width = w, .height = h, .enableGpuLodSelection = false,
             .camera = {.eye = {pose.eye[0], pose.eye[1], pose.eye[2]},
                 .center = {pose.center[0], pose.center[1], pose.center[2]},
@@ -1070,11 +1116,10 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         render::ScreenSpaceShadowResult output;
         std::string log;
         if (!checkedStreamIdentity && blocker) {
-            auto* materials = &geometry[blocker ? (alphaCutout ? 2 : 1) : 0];
             auto missing = streamGeometry;
             missing.accelerationStructure = nullptr;
             auto rejected = shadows.record(*device, *command, *streamer, *depthView, view, lights,
-                0, 0, settings, log, materials, &missing,
+                0, 0, settings, log, *textureFeedback.samplingMetadata, &materials, &missing,
                 nullptr, streamGeometry.accelerationStructure);
             if (rejected || rejected.error() != render::Error::InvalidArgument || log.find("ready CLAS") == std::string::npos) {
                 throw std::runtime_error("Missing stream CLAS publication was not rejected");
@@ -1084,14 +1129,15 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
                 throw std::runtime_error("Shadow identity fixture needs independent CLAS sessions");
             }
             rejected = shadows.record(*device, *command, *streamer, *depthView, view, lights,
-                0, 0, settings, log, materials, &streamGeometry,
+                0, 0, settings, log, *textureFeedback.samplingMetadata, &materials, &streamGeometry,
                 nullptr, other.accelerationStructure);
             if (rejected || rejected.error() != render::Error::InvalidArgument || log.find("same streaming session") == std::string::npos) {
                 throw std::runtime_error("Unrelated CLAS TLAS was not rejected before shadow recording");
             }
             checkedStreamIdentity = true;
         }
-        auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights, blocker ? (alphaCutout ? 3 : 1) : 2, 0, settings, log, &geometry[blocker ? (alphaCutout ? 2 : 1) : 0], &streamGeometry).transform([&](auto value) { output = std::move(value); });
+        auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights, sceneIndex + 1, 0, settings, log,
+            *textureFeedback.samplingMetadata, &materials, &streamGeometry).transform([&](auto value) { output = std::move(value); });
         if (!result) { throw std::runtime_error(log + render::resultToString(result)); }
         barrier.texture = output.texture;
         barrier.oldLayout = render::TextureLayout::ShaderRead; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
@@ -1103,6 +1149,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         require(runtime.cmdPostTraversal(*command));
         require(runtime.cmdEndFrame(*command));
+        require(materials.endTextureStreaming(*command, frameIndex));
         require(command->end());
         if (discard) {
             recording.cancel();
@@ -1205,8 +1252,24 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255);
     }
     alphaCutout = true;
-    auto cutout = renderShadow(true);
-    EXPECT_EQ(*std::min_element(cutout.begin(), cutout.end()), 255) << "Alpha-cutout geometry cast an opaque shadow";
+    settings.denoise = false;
+    for (uint32_t frame = 0; frame < 16; ++frame) {
+        const auto cutout = renderShadow(true);
+        EXPECT_EQ(*std::min_element(cutout.begin(), cutout.end()), 255)
+            << "Textured alpha cutout cast an opaque shadow at frame " << frame;
+    }
+    renderShadow(true, true);
+    const auto afterAlphaDiscard = renderShadow(true);
+    EXPECT_EQ(*std::min_element(afterAlphaDiscard.begin(), afterAlphaDiscard.end()), 255)
+        << "Cancelled textured shadow recording invalidated metadata on retry";
+    // An opaque alpha texel must still occlude: all-transparent fallback output
+    // would otherwise conceal a broken sampled-image or metadata binding.
+    opaqueAlphaTexture = true;
+    for (uint32_t frame = 0; frame < 16; ++frame) {
+        const auto opaqueTexture = renderShadow(true);
+        EXPECT_LT(*std::min_element(opaqueTexture.begin(), opaqueTexture.end()), 128)
+            << "Opaque alpha texture stopped casting a shadow at frame " << frame;
+    }
     alphaCutout = false;
     settings.maxDistance = 1.0f;
     auto truncated = renderShadow(true);

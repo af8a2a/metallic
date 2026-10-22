@@ -71,6 +71,7 @@ public:
         uint64_t transformRevision,
         const ScreenSpaceShadowSettings& settings,
         std::string& log,
+        Buffer& textureSamplingMetadata,
         ScenePathTraceResources* geometry,
         const MeshletStreamDeferredGPUResourcesView* streamGeometry = nullptr,
         CPUProfileRecorder* profiler = nullptr,
