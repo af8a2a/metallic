@@ -5,6 +5,7 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
@@ -175,9 +176,21 @@ public:
                 .pageLoadConcurrency = 0, .maxPageLoadsInFlight = 256, .queuedFrameCount = 2,
                 .enableClusterRtx = true, .enableClas = true, .compactClas = true,
                 .maxClasBytes = 64ull << 20, .maxClasBuildClusters = 8192,
-                .maxBlasClusterReferences = 8192, .maxBlasBytes = 32ull << 20, .maxBlasBuilds = 3,
+                .maxBlasClusterReferences = 8192, .maxBlasBytes = 32ull << 20,
+                .enableBlasGPUAllocator = true, .maxBlasBuilds = 3,
                 .maxFallbackBlasBytes = 4ull << 20, .prefetchPages = false};
+            {
+                MeshletStreamRuntime rejected;
+                auto limited = runtimeDesc;
+                limited.maxBlasStagingBytes = 0;
+                const auto result = rejected.initialize(*device, limited, log);
+                require(hasError(result, Error::OutOfMemory) && !rejected.ready() &&
+                    log.find("maxBlasStagingBytes") != std::string::npos,
+                    "Insufficient implicit build staging silently changed allocator or RT quality");
+            }
             require(bool(runtime.initialize(*device, runtimeDesc, log)), log);
+            const auto clusterProperties = device->queryClusterAccelerationStructureProperties();
+            require(bool(clusterProperties), "BLAS alignment query failed");
 
             ShaderCompileResult compiled;
             const char* capability = "spvRayQueryKHR";
@@ -446,6 +459,7 @@ public:
             }
             require(built > 0 && runtime.sceneReady() && runtime.tlasReady(), "Representations never built");
             const auto convergedGroups = stable.groups;
+            uint32_t stableAllocatorSamples = 0;
             for (uint32_t i = 0; i < 32; ++i) {
                 record(slots[i % 2]); stable = complete(slots[i % 2]);
                 require(stable.header.blasBuildCount == 0 && stable.header.arenaRepack == 0 && stable.header.semanticChangeCount == 0,
@@ -458,7 +472,25 @@ public:
                     std::memcmp(stable.groups.data(), convergedGroups.data(), stable.groups.size() * sizeof(MeshletStreamGPURTRepresentationGroup)) == 0,
                     "Parallel representation output is not deterministic across stable frames");
                 checkIdentity(stable);
+                const auto statistics = runtime.profilingStats();
+                require(statistics.blasGPUAllocatorEnabled, "Candidate runtime did not enable the GPU BLAS allocator");
+                if (statistics.blasFeedbackAvailable && statistics.blasEncodedBytes != 0) {
+                    ++stableAllocatorSamples;
+                    require(statistics.blasBuildCount == 0 && statistics.blasRelocatedCount == 0 &&
+                        statistics.blasRelocatedBytes == 0 && statistics.blasArenaRepack == 0,
+                        "Completed stationary feedback reported a rebuild, Move or repack");
+                    require(statistics.blasAllocatedBytes >= statistics.blasEncodedBytes &&
+                        uint64_t(statistics.blasAllocatedBytes) - statistics.blasEncodedBytes <
+                            uint64_t(asset.primitiveCount()) * kMeshletStreamRTRepresentationsPerPrimitive *
+                            clusterProperties->bottomLevelStorageAlignment,
+                        "Runtime actual-size allocation retained bucket-sized internal waste");
+                    require(uint64_t(statistics.blasAllocatedBytes) + statistics.blasFreeBytes == statistics.blasPersistentBytes &&
+                        statistics.blasLargestFreeBytes <= statistics.blasFreeBytes &&
+                        statistics.blasStagingBytes != 0 && statistics.blasStagingBytes <= runtimeDesc.maxBlasStagingBytes,
+                        "Runtime persistent/free/staging accounting violates allocator budgets");
+                }
             }
+            require(stableAllocatorSamples != 0, "No completed actual-size allocator feedback during 32 stationary frames");
             std::set<uint64_t> addresses;
             for (const auto& instance : stable.instances) { addresses.insert(instance.address); }
             require(addresses.size() == 1, "Identical finest cuts did not share one primitive representation");
@@ -604,6 +636,7 @@ public:
             phase = "legacy finest oracle";
             runtime.reset();
             runtimeDesc.enableBlasRepresentations = false;
+            runtimeDesc.enableBlasGPUAllocator = false;
             runtimeDesc.maxBlasBuilds = kInstanceCount;
             runtimeDesc.maxBlasClusterReferences = 64 * 1024;
             runtimeDesc.maxBlasBytes = 128ull << 20;
@@ -614,6 +647,7 @@ public:
             checkIdentity(stable);
             require(stable.header.blasBuildCount == 0 && stable.header.reusedInstances == kInstanceCount,
                 "Legacy oracle did not converge to eight per-instance BLAS");
+            require(!runtime.profilingStats().blasGPUAllocatorEnabled, "Legacy ray oracle used the candidate allocator");
             const Snapshot finestLegacy = stable;
             float maximumDistanceError = 0;
             for (uint32_t ray = 0; ray < finestCandidate.rays.size(); ++ray) {
@@ -634,6 +668,7 @@ public:
             phase = "candidate one-representation budget";
             runtime.reset();
             runtimeDesc.enableBlasRepresentations = true;
+            runtimeDesc.enableBlasGPUAllocator = true;
             runtimeDesc.maxBlasBuilds = 1;
             runtimeDesc.maxBlasClusterReferences = finestLegacy.allocations[0].selectedClusterCount;
             runtimeDesc.maxBlasBytes = 32ull << 20;
@@ -689,7 +724,9 @@ public:
                 {"pairs", finestCandidate.rays.size()}, {"rayCount", finestCandidate.rays.size() * 2},
                 {"maximumDistanceError", maximumDistanceError}, {"tolerance", 2e-5f},
                 {"sharingFrames", sharingFrames}, {"mergedFrames", mergedFrames}, {"sharedCutCacheHits", sharedCutCacheHits},
-                {"candidateBuildBudget", 3}, {"legacyBuildBudget", kInstanceCount}}).dump(2); }
+                {"candidateBuildBudget", 3}, {"legacyBuildBudget", kInstanceCount},
+                {"candidateAllocator", "gpu"}, {"legacyAllocator", "legacy"},
+                {"stableAllocatorSamples", stableAllocatorSamples}, {"stagingCapFailureRejected", true}}).dump(2); }
             for (const auto& [name, snapshot] : {std::pair{"CandidateRays.bin", &finestCandidate},
                     std::pair{"LegacyRays.bin", &finestLegacy}}) {
                 std::ofstream output(directory / name, std::ios::binary);

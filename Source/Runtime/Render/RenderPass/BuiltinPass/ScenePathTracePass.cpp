@@ -348,11 +348,17 @@ struct ScenePathTraceCameraSnapshot {
 
 class ScenePathTracePass final : public ComputePass {
 public:
+    bool diagnosticUsesVisibilityStream() const
+    {
+        return boolProperty(properties(), "diagnosticUseVisibilityStream", false);
+    }
+
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
+        const bool ownsGeometry = !visibilityDeferred_ && !diagnosticUsesVisibilityStream();
         return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures |
-            (visibilityDeferred_ ? SceneResourceFeatureBits::None : SceneResourceFeatureBits::AccelerationStructure),
-            .geometry = !visibilityDeferred_, .textureFeedback = true};
+            (ownsGeometry ? SceneResourceFeatureBits::AccelerationStructure : SceneResourceFeatureBits::None),
+            .geometry = ownsGeometry, .textureFeedback = true};
     }
 
     void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
@@ -364,6 +370,9 @@ public:
 
     RenderGraphSceneDependency sceneDependency() const override
     {
+        if (diagnosticUsesVisibilityStream()) {
+            return {RenderGraphSceneSource::Input, {"rasterInfo", "accelerationStructure"}};
+        }
         return visibilityDeferred_
             ? RenderGraphSceneDependency{RenderGraphSceneSource::Input, {"visibility", "depth", "rasterInfo"}}
             : RenderGraphSceneDependency{RenderGraphSceneSource::World};
@@ -394,6 +403,13 @@ public:
     {
         const bool exportGuides = exportDenoiserGuides(properties());
         RenderPassReflection reflection;
+        if (diagnosticUsesVisibilityStream()) {
+            reflection.addAccelerationStructureInput("accelerationStructure", "Visibility producer's current CLAS TLAS")
+                .accelerationStructureRead();
+            auto& info = reflection.addBufferInput("rasterInfo", "Visibility producer's camera and scene identity")
+                .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
+            info.memoryLocation = MemoryLocation::HostUpload;
+        }
         if (visibilityDeferred_) {
             reflection.addTextureInput("visibility", "Streamed GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
             reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
@@ -650,6 +666,12 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (diagnosticUsesVisibilityStream() && (visibilityDeferred_ || realtime_ ||
+                cacheModeFromProperties(properties()) != kScenePathTraceCacheModeOff ||
+                boolProperty(properties(), "accumulate", true) || exportDenoiserGuides(properties()))) {
+            log = "Visibility-stream diagnostics require standalone path tracing with cache, accumulation and guides disabled";
+            return makeError(Error::InvalidArgument);
+        }
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateTrustedSceneParameters(properties(), log)) { return makeError(Error::Unsupported); }
@@ -1324,6 +1346,33 @@ public:
         if (lightScene == nullptr || context.subsystems() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
+        MeshletStreamDeferredGPUResourcesView diagnosticStream;
+        VisibilityBufferFrameInfo diagnosticInfo{};
+        if (diagnosticUsesVisibilityStream()) {
+            const auto metadata = context.inputBuffer("rasterInfo");
+            const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
+            auto* accelerationStructure = context.inputAccelerationStructure("accelerationStructure");
+            if (!metadata.valid() || metadata.desc().size != sizeof(diagnosticInfo) ||
+                metadata.desc().memoryLocation != MemoryLocation::HostUpload || gpuScene == nullptr ||
+                accelerationStructure == nullptr) {
+                return makeError(Error::InvalidArgument);
+            }
+            const void* mapped = metadata.buffer()->map();
+            if (mapped == nullptr) { return makeError(Error::Failure); }
+            std::memcpy(&diagnosticInfo, mapped, sizeof(diagnosticInfo));
+            metadata.buffer()->unmap();
+            const auto* stream = gpuScene->visibilityStream(
+                {diagnosticInfo.lightGridViewIndex, diagnosticInfo.lightGridViewGeneration},
+                diagnosticInfo.frameIndex, diagnosticInfo.sceneIdentity);
+            if (diagnosticInfo.width != context.width() || diagnosticInfo.height != context.height() ||
+                diagnosticInfo.frameIndex != context.frameIndex() ||
+                diagnosticInfo.sceneIdentity != lightScene->resourceIdentity() || stream == nullptr ||
+                stream->accelerationStructure != accelerationStructure || stream->shadingChangeBuffer == nullptr) {
+                spdlog::error("Path-trace diagnostic requires the current visibility producer's scene, view and CLAS publication");
+                return makeError(Error::InvalidArgument);
+            }
+            diagnosticStream = *stream;
+        }
         const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
         if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
             ScenePathTracePush observerPush;
@@ -1339,6 +1388,9 @@ public:
                 if (mapped == nullptr) { return makeError(Error::Failure); }
                 std::memcpy(observerPush.eye, mapped->eye, sizeof(observerPush.eye));
                 rasterInfo.buffer()->unmap();
+            }
+            if (diagnosticUsesVisibilityStream()) {
+                std::memcpy(observerPush.eye, diagnosticInfo.eye, sizeof(observerPush.eye));
             }
             auto resolved = environmentSubsystem->resolveRadiance(*device_, context.commandBuffer(), *context.subsystems(),
                 worldEnvironment, {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]}, syncLog)
@@ -1565,6 +1617,11 @@ public:
         }
         profile.next("Prepare camera and history");
         push.sampleFrame = static_cast<uint32_t>(context.frameIndex());
+        // Opt-in diagnostic captures compare the same transport samples even
+        // when asynchronous scene warmup finishes on different editor frames.
+        if (context.properties().contains("diagnosticSampleFrame")) {
+            push.sampleFrame = uintProperty(context.properties(), "diagnosticSampleFrame", 0u, 0u, UINT32_MAX);
+        }
         push.temporalJitter = exportGuides ? 1u : 0u;
         if (exportGuides) {
             const std::array<float, 2> jitter = dlssTemporalJitter(context.frameIndex());
@@ -1581,6 +1638,17 @@ public:
             push.temporalJitter = view->frame[2];
             push.jitterOffsetX = view->jitter[0];
             push.jitterOffsetY = view->jitter[1];
+        }
+        if (diagnosticUsesVisibilityStream()) {
+            std::memcpy(push.eye, diagnosticInfo.eye, sizeof(push.eye));
+            std::memcpy(push.center, diagnosticInfo.center, sizeof(push.center));
+            std::memcpy(push.upProjection, diagnosticInfo.upProjection, sizeof(push.upProjection));
+            std::memcpy(push.viewport, diagnosticInfo.viewport, sizeof(push.viewport));
+            std::memcpy(push.clipOrtho, diagnosticInfo.clipOrtho, sizeof(push.clipOrtho));
+            push.eye[3] = push.center[3] = 0.0f;
+            push.temporalJitter = diagnosticInfo.temporalJitter;
+            push.jitterOffsetX = diagnosticInfo.jitter[0];
+            push.jitterOffsetY = diagnosticInfo.jitter[1];
         }
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
         const bool previousCameraValid =
@@ -1625,8 +1693,8 @@ public:
         TextureView* const atmosphereSkyViews[]{environment.skyView};
         TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         const auto* prepared = context.preparedScene();
-        const auto streamGeometry = prepared && prepared->geometry
-            ? prepared->geometry->deferredGpuResources() : MeshletStreamDeferredGPUResourcesView{};
+        const auto streamGeometry = diagnosticUsesVisibilityStream() ? diagnosticStream :
+            (prepared && prepared->geometry ? prepared->geometry->deferredGpuResources() : MeshletStreamDeferredGPUResourcesView{});
         if (!visibilityDeferred_ && (!streamGeometry.valid() || !streamGeometry.accelerationStructure)) {
             return makeError(Error::InvalidArgument);
         }
@@ -1673,7 +1741,7 @@ public:
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = textureFeedback.samplingMetadata});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = textureFeedback.demandMip});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = textureFeedback.demandHits});
-        if (!visibilityDeferred_) { appendStreamRayBindings(bindings, streamGeometry, prepared->geometry->shadingChangeBuffer()); }
+        if (!visibilityDeferred_) { appendStreamRayBindings(bindings, streamGeometry, streamGeometry.shadingChangeBuffer); }
         if (environment.atmosphereParametersBuffer != nullptr) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .textureViews = {atmosphereTransmittanceViews, 1}});

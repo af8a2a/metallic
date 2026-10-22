@@ -12,6 +12,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
+#include "Runtime/Render/Streamer/MeshletStreamBLASAllocator.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -105,7 +106,8 @@ Result<> createNamedBuffer(
     std::string_view label)
 {
     BufferDesc shared = desc;
-    if (hasFlag(shared.usage, BufferUsageBits::Storage)) {
+    if (hasFlag(shared.usage, BufferUsageBits::Storage) ||
+        hasFlag(shared.usage, BufferUsageBits::AccelerationStructureStorage)) {
         shared.queueAccess = shared.queueAccess | QueueAccessBits::Graphics | QueueAccessBits::Compute;
     }
     Result<> result = device.createBuffer(shared).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
@@ -646,6 +648,139 @@ private:
     std::unique_ptr<ComputePipeline> cooperativePipeline_;
     std::unique_ptr<ShaderModule> demandShader_;
     std::unique_ptr<ComputePipeline> demandPipeline_;
+};
+
+class MeshletStreamRuntime::GPUBLASAllocator {
+public:
+    bool enabled = false;
+    uint32_t ownerCount = 0;
+    uint32_t relocateBudget = 0;
+    std::unique_ptr<Buffer> state, gaps, allocations, buildOwners, moveSources, moveDestinations, moveCounts;
+    std::unique_ptr<Buffer> parameters, staging, relocationStaging, scratch;
+    std::unique_ptr<ShaderModule> shader;
+    std::unique_ptr<ComputePipeline> pipeline;
+    std::array<Buffer*, 5> referenced{};
+    std::shared_ptr<bool> initialized = std::make_shared<bool>(false);
+
+    Result<> initialize(Device& device, Buffer& owners, Buffer& header, Buffer& infos,
+        Buffer& sizes, Buffer& addresses, Buffer& arena, uint64_t referenceAddress, uint32_t count,
+        uint64_t stagingBytes, const ClusterAccelerationStructureProperties& properties,
+        bool reuse, bool useGPU, uint32_t moveBudget, std::string& log, PipelineCache* pipelineCache)
+    {
+        enabled = useGPU;
+        ownerCount = count;
+        relocateBudget = moveBudget;
+        referenced = {&owners, &header, &infos, &sizes, &addresses};
+        const auto buffer = [&](uint64_t bytes, std::unique_ptr<Buffer>& output, std::string_view label,
+                                MemoryLocation location = MemoryLocation::Device,
+                                BufferUsageBits usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
+                                    BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::TransferSource) {
+            return createNamedBuffer(device, {.size = bytes, .usage = usage, .memoryLocation = location},
+                output, log, label);
+        };
+        Result<> result;
+        const uint64_t nodeCount = uint64_t(count) * 4u + 1u;
+        if (nodeCount > UINT32_MAX) { return makeError(Error::OutOfMemory); }
+        if (!(result = buffer(kBLASAllocatorStateWords * 4u, state, "BLAS allocator state")) ||
+            !(result = buffer(nodeCount * sizeof(MeshletStreamBLASAllocatorGap), gaps, "BLAS allocator gaps")) ||
+            !(result = buffer(uint64_t(count) * sizeof(MeshletStreamBLASAllocatorAllocation), allocations, "BLAS allocations")) ||
+            !(result = buffer(uint64_t(count) * 4u, buildOwners, "BLAS build owners")) ||
+            !(result = buffer(uint64_t(count) * 16u, moveSources, "BLAS move sources")) ||
+            !(result = buffer(uint64_t(count) * 16u, moveDestinations, "BLAS move destinations", MemoryLocation::Device,
+                BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress | BufferUsageBits::AccelerationStructureStorage)) ||
+            !(result = buffer(8u, moveCounts, "BLAS move counts")) ||
+            !(result = buffer(sizeof(MeshletStreamBLASAllocatorParameters), parameters,
+                "BLAS allocator parameters", MemoryLocation::HostUpload))) { return result; }
+        if (enabled) {
+            if (!(result = buffer(stagingBytes, staging, "BLAS implicit build staging", MemoryLocation::Device,
+                    BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::ShaderDeviceAddress))) { return result; }
+            if (moveBudget != 0u && !(result = buffer(moveBudget, relocationStaging, "BLAS relocation staging",
+                    MemoryLocation::Device, BufferUsageBits::AccelerationStructureStorage |
+                        BufferUsageBits::ShaderDeviceAddress))) { return result; }
+            auto moveSizes = device.queryClusterAccelerationStructureMoveSizes(count,
+                std::max<uint64_t>(arena.desc().size, moveBudget), ClusterAccelerationStructureObjectType::BottomLevel);
+            if (!moveSizes) { return makeError(moveSizes.error()); }
+            if (!(result = buffer(moveSizes->updateScratchSize + properties.scratchAlignment,
+                    scratch, "BLAS move scratch"))) { return result; }
+        }
+        const MeshletStreamBLASAllocatorParameters params{
+            state->deviceAddress(), gaps->deviceAddress(), allocations->deviceAddress(), owners.deviceAddress(),
+            header.deviceAddress(), infos.deviceAddress(), buildOwners->deviceAddress(), sizes.deviceAddress(),
+            addresses.deviceAddress(), moveSources->deviceAddress(), moveDestinations->deviceAddress(), moveCounts->deviceAddress(),
+            referenceAddress, arena.deviceAddress(), count, uint32_t(properties.bottomLevelStorageAlignment),
+            uint32_t(arena.desc().size), moveBudget, uint32_t(nodeCount), std::min(count, 256u), reuse ? 1u : 0u, 0u,
+            relocationStaging ? relocationStaging->deviceAddress() : 0u};
+        if (!(result = updateHostBuffer(*parameters, &params, sizeof(params)))) { return result; }
+        ShaderCompileResult compiled;
+        result = ShaderRegistry::instance().getShader({.moduleName = "Features/GPUDriven/StreamBLASAllocator",
+            .entryPointName = "allocatorMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log)
+            .transform([&](auto value) { compiled = std::move(value); });
+        if (!result) { return result; }
+        result = ShaderRegistry::instance().getShaderModule(device, {.spirv = compiled.spirv,
+            .debugName = "StreamBLASAllocator.allocatorMain"}).transform([&](auto value) { shader = std::move(value); });
+        if (!result) { return result; }
+        return ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamBLASAllocatorPush),
+            .pipelineCache = pipelineCache}).transform([&](auto value) { pipeline = std::move(value); });
+    }
+
+    Result<> barrier(CommandBuffer& commandBuffer, Buffer& buffer)
+    {
+        const BufferBarrierDesc barrier{.buffer = &buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+        return commandBuffer.synchronize({.buffers = {&barrier, 1}});
+    }
+
+    Result<> dispatch(CommandBuffer& commandBuffer, BindlessHeap& heap, uint32_t phase)
+    {
+        for (Buffer* buffer : referenced) {
+            if (auto result = commandBuffer.retainResource(buffer->retainAllocation()); !result) { return result; }
+        }
+        for (Buffer* buffer : {state.get(), gaps.get(), allocations.get(), buildOwners.get(), moveSources.get(),
+                 moveDestinations.get(), moveCounts.get(), parameters.get()}) {
+            if (auto result = commandBuffer.retainResource(buffer->retainAllocation()); !result) { return result; }
+        }
+        const MemoryBarrierDesc dependency{
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+        if (auto result = commandBuffer.synchronize({.memory = {&dependency, 1}}); !result) { return result; }
+        if (auto result = commandBuffer.bindBindlessHeap(heap); !result) { return result; }
+        const MeshletStreamBLASAllocatorPush push{parameters->deviceAddress(), phase, 0u};
+        if (auto result = commandBuffer.bindExecution(pipeline->execution(), &push, sizeof(push)); !result) { return result; }
+        const bool parallel = phase == 0u || phase == 3u || phase == 4u || phase == 5u || phase == 6u;
+        const uint32_t groups = parallel ? (ownerCount + 63u) / 64u : 1u;
+        return commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1u);
+    }
+
+    Result<> initializeOnGPU(CommandBuffer& commands, BindlessHeap& heap)
+    {
+        if (*initialized) { return {}; }
+        if (auto result = dispatch(commands, heap, 0u); !result) { return result; }
+        return commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+            [value = initialized] { *value = true; }, nullptr));
+    }
+
+    Result<> move(CommandBuffer& commands, Buffer& arena, uint32_t list, bool stageClean = false)
+    {
+        const uint64_t offset = uint64_t(list) * ownerCount * sizeof(uint64_t);
+        auto sources = moveSources->slice({offset, uint64_t(ownerCount) * 8u});
+        auto destinations = moveDestinations->slice({offset, uint64_t(ownerCount) * 8u});
+        auto count = moveCounts->slice({uint64_t(list) * 4u, 4u});
+        auto work = scratch->slice();
+        auto sourceStorage = (list == 0 ? staging.get() : stageClean ? &arena : relocationStaging.get())->slice();
+        auto targetStorage = (stageClean ? relocationStaging.get() : &arena)->slice();
+        if (!sources || !destinations || !count || !work || !sourceStorage || !targetStorage) {
+            return makeError(Error::InvalidArgument);
+        }
+        return commands.moveClusterAccelerationStructuresIndirect({
+            .maxObjectCount = ownerCount,
+            .maxMovedBytes = list == 0 ? arena.desc().size : relocateBudget,
+            .sourceAddressBuffer = *sources, .destinationAddressBuffer = *destinations,
+            .objectCountBuffer = *count, .scratchBuffer = *work,
+            .sourceStorageBuffer = *sourceStorage, .destinationStorageBuffer = *targetStorage,
+            .objectType = ClusterAccelerationStructureObjectType::BottomLevel});
+    }
 };
 
 class MeshletStreamRuntime::BLASInputPass {
@@ -1510,15 +1645,48 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             blasInstanceReuse_ = std::strcmp(value, "0") != 0;
         }
         if (blasSizes.accelerationStructureSize > UINT32_MAX) { return makeError(Error::OutOfMemory); }
+        bool gpuAllocator = desc.enableBlasGPUAllocator;
+        if (const char* value = std::getenv("METALLIC_BLAS_ALLOCATOR")) {
+            if (std::strcmp(value, "legacy") == 0) { gpuAllocator = false; }
+            else if (std::strcmp(value, "gpu") != 0) {
+                log = "METALLIC_BLAS_ALLOCATOR must be legacy or gpu";
+                return makeError(Error::InvalidArgument);
+            }
+        }
+        uint64_t persistentBytes = blasSizes.accelerationStructureSize;
+        if (gpuAllocator && blasSizes.accelerationStructureSize > desc.maxBlasStagingBytes) {
+            log = "Dirty BLAS implicit build arena exceeds maxBlasStagingBytes";
+            return makeError(Error::OutOfMemory);
+        }
+        uint32_t relocationBytes = 4u * 1024u * 1024u;
+        if (const char* value = std::getenv("METALLIC_BLAS_STORAGE_BYTES")) {
+            char* end = nullptr;
+            const auto bytes = std::strtoull(value, &end, 10);
+            if (end == value || *end != '\0' || bytes == 0 || bytes > std::min<uint64_t>(desc.maxBlasBytes, UINT32_MAX) ||
+                bytes % clusterProperties.bottomLevelStorageAlignment != 0) {
+                log = "METALLIC_BLAS_STORAGE_BYTES must be aligned, nonzero and within maxBlasBytes";
+                return makeError(Error::InvalidArgument);
+            }
+            persistentBytes = bytes;
+        }
+        if (const char* value = std::getenv("METALLIC_BLAS_RELOCATE_BYTES")) {
+            char* end = nullptr;
+            const auto bytes = std::strtoull(value, &end, 10);
+            if (end == value || *end != '\0' || bytes > UINT32_MAX) {
+                log = "METALLIC_BLAS_RELOCATE_BYTES must be a 32-bit byte budget";
+                return makeError(Error::InvalidArgument);
+            }
+            relocationBytes = uint32_t(bytes);
+        }
         spdlog::info("[MeshletStreamRuntime] BLAS instance reuse={} representations={} storageBytes={} referenceCapacity={} buildCapacity={}",
-            blasInstanceReuse_, blasRepresentationsEnabled_, blasSizes.accelerationStructureSize,
+            blasInstanceReuse_, blasRepresentationsEnabled_, persistentBytes,
             blasClusterReferenceCapacity_, blasBuildCapacity_);
         result = createAndPopulateHostStorageBuffer<MeshletStreamGPUInstanceBLAS>(
             device, asset_.instanceCount(), instanceBlasBuffer_, log,
             "MeshletStreamRuntime instance BLAS inputs",
             [](MeshletStreamGPUInstanceBLAS& instanceBlas, size_t) {
                 instanceBlas = MeshletStreamGPUInstanceBLAS{};
-            }, BufferUsageBits::TransferSource);
+            }, BufferUsageBits::TransferSource | BufferUsageBits::ShaderDeviceAddress);
         if (!result) { return result; }
         instanceBlasBufferState_ = ResourceState::Undefined;
 
@@ -1529,7 +1697,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 device, rtRepresentationCount_, rtRepresentationBuffer_, log,
                 "MeshletStreamRuntime RT representations",
                 [](MeshletStreamGPUInstanceBLAS& representation, size_t) { representation = {}; },
-                BufferUsageBits::TransferSource);
+                BufferUsageBits::TransferSource | BufferUsageBits::ShaderDeviceAddress);
             if (!result) { return result; }
             const auto createRTBuffer = [&](uint64_t bytes, uint32_t stride,
                                             std::unique_ptr<Buffer>& buffer, std::string_view label) {
@@ -1637,7 +1805,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         result = createNamedBuffer(
             device,
             BufferDesc{
-                .size = blasSizes.accelerationStructureSize,
+                .size = persistentBytes,
                 .usage = BufferUsageBits::AccelerationStructureStorage |
                     BufferUsageBits::ShaderDeviceAddress,
                 .memoryLocation = MemoryLocation::Device,
@@ -1700,6 +1868,17 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             log = "MeshletStreamRuntime dynamic BLAS buffers have no device addresses";
             return makeError(Error::Failure);
         }
+
+        gpuBlasAllocator_ = std::make_unique<GPUBLASAllocator>();
+        result = gpuBlasAllocator_->initialize(device,
+            *(blasRepresentationsEnabled_ ? rtRepresentationBuffer_ : instanceBlasBuffer_),
+            *blasHeaderBuffer_, *blasBuildInfoBuffer_, *blasSizeBuffer_, *blasAddressBuffer_, *blasStorageBuffer_,
+            blasClusterReferenceAddress_, instanceCapacity, blasSizes.accelerationStructureSize,
+            clusterProperties, blasInstanceReuse_, gpuAllocator, relocationBytes, log, pipelineCache);
+        if (!result) { return result; }
+        spdlog::info("[MeshletStreamRuntime] BLAS allocator={} persistentBytes={} stagingBytes={} relocationBudget={}",
+            gpuAllocator ? "gpu" : "legacy", persistentBytes,
+            gpuAllocator ? blasSizes.accelerationStructureSize : 0u, relocationBytes);
 
         if (desc.maxFallbackBlasBytes == 0) {
             log = "MeshletStreamRuntime fallback BLAS budget must be non-zero";
@@ -2047,7 +2226,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = requestReadbackByteSize + kMeshletStreamDemandStatsWords * sizeof(uint32_t) + sizeof(MeshletStreamGPUBLASHeader),
+            .size = requestReadbackByteSize + kMeshletStreamDemandStatsWords * sizeof(uint32_t) +
+                sizeof(MeshletStreamGPUBLASHeader) + sizeof(recentBlasAllocatorState_),
             .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback,
         },
@@ -2471,6 +2651,8 @@ void MeshletStreamRuntime::reset()
     traversalWorkBuffer_.reset();
     blasHeaderBuffer_.reset();
     blasCacheInitialized_ = std::make_shared<bool>(false);
+    gpuBlasAllocator_.reset();
+    recentBlasAllocatorState_ = {};
     instanceBlasBuffer_.reset();
     rtRepresentationBuffer_.reset();
     rtRepresentationGroupBuffer_.reset();
@@ -3099,7 +3281,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
         return result;
     }
     if (checkpoint) { checkpoint("BeforeBlasBuild"); }
-    result = cmdBuildBlas(commandBuffer);
+    result = cmdBuildBlas(commandBuffer, checkpoint);
     if (!result) {
         return result;
     }
@@ -3365,6 +3547,7 @@ MeshletStreamDeferredGPUResourcesView MeshletStreamRuntime::deferredGpuResources
         .visibleClusterBuffer = visibleClusterBuffer_.get(),
         .visibleRecordCapacity = visibleClusterCapacity(),
         .accelerationStructure = accelerationStructure(),
+        .shadingChangeBuffer = shadingChangeBuffer(),
     };
 }
 
@@ -4025,9 +4208,9 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
     }
     if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
     {
-        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader)});
+        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader) - sizeof(recentBlasAllocatorState_)});
         if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = readback->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader)});
+        auto destinationSlice = readback->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader) - sizeof(recentBlasAllocatorState_)});
         if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
         if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
     }
@@ -4052,6 +4235,14 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
+    }
+    if (gpuBlasAllocator_) {
+        if (auto result = gpuBlasAllocator_->barrier(commandBuffer, *gpuBlasAllocator_->state); !result) { return result; }
+        auto source = gpuBlasAllocator_->state->slice();
+        auto destination = readback->slice({readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) -
+            sizeof(MeshletStreamGPUBLASHeader) - sizeof(recentBlasAllocatorState_), sizeof(recentBlasAllocatorState_)});
+        if (!source || !destination) { return makeError(Error::InvalidArgument); }
+        if (auto result = commandBuffer.copyBuffer(*source, *destination); !result) { return result; }
     }
     requestReadbackValid_ = metallic::render::RenderFrameContext::from(commandBuffer) == nullptr;
     return {};
@@ -4149,6 +4340,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.blasBuildCapacity = blasBuildCapacity_;
     params.maxBlasClustersPerBuild = maxBlasClustersPerBuild_;
     params.blasStorageBytes = blasStorageBuffer_ ? static_cast<uint32_t>(blasStorageBuffer_->desc().size) : 0u;
+    params.enableBlasGPUAllocator = gpuBlasAllocator_ && gpuBlasAllocator_->enabled ? 1u : 0u;
     const uint64_t blasStorageAddress = blasStorageBuffer_ ? blasStorageBuffer_->deviceAddress() : 0u;
     params.blasStorageAddressLow = static_cast<uint32_t>(blasStorageAddress);
     params.blasStorageAddressHigh = static_cast<uint32_t>(blasStorageAddress >> 32u);
@@ -4340,6 +4532,49 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
     return {};
 }
 
+Result<> MeshletStreamRuntime::dispatchBlasPhase(CommandBuffer& commandBuffer, uint32_t phase,
+    uint32_t threadCount, bool publicationWrapped)
+{
+    MeshletStreamUserPush push = userPush();
+    push.activeBuildPhase = phase;
+    push.traversalPhase = (*blasCacheInitialized_ ? 0u : 1u) | (publicationWrapped ? 2u : 0u);
+    const auto transitionRT = [&](bool force) -> Result<> {
+        if (!blasRepresentationsEnabled_) { return {}; }
+        for (auto [buffer, state] : {
+                 std::pair{rtRepresentationBuffer_.get(), &rtRepresentationBufferState_},
+                 std::pair{rtRepresentationGroupBuffer_.get(), &rtRepresentationGroupBufferState_},
+                 std::pair{rtRepresentationHeaderBuffer_.get(), &rtRepresentationHeaderBufferState_},
+                 std::pair{rtRepresentationStateBuffer_.get(), &rtRepresentationStateBufferState_},
+                 std::pair{rtRepresentationCacheBuffer_.get(), &rtRepresentationCacheBufferState_}}) {
+            if (auto result = transitionBuffer(commandBuffer, *buffer, *state, ResourceState::General, force); !result) {
+                return result;
+            }
+        }
+        return {};
+    };
+    if (auto result = transitionRT(false); !result) { return result; }
+    auto result = blasInputPass_->dispatch(
+        commandBuffer,
+        *registry_->heap(),
+        push,
+        threadCount,
+        *activeGroupBuffer_,
+        activeGroupBufferState_,
+        *activeHeaderBuffer_,
+        activeHeaderBufferState_,
+        *blasHeaderBuffer_,
+        blasHeaderBufferState_,
+        *instanceBlasBuffer_,
+        instanceBlasBufferState_,
+        *blasBuildInfoBuffer_,
+        blasBuildInfoBufferState_,
+        *blasClusterReferenceBuffer_,
+        blasClusterReferenceBufferState_,
+        blasRepresentationsEnabled_ && (phase == 22u || phase == 25u || phase == 27u));
+    if (result) { result = transitionRT(true); }
+    return result;
+}
+
 Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint)
 {
     if (blasInputPass_ == nullptr ||
@@ -4360,45 +4595,8 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     commandBuffer.hostWriteBarrier();
     if (auto r = transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true); !r) { return r; }
 
-    auto dispatchPhase = [this, &commandBuffer, publicationWrapped](uint32_t phase, uint32_t threadCount) {
-        MeshletStreamUserPush push = userPush();
-        push.activeBuildPhase = phase;
-        push.traversalPhase = (*blasCacheInitialized_ ? 0u : 1u) | (publicationWrapped ? 2u : 0u);
-        const auto transitionRT = [&](bool force) -> Result<> {
-            if (!blasRepresentationsEnabled_) { return {}; }
-            for (auto [buffer, state] : {
-                     std::pair{rtRepresentationBuffer_.get(), &rtRepresentationBufferState_},
-                     std::pair{rtRepresentationGroupBuffer_.get(), &rtRepresentationGroupBufferState_},
-                     std::pair{rtRepresentationHeaderBuffer_.get(), &rtRepresentationHeaderBufferState_},
-                     std::pair{rtRepresentationStateBuffer_.get(), &rtRepresentationStateBufferState_},
-                     std::pair{rtRepresentationCacheBuffer_.get(), &rtRepresentationCacheBufferState_}}) {
-                if (auto result = transitionBuffer(commandBuffer, *buffer, *state, ResourceState::General, force); !result) {
-                    return result;
-                }
-            }
-            return {};
-        };
-        if (auto result = transitionRT(false); !result) { return result; }
-        auto result = blasInputPass_->dispatch(
-            commandBuffer,
-            *registry_->heap(),
-            push,
-            threadCount,
-            *activeGroupBuffer_,
-            activeGroupBufferState_,
-            *activeHeaderBuffer_,
-            activeHeaderBufferState_,
-            *blasHeaderBuffer_,
-            blasHeaderBufferState_,
-            *instanceBlasBuffer_,
-            instanceBlasBufferState_,
-            *blasBuildInfoBuffer_,
-            blasBuildInfoBufferState_,
-            *blasClusterReferenceBuffer_,
-            blasClusterReferenceBufferState_,
-            blasRepresentationsEnabled_ && (phase == 22u || phase == 25u || phase == 27u));
-        if (result) { result = transitionRT(true); }
-        return result;
+    const auto dispatchPhase = [this, &commandBuffer, publicationWrapped](uint32_t phase, uint32_t threadCount) {
+        return dispatchBlasPhase(commandBuffer, phase, threadCount, publicationWrapped);
     };
 
     // These cuts own BLAS allocation and history independently of raster groups.
@@ -4468,20 +4666,30 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
         return result;
     }
     if (checkpoint) { checkpoint("BeforeBlasAllocate"); }
-    result = dispatchPhase(8u, std::max(allocationCount, 1u));
+    result = gpuBlasAllocator_->initializeOnGPU(commandBuffer, *registry_->heap());
     if (!result) { return result; }
-    result = dispatchPhase(9u, 1u);
-    if (!result) { return result; }
-    // Admit complete size-class allocations before growth can trigger a repack.
-    result = dispatchPhase(12u, std::max(allocationCount, 1u));
-    if (!result) { return result; }
-    result = dispatchPhase(13u, 1u);
-    if (!result) { return result; }
-    result = dispatchPhase(10u, std::max(allocationCount, 1u));
+    if (gpuBlasAllocator_->enabled) {
+        result = gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 5u);
+        if (result) { result = gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 1u); }
+        if (result) { result = gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 6u); }
+        if (!result) { return result; }
+        for (Buffer* buffer : {blasHeaderBuffer_.get(), blasBuildInfoBuffer_.get(),
+                 blasRepresentationsEnabled_ ? rtRepresentationBuffer_.get() : instanceBlasBuffer_.get()}) {
+            if (auto barrier = gpuBlasAllocator_->barrier(commandBuffer, *buffer); !barrier) { return barrier; }
+        }
+    } else {
+        result = dispatchPhase(8u, std::max(allocationCount, 1u));
+        if (result) { result = dispatchPhase(9u, 1u); }
+        // Admit complete size-class allocations before growth can trigger a repack.
+        if (result) { result = dispatchPhase(12u, std::max(allocationCount, 1u)); }
+        if (result) { result = dispatchPhase(13u, 1u); }
+        if (result) { result = dispatchPhase(10u, std::max(allocationCount, 1u)); }
+    }
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasInsert"); }
     result = dispatchPhase(kMeshletStreamBLASInputInsertPhase, groupCapacity);
     if (!result) { return result; }
+    if (gpuBlasAllocator_->enabled) { return {}; }
     result = dispatchPhase(11u, std::max(groupCapacity, allocationCount));
     if (!result) { return result; }
     if (blasRepresentationsEnabled_) {
@@ -4491,7 +4699,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     return transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true);
 }
 
-Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
+Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint)
 {
     if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (clasPool_ == nullptr ||
@@ -4510,7 +4718,8 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
     if (!infos) { return makeError(infos.error()); }
     auto count = blasHeaderBuffer_->slice({offsetof(MeshletStreamGPUBLASHeader, blasBuildCount), sizeof(uint32_t)});
     if (!count) { return makeError(count.error()); }
-    auto storage = blasStorageBuffer_->slice();
+    const bool gpu = gpuBlasAllocator_->enabled;
+    auto storage = (gpu ? gpuBlasAllocator_->staging : blasStorageBuffer_)->slice();
     if (!storage) { return makeError(storage.error()); }
     auto addresses = blasAddressBuffer_->slice();
     if (!addresses) { return makeError(addresses.error()); }
@@ -4518,10 +4727,11 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
     if (!sizes) { return makeError(sizes.error()); }
     auto scratch = blasScratchBuffer_->slice();
     if (!scratch) { return makeError(scratch.error()); }
-    return commandBuffer.buildClusterAccelerationStructureBottomLevels(
+    auto result = commandBuffer.buildClusterAccelerationStructureBottomLevels(
         ClusterAccelerationStructureBottomLevelBuildDesc{
             .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
-            .destinationMode = ClusterAccelerationStructureDestinationMode::Explicit,
+            .destinationMode = gpu ? ClusterAccelerationStructureDestinationMode::Implicit :
+                ClusterAccelerationStructureDestinationMode::Explicit,
             .maxClusterCountPerAccelerationStructure = maxBlasClustersPerBuild_,
             .maxTotalClusterCount = blasClusterReferenceCapacity_,
             .maxAccelerationStructureCount = blasBuildCapacity_,
@@ -4533,6 +4743,40 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
             .destinationSizeBuffer = *sizes,
             .scratchBuffer = *scratch,
         });
+    if (!result) { return result; }
+    for (Buffer* buffer : {blasSizeBuffer_.get(), blasAddressBuffer_.get()}) {
+        if (auto barrier = gpuBlasAllocator_->barrier(commandBuffer, *buffer); !barrier) { return barrier; }
+    }
+    if (!gpu) {
+        if (checkpoint) { checkpoint("BeforeBlasStatistics"); }
+        if (auto result = gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 9u); !result) { return result; }
+        return gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 4u);
+    }
+    if (checkpoint) { checkpoint("BeforeBlasGPUAllocate"); }
+    result = gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 2u);
+    if (checkpoint) { checkpoint("BeforeBlasMove"); }
+    if (result) { result = gpuBlasAllocator_->move(commandBuffer, *blasStorageBuffer_, 0u); }
+    if (result && gpuBlasAllocator_->relocateBudget != 0u) {
+        result = gpuBlasAllocator_->move(commandBuffer, *blasStorageBuffer_, 1u, true);
+    }
+    if (result) { result = gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 8u); }
+    if (result && gpuBlasAllocator_->relocateBudget != 0u) {
+        result = gpuBlasAllocator_->move(commandBuffer, *blasStorageBuffer_, 1u);
+    }
+    if (checkpoint) { checkpoint("BeforeBlasPublish"); }
+    if (result) { result = gpuBlasAllocator_->dispatch(commandBuffer, *registry_->heap(), 3u); }
+    if (!result) { return result; }
+    for (Buffer* buffer : {blasHeaderBuffer_.get(),
+             blasRepresentationsEnabled_ ? rtRepresentationBuffer_.get() : instanceBlasBuffer_.get()}) {
+        if (auto barrier = gpuBlasAllocator_->barrier(commandBuffer, *buffer); !barrier) { return barrier; }
+    }
+    const uint32_t owners = blasRepresentationsEnabled_ ? rtRepresentationCount_ : asset_.instanceCount();
+    const uint32_t groups = blasRepresentationsEnabled_ ? rtRepresentationGroupCapacity_ : maxActiveGroups_;
+    result = dispatchBlasPhase(commandBuffer, 11u, std::max(groups, owners));
+    if (result && blasRepresentationsEnabled_) {
+        result = dispatchBlasPhase(commandBuffer, 24u, asset_.instanceCount());
+    }
+    return result;
 }
 
 Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
@@ -4743,6 +4987,11 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profile
     if (clusterRtxEnabled_) {
         std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
             readback->desc().size - sizeof(MeshletStreamGPUBLASHeader), sizeof(recentBlasHeader_));
+        if (gpuBlasAllocator_) {
+            std::memcpy(recentBlasAllocatorState_.data(), static_cast<const uint8_t*>(mapped) +
+                readback->desc().size - sizeof(recentDemandStats_) - sizeof(MeshletStreamGPUBLASHeader) -
+                sizeof(recentBlasAllocatorState_), sizeof(recentBlasAllocatorState_));
+        }
         // Telemetry only: replaying this delayed feedback into shadingRevision()
         // would clear PT/SHaRC a second time after the same-frame GPU invalidation.
     }
@@ -4917,6 +5166,21 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.blasStorageRejected = recentBlasHeader_.storageRejected;
     result.blasArenaUsedBytes = recentBlasHeader_.arenaUsedBytes;
     result.blasArenaRepack = recentBlasHeader_.arenaRepack;
+    if (gpuBlasAllocator_) {
+        result.blasGPUAllocatorEnabled = gpuBlasAllocator_->enabled;
+        result.blasEncodedBytes = recentBlasAllocatorState_[kBLASAllocatorEncodedBytesWord];
+        result.blasAllocatedBytes = recentBlasAllocatorState_[kBLASAllocatorAllocatedBytesWord];
+        result.blasFreeBytes = recentBlasAllocatorState_[kBLASAllocatorFreeBytesWord];
+        result.blasLargestFreeBytes = recentBlasAllocatorState_[kBLASAllocatorLargestFreeWord];
+        result.blasRelocatedCount = recentBlasAllocatorState_[kBLASAllocatorRelocatedCountWord];
+        result.blasRelocatedBytes = recentBlasAllocatorState_[kBLASAllocatorRelocatedBytesWord];
+        result.blasSuppressedBuilds = recentBlasAllocatorState_[kBLASAllocatorSuppressedBuildsWord];
+        result.blasFailedAllocations = recentBlasAllocatorState_[kBLASAllocatorFailedAllocationsWord];
+        result.blasPersistentBytes = blasStorageBuffer_->desc().size;
+        result.blasStagingBytes = gpuBlasAllocator_->staging ? gpuBlasAllocator_->staging->desc().size : 0;
+        result.blasMoveScratchBytes = gpuBlasAllocator_->scratch ? gpuBlasAllocator_->scratch->desc().size : 0;
+        result.blasRelocationStagingBytes = gpuBlasAllocator_->relocationStaging ? gpuBlasAllocator_->relocationStaging->desc().size : 0;
+    }
     result.blasPublicationInvalidated = recentBlasHeader_.publicationInvalidated;
     result.blasRepresentationsEnabled = blasRepresentationsEnabled_;
     result.blasRepresentationCount = recentBlasHeader_.representationCount;

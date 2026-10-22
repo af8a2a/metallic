@@ -16,6 +16,7 @@ class RayQualityCapture final : public render::IRenderDebugObserver {
 public:
     using Json = nlohmann::json;
     bool capture = false;
+    bool captureReflections = false;
     void compiled(Json) override {}
     void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
     {
@@ -28,7 +29,8 @@ public:
         using namespace render;
         if (!capture || checkpoint != "AfterPass") { return; }
         for (const auto& resource : resources) {
-            if (resource.id != "Shadows.shadow" && resource.id != "Deferred.color" && resource.id != "FinalBlit.color") { continue; }
+            if (resource.id != "Shadows.shadow" && resource.id != "Deferred.color" && resource.id != "FinalBlit.color" &&
+                !(captureReflections && resource.id == "ReflectionQuality.color")) { continue; }
             if (!resource.texture || copies_.contains(resource.id)) { continue; }
             const auto& desc = resource.texture->desc();
             const auto info = formatInfo(desc.format);
@@ -69,6 +71,9 @@ public:
     {
         if (!copies_.contains("Shadows.shadow") || !copies_.contains("Deferred.color") || !copies_.contains("FinalBlit.color")) {
             throw std::runtime_error("Quality capture is missing a required scene output");
+        }
+        if (captureReflections && !copies_.contains("ReflectionQuality.color")) {
+            throw std::runtime_error("Quality capture is missing the path-traced reflection diagnostic");
         }
         std::filesystem::create_directories(directory);
         Json report = Json::array();

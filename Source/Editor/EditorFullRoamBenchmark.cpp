@@ -99,6 +99,14 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"blasStorageRejected",s.blasStorageRejected},
         {"blasArenaUsedBytes",s.blasArenaUsedBytes},
         {"blasArenaRepack",s.blasArenaRepack},
+        {"blasGPUAllocatorEnabled",s.blasGPUAllocatorEnabled},
+        {"blasEncodedBytes",s.blasEncodedBytes},{"blasAllocatedBytes",s.blasAllocatedBytes},
+        {"blasFreeBytes",s.blasFreeBytes},{"blasLargestFreeBytes",s.blasLargestFreeBytes},
+        {"blasRelocatedCount",s.blasRelocatedCount},{"blasRelocatedBytes",s.blasRelocatedBytes},
+        {"blasSuppressedBuilds",s.blasSuppressedBuilds},{"blasFailedAllocations",s.blasFailedAllocations},
+        {"blasPersistentBytes",s.blasPersistentBytes},{"blasStagingBytes",s.blasStagingBytes},
+        {"blasMoveScratchBytes",s.blasMoveScratchBytes},
+        {"blasRelocationStagingBytes",s.blasRelocationStagingBytes},
         {"blasPublicationInvalidated",s.blasPublicationInvalidated},
         {"blasSemanticChangeCount",s.blasSemanticChangeCount},
         {"blasRepresentationsEnabled",s.blasRepresentationsEnabled},
@@ -226,8 +234,12 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["focusProfiler"] = focusProfiler;
         const uint32_t workloadEvery = config.value("workloadEvery", 0u);
         const bool captureQuality = config.value("captureQuality", false);
+        const bool captureReflections = config.value("captureReflections", false);
+        if (captureReflections && !captureQuality) { throw std::runtime_error("captureReflections requires captureQuality"); }
         if (captureQuality && workloadEvery) { throw std::runtime_error("Quality and workload captures require separate runs"); }
         report["captureQuality"] = captureQuality;
+        report["captureReflections"] = captureReflections;
+        qualityCapture.captureReflections = captureReflections;
         workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
@@ -346,6 +358,38 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             applyViewportCameraProperties(view, nullptr);
             viewportView_.setTemporalJitter(jitter);
             renderGraph_.setNodeRuntimeProperty(vbuffer->id, "temporalJitter", jitter);
+        }
+        if (captureReflections) {
+            // Reuse the raster producer's scene binding, stream budgets and
+            // global camera. An asset-bound sample must not accidentally trace
+            // a different editor document through a new World binding.
+            Json properties = vbuffer->properties;
+            properties.update(vbuffer->runtimeProperties, true);
+            properties["viewBinding"] = "global";
+            properties["bsdf"] = "openpbr";
+            properties["cacheMode"] = "off";
+            properties["samples"] = 8;
+            properties["maxDepth"] = 3;
+            properties["accumulate"] = false;
+            properties["outputLinear"] = true;
+            properties["exportDenoiserGuides"] = false;
+            properties["diagnosticSampleFrame"] = 0u;
+            properties["diagnosticUseVisibilityStream"] = true;
+            properties["stochasticTextureFiltering"] = false;
+            if (!renderGraph_.addNode("ScenePathTracePass", "ReflectionQuality", properties) ||
+                !renderGraph_.addEdge("VBuffer.rasterInfo", "ReflectionQuality.rasterInfo") ||
+                !renderGraph_.addEdge("VBuffer.accelerationStructure", "ReflectionQuality.accelerationStructure") ||
+                !renderGraph_.markOutput("FinalBlit.color") || !renderGraph_.markOutput("ReflectionQuality.color")) {
+                throw std::runtime_error("Failed to add path-traced reflection quality diagnostic");
+            }
+            // addNode can reallocate the graph's node storage.
+            vbuffer = renderGraph_.findNode("VBuffer");
+            deferred = renderGraph_.findNode("Deferred");
+            dlss = renderGraph_.findNode("DLSSSR");
+            report["reflectionDiagnostic"] = {{"pass", "ReflectionQuality"}, {"properties", properties},
+                {"scope", "Three-vertex OpenPBR path tracing of VBuffer's published CLAS TLAS including material reflections; not isolated specular radiance"},
+                {"geometrySource", "VBuffer.accelerationStructure and its published visibility stream; no separate streaming session"},
+                {"performanceComparable", false}};
         }
         const uint32_t routeFrames = config.value("routeFrames", 0u);
         if (routeFrames && (routeFrames < 8 || routeFrames > 10000)) { throw std::runtime_error("routeFrames must be 0 or [8,10000]"); }
@@ -594,7 +638,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             drain();
             report["qualityCamera"] = viewportCameraProperties();
             report["qualityImages"] = qualityCapture.exportAfterDrain(output / "Quality");
-            report["qualityScope"] = "One untimed final-route frame; shadow mask, deferred lighting and final output. This scene has no secondary reflection pass.";
+            report["qualityScope"] = captureReflections
+                ? "One untimed final-route frame; shadow mask, deferred lighting, final output and fixed-sample OpenPBR path tracing including reflections. The diagnostic graph is excluded from performance comparisons."
+                : "One untimed final-route frame; shadow mask, deferred lighting and final output. This scene has no secondary reflection pass.";
         }
         report["status"]="capture_complete";
         passed=true;

@@ -12,6 +12,7 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/MeshletLOD.h"
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
+#include "Runtime/Render/Streamer/MeshletStreamBLASAllocator.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/Streamer/MeshletStreamPrefetch.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -406,6 +407,7 @@ struct MeshletStreamGPUParams {
     uint32_t enableBlasRepresentations = 0;
     uint32_t rtRepresentationCacheBuffer = UINT32_MAX;
     uint32_t rtRepresentationCachePadding[3] = {};
+    uint32_t enableBlasGPUAllocator = 0;
 };
 
 struct MeshletStreamGPURasterBindings {
@@ -451,6 +453,7 @@ struct MeshletStreamDeferredGPUResourcesView {
     Buffer* visibleClusterBuffer = nullptr;
     uint32_t visibleRecordCapacity = 0;
     RayTracingAccelerationStructure* accelerationStructure = nullptr;
+    Buffer* shadingChangeBuffer = nullptr;
 
     bool valid() const
     {
@@ -518,7 +521,7 @@ static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGPUParams) == 688);
+static_assert(sizeof(MeshletStreamGPUParams) == 692);
 static_assert(sizeof(MeshletStreamGPURTRepresentationGroup) == 16);
 static_assert(sizeof(MeshletStreamGPURTRepresentationLODMetadata) == 32);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
@@ -561,6 +564,10 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxClasBuildClusters = 0;
     uint32_t maxBlasClusterReferences = 0;
     uint64_t maxBlasBytes = 512ull * 1024ull * 1024ull;
+    // Separate hard cap for dirty implicit build output. Both arenas are charged
+    // to device memory; this cap does not reduce the selected RT cut on failure.
+    uint64_t maxBlasStagingBytes = 512ull * 1024ull * 1024ull;
+    bool enableBlasGPUAllocator = true;
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBLASBuilds;
     bool enableBlasRepresentations = true;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
@@ -753,6 +760,7 @@ private:
     class TraversalPass;
     class ActiveBuildPass;
     class BLASInputPass;
+    class GPUBLASAllocator;
     class GPUFallbackPass;
     class TLASInputPass;
 
@@ -769,7 +777,9 @@ private:
     Result<> dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
     Result<> buildActiveTable(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
     Result<> buildBlasInputs(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
-    Result<> cmdBuildBlas(CommandBuffer& commandBuffer);
+    Result<> cmdBuildBlas(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
+    Result<> dispatchBlasPhase(CommandBuffer& commandBuffer, uint32_t phase, uint32_t threadCount,
+        bool publicationWrapped = false);
     Result<> cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
     Result<> buildTlasInstances(CommandBuffer& commandBuffer);
     Result<> cmdBuildTlas(CommandBuffer& commandBuffer);
@@ -860,6 +870,7 @@ private:
     std::unique_ptr<TraversalPass> traversalPass_;
     std::unique_ptr<ActiveBuildPass> activeBuildPass_;
     std::unique_ptr<BLASInputPass> blasInputPass_;
+    std::unique_ptr<GPUBLASAllocator> gpuBlasAllocator_;
     std::unique_ptr<TLASInputPass> tlasInputPass_;
     std::unique_ptr<MeshletStreamCLASPool> clasPool_;
     std::unordered_map<uint32_t, MeshletStreamCLASPagePlan> pendingClasPlans_;
@@ -873,6 +884,7 @@ private:
     uint64_t maxDevicePageBytes_ = 0;
     bool clusterRtxEnabled_ = false;
     MeshletStreamGPUBLASHeader recentBlasHeader_;
+    std::array<uint32_t, kBLASAllocatorStateWords> recentBlasAllocatorState_{};
     ResourceLease pageHandle_;
     ResourceLease activeGroupHandle_;
     ResourceLease activeHeaderHandle_;

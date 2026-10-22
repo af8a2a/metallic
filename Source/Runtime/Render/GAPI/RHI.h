@@ -811,22 +811,29 @@ struct ClusterAccelerationStructureTriangleBuildDesc {
     BufferSlice destinationSizeBuffer;
 };
 
+enum class ClusterAccelerationStructureObjectType : uint8_t {
+    TriangleCluster,
+    BottomLevel,
+};
+
 // The source slice size is the encoded object size; destination must cover it.
 struct ClusterAccelerationStructureMoveInfo {
     BufferSlice sourceBuffer;
     BufferSlice destinationBuffer;
 };
 
-// Non-overlapping copies of triangle CLAS, with driver relocation of their contents.
+// Non-overlapping copies, with driver relocation of the objects' contents.
 struct ClusterAccelerationStructureMoveDesc {
     std::span<const ClusterAccelerationStructureMoveInfo> objects;
     BufferSlice sourceAddressBuffer;
     BufferSlice destinationAddressBuffer;
     BufferSlice scratchBuffer;
+    ClusterAccelerationStructureObjectType objectType = ClusterAccelerationStructureObjectType::TriangleCluster;
 };
 
-// GPU-produced, non-overlapping triangle CLAS moves. The producer guarantees
-// that every address and encoded object fits the retained storage slices.
+// GPU-produced, non-overlapping moves. The producer guarantees that every
+// address has the object type's alignment and every encoded object fits the
+// retained storage slices. Source objects remain valid after the copy.
 struct ClusterAccelerationStructureIndirectMoveDesc {
     uint32_t maxObjectCount = 0;
     uint64_t maxMovedBytes = 0;
@@ -836,6 +843,11 @@ struct ClusterAccelerationStructureIndirectMoveDesc {
     BufferSlice scratchBuffer;
     BufferSlice sourceStorageBuffer;
     BufferSlice destinationStorageBuffer;
+    ClusterAccelerationStructureObjectType objectType = ClusterAccelerationStructureObjectType::TriangleCluster;
+    // The retained storage windows may overlap, but the GPU producer guarantees
+    // every destination object is disjoint from every source and destination
+    // object in this command. Vulkan noMoveOverlap remains true.
+    bool allowAliasedStorage = false;
 };
 
 enum class RayTracingAccelerationStructureType : uint8_t {
@@ -2024,7 +2036,9 @@ class Device {
     [[nodiscard]] Result<ClusterAccelerationStructureProperties> queryClusterAccelerationStructureProperties() const;
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureTriangleBuildSizes(const ClusterAccelerationStructureTriangleBuildSizesDesc& desc) const;
     // MOVE_OBJECTS reports its required scratch bytes in updateScratchSize.
-    [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes) const;
+    [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureMoveSizes(
+        uint32_t maxCount, uint64_t maxBytes,
+        ClusterAccelerationStructureObjectType objectType = ClusterAccelerationStructureObjectType::TriangleCluster) const;
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureBottomLevelBuildSizes(const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const;
     [[nodiscard]] Result<PartitionedAccelerationStructureBuildSizes> queryPartitionedAccelerationStructureBuildSizes(const PartitionedAccelerationStructureBuildInputs& inputs) const;
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createPartitionedAccelerationStructureInstanceBuffer(std::span<const PartitionedAccelerationStructureInstanceDesc> instances);

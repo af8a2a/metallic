@@ -372,6 +372,7 @@ public struct GPUDrivenStreamAssetInstanceBLAS
     public uint allocationPrefix;
     public uint packedPrefix;
     public uint buildPrefix;
+    // 0: no cut keys; 1: live BLAS; 2: examined cut rejected by exact storage.
     public uint cachedValid;
 };
 
@@ -535,6 +536,7 @@ public struct GPUDrivenStreamAssetParams
     public uint rtRepresentationCachePadding0;
     public uint rtRepresentationCachePadding1;
     public uint rtRepresentationCachePadding2;
+    public uint enableBlasGPUAllocator;
 };
 
 public struct GPUDrivenStreamAssetVertexOutput
@@ -3401,7 +3403,7 @@ bool streamBlasDynamicReady(GPUDrivenStreamAssetInstanceBLAS blas)
         (blas.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
         blas.selectedClusterCount != 0u &&
         blas.insertedClusterCount == blas.selectedClusterCount &&
-        blas.cachedValid != 0u && blas.storageCapacity != 0u;
+        blas.cachedValid == 1u && blas.storageCapacity != 0u;
 }
 
 uint2 streamPublishedBlasAddress(GPUDrivenStreamAssetInstanceBLAS blas,
@@ -3727,7 +3729,7 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
                 if (mode != 2u || (state[base + 11u] & kRTCachedLevelMask) == 0u) { continue; }
                 StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> representations = resolveUniform(
                     ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(params.rtRepresentationBuffer));
-                if (representations[item * 3u + 2u].cachedValid == 0u) { continue; }
+                if (representations[item * 3u + 2u].cachedValid != 1u) { continue; }
                 uint cachedLevel = (state[base + 11u] & kRTCachedLevelMask) - 1u;
                 bool unchanged = cutCache[cacheBase + 4u] == push.pageTableMutationSerial &&
                     cutCache[cacheBase + 5u] == push.clasPublicationRevision &&
@@ -3840,7 +3842,10 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             if (lane == 0u && totals.x != 0u) { InterlockedAdd(header[0].representationCount, 1u); }
             total += totals.x;
             references += totals.y;
-            uint bytes = totals.y != 0u ? blasInstanceStorageBytes(totals.y, params) : 0u;
+            // The persistent GPU allocator admits using actual encoded bytes.
+            // Its idle-cache eviction policy must not charge power-of-two bounds.
+            uint bytes = totals.y != 0u && params.enableBlasGPUAllocator == 0u
+                ? blasInstanceStorageBytes(totals.y, params) : 0u;
             storage += min(bytes, 0xffffffffu - storage);
             if (mode == 2u) { cachedReferences = totals.y; cachedStorage = bytes; }
         }
@@ -3894,8 +3899,14 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             prefix += min(count, 0xffffffffu - prefix);
         }
         if (push.activeBuildPhase == 26u) {
+            // Representation planning precedes the BLAS header reset. A real
+            // allocation rejection from the last submitted frame may evict
+            // unreferenced discrete caches without predicting bucket sizes.
+            bool actualStoragePressure = params.enableBlasGPUAllocator != 0u &&
+                (push.traversalPhase & 1u) == 0u && header[0].storageRejected != 0u;
             bool evictIdle = prefix.x > params.blasClusterReferenceCapacity || prefix.y > params.blasStorageBytes ||
-                prefix.z > params.rtRepresentationGroupCapacity || header[0].representationCount > params.blasBuildCapacity;
+                prefix.z > params.rtRepresentationGroupCapacity || header[0].representationCount > params.blasBuildCapacity ||
+                actualStoragePressure;
             header[0].representationPadding = evictIdle ? 1u : 0u;
         }
         return;

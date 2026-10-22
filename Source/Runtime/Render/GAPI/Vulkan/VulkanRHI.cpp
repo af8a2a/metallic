@@ -602,6 +602,13 @@ VkGeometryInstanceFlagsKHR toVkInstanceFlags(RayTracingInstanceFlags flags)
 }
 
 #ifdef VK_NV_cluster_acceleration_structure
+VkClusterAccelerationStructureTypeNV toVkClusterObjectType(ClusterAccelerationStructureObjectType type)
+{
+    return type == ClusterAccelerationStructureObjectType::BottomLevel
+        ? VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_CLUSTERS_BOTTOM_LEVEL_NV
+        : VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV;
+}
+
 VkClusterAccelerationStructureIndexFormatFlagBitsNV toVkClusterIndexFormat(
     ClusterAccelerationStructureIndexFormat format)
 {
@@ -6178,7 +6185,8 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
 
 Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureMoveSizes(
     uint32_t maxCount,
-    uint64_t maxBytes) const
+    uint64_t maxBytes,
+    ClusterAccelerationStructureObjectType objectType) const
 {
     ClusterAccelerationStructureBuildSizes buildSizes{};
 #ifndef VK_NV_cluster_acceleration_structure
@@ -6189,7 +6197,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 
     VkClusterAccelerationStructureMoveObjectsInputNV move{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV,
-        .type = VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV,
+        .type = toVkClusterObjectType(objectType),
         .noMoveOverlap = VK_TRUE, .maxMovedBytes = maxBytes};
     VkClusterAccelerationStructureInputInfoNV input{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
@@ -6225,10 +6233,12 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     std::vector<uint64_t> sources(desc.objects.size()), destinations(desc.objects.size());
     uint64_t totalBytes = 0;
     const auto& limits = impl_->device->physicalProperties.cluster;
+    const uint64_t storageAlignment = desc.objectType == ClusterAccelerationStructureObjectType::BottomLevel
+        ? limits.clusterBottomLevelByteAlignment : limits.clusterByteAlignment;
     for (uint32_t i = 0; i < desc.objects.size(); ++i) {
         const auto& item = desc.objects[i];
-        if (!validCommandSlice(*impl_, item.sourceBuffer, BufferUsageBits::AccelerationStructureStorage, 1, limits.clusterByteAlignment) ||
-            !validCommandSlice(*impl_, item.destinationBuffer, BufferUsageBits::AccelerationStructureStorage, item.sourceBuffer.size(), limits.clusterByteAlignment) ||
+        if (!validCommandSlice(*impl_, item.sourceBuffer, BufferUsageBits::AccelerationStructureStorage, 1, storageAlignment) ||
+            !validCommandSlice(*impl_, item.destinationBuffer, BufferUsageBits::AccelerationStructureStorage, item.sourceBuffer.size(), storageAlignment) ||
             totalBytes > UINT64_MAX - item.sourceBuffer.size()) {
             return makeError(Error::InvalidArgument);
         }
@@ -6254,7 +6264,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     }
     VkClusterAccelerationStructureMoveObjectsInputNV move{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV,
-        .type = VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV,
+        .type = toVkClusterObjectType(desc.objectType),
         .noMoveOverlap = VK_TRUE, .maxMovedBytes = totalBytes};
     VkClusterAccelerationStructureInputInfoNV input{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
@@ -6339,18 +6349,21 @@ Result<> CommandBuffer::moveClusterAccelerationStructuresIndirect(const ClusterA
     if (!impl_->device->capabilities.clusterAccelerationStructure) { return makeError(Error::Unsupported); }
     const uint64_t arrayBytes = uint64_t(desc.maxObjectCount) * sizeof(uint64_t);
     const auto& limits = impl_->device->physicalProperties.cluster;
+    const uint64_t storageAlignment = desc.objectType == ClusterAccelerationStructureObjectType::BottomLevel
+        ? limits.clusterBottomLevelByteAlignment : limits.clusterByteAlignment;
     if (!desc.maxObjectCount || !desc.maxMovedBytes ||
         !validCommandSlice(*impl_, desc.sourceAddressBuffer, BufferUsageBits::AccelerationStructureBuildInput, arrayBytes, 8) ||
         !validCommandSlice(*impl_, desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage, arrayBytes, 8) ||
         !validCommandSlice(*impl_, desc.objectCountBuffer, BufferUsageBits::AccelerationStructureBuildInput, 4, 4) ||
-        !validCommandSlice(*impl_, desc.sourceStorageBuffer, BufferUsageBits::AccelerationStructureStorage, 1, limits.clusterByteAlignment) ||
-        !validCommandSlice(*impl_, desc.destinationStorageBuffer, BufferUsageBits::AccelerationStructureStorage, 1, limits.clusterByteAlignment) ||
-        detail::BufferAddressCommandAccess::overlap(desc.sourceStorageBuffer, desc.destinationStorageBuffer) ||
+        !validCommandSlice(*impl_, desc.sourceStorageBuffer, BufferUsageBits::AccelerationStructureStorage, 1, storageAlignment) ||
+        !validCommandSlice(*impl_, desc.destinationStorageBuffer, BufferUsageBits::AccelerationStructureStorage, 1, storageAlignment) ||
+        (!desc.allowAliasedStorage &&
+            detail::BufferAddressCommandAccess::overlap(desc.sourceStorageBuffer, desc.destinationStorageBuffer)) ||
         detail::BufferAddressCommandAccess::overlap(desc.sourceAddressBuffer, desc.destinationAddressBuffer)) {
         return makeError(Error::InvalidArgument);
     }
     VkClusterAccelerationStructureMoveObjectsInputNV move{.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV,
-        .type = VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV, .noMoveOverlap = VK_TRUE, .maxMovedBytes = desc.maxMovedBytes};
+        .type = toVkClusterObjectType(desc.objectType), .noMoveOverlap = VK_TRUE, .maxMovedBytes = desc.maxMovedBytes};
     VkClusterAccelerationStructureInputInfoNV input{.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
         .maxAccelerationStructureCount = desc.maxObjectCount, .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV,
         .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV, .opInput = {.pMoveObjects = &move}};

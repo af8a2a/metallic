@@ -1,0 +1,55 @@
+#pragma once
+
+#include <cstdint>
+
+namespace metallic::render
+{
+// Raw device-address ABI of StreamBLASAllocator.slang. All configuration is
+// immutable for the lifetime of an arena; only submitted GPU work mutates it.
+// Phases 5/1/6 gather releases, retire them and prepare dirty builds; phase 2
+// allocates/plans moves. Phase 8 retires staged move sources and plans their
+// return; phase 3 publishes after that return. Phases 9/4 measure the legacy path.
+// nodeCapacity >= 4 * ownerCount + 1 covers live sources and pending targets.
+struct MeshletStreamBLASAllocatorParameters
+{
+    uint64_t state, gaps, allocations, owners, header, buildInfos;
+    uint64_t buildOwners, sizes, sourceAddresses, moveSources, moveDestinations, moveCounts;
+    uint64_t clusterReferenceAddress, arena;
+    uint32_t ownerCount, alignment, storageBytes, relocateBudget;
+    uint32_t nodeCapacity, relocateScanCount, reuseEnable, reserved;
+    uint64_t relocationArena;
+};
+static_assert(sizeof(MeshletStreamBLASAllocatorParameters) == 152);
+
+struct MeshletStreamBLASAllocatorGap
+{
+    uint32_t offset, size, previous, next;
+    uint32_t binPrevious, binNext, free, unusedNext;
+};
+struct MeshletStreamBLASAllocatorAllocation
+{
+    uint32_t node, encodedBytes, rejectedEpoch, oldNode;
+    uint32_t pendingNode, pendingOffset, pendingBytes, status;
+};
+static_assert(sizeof(MeshletStreamBLASAllocatorGap) == 32);
+static_assert(sizeof(MeshletStreamBLASAllocatorAllocation) == 32);
+
+struct MeshletStreamBLASAllocatorPush
+{
+    uint64_t parameters;
+    uint32_t phase, reserved;
+};
+static_assert(sizeof(MeshletStreamBLASAllocatorPush) == 16);
+
+inline constexpr uint32_t kBLASAllocatorStateWords = 112;
+inline constexpr uint32_t kBLASAllocatorEpochWord = 99;
+inline constexpr uint32_t kBLASAllocatorEncodedBytesWord = 102;
+inline constexpr uint32_t kBLASAllocatorAllocatedBytesWord = 103;
+inline constexpr uint32_t kBLASAllocatorLargestFreeWord = 104;
+inline constexpr uint32_t kBLASAllocatorFreeBytesWord = 105;
+inline constexpr uint32_t kBLASAllocatorSuppressedBuildsWord = 106;
+inline constexpr uint32_t kBLASAllocatorRelocatedCountWord = 107;
+inline constexpr uint32_t kBLASAllocatorRelocatedBytesWord = 108;
+inline constexpr uint32_t kBLASAllocatorFailedAllocationsWord = 109;
+inline constexpr uint32_t kBLASAllocatorPressureTargetWord = 110;
+} // namespace metallic::render

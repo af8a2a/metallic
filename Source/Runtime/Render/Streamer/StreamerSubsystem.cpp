@@ -380,8 +380,13 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             else if (point == "BeforeBlasCompare") { phaseProfile.next("BLAS cut compare"); }
             else if (point == "BeforeBlasCount") { phaseProfile.next("BLAS count"); }
             else if (point == "BeforeBlasSetup") { phaseProfile.next("BLAS setup"); }
+            else if (point == "BeforeBlasAllocate") { phaseProfile.next("BLAS prepare allocation"); }
             else if (point == "BeforeBlasInsert") { phaseProfile.next("BLAS insert"); }
             else if (point == "BeforeBlasBuild") { phaseProfile.next("BLAS build"); }
+            else if (point == "BeforeBlasGPUAllocate") { phaseProfile.next("BLAS GPU allocate"); }
+            else if (point == "BeforeBlasMove") { phaseProfile.next("BLAS move"); }
+            else if (point == "BeforeBlasPublish") { phaseProfile.next("BLAS publish"); }
+            else if (point == "BeforeBlasStatistics") { phaseProfile.next("BLAS statistics"); }
             else if (point == "BeforeTlasInput") { phaseProfile.next("TLAS input"); }
             else if (point == "BeforeTlasBuild") { phaseProfile.next("TLAS build"); }
             else if (point == "AfterTlasBuild") { phaseProfile.end(); }
