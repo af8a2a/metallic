@@ -1780,6 +1780,14 @@ struct BufferImpl {
     void* mapped = nullptr;
     uint64_t allocationBytes = 0;
     bool deviceLocal = false;
+    struct SparseBlock { VmaAllocation allocation; uint64_t bytes; bool deviceLocal; };
+    std::mutex sparseMutex;
+    VkMemoryRequirements sparseRequirements{};
+    std::vector<SparseBlock> sparseBlocks;
+    std::unique_ptr<Semaphore> sparseTimeline;
+    uint64_t sparseCommitted = 0;
+    uint64_t sparseBindValue = 0;
+    bool sparseVirtualReservation = false;
     ~BufferImpl();
 };
 
@@ -1810,8 +1818,10 @@ struct BufferAddressCommandAccess {
 private:
     static VkAddressCommandFlagsKHR flags(const BufferImpl* allocation)
     {
-        return addressCommandFlags(allocation ? allocation->desc.usage : BufferUsageBits::None,
+        auto result = addressCommandFlags(allocation ? allocation->desc.usage : BufferUsageBits::None,
             allocation && allocation->aliasAllocation);
+        if (allocation && allocation->sparseTimeline) { result &= ~VK_ADDRESS_COMMAND_FULLY_BOUND_BIT_KHR; }
+        return result;
     }
 };
 
@@ -2088,6 +2098,12 @@ struct DeviceImpl {
         VmaAllocationCreateInfo& allocationInfo,
         MemoryBudgetDomain domain);
     void trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add);
+    struct PendingSparseBind { std::shared_ptr<BufferImpl> buffer; uint64_t value; };
+    std::mutex sparseBindsMutex;
+    std::vector<PendingSparseBind> pendingSparseBinds;
+    uint64_t sparseVirtualBytes = 0; // Protected by memoryBudgetState->mutex; not physical commitment.
+    void collectSparseBinds();
+    Result<> bindSparse(const std::shared_ptr<BufferImpl>& buffer, uint64_t bytes);
     DeviceCapabilities capabilities;
     vulkan::VulkanDeviceCapabilities vulkanCapabilities;
     PipelineCacheFileIdentity pipelineCacheFileIdentity;
@@ -2232,6 +2248,76 @@ Result<> DeviceImpl::prepareBufferAllocationLocked(
     return {};
 }
 
+void DeviceImpl::collectSparseBinds()
+{
+    std::lock_guard lock(sparseBindsMutex);
+    std::erase_if(pendingSparseBinds, [&](const PendingSparseBind& pending) {
+        uint64_t completed = 0;
+        return functions.vkGetSemaphoreCounterValue(device, pending.buffer->sparseTimeline->impl_->semaphore,
+                   &completed) == VK_SUCCESS && completed >= pending.value;
+    });
+}
+
+Result<> DeviceImpl::bindSparse(const std::shared_ptr<BufferImpl>& buffer, uint64_t bytes)
+{
+    // Caller holds sparseMutex. Allocate all ownership records before queue acceptance.
+    if (bytes <= buffer->sparseCommitted) { return {}; }
+    buffer->sparseBlocks.reserve(buffer->sparseBlocks.size() + 1);
+    std::lock_guard pendingLock(sparseBindsMutex);
+    pendingSparseBinds.reserve(pendingSparseBinds.size() + 1);
+    auto* queue = queues.front()->impl_.get();
+    auto requirements = buffer->sparseRequirements;
+    requirements.size = bytes - buffer->sparseCommitted;
+    VmaAllocationCreateInfo allocationInfo{.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+        .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VmaAllocationInfo allocated{};
+    {
+        std::lock_guard lock(memoryBudgetState->mutex);
+        uint32_t memoryType = 0;
+        auto result = resultFromVk(vmaFindMemoryTypeIndex(allocator, requirements.memoryTypeBits, &allocationInfo, &memoryType));
+        if (!result) { return result; }
+        if (!admitMemoryLocked(memoryType, requirements.size, buffer->desc.memoryDomain)) { return makeError(Error::OutOfMemory); }
+        allocationInfo.memoryTypeBits = 1u << memoryType;
+        if (memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
+        result = resultFromVk(vmaAllocateMemory(allocator, &requirements, &allocationInfo, &allocation, &allocated));
+        if (!result) { return result; }
+        trackMemoryLocked(buffer->desc.memoryDomain, allocated.size, true, true);
+    }
+    const uint64_t previousValue = buffer->sparseBindValue;
+    const uint64_t value = previousValue + 1;
+    const VkSemaphore semaphore = buffer->sparseTimeline->impl_->semaphore;
+    const VkSparseMemoryBind bind{.resourceOffset = buffer->sparseCommitted, .size = requirements.size,
+        .memory = allocated.deviceMemory, .memoryOffset = allocated.offset};
+    const VkSparseBufferMemoryBindInfo bufferBind{.buffer = buffer->buffer, .bindCount = 1, .pBinds = &bind};
+    const VkTimelineSemaphoreSubmitInfo timeline{.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .waitSemaphoreValueCount = previousValue ? 1u : 0u, .pWaitSemaphoreValues = &previousValue,
+        .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &value};
+    const VkBindSparseInfo info{.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .pNext = &timeline,
+        .waitSemaphoreCount = previousValue ? 1u : 0u, .pWaitSemaphores = &semaphore,
+        .bufferBindCount = 1, .pBufferBinds = &bufferBind,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = &semaphore};
+    VkResult result;
+    {
+        std::lock_guard lock(*queue->nativeMutex);
+        result = functions.vkQueueBindSparse(queue->queue, 1, &info, VK_NULL_HANDLE);
+    }
+    if (result != VK_SUCCESS) {
+        std::lock_guard lock(memoryBudgetState->mutex);
+        vmaFreeMemory(allocator, allocation);
+        trackMemoryLocked(buffer->desc.memoryDomain, allocated.size, true, false);
+        return resultFromVk(result);
+    }
+    buffer->sparseBlocks.push_back({allocation, allocated.size, true});
+    buffer->sparseCommitted = bytes;
+    buffer->sparseBindValue = value;
+    buffer->allocationBytes += allocated.size;
+    buffer->memoryInfo.sizeBytes = buffer->allocationBytes;
+    buffer->memoryInfo.backingSizeBytes = buffer->allocationBytes;
+    pendingSparseBinds.push_back({buffer, value});
+    return {};
+}
+
 // Keep native ownership in Impl so unique_ptr replacement and wrapper
 // destruction perform the same cleanup.
 FenceImpl::~FenceImpl()
@@ -2311,6 +2397,19 @@ BufferImpl::~BufferImpl()
 {
     if (!device || buffer == VK_NULL_HANDLE) { return; }
     vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_BUFFER, uint64_t(buffer));
+    if (sparseVirtualReservation) {
+        std::lock_guard lock(device->memoryBudgetState->mutex);
+        device->sparseVirtualBytes -= desc.size;
+    }
+    if (sparseTimeline) {
+        device->functions.vkDestroyBuffer(device->device, buffer, nullptr);
+        std::lock_guard lock(device->memoryBudgetState->mutex);
+        for (const auto& block : sparseBlocks) {
+            vmaFreeMemory(device->allocator, block.allocation);
+            device->trackMemoryLocked(desc.memoryDomain, block.bytes, block.deviceLocal, false);
+        }
+        return;
+    }
     // Alias members and temporary unbound buffers own only their native handle.
     // The last retained member releases and accounts for the backing allocation.
     if (aliasAllocation || allocation == VK_NULL_HANDLE) {
@@ -2411,6 +2510,8 @@ DeviceImpl::~DeviceImpl()
         vulkan::shutdownStreamline();
         streamlineInitialized = false;
     }
+
+    pendingSparseBinds.clear();
 
     sharedStates.clear();
 
@@ -3172,6 +3273,7 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
+    impl_->device->collectSparseBinds();
     if ((desc.waitSemaphores.size() > UINT32_MAX) ||
         (desc.waitSwapchainSemaphores.size() > UINT32_MAX) ||
         (desc.commandBuffers.size() > UINT32_MAX) ||
@@ -3595,12 +3697,26 @@ const BufferDesc& Buffer::desc() const
 
 ResourceMemoryInfo Buffer::memoryInfo() const
 {
-    return impl_ ? impl_->memoryInfo : ResourceMemoryInfo{};
+    if (!impl_) { return {}; }
+    std::lock_guard lock(impl_->sparseMutex);
+    return impl_->memoryInfo;
 }
 
 uint64_t Buffer::deviceAddress() const
 {
     return impl_ ? impl_->address : 0;
+}
+
+uint64_t Buffer::sparseCommittedBytes() const
+{
+    if (!impl_) { return 0; }
+    std::lock_guard lock(impl_->sparseMutex);
+    return impl_->sparseCommitted;
+}
+
+uint64_t Buffer::sparseBlockAlignment() const
+{
+    return impl_ ? impl_->sparseRequirements.alignment : 0;
 }
 
 Result<BufferSlice> Buffer::slice(BufferRange range) const
@@ -6190,6 +6306,83 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
 #endif
 }
 
+Result<> CommandBuffer::commitSparseBuffer(Buffer& buffer, uint64_t targetBytes)
+{
+    if (!validCommandRecording(impl_.get(), recording_) || !buffer.impl_ ||
+        buffer.impl_->device != impl_->device || !buffer.impl_->sparseTimeline || targetBytes > buffer.desc().size) {
+        return makeError(Error::InvalidArgument);
+    }
+    impl_->device->collectSparseBinds();
+    auto& allocation = *buffer.impl_;
+    std::lock_guard lock(allocation.sparseMutex);
+    const uint64_t alignment = allocation.sparseRequirements.alignment;
+    const uint64_t bytes = targetBytes + (alignment - targetBytes % alignment) % alignment;
+    auto result = retainResource(buffer.impl_);
+    if (!result) { return result; }
+    // Reserve the dependency before submitting a bind. On failure the existing
+    // completed/accepted value remains valid and cannot stall a later submit.
+    SemaphoreSubmitDesc wait{.semaphore = allocation.sparseTimeline.get(), .value = allocation.sparseBindValue};
+    result = addDependency({&wait, 1}, buffer.impl_);
+    if (!result) { return result; }
+    result = impl_->device->bindSparse(buffer.impl_, bytes);
+    if (!result) { return result; }
+    wait.value = allocation.sparseBindValue;
+    return addDependency({&wait, 1}, buffer.impl_);
+}
+
+Result<> CommandBuffer::moveClusterAccelerationStructuresIndirect(const ClusterAccelerationStructureIndirectMoveDesc& desc)
+{
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT)) { return makeError(Error::InvalidArgument); }
+#ifndef VK_NV_cluster_acceleration_structure
+    return makeError(Error::Unsupported);
+#else
+    if (!impl_->device->capabilities.clusterAccelerationStructure) { return makeError(Error::Unsupported); }
+    const uint64_t arrayBytes = uint64_t(desc.maxObjectCount) * sizeof(uint64_t);
+    const auto& limits = impl_->device->physicalProperties.cluster;
+    if (!desc.maxObjectCount || !desc.maxMovedBytes ||
+        !validCommandSlice(*impl_, desc.sourceAddressBuffer, BufferUsageBits::AccelerationStructureBuildInput, arrayBytes, 8) ||
+        !validCommandSlice(*impl_, desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage, arrayBytes, 8) ||
+        !validCommandSlice(*impl_, desc.objectCountBuffer, BufferUsageBits::AccelerationStructureBuildInput, 4, 4) ||
+        !validCommandSlice(*impl_, desc.sourceStorageBuffer, BufferUsageBits::AccelerationStructureStorage, 1, limits.clusterByteAlignment) ||
+        !validCommandSlice(*impl_, desc.destinationStorageBuffer, BufferUsageBits::AccelerationStructureStorage, 1, limits.clusterByteAlignment) ||
+        detail::BufferAddressCommandAccess::overlap(desc.sourceStorageBuffer, desc.destinationStorageBuffer) ||
+        detail::BufferAddressCommandAccess::overlap(desc.sourceAddressBuffer, desc.destinationAddressBuffer)) {
+        return makeError(Error::InvalidArgument);
+    }
+    VkClusterAccelerationStructureMoveObjectsInputNV move{.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV,
+        .type = VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV, .noMoveOverlap = VK_TRUE, .maxMovedBytes = desc.maxMovedBytes};
+    VkClusterAccelerationStructureInputInfoNV input{.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
+        .maxAccelerationStructureCount = desc.maxObjectCount, .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV,
+        .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV, .opInput = {.pMoveObjects = &move}};
+    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    impl_->device->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &input, &sizes);
+    auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, limits.clusterScratchByteAlignment, sizes.updateScratchSize);
+    if (!scratch) { return makeError(scratch.error()); }
+    auto result = retainBufferSlices(*this, {desc.sourceAddressBuffer, desc.destinationAddressBuffer, desc.objectCountBuffer,
+        desc.scratchBuffer, desc.sourceStorageBuffer, desc.destinationStorageBuffer});
+    if (!result) { return result; }
+    VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR};
+    const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
+    const VkClusterAccelerationStructureCommandsInfoNV commands{.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
+        .input = input, .scratchData = scratch->deviceAddress(),
+        .dstAddressesArray = {desc.destinationAddressBuffer.deviceAddress(), sizeof(uint64_t), arrayBytes},
+        .srcInfosArray = {desc.sourceAddressBuffer.deviceAddress(), sizeof(uint64_t), arrayBytes},
+        .srcInfosCount = desc.objectCountBuffer.deviceAddress()};
+    impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+    barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
+    return {};
+#endif
+}
+
 Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
     const ClusterAccelerationStructureBottomLevelBuildDesc& desc)
 {
@@ -7148,7 +7341,9 @@ Result<> Device::waitIdle()
         return makeError(Error::InvalidArgument);
     }
 
-    return resultFromVk(vulkan::waitInterop(*this));
+    auto result = resultFromVk(vulkan::waitInterop(*this));
+    if (result) { impl_->collectSparseBinds(); }
+    return result;
 }
 
 Result<std::unique_ptr<Swapchain>> Device::createSwapchain(const SwapchainDesc& desc)
@@ -7450,6 +7645,52 @@ BufferAllocationRequirements aliasBufferRequirements(const VkMemoryRequirements&
 Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& requestedDesc)
 {
     return createBuffer(impl_.get(), requestedDesc);
+}
+
+Result<std::unique_ptr<Buffer>> Device::createSparseBuffer(const BufferDesc& requestedDesc)
+{
+    auto desc = effectiveBufferDesc(requestedDesc);
+    if (!impl_ || !desc.size || desc.memoryLocation != MemoryLocation::Device ||
+        size_t(desc.memoryDomain) >= size_t(MemoryBudgetDomain::Count)) { return makeError(Error::InvalidArgument); }
+    if (!impl_->capabilities.sparseBuffers) { return makeError(Error::Unsupported); }
+    if (desc.size > impl_->physicalProperties.core.limits.sparseAddressSpaceSize ||
+        desc.size > impl_->physicalProperties.maintenance4.maxBufferSize) { return makeError(Error::InvalidArgument); }
+    const auto usage = nativeBufferUsage(*impl_, desc.usage);
+    if (!usage) { return makeError(usage.error()); }
+    if (desc.memoryDomain == MemoryBudgetDomain::Other && hasFlag(desc.usage, BufferUsageBits::AccelerationStructureStorage)) {
+        desc.memoryDomain = MemoryBudgetDomain::RayTracing;
+    }
+    const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+    const VkBufferUsageFlags2CreateInfo usage2{.sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO, .usage = *usage};
+    auto info = nativeBufferInfo(desc, usage2, families);
+    info.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
+    auto buffer = std::make_unique<detail::BufferImpl>();
+    buffer->device = impl_.get();
+    buffer->desc = desc;
+    Result<> result;
+    {
+        std::lock_guard lock(impl_->memoryBudgetState->mutex);
+        if (desc.size > impl_->physicalProperties.core.limits.sparseAddressSpaceSize - impl_->sparseVirtualBytes) {
+            return makeError(Error::OutOfMemory);
+        }
+        result = resultFromVk(impl_->functions.vkCreateBuffer(impl_->device, &info, nullptr, &buffer->buffer));
+        if (result) {
+            impl_->sparseVirtualBytes += desc.size;
+            buffer->sparseVirtualReservation = true;
+        }
+    }
+    if (!result) { return makeError(result.error()); }
+    impl_->functions.vkGetBufferMemoryRequirements(impl_->device, buffer->buffer, &buffer->sparseRequirements);
+    if (desc.size % buffer->sparseRequirements.alignment) { return makeError(Error::InvalidArgument); }
+    result = createSemaphore().transform([&](auto value) { buffer->sparseTimeline = std::move(value); });
+    if (!result) { return makeError(result.error()); }
+    if ((*usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+        const VkBufferDeviceAddressInfo address{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer->buffer};
+        buffer->address = impl_->functions.vkGetBufferDeviceAddress(impl_->device, &address);
+    }
+    // Multiple physical allocations back this virtual resource; no single memoryBlockId.
+    buffer->memoryInfo.backingAllocationId = buffer->memoryInfo.allocationId;
+    return std::unique_ptr<Buffer>(new Buffer(std::move(buffer)));
 }
 
 Result<std::unique_ptr<Buffer>> Device::createBuffer(detail::DeviceImpl* impl_, const BufferDesc& requestedDesc)
@@ -10522,6 +10763,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     deviceImpl->functions.vkGetDeviceQueue(deviceImpl->device, deviceImpl->graphicsFamily, 0, &graphicsQueue);
+    deviceImpl->capabilities.sparseBuffers &=
+        (selectedQueueFamilies[deviceImpl->graphicsFamily].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0;
     deviceImpl->addQueue(
         graphicsQueue,
         deviceImpl->graphicsFamily,

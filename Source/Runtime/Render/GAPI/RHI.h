@@ -502,6 +502,8 @@ struct DeviceDesc {
 };
 
 struct DeviceCapabilities {
+    // Append-only sparse buffers on the graphics queue; ordinary buffers remain available.
+    bool sparseBuffers = false;
     bool memoryDecompression = false;
     bool deviceGeneratedCommands = false;
     bool dynamicGeneratedPipelineLayout = false;
@@ -821,6 +823,19 @@ struct ClusterAccelerationStructureMoveDesc {
     BufferSlice sourceAddressBuffer;
     BufferSlice destinationAddressBuffer;
     BufferSlice scratchBuffer;
+};
+
+// GPU-produced, non-overlapping triangle CLAS moves. The producer guarantees
+// that every address and encoded object fits the retained storage slices.
+struct ClusterAccelerationStructureIndirectMoveDesc {
+    uint32_t maxObjectCount = 0;
+    uint64_t maxMovedBytes = 0;
+    BufferSlice sourceAddressBuffer;
+    BufferSlice destinationAddressBuffer;
+    BufferSlice objectCountBuffer;
+    BufferSlice scratchBuffer;
+    BufferSlice sourceStorageBuffer;
+    BufferSlice destinationStorageBuffer;
 };
 
 enum class RayTracingAccelerationStructureType : uint8_t {
@@ -1498,6 +1513,10 @@ class Buffer {
     const BufferDesc& desc() const;
     ResourceMemoryInfo memoryInfo() const;
     uint64_t deviceAddress() const;
+    // Zero for ordinary buffers. Committed bytes are accepted binds; commands
+    // must call commitSparseBuffer even when reusing the current committed range.
+    uint64_t sparseCommittedBytes() const;
+    uint64_t sparseBlockAlignment() const;
     [[nodiscard]] Result<BufferSlice> slice(BufferRange range = {}) const;
     // Retains this allocation, not the movable public wrapper. Device must outlive it.
     std::shared_ptr<void> retainAllocation() const;
@@ -1869,6 +1888,10 @@ class CommandBuffer {
     Result<> buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
     Result<> moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc);
+    Result<> moveClusterAccelerationStructuresIndirect(const ClusterAccelerationStructureIndirectMoveDesc& desc);
+    // Append physical backing and attach its GPU timeline dependency. Accepted
+    // bindings survive cancellation; no existing addresses or bindings change.
+    Result<> commitSparseBuffer(Buffer& buffer, uint64_t targetBytes);
     Result<> buildClusterAccelerationStructureBottomLevels(
         const ClusterAccelerationStructureBottomLevelBuildDesc& desc);
     Result<> buildPartitionedAccelerationStructure(
@@ -1957,6 +1980,8 @@ class Device {
     [[nodiscard]] Result<std::unique_ptr<Semaphore>> createSemaphore();
     [[nodiscard]] Result<std::unique_ptr<SwapchainSemaphore>> createSwapchainSemaphore();
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createBuffer(const BufferDesc& desc);
+    // Reserves virtual addresses without charging physical memory. Device-local only.
+    [[nodiscard]] Result<std::unique_ptr<Buffer>> createSparseBuffer(const BufferDesc& desc);
     [[nodiscard]] Result<uint64_t> bufferAllocationSize(const BufferDesc& desc);
     [[nodiscard]] Result<BufferAllocationRequirements> bufferAliasAllocationRequirements(const BufferDesc& desc);
     // Creates independent Device buffers at offset zero in one shared allocation,

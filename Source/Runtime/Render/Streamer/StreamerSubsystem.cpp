@@ -351,6 +351,7 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
     if (!prepared.geometry) { return {}; }
     auto traversalProfile = context.profileScope("Stream traversal");
     auto phaseProfile = context.profileScope("Traversal setup");
+    RenderGraphExecutionContext::ProfileScope clasProfile;
     const auto result = prepared.geometry->cmdPreTraversal(context.commandBuffer(), view,
         [&](std::string_view point) {
             if (point == "BeforeStreamUpdates") { phaseProfile.next("Page updates"); }
@@ -363,8 +364,15 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             else if (point == "AfterStreamPrefix") { phaseProfile.next("LOD emit"); }
             else if (point == "AfterStreamEmit") { phaseProfile.next("Prefetch"); }
             else if (point == "AfterStreamPrefetch") { phaseProfile.next("Traversal finalize"); }
-            else if (point == "BeforeStreamClasBuild") { phaseProfile.next("CLAS build"); }
-            else if (point == "AfterStreamClasBuild") { phaseProfile.end(); }
+            else if (point == "BeforeStreamClasBuild") {
+                phaseProfile.next("CLAS build");
+                clasProfile = context.profileScope("CLAS preparation");
+            }
+            else if (point == "BeforeCLASScratchBuild") { clasProfile.next("CLAS scratch build"); }
+            else if (point == "BeforeCLASAllocate") { clasProfile.next("CLAS allocate"); }
+            else if (point == "BeforeCLASMove") { clasProfile.next("CLAS move"); }
+            else if (point == "BeforeCLASPublish") { clasProfile.next("CLAS publish"); }
+            else if (point == "AfterStreamClasBuild") { clasProfile.end(); phaseProfile.end(); }
             else if (point == "BeforeFallbackBlas") { phaseProfile.next("Fallback BLAS"); }
             else if (point == "BeforeRTRepresentationClassify") { phaseProfile.next("RT representation classify"); }
             else if (point == "BeforeRTRepresentationCut") { phaseProfile.next("RT representation cut"); }
@@ -380,6 +388,7 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             if (checkpoint) { checkpoint(point); }
         }, context.output("accelerationStructure") != nullptr &&
             context.properties().value("AsyncComputePreferred", true) && context.supportsParallelCompute());
+    clasProfile.end();
     phaseProfile.end();
     if (result && checkpoint) { checkpoint("AfterTraversal"); }
     return result;

@@ -13,7 +13,8 @@ class MeshletStreamCompactCLASPool {
     ~MeshletStreamCompactCLASPool();
     Result<> initialize(Device&, const MeshletStreamCLASPoolDesc&, std::string&);
     void beginFrame(CPUProfileRecorder* profiler = nullptr);
-    Result<> cmdBuildPages(CommandBuffer&, Buffer&, std::span<const MeshletStreamCLASPageBuild>, std::string&);
+    Result<> cmdBuildPages(CommandBuffer&, Buffer&, std::span<const MeshletStreamCLASPageBuild>, std::string&,
+        const std::function<void(std::string_view)>& checkpoint = {});
     void retirePages(std::span<const uint32_t>);
     bool ready() const;
     bool pageHasClas(uint32_t) const;
@@ -24,6 +25,7 @@ class MeshletStreamCompactCLASPool {
     Buffer* pageStorageBuffer(uint32_t) const;
     Buffer* clusterAddressBuffer() const;
     Buffer* pageTableBuffer() const;
+    uint64_t publicationRevision() const;
     MeshletStreamCLASPoolStats stats() const;
 
   private:

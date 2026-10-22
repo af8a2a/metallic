@@ -3,6 +3,7 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Streamer/MeshletStreamThroughput.h"
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -139,6 +140,11 @@ struct SceneStreamingProfile {
     uint64_t clasEncodedBytes = 0;
     uint64_t clasWorstCaseBytes = 0;
     uint64_t clasScratchBytes = 0;
+    uint64_t clasVirtualBytes = 0, clasSizeReadbackBytes = 0;
+    uint32_t clasAllocatorPages = 0;
+    uint64_t clasReadyLatencySamples = 0, clasReadyLatencyFrameTotal = 0, clasReadyLatencyFrameMax = 0;
+    uint32_t clasReadyLatencyFramesP50 = 0, clasReadyLatencyFramesP95 = 0;
+    std::array<uint64_t, 33> clasReadyLatencyHistogram{};
     uint32_t clasMovedClusters = 0;
     bool clasEnabled = false;
     uint32_t clasResidentPages = 0;

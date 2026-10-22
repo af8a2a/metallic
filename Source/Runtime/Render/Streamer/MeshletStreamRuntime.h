@@ -753,6 +753,7 @@ private:
     class TraversalPass;
     class ActiveBuildPass;
     class BLASInputPass;
+    class GPUFallbackPass;
     class TLASInputPass;
 
     uint32_t computeMaxActiveGroups(uint32_t capacity) const;
@@ -850,6 +851,7 @@ private:
     std::unique_ptr<Buffer> fallbackBlasBuildInfoBuffer_;
     std::unique_ptr<Buffer> fallbackBlasDestinationBuffer_;
     std::unique_ptr<Buffer> fallbackBlasAddressBuffer_;
+    std::unique_ptr<GPUFallbackPass> gpuFallbackPass_;
     std::unique_ptr<Buffer> tlasInstanceBuffer_;
     std::unique_ptr<Buffer> tlasScratchBuffer_;
     std::unique_ptr<RayTracingAccelerationStructure> tlas_;

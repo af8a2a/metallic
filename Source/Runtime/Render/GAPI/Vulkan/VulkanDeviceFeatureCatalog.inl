@@ -27,6 +27,11 @@
     MT_VK_SIMPLE(id, extension, type, stype, member, requested, preferred, dependencies, score, publish) \
     MT_VK_DEPENDENCY(id, rayTracingAccelerationStructure)
 
+MT_VK_FEATURE(sparseBuffers, true, false,
+    probe.features.features.sparseBinding == VK_TRUE && probe.features.features.sparseResidencyBuffer == VK_TRUE, 0,
+    features.features.sparseBinding = selection.sparseBuffers;
+    features.features.sparseResidencyBuffer = selection.sparseBuffers;, caps.sparseBuffers = sparseBuffers;)
+
 MT_VK_SIMPLE(memoryDecompression, VK_EXT_MEMORY_DECOMPRESSION_EXTENSION_NAME,
     VkPhysicalDeviceMemoryDecompressionFeaturesEXT, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT,
     memoryDecompression, true, false,

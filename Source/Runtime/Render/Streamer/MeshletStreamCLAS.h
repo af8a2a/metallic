@@ -5,6 +5,8 @@
 #include "Runtime/Scene/MeshletStreamGPUCodec.h"
 
 #include <cstdint>
+#include <array>
+#include <string_view>
 #include <functional>
 #include <memory>
 #include <span>
@@ -89,6 +91,8 @@ struct MeshletStreamCLASPoolDesc {
     uint32_t maxBuildClusters = 2048;
     uint32_t queuedFrameCount = 3;
     bool compactStorage = false; // Opt-in until the compact path is validated.
+    bool gpuAllocation = false; // Exact-size allocation, relocation and publication stay on the GPU.
+    bool sparseStorage = false; // Reserve virtual capacity; commit physical backing on demand.
     uint64_t startStorageBytes = 0; // Initial physical commitment; may shrink to zero when unused.
     uint64_t growStorageBytes = 64ull * 1024ull * 1024ull;
     uint32_t emptyChunkRetentionFrames = 0; // After all GPU readers finish; zero releases immediately.
@@ -135,9 +139,16 @@ struct MeshletStreamCLASPoolStats {
     uint64_t retiringStorageBytes = 0;
     uint32_t frameMovedPageCount = 0;
     uint32_t frameMovedClusterCount = 0;
+    uint64_t virtualStorageBytes = 0;
+    uint64_t frameSizeReadbackBytes = 0;
+    uint32_t frameAllocatorPageCount = 0;
+    uint64_t readyLatencySamples = 0, readyLatencyFrameTotal = 0, readyLatencyFrameMax = 0;
+    uint32_t readyLatencyFramesP50 = 0, readyLatencyFramesP95 = 0;
+    std::array<uint64_t, 33> readyLatencyHistogram{}; // Frames 0..31, then >=32.
 };
 
 class MeshletStreamCompactCLASPool;
+class MeshletStreamGPUCLASPool;
 
 class MeshletStreamCLASPool {
 public:
@@ -159,7 +170,8 @@ public:
         Buffer& pageBuffer,
         std::span<const MeshletStreamCLASPageBuild> pages,
         std::string& log,
-        Buffer* sizeOutput = nullptr);
+        Buffer* sizeOutput = nullptr,
+        const std::function<void(std::string_view)>& checkpoint = {});
     void retirePages(std::span<const uint32_t> pageIndices);
     // Empty span denotes a whole-pool clear. Called before destructive changes.
     void setInvalidationObserver(std::function<void(std::span<const uint32_t>)> observer)
@@ -168,6 +180,7 @@ public:
     }
 
     bool ready() const;
+    bool usesGPUAllocation() const { return gpu_ != nullptr; }
     bool pageHasClas(uint32_t pageIndex) const;
     bool pageBuildPending(uint32_t pageIndex) const;
     uint64_t pageStorageBytes(uint32_t pageIndex) const;
@@ -178,12 +191,14 @@ public:
     uint64_t clusterAddress(uint32_t pageIndex, uint32_t clusterIndex) const;
     Buffer* clusterAddressBuffer() const;
     Buffer* pageTableBuffer() const;
+    uint64_t publicationRevision() const;
     MeshletStreamCLASPoolStats stats() const;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::unique_ptr<MeshletStreamCompactCLASPool> compact_;
+    std::unique_ptr<MeshletStreamGPUCLASPool> gpu_;
     std::function<void(std::span<const uint32_t>)> invalidationObserver_;
 };
 

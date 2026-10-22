@@ -533,6 +533,8 @@ add_executable(MetallicRHITests
     rhi/RayTracingAccelerationStructureTests.cpp
     rhi/UnifiedTopLevelTests.cpp
         rhi/CLASCompactionTests.cpp
+        rhi/SparseBufferTests.cpp
+        rhi/GPUCLASAllocatorTests.cpp
     rhi/SceneCLASAttributesTests.cpp
     rhi/StreamTriangleDecodeTests.cpp
     rhi/StreamerTests.cpp

@@ -52,7 +52,7 @@ struct MeshletStreamCompactCLASPool::Impl {
     struct Page {
         State state = State::Pending;
         bool wanted = true;
-        uint64_t retireFrame = 0, encodedBytes = 0;
+        uint64_t retireFrame = 0, encodedBytes = 0, requestedFrame = 0;
         Chunk* chunk = nullptr;
         MeshletStreamStorageAllocation allocation, addresses;
         FrameUses retirementUses;
@@ -61,6 +61,7 @@ struct MeshletStreamCompactCLASPool::Impl {
     struct Item {
         uint32_t page = 0, first = 0;
         bool moving = false;
+        uint64_t publishedFrame = 0;
         std::vector<uint32_t> sizes;
     };
     struct Batch {
@@ -378,6 +379,7 @@ struct MeshletStreamCompactCLASPool::Impl {
                 }
                 for (auto& item : batch.items) {
                     const uint32_t count = asset->pages()[item.page].clusterCount;
+                    stats.frameSizeReadbackBytes += uint64_t(count) * sizeof(uint32_t);
                     item.sizes.assign(sizes + item.first, sizes + item.first + count);
                     for (uint32_t size : item.sizes) {
                         if (!size || size > stride) {
@@ -404,6 +406,11 @@ struct MeshletStreamCompactCLASPool::Impl {
                     }
                     // GPU publication was ordered directly after MOVE. Only CPU
                     // ownership/statistics wait for the completion here.
+                    const uint64_t latency = item.publishedFrame - page.requestedFrame;
+                    ++stats.readyLatencySamples;
+                    stats.readyLatencyFrameTotal += latency;
+                    stats.readyLatencyFrameMax = std::max(stats.readyLatencyFrameMax, latency);
+                    ++stats.readyLatencyHistogram[std::min<uint64_t>(latency, 32u)];
                     page.state = State::Active;
                     ++stats.builtPageCount;
                     stats.builtClusterCount += uint32_t(page.offsets.size());
@@ -556,6 +563,8 @@ void MeshletStreamCompactCLASPool::beginFrame(CPUProfileRecorder* profiler)
     ++p.frame;
     p.stats.frameBuiltPageCount = p.stats.frameBuiltClusterCount = p.stats.frameRejectedPageCount = 0;
     p.stats.frameMovedPageCount = p.stats.frameMovedClusterCount = 0;
+    p.stats.frameSizeReadbackBytes = 0;
+    p.stats.frameAllocatorPageCount = 0;
     p.stats.frameStorageGrowthCount = p.stats.frameStorageReleaseCount = 0;
     CPUProfileScope profile(profiler, "Collect completed CLAS");
     p.collectFrameUses();
@@ -592,7 +601,8 @@ void MeshletStreamCompactCLASPool::beginFrame(CPUProfileRecorder* profiler)
 
 Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer& geometry,
                                                    std::span<const MeshletStreamCLASPageBuild> requests,
-                                                   std::string& log)
+                                                   std::string& log,
+                                                   const std::function<void(std::string_view)>& checkpoint)
 {
     auto& p = *impl_;
     log = p.error;
@@ -653,6 +663,7 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             p.reset(batch);
             continue;
         }
+        if (checkpoint) { checkpoint("BeforeCLASAllocate"); }
         std::vector<ClusterAccelerationStructureMoveInfo> moves;
         for (auto& item : batch.items) {
             auto& page = p.pages.at(item.page);
@@ -660,6 +671,7 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             for (auto size : item.sizes) {
                 bytes += compactAlign(size, p.alignment);
             }
+            ++p.stats.frameAllocatorPageCount;
             p.allocate(item.page, page, bytes);
             if (page.allocation.valid()) {
                 page.addresses = p.addressStorage.allocate(item.sizes.size());
@@ -718,6 +730,7 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             if (!sources || !destinations || !scratch) {
                 result = makeError(Error::InvalidArgument);
             } else {
+                if (checkpoint) { checkpoint("BeforeCLASMove"); }
                 result = cmd.moveClusterAccelerationStructures({
                     .objects = moves,
                     .sourceAddressBuffer = *sources,
@@ -739,8 +752,9 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             log = "Compact CLAS move recording failed";
             return result;
         }
-        for (const auto& item : batch.items) {
+        for (auto& item : batch.items) {
             if (item.moving) {
+                item.publishedFrame = p.frame;
                 p.publish(item.page, &p.pages.at(item.page), true);
                 ++p.stats.frameMovedPageCount;
                 p.stats.frameMovedClusterCount += uint32_t(item.sizes.size());
@@ -752,6 +766,7 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
     auto freeBatch =
         std::find_if(p.batches.begin(), p.batches.end(), [](const auto& b) { return b.phase == Impl::Phase::Free; });
     if (freeBatch == p.batches.end()) {
+        if (checkpoint) { checkpoint("BeforeCLASPublish"); }
         return p.flushPublications(cmd, log);
     }
     auto& batch = *freeBatch;
@@ -776,9 +791,11 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
         count += clusters;
     }
     if (builds.empty()) {
+        if (checkpoint) { checkpoint("BeforeCLASPublish"); }
         return p.flushPublications(cmd, log);
     }
     batch.builder->beginFrame();
+    if (checkpoint) { checkpoint("BeforeCLASScratchBuild"); }
     auto result = batch.builder->cmdBuildPages(cmd, geometry, builds, log, batch.sizes.get());
     if (!result) {
         p.reset(batch);
@@ -792,13 +809,14 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
         return result;
     }
     for (const auto& build : builds) {
-        p.pages.emplace(build.pageIndex, Impl::Page{});
+        p.pages.emplace(build.pageIndex, Impl::Page{.requestedFrame = p.frame});
     }
     batch.phase = Impl::Phase::Building;
     p.stats.frameBuiltPageCount += uint32_t(builds.size());
     p.stats.frameBuiltClusterCount += count;
     p.stats.totalBuiltPageCount += builds.size();
     p.stats.totalBuiltClusterCount += count;
+    if (checkpoint) { checkpoint("BeforeCLASPublish"); }
     return p.flushPublications(cmd, log);
 }
 
@@ -874,10 +892,27 @@ Buffer* MeshletStreamCompactCLASPool::pageTableBuffer() const
 {
     return impl_->pageTable.get();
 }
+uint64_t MeshletStreamCompactCLASPool::publicationRevision() const
+{
+    return impl_->stats.publicationRevision;
+}
+
 MeshletStreamCLASPoolStats MeshletStreamCompactCLASPool::stats() const
 {
     auto result = impl_->stats;
     result.trackedPageCount = uint32_t(impl_->pages.size());
+    result.virtualStorageBytes = result.storageBytes;
+    uint64_t cumulative = 0;
+    for (uint32_t index = 0; index < result.readyLatencyHistogram.size(); ++index) {
+        const auto previous = cumulative;
+        cumulative += result.readyLatencyHistogram[index];
+        if (previous * 100u < result.readyLatencySamples * 50u && cumulative * 100u >= result.readyLatencySamples * 50u) {
+            result.readyLatencyFramesP50 = index;
+        }
+        if (previous * 100u < result.readyLatencySamples * 95u && cumulative * 100u >= result.readyLatencySamples * 95u) {
+            result.readyLatencyFramesP95 = index;
+        }
+    }
     for (const auto& chunk : impl_->chunks) {
         result.usedStorageBytes += chunk->storage.usedBytes();
         if (!chunk->storage.usedBytes()) { result.emptyStorageBytes += chunk->buffer->desc().size; }

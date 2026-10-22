@@ -395,6 +395,7 @@ struct RenderGraphExecutor::Impl {
         }
     };
     struct GPUTimingSlot {
+        std::array<std::unique_ptr<TimestampQueryPool>, 3> queryPools;
         uint32_t firstQuery = 0;
         uint32_t queryCount = 0;
         bool pending = false;
@@ -462,7 +463,6 @@ struct RenderGraphExecutor::Impl {
     GraphAccessPlan accessPlan;
     std::vector<RenderGraphResource*> accessResources;
     std::vector<GraphAccessBinding> accessBindings;
-    std::array<std::unique_ptr<TimestampQueryPool>, 3> gpuTimestampQueryPools;
     std::array<GPUTimingSlot, kGPUTimingSlotCount> gpuTimingSlots;
     std::vector<RenderGraphExecutionStats> completedGpuExecutionStats;
     GPUTimingSlot* activeGpuTimingSlot = nullptr;
@@ -1761,7 +1761,6 @@ struct RenderGraphExecutor::Impl {
     void initializeGpuTiming(Device& graphDevice)
     {
         profilingGeneration = nextProfilingGeneration.fetch_add(1, std::memory_order_relaxed);
-        for (auto& pool : gpuTimestampQueryPools) { pool.reset(); }
         gpuTimingSlots = {};
         completedGpuExecutionStats.clear();
         activeGpuTimingSlot = nullptr;
@@ -1777,16 +1776,17 @@ struct RenderGraphExecutor::Impl {
         const uint64_t perSlot = (executionList.size() + 1ull) * 2ull + 512ull * (parallelNodes + 1);
         if (perSlot * kGPUTimingSlotCount > UINT32_MAX) { return; }
         constexpr std::array types{QueueType::Graphics, QueueType::Compute, QueueType::Copy};
-        for (uint32_t i = 0; i < types.size(); ++i) {
-            auto* queue = graphDevice.getQueue(types[i]);
-            if (!queue || queue->timestampValidBits() == 0) { continue; }
-            const auto result = graphDevice.createTimestampQueryPool(*queue,
-                {.queryCount = uint32_t(perSlot * kGPUTimingSlotCount)}).transform([&](auto rhiValue) { gpuTimestampQueryPools[i] = std::move(rhiValue); });
-            if (!result) { gpuTimestampQueryPools[i].reset(); }
-        }
-        for (uint32_t i = 0; i < kGPUTimingSlotCount; ++i) {
-            gpuTimingSlots[i].firstQuery = i * uint32_t(perSlot);
-            gpuTimingSlots[i].queryCount = uint32_t(perSlot);
+        // A pool belongs to one completion generation. Separate native pools
+        // keep host reset independent of commands using another frame's slots.
+        for (auto& slot : gpuTimingSlots) {
+            slot.queryCount = uint32_t(perSlot);
+            for (uint32_t i = 0; i < types.size(); ++i) {
+                auto* queue = graphDevice.getQueue(types[i]);
+                if (!queue || queue->timestampValidBits() == 0) { continue; }
+                const auto result = graphDevice.createTimestampQueryPool(*queue,
+                    {.queryCount = uint32_t(perSlot)}).transform([&](auto rhiValue) { slot.queryPools[i] = std::move(rhiValue); });
+                if (!result) { slot.queryPools[i].reset(); }
+            }
         }
     }
 
@@ -1795,7 +1795,7 @@ struct RenderGraphExecutor::Impl {
         if (!activeGpuTimingSlot || !activeGpuTimingValid) { return {}; }
         auto& slot = *activeGpuTimingSlot;
         const uint32_t queue = timingQueueIndex();
-        auto* pool = gpuTimestampQueryPools[queue].get();
+        auto* pool = slot.queryPools[queue].get();
         if (!pool) { return {}; }
         auto& used = slot.used[queue];
         if (used + 2 > slot.queryCount) { lastExecutionStats.profilingOverflow = true; return {}; }
@@ -1810,7 +1810,7 @@ struct RenderGraphExecutor::Impl {
     void endInterval(CommandBuffer& commands, TimerRef timer)
     {
         if (!activeGpuTimingSlot || !activeGpuTimingValid || timer.queue == UINT32_MAX) { return; }
-        if (!commands.writeTimestamp(*gpuTimestampQueryPools[timer.queue],
+        if (!commands.writeTimestamp(*activeGpuTimingSlot->queryPools[timer.queue],
             activeGpuTimingSlot->firstQuery + timer.begin + 1, PipelineStageBits::BottomOfPipe)) {
             activeGpuTimingValid = false;
         }
@@ -1833,7 +1833,7 @@ struct RenderGraphExecutor::Impl {
             for (uint32_t q = 0; q < values.size(); ++q) {
                 if (!slot.used[q]) { continue; }
                 values[q].resize(slot.used[q]);
-                const auto result = gpuTimestampQueryPools[q]->readResults(slot.firstQuery, {values[q].data(), slot.used[q]});
+                const auto result = slot.queryPools[q]->readResults(slot.firstQuery, {values[q].data(), slot.used[q]});
                 if (!result) { return result; }
             }
             const auto intervalReady = [&](TimerRef timer) {
@@ -1849,7 +1849,7 @@ struct RenderGraphExecutor::Impl {
             const auto resolve = [&](TimerRef timer, double& ms, bool& available) {
                 if (timer.queue == UINT32_MAX) { return; }
                 const auto& data = values[timer.queue];
-                ms = gpuTimestampQueryPools[timer.queue]->durationMilliseconds(data[timer.begin].value, data[timer.begin + 1].value);
+                ms = slot.queryPools[timer.queue]->durationMilliseconds(data[timer.begin].value, data[timer.begin + 1].value);
                 available = true;
             };
             resolve(slot.frameTimer, slot.stats.gpuMilliseconds, slot.stats.gpuTimingAvailable);
@@ -1897,21 +1897,23 @@ struct RenderGraphExecutor::Impl {
         // Raw external recording exposes no GPU completion. Queue acceptance
         // and query availability cannot distinguish an unexecuted reset from
         // a previous query generation, so retain CPU scopes without timestamps.
-        if (!gpuTimestampQueryPools[0] || !metallic::render::RenderFrameContext::from(commands) ||
+        if (!metallic::render::RenderFrameContext::from(commands) ||
             !metallic::render::RenderFrameContext::from(commands)->completion().valid()) { return; }
         const auto resolved = resolveGpuTimings();
         if (!resolved) { return; }
         for (uint32_t offset = 0; offset < kGPUTimingSlotCount; ++offset) {
             const uint32_t index = (nextGpuTimingSlot + offset) % kGPUTimingSlotCount;
             auto& slot = gpuTimingSlots[index];
-            if (slot.pending) { continue; }
+            // Invalid samples can still belong to accepted GPU work. Pending
+            // only describes result collection, never permission to reset.
+            if (slot.pending || !slot.completion.isComplete() || !slot.queryPools[0]) { continue; }
             slot.stats = {}; slot.profile = {}; slot.used = {};
             slot.nodeTimers.clear(); slot.sectionTimers.clear();
             activeGpuTimingSlot = &slot; activeGpuTimingValid = true;
             slot.completion = metallic::render::RenderFrameContext::from(commands)->completion();
-            // Only reuse ranges after resolveGpuTimings has observed completion.
+            // Reuse only after the previous completion generation has retired.
             // Host reset allows transfer timestamps without a graphics dependency.
-            for (const auto& pool : gpuTimestampQueryPools) {
+            for (const auto& pool : slot.queryPools) {
                 if (pool && !pool->reset(slot.firstQuery, slot.queryCount)) {
                     activeGpuTimingValid = false;
                 }
@@ -2385,14 +2387,14 @@ struct RenderGraphExecutor::Impl {
             auto& slot = *activeGpuTimingSlot;
             const uint32_t queue = timingQueueIndex();
             constexpr uint32_t queries = 2 * (256 + 1);
-            if (gpuTimestampQueryPools[queue] && slot.used[queue] + queries <= slot.queryCount) {
-                recording.queryPool = gpuTimestampQueryPools[queue].get();
+            if (slot.queryPools[queue] && slot.used[queue] + queries <= slot.queryCount) {
+                recording.queryPool = slot.queryPools[queue].get();
                 recording.queueIndex = queue;
                 recording.firstQuery = slot.firstQuery;
                 recording.nextQuery = slot.used[queue];
                 slot.used[queue] += queries;
                 recording.endQuery = slot.used[queue];
-            } else if (gpuTimestampQueryPools[queue]) { recording.profilingOverflow = true; }
+            } else if (slot.queryPools[queue]) { recording.profilingOverflow = true; }
             recording.profile.active = slot.profile.active;
         }
         recording.passTimer = recording.beginInterval(commands);
@@ -3703,7 +3705,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
     uint32_t capturePassId = UINT32_MAX;
-    const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimestampQueryPools[0];
+    const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimingSlots[0].queryPools[0];
     const auto beginSegment = [&](QueueType type, CommandRecordingContext* recording = nullptr,
         RenderGraphSegmentRole role = RenderGraphSegmentRole::Pass) -> Result<> {
         Queue* queue = selectedQueue(type);

@@ -744,6 +744,163 @@ private:
     std::unique_ptr<ComputePipeline> blasInputPipeline_;
 };
 
+// GPU publication of CLAS addresses must not wait for the host readiness mirror.
+// Terminal BLAS inputs are assembled from the same ordered GPU page table.
+class MeshletStreamRuntime::GPUFallbackPass {
+public:
+    struct Push {
+        uint32_t metadata, pages, clasPages, clasAddresses, references, infos;
+        uint32_t destinations, count, selected, published, primitiveCount, phase;
+        uint64_t referenceAddress, storageAddress;
+    };
+    static_assert(sizeof(Push) == 64);
+
+    Result<> initialize(MeshletStreamRuntime& runtime, Device& device, std::string& log)
+    {
+        device_ = &device;
+        primitiveCount_ = uint32_t(runtime.fallbackBlasPrimitives_.size());
+        std::vector<uint32_t> metadata;
+        std::vector<uint32_t> pages;
+        uint64_t references = 0;
+        for (const auto& primitive : runtime.fallbackBlasPrimitives_) {
+            const auto groups = runtime.asset_.primitiveTerminalGroups(primitive.primitiveIndex);
+            metadata.insert(metadata.end(), {primitive.primitiveIndex, primitive.referenceCount,
+                uint32_t(primitive.referenceOffset), uint32_t(primitive.referenceOffset >> 32u),
+                uint32_t(primitive.storageOffset), uint32_t(primitive.storageOffset >> 32u),
+                uint32_t(pages.size() / 2u), uint32_t(groups.size())});
+            for (auto group : groups) {
+                const auto page = runtime.asset_.groups()[group].pageIndex;
+                pages.insert(pages.end(), {page, runtime.asset_.pages()[page].clusterCount});
+            }
+            references += primitive.referenceCount;
+            maxReferences_ = std::max(maxReferences_, primitive.referenceCount);
+        }
+        if (references > UINT32_MAX) {
+            log = "GPU fallback reference table exceeds shader indexing capacity";
+            return makeError(Error::InvalidArgument);
+        }
+        totalReferences_ = uint32_t(references);
+        auto upload = [&](const std::vector<uint32_t>& data, std::unique_ptr<Buffer>& target) -> Result<> {
+            auto result = createHostStorageBuffer(device, data.size() * sizeof(uint32_t), target, log, "GPU fallback metadata");
+            if (!result) { return result; }
+            auto* mapped = target->map();
+            if (!mapped) { return makeError(Error::Failure); }
+            std::memcpy(mapped, data.data(), data.size() * sizeof(uint32_t));
+            target->flush();
+            target->unmap();
+            return {};
+        };
+        if (auto r = upload(metadata, metadata_); !r) { return r; }
+        if (auto r = upload(pages, pages_); !r) { return r; }
+        auto allocate = [&](uint64_t bytes, std::unique_ptr<Buffer>& target, BufferUsageBits extra = BufferUsageBits::None) {
+            return createNamedBuffer(device, {.size = bytes,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
+                    BufferUsageBits::AccelerationStructureBuildInput | extra,
+                .memoryLocation = MemoryLocation::Device}, target, log, "GPU fallback inputs");
+        };
+        if (auto r = allocate(uint64_t(primitiveCount_) * 16u, infos_); !r) { return r; }
+        if (auto r = allocate(uint64_t(primitiveCount_) * 8u, destinations_, BufferUsageBits::AccelerationStructureStorage); !r) { return r; }
+        if (auto r = allocate(uint64_t(primitiveCount_) * 4u, selected_); !r) { return r; }
+        if (auto r = allocate(4u, count_); !r) { return r; }
+        auto sizes = device.queryClusterAccelerationStructureBottomLevelBuildSizes({
+            .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
+            .maxClusterCountPerAccelerationStructure = maxReferences_,
+            .maxTotalClusterCount = totalReferences_, .maxAccelerationStructureCount = primitiveCount_});
+        if (!sizes) { return makeError(sizes.error()); }
+        const auto properties = device.queryClusterAccelerationStructureProperties();
+        if (!properties) { return makeError(properties.error()); }
+        if (auto r = allocate(sizes->buildScratchSize + properties->scratchAlignment,
+                scratch_); !r) { return r; }
+        auto shader = ShaderRegistry::instance().getShader({
+            .moduleName = "Features/GPUDriven/StreamFallbackBLAS", .entryPointName = "streamFallbackBLASMain",
+            .searchPath = kMeshletStreamShaderSearchPath}, log);
+        if (!shader) { return makeError(shader.error()); }
+        return kernel_.initialize(device, {.spirv = shader->spirv,
+            .parameters = parameterAbi<Push>(kABI, ParameterTransport::InlinePush),
+            .debugName = "StreamFallbackBLAS"}, log);
+    }
+
+    Result<> record(MeshletStreamRuntime& runtime, CommandBuffer& commands)
+    {
+        if (std::all_of(runtime.fallbackBlasPrimitives_.begin(), runtime.fallbackBlasPrimitives_.end(),
+                [](const auto& fallback) { return fallback.recorded(); })) {
+            if (metadata_ && std::all_of(runtime.fallbackBlasPrimitives_.begin(), runtime.fallbackBlasPrimitives_.end(),
+                    [](const auto& fallback) { return fallback.submitted(); })) {
+                // Terminal roots are immutable for this runtime. Submitted commands
+                // retain these allocations until the last GPU consumer completes.
+                metadata_.reset(); pages_.reset(); infos_.reset(); destinations_.reset();
+                count_.reset(); selected_.reset(); scratch_.reset();
+            }
+            return {};
+        }
+        ParameterWriter writer(*device_, *runtime.registry_, RenderFrameContext::from(commands));
+        Push push{writer.buffer(metadata_.get()).index, writer.buffer(pages_.get()).index,
+            writer.buffer(runtime.clasPool_->pageTableBuffer()).index,
+            writer.buffer(runtime.clasPool_->clusterAddressBuffer()).index,
+            writer.buffer(runtime.fallbackBlasReferenceBuffer_.get()).index,
+            writer.buffer(infos_.get()).index, writer.buffer(destinations_.get()).index,
+            writer.buffer(count_.get()).index, writer.buffer(selected_.get()).index,
+            writer.buffer(runtime.fallbackBlasAddressBuffer_.get()).index, primitiveCount_, 0u,
+            runtime.fallbackBlasReferenceBuffer_->deviceAddress(), runtime.fallbackBlasStorageBuffer_->deviceAddress()};
+        writer.retain(runtime.fallbackBlasStorageBuffer_->retainAllocation());
+        if (auto r = writer.status(); !r) { return r; }
+        const MemoryBarrierDesc barrier{.before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+        auto dispatch = [&](uint32_t phase, uint32_t groups) -> Result<> {
+            push.phase = phase;
+            auto parameters = writer.encode(push, kABI, ParameterTransport::InlinePush);
+            if (!parameters) { return makeError(parameters.error()); }
+            auto r = kernel_.dispatch(commands, *parameters, std::min(groups, 65535u), (groups - 1u) / 65535u + 1u);
+            if (!r) { return r; }
+            return commands.synchronize({.memory = {&barrier, 1}});
+        };
+        commands.hostWriteBarrier();
+        if (auto r = commands.synchronize({.memory = {&barrier, 1}}); !r) { return r; }
+        if (auto r = dispatch(0u, 1u); !r) { return r; }
+        if (auto r = dispatch(1u, primitiveCount_); !r) { return r; }
+        const auto infos = infos_->slice();
+        const auto destinations = destinations_->slice();
+        const auto count = count_->slice();
+        const auto scratch = scratch_->slice();
+        const auto storage = runtime.fallbackBlasStorageBuffer_->slice();
+        if (!infos || !destinations || !count || !scratch || !storage) { return makeError(Error::InvalidArgument); }
+        auto result = commands.buildClusterAccelerationStructureBottomLevels({
+            .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
+            .destinationMode = ClusterAccelerationStructureDestinationMode::Explicit,
+            .maxClusterCountPerAccelerationStructure = maxReferences_,
+            .maxTotalClusterCount = totalReferences_, .maxAccelerationStructureCount = primitiveCount_,
+            .buildInfoBuffer = *infos, .buildInfoStride = 16u, .buildInfoCountBuffer = *count,
+            .destinationStorageBuffer = *storage, .destinationAddressBuffer = *destinations, .scratchBuffer = *scratch});
+        if (!result) { return result; }
+        if (auto r = commands.synchronize({.memory = {&barrier, 1}}); !r) { return r; }
+        if (auto r = dispatch(2u, primitiveCount_); !r) { return r; }
+
+        // This delayed mirror only completes the editor's startup readiness gate.
+        // GPU BLAS publication above has already happened without host feedback.
+        const bool rootsReady = std::all_of(runtime.lockedFallbackPages_.begin(), runtime.lockedFallbackPages_.end(),
+            [&](uint32_t page) { return runtime.clasPool_->pageHasClas(page); });
+        if (rootsReady) {
+            auto publication = std::make_shared<SubmissionTransaction>(
+                [cache = runtime.sceneReadinessCache_] { cache->valid = false; },
+                [cache = runtime.sceneReadinessCache_] { cache->valid = false; cache->value.ready = false; });
+            if (auto r = commands.addSubmissionTransaction(publication); !r) { return r; }
+            for (auto& fallback : runtime.fallbackBlasPrimitives_) {
+                fallback.built = true;
+                fallback.buildTransaction = publication;
+            }
+        }
+        runtime.sceneReadinessCache_->valid = false;
+        return {};
+    }
+
+private:
+    static constexpr uint64_t kABI = 0x434c415346414c01ull;
+    Device* device_ = nullptr;
+    ComputeKernel kernel_;
+    uint32_t primitiveCount_ = 0, totalReferences_ = 0, maxReferences_ = 0;
+    std::unique_ptr<Buffer> metadata_, pages_, infos_, destinations_, count_, selected_, scratch_;
+};
+
 class MeshletStreamRuntime::TLASInputPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
@@ -1040,6 +1197,19 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             return makeError(Error::InvalidArgument);
         }
         maxClasBuildClusters_ = static_cast<uint32_t>(buildClusters);
+        // Sparse-capable devices use same-submission compaction. Preserve the
+        // existing compact backend where sparse binding is unavailable.
+        bool gpuClasAllocation = desc.compactClas && device.capabilities().sparseBuffers;
+        bool sparseClasStorage = gpuClasAllocation;
+        if (const char* mode = std::getenv("METALLIC_CLAS_ALLOCATOR")) {
+            const std::string_view value(mode);
+            if (value != "cpu" && value != "gpu" && value != "sparse") {
+                log = "METALLIC_CLAS_ALLOCATOR must be cpu, gpu or sparse";
+                return makeError(Error::InvalidArgument);
+            }
+            gpuClasAllocation = desc.compactClas && value != "cpu";
+            sparseClasStorage = gpuClasAllocation && value == "sparse";
+        }
         clasPool_ = std::make_unique<MeshletStreamCLASPool>();
         result = clasPool_->initialize(
             device,
@@ -1049,6 +1219,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 .maxBuildClusters = static_cast<uint32_t>(buildClusters),
                 .queuedFrameCount = std::max(desc.queuedFrameCount, 1u),
                 .compactStorage = desc.compactClas,
+                .gpuAllocation = gpuClasAllocation,
+                .sparseStorage = sparseClasStorage,
                 .startStorageBytes = desc.startClasBytes,
                 .growStorageBytes = desc.growClasBytes,
                 .emptyChunkRetentionFrames = desc.clasEmptyChunkRetentionFrames,
@@ -1636,18 +1808,20 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         const uint64_t fallbackStorageAddress =
             fallbackBlasStorageBuffer_->deviceAddress();
 
-        result = createNamedBuffer(
-            device,
-            BufferDesc{
-                .size = fallbackScratchBytes + scratchAlignment - 1u,
-                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
-                .memoryLocation = MemoryLocation::Device,
-            },
-            fallbackBlasScratchBuffer_,
-            log,
-            "MeshletStreamRuntime fallback BLAS scratch");
-        if (!result) {
-            return result;
+        if (!clasPool_->usesGPUAllocation()) {
+            result = createNamedBuffer(
+                device,
+                BufferDesc{
+                    .size = fallbackScratchBytes + scratchAlignment - 1u,
+                    .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+                    .memoryLocation = MemoryLocation::Device,
+                },
+                fallbackBlasScratchBuffer_,
+                log,
+                "MeshletStreamRuntime fallback BLAS scratch");
+            if (!result) {
+                return result;
+            }
         }
         result = createNamedBuffer(
             device,
@@ -1690,61 +1864,63 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         const uint64_t fallbackDestinationBytes = fallbackPrimitiveCount * sizeof(uint64_t);
         const uint64_t primitiveAddressBytes =
             static_cast<uint64_t>(asset_.primitiveCount()) * sizeof(uint64_t);
-        result = createFallbackHostBuffer(
-            fallbackBuildInfoBytes,
-            BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
-            fallbackBlasBuildInfoBuffer_,
-            "MeshletStreamRuntime fallback BLAS build infos");
-        if (!result) {
-            return result;
-        }
-        auto* fallbackBuildInfos = static_cast<MeshletStreamGPUBLASBuildInfo*>(
-            fallbackBlasBuildInfoBuffer_->map());
-        if (fallbackBuildInfos == nullptr) {
-            log = "MeshletStreamRuntime fallback BLAS build info buffer map failed";
-            return makeError(Error::Failure);
-        }
-        for (size_t fallbackIndex = 0;
-             fallbackIndex < fallbackBlasPrimitives_.size();
-             ++fallbackIndex) {
-            const FallbackBLASPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
-            const uint64_t referenceAddress = fallbackReferenceAddress +
-                fallback.referenceOffset * sizeof(uint64_t);
-            fallbackBuildInfos[fallbackIndex] = MeshletStreamGPUBLASBuildInfo{
-                .clusterReferencesCount = fallback.referenceCount,
-                .clusterReferencesStride = sizeof(uint64_t),
-                .clusterReferencesAddressLow = static_cast<uint32_t>(referenceAddress),
-                .clusterReferencesAddressHigh = static_cast<uint32_t>(referenceAddress >> 32u),
-            };
-        }
-        fallbackBlasBuildInfoBuffer_->flush({0, fallbackBuildInfoBytes});
-        fallbackBlasBuildInfoBuffer_->unmap();
+        if (!clasPool_->usesGPUAllocation()) {
+            result = createFallbackHostBuffer(
+                fallbackBuildInfoBytes,
+                BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
+                fallbackBlasBuildInfoBuffer_,
+                "MeshletStreamRuntime fallback BLAS build infos");
+            if (!result) {
+                return result;
+            }
+            auto* fallbackBuildInfos = static_cast<MeshletStreamGPUBLASBuildInfo*>(
+                fallbackBlasBuildInfoBuffer_->map());
+            if (fallbackBuildInfos == nullptr) {
+                log = "MeshletStreamRuntime fallback BLAS build info buffer map failed";
+                return makeError(Error::Failure);
+            }
+            for (size_t fallbackIndex = 0;
+                 fallbackIndex < fallbackBlasPrimitives_.size();
+                 ++fallbackIndex) {
+                const FallbackBLASPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+                const uint64_t referenceAddress = fallbackReferenceAddress +
+                    fallback.referenceOffset * sizeof(uint64_t);
+                fallbackBuildInfos[fallbackIndex] = MeshletStreamGPUBLASBuildInfo{
+                    .clusterReferencesCount = fallback.referenceCount,
+                    .clusterReferencesStride = sizeof(uint64_t),
+                    .clusterReferencesAddressLow = static_cast<uint32_t>(referenceAddress),
+                    .clusterReferencesAddressHigh = static_cast<uint32_t>(referenceAddress >> 32u),
+                };
+            }
+            fallbackBlasBuildInfoBuffer_->flush({0, fallbackBuildInfoBytes});
+            fallbackBlasBuildInfoBuffer_->unmap();
 
-        result = createFallbackHostBuffer(
-            fallbackDestinationBytes,
-            BufferUsageBits::Storage |
-                BufferUsageBits::AccelerationStructureStorage |
-                BufferUsageBits::AccelerationStructureBuildInput |
-                BufferUsageBits::ShaderDeviceAddress,
-            fallbackBlasDestinationBuffer_,
-            "MeshletStreamRuntime fallback BLAS destinations");
-        if (!result) {
-            return result;
-        }
-        auto* fallbackDestinations = static_cast<uint64_t*>(fallbackBlasDestinationBuffer_->map());
-        if (fallbackDestinations == nullptr) {
-            log = "MeshletStreamRuntime fallback BLAS destination buffer map failed";
-            return makeError(Error::Failure);
-        }
-        for (size_t fallbackIndex = 0;
-             fallbackIndex < fallbackBlasPrimitives_.size();
-             ++fallbackIndex) {
-            fallbackDestinations[fallbackIndex] =
-                fallbackStorageAddress + fallbackBlasPrimitives_[fallbackIndex].storageOffset;
-        }
-        fallbackBlasDestinationBuffer_->flush({0, fallbackDestinationBytes});
-        fallbackBlasDestinationBuffer_->unmap();
+            result = createFallbackHostBuffer(
+                fallbackDestinationBytes,
+                BufferUsageBits::Storage |
+                    BufferUsageBits::AccelerationStructureStorage |
+                    BufferUsageBits::AccelerationStructureBuildInput |
+                    BufferUsageBits::ShaderDeviceAddress,
+                fallbackBlasDestinationBuffer_,
+                "MeshletStreamRuntime fallback BLAS destinations");
+            if (!result) {
+                return result;
+            }
+            auto* fallbackDestinations = static_cast<uint64_t*>(fallbackBlasDestinationBuffer_->map());
+            if (fallbackDestinations == nullptr) {
+                log = "MeshletStreamRuntime fallback BLAS destination buffer map failed";
+                return makeError(Error::Failure);
+            }
+            for (size_t fallbackIndex = 0;
+                 fallbackIndex < fallbackBlasPrimitives_.size();
+                 ++fallbackIndex) {
+                fallbackDestinations[fallbackIndex] =
+                    fallbackStorageAddress + fallbackBlasPrimitives_[fallbackIndex].storageOffset;
+            }
+            fallbackBlasDestinationBuffer_->flush({0, fallbackDestinationBytes});
+            fallbackBlasDestinationBuffer_->unmap();
 
+        }
         result = createFallbackHostBuffer(
             primitiveAddressBytes,
             BufferUsageBits::Storage,
@@ -1762,11 +1938,11 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         fallbackBlasAddressBuffer_->flush({0, primitiveAddressBytes});
         fallbackBlasAddressBuffer_->unmap();
 
-        if (fallbackStorageAddress == 0 ||
-            fallbackBlasScratchBuffer_->deviceAddress() == 0 ||
-            fallbackReferenceAddress == 0 ||
-            fallbackBlasBuildInfoBuffer_->deviceAddress() == 0 ||
-            fallbackBlasDestinationBuffer_->deviceAddress() == 0) {
+        if (fallbackStorageAddress == 0 || fallbackReferenceAddress == 0 ||
+            (!clasPool_->usesGPUAllocation() &&
+                (fallbackBlasScratchBuffer_->deviceAddress() == 0 ||
+                    fallbackBlasBuildInfoBuffer_->deviceAddress() == 0 ||
+                    fallbackBlasDestinationBuffer_->deviceAddress() == 0))) {
             log = "MeshletStreamRuntime fallback BLAS buffers have no device addresses";
             return makeError(Error::Failure);
         }
@@ -2207,6 +2383,11 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         if (!result) {
             return result;
         }
+        if (clasPool_->usesGPUAllocation()) {
+            gpuFallbackPass_ = std::make_unique<GPUFallbackPass>();
+            result = gpuFallbackPass_->initialize(*this, device, log);
+            if (!result) { return result; }
+        }
     }
 
     frameUploads_.resize(std::max(desc.queuedFrameCount, 1u));
@@ -2303,6 +2484,7 @@ void MeshletStreamRuntime::reset()
     blasScratchBuffer_.reset();
     blasAddressBuffer_.reset();
     blasSizeBuffer_.reset();
+    gpuFallbackPass_.reset();
     fallbackBlasStorageBuffer_.reset();
     fallbackBlasScratchBuffer_.reset();
     fallbackBlasReferenceBuffer_.reset();
@@ -2598,10 +2780,10 @@ bool MeshletStreamRuntime::ready() const
                 blasAddressBuffer_ != nullptr &&
                 blasSizeBuffer_ != nullptr &&
                 fallbackBlasStorageBuffer_ != nullptr &&
-                fallbackBlasScratchBuffer_ != nullptr &&
+                (gpuFallbackPass_ != nullptr ||
+                    (fallbackBlasScratchBuffer_ != nullptr && fallbackBlasBuildInfoBuffer_ != nullptr &&
+                        fallbackBlasDestinationBuffer_ != nullptr)) &&
                 fallbackBlasReferenceBuffer_ != nullptr &&
-                fallbackBlasBuildInfoBuffer_ != nullptr &&
-                fallbackBlasDestinationBuffer_ != nullptr &&
                 fallbackBlasAddressBuffer_ != nullptr &&
                 tlasInstanceBuffer_ != nullptr &&
                 tlasScratchBuffer_ != nullptr &&
@@ -3027,7 +3209,7 @@ Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
     }
     { // Pending size/move batches also need progress on frames without new pages.
         std::string clasLog;
-        result = clasPool_->cmdBuildPages(commandBuffer, *pageBuffer_, clasBuilds, clasLog);
+        result = clasPool_->cmdBuildPages(commandBuffer, *pageBuffer_, clasBuilds, clasLog, nullptr, checkpoint);
         if (!result) {
             spdlog::error("[MeshletStreamRuntime] CLAS build failed: {}", clasLog);
             return result;
@@ -3120,7 +3302,7 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
             : 0u,
         .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.shaderIndex() : 0u,
         .rasterBindingsBuffer = rasterBindingsHandle_.shaderIndex(),
-        .clasPublicationRevision = clasPool_ ? uint32_t(clasPool_->stats().publicationRevision) : 0u,
+        .clasPublicationRevision = clasPool_ ? uint32_t(clasPool_->publicationRevision()) : 0u,
         .pageTableMutationSerial = pageTableMutationSerial_,
     };
 }
@@ -4173,7 +4355,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
 
     // A 32-bit page-generation wrap rebuilds physical references, while keeping
     // the prior semantic cut. Commit the epoch only when the recording is accepted.
-    const auto publicationEpoch = static_cast<uint32_t>(clasPool_->stats().publicationRevision >> 32u);
+    const auto publicationEpoch = static_cast<uint32_t>(clasPool_->publicationRevision() >> 32u);
     const bool publicationWrapped = publicationEpoch != *blasPublicationEpoch_;
     commandBuffer.hostWriteBarrier();
     if (auto r = transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true); !r) { return r; }
@@ -4355,6 +4537,7 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
 
 Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
 {
+    if (gpuFallbackPass_) { return gpuFallbackPass_->record(*this, commandBuffer); }
     if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (clasPool_ == nullptr ||
         fallbackBlasStorageBuffer_ == nullptr ||
@@ -4789,6 +4972,15 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
         result.clasEncodedBytes = clas.encodedStorageBytes;
         result.clasWorstCaseBytes = clas.worstCaseStorageBytes;
         result.clasScratchBytes = clas.scratchBytes;
+        result.clasVirtualBytes = clas.virtualStorageBytes;
+        result.clasSizeReadbackBytes = clas.frameSizeReadbackBytes;
+        result.clasAllocatorPages = clas.frameAllocatorPageCount;
+        result.clasReadyLatencySamples = clas.readyLatencySamples;
+        result.clasReadyLatencyFrameTotal = clas.readyLatencyFrameTotal;
+        result.clasReadyLatencyFrameMax = clas.readyLatencyFrameMax;
+        result.clasReadyLatencyFramesP50 = clas.readyLatencyFramesP50;
+        result.clasReadyLatencyFramesP95 = clas.readyLatencyFramesP95;
+        result.clasReadyLatencyHistogram = clas.readyLatencyHistogram;
         result.clasMovedClusters = clas.frameMovedClusterCount;
         result.clasResidentPages = clas.builtPageCount;
         result.clasResidentClusters = clas.builtClusterCount;
