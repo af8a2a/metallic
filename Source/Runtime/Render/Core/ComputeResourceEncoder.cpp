@@ -51,6 +51,77 @@ bool usesImageHeap(ComputeResourceBindingKind kind)
 
 } // namespace
 
+namespace detail {
+
+struct ComputeSampledImageTable {
+    // Keep the generation's transitive owners without retaining the snapshot
+    // which owns this cache. Packets retain this table until GPU completion.
+    std::shared_ptr<const void> owner;
+    std::vector<ResourceLease> images;
+    std::unique_ptr<Buffer> indices;
+    ResourceLease indexLease;
+    GPUBufferSpan span;
+};
+
+} // namespace detail
+
+Result<std::shared_ptr<detail::ComputeSampledImageTable>> ComputeSampledImageSnapshot::table(
+    Device& device, ResourceRegistry& registry, uint32_t count, ComputeDispatchStats* stats) const
+{
+    if (!count || views.size() < count || uint64_t(count) * sizeof(uint32_t) > UINT32_MAX) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::lock_guard lock(tableMutex_);
+    for (const auto& cached : tables_) {
+        // A lease owns the exact registry epoch, so neither a recycled Device
+        // nor a reused registry address can match a table from another heap.
+        if (cached->span.count == count && registry.owns(cached->indexLease)) {
+            if (stats) { ++stats->sampledImageTableCacheHits; }
+            return cached;
+        }
+    }
+    auto cached = std::make_shared<detail::ComputeSampledImageTable>();
+    cached->owner = owner;
+    cached->images.reserve(count);
+    std::vector<uint32_t> indices;
+    indices.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!views[i]) { return makeError(Error::InvalidArgument); }
+        bool written = false;
+        auto lease = registry.sampledImage(*views[i], TextureLayout::ShaderRead, &written);
+        if (!lease) { return makeError(lease.error()); }
+        if (stats) {
+            if (written) { ++stats->sampledImageWrites; }
+            else { ++stats->sampledImageCacheHits; }
+        }
+        indices.push_back(lease->shaderIndex());
+        cached->images.push_back(std::move(*lease));
+    }
+    const uint64_t bytes = uint64_t(count) * sizeof(uint32_t);
+    auto buffer = device.createBuffer({.size = bytes, .usage = BufferUsageBits::Storage,
+        .memoryLocation = MemoryLocation::HostUpload,
+        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+    if (!buffer) { return makeError(buffer.error()); }
+    cached->indices = std::move(*buffer);
+    auto* mapped = cached->indices->map();
+    if (!mapped) { return makeError(Error::Failure); }
+    std::memcpy(mapped, indices.data(), bytes);
+    cached->indices->flush({0, bytes});
+    cached->indices->unmap();
+    auto lease = registry.storageBuffer(*cached->indices);
+    if (!lease) { return makeError(lease.error()); }
+    cached->indexLease = std::move(*lease);
+    cached->span = {{cached->indexLease.shaderIndex()}, 0, count};
+    // This immutable allocation is independent of frame upload chunks. A
+    // cancelled first recording cannot recycle storage used by a later frame.
+    tables_.push_back(cached);
+    if (stats) {
+        ++stats->sampledImageTableBuilds;
+        stats->sampledImageTableUploadBytes += bytes;
+    }
+    return cached;
+}
+
 struct ComputeResourceEncoder::Impl {
     uint64_t abiId = 0;
     Device* device = nullptr;
@@ -257,10 +328,18 @@ Result<std::vector<EncodedParameters>> ComputeResourceEncoder::encode(
             continue;
         }
         if (binding->data.valid()) { return makeError(Error::InvalidArgument); }
+        const uint32_t count = std::max(expected.descriptorCount, 1u);
+        if (binding->sampledImages && expected.kind == ComputeResourceBindingKind::SampledImage &&
+            member.format() == ResourceMemberFormat::IndexSpan) {
+            auto table = binding->sampledImages->table(*impl_->device, registry, count, desc.stats);
+            if (!table) { return makeError(table.error()); }
+            writer.retain(*table);
+            std::memcpy(destination, &(*table)->span, sizeof(GPUBufferSpan));
+            continue;
+        }
         if (binding->sampledImages) {
             writer.retain(std::const_pointer_cast<ComputeSampledImageSnapshot>(binding->sampledImages));
         }
-        const uint32_t count = std::max(expected.descriptorCount, 1u);
         std::vector<uint64_t> handles;
         handles.reserve(count);
         for (uint32_t i = 0; i < count; ++i) {

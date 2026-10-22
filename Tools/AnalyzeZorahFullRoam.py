@@ -60,7 +60,12 @@ def analyze(root):
     # Frozen diagnostic cuts reuse RTAS; those build scopes are intentionally absent.
     required = ['Deferred shading']
     if not frozen:
-        required += ['BLAS reset','BLAS cut compare','BLAS count','BLAS setup','BLAS insert','BLAS build','TLAS input','TLAS build']
+        required += ['BLAS reset','BLAS cut compare','BLAS count','BLAS setup','BLAS insert','BLAS build']
+        # Parallel RTAS records TLAS input/build inside one compute scope.
+        if any(s['path'].endswith('/Async TLAS build') for s in scopes):
+            required += ['Async TLAS build']
+        else:
+            required += ['TLAS input','TLAS build']
     missing = [name for name in required if not any(s['path'].endswith('/'+name) and s['gpuMs'] and s['gpuMs']['count']==len(rows) for s in scopes)]
     if missing:
         raise ValueError(f'Missing {"frozen shading" if frozen else "RTAS"} timing coverage: {missing}')

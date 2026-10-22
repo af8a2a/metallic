@@ -3401,6 +3401,13 @@ uint blasInstanceStorageBytes(uint count, GPUDrivenStreamAssetParams params)
     return params.blasSizeClasses[min(bucket, 31u)];
 }
 
+bool blasInstanceNeedsStorage(GPUDrivenStreamAssetInstanceBLAS info, uint size,
+    GPUDrivenStreamAssetParams params)
+{
+    return info.storageCapacity < size || info.storageOffset > params.blasStorageBytes ||
+        info.storageCapacity > params.blasStorageBytes - min(info.storageOffset, params.blasStorageBytes);
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetBuildBlasInputMain(
@@ -3655,15 +3662,37 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         InterlockedAdd(blasHeader[0].admittedInstances, 1u);
         return;
     }
-    if (push.activeBuildPhase == 8u) {
+    if (push.activeBuildPhase == 8u || push.activeBuildPhase == 12u) {
         uint lane = itemIndex & 63u;
         uint4 demand = 0u;
         if (itemIndex < params.sceneInstanceCount) {
             GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
             if ((info.flags & kBLASInstanceDynamic) != 0u) {
                 uint size = blasInstanceStorageBytes(info.selectedClusterCount, params);
-                demand = uint4(info.storageCapacity < size ? size : 0u, size,
-                    (info.flags & kBLASInstanceDirty) != 0u ? 1u : 0u, 0u);
+                if (push.activeBuildPhase == 8u) {
+                    // Decide complete-instance storage admission before growth.
+                    // Rejected instances must not force another repack next frame.
+                    demand.y = size;
+                } else {
+                    uint packedOffset = scan[scratchBase + itemIndex / 64u].y;
+                    packedOffset += min(info.packedPrefix, 0xffffffffu - packedOffset);
+                    bool fits = size != 0u && packedOffset < params.blasStorageBytes &&
+                        size <= params.blasStorageBytes - packedOffset;
+                    if (!fits) {
+                        info.flags = (info.flags & kBLASInstancePublishedMask) | kBLASInstanceFallback | kBLASInstanceOverflow;
+                        info.cachedValid = 0u;
+                        info.storageOffset = 0u;
+                        info.storageCapacity = 0u;
+                        InterlockedAdd(blasHeader[0].storageRejected, 1u);
+                        InterlockedAdd(blasHeader[0].overflowCount, 1u);
+                    } else {
+                        bool needsStorage = blasInstanceNeedsStorage(info, size, params);
+                        if (needsStorage) { info.flags |= kBLASInstanceDirty; }
+                        demand = uint4(needsStorage ? size : 0u, size,
+                            (info.flags & kBLASInstanceDirty) != 0u ? 1u : 0u, 1u);
+                    }
+                    instanceBlas[itemIndex] = info;
+                }
             }
         }
         g_StreamBlasStoragePrefix[lane] = demand;
@@ -3680,11 +3709,12 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             instanceBlas[itemIndex].allocationPrefix = before.x;
             instanceBlas[itemIndex].packedPrefix = before.y;
             instanceBlas[itemIndex].buildPrefix = before.z;
+            if (push.activeBuildPhase == 12u) { instanceBlas[itemIndex].blasBuildIndex = before.w; }
         }
         if (lane == 63u) { scan[scratchBase + itemIndex / 64u] = g_StreamBlasStoragePrefix[63]; }
         return;
     }
-    if (push.activeBuildPhase == 9u) {
+    if (push.activeBuildPhase == 9u || push.activeBuildPhase == 13u) {
         if (itemIndex == 0u) {
             uint4 prefix = 0u;
             for (uint block = 0u; block < (params.sceneInstanceCount + 63u) / 64u; ++block) {
@@ -3692,10 +3722,12 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
                 scan[scratchBase + block] = prefix;
                 prefix += min(count, 0xffffffffu - prefix);
             }
-            uint base = blasHeader[0].arenaBase;
-            bool repack = base > params.blasStorageBytes || prefix.x > params.blasStorageBytes - min(base, params.blasStorageBytes);
-            blasHeader[0].arenaRepack = repack ? 1u : 0u;
-            blasHeader[0].arenaUsedBytes = repack ? min(prefix.y, params.blasStorageBytes) : base + prefix.x;
+            if (push.activeBuildPhase == 13u) {
+                uint base = blasHeader[0].arenaBase;
+                bool repack = base > params.blasStorageBytes || prefix.x > params.blasStorageBytes - min(base, params.blasStorageBytes);
+                blasHeader[0].arenaRepack = repack ? 1u : 0u;
+                blasHeader[0].arenaUsedBytes = repack ? prefix.y : base + prefix.x;
+            }
         }
         return;
     }
@@ -3711,7 +3743,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         }
         uint4 prefix = scan[scratchBase + itemIndex / 64u];
         uint size = blasInstanceStorageBytes(info.selectedClusterCount, params);
-        bool grow = info.storageCapacity < size;
+        bool grow = blasInstanceNeedsStorage(info, size, params);
         uint packedOffset = prefix.y + min(info.packedPrefix, 0xffffffffu - prefix.y);
         uint growthOffset = prefix.x + min(info.allocationPrefix, 0xffffffffu - prefix.x);
         growthOffset += min(blasHeader[0].arenaBase, 0xffffffffu - growthOffset);
@@ -3738,7 +3770,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             InterlockedAdd(blasHeader[0].reusedInstances, 1u);
             return;
         }
-        uint buildIndex = repack ? info.blasBuildIndex : prefix.z + info.buildPrefix;
+        uint buildIndex = repack ? prefix.w + info.blasBuildIndex : prefix.z + info.buildPrefix;
         info.blasBuildIndex = buildIndex;
         info.flags |= kBLASInstanceDirty;
         instanceBlas[itemIndex] = info;

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <compare>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <vector>
@@ -88,17 +89,29 @@ struct ResourceRayTracingKernelDesc {
 };
 
 struct CPUProfileRecorder;
+struct ComputeDispatchStats;
+namespace detail { struct ComputeSampledImageTable; }
 
 // Publish through shared_ptr<const ...> and never mutate afterwards. The owner
 // retains the underlying images, while views supply stable ownership identities.
 struct ComputeSampledImageSnapshot {
     std::shared_ptr<const void> owner;
     std::vector<std::shared_ptr<TextureView>> views;
+private:
+    Result<std::shared_ptr<detail::ComputeSampledImageTable>> table(
+        Device& device, ResourceRegistry& registry, uint32_t count, ComputeDispatchStats* stats) const;
+    mutable std::mutex tableMutex_;
+    mutable std::vector<std::shared_ptr<detail::ComputeSampledImageTable>> tables_;
+    friend class ComputeResourceEncoder;
 };
 
 struct ComputeDispatchStats {
+    // Per-image registry operations; a table cache hit performs none.
     uint32_t sampledImageWrites = 0;
     uint32_t sampledImageCacheHits = 0;
+    uint32_t sampledImageTableBuilds = 0;
+    uint32_t sampledImageTableCacheHits = 0;
+    uint64_t sampledImageTableUploadBytes = 0;
 };
 
 struct ComputeDispatchBinding {
@@ -114,7 +127,7 @@ struct ComputeDispatchBinding {
     // DataBuffer only. Supply either a slice or buffer/range, never both.
     BufferSlice data;
     // Optional immutable sampled-image array; takes precedence over textureViews.
-    // The shared registry also deduplicates individual resource registrations.
+    // Index spans cache their immutable GPU table per registry epoch and count.
     std::shared_ptr<const ComputeSampledImageSnapshot> sampledImages;
 };
 

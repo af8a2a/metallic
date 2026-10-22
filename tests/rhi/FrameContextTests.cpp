@@ -540,11 +540,16 @@ public:
             std::array<std::shared_ptr<render::TextureView>, 3> views;
         };
         auto images = std::make_shared<Images>();
+        constexpr uint32_t kStableFrames = 32;
+        constexpr uint32_t kCancelledFrames = 4;
+        constexpr uint32_t kResumedIndex = 6 + kStableFrames;
+        constexpr uint32_t kInFlightIndex = kResumedIndex + 1;
+        constexpr uint32_t kOutputCount = kInFlightIndex + 3;
         FRAME_REQUIRE(tracker.initialize(*device, queue));
         FRAME_REQUIRE(commands.initialize(*device, queue));
         FRAME_REQUIRE(pending.initialize(*device, queue));
         FRAME_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
-        FRAME_REQUIRE(device->createBuffer({.size = 8 * sizeof(uint32_t), .structureStride = 4,
+        FRAME_REQUIRE(device->createBuffer({.size = kOutputCount * sizeof(uint32_t), .structureStride = 4,
             .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         for (size_t i = 0; i < 3; ++i) {
             render::TextureDesc desc;
@@ -556,10 +561,22 @@ public:
             FRAME_REQUIRE(device->createTextureView(*images->textures[i], {}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
             images->views[i] = std::move(view);
         }
-        auto a = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
-            images, {images->views[0], images->views[1]}});
-        auto b = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
-            images, {images->views[0], images->views[2]}});
+        // Distinct generation owners make retirement observable even though the
+        // generations deliberately share their unchanged first texture.
+        auto aOwner = std::make_shared<std::shared_ptr<Images>>(images);
+        auto bOwner = std::make_shared<std::shared_ptr<Images>>(images);
+        std::weak_ptr<void> aLifetime = aOwner;
+        std::weak_ptr<void> bLifetime = bOwner;
+        auto makeSnapshot = [](std::shared_ptr<const void> owner,
+            std::vector<std::shared_ptr<render::TextureView>> views) {
+            auto snapshot = std::make_shared<render::ComputeSampledImageSnapshot>();
+            snapshot->owner = std::move(owner);
+            snapshot->views = std::move(views);
+            return std::shared_ptr<const render::ComputeSampledImageSnapshot>(std::move(snapshot));
+        };
+        auto a = makeSnapshot(aOwner, {images->views[0], images->views[1]});
+        auto b = makeSnapshot(bOwner, {images->views[0], images->views[2]});
+        aOwner.reset(); bOwner.reset();
         const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .kind = render::ComputeResourceBindingKind::SampledImage, .descriptorCount = 2},
             {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer},
@@ -570,7 +587,7 @@ public:
         QueueDrain drain{queue, gate.get()};
         // A raw array and a second program reuse the same canonical descriptors.
         const std::array<uint32_t, 6> writes{2, 0, 1, 0, 0, 0};
-        const std::array<uint32_t, 8> expected{30, 30, 40, 30, 30, 40, 30, 40};
+        std::array<uint32_t, kOutputCount> expected{30, 30, 40, 30, 30, 40};
         for (uint32_t i = 0; i < 6; ++i) {
             FRAME_REQUIRE(commands.begin(i));
             if (i == 0) {
@@ -608,39 +625,159 @@ public:
                 .pushDataSize = 4,
                 .stats = &stats,
             }));
-            if (stats.sampledImageWrites != writes[i] || stats.sampledImageCacheHits != 2 - writes[i]) {
+            const bool tableBuild = i == 0 || i == 2;
+            const bool rawArray = i == 3;
+            if (stats.sampledImageWrites != writes[i] ||
+                stats.sampledImageCacheHits != (tableBuild || rawArray ? 2 - writes[i] : 0) ||
+                stats.sampledImageTableBuilds != (tableBuild ? 1u : 0u) ||
+                stats.sampledImageTableCacheHits != (!tableBuild && !rawArray ? 1u : 0u) ||
+                stats.sampledImageTableUploadBytes != (tableBuild ? 2 * sizeof(uint32_t) : 0)) {
                 return RHITestResult::fail("incorrect sampled-image generation reuse at step " + std::to_string(i));
             }
             FRAME_REQUIRE(commands.submit(tracker));
             FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
             FRAME_REQUIRE(commands.frame.reset());
         }
+        // Completed frame arenas are recycled repeatedly while both independent
+        // programs reuse a snapshot's immutable table. No per-image registry
+        // lookup or index upload is allowed on these stable frames.
+        for (uint32_t i = 6; i < kResumedIndex; ++i) {
+            FRAME_REQUIRE(commands.begin(i));
+            storageBarrier(*commands.buffer, *output);
+            const bool useA = (i & 1u) == 0;
+            expected[i] = useA ? 30 : 40;
+            const render::ComputeDispatchBinding resources[] = {
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .sampledImages = useA ? a : b},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .buffer = output.get()},
+            };
+            render::ComputeDispatchStats stats;
+            FRAME_REQUIRE((i % 3 == 0 ? secondProgram : program).dispatch({
+                .commandBuffer = commands.buffer.get(), .bindings = resources,
+                .pushData = &i, .pushDataSize = 4, .stats = &stats,
+            }));
+            if (stats.sampledImageWrites != 0 || stats.sampledImageCacheHits != 0 ||
+                stats.sampledImageTableBuilds != 0 || stats.sampledImageTableCacheHits != 1 ||
+                stats.sampledImageTableUploadBytes != 0) {
+                return RHITestResult::fail("stable snapshot repeated per-image registration or index upload");
+            }
+            FRAME_REQUIRE(commands.submit(tracker));
+            FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
+            FRAME_REQUIRE(commands.frame.reset());
+        }
+        // A table first built during a cancelled recording must remain usable.
+        // Reusing the frame upload arena must not overwrite its index storage.
+        auto cancelled = makeSnapshot(images, {images->views[2], images->views[1]});
+        for (uint32_t attempt = 0; attempt <= kCancelledFrames; ++attempt) {
+            FRAME_REQUIRE(commands.begin(kResumedIndex + attempt));
+            storageBarrier(*commands.buffer, *output);
+            const render::ComputeDispatchBinding resources[] = {
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .sampledImages = cancelled},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .buffer = output.get()},
+            };
+            render::ComputeDispatchStats stats;
+            FRAME_REQUIRE(program.dispatch({
+                .commandBuffer = commands.buffer.get(), .bindings = resources,
+                .pushData = &kResumedIndex, .pushDataSize = 4, .stats = &stats,
+            }));
+            if (stats.sampledImageWrites != 0 || stats.sampledImageCacheHits != (attempt == 0 ? 2u : 0u) ||
+                stats.sampledImageTableBuilds != (attempt == 0 ? 1u : 0u) ||
+                stats.sampledImageTableCacheHits != (attempt == 0 ? 0u : 1u) ||
+                stats.sampledImageTableUploadBytes != (attempt == 0 ? 2 * sizeof(uint32_t) : 0)) {
+                return RHITestResult::fail("cancelled recording invalidated or rebuilt a snapshot table");
+            }
+            if (attempt < kCancelledFrames) {
+                FRAME_REQUIRE(commands.pool->reset());
+                commands.frame.cancel();
+            } else {
+                FRAME_REQUIRE(commands.submit(tracker));
+                FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
+            }
+            FRAME_REQUIRE(commands.frame.reset());
+        }
+        cancelled.reset();
+        expected[kResumedIndex] = 50;
+        // A populated cache must never bypass the other device's image boundary.
+        {
+            std::unique_ptr<render::Device> otherDevice;
+            FRAME_REQUIRE(render::createDevice({.applicationName = "Foreign snapshot cache",
+                .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+                .transform([&](auto value) { otherDevice = std::move(value); }));
+            render::ComputeProgram otherProgram;
+            FRAME_REQUIRE(createProbe(*otherDevice, "sampleImages", bindings, otherProgram, log));
+            std::unique_ptr<render::Buffer> otherOutput;
+            FRAME_REQUIRE(otherDevice->createBuffer({.size = kOutputCount * sizeof(uint32_t), .structureStride = 4,
+                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback})
+                .transform([&](auto value) { otherOutput = std::move(value); }));
+            const render::ComputeDispatchBinding resources[] = {
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .sampledImages = a},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .buffer = otherOutput.get()},
+            };
+            render::ComputeDispatchStats stats;
+            const auto encoded = otherProgram.encoder.encode(nullptr, {
+                .bindings = resources, .pushData = &kResumedIndex, .pushDataSize = 4, .stats = &stats,
+            });
+            if (encoded || !render::hasError(encoded, render::Error::InvalidArgument) ||
+                stats.sampledImageTableCacheHits != 0) {
+                return RHITestResult::fail("foreign registry reused a cached sampled-image table");
+            }
+        }
         // Keep two generations in flight and release the caller's ownership
-        // before execution. Cached weak entries must not own retired images.
-        for (uint32_t i = 6; i < 8; ++i) {
-            auto& frame = i == 6 ? commands : pending;
-            FRAME_REQUIRE(frame.begin(i));
+        // before execution. Also recreate the same registry wrapper's heap
+        // epoch: the same snapshot must acquire new indices, while the old
+        // packet must retain its original heap and table until GPU completion.
+        std::shared_ptr<render::ResourceRegistry> registry;
+        FRAME_REQUIRE(render::ResourceRegistry::forDevice(*device).transform([&](auto value) { registry = std::move(value); }));
+        for (uint32_t i = kInFlightIndex; i < kOutputCount; ++i) {
+            const bool first = i == kInFlightIndex;
+            const bool useA = i != kOutputCount - 1;
+            expected[i] = useA ? 30 : 40;
+            auto& frame = first ? commands : pending;
+            if (i == kInFlightIndex + 1) {
+                *registry = render::ResourceRegistry{};
+                FRAME_REQUIRE(registry->initialize(*device));
+            }
+            if (i != kOutputCount - 1) { FRAME_REQUIRE(frame.begin(i)); }
             storageBarrier(*frame.buffer, *output);
             const render::ComputeDispatchBinding resources[] = {
-                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .sampledImages = i == 6 ? a : b}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .sampledImages = useA ? a : b}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .buffer = output.get()},
             };
+            render::ComputeDispatchStats stats;
             FRAME_REQUIRE(program.dispatch({
                 .commandBuffer = frame.buffer.get(),
                 .bindings = {resources, 2},
                 .pushData = &i,
                 .pushDataSize = 4,
+                .stats = &stats,
             }));
-            FRAME_REQUIRE(frame.submit(tracker, i == 6 ? gate.get() : nullptr));
+            const uint32_t expectedWrites = first ? 0u : (useA ? 2u : 1u);
+            if (stats.sampledImageWrites != expectedWrites ||
+                stats.sampledImageCacheHits != (!first && !useA ? 1u : 0u) ||
+                stats.sampledImageTableBuilds != (first ? 0u : 1u) ||
+                stats.sampledImageTableCacheHits != (first ? 1u : 0u) ||
+                stats.sampledImageTableUploadBytes != (first ? 0u : 2 * sizeof(uint32_t))) {
+                return RHITestResult::fail("snapshot reused indices from a different registry epoch");
+            }
+            if (first || i == kOutputCount - 1) {
+                FRAME_REQUIRE(frame.submit(tracker, first ? gate.get() : nullptr));
+            }
         }
         std::weak_ptr<Images> lifetime = images;
         images.reset(); a.reset(); b.reset();
-        if (lifetime.expired()) { return RHITestResult::fail("in-flight sampled images released early"); }
+        program.clear(); secondProgram.clear();
+        if (lifetime.expired() || aLifetime.expired() || bLifetime.expired()) {
+            return RHITestResult::fail("in-flight sampled image generation released early");
+        }
         FRAME_REQUIRE(gate->signal(1));
         FRAME_REQUIRE(pending.frame.wait(kWaitTimeout));
         FRAME_REQUIRE(commands.frame.reset());
+        if (aLifetime.expired() || bLifetime.expired()) {
+            return RHITestResult::fail("new epoch did not retain its sampled-image generations");
+        }
         FRAME_REQUIRE(pending.frame.reset());
-        if (!lifetime.expired()) { return RHITestResult::fail("completed descriptor cache retains retired images"); }
-        std::array<uint32_t, 8> actual{};
+        if (!lifetime.expired() || !aLifetime.expired() || !bLifetime.expired()) {
+            return RHITestResult::fail("completed descriptor cache retains retired images");
+        }
+        std::array<uint32_t, kOutputCount> actual{};
         if (!readWords(*output, actual.data(), actual.size()) || actual != expected) {
             return RHITestResult::fail("sampled descriptors returned stale/overwritten image values");
         }

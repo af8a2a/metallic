@@ -165,7 +165,7 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     const uint64_t structural = scene->sceneGraph().structuralRevision();
     // A session rebuild uses a unique cache for runtime instance edits and
     // composed scenes. Never overwrite an asset still mapped by in-flight work.
-    const bool runtimeCook = !scene->sources().empty() ||
+    const bool runtimeCook = scene->isComposed() ||
         (prepared->state && (prepared->state->sceneIdentity != identity ||
          prepared->state->structuralRevision != structural));
     const auto selectRuntimeCache = [&]() -> Result<> {
@@ -207,9 +207,15 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
             for (const auto& instance : asset.instances()) {
                 if (!compatible) { break; }
                 compatible = instance.renderNodeIndex < scene->renderNodes().size() &&
-                    instance.primitiveIndex < asset.primitives().size() &&
-                    asset.primitives()[instance.primitiveIndex].renderPrimitiveIndex ==
+                    instance.primitiveIndex < asset.primitives().size();
+                // Offline cooks use canonical source geometry ordinals; stream
+                // metadata creates a primitive per instance. Their indices are
+                // not comparable. Source dependencies and the structural
+                // revision above establish that metadata retains source topology.
+                if (compatible && !scene->hasStreamGeometry()) {
+                    compatible = asset.primitives()[instance.primitiveIndex].renderPrimitiveIndex ==
                         uint32_t(scene->renderNodes()[instance.renderNodeIndex].renderPrimitiveIndex);
+                }
             }
         }
         asset.close();

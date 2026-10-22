@@ -446,6 +446,9 @@ public:
     SceneMaterialSource materialSource(int32_t materialIndex) const;
     int32_t materialIndexForSource(std::string_view sourceId, int32_t sourceMaterialIndex) const;
     const std::vector<SceneSourceDesc>& sources() const { return sources_; }
+    // compose() owns a mount per source, including single-source compositions.
+    // Imported assets also expose a source, but do not have composition mounts.
+    bool isComposed() const { return !sourceMountObjects_.empty(); }
     const std::vector<int32_t>& rootNodeIndices() const { return rootNodeIndices_; }
     const std::vector<SceneNode>& nodes() const { return nodes_; }
     const std::vector<SceneMesh>& meshes() const { return meshes_; }

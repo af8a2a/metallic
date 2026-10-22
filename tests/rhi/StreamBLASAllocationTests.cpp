@@ -90,6 +90,10 @@ public:
                 .traversalPhase = 1};
             bool submitted = false;
             const auto execute = [&](uint32_t cacheFlags) {
+                // Build records are frame outputs. Clear them so a missing write
+                // cannot be concealed by a valid record from an earlier frame.
+                upload(Infos, nullptr, 0);
+                upload(Destinations, nullptr, 0);
                 push.traversalPhase = cacheFlags;
                 if (submitted) { require(bool(fence->reset()) && bool(pool->reset()), "reset"); }
                 require(bool(command->begin()), "begin"); command->hostWriteBarrier(); require(bool(command->bindBindlessHeap(*heap)), "record command");
@@ -100,9 +104,9 @@ public:
                         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
                 }
-                for (uint32_t phase : {0u, 5u, 1u, 4u, 6u, 7u, 2u, 8u, 9u, 10u, 3u, 11u}) {
+                for (uint32_t phase : {0u, 5u, 1u, 4u, 6u, 7u, 2u, 8u, 9u, 12u, 13u, 10u, 3u, 11u}) {
                     push.activeBuildPhase = phase; require(bool(command->pushBindlessData(&push, sizeof(push))), "record command");
-                    require(bool(command->dispatch(phase == 0 || phase == 7 || phase == 9 ? 1 : (count + 63) / 64)), "record command");
+                    require(bool(command->dispatch(phase == 0 || phase == 7 || phase == 9 || phase == 13 ? 1 : (count + 63) / 64)), "record command");
                     require(bool(command->synchronize({.buffers = barriers})), "phase barrier");
                 }
                 for (auto& barrier : barriers) { barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead}; }
@@ -269,6 +273,203 @@ public:
                     require(headerAt(reuse).semanticChangeCount == 0, "BLAS arena relocation invalidated identical geometry");
                     reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 0, "repacked arena did not settle");
+                    // Partial overflow must settle just like a fully admitted cut:
+                    // rejected instances cannot force the surviving BLAS to repack
+                    // and rebuild on every unchanged frame.
+                    params.blasStorageBytes = packedBytes / 2u;
+                    upload(Params, &params, sizeof(params));
+                    auto partial = execute(false);
+                    const auto partialHeader = headerAt(partial);
+                    require(partialHeader.storageRejected > 0 && partialHeader.storageRejected < acceptedBuilds,
+                        "partial storage overflow did not retain a dynamic subset");
+                    require(partialHeader.semanticChangeCount == partialHeader.storageRejected,
+                        "partial overflow invalidated unchanged dynamic geometry or omitted fallback changes");
+                    const uint32_t partialBuilds = acceptedBuilds - partialHeader.storageRejected;
+                    const auto checkStorage = [&](const auto& bytes) {
+                        const auto currentHeader = headerAt(bytes);
+                        std::vector<std::pair<uint32_t, uint32_t>> slots;
+                        uint32_t liveReferences = 0;
+                        for (uint32_t i = 0; i < count; ++i) {
+                            const auto instance = instanceAt(bytes, i);
+                            if ((instance.flags & kMeshletStreamBLASInstanceDynamic) == 0u) { continue; }
+                            require(instance.storageCapacity != 0 && instance.storageOffset <= params.blasStorageBytes &&
+                                instance.storageCapacity <= params.blasStorageBytes - instance.storageOffset,
+                                "partial overflow published an out-of-bounds BLAS");
+                            slots.emplace_back(instance.storageOffset, instance.storageOffset + instance.storageCapacity);
+                            liveReferences += instance.selectedClusterCount;
+                        }
+                        std::sort(slots.begin(), slots.end());
+                        for (size_t i = 1; i < slots.size(); ++i) {
+                            require(slots[i - 1].second <= slots[i].first, "partial overflow BLAS storage overlaps");
+                        }
+                        require(liveReferences == currentHeader.liveClusterReferences &&
+                            slots.size() == currentHeader.reusedInstances + currentHeader.blasBuildCount,
+                            "partial overflow admission counters do not match live instances");
+                        require(currentHeader.blasBuildCount <= count, "partial overflow build count exceeds capacity");
+                        const uint64_t infoOffset = std::accumulate(std::begin(sizes), std::begin(sizes) + Infos, uint64_t(0));
+                        const uint64_t destinationOffset = std::accumulate(std::begin(sizes), std::begin(sizes) + Destinations, uint64_t(0));
+                        std::vector<uint64_t> builtAddresses;
+                        uint32_t buildReferences = 0;
+                        for (uint32_t build = 0; build < currentHeader.blasBuildCount; ++build) {
+                            MeshletStreamGPUBLASBuildInfo info;
+                            std::memcpy(&info, bytes.data() + infoOffset + build * sizeof(info), sizeof(info));
+                            uint64_t destination;
+                            std::memcpy(&destination, bytes.data() + destinationOffset + build * sizeof(destination), sizeof(destination));
+                            require(info.clusterReferencesCount != 0 && destination != 0,
+                                "partial overflow left a hole in the indirect build records");
+                            bool matched = false;
+                            for (uint32_t i = 0; i < count; ++i) {
+                                const auto instance = instanceAt(bytes, i);
+                                if ((instance.flags & kMeshletStreamBLASInstanceDynamic) == 0u) { continue; }
+                                const uint64_t storageAddress = (uint64_t(params.blasStorageAddressHigh) << 32) | params.blasStorageAddressLow;
+                                if (destination != storageAddress + instance.storageOffset) { continue; }
+                                const uint64_t referencesAddress = (uint64_t(info.clusterReferencesAddressHigh) << 32) | info.clusterReferencesAddressLow;
+                                require(instance.blasBuildIndex == build && info.clusterReferencesCount == instance.selectedClusterCount &&
+                                    referencesAddress == 0x5fffffff0ull + uint64_t(instance.clusterReferenceOffset) * 8 &&
+                                    instance.clusterReferenceOffset <= params.blasClusterReferenceCapacity &&
+                                    info.clusterReferencesCount <= params.blasClusterReferenceCapacity - instance.clusterReferenceOffset,
+                                    "partial overflow build record does not match its admitted instance");
+                                matched = true;
+                                break;
+                            }
+                            require(matched, "partial overflow build destination is not an admitted BLAS");
+                            builtAddresses.push_back(destination);
+                            buildReferences += info.clusterReferencesCount;
+                        }
+                        std::sort(builtAddresses.begin(), builtAddresses.end());
+                        require(std::adjacent_find(builtAddresses.begin(), builtAddresses.end()) == builtAddresses.end(),
+                            "partial overflow emitted duplicate BLAS build destinations");
+                        require(buildReferences == currentHeader.clusterReferenceCount,
+                            "partial overflow build reference count includes rejected instances");
+                    };
+                    checkStorage(partial);
+                    for (uint32_t stableFrame = 0; stableFrame < 2; ++stableFrame) {
+                        reuse = execute(false);
+                        const auto stable = headerAt(reuse);
+                        require(stable.blasBuildCount == 0 && stable.arenaRepack == 0 &&
+                            stable.reusedInstances == partialBuilds && stable.storageRejected == partialHeader.storageRejected,
+                            "unchanged partial storage overflow repeatedly repacked or rebuilt BLAS");
+                        require(stable.semanticChangeCount == 0, "stable partial storage overflow invalidated shading history");
+                        for (uint32_t i = 0; i < count; ++i) {
+                            const auto before = instanceAt(partial, i);
+                            const auto after = instanceAt(reuse, i);
+                            require((before.flags & kMeshletStreamBLASInstanceDynamic) == (after.flags & kMeshletStreamBLASInstanceDynamic) &&
+                                before.storageOffset == after.storageOffset && before.storageCapacity == after.storageCapacity,
+                                "unchanged partial overflow changed admission or persistent storage");
+                        }
+                        checkStorage(reuse);
+                    }
+                    // Growing a surviving cut across a size class can evict later
+                    // instances, but unchanged survivors must settle immediately.
+                    uint32_t growingGroup = 0;
+                    while (growingGroup < activeHeader.activeGroupCount &&
+                        (instanceAt(partial, active[growingGroup].instanceIndex).flags & kMeshletStreamBLASInstanceDynamic) == 0u) {
+                        ++growingGroup;
+                    }
+                    require(growingGroup < activeHeader.activeGroupCount, "no admitted instance available to grow");
+                    const uint32_t growingInstance = active[growingGroup].instanceIndex;
+                    const uint32_t originalMask = active[growingGroup].clusterSelectionMask;
+                    const uint32_t originalCount = std::popcount(originalMask);
+                    require(originalCount > 0 && originalCount <= 16, "growth fixture does not cross a storage size class");
+                    active[growingGroup].clusterSelectionMask = 0xffffffffu;
+                    upload(Groups, active.data(), sizeof(active));
+                    auto grown = execute(false);
+                    uint32_t evicted = 0;
+                    for (uint32_t i = 0; i < count; ++i) {
+                        evicted += (instanceAt(partial, i).flags & kMeshletStreamBLASInstanceDynamic) != 0u &&
+                            (instanceAt(grown, i).flags & kMeshletStreamBLASInstanceDynamic) == 0u;
+                    }
+                    require(evicted > 0 && (instanceAt(grown, growingInstance).flags & kMeshletStreamBLASInstanceDynamic) != 0u,
+                        "partial-budget growth did not retain the changed cut and evict another instance");
+                    require(headerAt(grown).semanticChangeCount == evicted + 1 &&
+                        headerAt(grown).dirtyInstances == headerAt(grown).blasBuildCount,
+                        "partial-budget growth invalidated unchanged geometry or omitted changed geometry");
+                    checkStorage(grown);
+                    const auto requireStableAdmission = [&](const auto& expected, const auto& actual) {
+                        const auto current = headerAt(actual);
+                        require(current.blasBuildCount == 0 && current.arenaRepack == 0 && current.semanticChangeCount == 0 &&
+                            current.storageRejected == headerAt(expected).storageRejected,
+                            "partial-budget size-class change did not settle");
+                        for (uint32_t i = 0; i < count; ++i) {
+                            const auto before = instanceAt(expected, i);
+                            const auto after = instanceAt(actual, i);
+                            require((before.flags & kMeshletStreamBLASInstanceDynamic) == (after.flags & kMeshletStreamBLASInstanceDynamic) &&
+                                before.storageOffset == after.storageOffset && before.storageCapacity == after.storageCapacity,
+                                "stable size-class change altered admission or persistent storage");
+                        }
+                        checkStorage(actual);
+                    };
+                    for (uint32_t stableFrame = 0; stableFrame < 2; ++stableFrame) {
+                        reuse = execute(false);
+                        requireStableAdmission(grown, reuse);
+                    }
+                    active[growingGroup].clusterSelectionMask = originalMask;
+                    upload(Groups, active.data(), sizeof(active));
+                    auto shrunk = execute(false);
+                    uint32_t restored = 0;
+                    for (uint32_t i = 0; i < count; ++i) {
+                        const bool dynamic = (instanceAt(shrunk, i).flags & kMeshletStreamBLASInstanceDynamic) != 0u;
+                        require(dynamic == ((instanceAt(partial, i).flags & kMeshletStreamBLASInstanceDynamic) != 0u),
+                            "restoring the original cut did not restore storage admission");
+                        restored += dynamic && (instanceAt(grown, i).flags & kMeshletStreamBLASInstanceDynamic) == 0u;
+                    }
+                    require(restored == evicted && headerAt(shrunk).semanticChangeCount == restored + 1,
+                        "cut shrink omitted readmission or invalidated unchanged geometry");
+                    checkStorage(shrunk);
+                    for (uint32_t stableFrame = 0; stableFrame < 2; ++stableFrame) {
+                        reuse = execute(false);
+                        requireStableAdmission(shrunk, reuse);
+                    }
+                    // Releasing selected geometry must make room for a previously
+                    // rejected instance, and restoring that geometry must settle.
+                    uint32_t releasedGroup = 0;
+                    while (releasedGroup < activeHeader.activeGroupCount &&
+                        (instanceAt(partial, active[releasedGroup].instanceIndex).flags & kMeshletStreamBLASInstanceDynamic) == 0u) {
+                        ++releasedGroup;
+                    }
+                    require(releasedGroup < activeHeader.activeGroupCount, "no admitted instance available to release");
+                    const uint32_t releasedInstance = active[releasedGroup].instanceIndex;
+                    const uint32_t releasedMask = active[releasedGroup].clusterSelectionMask;
+                    active[releasedGroup].clusterSelectionMask = 0u;
+                    upload(Groups, active.data(), sizeof(active));
+                    reuse = execute(false);
+                    require((instanceAt(reuse, releasedInstance).flags & kMeshletStreamBLASInstanceDynamic) == 0u,
+                        "released geometry retained dynamic admission");
+                    bool readmitted = false;
+                    for (uint32_t i = 0; i < count; ++i) {
+                        readmitted |= (instanceAt(partial, i).flags & kMeshletStreamBLASInstanceDynamic) == 0u &&
+                            (instanceAt(reuse, i).flags & kMeshletStreamBLASInstanceDynamic) != 0u;
+                    }
+                    require(readmitted, "released storage did not admit a previously rejected instance");
+                    checkStorage(reuse);
+                    reuse = execute(false);
+                    require(headerAt(reuse).blasBuildCount == 0 && headerAt(reuse).arenaRepack == 0 &&
+                        headerAt(reuse).semanticChangeCount == 0, "released partial overflow did not settle");
+                    active[releasedGroup].clusterSelectionMask = releasedMask;
+                    upload(Groups, active.data(), sizeof(active));
+                    reuse = execute(false);
+                    require((instanceAt(reuse, releasedInstance).flags & kMeshletStreamBLASInstanceDynamic) != 0u,
+                        "restored geometry did not reenter dynamic storage");
+                    checkStorage(reuse);
+                    reuse = execute(false);
+                    require(headerAt(reuse).blasBuildCount == 0 && headerAt(reuse).arenaRepack == 0 &&
+                        headerAt(reuse).semanticChangeCount == 0, "restored partial overflow did not settle");
+                    // Raising the storage budget retries rejected instances without
+                    // forcing a cache reset or a publication-generation change.
+                    const uint32_t retryCount = headerAt(reuse).storageRejected;
+                    params.blasStorageBytes = 1u << 20;
+                    upload(Params, &params, sizeof(params));
+                    reuse = execute(false);
+                    require(headerAt(reuse).storageRejected == 0 && headerAt(reuse).blasBuildCount == retryCount &&
+                        headerAt(reuse).reusedInstances + retryCount == acceptedBuilds,
+                        "restored storage capacity did not retry only rejected instances");
+                    require(headerAt(reuse).semanticChangeCount == retryCount,
+                        "capacity recovery omitted fallback-to-dynamic semantic changes");
+                    checkStorage(reuse);
+                    reuse = execute(false);
+                    require(headerAt(reuse).blasBuildCount == 0 && headerAt(reuse).arenaRepack == 0 &&
+                        headerAt(reuse).reusedInstances == acceptedBuilds && headerAt(reuse).semanticChangeCount == 0,
+                        "restored storage capacity did not settle");
                     params.blasStorageBytes = 64;
                     upload(Params, &params, sizeof(params)); reuse = execute(false);
                     require(headerAt(reuse).storageRejected == acceptedBuilds && headerAt(reuse).blasBuildCount == 0, "storage overflow published invalid BLAS");
@@ -298,7 +499,7 @@ public:
                     require(headerAt(reuse).semanticChangeCount == 1, "Restoring ray-visible geometry omitted semantic change");
                 }
             }
-            return RHITestResult::pass("Per-instance exact reuse, local generation/cut invalidation, shifted ranges, bounded growth/repack, reset; selected-cut packing: zero initial slices, multi-block/tail scan, reordered instances, sparse masks, exact fit, reference/build/per-build limits and missing CLAS");
+            return RHITestResult::pass("Per-instance exact reuse, local generation/cut invalidation, shifted ranges, bounded growth/repack, stable partial overflow, release/reentry, capacity recovery, reset; selected-cut packing: zero initial slices, multi-block/tail scan, reordered instances, sparse masks, exact fit, reference/build/per-build limits and missing CLAS");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

@@ -1068,6 +1068,7 @@ struct ScenePathTraceResources::Impl {
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot;
     GPUCompletionPoint texturePublication;
     struct TextureFeedbackBuffers {
+        std::vector<TextureSamplingMetadata> metadata;
         std::shared_ptr<Buffer> seed;
         std::shared_ptr<Buffer> samplingMetadata;
         std::shared_ptr<Buffer> demandMip;
@@ -1341,8 +1342,12 @@ struct ScenePathTraceResources::Impl {
         const uint64_t steadyBudget = textureStats.budgetBytes - reserve;
         CPUProfileScope phase(profiler, "Candidates and allocation queries");
         const auto budget = device->memoryBudget();
+        // Retired generations free themselves when their submitting frames finish;
+        // temporary overlap must not evict another otherwise affordable image.
+        const uint64_t availableAfterRetirement = budget.availableBytes + textureStats.retiredAllocationBytes;
         const bool pressure = textureStats.residentAllocationBytes > steadyBudget ||
-            (budget.policy.enabled && budget.availableBytes < reserve);
+            (budget.policy.enabled && availableAfterRetirement < reserve);
+        bool reclaimCold = pressure;
         struct Candidate { TextureRequest request; double priority; };
         std::vector<Candidate> candidates;
         textureStats.refinedImages = textureStats.requestedImages = 0;
@@ -1353,22 +1358,38 @@ struct ScenePathTraceResources::Impl {
             const uint32_t current = ktxFirstMips[image], base = baseTextureMips[image];
             textureStats.refinedImages += current < base;
             const uint64_t age = streamingFrame - textureLastSeen[image];
-            uint32_t target = current;
-            const bool cold = age >= textureColdFrames || (pressure && age >= std::min(30u, textureColdFrames));
-            if (cold && current < base) { target = base; }
-            else if (age < 16 && desiredTextureMips[image] < current) {
-                ++textureStats.requestedImages;
-                if (!pressure) { target = std::max(desiredTextureMips[image], current - 1); }
-                else { ++textureStats.budgetDeferrals; }
-            }
+            if (age >= std::min(16u, textureColdFrames) || desiredTextureMips[image] >= current) { continue; }
+            ++textureStats.requestedImages;
+            if (pressure) { ++textureStats.budgetDeferrals; continue; }
             // A separate cooldown prevents refine/evict oscillation around a view cut.
-            if (target == current || streamingFrame - textureLastChanged[image] < std::min(30u, textureColdFrames)) { continue; }
+            if (streamingFrame - textureLastChanged[image] < std::min(30u, textureColdFrames)) { continue; }
+            const uint32_t target = std::max(desiredTextureMips[image], current - 1);
             uint64_t bytes = 0;
             if (!device->textureAllocationSize(ktxImages[image]->textureDesc(target)).transform([&](auto rhiValue) { bytes = std::move(rhiValue); })) { continue; }
+            if (bytes > maxBatchBytes || Ktx2TexturePrefetch::requiredBytes(*ktxImages[image], target) > kTexturePrefetchBytes) { continue; }
             const uint64_t oldBytes = materialTextures[slot].texture->allocationSize();
-            const double priority = target > current ? 1e12 + double(oldBytes) :
-                double(textureHits[image]) * (current - target) / double(std::max<uint64_t>(bytes - std::min(bytes,oldBytes),1));
+            // A resident set can be below steadyBudget while the next real
+            // upgrade cannot fit. Reclaim for that request, not for a full batch.
+            reclaimCold |= textureStats.residentAllocationBytes - oldBytes + bytes > steadyBudget ||
+                textureStats.residentAllocationBytes + bytes > textureStats.budgetBytes ||
+                (budget.policy.enabled && bytes > availableAfterRetirement);
+            const double priority = double(textureHits[image]) * (current - target) /
+                double(std::max<uint64_t>(bytes - std::min(bytes,oldBytes),1));
             candidates.push_back({{image,slot,target,bytes},priority});
+        }
+        if (reclaimCold) {
+            for (uint32_t image = 0; image < ktxImages.size(); ++image) {
+                if (!ktxImages[image] || pinnedImages[image]) { continue; }
+                const uint32_t slot = asyncImageTextureIndexMap[image];
+                if (slot == kInvalidMaterialTextureIndex) { continue; }
+                const uint32_t current = ktxFirstMips[image], base = baseTextureMips[image];
+                const uint64_t coldFrames = std::min(30u, textureColdFrames);
+                if (current >= base || streamingFrame - textureLastSeen[image] < coldFrames ||
+                    streamingFrame - textureLastChanged[image] < coldFrames) { continue; }
+                uint64_t bytes = 0;
+                if (!device->textureAllocationSize(ktxImages[image]->textureDesc(base)).transform([&](auto rhiValue) { bytes = std::move(rhiValue); })) { continue; }
+                candidates.push_back({{image,slot,base,bytes},1e12 + double(materialTextures[slot].texture->allocationSize())});
+            }
         }
         phase.next("Sort and admit candidates");
         std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.priority > b.priority; });
@@ -1519,21 +1540,26 @@ struct ScenePathTraceResources::Impl {
         }
         const uint64_t count = std::max<size_t>(materialTextures.size(), 1);
         const uint64_t metadataBytes = count * sizeof(TextureSamplingMetadata), demandBytes = count * sizeof(uint32_t);
-        auto* metadata = static_cast<TextureSamplingMetadata*>(buffers.seed->map());
-        if (!metadata) { return makeError(Error::Failure); }
-        auto* mip = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(metadata) + metadataBytes);
+        buffers.metadata.resize(count);
+        auto* metadata = buffers.metadata.data();
+        auto* seed = static_cast<uint8_t*>(buffers.seed->map());
+        if (!seed) { return makeError(Error::Failure); }
+        auto* mip = reinterpret_cast<uint32_t*>(seed + metadataBytes);
         auto* hits = mip + count;
         for (uint32_t slot = 0; slot < count; ++slot) {
             metadata[slot] = slot < materialTextures.size() ? textureSamplingMetadata(slot) : TextureSamplingMetadata{};
         }
-        std::fill_n(mip, count, UINT32_MAX);
-        std::fill_n(hits, count, 0u);
         for (uint32_t image = 0; image < ktxImages.size(); ++image) {
             const uint32_t slot = asyncImageTextureIndexMap[image];
             if (!ktxImages[image] || pinnedImages[image] || slot >= materialTextures.size()) { continue; }
             metadata[slot].samplingFloor = textureMipTransitions[image].samplingLodFloor(textureTransitionSeconds);
             if (captureDemand) { metadata[slot].residentFirstMipAndFlags |= kTextureDemandEnabled; }
         }
+        // HostUpload may be uncached/write-combined. Finish all metadata reads
+        // and updates in ordinary memory before writing the upload range once.
+        std::memcpy(seed, metadata, metadataBytes);
+        std::fill_n(mip, count, UINT32_MAX);
+        std::fill_n(hits, count, 0u);
         buffers.seed->flush(); buffers.seed->unmap();
         TextureFeedback entry{.buffers = std::move(buffers), .completion = frame->completion(),
             .frame = frameIndex, .captureDemand = captureDemand};

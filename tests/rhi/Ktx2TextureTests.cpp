@@ -708,11 +708,12 @@ public:
         require(resources.prepare(context.device,context.graphicsQueue,
             {{"path",path.string()},{"materialTextureMaxDimension",128},{"materialTextureMaskMaxDimension",4},
              {"materialTextureBudgetMiB",4},
-             {"materialTextureRefineDimension",512},{"materialTextureColdFrames",16}},&scene,log),log);
+             {"materialTextureRefineDimension",512},{"materialTextureColdFrames",8}},&scene,log),log);
         const auto baseline = resources.textureStats().residentAllocationBytes;
         const auto initialMips = resources.materialTextureFirstMips();
         const auto logical = std::vector<uint32_t>(resources.logicalTextureIndices().begin(),resources.logicalTextureIndices().end());
         const auto imageSlot = logical[1];
+        uint32_t demandImage = 1;
         ShaderCompileResult shader;
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
@@ -760,7 +761,7 @@ public:
                 {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, samplingMetadata), .buffer = feedback.samplingMetadata},
                 {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandMip), .buffer = feedback.demandMip},
                 {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandHits), .buffer = feedback.demandHits}};
-            const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
+            const uint32_t push[]{logical[demandImage],0,visible ? 1000u : 0u,0};
             require(program.dispatch({
                 .commandBuffer = commands.get(),
                 .bindings = view,
@@ -807,7 +808,37 @@ public:
         require(frame.wait(),"sample refined wait");
         auto sample = sampleTexture(context,resources,imageSlot,0,2);
         require(std::abs(sample[4]-64.f/255)<.003f,"Refined image lost BC5 channels");
-        for (uint32_t i=0;i<120;++i) { tick(false); }
+        const auto stable = resources.textureStats();
+        const auto requireStableResidency = [&] {
+            const auto current = resources.textureStats();
+            require(current.upgrades == stable.upgrades && current.downgrades == stable.downgrades &&
+                current.streamingUploadBytes == stable.streamingUploadBytes &&
+                current.lastUpload.sequence == stable.lastUpload.sequence &&
+                current.residentAllocationBytes == stable.residentAllocationBytes &&
+                resources.materialTextureFirstMips()[1] == 1,
+                "Cold or sparsely sampled texture churned without memory pressure");
+        };
+        // Feedback absence is not proof that a stochastic ray consumer no longer
+        // needs this image. Keep its tail across many cold windows while it fits.
+        for (uint32_t i = 0; i < 128; ++i) { tick(false); requireStableResidency(); }
+        for (uint32_t i = 0; i < 128; ++i) { tick(i % 32 == 0); requireStableResidency(); }
+        require(frame.wait(), "stable texture wait");
+        const uint64_t reserve = std::min<uint64_t>(16ull * 1024 * 1024, stable.budgetBytes / 8);
+        pressure = restore.policy;
+        pressure.enabled = true;
+        // Admit the small base-tail replacement while keeping shared headroom
+        // below the reserve. Refresh the cap as allocations retire.
+        for (uint32_t i = 0; i < 120; ++i) {
+            const auto memory = context.device.memoryBudget();
+            require(memory.primaryDeviceLocalHeap != UINT32_MAX, "Missing local heap for texture pressure test");
+            pressure.deviceLocalHeapLimitBytes = memory.heaps[memory.primaryDeviceLocalHeap].usageBytes +
+                pressure.safetyBytes + memory.reservedBytes + reserve / 2;
+            context.device.setMemoryBudgetPolicy(pressure);
+            tick(false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        context.device.setMemoryBudgetPolicy(restore.policy);
+        for (uint32_t i = 0; i < 4; ++i) { tick(false); }
         require(frame.wait(),"cold wait");
         require(resources.materialTextureFirstMips()[1]==initialMips[1],"Cold texture did not return to base tail");
         const auto cold = resources.textureStats();
@@ -825,10 +856,67 @@ public:
         Json report{{"baseBytes",baseline},{"hotBytes",hot.residentAllocationBytes},{"coldBytes",cold.residentAllocationBytes},
             {"peakLiveBytes",cold.peakLiveAllocationBytes},{"budgetBytes",cold.budgetBytes},{"upgrades",cold.upgrades},
             {"downgrades",cold.downgrades},{"feedbackFrames",cold.feedbackFrames},{"maxRequestFrames",cold.maxRequestLatencyFrames}};
+        require(frame.reset(), "pressure fixture frame reset");
+        require(pool->reset(), "pressure fixture pool reset");
+        resources.clear();
+        require(resources.prepare(context.device, context.graphicsQueue,
+            {{"path",path.string()}, {"materialTextureMaxDimension",128}, {"materialTextureMaskMaxDimension",4},
+             {"materialTextureBudgetMiB",1}, {"materialTextureRefineDimension",512},
+             {"materialTextureColdFrames",8}}, &scene, log), log);
+        require(std::equal(logical.begin(), logical.end(), resources.logicalTextureIndices().begin()),
+            "Reprepared fixture changed logical texture IDs");
+        const auto admissionBase = resources.textureStats();
+        const auto admissionBaseMips = resources.materialTextureFirstMips();
+        const uint64_t steadyBudget = admissionBase.budgetBytes -
+            std::min<uint64_t>(16ull * 1024 * 1024, admissionBase.budgetBytes / 8);
+        std::array<uint64_t, 2> fineGrowth{};
+        for (uint32_t image = 0; image < 2; ++image) {
+            Ktx2TextureInfo info;
+            require(readKtx2TextureInfo(directory / (std::to_string(image) + ".ktx2"), info, log), log);
+            uint64_t baseBytes = 0, fineBytes = 0;
+            require(context.device.textureAllocationSize(info.textureDesc(admissionBaseMips[image]))
+                .transform([&](auto value) { baseBytes = value; }), "Admission base allocation");
+            require(context.device.textureAllocationSize(info.textureDesc(info.firstMipForDimension(512)))
+                .transform([&](auto value) { fineBytes = value; }), "Admission fine allocation");
+            fineGrowth[image] = fineBytes - baseBytes;
+        }
+        require(admissionBase.residentAllocationBytes + fineGrowth[1] <= steadyBudget &&
+            admissionBase.residentAllocationBytes + fineGrowth[0] <= steadyBudget &&
+            admissionBase.residentAllocationBytes + fineGrowth[0] + fineGrowth[1] > steadyBudget,
+            "Fixture must fit either hot image but not both within the steady texture budget");
+        for (uint32_t attempt = 0; attempt < 300 && resources.materialTextureFirstMips()[1] != 1; ++attempt) {
+            tick(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(resources.materialTextureFirstMips()[1] == 1, "First admission image did not refine");
+        for (uint32_t step = 0; step < 32; ++step) { tick(false); }
+        require(resources.textureStats().downgrades == 0 && resources.textureStats().residentAllocationBytes <= steadyBudget,
+            "Cold image should remain cached before another admission needs its budget");
+        demandImage = 0;
+        for (uint32_t attempt = 0; attempt < 300 && resources.materialTextureFirstMips()[0] != 1; ++attempt) {
+            require(resources.textureStats().residentAllocationBytes <= steadyBudget,
+                "Admission fixture unexpectedly entered resident budget pressure");
+            tick(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(resources.materialTextureFirstMips()[0] == 1 &&
+            resources.materialTextureFirstMips()[1] == admissionBaseMips[1] && resources.textureStats().downgrades == 1,
+            "A blocked hot upgrade must reclaim a cold image even when current residency fits the steady budget");
+        const auto admitted = resources.textureStats();
+        for (uint32_t step = 0; step < 96; ++step) { tick(step % 32 == 0); }
+        require(frame.wait(), "admission retirement wait");
+        const auto admissionStable = resources.textureStats();
+        require(admissionStable.upgrades == admitted.upgrades && admissionStable.downgrades == admitted.downgrades &&
+            admissionStable.streamingUploadBytes == admitted.streamingUploadBytes &&
+            admissionStable.lastUpload.sequence == admitted.lastUpload.sequence && admissionStable.retiredAllocationBytes == 0,
+            "Admitted sparse texture did not stabilize after cold reclamation");
+        report["admission"] = {{"baseBytes",admissionBase.residentAllocationBytes}, {"steadyBudget",steadyBudget},
+            {"fineGrowth",fineGrowth}, {"upgrades",admissionStable.upgrades}, {"downgrades",admissionStable.downgrades},
+            {"residentBytes",admissionStable.residentAllocationBytes}};
         { std::ofstream output(directory/"residency.json"); output << report.dump(2); }
         commands.reset(); require(frame.reset(),"final frame reset");
         resources.clear();
-        return RHITestResult::pass("GPU demand refines only visible tails; cold physical replacement retires to base under budget, MASK/IDs stable");
+        return RHITestResult::pass("Sparse demand converges; shared pressure and blocked hot admission reclaim cold tails, MASK/IDs stable");
     }
 };
 METALLIC_REGISTER_RHI_TEST(KtxTextureStreamingTest);
@@ -891,6 +979,12 @@ public:
         {
             // Keep four recordings pending so no demand readback can retire.
             // The fifth still publishes sampling metadata, but must disable demand.
+            const auto expectedMetadata = readEmptyTextureMetadata(context, resources);
+            const uint64_t metadataBytes = expectedMetadata.size() * sizeof(TextureSamplingMetadata);
+            std::unique_ptr<Buffer> metadataReadback;
+            require(context.device.createBuffer({.size = metadataBytes * 6,
+                .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
+                    .transform([&](auto value) { metadataReadback = std::move(value); }), "feedback metadata readback");
             std::array<RenderFrameContext, 6> pendingFrames;
             struct CancelPendingFrames {
                 std::array<RenderFrameContext, 6>& frames;
@@ -922,8 +1016,37 @@ public:
                 require(repeatedFeedback.samplingMetadata == feedback.samplingMetadata && repeatedFeedback.demandMip == feedback.demandMip &&
                     repeatedFeedback.demandHits == feedback.demandHits && repeatedFeedback.textureCount == feedback.textureCount && repeatedCapture == captureDemand,
                     "Repeated consumers must preserve disabled and enabled capture decisions");
+                const BufferBarrierDesc copyReady{.buffer = feedback.samplingMetadata,
+                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::TransferWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                require(pendingCommands[index]->synchronize({.buffers = {&copyReady, 1}}), "feedback metadata copy ready");
+                const auto source = feedback.samplingMetadata->slice({0, metadataBytes});
+                const auto destination = metadataReadback->slice({index * metadataBytes, metadataBytes});
+                require(bool(source) && bool(destination), "feedback metadata readback slices");
+                require(pendingCommands[index]->copyBuffer(*source, *destination), "feedback metadata copy");
                 require(pendingCommands[index]->end(), "feedback backlog end");
             }
+            // Submit only after the backlog and cancellation decisions are fixed.
+            for (uint32_t index = 1; index < pendingFrames.size(); ++index) {
+                CommandBuffer* command = pendingCommands[index].get();
+                require(tracker.submit({.commandBuffers = {&command, 1}}, pendingFrames[index]), "feedback metadata submit");
+            }
+            for (uint32_t index = 1; index < pendingFrames.size(); ++index) {
+                require(pendingFrames[index].wait(), "feedback metadata completion");
+            }
+            metadataReadback->invalidate();
+            const auto* uploaded = static_cast<const TextureSamplingMetadata*>(metadataReadback->map());
+            require(uploaded != nullptr, "feedback metadata map");
+            for (uint32_t index = 1; index < pendingFrames.size(); ++index) {
+                for (size_t texture = 0; texture < expectedMetadata.size(); ++texture) {
+                    auto expected = expectedMetadata[texture];
+                    if (texture != 0 && index != 4) { expected.residentFirstMipAndFlags |= kTextureDemandEnabled; }
+                    const auto& actual = uploaded[index * expectedMetadata.size() + texture];
+                    require(std::memcmp(&actual, &expected, sizeof(expected)) == 0,
+                        "Uploaded metadata must preserve every slot and the frame's enabled/disabled demand flag");
+                }
+            }
+            metadataReadback->unmap();
         }
         const auto dispatch = [&](CommandBuffer& command, const TextureFeedbackResources& feedback, uint32_t mip, uint32_t samples) {
             const ComputeDispatchBinding binding[]{
@@ -1149,7 +1272,31 @@ public:
         require(resources.materialTextureFirstMips()[0] == 1 && resources.textureStats().upgrades == 2 &&
             std::abs(previous[0] - 48.f / 255) < .003f && intermediateSamples >= 2,
             "Refinement did not converge through intermediate GPU samples to the 512 tail");
+        const auto stable = resources.textureStats();
         for (uint32_t step = 0; step < 120; ++step) { (void)tick(false); }
+        require(resources.materialTextureFirstMips()[0] == 1 && resources.textureStats().upgrades == stable.upgrades &&
+            resources.textureStats().downgrades == stable.downgrades &&
+            resources.textureStats().streamingUploadBytes == stable.streamingUploadBytes &&
+            resources.textureStats().lastUpload.sequence == stable.lastUpload.sequence,
+            "Unpressured sampling transition discarded a cold resident tail");
+        struct RestorePolicy {
+            Device& device; MemoryBudgetPolicy policy;
+            ~RestorePolicy() { device.setMemoryBudgetPolicy(policy); }
+        } restore{context.device,context.device.memoryBudget().policy};
+        auto pressure = restore.policy;
+        pressure.enabled = true;
+        const uint64_t reserve = std::min<uint64_t>(16ull * 1024 * 1024, stable.budgetBytes / 8);
+        for (uint32_t step = 0; step < 120; ++step) {
+            const auto memory = context.device.memoryBudget();
+            require(memory.primaryDeviceLocalHeap != UINT32_MAX, "Missing local heap for sampling pressure test");
+            pressure.deviceLocalHeapLimitBytes = memory.heaps[memory.primaryDeviceLocalHeap].usageBytes +
+                pressure.safetyBytes + memory.reservedBytes + reserve / 2;
+            context.device.setMemoryBudgetPolicy(pressure);
+            (void)tick(false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        context.device.setMemoryBudgetPolicy(restore.policy);
+        for (uint32_t step = 0; step < 4; ++step) { (void)tick(false); }
         require(resources.materialTextureFirstMips()[0] == 3 && resources.textureStats().downgrades == 1 &&
             resources.textureStats().residentAllocationBytes == baseline && resources.textureStats().retiredAllocationBytes == 0,
             "Sampling transition prevented cold physical retirement");

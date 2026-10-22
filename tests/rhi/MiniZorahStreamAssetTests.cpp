@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <algorithm>
@@ -860,6 +861,104 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(GPUSceneCoverageClassificationTest);
+
+class StreamSceneCacheRoutingTest final : public RHITest {
+public:
+    StreamSceneCacheRoutingTest() { type = RHITestType::Resource; name = "stream_scene_cache_routing"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        try {
+            const auto directory = std::filesystem::absolute(context.outputDirectory / "SceneCacheRouting");
+            std::filesystem::create_directories(directory);
+            const auto sourcePath = directory / "Metadata.gltf";
+            const auto residentPath = directory / "Resident.gltf";
+            const auto cachePath = directory / "Metadata.meshstream.bin";
+            const auto residentCachePath = directory / "Resident.meshstream.bin";
+            const float positions[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+            { std::ofstream file(directory / "Triangle.bin", std::ios::binary);
+                file.write(reinterpret_cast<const char*>(positions), sizeof(positions)); }
+            Json source = {{"asset", {{"version", "2.0"}}}, {"scene", 0},
+                {"scenes", {{{"nodes", {0, 1}}}}},
+                {"nodes", {{{"mesh", 0}}, {{"mesh", 0}, {"translation", {2, 0, 0}}}}},
+                {"buffers", {{{"uri", "Triangle.bin"}, {"byteLength", sizeof(positions)}}}},
+                {"bufferViews", {{{"buffer", 0}, {"byteLength", sizeof(positions)}}}},
+                {"accessors", {{{"bufferView", 0}, {"componentType", 5126}, {"count", 3},
+                    {"type", "VEC3"}, {"min", {0, 0, 0}}, {"max", {1, 1, 0}}}}},
+                {"meshes", {{{"primitives", {{{"attributes", {{"POSITION", 0}}}}}}}}}};
+            auto residentSource = source;
+            residentSource["scenes"][0]["nodes"] = {0};
+            residentSource["nodes"].erase(1);
+            { std::ofstream file(residentPath); file << residentSource.dump(); }
+            // Keep the fixture small while making any resident-import fallback
+            // fail at the same required-extension boundary as MiniZorah.
+            source["extensionsRequired"] = {"EXT_meshopt_compression"};
+            { std::ofstream file(sourcePath); file << source.dump(); }
+            std::string log;
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath = sourcePath, .outputPath = cachePath}, log), log);
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath = residentPath, .outputPath = residentCachePath}, log), log);
+            scene::Scene metadata;
+            require(metadata.loadStreamMetadata(sourcePath), metadata.lastLoadResult().error);
+            require(metadata.sources().size() == 1 && metadata.hasStreamGeometry(), "Ordinary metadata source identity missing");
+            require(!metadata.isComposed() && metadata.renderNodes().size() == 2,
+                "Ordinary repeated-mesh metadata fixture is invalid");
+            require(metadata.renderPrimitives().front().positions.empty(), "Metadata fixture loaded resident geometry");
+            const auto cacheSize = std::filesystem::file_size(cachePath);
+            const auto cacheTime = std::filesystem::last_write_time(cachePath);
+
+            RenderSubsystemHost host;
+            require(host.registerSubsystem<StreamerSubsystem>(log), log);
+            require(bool(host.initialize(context.device, 1, log)), log);
+            require(bool(host.activate(StreamerSubsystem::kSubsystemId, log)), log);
+            auto* streamer = host.get<StreamerSubsystem>();
+            const SceneStreamingRequirements requirements{.geometry = true};
+            const RenderGraphProperties properties{{"streamAssetPath", cachePath.generic_string()},
+                {"maxResidentPages", 4}, {"maxLockedFallbackPages", 4}, {"maxActiveGroups", 64},
+                {"maxGpuPageRequests", 64}, {"maxTraversalWorkers", 32}, {"maxTraversalWorkItems", 128}};
+            std::shared_ptr<PreparedSceneResources> prepared;
+            require(bool(streamer->prepareScene(requirements, properties, &metadata, prepared, log)), log);
+            require(prepared->streamAssetPath == cachePath && prepared->streamSourcePath == sourcePath,
+                "Ordinary metadata import did not reuse its cooked source cache");
+            const auto originalStream = prepared->geometry;
+            require(bool(streamer->prepareScene(requirements, properties, &metadata, prepared, log)), log);
+            require(prepared->geometry == originalStream, "Unchanged metadata scene replaced its stream");
+
+            scene::Scene composed;
+            // The source, instance count and primitive ordinal all match this
+            // cache. Only composition ownership should select a session cache.
+            require(composed.compose({{.id = "single", .path = residentPath}}, log, residentPath), log);
+            require(composed.sources().size() == 1, "Single-source composition fixture is invalid");
+            require(composed.isComposed(), "Single-source composition lost its composed identity");
+            scene::MeshletStreamAsset residentAsset;
+            require(residentAsset.open(residentCachePath, log) &&
+                residentAsset.isRuntimeCompatibleForSource(composed.filename(), log), log);
+            require(residentAsset.instanceCount() == 1 && composed.renderNodes().size() == 1 &&
+                residentAsset.instances()[0].renderNodeIndex == 0 &&
+                residentAsset.primitives()[residentAsset.instances()[0].primitiveIndex].renderPrimitiveIndex ==
+                    uint32_t(composed.renderNodes()[0].renderPrimitiveIndex), "Composition cache prerequisite does not match the source");
+            residentAsset.close();
+            const auto residentCacheSize = std::filesystem::file_size(residentCachePath);
+            const auto residentCacheTime = std::filesystem::last_write_time(residentCachePath);
+            auto composedProperties = properties;
+            composedProperties["streamAssetPath"] = residentCachePath.generic_string();
+            std::shared_ptr<PreparedSceneResources> composedPrepared;
+            require(bool(streamer->prepareScene(requirements, composedProperties, &composed, composedPrepared, log)), log);
+            require(composedPrepared->streamAssetPath != residentCachePath &&
+                composedPrepared->streamSourcePath != residentPath, "Single-source composition reused the authored source cache");
+            require(std::filesystem::file_size(residentCachePath) == residentCacheSize &&
+                std::filesystem::last_write_time(residentCachePath) == residentCacheTime, "Composition rewrote the authored cache");
+            require(std::filesystem::file_size(cachePath) == cacheSize &&
+                std::filesystem::last_write_time(cachePath) == cacheTime, "Scene preparation rewrote the authored cache");
+            composedPrepared.reset();
+            composed.clear();
+            require(!composed.isComposed(), "Clear retained composed identity");
+            require(composed.compose({{.id = "single", .path = residentPath}}, log), log);
+            require(composed.loadStreamMetadata(sourcePath), composed.lastLoadResult().error);
+            require(!composed.isComposed(), "Ordinary reload retained composed identity");
+            return RHITestResult::pass("Ordinary metadata imports reuse cooked caches; single-source compositions keep session caches");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamSceneCacheRoutingTest);
 
 class StreamMetadataContractTest final : public RHITest {
 public:

@@ -4087,6 +4087,11 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     if (!result) { return result; }
     result = dispatchPhase(9u, 1u);
     if (!result) { return result; }
+    // Admit complete size-class allocations before growth can trigger a repack.
+    result = dispatchPhase(12u, std::max(asset_.instanceCount(), 1u));
+    if (!result) { return result; }
+    result = dispatchPhase(13u, 1u);
+    if (!result) { return result; }
     result = dispatchPhase(10u, std::max(asset_.instanceCount(), 1u));
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasInsert"); }
