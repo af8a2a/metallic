@@ -47,6 +47,9 @@ struct ImportanceInput {
     std::array<uint32_t, kInstanceCount> minimumLevels{};
     bool orthographic = false;
     bool allowSaturatedError = false;
+    bool classifyRepresentations = false;
+    bool mergedSharing = false;
+    bool cancelClassification = false;
 
     ImportanceInput() { minimumLevels.fill(1); }
 };
@@ -179,7 +182,7 @@ struct ImportanceFixture {
         push.activeBuildPhase = phase;
         push.traversalPhase = traversal;
         importanceChecked(commands->bindExecution(pipeline->execution(), &push, sizeof(push)));
-        importanceChecked(commands->dispatch((kInstanceCount + 63) / 64));
+        importanceChecked(commands->dispatch(phase == 22 ? kPrimitiveCount : (kInstanceCount + 63) / 64));
         std::array<BufferBarrierDesc, InputCount> barriers;
         for (uint32_t input = 0; input < InputCount; ++input) {
             barriers[input] = {.buffer = buffers[input].get(),
@@ -197,6 +200,8 @@ struct ImportanceFixture {
     {
         params.frameIndex = ++frameNumber;
         params.upProjection[3] = input.orthographic ? 1.f : 0.f;
+        params.enableBlasPriority = input.classifyRepresentations;
+        params.enableBlasMergedSharing = input.mergedSharing;
         write(Params, params); write(Instances, input.instances);
         dispatch(20);
         auto state = readState();
@@ -216,7 +221,37 @@ struct ImportanceFixture {
             state[base] = input.minimumLevels[instance];
             state[base + 1] = 1; state[base + 2] = UINT32_MAX; state[base + 3] = 0;
         }
-        write(State, state); dispatch(23); state = readState();
+        if (input.classifyRepresentations) {
+            // Zero-group primitives isolate production histogram selection from
+            // residency. Their complete discrete cache level is 1. Every active
+            // instance has a synthetic complete cut with maximum level 1.
+            for (uint32_t level = 0; level < kLevelCount; ++level) {
+                state[level * 4 + 2] = UINT32_MAX;
+            }
+            for (uint32_t instance = 0; instance < kInstanceCount; ++instance) {
+                const auto& value = input.instances[instance];
+                if (!value.visible) { continue; }
+                const uint32_t minimum = input.minimumLevels[instance];
+                const uint32_t histogram = value.primitiveIndex * 16;
+                ++state[histogram + minimum * 4];
+                if (minimum < 3) {
+                    ++state[histogram + 5];
+                    state[histogram + 6] = std::min(state[histogram + 6], instance);
+                }
+                // Phase 22 normally consumes reset primitive selection words.
+                const uint32_t base = kPrimitiveBase + value.primitiveIndex * 12;
+                state[base] = state[base + 1] = state[base + 2] = UINT32_MAX;
+            }
+        }
+        write(State, state);
+        if (input.classifyRepresentations) {
+            if (input.cancelClassification) {
+                dispatch(22, 0, true);
+                importanceRequire(state == readState(), "Cancelled merged-demand classification mutated submitted state");
+            }
+            dispatch(22);
+        }
+        dispatch(23); state = readState();
         ImportanceOwners output;
         for (uint32_t owner = 0; owner < kOwnerCount; ++owner) {
             std::copy_n(state.begin() + kImportanceBase + owner * 6, 6, output[owner].begin());
@@ -431,6 +466,43 @@ public:
                 importanceRequire(owner[0] == 0 && owner[2] == 0 && owner[3] == 0,
                     "Removing all consumers failed to reset owner importance");
             }
+            phase = "canonical merged demand and representative exception";
+            auto canonicalInput = shared;
+            canonicalInput.classifyRepresentations = true;
+            canonicalInput.minimumLevels[0] = 0;
+            canonicalInput.minimumLevels[136] = 0;
+            canonicalInput.instances[5] = importanceInstance(40.f, -4.f);
+            const auto separateOwners = fixture.frame(canonicalInput);
+            importanceRequire(separateOwners[0][3] == 1 && separateOwners[1][3] == 1 && separateOwners[2][3] == 134,
+                "Fixture did not produce merged, representative-shared and discrete consumers");
+            Importance combined{};
+            combined[1] = 0x7f7fffffu;
+            for (uint32_t owner = 0; owner < 3; ++owner) {
+                combined[0] = std::max(combined[0], separateOwners[owner][0]);
+                combined[1] = std::min(combined[1], separateOwners[owner][1]);
+                combined[2] = std::max(combined[2], separateOwners[owner][2]);
+                for (uint32_t word = 3; word < 6; ++word) { combined[word] += separateOwners[owner][word]; }
+            }
+            canonicalInput.mergedSharing = true;
+            const auto canonicalOwners = fixture.frame(canonicalInput);
+            importanceRequire(canonicalOwners[0] == combined && canonicalOwners[1][3] == 0 && canonicalOwners[2][3] == 0 &&
+                canonicalOwners[0][5] == 1,
+                "Canonical merged owner lost consumer importance/offscreen demand or retained duplicate ownership");
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                canonicalInput.cancelClassification = frame == 7;
+                importanceRequire(fixture.frame(canonicalInput) == canonicalOwners,
+                    "Stationary canonical demand or cancelled retry changed owner aggregation");
+            }
+            canonicalInput.cancelClassification = false;
+            canonicalInput.minimumLevels[136] = 1;
+            auto representativeOnly = fixture.frame(canonicalInput);
+            importanceRequire(representativeOnly[0][3] == 0 && representativeOnly[1][3] == 1 && representativeOnly[2][3] == 135,
+                "The representative's interval alone incorrectly created canonical merged demand");
+            canonicalInput.minimumLevels.fill(3);
+            const auto terminalOnly = fixture.frame(canonicalInput);
+            for (const auto& owner : terminalOnly) {
+                importanceRequire(owner[3] == 0, "Terminal-only consumers created unnecessary dynamic demand");
+            }
             phase = "137-owner partial-tail priority sort";
             ImportanceOwners keys{};
             for (uint32_t owner = 0; owner < kOwnerCount; ++owner) {
@@ -494,9 +566,12 @@ public:
                 {"nearPlane", nearPlane}, {"insideSphere", insideSphere}, {"negativeNonuniform", negativeNonuniform},
                 {"priorityOwnerCount", 137}, {"priorityOrder", sortedOwners},
                 {"exactPriorityCacheStableFrames", 32}, {"priorityCacheCancellationVerified", true},
+                {"mergedSharingStableFrames", 32}, {"mergedSharingCancellationVerified", true},
+                {"mergedSharingOwners", canonicalOwners}, {"separateOwners", separateOwners},
+                {"representativeExceptionVerified", true}, {"terminalOnlyVerified", true},
                 {"nearOrtho", nearOrtho}, {"scale", scale}, {"shear", shear}, {"zeroError", zero},
                 {"validationErrors", validationErrors.load()},
-                {"scope", "Production phase20/23; classified LOD bounds seeded; no admission or native BLAS build"}}.dump(2);
+                {"scope", "Production phase20/22/23; classified LOD bounds and histograms seeded; no admission or native BLAS build"}}.dump(2);
             return RHITestResult::pass("137 consumers across three workgroups; shared max/min aggregation; hidden exclusion; permutation invariance; finite offscreen ray demand; ortho/scale/shear; zero-error sentinel; 32 reset/removal/owner-migration frames");
         } catch (const std::exception& error) { return RHITestResult::fail(phase + ": " + error.what()); }
     }

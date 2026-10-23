@@ -58,6 +58,9 @@ def validate_conditions(manifest, capture, quality=False, comparison="priority")
         raise ValueError("Set METALLIC_BLAS_PRIORITY explicitly to 0 or 1, including the default-on variant")
     if comparison == "cache" and (manifest["blasPriority"] != "1" or manifest.get("blasPriorityCache") not in ("0", "1")):
         raise ValueError("Cache comparison requires priority=1 and explicit METALLIC_BLAS_PRIORITY_CACHE=0/1")
+    if comparison == "merged-sharing" and (manifest["blasPriority"] != "1" or manifest.get("blasPriorityCache") != "1" or
+                                          manifest.get("blasMergedSharing") not in ("0", "1")):
+        raise ValueError("Merged-sharing comparison requires priority/cache=1 and explicit METALLIC_BLAS_MERGED_SHARING=0/1")
     if not manifest.get("blasStorageBytes") or int(manifest["blasStorageBytes"]) <= 0:
         raise ValueError("Priority A/B requires an explicit shared storage budget")
     if manifest.get("blasRelocateBytes") is None or int(manifest["blasRelocateBytes"]) < 0:
@@ -74,7 +77,7 @@ def validate_conditions(manifest, capture, quality=False, comparison="priority")
         "manifest": {key: manifest.get(key) for key in (
             "executableSha256", "shaderSha256", "asset", "gpu", "config", "validation", "vsync", "hidden",
             "blasAllocator", "blasRepresentations", "blasInstanceReuse", "clasAllocator", "blasStorageBytes",
-            "blasRelocateBytes", "blasPriorityCache", "reflexMode", "streamMaintenanceBeforePacing")},
+            "blasRelocateBytes", "blasPriorityCache", "blasMergedSharing", "reflexMode", "streamMaintenanceBeforePacing")},
         "capture": {**{key: capture.get(key) for key in (
             "outputExtent", "renderExtent", "config", "absoluteKeyframes", "graph", "hidden", "vsync",
             "shaderDebugMode", "graphicsCaptureInjected", "frameTimeDefinition", "gpuTimeDefinition",
@@ -83,6 +86,9 @@ def validate_conditions(manifest, capture, quality=False, comparison="priority")
     }
     if comparison == "cache":
         del conditions["manifest"]["blasPriorityCache"]
+        conditions["manifest"]["blasPriority"] = manifest["blasPriority"]
+    if comparison == "merged-sharing":
+        del conditions["manifest"]["blasMergedSharing"]
         conditions["manifest"]["blasPriority"] = manifest["blasPriority"]
     return conditions
 
@@ -174,6 +180,7 @@ def analyze_run(directory, discard_first, comparison="priority"):
     timings, stream_rows, route = [], [], {}
     expected_priority = manifest["blasPriority"] == "1"
     expected_cache = manifest.get("blasPriorityCache") == "1"
+    expected_merged_sharing = manifest.get("blasMergedSharing") == "1"
     for row in rows:
         if row.get("diagnostic"):
             raise ValueError("Diagnostic frame in performance route")
@@ -208,8 +215,10 @@ def analyze_run(directory, discard_first, comparison="priority"):
         if stream.get("blasGPUAllocatorEnabled") is not True or stream.get("blasRepresentationsEnabled") is not True or \
                 stream.get("blasPriorityEnabled") is not expected_priority:
             raise ValueError("Requested priority/allocator/representations differ from effective runtime settings")
-        if comparison == "cache" and stream.get("blasPriorityCacheEnabled") is not expected_cache:
+        if comparison in ("cache", "merged-sharing") and stream.get("blasPriorityCacheEnabled") is not expected_cache:
             raise ValueError("Requested priority cache differs from effective runtime settings")
+        if comparison == "merged-sharing" and stream.get("blasMergedSharingEnabled") is not expected_merged_sharing:
+            raise ValueError("Requested merged sharing differs from effective runtime settings")
         if stream["frame"] in route:
             raise ValueError("Repeated runtime frame identity")
         route[stream["frame"]] = row
@@ -255,7 +264,8 @@ def analyze_run(directory, discard_first, comparison="priority"):
     timing_keys = ("frameMs", "rtPreparationGpuMs", "rtPreparationCpuMs", "blasBuildGpuMs", "graphGpuEnvelopeMs", "reflexPacingCpuMs")
     settled = [sample for sample in samples if sample["stage"] == "final-static"]
     result = {"run": directory.parent.name + "/" + directory.name, "priority": expected_priority,
-        "comparison": comparison, "comparisonEnabled": expected_cache if comparison == "cache" else expected_priority,
+        "comparison": comparison, "comparisonEnabled": expected_merged_sharing if comparison == "merged-sharing" else
+            expected_cache if comparison == "cache" else expected_priority,
         "started": manifest.get("started"), "recordedFrames": len(all_rows), "measuredFrames": len(rows),
         "discardedFirstFrames": discard_first, "feedbackSamples": len(samples), "missingRouteFeedback": len(rows) - len(samples),
         "duplicateFeedback": duplicates, "outsideRouteFeedback": outside,
@@ -552,6 +562,7 @@ def main():
     parser.add_argument("--exploratory", action="store_true", help="Permit incomplete ABBA blocks; report descriptive data only")
     parser.add_argument("--no-plot", action="store_true")
     parser.add_argument("--compare-cache", action="store_true", help="Compare admission caching off/on with owner priority enabled on both sides")
+    parser.add_argument("--compare-merged-sharing", action="store_true", help="Compare merged sharing off/on with owner priority and admission caching enabled on both sides")
     parser.add_argument("--quality", action="store_true", help="Compare a separate off/on diagnostic pair and matched image samples; no performance analysis")
     parser.add_argument("--quality-reference", type=Path, help="Separate higher-budget priority-off quality run or capture root; only storage budget may differ")
     args = parser.parse_args()
@@ -559,8 +570,11 @@ def main():
         parser.error("--discard-first must be nonnegative")
     if args.quality_reference and not args.quality:
         parser.error("--quality-reference requires --quality")
-    if args.compare_cache and args.quality:
-        parser.error("--compare-cache is a performance comparison; use separate matched quality diagnostics")
+    if args.compare_cache and args.compare_merged_sharing:
+        parser.error("Choose one performance comparison mode")
+    if (args.compare_cache or args.compare_merged_sharing) and args.quality:
+        parser.error("Policy/cache comparisons require separate matched quality diagnostics")
+    comparison = "merged-sharing" if args.compare_merged_sharing else "cache" if args.compare_cache else "priority"
     directories = sorted(path.parent for path in args.root.glob("*/run*/Capture.json"))
     if not directories:
         parser.error("No captures matching */run*/Capture.json")
@@ -571,7 +585,7 @@ def main():
         return
     results, observations, expected = [], {}, None
     for directory in directories:
-        conditions, result, samples = analyze_run(directory, args.discard_first, "cache" if args.compare_cache else "priority")
+        conditions, result, samples = analyze_run(directory, args.discard_first, comparison)
         if expected is not None and conditions != expected:
             raise ValueError(f"Workload, budget, binary, shader or warmup mismatch: {directory}")
         expected = conditions
@@ -607,6 +621,8 @@ def main():
         command.append("--no-plot")
     if args.compare_cache:
         command.append("--compare-cache")
+    if args.compare_merged_sharing:
+        command.append("--compare-merged-sharing")
     caveats = [PROXY_DEFINITION, STORAGE_SEMANTICS_NOTE,
         "Full RT preparation is the per-execution sum of same-parent/same-queue RT representation and BLAS siblings, including priority sort inside classify and group admission inside cut. It excludes Fallback BLAS, traversal parents and TLAS; stage P99 values are never added.",
         "Frame time includes Reflex pacing and presentation. The GPU envelope excludes editor composite/present and independent texture submissions; neither metric is a pure BLAS kernel duration.",
@@ -628,14 +644,14 @@ def main():
                 values = [result["timings"][metric]["mean"] for result in block]
                 gains[metric] = math.exp((math.log(values[0]) + math.log(values[3]) - math.log(values[1]) - math.log(values[2])) / 2) if min(values) > 0 else None
             blocks.append({"runs": [result["run"] for result in block], "baselineOverCandidateGeometricRatio": gains})
-    report = {"conditions": expected, "comparison": "cache" if args.compare_cache else "priority", "runs": results, "completeABBABlocks": len(blocks), "blocks": blocks,
+    report = {"conditions": expected, "comparison": comparison, "runs": results, "completeABBABlocks": len(blocks), "blocks": blocks,
         "exploratory": args.exploratory, "proxyDefinition": PROXY_DEFINITION, "caveats": caveats,
         "reproducibility": {"python": sys.version, "platform": platform.platform(), "dependencies": versions,
             "scripts": scripts, "commandArguments": command, "windowsCommand": "& " + subprocess.list2cmdline(command)}}
     (output / "Report.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
     (output / "Samples.json").write_text(json.dumps(observations, indent=2, allow_nan=False), encoding="utf-8")
     lines = ["# BLAS owner-priority comparison", "", PROXY_DEFINITION, "",
-        f"| Run | {'Admission cache (priority on)' if args.compare_cache else 'Priority'} | Frame mean/P99 ms | Full RT prep GPU mean/P99 ms | Graph GPU mean/P99 ms | Selected BLAS peak MiB | Device sampled peak MiB |",
+        f"| Run | {'Merged sharing (priority/cache on)' if args.compare_merged_sharing else 'Admission cache (priority on)' if args.compare_cache else 'Priority'} | Frame mean/P99 ms | Full RT prep GPU mean/P99 ms | Graph GPU mean/P99 ms | Selected BLAS peak MiB | Device sampled peak MiB |",
         "|---|---|---:|---:|---:|---:|---:|"]
     for result in results:
         values = [f"{result['timings'][key]['mean']:.3f}/{result['timings'][key]['p99']:.3f}" for key in ("frameMs", "rtPreparationGpuMs", "graphGpuEnvelopeMs")]

@@ -405,7 +405,8 @@ def main():
     capture_path = root / "Capture.json"
     capture = read_json(capture_path)
     require(capture.get("status") == "capture_complete" and
-            capture.get("protocol") == "minizorah-blas-frozen-quality-v1", "Unexpected or incomplete capture")
+            capture.get("protocol") in ("minizorah-blas-frozen-quality-v1", "minizorah-blas-frozen-quality-v2"),
+            "Unexpected or incomplete capture")
     config = capture["config"]
     require(config.get("sample") == "gpu-driven-sample", "Expected controlled MiniZorah")
     pixels = config["diagnosticPixels"]

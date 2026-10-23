@@ -539,6 +539,7 @@ public struct GPUDrivenStreamAssetParams
     public uint enableBlasGPUAllocator;
     public uint enableBlasPriority;
     public uint enableBlasPriorityCache;
+    public uint enableBlasMergedSharing;
 };
 
 public struct GPUDrivenStreamAssetVertexOutput
@@ -3882,6 +3883,28 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
                     break;
                 }
             }
+            // The fourth histogram word is classification scratch until phase
+            // 25 replaces it with cached storage demand. Decide before phase 23
+            // atomically aggregates consumers, so no instance races the choice.
+            uint canonicalMerged = 0u;
+            if (params.enableBlasPriority != 0u && params.enableBlasMergedSharing != 0u) {
+                uint threshold = min(primitive.lodLevelCount - 1u,
+                    min(state[base + 1u], state[base + 2u]));
+                uint mergedConsumers = 0u;
+                for (uint level = 0u; level < threshold; ++level) {
+                    uint histogram = streamRTHistogramBase(params) + (primitive.lodLevelOffset + level) * 4u;
+                    mergedConsumers += state[histogram];
+                }
+                // The representative is allowed its own cut even if its LOD
+                // interval spans the sharing threshold; it is not merged demand.
+                uint representative = state[base];
+                if (representative != 0xffffffffu &&
+                    state[streamRTInstanceBase(params, representative)] < threshold) {
+                    --mergedConsumers;
+                }
+                canonicalMerged = mergedConsumers != 0u ? 1u : 0u;
+            }
+            state[streamRTHistogramBase(params) + primitive.lodLevelOffset * 4u + 3u] = canonicalMerged;
         }
         return;
     }
@@ -3898,6 +3921,13 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         // The representative itself retains its own view cut even when its
         // interval spans several levels. Other users satisfy the conservative test.
         if (mode == 0u && item == state[base]) { mode = 1u; }
+        // A demanded highest-drawable cut can serve every consumer of the same
+        // primitive. Charge and prioritize that owner once rather than retaining
+        // redundant shared/cache builds while other primitives use terminal cuts.
+        if (params.enableBlasPriority != 0u && params.enableBlasMergedSharing != 0u &&
+            state[streamRTHistogramBase(params) + primitive.lodLevelOffset * 4u + 3u] != 0u) {
+            mode = 0u;
+        }
         uint owner = instance.primitiveIndex * 3u + mode;
         state[output + 2u] = owner;
         InterlockedAdd(state[base + 3u + mode], 1u);

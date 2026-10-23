@@ -597,7 +597,11 @@ public:
             const Snapshot finestCandidate = stable;
             uint32_t sharingFrames = stable.header.sharingInstanceCount != 0;
             uint32_t mergedFrames = stable.header.mergedInstanceCount != 0;
-            uint32_t sharedCutCacheHits = 0;
+            // The stationary finest phase already exercised repeated shared
+            // reuse. Canonical merged demand intentionally removes shared
+            // consumers from the mixed-distance phase below.
+            uint32_t sharedCutCacheHits = stable.header.sharingInstanceCount != 0 && (stable.cutCache[15] & 2u) != 0;
+            uint32_t mergedCutCacheHits = 0;
 
             phase = "candidate discrete cache";
             const uint32_t cacheLevel = asset.primitives()[0].lodLevelCount > 3
@@ -640,11 +644,24 @@ public:
                     sharedCutCacheHits += (stable.cutCache[15] & 2u) != 0;
                     require(stable.header.blasBuildCount <= 3 && stable.header.requestedInstances <= 3,
                         "View-dependent selection charged duplicate per-instance representations");
+                    if (stable.header.mergedInstanceCount != 0) {
+                        require(stable.header.sharingInstanceCount == 0 && stable.header.cachedInstanceCount == 0 &&
+                            stable.importance[0].consumerCount == stable.header.mergedInstanceCount &&
+                            stable.importance[1].consumerCount == 0 && stable.importance[2].consumerCount == 0,
+                            "A demanded merged cut retained duplicate shared/discrete consumers or lost aggregate importance");
+                        if (i == 3) {
+                            require((stable.cutCache[15] & 1u) != 0 && stable.header.blasBuildCount == 0 &&
+                                stable.header.semanticChangeCount == 0,
+                                "Stable canonical merged demand missed its exact cut cache or rebuilt/republished unchanged geometry");
+                            ++mergedCutCacheHits;
+                        }
+                    }
                     checkIdentity(stable);
                 }
             }
             require(sharingFrames != 0 && mergedFrames != 0, "Fixture did not exercise both Sharing and Merging");
-            require(sharedCutCacheHits != 0, "Repeated view-dependent sharing never hit its exact-mask cut cache");
+            require(sharedCutCacheHits != 0, "Repeated stationary sharing never hit its exact-mask cut cache");
+            require(mergedCutCacheHits != 0, "View-dependent canonical demand never exercised stable merged cut reuse");
             view.enableGpuLodSelection = false;
             view.selectedLodLevel = 0;
             view.camera.eye = {1.f, .11f, 2.f};
@@ -831,6 +848,7 @@ public:
                 {"pairs", finestCandidate.rays.size()}, {"rayCount", finestCandidate.rays.size() * 2},
                 {"maximumDistanceError", maximumDistanceError}, {"tolerance", 2e-5f},
                 {"sharingFrames", sharingFrames}, {"mergedFrames", mergedFrames}, {"sharedCutCacheHits", sharedCutCacheHits},
+                {"mergedCutCacheHits", mergedCutCacheHits},
                 {"candidateBuildBudget", 3}, {"legacyBuildBudget", kInstanceCount},
                 {"candidateAllocator", "gpu"}, {"legacyAllocator", "legacy"},
                 {"stableAllocatorSamples", stableAllocatorSamples}, {"stagingCapFailureRejected", true},

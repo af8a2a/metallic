@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 PROTOCOL = "minizorah-blas-frozen-quality-v1"
+MERGED_SHARING_PROTOCOL = "minizorah-blas-frozen-quality-v2"
 NAMES = ("A1", "A2", "B0", "B1", "R")
 RESOURCES = ("Shadows.shadow", "Deferred.color", "ReflectionQuality.color", "FinalBlit.color")
 AUXILIARY = ("VBuffer.depth", "VBuffer.visibility")
@@ -87,7 +88,8 @@ def main():
     manifest_path = root.parent / "Manifest.json"
     frames_path = root / "ControlledFrames.jsonl"
     capture, manifest = read(capture_path), read(manifest_path)
-    if capture.get("protocol") != PROTOCOL or manifest.get("protocol") != PROTOCOL or capture.get("status") != "capture_complete":
+    protocol = capture.get("protocol")
+    if protocol not in (PROTOCOL, MERGED_SHARING_PROTOCOL) or manifest.get("protocol") != protocol or capture.get("status") != "capture_complete":
         raise ValueError("Incomplete capture or unexpected protocol")
     if capture["config"] != manifest["config"] or capture["config"].get("sample") != "gpu-driven-sample":
         raise ValueError("Controlled config identity or MiniZorah sample mismatch")
@@ -99,6 +101,9 @@ def main():
     if capture.get("blasStorageRejectedSemantics") != "physical-and-known-storage-only-v2":
         raise ValueError("Unexpected storage-rejection semantics")
     config = capture["config"]["blasQualityComparison"]
+    merged_sharing = config.get("mergedSharingComparison", False)
+    if not isinstance(merged_sharing, bool) or merged_sharing != (protocol == MERGED_SHARING_PROTOCOL):
+        raise ValueError("Merged-sharing comparison configuration/protocol mismatch")
     poses = config.get("poses", [{"forward": 0, "yaw": 0}])
     seeds = config.get("seeds", [0])
     if not 1 <= len(poses) <= 2 or not 1 <= len(seeds) <= 2 or len(set(seeds)) != len(seeds) or \
@@ -142,9 +147,12 @@ def main():
                 failures.append(f"pose{pose}: frozen {key} changed or missing: {sorted(values, key=str)}")
         for name, variant in group.items():
             budget = config["referenceBytes"] if name == "R" else config["storageBytes"]
-            expected = (name.startswith("B"), name == "B1")
+            expected = ((name != "R", name in ("A1", "A2", "B1")) if merged_sharing
+                        else (name.startswith("B"), name == "B1"))
             if variant["storageBytes"] != budget or (variant["priority"], variant["cache"]) != expected:
                 raise ValueError("Unexpected effective policy or storage budget")
+            if merged_sharing and variant.get("mergedSharing") != name.startswith("B"):
+                raise ValueError("Unexpected merged-sharing policy")
             selected = [row["state"] for row in pose_rows if row["variant"] == name]
             if len(variant["settle"]) != config.get("settleFrames", 16) or \
                     len(selected) != len(variant["settle"]) + len(seeds):
@@ -154,6 +162,8 @@ def main():
                         (state["blasPriorityEnabled"], state["blasPriorityCacheEnabled"]) != expected or \
                         not state["blasGPUAllocatorEnabled"] or not state["blasRepresentationsEnabled"]:
                     raise ValueError("Runtime source or mode identity mismatch")
+                if merged_sharing and state.get("blasMergedSharingEnabled") != name.startswith("B"):
+                    raise ValueError("Runtime merged-sharing policy mismatch")
             # CPU feedback is delayed. Judge only distinct completed producers
             # belonging to this epoch, never reinterpret it as image-frame truth.
             start_frame = selected[0]["frame"]
@@ -298,7 +308,7 @@ def main():
     script = Path(__file__).resolve()
     sources.append(identity(script))
     shutil.copyfile(script, output / "AnalyzeFrozenBLASQuality.py")
-    report = dict(protocol=PROTOCOL, status="valid" if not failures else "not_accepted", failures=failures,
+    report = dict(protocol=protocol, status="valid" if not failures else "not_accepted", failures=failures,
         producerAlignment="Completed producer IDs retained; last four distinct post-reset producers, not image-frame attribution.",
         sourceScope=capture["controlledBlas"], manifest=manifest, rawSources=sources,
         versions=dict(python=platform.python_version(), numpy=np.__version__, matplotlib=matplotlib.__version__),
@@ -313,6 +323,9 @@ def main():
                 "HDR outlier concentration alone does not establish geometry, material, normal or PDF cause."])
     (output / "Analysis.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
     lines = ["# Frozen MiniZorah BLAS quality", "", f"Status: **{report['status']}**. No performance claim.", ""]
+    if merged_sharing:
+        lines += ["A1/A2: priority and cache on, merged sharing off. B0/B1: priority on, merged sharing on, cache off/on. "
+                  "R: ample budget, priority/cache/merged sharing off. All variants share frozen source residency.", ""]
     if failures:
         lines += ["Acceptance gaps:", ""] + ["- " + reason for reason in failures] + [""]
     lines += ["| Pose/seed | Resource | A/A exact | B0/B1 exact | Raw MAE A1 / A2 → B | Raw RMSE A1 / A2 → B | Display >1% A1 / A2 → B |",

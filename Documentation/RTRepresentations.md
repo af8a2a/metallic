@@ -28,6 +28,26 @@ TLAS creation, raster traversal or all RT preparation independent of instance
 count. The selected representation retains the authored TLAS instance identity
 and transform.
 
+With priority enabled, `METALLIC_BLAS_MERGED_SHARING=1` (default) makes a
+primitive's demanded merged cut the single owner of all its nonterminal
+consumers. The highest drawable cut can satisfy those consumers without also
+charging shared/discrete BLAS storage, references and builds. Its importance
+aggregates all those consumers, including offscreen ones. A representative's
+own broad LOD interval alone does not create merged demand. Primitives with no
+real merged consumer retain their shared/discrete choices; terminal-only users
+retain the terminal BLAS. `0` keeps the independent-slot control for A/B.
+
+This choice is computed from the completed minimum-LOD histogram after shared
+and discrete selection, before per-instance demand aggregation. The first LOD's
+fourth histogram word temporarily holds the choice; phase 25 subsequently reuses
+it for cached-storage accounting. No extra sort, scan pass, CPU readback or
+persistent publication state is added. Existing idle discrete-cache retention and
+pressure eviction still apply. A merged cut can cost more traversal work than a
+coarser shared cut, so image quality and ray timings remain scene-level checks.
+If that merged cut cannot fit, this policy also forgoes smaller independently
+requested shared/discrete alternatives; it is not a universal quality guarantee
+under every capacity limit. Terminal fallback remains possible for rejected owners.
+
 The compact RT group buffer has its own capacity. Admission publishes complete
 primitive ranges, never a truncated group list. Under pressure, idle cache
 storage gives way to active demand. A rejected shared/cache selection may use
@@ -177,6 +197,11 @@ by the fixture. It checks shared-consumer maxima, permutation invariance,
 offscreen/behind-camera demand, orthographic/affine/near-plane cases and 32 frames
 of removal and owner migration. It also compares GPU owner sorting and inverse
 ranks with a CPU total-order oracle, including partial tiles and merge parity.
+Production phase 22 also checks canonical merged demand against independent
+owner aggregates over 32 stable frames, cancelled classification/retry, a sole
+representative exception, offscreen consumers and terminal-only demand. Its
+classified bounds/histograms are synthetic; the lifecycle test separately runs
+native CLAS/BLAS builds, publication, in-flight retirement and ray probes.
 `stream_rt_representation_parallel_admission` covers priority group capacity;
 `stream_blas_gpu_allocator` covers dirty reference/build quotas, priority-only
 storage replacement, cancelled submissions and 32 stationary pressure frames.

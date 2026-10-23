@@ -1692,6 +1692,16 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             }
         }
         blasPriorityCacheEnabled_ = priorityCache && blasPriorityEnabled_;
+        bool mergedSharing = desc.enableBlasMergedSharing;
+        if (const char* value = std::getenv("METALLIC_BLAS_MERGED_SHARING")) {
+            if (std::strcmp(value, "0") == 0) { mergedSharing = false; }
+            else if (std::strcmp(value, "1") == 0) { mergedSharing = true; }
+            else {
+                log = "METALLIC_BLAS_MERGED_SHARING must be 0 or 1";
+                return makeError(Error::InvalidArgument);
+            }
+        }
+        blasMergedSharingEnabled_ = mergedSharing && blasPriorityEnabled_;
         uint64_t persistentBytes = blasSizes.accelerationStructureSize;
         if (gpuAllocator && blasSizes.accelerationStructureSize > desc.maxBlasStagingBytes) {
             log = "Dirty BLAS implicit build arena exceeds maxBlasStagingBytes";
@@ -2859,6 +2869,7 @@ void MeshletStreamRuntime::reset()
     blasRepresentationsEnabled_ = false;
     blasPriorityEnabled_ = false;
     blasPriorityCacheEnabled_ = false;
+    blasMergedSharingEnabled_ = false;
     diagnosticBlasStorageBytes_ = 0;
     rtRepresentationCount_ = 0;
     rtRepresentationGroupCapacity_ = 0;
@@ -3121,7 +3132,8 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
     return beginUploadBatch(commandBuffer, streamer, frame, flushUploads, false);
 }
 
-Result<> MeshletStreamRuntime::resetDiagnosticBLAS(uint32_t storageBytes, bool priorityEnabled, bool priorityCacheEnabled)
+Result<> MeshletStreamRuntime::resetDiagnosticBLAS(uint32_t storageBytes, bool priorityEnabled, bool priorityCacheEnabled,
+    bool mergedSharingEnabled)
 {
     if (!gpuBlasAllocator_ || !gpuBlasAllocator_->enabled || !blasRepresentationsEnabled_ || storageBytes == 0u ||
         storageBytes > blasStorageBuffer_->desc().size || storageBytes % gpuBlasAllocator_->parameterValues.alignment != 0u) {
@@ -3137,6 +3149,7 @@ Result<> MeshletStreamRuntime::resetDiagnosticBLAS(uint32_t storageBytes, bool p
     diagnosticBlasStorageBytes_ = storageBytes;
     blasPriorityEnabled_ = priorityEnabled;
     blasPriorityCacheEnabled_ = priorityEnabled && priorityCacheEnabled;
+    blasMergedSharingEnabled_ = priorityEnabled && mergedSharingEnabled;
     *blasCacheInitialized_ = false;
     recentBlasHeader_ = {};
     recentBlasAllocatorState_ = {};
@@ -3210,7 +3223,8 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         // The diagnostic harness drains every prior submission before changing epoch.
         if (!sourceResidencyFrozen_) { return makeError(Error::InvalidArgument); }
         if (auto result = resetDiagnosticBLAS(frame.diagnosticBlasStorageBytes,
-                frame.diagnosticBlasPriority, frame.diagnosticBlasPriorityCache); !result) { return result; }
+                frame.diagnosticBlasPriority, frame.diagnosticBlasPriorityCache,
+                frame.diagnosticBlasMergedSharing); !result) { return result; }
         diagnosticBlasResetEpoch_ = frame.diagnosticBlasResetEpoch;
     }
     if (frame.diagnosticBlasResetEpoch == 0u) { diagnosticBlasResetEpoch_ = 0u; }
@@ -4469,6 +4483,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.enableBlasGPUAllocator = gpuBlasAllocator_ && gpuBlasAllocator_->enabled ? 1u : 0u;
     params.enableBlasPriority = blasPriorityEnabled_ ? 1u : 0u;
     params.enableBlasPriorityCache = blasPriorityCacheEnabled_ ? 1u : 0u;
+    params.enableBlasMergedSharing = blasMergedSharingEnabled_ ? 1u : 0u;
     const uint64_t blasStorageAddress = blasStorageBuffer_ ? blasStorageBuffer_->deviceAddress() : 0u;
     params.blasStorageAddressLow = static_cast<uint32_t>(blasStorageAddress);
     params.blasStorageAddressHigh = static_cast<uint32_t>(blasStorageAddress >> 32u);
@@ -5315,6 +5330,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
         result.blasGPUAllocatorEnabled = gpuBlasAllocator_->enabled;
         result.blasPriorityEnabled = blasPriorityEnabled_;
         result.blasPriorityCacheEnabled = blasPriorityCacheEnabled_;
+        result.blasMergedSharingEnabled = blasMergedSharingEnabled_;
         result.blasPrioritySortReused = recentBlasAllocatorState_[kBLASAllocatorSortReusedWord];
         result.blasPriorityAdmissionReused = recentBlasAllocatorState_[kBLASAllocatorAdmissionReusedWord];
         result.blasRequestedVisibleConsumers = recentBlasAllocatorState_[kBLASAllocatorRequestedVisibleWord];

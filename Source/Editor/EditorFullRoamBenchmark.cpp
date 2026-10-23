@@ -106,6 +106,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"blasGPUAllocatorEnabled",s.blasGPUAllocatorEnabled},
         {"blasPriorityEnabled",s.blasPriorityEnabled},
         {"blasPriorityCacheEnabled",s.blasPriorityCacheEnabled},
+        {"blasMergedSharingEnabled",s.blasMergedSharingEnabled},
         {"blasPrioritySortReused",s.blasPrioritySortReused},
         {"blasPriorityAdmissionReused",s.blasPriorityAdmissionReused},
         {"blasRequestedVisibleConsumers",s.blasRequestedVisibleConsumers},
@@ -542,6 +543,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             }
             const auto pressureBytes = blasComparison.at("storageBytes").get<uint32_t>();
             const auto referenceBytes = blasComparison.at("referenceBytes").get<uint32_t>();
+            const bool mergedSharingComparison = blasComparison.value("mergedSharingComparison", false);
             const uint32_t settleFrames = blasComparison.value("settleFrames", 16u);
             const uint32_t primeFrames = blasComparison.value("primeFrames", 16u);
             const Json poses = blasComparison.value("poses", Json::array({{{"forward",0.0},{"yaw",0.0}}}));
@@ -573,7 +575,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 initial.at("blasPriorityEnabled").get<bool>() || initial.at("blasPersistentBytes").get<uint64_t>() != referenceBytes) {
                 throw std::runtime_error("Controlled BLAS requires priority-off initialization and physical storage equal to referenceBytes");
             }
-            report["protocol"] = "minizorah-blas-frozen-quality-v1";
+            report["protocol"] = mergedSharingComparison ? "minizorah-blas-frozen-quality-v2" : "minizorah-blas-frozen-quality-v1";
             report["diagnosticRun"] = true;
             report["config"] = config;
             report["frames"] = 0u;
@@ -590,9 +592,11 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             std::ofstream controlledFrames(output / "ControlledFrames.jsonl");
             controlledFrames.exceptions(std::ios::badbit | std::ios::failbit);
             uint32_t epoch = 0u;
-            struct Variant { const char* name; bool priority; bool cache; uint32_t bytes; };
-            const std::array variants{Variant{"A1",false,false,pressureBytes}, Variant{"A2",false,false,pressureBytes},
-                Variant{"B0",true,false,pressureBytes}, Variant{"B1",true,true,pressureBytes}, Variant{"R",false,false,referenceBytes}};
+            struct Variant { const char* name; bool priority; bool cache; bool mergedSharing; uint32_t bytes; };
+            const std::array variants{Variant{"A1",mergedSharingComparison,mergedSharingComparison,false,pressureBytes},
+                Variant{"A2",mergedSharingComparison,mergedSharingComparison,false,pressureBytes},
+                Variant{"B0",true,false,mergedSharingComparison,pressureBytes},
+                Variant{"B1",true,true,mergedSharingComparison,pressureBytes}, Variant{"R",false,false,false,referenceBytes}};
             for (size_t poseIndex = 0; poseIndex < poses.size(); ++poseIndex) {
                 const double forward = poses[poseIndex].at("forward").get<double>();
                 const double yaw = poses[poseIndex].at("yaw").get<double>();
@@ -615,16 +619,19 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     setProperty("VBuffer", "benchmarkBlasStorageBytes", variant.bytes);
                     setProperty("VBuffer", "benchmarkBlasPriority", variant.priority);
                     setProperty("VBuffer", "benchmarkBlasPriorityCache", variant.cache);
+                    if (mergedSharingComparison) { setProperty("VBuffer", "benchmarkBlasMergedSharing", variant.mergedSharing); }
                     setProperty("VBuffer", "benchmarkBlasResetEpoch", ++epoch);
                     Json variantReport{{"pose",poseIndex},{"name",variant.name},{"priority",variant.priority},{"cache",variant.cache},
                         {"storageBytes",variant.bytes},{"resetEpoch",epoch},{"camera",viewportCameraProperties()},{"settle",Json::array()},{"captures",Json::array()}};
+                    if (mergedSharingComparison) { variantReport["mergedSharing"] = variant.mergedSharing; }
                     const auto record = [&](const char* phase) {
                         auto state = snapshot();
                         const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
                         if (identity.empty()) { throw std::runtime_error("Missing frozen source identity"); }
                         if (sourceIdentity.empty()) { sourceIdentity = identity; }
                         if (identity != sourceIdentity || state.at("blasPriorityEnabled") != variant.priority ||
-                            state.at("blasPriorityCacheEnabled") != (variant.priority && variant.cache)) {
+                            state.at("blasPriorityCacheEnabled") != (variant.priority && variant.cache) ||
+                            (mergedSharingComparison && state.at("blasMergedSharingEnabled") != variant.mergedSharing)) {
                             throw std::runtime_error("Frozen source identity or effective policy changed");
                         }
                         controlledFrames << Json{{"pose",poseIndex},{"variant",variant.name},{"phase",phase},{"state",state}}.dump() << '\n';
