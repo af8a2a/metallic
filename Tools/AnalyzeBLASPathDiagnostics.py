@@ -405,7 +405,7 @@ def main():
     capture_path = root / "Capture.json"
     capture = read_json(capture_path)
     require(capture.get("status") == "capture_complete" and
-            capture.get("protocol") in ("minizorah-blas-frozen-quality-v1", "minizorah-blas-frozen-quality-v2"),
+            capture.get("protocol") in ("minizorah-blas-frozen-quality-v1", "minizorah-blas-frozen-quality-v2", "minizorah-blas-frozen-quality-v3"),
             "Unexpected or incomplete capture")
     config = capture["config"]
     require(config.get("sample") == "gpu-driven-sample", "Expected controlled MiniZorah")
@@ -434,7 +434,10 @@ def main():
     variants = capture["controlledBlas"]["variants"]
     for pose in sorted({v["pose"] for v in variants}):
         group = {v["name"]: v for v in variants if v["pose"] == pose}
-        require(set(group) == {"A1", "A2", "B0", "B1", "R"}, "Incomplete cold policy variants")
+        expected_names = {"A1", "A2", "B0", "B1", "R"}
+        if config["blasQualityComparison"].get("intermediateFallbackComparison", False):
+            expected_names.add("R0")
+        require(set(group) == expected_names, "Incomplete cold policy variants")
         require(len({v["sourceIdentity"] for v in group.values()}) == 1, "Frozen source identity mismatch")
         require(all(v["camera"] == group["R"]["camera"] for v in group.values()), "Pose camera mismatch")
         for seed in config["blasQualityComparison"].get("seeds", [0]):
@@ -455,6 +458,10 @@ def main():
             for left, right in (("A1", "A2"), ("B0", "B1"), ("A1", "R"), ("A2", "R"), ("B1", "R")):
                 comparisons.append(dict(pose=pose, seed=seed, left=left, right=right,
                                         targets=compare(captures[left], captures[right])))
+            if "R0" in captures:
+                for left in ("A1", "B1", "R"):
+                    comparisons.append(dict(pose=pose, seed=seed, left=left, right="R0",
+                                            targets=compare(captures[left], captures["R0"])))
             for target in range(len(pixels)):
                 plots.append(plot_contributions(output, captures, pose, seed, target))
     report = dict(protocol=PROTOCOL, layout=dict(width=WIDTH, rowsPerTarget=SAMPLES, vertexBase=VERTEX_BASE,

@@ -540,6 +540,7 @@ public struct GPUDrivenStreamAssetParams
     public uint enableBlasPriority;
     public uint enableBlasPriorityCache;
     public uint enableBlasMergedSharing;
+    public uint blasFallbackPolicy;
 };
 
 public struct GPUDrivenStreamAssetVertexOutput
@@ -3481,7 +3482,13 @@ uint4 streamRTOwnerPriorityKey(RWStructuredBuffer<uint> state, uint owner, GPUDr
 {
     if (owner == 0xffffffffu) { return uint4(0xffffffffu); }
     uint base = streamRTOwnerImportanceBase(p, owner);
-    return uint4(~state[base], state[base + 1u], ~state[base + 2u], owner);
+    uint errorKey = ~state[base];
+    // A bounded intermediate cut is admitted before optional fine upgrades.
+    // The remaining key still orders all consumers by error, distance, coverage.
+    if (p.blasFallbackPolicy == 1u && owner % 3u == 2u && state[base] != 0u) {
+        errorKey &= 0x7fffffffu;
+    }
+    return uint4(errorKey, state[base + 1u], ~state[base + 2u], owner);
 }
 
 bool streamRTPriorityBefore(uint4 a, uint4 b)
@@ -3645,6 +3652,8 @@ GPUDrivenStreamAssetActiveGroup streamBlasGroup(uint index,
 }
 
 public groupshared uint g_RTCacheMissing;
+public groupshared uint g_RTFloorTerminalClusters;
+public groupshared uint g_RTFloorFirstLevel;
 
 uint4 scanRTRepresentationCounts(uint4 demand, uint lane)
 {
@@ -3862,27 +3871,76 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         }
         GroupMemoryBarrierWithGroupSync();
         if (g_RTCacheMissing == 0x80000000u) { return; }
-        uint firstCacheLevel = primitive.lodLevelCount > 3u ? primitive.lodLevelCount - 3u : 0u;
-        uint missing = 0u;
-        for (uint local = lane; local < primitive.groupCount; local += 64u) {
-            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + local];
-            if (group.lodLevel < firstCacheLevel && (group.flags & 1u) == 0u) { continue; }
-            if (groupPageDrawable(pageTable, params, group)) { continue; }
-            for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
-                if (group.lodLevel >= level || (group.flags & 1u) != 0u) {
-                    missing |= 1u << (level - firstCacheLevel);
+        if (params.blasFallbackPolicy == 1u) {
+            StructuredBuffer<GPUDrivenStreamAssetLODLevel> levels = resolveUniform(
+                ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>>(push.lodLevelBuffer));
+            // A missing nonterminal page excludes that level and every finer
+            // complete cut. Missing terminal pages exclude the entire floor.
+            // This reduction works for arbitrary LOD counts, without a bitmask.
+            if (lane == 0u) {
+                g_RTCacheMissing = 0u;
+                g_RTFloorTerminalClusters = 0u;
+                g_RTFloorFirstLevel = primitive.lodLevelCount;
+                for (uint level = 0u; level + 1u < primitive.lodLevelCount; ++level) {
+                    if (levels[primitive.lodLevelOffset + level].clusterCount <= 12u) {
+                        g_RTFloorFirstLevel = level;
+                        break;
+                    }
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+            uint missingLevel = 0u, terminalClusters = 0u;
+            for (uint local = lane; local < primitive.groupCount; local += 64u) {
+                GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + local];
+                bool terminal = (group.flags & 1u) != 0u;
+                if (terminal) { terminalClusters += group.clusterCount; }
+                if (!terminal && group.lodLevel < g_RTFloorFirstLevel) { continue; }
+                if (!groupPageDrawable(pageTable, params, group)) {
+                    missingLevel = max(missingLevel, terminal ? 0xffffffffu : group.lodLevel + 1u);
+                }
+            }
+            InterlockedMax(g_RTCacheMissing, missingLevel);
+            InterlockedAdd(g_RTFloorTerminalClusters, terminalClusters);
+            GroupMemoryBarrierWithGroupSync();
+            if (lane == 0u) {
+                for (uint level = max(g_RTCacheMissing, g_RTFloorFirstLevel); level + 1u < primitive.lodLevelCount &&
+                    level != 0xffffffffu; ++level) {
+                    uint clusters = levels[primitive.lodLevelOffset + level].clusterCount;
+                    // Include early terminal branches, even though this bound
+                    // may count some terminal clusters twice. Actual bytes are
+                    // still charged by the native-size GPU allocator.
+                    if (clusters <= 12u && g_RTFloorTerminalClusters <= 12u - clusters) {
+                        state[base + 2u] = level;
+                        break;
+                    }
+                }
+            }
+        } else {
+            uint firstCacheLevel = primitive.lodLevelCount > 3u ? primitive.lodLevelCount - 3u : 0u;
+            uint missing = 0u;
+            for (uint local = lane; local < primitive.groupCount; local += 64u) {
+                GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + local];
+                if (group.lodLevel < firstCacheLevel && (group.flags & 1u) == 0u) { continue; }
+                if (groupPageDrawable(pageTable, params, group)) { continue; }
+                for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
+                    if (group.lodLevel >= level || (group.flags & 1u) != 0u) {
+                        missing |= 1u << (level - firstCacheLevel);
+                    }
+                }
+            }
+            InterlockedOr(g_RTCacheMissing, missing);
+            GroupMemoryBarrierWithGroupSync();
+            if (lane == 0u) {
+                for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
+                    if ((g_RTCacheMissing & (1u << (level - firstCacheLevel))) == 0u) {
+                        state[base + 2u] = level;
+                        break;
+                    }
                 }
             }
         }
-        InterlockedOr(g_RTCacheMissing, missing);
         GroupMemoryBarrierWithGroupSync();
         if (lane == 0u) {
-            for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
-                if ((g_RTCacheMissing & (1u << (level - firstCacheLevel))) == 0u) {
-                    state[base + 2u] = level;
-                    break;
-                }
-            }
             // The fourth histogram word is classification scratch until phase
             // 25 replaces it with cached storage demand. Decide before phase 23
             // atomically aggregates consumers, so no instance races the choice.
@@ -3917,6 +3975,23 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         uint base = streamRTPrimitiveBase(params, instance.primitiveIndex);
         uint minimum = state[output];
         if (primitive.lodLevelCount == 0u || minimum >= primitive.lodLevelCount - 1u) { return; }
+        if (params.blasFallbackPolicy == 2u) {
+            uint owner = instance.primitiveIndex * 3u;
+            state[output + 2u] = owner;
+            InterlockedAdd(state[base + 3u], 1u);
+            streamAccumulateRTOwnerImportance(state, owner, instance, params);
+            return;
+        }
+        bool floorAvailable = params.blasFallbackPolicy == 1u && state[base + 2u] != 0xffffffffu;
+        if (floorAvailable) {
+            uint floorOwner = instance.primitiveIndex * 3u + 2u;
+            InterlockedAdd(state[base + 5u], 1u);
+            streamAccumulateRTOwnerImportance(state, floorOwner, instance, params);
+            if (minimum >= state[base + 2u]) {
+                state[output + 2u] = floorOwner;
+                return;
+            }
+        }
         uint mode = minimum >= state[base + 2u] ? 2u : minimum >= state[base + 1u] ? 1u : 0u;
         // The representative itself retains its own view cut even when its
         // interval spans several levels. Other users satisfy the conservative test.
@@ -3930,8 +4005,10 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         }
         uint owner = instance.primitiveIndex * 3u + mode;
         state[output + 2u] = owner;
-        InterlockedAdd(state[base + 3u + mode], 1u);
-        streamAccumulateRTOwnerImportance(state, owner, instance, params);
+        if (!floorAvailable || mode != 2u) {
+            InterlockedAdd(state[base + 3u + mode], 1u);
+            streamAccumulateRTOwnerImportance(state, owner, instance, params);
+        }
         return;
     }
     if (push.activeBuildPhase == 25u) {
@@ -4265,6 +4342,13 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
                 uint merged = instance.primitiveIndex * 3u;
                 if (streamBlasDynamicReady(representations[merged])) {
                     selected = merged;
+                    dynamic = true;
+                }
+            }
+            if (!dynamic && params.blasFallbackPolicy == 1u) {
+                uint floorOwner = instance.primitiveIndex * 3u + 2u;
+                if (streamBlasDynamicReady(representations[floorOwner])) {
+                    selected = floorOwner;
                     dynamic = true;
                 }
             }

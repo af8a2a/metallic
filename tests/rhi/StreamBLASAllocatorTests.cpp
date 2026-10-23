@@ -172,6 +172,9 @@ struct AllocatorScenario {
     MeshletStreamBLASAllocatorParameters params{};
     std::array<uint32_t, kOwners> encoded{};
     nlohmann::json frames = nlohmann::json::array();
+    // Keep the large readback payload out of each caller's return-value slots.
+    // Tests take value copies explicitly when comparing across submissions.
+    std::unique_ptr<Frame> lastFrame = std::make_unique<Frame>();
 
     AllocatorScenario(Device& device, uint32_t storageBytes, uint32_t relocateBudget,
         uint32_t scanCount = kOwners) : fixture(device),
@@ -188,7 +191,7 @@ struct AllocatorScenario {
         params = {state.deviceAddress(), gaps.deviceAddress(), allocations.deviceAddress(), owners.deviceAddress(),
             header.deviceAddress(), buildInfos.deviceAddress(), buildOwners.deviceAddress(), sizes.deviceAddress(),
             sourceAddresses.deviceAddress(), moveSources.deviceAddress(), moveDestinations.deviceAddress(), moveCounts.deviceAddress(),
-            0x100000000ull, 0x200000000ull, kOwners, kAlignment, storageBytes, relocateBudget, kNodes, scanCount, 1, 0,
+            0x100000000ull, 0x200000000ull, kOwners, kAlignment, storageBytes, relocateBudget, kNodes, scanCount, 1, 1,
             0x600000000ull};
         fixture.write(parameters, params);
         std::array<uint64_t, kOwners> sources{};
@@ -244,7 +247,7 @@ struct AllocatorScenario {
             fixture.read<std::array<uint32_t, 2>>(moveCounts)};
     }
 
-    Frame frame(const Owners& input, bool cancel = false, bool inspectPendingMoves = false,
+    const Frame& frame(const Owners& input, bool cancel = false, bool inspectPendingMoves = false,
         GatherOrder gatherOrder = GatherOrder::Native)
     {
         fixture.write(owners, input);
@@ -264,7 +267,7 @@ struct AllocatorScenario {
         dispatch(1); dispatch(6);
         if (cancel) { dispatch(2); dispatch(8); dispatch(3); }
         fixture.finish(cancel);
-        if (cancel) { return snapshot(); }
+        if (cancel) { *lastFrame = snapshot(); return *lastFrame; }
         const auto prepared = snapshot();
         auto ids = fixture.read<std::array<uint32_t, kOwners>>(buildOwners);
         std::array<uint32_t, kOwners> bytes{};
@@ -340,7 +343,8 @@ struct AllocatorScenario {
             fixture.begin();
         }
         dispatch(3); fixture.finish();
-        const auto output = snapshot();
+        *lastFrame = snapshot();
+        const auto& output = *lastFrame;
         check(output);
         if (gatherOrder != GatherOrder::Native) {
             const auto sources = fixture.read<std::array<uint64_t, 2 * kOwners>>(moveSources);
@@ -788,6 +792,148 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
 
     return {{"cachedAdmission", cachedAdmission.frames}, {"cachedWaiting", cachedWaiting.frames},
         {"exhaustedEvictionCache", exhaustedCacheFrames}};
+}
+
+struct MixedTileRegressionResult {
+    nlohmann::json frames;
+    std::vector<Frame> checkpoints;
+};
+
+MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string& phase, bool fastPath)
+{
+    MixedTileRegressionResult result;
+    phase = "interleaved resident and oversized negative priority tiles";
+    auto scenario = std::make_unique<AllocatorScenario>(device, 4096, 0);
+    scenario->params.reserved = uint32_t(fastPath);
+    PriorityImportance priorities{};
+    // Retain inactive ranks, so the live/negative pairs straddle both full
+    // tiles and the partial tail instead of being compacted into one tile.
+    for (uint32_t owner = 0; owner < kOwners; ++owner) {
+        priorities[owner] = {std::bit_cast<uint32_t>(float(kOwners - owner)) + 1,
+            std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+    }
+    scenario->priority(priorities, kOwners, kOwners);
+    auto owners = scenario->inputs();
+    for (const uint32_t owner : {0u, 63u, 64u, 127u, 136u, 1u, 62u, 65u, 126u}) {
+        owners[owner].selectedClusterCount = 1;
+        owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+        scenario->encoded[owner] = owner == 1 || owner == 62 || owner == 65 || owner == 126 ? 8192 : 256;
+    }
+    auto value = scenario->frame(owners);
+    result.checkpoints.push_back(value);
+    require(value.header.blasBuildCount == 9 && value.header.storageRejected == 4 &&
+        value.state[kBLASAllocatorAllocatedBytesWord] == 1280,
+        "Mixed priority fixture did not establish five residents and four measured negative entries");
+    const auto residentOffsets = value.owners;
+    for (const bool cached : {false, true}) {
+        scenario->admissionCache(cached, true);
+        result.checkpoints.push_back(scenario->frame(scenario->inputs()));
+        scenario->admissionCache(cached);
+        for (uint32_t frame = 0; frame < 32; ++frame) {
+            value = scenario->frame(scenario->inputs());
+            result.checkpoints.push_back(value);
+            require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 5 &&
+                value.header.storageRejected == 4 && value.state[kBLASAllocatorSuppressedBuildsWord] == 4 &&
+                value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0 &&
+                value.state[kBLASAllocatorPriorityEvictedWord] == 0 &&
+                value.state[kBLASAllocatorAdmissionReusedWord] == uint32_t(cached),
+                "Mixed resident/negative tiles changed rejection accounting or stationary cache behavior");
+            for (const uint32_t owner : {0u, 63u, 64u, 127u, 136u}) {
+                require(value.owners[owner].cachedValid == 1 &&
+                    value.owners[owner].storageOffset == residentOffsets[owner].storageOffset,
+                    "Mixed negative fast rejection overwrote or moved a resident owner");
+            }
+        }
+    }
+    phase = "mixed priority tile dirty and unknown cuts invalidate the summary";
+    owners = scenario->inputs();
+    owners[63].flags |= kDirty;
+    owners[2].selectedClusterCount = 1;
+    owners[2].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+    scenario->encoded[2] = 256;
+    value = scenario->frame(owners);
+    result.checkpoints.push_back(value);
+    require(value.header.blasBuildCount == 2 && value.owners[2].cachedValid == 1 &&
+        value.owners[63].cachedValid == 1 && value.state[kBLASAllocatorAllocatedBytesWord] == 1536 &&
+        value.state[kBLASAllocatorAdmissionReusedWord] == 0,
+        "Mixed tile summary bypassed an unknown or dirty cut");
+
+    phase = "mixed negative exact remaining-budget boundary must retry";
+    auto equality = std::make_unique<AllocatorScenario>(device, 4096, 0);
+    equality->params.reserved = uint32_t(fastPath);
+    auto equalityPriorities = priorities;
+    equalityPriorities[1][0] = 1;
+    equality->priority(equalityPriorities, kOwners, kOwners);
+    owners = equality->inputs();
+    for (const uint32_t owner : {0u, 63u, 64u, 127u, 136u, 1u}) {
+        owners[owner].selectedClusterCount = 1;
+        owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+        equality->encoded[owner] = owner == 1 ? 3840 : 256;
+    }
+    value = equality->frame(owners);
+    result.checkpoints.push_back(value);
+    require(value.owners[1].cachedValid == 2 && value.state[kBLASAllocatorAllocatedBytesWord] == 1280,
+        "Exact-boundary fixture lacks a measured negative cut");
+    equality->priority(priorities, kOwners, kOwners);
+    value = equality->frame(equality->inputs());
+    result.checkpoints.push_back(value);
+    require(value.header.blasBuildCount == 1 && value.owners[0].cachedValid == 1 &&
+        value.owners[1].cachedValid == 1 && value.state[kBLASAllocatorAllocatedBytesWord] == 4096 &&
+        value.state[kBLASAllocatorPriorityEvictedWord] == 4,
+        "A negative exactly equal to remaining storage was incorrectly rejected by the tile shortcut");
+
+    phase = "mixed resident sum exceeding a preceding waiting claim stays serialized";
+    auto exhausted = std::make_unique<AllocatorScenario>(device, 32768, 0, 1);
+    exhausted->params.reserved = uint32_t(fastPath);
+    exhausted->priority(priorities, kOwners, kOwners);
+    owners = exhausted->inputs();
+    for (uint32_t owner = 0; owner < 128; ++owner) {
+        owners[owner].selectedClusterCount = 1;
+        owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+        exhausted->encoded[owner] = owner == 80 ? 65536 : 256;
+    }
+    owners[136].selectedClusterCount = 1;
+    owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+    exhausted->encoded[136] = 8192;
+    value = exhausted->frame(owners);
+    result.checkpoints.push_back(value);
+    require(value.state[kBLASAllocatorAllocatedBytesWord] == 127 * 256 && value.owners[136].cachedValid == 2,
+        "Resident-sum fixture did not retain its waiting candidate and oversized negative");
+    auto exhaustedPriorities = priorities;
+    exhaustedPriorities[136][0] = std::bit_cast<uint32_t>(1000.f) + 1;
+    exhausted->priority(exhaustedPriorities, kOwners, kOwners);
+    value = exhausted->frame(exhausted->inputs());
+    result.checkpoints.push_back(value);
+    require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 126 &&
+        value.state[kBLASAllocatorPriorityEvictedWord] == 1 &&
+        value.state[kBLASAllocatorWaitingCountWord] == 1 &&
+        value.state[kBLASAllocatorWaitingClaimBytesWord] == 8192 &&
+        value.state[kBLASAllocatorAllocatedBytesWord] == 126 * 256 &&
+        value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0,
+        "Mixed tile resident overflow skipped the eviction cap or corrupted waiting claims");
+    result.frames = {{"mixedTiles", scenario->frames}, {"exactBoundary", equality->frames},
+        {"residentSumExhaustion", exhausted->frames}};
+    return result;
+}
+
+nlohmann::json runMixedPriorityTileRegression(Device& device, std::string& phase)
+{
+    const auto serial = runMixedPriorityTileCases(device, phase, false);
+    const auto optimized = runMixedPriorityTileCases(device, phase, true);
+    phase = "mixed tile fast path preserves every serial allocator output";
+    require(serial.checkpoints.size() == optimized.checkpoints.size(), "Mixed tile comparison frame counts differ");
+    for (size_t frame = 0; frame < serial.checkpoints.size(); ++frame) {
+        const auto& a = serial.checkpoints[frame];
+        const auto& b = optimized.checkpoints[frame];
+        require(std::memcmp(a.owners.data(), b.owners.data(), sizeof(Owners)) == 0 &&
+            std::memcmp(a.allocations.data(), b.allocations.data(), sizeof(Allocations)) == 0 &&
+            std::memcmp(a.gaps.data(), b.gaps.data(), sizeof(Gaps)) == 0 &&
+            std::memcmp(a.state.data(), b.state.data(), sizeof(State)) == 0 &&
+            std::memcmp(&a.header, &b.header, sizeof(a.header)) == 0 && a.moves == b.moves,
+            "Mixed tile fast path changed owner, allocator, gap, budget, or Move state");
+    }
+    return {{"serial", serial.frames}, {"optimized", optimized.frames},
+        {"identicalFrames", serial.checkpoints.size()}};
 }
 
 class StreamBLASAllocatorTest final : public RHITest {
@@ -1528,6 +1674,7 @@ public:
 
             auto admissionCacheFrames = runAdmissionCacheRegression(*device, phase);
             auto deterministicBaselineFrames = runDeterministicBaselineRegression(*device, phase);
+            auto mixedPriorityTileFrames = runMixedPriorityTileRegression(*device, phase);
 
             require(validationErrors.load() == 0, "Vulkan validation errors during allocator regression");
             const auto directory = context.outputDirectory / "BLASAllocator";
@@ -1547,6 +1694,7 @@ public:
                 {"negativeTiles", negativeTileFrames}, {"residentTiles", residentTiles.frames},
                 {"admissionCache", std::move(admissionCacheFrames)},
                 {"deterministicBaseline", std::move(deterministicBaselineFrames)},
+                {"mixedPriorityTiles", std::move(mixedPriorityTileFrames)},
                 {"relocationAccounting", "logical bytes; native scratch round-trip copies twice this amount"},
                 {"validationErrors", validationErrors.load()},
                 {"sizeInput", "deterministic driver-size synthesis; native Move fixture covers real build outputs"}}.dump(2);

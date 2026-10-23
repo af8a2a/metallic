@@ -49,6 +49,7 @@ struct ImportanceInput {
     bool allowSaturatedError = false;
     bool classifyRepresentations = false;
     bool mergedSharing = false;
+    uint32_t fallbackPolicy = 0;
     bool cancelClassification = false;
 
     ImportanceInput() { minimumLevels.fill(1); }
@@ -81,7 +82,7 @@ bool importanceClose(float a, float b)
 // The intervening CPU upload seeds already-classified LOD bounds, so this test
 // isolates importance from DAG traversal, storage admission and native builds.
 struct ImportanceFixture {
-    enum Input { Params, Instances, Primitives, State, Cache, Active, Header, Metadata, InputCount };
+    enum Input { Params, Instances, Primitives, State, Cache, Active, Header, Metadata, Levels, InputCount };
     Device& device;
     Queue& queue;
     std::unique_ptr<BindlessHeap> heap;
@@ -102,9 +103,11 @@ struct ImportanceFixture {
         const uint64_t sizes[] = {sizeof(params), kInstanceCount * sizeof(MeshletStreamGPUInstance),
             kPrimitiveCount * sizeof(MeshletStreamGPUPrimitive), sizeof(ImportanceState), kPrimitiveCount * 16 * 4,
             sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUBLASHeader),
-            (kLevelCount + kPrimitiveCount) * sizeof(MeshletStreamGPURTRepresentationLODMetadata)};
+            (kLevelCount + kPrimitiveCount) * sizeof(MeshletStreamGPURTRepresentationLODMetadata),
+            kLevelCount * sizeof(MeshletStreamGPULODLevel)};
         const uint32_t strides[] = {sizeof(params), sizeof(MeshletStreamGPUInstance), sizeof(MeshletStreamGPUPrimitive),
-            4, 4, sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUBLASHeader), 16};
+            4, 4, sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUBLASHeader), 16,
+            sizeof(MeshletStreamGPULODLevel)};
         heap = importanceChecked(device.createBindlessHeap({.maxBuffers = InputCount}));
         for (uint32_t input = 0; input < InputCount; ++input) {
             buffers[input] = importanceChecked(device.createBuffer({.size = sizes[input], .structureStride = strides[input],
@@ -133,6 +136,13 @@ struct ImportanceFixture {
             primitives[primitive].lodLevelCount = 4;
         }
         write(Primitives, primitives);
+        std::array<MeshletStreamGPULODLevel, kLevelCount> levels{};
+        for (uint32_t level = 0; level < kLevelCount; ++level) {
+            constexpr uint32_t clusters[]{32, 8, 4, 1};
+            levels[level].lodLevel = level % 4;
+            levels[level].clusterCount = clusters[level % 4];
+        }
+        write(Levels, levels);
         std::array<MeshletStreamGPURTRepresentationLODMetadata, kLevelCount + kPrimitiveCount> metadata{};
         for (auto& entry : metadata) { entry.boundsCenterRadius[3] = .5f; entry.errorAndPadding[0] = .25f; }
         metadata[kLevelCount + 2].errorAndPadding[0] = 0.f;
@@ -154,6 +164,7 @@ struct ImportanceFixture {
         push.paramsBuffer = handles[Params].shaderIndex;
         push.instanceBuffer = handles[Instances].shaderIndex;
         push.primitiveBuffer = push.groupBuffer = handles[Primitives].shaderIndex;
+        push.lodLevelBuffer = handles[Levels].shaderIndex;
         push.pageTableBuffer = handles[State].shaderIndex;
         push.blasHeaderBuffer = handles[Header].shaderIndex;
     }
@@ -202,6 +213,7 @@ struct ImportanceFixture {
         params.upProjection[3] = input.orthographic ? 1.f : 0.f;
         params.enableBlasPriority = input.classifyRepresentations;
         params.enableBlasMergedSharing = input.mergedSharing;
+        params.blasFallbackPolicy = input.fallbackPolicy;
         write(Params, params); write(Instances, input.instances);
         dispatch(20);
         auto state = readState();
@@ -308,6 +320,11 @@ struct ImportanceFixture {
         std::vector<uint32_t> expected(count);
         std::iota(expected.begin(), expected.end(), 0);
         std::sort(expected.begin(), expected.end(), [&](uint32_t a, uint32_t b) {
+            if (params.blasFallbackPolicy == 1) {
+                const bool floorA = a % 3 == 2 && values[a][0] != 0;
+                const bool floorB = b % 3 == 2 && values[b][0] != 0;
+                if (floorA != floorB) { return floorA; }
+            }
             if (values[a][0] != values[b][0]) { return values[a][0] > values[b][0]; }
             if (values[a][1] != values[b][1]) { return values[a][1] < values[b][1]; }
             if (values[a][2] != values[b][2]) { return values[a][2] > values[b][2]; }
@@ -503,6 +520,34 @@ public:
             for (const auto& owner : terminalOnly) {
                 importanceRequire(owner[3] == 0, "Terminal-only consumers created unnecessary dynamic demand");
             }
+            phase = "intermediate floor aggregation, migration and cache";
+            canonicalInput.minimumLevels.fill(1);
+            canonicalInput.minimumLevels[0] = canonicalInput.minimumLevels[136] = 0;
+            canonicalInput.fallbackPolicy = 1;
+            const auto floorOwners = fixture.frame(canonicalInput);
+            importanceRequire(floorOwners[2] == combined && floorOwners[0][3] == 2 && floorOwners[1][3] == 0,
+                "Intermediate floor lost all-consumer importance or duplicated fine demand for coarse consumers");
+            auto floorOrder = fixture.sort(floorOwners, kOwnerCount, true);
+            importanceRequire(floorOrder.front() == 2, "Intermediate floor did not precede its optional fine upgrade");
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                canonicalInput.cancelClassification = frame == 7;
+                importanceRequire(fixture.frame(canonicalInput) == floorOwners,
+                    "Stationary floor or cancelled classification changed ownership");
+                importanceRequire(fixture.sort(floorOwners, kOwnerCount, true, false, true) == floorOrder,
+                    "Unchanged floor priority missed its exact cached ordering");
+            }
+            canonicalInput.cancelClassification = false;
+            canonicalInput.instances[136].primitiveIndex = 1;
+            const auto migratedFloor = fixture.frame(canonicalInput);
+            importanceRequire(migratedFloor[2][3] == 135 && migratedFloor[5][3] == 1 &&
+                migratedFloor[2][5] + migratedFloor[5][5] == combined[5],
+                "Migrating a fine consumer left stale floor consumers or lost offscreen coverage");
+            canonicalInput.instances[136].primitiveIndex = 0;
+            canonicalInput.fallbackPolicy = 2;
+            const auto finestOwners = fixture.frame(canonicalInput);
+            importanceRequire(finestOwners[0] == combined && finestOwners[1][3] == 0 && finestOwners[2][3] == 0,
+                "Finest reference failed to request one merged owner for all eligible consumers");
+            fixture.params.blasFallbackPolicy = 0;
             phase = "137-owner partial-tail priority sort";
             ImportanceOwners keys{};
             for (uint32_t owner = 0; owner < kOwnerCount; ++owner) {

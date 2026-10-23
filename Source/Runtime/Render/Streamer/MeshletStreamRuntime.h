@@ -428,6 +428,7 @@ struct MeshletStreamGPUParams {
     uint32_t enableBlasPriority = 0;
     uint32_t enableBlasPriorityCache = 0;
     uint32_t enableBlasMergedSharing = 0;
+    uint32_t blasFallbackPolicy = 0; // 0: original, 1: intermediate floor, 2: diagnostic finest reference.
 };
 
 struct MeshletStreamGPURasterBindings {
@@ -541,7 +542,7 @@ static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGPUParams) == 704);
+static_assert(sizeof(MeshletStreamGPUParams) == 708);
 static_assert(sizeof(MeshletStreamGPURTRepresentationGroup) == 16);
 static_assert(sizeof(MeshletStreamGPURTRepresentationLODMetadata) == 32);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
@@ -591,6 +592,7 @@ struct MeshletStreamRuntimeDesc {
     bool enableBlasPriority = true; // Owner importance; requires representations and the GPU allocator.
     bool enableBlasPriorityCache = true; // Exact GPU sort/admission reuse; requires owner priority.
     bool enableBlasMergedSharing = true; // Reuse a demanded merged cut across all primitive consumers.
+    bool enableBlasIntermediateFallback = false; // Experimental: budget a small resident cut before fine upgrades.
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBLASBuilds;
     bool enableBlasRepresentations = true;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
@@ -657,6 +659,7 @@ struct MeshletStreamFrameDesc {
     bool diagnosticBlasPriority = false;
     bool diagnosticBlasPriorityCache = false;
     bool diagnosticBlasMergedSharing = false;
+    uint32_t diagnosticBlasFallbackPolicy = 0;
 };
 
 class MeshletStreamRuntime {
@@ -710,7 +713,7 @@ public:
     // Diagnostic harness only: all preceding submissions/readers must be drained,
     // and no other command buffer may be recording against this runtime.
     Result<> resetDiagnosticBLAS(uint32_t storageBytes, bool priorityEnabled, bool priorityCacheEnabled,
-        bool mergedSharingEnabled);
+        bool mergedSharingEnabled, uint32_t fallbackPolicy);
     // Record one bounded root-only batch in a dedicated, completion-tracked
     // submission. Drain it before another batch or any normal graph recording.
     Result<> cmdLoadInitialResources(CommandBuffer& commandBuffer, Streamer& streamer,
@@ -1036,6 +1039,7 @@ private:
     bool blasPriorityEnabled_ = false;
     bool blasPriorityCacheEnabled_ = false;
     bool blasMergedSharingEnabled_ = false;
+    uint32_t blasFallbackPolicy_ = 0;
     uint32_t diagnosticBlasStorageBytes_ = 0;
     uint32_t rtRepresentationCount_ = 0;
     uint32_t rtRepresentationGroupCapacity_ = 0;

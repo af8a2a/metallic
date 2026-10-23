@@ -78,7 +78,7 @@ function Get-ShaderDigest {
     try { return [Convert]::ToHexString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($records -join "`n")))) }
     finally { $hash.Dispose() }
 }
-$manifest=@{protocol=$(if ($controlledBlas -and $config.blasQualityComparison.mergedSharingComparison) {'minizorah-blas-frozen-quality-v2'} elseif ($controlledBlas) {'minizorah-blas-frozen-quality-v1'} elseif ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
+$manifest=@{protocol=$(if ($controlledBlas -and $config.blasQualityComparison.intermediateFallbackComparison) {'minizorah-blas-frozen-quality-v3'} elseif ($controlledBlas -and $config.blasQualityComparison.mergedSharingComparison) {'minizorah-blas-frozen-quality-v2'} elseif ($controlledBlas) {'minizorah-blas-frozen-quality-v1'} elseif ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
     executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash; shaderSha256=(Get-ShaderDigest)
     config=$config; validation=[bool]$Validation; nsightCaptureRequested=[bool]$NsightCapture; shaderCaptureSymbols=([bool]$NsightCapture -or [bool]$ShaderCaptureSymbols); hidden=$true; vsync=(!$NoVSync); reflexMode=$env:METALLIC_REFLEX_MODE; blasInstanceReuse=$env:METALLIC_BLAS_INSTANCE_REUSE; streamMaintenanceBeforePacing=$env:METALLIC_STREAM_MAINTENANCE_BEFORE_PACING; runs=$Runs; gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)
     dirty=(& git -C $repo status --short --ignore-submodules)
@@ -91,6 +91,8 @@ $manifest.blasAllocator=$env:METALLIC_BLAS_ALLOCATOR
 $manifest.blasPriority=$env:METALLIC_BLAS_PRIORITY
 $manifest.blasPriorityCache=$env:METALLIC_BLAS_PRIORITY_CACHE
 $manifest.blasMergedSharing=$env:METALLIC_BLAS_MERGED_SHARING
+$manifest.blasFallbackPolicy=$env:METALLIC_BLAS_INTERMEDIATE_FALLBACK
+$manifest.blasMixedTileFastPath=$env:METALLIC_BLAS_MIXED_TILE_FAST_PATH
 $manifest.blasStorageBytes=$env:METALLIC_BLAS_STORAGE_BYTES
 $manifest.blasRelocateBytes=$env:METALLIC_BLAS_RELOCATE_BYTES
 $manifest.clasAllocator=$env:METALLIC_CLAS_ALLOCATOR

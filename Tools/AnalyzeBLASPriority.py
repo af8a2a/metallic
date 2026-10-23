@@ -61,6 +61,11 @@ def validate_conditions(manifest, capture, quality=False, comparison="priority")
     if comparison == "merged-sharing" and (manifest["blasPriority"] != "1" or manifest.get("blasPriorityCache") != "1" or
                                           manifest.get("blasMergedSharing") not in ("0", "1")):
         raise ValueError("Merged-sharing comparison requires priority/cache=1 and explicit METALLIC_BLAS_MERGED_SHARING=0/1")
+    if comparison == "intermediate-fallback" and (manifest["blasPriority"] != "1" or
+            manifest.get("blasPriorityCache") != "1" or manifest.get("blasMergedSharing") != "1" or
+            manifest.get("blasFallbackPolicy") not in ("0", "1") or
+            manifest.get("blasMixedTileFastPath") != manifest.get("blasFallbackPolicy")):
+        raise ValueError("Intermediate fallback comparison requires priority/cache/merged=1 and explicit fallback policy=0/1 with matching mixed-tile fast path")
     if not manifest.get("blasStorageBytes") or int(manifest["blasStorageBytes"]) <= 0:
         raise ValueError("Priority A/B requires an explicit shared storage budget")
     if manifest.get("blasRelocateBytes") is None or int(manifest["blasRelocateBytes"]) < 0:
@@ -77,7 +82,7 @@ def validate_conditions(manifest, capture, quality=False, comparison="priority")
         "manifest": {key: manifest.get(key) for key in (
             "executableSha256", "shaderSha256", "asset", "gpu", "config", "validation", "vsync", "hidden",
             "blasAllocator", "blasRepresentations", "blasInstanceReuse", "clasAllocator", "blasStorageBytes",
-            "blasRelocateBytes", "blasPriorityCache", "blasMergedSharing", "reflexMode", "streamMaintenanceBeforePacing")},
+            "blasRelocateBytes", "blasPriorityCache", "blasMergedSharing", "blasFallbackPolicy", "blasMixedTileFastPath", "reflexMode", "streamMaintenanceBeforePacing")},
         "capture": {**{key: capture.get(key) for key in (
             "outputExtent", "renderExtent", "config", "absoluteKeyframes", "graph", "hidden", "vsync",
             "shaderDebugMode", "graphicsCaptureInjected", "frameTimeDefinition", "gpuTimeDefinition",
@@ -89,6 +94,10 @@ def validate_conditions(manifest, capture, quality=False, comparison="priority")
         conditions["manifest"]["blasPriority"] = manifest["blasPriority"]
     if comparison == "merged-sharing":
         del conditions["manifest"]["blasMergedSharing"]
+        conditions["manifest"]["blasPriority"] = manifest["blasPriority"]
+    if comparison == "intermediate-fallback":
+        del conditions["manifest"]["blasFallbackPolicy"]
+        del conditions["manifest"]["blasMixedTileFastPath"]
         conditions["manifest"]["blasPriority"] = manifest["blasPriority"]
     return conditions
 
@@ -215,10 +224,14 @@ def analyze_run(directory, discard_first, comparison="priority"):
         if stream.get("blasGPUAllocatorEnabled") is not True or stream.get("blasRepresentationsEnabled") is not True or \
                 stream.get("blasPriorityEnabled") is not expected_priority:
             raise ValueError("Requested priority/allocator/representations differ from effective runtime settings")
-        if comparison in ("cache", "merged-sharing") and stream.get("blasPriorityCacheEnabled") is not expected_cache:
+        if comparison in ("cache", "merged-sharing", "intermediate-fallback") and stream.get("blasPriorityCacheEnabled") is not expected_cache:
             raise ValueError("Requested priority cache differs from effective runtime settings")
-        if comparison == "merged-sharing" and stream.get("blasMergedSharingEnabled") is not expected_merged_sharing:
+        if comparison in ("merged-sharing", "intermediate-fallback") and stream.get("blasMergedSharingEnabled") is not expected_merged_sharing:
             raise ValueError("Requested merged sharing differs from effective runtime settings")
+        if comparison == "intermediate-fallback" and stream.get("blasFallbackPolicy") != int(manifest["blasFallbackPolicy"]):
+            raise ValueError("Requested intermediate fallback differs from effective runtime settings")
+        if comparison == "intermediate-fallback" and stream.get("blasMixedTileFastPathEnabled") is not (manifest["blasMixedTileFastPath"] == "1"):
+            raise ValueError("Requested mixed-tile fast path differs from effective runtime settings")
         if stream["frame"] in route:
             raise ValueError("Repeated runtime frame identity")
         route[stream["frame"]] = row
@@ -264,7 +277,7 @@ def analyze_run(directory, discard_first, comparison="priority"):
     timing_keys = ("frameMs", "rtPreparationGpuMs", "rtPreparationCpuMs", "blasBuildGpuMs", "graphGpuEnvelopeMs", "reflexPacingCpuMs")
     settled = [sample for sample in samples if sample["stage"] == "final-static"]
     result = {"run": directory.parent.name + "/" + directory.name, "priority": expected_priority,
-        "comparison": comparison, "comparisonEnabled": expected_merged_sharing if comparison == "merged-sharing" else
+        "comparison": comparison, "comparisonEnabled": manifest.get("blasFallbackPolicy") == "1" if comparison == "intermediate-fallback" else expected_merged_sharing if comparison == "merged-sharing" else
             expected_cache if comparison == "cache" else expected_priority,
         "started": manifest.get("started"), "recordedFrames": len(all_rows), "measuredFrames": len(rows),
         "discardedFirstFrames": discard_first, "feedbackSamples": len(samples), "missingRouteFeedback": len(rows) - len(samples),
@@ -563,6 +576,7 @@ def main():
     parser.add_argument("--no-plot", action="store_true")
     parser.add_argument("--compare-cache", action="store_true", help="Compare admission caching off/on with owner priority enabled on both sides")
     parser.add_argument("--compare-merged-sharing", action="store_true", help="Compare merged sharing off/on with owner priority and admission caching enabled on both sides")
+    parser.add_argument("--compare-intermediate-fallback", action="store_true", help="Compare fallback policy 0/1 with priority/cache/merged enabled")
     parser.add_argument("--quality", action="store_true", help="Compare a separate off/on diagnostic pair and matched image samples; no performance analysis")
     parser.add_argument("--quality-reference", type=Path, help="Separate higher-budget priority-off quality run or capture root; only storage budget may differ")
     args = parser.parse_args()
@@ -570,11 +584,11 @@ def main():
         parser.error("--discard-first must be nonnegative")
     if args.quality_reference and not args.quality:
         parser.error("--quality-reference requires --quality")
-    if args.compare_cache and args.compare_merged_sharing:
+    if sum((args.compare_cache, args.compare_merged_sharing, args.compare_intermediate_fallback)) > 1:
         parser.error("Choose one performance comparison mode")
-    if (args.compare_cache or args.compare_merged_sharing) and args.quality:
+    if (args.compare_cache or args.compare_merged_sharing or args.compare_intermediate_fallback) and args.quality:
         parser.error("Policy/cache comparisons require separate matched quality diagnostics")
-    comparison = "merged-sharing" if args.compare_merged_sharing else "cache" if args.compare_cache else "priority"
+    comparison = "intermediate-fallback" if args.compare_intermediate_fallback else "merged-sharing" if args.compare_merged_sharing else "cache" if args.compare_cache else "priority"
     directories = sorted(path.parent for path in args.root.glob("*/run*/Capture.json"))
     if not directories:
         parser.error("No captures matching */run*/Capture.json")
@@ -623,6 +637,8 @@ def main():
         command.append("--compare-cache")
     if args.compare_merged_sharing:
         command.append("--compare-merged-sharing")
+    if args.compare_intermediate_fallback:
+        command.append("--compare-intermediate-fallback")
     caveats = [PROXY_DEFINITION, STORAGE_SEMANTICS_NOTE,
         "Full RT preparation is the per-execution sum of same-parent/same-queue RT representation and BLAS siblings, including priority sort inside classify and group admission inside cut. It excludes Fallback BLAS, traversal parents and TLAS; stage P99 values are never added.",
         "Frame time includes Reflex pacing and presentation. The GPU envelope excludes editor composite/present and independent texture submissions; neither metric is a pure BLAS kernel duration.",

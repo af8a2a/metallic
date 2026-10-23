@@ -15,6 +15,7 @@ import numpy as np
 
 PROTOCOL = "minizorah-blas-frozen-quality-v1"
 MERGED_SHARING_PROTOCOL = "minizorah-blas-frozen-quality-v2"
+INTERMEDIATE_FALLBACK_PROTOCOL = "minizorah-blas-frozen-quality-v3"
 NAMES = ("A1", "A2", "B0", "B1", "R")
 RESOURCES = ("Shadows.shadow", "Deferred.color", "ReflectionQuality.color", "FinalBlit.color")
 AUXILIARY = ("VBuffer.depth", "VBuffer.visibility")
@@ -89,7 +90,7 @@ def main():
     frames_path = root / "ControlledFrames.jsonl"
     capture, manifest = read(capture_path), read(manifest_path)
     protocol = capture.get("protocol")
-    if protocol not in (PROTOCOL, MERGED_SHARING_PROTOCOL) or manifest.get("protocol") != protocol or capture.get("status") != "capture_complete":
+    if protocol not in (PROTOCOL, MERGED_SHARING_PROTOCOL, INTERMEDIATE_FALLBACK_PROTOCOL) or manifest.get("protocol") != protocol or capture.get("status") != "capture_complete":
         raise ValueError("Incomplete capture or unexpected protocol")
     if capture["config"] != manifest["config"] or capture["config"].get("sample") != "gpu-driven-sample":
         raise ValueError("Controlled config identity or MiniZorah sample mismatch")
@@ -101,6 +102,12 @@ def main():
     if capture.get("blasStorageRejectedSemantics") != "physical-and-known-storage-only-v2":
         raise ValueError("Unexpected storage-rejection semantics")
     config = capture["config"]["blasQualityComparison"]
+    intermediate_fallback = config.get("intermediateFallbackComparison", False)
+    names = (*NAMES, "R0") if intermediate_fallback else NAMES
+    if not isinstance(intermediate_fallback, bool) or intermediate_fallback != (protocol == INTERMEDIATE_FALLBACK_PROTOCOL):
+        raise ValueError("Intermediate fallback configuration/protocol mismatch")
+    if intermediate_fallback and manifest.get("blasMixedTileFastPath") != "1":
+        raise ValueError("Intermediate fallback quality requires the mixed-tile fast path on for all variants")
     merged_sharing = config.get("mergedSharingComparison", False)
     if not isinstance(merged_sharing, bool) or merged_sharing != (protocol == MERGED_SHARING_PROTOCOL):
         raise ValueError("Merged-sharing comparison configuration/protocol mismatch")
@@ -120,8 +127,8 @@ def main():
     if len(rows) != capture["frames"]:
         raise ValueError("Controlled frame coverage mismatch")
     variants = capture["controlledBlas"]["variants"]
-    if [(v["pose"], v["name"]) for v in variants] != [(p, n) for p in range(len(poses)) for n in NAMES]:
-        raise ValueError("Expected A1/A2/B0/B1/R cold-reset order for each pose")
+    if [(v["pose"], v["name"]) for v in variants] != [(p, n) for p in range(len(poses)) for n in names]:
+        raise ValueError("Expected protocol-specific cold-reset order for each pose")
     if len({v["resetEpoch"] for v in variants}) != len(variants):
         raise ValueError("Each variant must have a distinct cold-reset epoch")
     output = (args.output or root.parent / "FrozenQualityAnalysis").resolve()
@@ -146,13 +153,18 @@ def main():
             if None in values or len(values) != 1:
                 failures.append(f"pose{pose}: frozen {key} changed or missing: {sorted(values, key=str)}")
         for name, variant in group.items():
-            budget = config["referenceBytes"] if name == "R" else config["storageBytes"]
-            expected = ((name != "R", name in ("A1", "A2", "B1")) if merged_sharing
+            budget = config["referenceBytes"] if name in ("R", "R0") else config["storageBytes"]
+            expected = ((True, name != "B0") if intermediate_fallback else
+                        (name != "R", name in ("A1", "A2", "B1")) if merged_sharing
                         else (name.startswith("B"), name == "B1"))
+            expected_fallback = 2 if name == "R" else 1 if name.startswith("B") else 0
             if variant["storageBytes"] != budget or (variant["priority"], variant["cache"]) != expected:
                 raise ValueError("Unexpected effective policy or storage budget")
             if merged_sharing and variant.get("mergedSharing") != name.startswith("B"):
                 raise ValueError("Unexpected merged-sharing policy")
+            if intermediate_fallback and (variant.get("mergedSharing") is not True or
+                    variant.get("fallbackPolicy") != expected_fallback):
+                raise ValueError("Unexpected intermediate fallback policy")
             selected = [row["state"] for row in pose_rows if row["variant"] == name]
             if len(variant["settle"]) != config.get("settleFrames", 16) or \
                     len(selected) != len(variant["settle"]) + len(seeds):
@@ -164,6 +176,10 @@ def main():
                     raise ValueError("Runtime source or mode identity mismatch")
                 if merged_sharing and state.get("blasMergedSharingEnabled") != name.startswith("B"):
                     raise ValueError("Runtime merged-sharing policy mismatch")
+                if intermediate_fallback and (state.get("blasMergedSharingEnabled") is not True or
+                        state.get("blasFallbackPolicy") != expected_fallback or
+                        state.get("blasMixedTileFastPathEnabled") is not True):
+                    raise ValueError("Runtime intermediate fallback policy mismatch")
             # CPU feedback is delayed. Judge only distinct completed producers
             # belonging to this epoch, never reinterpret it as image-frame truth.
             start_frame = selected[0]["frame"]
@@ -175,10 +191,10 @@ def main():
             if not settled:
                 failures.append(f"pose{pose}/{name}: fewer than four fresh idle BLAS producers")
             audit = dict(pose=pose, variant=name, settled=settled, producerFrames=sorted(feedback), tail=tail)
-            if name == "R":
+            if name in ("R", "R0"):
                 audit["referenceClean"] = bool(tail) and all(s[k] == 0 for s in tail for k in reference_keys)
                 if not audit["referenceClean"]:
-                    failures.append(f"pose{pose}/R: high-budget reference still has rejection/failure/missing CLAS")
+                    failures.append(f"pose{pose}/{name}: high-budget reference still has rejection/failure/missing CLAS")
             audits.append(audit)
         for seed in seeds:
             images, hashes = {}, {}
@@ -190,7 +206,7 @@ def main():
                 if not directory.is_relative_to(root):
                     raise ValueError("Capture directory escapes run")
                 images[name], hashes[name] = image_arrays(directory, sources)
-            if any(images[name].keys() != images["A1"].keys() for name in NAMES):
+            if any(images[name].keys() != images["A1"].keys() for name in names):
                 raise ValueError("Auxiliary raster capture coverage differs")
             if capture["controlledBlas"].get("captureRasterInputs") and not all(key in images["A1"] for key in AUXILIARY):
                 raise ValueError("Requested raster diagnostic inputs are absent")
@@ -223,7 +239,7 @@ def main():
                             failures.append(f"pose{pose}/seed{seed}/{key}: {left}/{right} are not byte-identical")
                     raster_audits.append(item)
             for resource in RESOURCES:
-                data = {name: images[name][resource] for name in NAMES}
+                data = {name: images[name][resource] for name in names}
                 if any(value.shape != data["R"].shape for value in data.values()):
                     raise ValueError("Image extent/channel mismatch")
                 aa = hashes["A1"][resource] == hashes["A2"][resource]
@@ -236,7 +252,7 @@ def main():
                 h, w = reference.shape[:2]
                 regions = {"fullFrame": (0, 0, w, h), "central50PercentProxy": (w//4, h//4, 3*w//4, 3*h//4)}
                 entry = dict(pose=pose, seed=seed, resource=resource, repeatExact=aa, cacheExact=cache_equal,
-                             imageHashes={name: hashes[name][resource] for name in NAMES}, regions={})
+                             imageHashes={name: hashes[name][resource] for name in names}, regions={})
                 for region, (x0, y0, x1, y1) in regions.items():
                     ref = reference[y0:y1, x0:x1]
                     before, repeat, after = (errors(data[name][y0:y1, x0:x1], ref) for name in ("A1", "A2", "B1"))
@@ -245,6 +261,8 @@ def main():
                         baselineRepeatRange={key: [min(before[key],repeat[key]),max(before[key],repeat[key])] for key in before},
                         candidateMinusBaseline={key: after[key]-before[key] for key in before},
                         candidateMinusBaselineRepeat={key: after[key]-repeat[key] for key in before})
+                if intermediate_fallback:
+                    entry["currentPolicyReference"] = {name: errors(data[name], data["R0"]) for name in ("A1", "A2", "B1", "R")}
                 squared = (data["B1"] - reference) ** 2
                 excess = squared.sum(axis=-1) - ((data["A1"] - reference) ** 2).sum(axis=-1)
                 indices = np.argsort(excess.reshape(-1))[-10:][::-1]
@@ -323,6 +341,10 @@ def main():
                 "HDR outlier concentration alone does not establish geometry, material, normal or PDF cause."])
     (output / "Analysis.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
     lines = ["# Frozen MiniZorah BLAS quality", "", f"Status: **{report['status']}**. No performance claim.", ""]
+    if intermediate_fallback:
+        lines += ["A1/A2: current merged policy, priority/cache on. B0/B1: intermediate fallback, cache off/on. "
+                  "R: ample-budget finest resident cut; R0: ample-budget current policy. Priority/merged sharing are on throughout. "
+                  "Main errors use R; currentPolicyReference retains errors against R0. All variants share frozen source residency.", ""]
     if merged_sharing:
         lines += ["A1/A2: priority and cache on, merged sharing off. B0/B1: priority on, merged sharing on, cache off/on. "
                   "R: ample budget, priority/cache/merged sharing off. All variants share frozen source residency.", ""]

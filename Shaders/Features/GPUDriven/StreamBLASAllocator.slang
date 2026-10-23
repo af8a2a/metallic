@@ -323,6 +323,19 @@ void preparePriorityBuilds(Parameters p, uint lane)
                 storageRejected += g_PriorityActiveCount;
                 suppressed += g_PriorityActiveCount;
                 g_PriorityFastPath = 2u;
+            } else if (p.reserved != 0u &&
+                g_PriorityResidentCount + g_PriorityNegativeCount == g_PriorityActiveCount &&
+                g_PriorityResidentOverflow == 0u && g_PriorityResidentBytes <= storageRemaining &&
+                g_PriorityMinNegativeBytes > storageRemaining) {
+                // Even the first negative owner cannot fit, while all resident
+                // claims fit together. Their interleaved rank order therefore
+                // cannot change admission, eviction, or projected deferrals.
+                storageRemaining -= g_PriorityResidentBytes;
+                projectedRemaining -= min(projectedRemaining, g_PriorityResidentBytes);
+                g_PriorityStorageRemaining = storageRemaining;
+                storageRejected += g_PriorityNegativeCount;
+                suppressed += g_PriorityNegativeCount;
+                g_PriorityFastPath = 3u;
             }
             if (g_PriorityFastPath == 0u) {
                 for (uint local = 0u; local < min(64u, p.ownerCount - tile); ++local) {
@@ -448,8 +461,9 @@ void preparePriorityBuilds(Parameters p, uint lane)
             }
         }
         GroupMemoryBarrierWithGroupSync();
-        if (g_PriorityFastPath == 2u && rank < p.ownerCount &&
-            (g_PriorityInfo[lane].flags & kBLASInstanceDynamic) != 0u) {
+        if ((g_PriorityFastPath == 2u || g_PriorityFastPath == 3u) && rank < p.ownerCount &&
+            (g_PriorityInfo[lane].flags & kBLASInstanceDynamic) != 0u &&
+            g_PriorityAllocations[lane].node == kInvalid) {
             GPUDrivenStreamAssetInstanceBLAS info = rejectedInfo(g_PriorityInfo[lane]);
             info.cachedValid = 2u;
             g_PriorityInfo[lane] = info;

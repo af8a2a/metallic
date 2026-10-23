@@ -209,7 +209,7 @@ public:
                 .enableClusterRtx = true, .enableClas = true, .compactClas = true,
                 .maxClasBytes = 64ull << 20, .maxClasBuildClusters = 8192,
                 .maxBlasClusterReferences = 8192, .maxBlasBytes = 32ull << 20,
-                .enableBlasGPUAllocator = true, .maxBlasBuilds = 3,
+                .enableBlasGPUAllocator = true, .enableBlasIntermediateFallback = false, .maxBlasBuilds = 3,
                 .maxFallbackBlasBytes = 4ull << 20, .prefetchPages = false};
             {
                 MeshletStreamRuntime rejected;
@@ -407,7 +407,10 @@ public:
                             std::isfinite(distance) && distance >= 0.0f && std::isfinite(coverage) && coverage >= 0.0f && coverage <= 1.0f,
                             "Owner importance contains invalid error, distance or coverage");
                     }
-                    require(consumers <= kInstanceCount, "Owner importance charged a consumer more than once");
+                    const uint32_t floorConsumers = runtimeDesc.enableBlasIntermediateFallback
+                        ? snapshot.importance[2].consumerCount : 0;
+                    require(floorConsumers <= kInstanceCount && consumers - floorConsumers <= kInstanceCount,
+                        "Owner importance duplicated a consumer within the floor or fine tier");
                 }
                 checkLegalCuts(snapshot);
                 if (slot.traced) {
@@ -842,6 +845,44 @@ public:
                         "Representation overflow changed complete terminal-fallback ray coverage");
                 }
             }
+            // Exercise the real floor cut, native Build/Move, publication and
+            // two in-flight submissions under a budget that denies the fine cut.
+            // Earlier stages remain explicit policy-0 coverage of the old paths.
+            phase = "intermediate floor under storage pressure";
+            runtime.reset();
+            runtimeDesc.enableBlasIntermediateFallback = true;
+            runtimeDesc.maxBlasClusterReferences = 8192;
+            runtimeDesc.maxBlasBuilds = 3;
+            // Initialization derives reference/group capacity from the worst-case
+            // native size query. Keep those capacities generous, then constrain
+            // only persistent storage so this tests storage-pressure fallback.
+            runtimeDesc.maxBlasBytes = 32ull << 20;
+            view.selectedLodLevel = 0;
+            require(bool(runtime.initialize(*device, runtimeDesc, log)), log);
+            // No submissions exist for this newly initialized runtime; the
+            // diagnostic reset's full-drain requirement is satisfied.
+            checked(runtime.resetDiagnosticBLAS(4096, true, true, true, 1), "Floor storage-only budget reset");
+            for (uint32_t i = 0; i < 100; ++i) { record(slots[i % 2]); stable = complete(slots[i % 2]); }
+            require(stable.header.cachedInstanceCount == kInstanceCount && stable.importance[2].consumerCount == kInstanceCount,
+                "Budget-denied fine owners failed to publish the complete intermediate floor to every consumer");
+            uint32_t floorClusters = 0;
+            for (const auto& group : stable.groups) {
+                if (group.representationIndex == 2) { floorClusters += std::popcount(group.clusterMask); }
+            }
+            require(floorClusters != 0 && floorClusters <= 12,
+                "Intermediate floor exceeded its complete-cut cluster bound");
+            for (uint32_t frame = 0; frame < 32; frame += 2) {
+                if (frame == 8) { record(slots[0], true); }
+                record(slots[0]); record(slots[1]);
+                for (auto& slot : slots) {
+                    stable = complete(slot);
+                    require(stable.header.cachedInstanceCount == kInstanceCount && stable.header.blasBuildCount == 0 &&
+                        stable.header.arenaRepack == 0 && stable.header.semanticChangeCount == 0 &&
+                        (stable.cutCache[15] & 4u) != 0,
+                        "Stable intermediate floor or cancelled retry rebuilt, republished or lost its exact cut cache");
+                    checkIdentity(stable);
+                }
+            }
             require(validationErrors.load() == 0, "Vulkan validation errors during representation lifetime regression");
             { std::ofstream report(directory / "Frames.json"); report << frames.dump(2); }
             { std::ofstream report(directory / "RayComparison.json"); report << nlohmann::json({
@@ -849,6 +890,8 @@ public:
                 {"maximumDistanceError", maximumDistanceError}, {"tolerance", 2e-5f},
                 {"sharingFrames", sharingFrames}, {"mergedFrames", mergedFrames}, {"sharedCutCacheHits", sharedCutCacheHits},
                 {"mergedCutCacheHits", mergedCutCacheHits},
+                {"intermediateFloorStableFrames", 32}, {"intermediateFloorClusters", floorClusters},
+                {"intermediateFloorStorageBytes", 4096}, {"intermediateFloorCancelledRetry", true},
                 {"candidateBuildBudget", 3}, {"legacyBuildBudget", kInstanceCount},
                 {"candidateAllocator", "gpu"}, {"legacyAllocator", "legacy"},
                 {"stableAllocatorSamples", stableAllocatorSamples}, {"stagingCapFailureRejected", true},

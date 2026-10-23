@@ -2586,6 +2586,7 @@ struct RenderGraphExecutor::Impl {
             view.diagnosticBlasPriority = context.properties().value("benchmarkBlasPriority", false);
             view.diagnosticBlasPriorityCache = context.properties().value("benchmarkBlasPriorityCache", false);
             view.diagnosticBlasMergedSharing = context.properties().value("benchmarkBlasMergedSharing", false);
+            view.diagnosticBlasFallbackPolicy = context.properties().value("benchmarkBlasFallbackPolicy", 0u);
             result = upload->recordSceneBegin(*node.preparedScene, node.sceneRequirements, context, view, streamingLog);
         }
         const bool sceneReady = !node.preparedScene || node.preparedScene->ready;

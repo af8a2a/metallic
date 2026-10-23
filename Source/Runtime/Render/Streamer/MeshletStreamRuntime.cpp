@@ -672,6 +672,15 @@ public:
         uint32_t buildCapacity, std::string& log, PipelineCache* pipelineCache)
     {
         enabled = useGPU;
+        bool mixedTileFastPath = true;
+        if (const char* value = std::getenv("METALLIC_BLAS_MIXED_TILE_FAST_PATH")) {
+            if (std::strcmp(value, "0") == 0) { mixedTileFastPath = false; }
+            else if (std::strcmp(value, "1") == 0) { mixedTileFastPath = true; }
+            else {
+                log = "METALLIC_BLAS_MIXED_TILE_FAST_PATH must be 0 or 1";
+                return makeError(Error::InvalidArgument);
+            }
+        }
         ownerCount = count;
         relocateBudget = moveBudget;
         referenced = {&owners, &header, &infos, &sizes, &addresses, priorityState};
@@ -712,7 +721,8 @@ public:
             header.deviceAddress(), infos.deviceAddress(), buildOwners->deviceAddress(), sizes.deviceAddress(),
             addresses.deviceAddress(), moveSources->deviceAddress(), moveDestinations->deviceAddress(), moveCounts->deviceAddress(),
             referenceAddress, arena.deviceAddress(), count, uint32_t(properties.bottomLevelStorageAlignment),
-            uint32_t(arena.desc().size), moveBudget, uint32_t(nodeCount), std::min(count, 256u), reuse ? 1u : 0u, 0u,
+            uint32_t(arena.desc().size), moveBudget, uint32_t(nodeCount), std::min(count, 256u), reuse ? 1u : 0u,
+            mixedTileFastPath ? 1u : 0u,
             relocationStaging ? relocationStaging->deviceAddress() : 0u,
             priorityOrderAddress, importanceAddress, referenceCapacity, buildCapacity, priorityCacheControlAddress};
         if (!(result = updateHostBuffer(*parameters, &params, sizeof(params)))) { return result; }
@@ -1702,6 +1712,16 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             }
         }
         blasMergedSharingEnabled_ = mergedSharing && blasPriorityEnabled_;
+        bool intermediateFallback = desc.enableBlasIntermediateFallback;
+        if (const char* value = std::getenv("METALLIC_BLAS_INTERMEDIATE_FALLBACK")) {
+            if (std::strcmp(value, "0") == 0) { intermediateFallback = false; }
+            else if (std::strcmp(value, "1") == 0) { intermediateFallback = true; }
+            else {
+                log = "METALLIC_BLAS_INTERMEDIATE_FALLBACK must be 0 or 1";
+                return makeError(Error::InvalidArgument);
+            }
+        }
+        blasFallbackPolicy_ = intermediateFallback && blasPriorityEnabled_ ? 1u : 0u;
         uint64_t persistentBytes = blasSizes.accelerationStructureSize;
         if (gpuAllocator && blasSizes.accelerationStructureSize > desc.maxBlasStagingBytes) {
             log = "Dirty BLAS implicit build arena exceeds maxBlasStagingBytes";
@@ -2870,6 +2890,7 @@ void MeshletStreamRuntime::reset()
     blasPriorityEnabled_ = false;
     blasPriorityCacheEnabled_ = false;
     blasMergedSharingEnabled_ = false;
+    blasFallbackPolicy_ = 0;
     diagnosticBlasStorageBytes_ = 0;
     rtRepresentationCount_ = 0;
     rtRepresentationGroupCapacity_ = 0;
@@ -3133,10 +3154,11 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
 }
 
 Result<> MeshletStreamRuntime::resetDiagnosticBLAS(uint32_t storageBytes, bool priorityEnabled, bool priorityCacheEnabled,
-    bool mergedSharingEnabled)
+    bool mergedSharingEnabled, uint32_t fallbackPolicy)
 {
     if (!gpuBlasAllocator_ || !gpuBlasAllocator_->enabled || !blasRepresentationsEnabled_ || storageBytes == 0u ||
-        storageBytes > blasStorageBuffer_->desc().size || storageBytes % gpuBlasAllocator_->parameterValues.alignment != 0u) {
+        storageBytes > blasStorageBuffer_->desc().size || storageBytes % gpuBlasAllocator_->parameterValues.alignment != 0u ||
+        fallbackPolicy > 2u || (fallbackPolicy != 0u && !priorityEnabled)) {
         return makeError(Error::InvalidArgument);
     }
     const uint64_t importanceOffset = (uint64_t(asset_.groupCount()) * 3u + uint64_t(asset_.lodLevelCount()) * 4u +
@@ -3150,6 +3172,7 @@ Result<> MeshletStreamRuntime::resetDiagnosticBLAS(uint32_t storageBytes, bool p
     blasPriorityEnabled_ = priorityEnabled;
     blasPriorityCacheEnabled_ = priorityEnabled && priorityCacheEnabled;
     blasMergedSharingEnabled_ = priorityEnabled && mergedSharingEnabled;
+    blasFallbackPolicy_ = fallbackPolicy;
     *blasCacheInitialized_ = false;
     recentBlasHeader_ = {};
     recentBlasAllocatorState_ = {};
@@ -3224,7 +3247,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         if (!sourceResidencyFrozen_) { return makeError(Error::InvalidArgument); }
         if (auto result = resetDiagnosticBLAS(frame.diagnosticBlasStorageBytes,
                 frame.diagnosticBlasPriority, frame.diagnosticBlasPriorityCache,
-                frame.diagnosticBlasMergedSharing); !result) { return result; }
+                frame.diagnosticBlasMergedSharing, frame.diagnosticBlasFallbackPolicy); !result) { return result; }
         diagnosticBlasResetEpoch_ = frame.diagnosticBlasResetEpoch;
     }
     if (frame.diagnosticBlasResetEpoch == 0u) { diagnosticBlasResetEpoch_ = 0u; }
@@ -4484,6 +4507,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.enableBlasPriority = blasPriorityEnabled_ ? 1u : 0u;
     params.enableBlasPriorityCache = blasPriorityCacheEnabled_ ? 1u : 0u;
     params.enableBlasMergedSharing = blasMergedSharingEnabled_ ? 1u : 0u;
+    params.blasFallbackPolicy = blasFallbackPolicy_;
     const uint64_t blasStorageAddress = blasStorageBuffer_ ? blasStorageBuffer_->deviceAddress() : 0u;
     params.blasStorageAddressLow = static_cast<uint32_t>(blasStorageAddress);
     params.blasStorageAddressHigh = static_cast<uint32_t>(blasStorageAddress >> 32u);
@@ -5331,6 +5355,8 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
         result.blasPriorityEnabled = blasPriorityEnabled_;
         result.blasPriorityCacheEnabled = blasPriorityCacheEnabled_;
         result.blasMergedSharingEnabled = blasMergedSharingEnabled_;
+        result.blasFallbackPolicy = blasFallbackPolicy_;
+        result.blasMixedTileFastPathEnabled = gpuBlasAllocator_->parameterValues.reserved != 0u;
         result.blasPrioritySortReused = recentBlasAllocatorState_[kBLASAllocatorSortReusedWord];
         result.blasPriorityAdmissionReused = recentBlasAllocatorState_[kBLASAllocatorAdmissionReusedWord];
         result.blasRequestedVisibleConsumers = recentBlasAllocatorState_[kBLASAllocatorRequestedVisibleWord];

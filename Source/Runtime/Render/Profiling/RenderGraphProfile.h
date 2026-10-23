@@ -113,6 +113,8 @@ struct SceneStreamingProfile {
     bool blasPriorityEnabled = false;
     bool blasPriorityCacheEnabled = false;
     bool blasMergedSharingEnabled = false;
+    uint32_t blasFallbackPolicy = 0;
+    bool blasMixedTileFastPathEnabled = false;
     uint32_t blasPrioritySortReused = 0;
     uint32_t blasPriorityAdmissionReused = 0;
     uint32_t blasRequestedVisibleConsumers = 0, blasRequestedOffscreenConsumers = 0;

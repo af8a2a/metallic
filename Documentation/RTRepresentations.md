@@ -62,6 +62,54 @@ bins. Empty build/release lists skip these owner scans, preserving stationary
 zero-build behavior. Priority-on sorting and cached admission are independent
 of this control path.
 
+## Budgeted intermediate fallback
+
+This experimental policy is disabled by default. Set
+`METALLIC_BLAS_INTERMEDIATE_FALLBACK=1` to evaluate it. The bounded MiniZorah
+comparison improved the original terminal-fallback hotspots but traded away
+existing fine representations, increased overall HDR error and did not pass
+the exact cache-on/off shadow comparison. It is not accepted as the production
+admission policy.
+
+With owner priority enabled, the intermediate-fallback policy requests a small
+complete resident cut before optional fine upgrades. The existing discrete slot
+owns this floor; every eligible consumer contributes importance, including
+offscreen consumers. A consumer whose conservative LOD bound is already met by
+the floor does not request another fine owner. Fine owners keep their own
+consumer aggregation. Floor and fine demand counters can therefore overlap;
+published TLAS counters still count each instance exactly once.
+
+The floor selects the finest fully resident level whose cluster count plus a
+conservative allowance for terminal branches is at most 12. This is a complexity
+cap, not a portable byte estimate: reference/build limits and the GPU allocator's
+actual native BLAS byte sizes remain authoritative. A missing terminal page
+invalidates the floor; a missing nonterminal page excludes its level and every
+finer complete cut. Selection uses a maximum-level reduction rather than a
+32-bit LOD mask. The existing discrete residency/publication epochs, semantic
+revision, submission cancellation and in-flight retirement remain in effect.
+
+Priority sorts demanded floors before fine upgrades, then uses the existing
+maximum fallback error, minimum distance and maximum coverage order within
+each tier. An unchanged frame reuses exact priority and admission caches.
+Publication tries the desired ready owner, then ready merged owner, then the
+ready floor, and finally terminal fallback. The floor shares the storage budget
+with upgrades; broad coverage can trade away some fine owners under pressure.
+Quality and foreground-shadow acceptance therefore require a same-residency A/B.
+Primitive group capacity still admits floor and fine demand together; a small
+floor is not guaranteed when that combined demand exceeds group capacity.
+
+`METALLIC_BLAS_INTERMEDIATE_FALLBACK=0` retains the previous canonical merged
+policy for A/B. GPU policy 2 is a diagnostic finest-resident reference: every
+eligible consumer requests its merged owner without a floor. It is intended for
+the drained, frozen-source quality harness with a sufficient reference budget.
+
+`METALLIC_BLAS_MIXED_TILE_FAST_PATH=0/1` independently controls the allocator's
+mixed resident/rejected tile preparation shortcut (default 1). It only applies
+when every resident claim fits and even the smallest rejected claim cannot fit
+before any resident charge; equality retains the serial path. The 72-frame
+allocator regression compares both settings byte-for-byte, including dirty,
+unknown-size, eviction-limit and cached stationary frames.
+
 ## Owner demand importance
 
 Each owner also carries demand metadata aggregated from **all** instances that
