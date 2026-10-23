@@ -538,6 +538,7 @@ public struct GPUDrivenStreamAssetParams
     public uint rtRepresentationCachePadding2;
     public uint enableBlasGPUAllocator;
     public uint enableBlasPriority;
+    public uint enableBlasPriorityCache;
 };
 
 public struct GPUDrivenStreamAssetVertexOutput
@@ -3465,6 +3466,16 @@ uint streamRTOwnerOrderBase(GPUDrivenStreamAssetParams p)
     return streamRTOwnerImportanceBase(p, p.rtRepresentationCount);
 }
 
+uint streamRTOwnerPriorityHistoryBase(GPUDrivenStreamAssetParams p)
+{
+    return streamRTOwnerOrderBase(p) + p.rtRepresentationCount * 3u;
+}
+
+uint streamRTOwnerPriorityControlBase(GPUDrivenStreamAssetParams p)
+{
+    return streamRTOwnerPriorityHistoryBase(p) + p.rtRepresentationCount * 3u;
+}
+
 uint4 streamRTOwnerPriorityKey(RWStructuredBuffer<uint> state, uint owner, GPUDrivenStreamAssetParams p)
 {
     if (owner == 0xffffffffu) { return uint4(0xffffffffu); }
@@ -3485,6 +3496,24 @@ void sortStreamRTOwners(uint item, GPUDrivenStreamAssetPush push, GPUDrivenStrea
         ResourceHandle<RWStructuredBuffer<uint>>(p.rtRepresentationStateBuffer));
     uint count = p.rtRepresentationCount;
     uint base = streamRTOwnerOrderBase(p);
+    uint control = streamRTOwnerPriorityControlBase(p);
+    if (push.activeBuildPhase == 41u) {
+        if (item >= count || p.enableBlasPriorityCache == 0u || (push.traversalPhase & 1u) != 0u) { return; }
+        uint importance = streamRTOwnerImportanceBase(p, item);
+        uint history = streamRTOwnerPriorityHistoryBase(p) + item * 3u;
+        // Exact inputs to the total order, including owners without consumers.
+        // Cut/residency/budget changes are validated separately by admission.
+        if (state[importance] != state[history] || state[importance + 1u] != state[history + 1u] ||
+            state[importance + 2u] != state[history + 2u]) {
+            InterlockedOr(state[control], 1u);
+        }
+        return;
+    }
+    // The decision is uniform across every sort workgroup, before its barriers.
+    if (p.enableBlasPriorityCache != 0u && state[control] == 0u) {
+        if (item == 0u && push.activeBuildPhase == 35u) { state[control + 1u] = 1u; }
+        return;
+    }
     uint lane = item & 63u;
     if (push.activeBuildPhase == 35u) {
         uint4 key = streamRTOwnerPriorityKey(state, item < count ? item : 0xffffffffu, p);
@@ -3510,6 +3539,13 @@ void sortStreamRTOwners(uint item, GPUDrivenStreamAssetPush push, GPUDrivenStrea
     if (push.activeBuildPhase == 37u) {
         if (source != base) { state[base + item] = owner; }
         state[base + count * 2u + owner] = item;
+        uint importance = streamRTOwnerImportanceBase(p, owner);
+        uint history = streamRTOwnerPriorityHistoryBase(p) + owner * 3u;
+        // Publish on every real sort, including cache-disabled frames. Switching
+        // the cache on therefore consumes the last submitted order's exact keys.
+        state[history] = state[importance];
+        state[history + 1u] = state[importance + 1u];
+        state[history + 2u] = state[importance + 2u];
         return;
     }
     // Each input run is sorted. Its element's binary-search rank in the other
@@ -3626,7 +3662,7 @@ uint4 scanRTRepresentationCounts(uint4 demand, uint lane)
 void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAssetPush push,
     GPUDrivenStreamAssetParams params)
 {
-    if (push.activeBuildPhase >= 35u && push.activeBuildPhase <= 37u) {
+    if ((push.activeBuildPhase >= 35u && push.activeBuildPhase <= 37u) || push.activeBuildPhase == 41u) {
         sortStreamRTOwners(item + groupRow * (65535u * 64u), push, params);
         return;
     }
@@ -3701,6 +3737,11 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             }
         }
         if (item == 0u) {
+            if (params.enableBlasPriority != 0u) {
+                uint priorityControl = streamRTOwnerPriorityControlBase(params);
+                state[priorityControl] = params.enableBlasPriorityCache == 0u || (push.traversalPhase & 1u) != 0u ? 1u : 0u;
+                state[priorityControl + 1u] = 0u;
+            }
             GPUDrivenStreamAssetActiveHeader value = (GPUDrivenStreamAssetActiveHeader)0;
             value.activeGroupCapacity = params.rtRepresentationGroupCapacity;
             value.maxActiveGroupClusters = 32u; value.frameIndex = params.frameIndex;

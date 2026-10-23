@@ -39,7 +39,7 @@ public:
             constexpr uint32_t kPrimitives = 137, kBlocks = (kPrimitives + 63) / 64, kCapacity = 1024;
             constexpr uint32_t kOwners = kPrimitives * 3, kOwnerBlocks = (kOwners + 63) / 64;
             constexpr uint32_t kImportanceBase = kPrimitives * 16;
-            constexpr uint32_t kStateWords = kImportanceBase + kOwners * 9;
+            constexpr uint32_t kStateWords = kImportanceBase + kOwners * 12 + 2;
             enum Input { Params, Primitives, State, Header, Active, Representations, InputCount };
             const uint64_t sizes[] = {sizeof(MeshletStreamGPUParams), kPrimitives * sizeof(MeshletStreamGPUPrimitive),
                 kStateWords * 4, sizeof(MeshletStreamGPUBLASHeader) + (kCapacity + kOwnerBlocks) * 16,

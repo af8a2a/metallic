@@ -17,6 +17,7 @@ public:
     using Json = nlohmann::json;
     bool capture = false;
     bool captureReflections = false;
+    bool captureRasterInputs = false;
     void compiled(Json) override {}
     void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
     {
@@ -30,7 +31,8 @@ public:
         if (!capture || checkpoint != "AfterPass") { return; }
         for (const auto& resource : resources) {
             if (resource.id != "Shadows.shadow" && resource.id != "Deferred.color" && resource.id != "FinalBlit.color" &&
-                !(captureReflections && resource.id == "ReflectionQuality.color")) { continue; }
+                !(captureReflections && resource.id == "ReflectionQuality.color") &&
+                !(captureRasterInputs && (resource.id == "VBuffer.depth" || resource.id == "VBuffer.visibility"))) { continue; }
             if (!resource.texture || copies_.contains(resource.id)) { continue; }
             const auto& desc = resource.texture->desc();
             const auto info = formatInfo(desc.format);
@@ -39,6 +41,8 @@ public:
             case Format::R8Unorm: format = "unorm8x1"; break;
             case Format::R16Sfloat: format = "float16x1"; break;
             case Format::R32Sfloat: format = "float32x1"; break;
+            case Format::D32Sfloat: format = "float32x1"; break;
+            case Format::R32Uint: format = "uint32x1"; break;
             case Format::RG16Sfloat: format = "float16x2"; break;
             case Format::RGBA16Sfloat: format = "float16x4"; break;
             case Format::RGBA32Sfloat: format = "float32x4"; break;
@@ -74,6 +78,9 @@ public:
         }
         if (captureReflections && !copies_.contains("ReflectionQuality.color")) {
             throw std::runtime_error("Quality capture is missing the path-traced reflection diagnostic");
+        }
+        if (captureRasterInputs && (!copies_.contains("VBuffer.depth") || !copies_.contains("VBuffer.visibility"))) {
+            throw std::runtime_error("Quality capture is missing raster diagnostic inputs");
         }
         std::filesystem::create_directories(directory);
         Json report = Json::array();

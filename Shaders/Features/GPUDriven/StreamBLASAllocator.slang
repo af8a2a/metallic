@@ -14,6 +14,7 @@ struct Allocation
 {
     uint node, encodedBytes, rejectedEpoch, oldNode;
     uint pendingNode, pendingOffset, pendingBytes, status;
+    uint inputDynamic, inputSelectedClusterCount, prepareDecision, reserved;
 };
 struct Parameters
 {
@@ -36,12 +37,13 @@ struct Parameters
     uint* priorityOrder;
     uint* importance;
     uint referenceCapacity, buildCapacity;
+    uint* priorityCacheControl;
 };
 struct Push { Parameters* parameters; uint phase, reserved; };
 [[vk::push_constant]] ConstantBuffer<Push> gPush;
 
 static const uint kInvalid = 0xffffffffu;
-static const uint kBinCount = 96u, kStateWords = 128u;
+static const uint kBinCount = 96u, kStateWords = 144u;
 static const uint kNextNode = 96u, kFreeNode = 97u, kTail = 98u, kEpoch = 99u, kCursor = 100u;
 static const uint kReleaseCount = 101u;
 static const uint kEncodedBytes = 102u, kAllocatedBytes = 103u, kLargestFree = 104u, kFreeBytes = 105u;
@@ -57,6 +59,15 @@ static const uint kAdmittedOffscreen = 118u, kPriorityEvicted = 119u;
 static const uint kPostBuildBudgetRejected = 120u, kPhysicalGapFailures = 121u;
 static const uint kWaitingClaimBytes = 122u, kMaxWaitingBytes = 123u, kUnknownBuilds = 124u;
 static const uint kProjectedRetryDeferred = 125u, kProjectedDirtyClaimBytes = 126u;
+static const uint kSortReused = 128u, kAdmissionReused = 129u, kInputsChanged = 130u, kCacheValid = 131u;
+static const uint kCachedFree = 132u, kCachedLargest = 133u;
+static const uint kCachedReferenceCapacity = 134u, kCachedBuildCapacity = 135u;
+static const uint kCachedStorageBytes = 136u, kCachedEvictionCapacity = 137u;
+static const uint kCachedStorageRejected = 138u, kCachedWaitingCount = 139u;
+static const uint kCachedWaitingBytes = 140u, kCachedMaxWaitingBytes = 141u;
+static const uint kCachedReferenceRejected = 142u, kCachedBuildRejected = 143u;
+static const uint kPrepareNone = 0u, kPrepareStorageRejected = 1u, kPrepareWaiting = 2u;
+static const uint kPrepareReferenceRejected = 3u, kPrepareBuildRejected = 4u, kPrepareProjected = 5u;
 
 // The priority topology remains serialized, but every tile's scattered owner
 // and allocation reads are issued cooperatively rather than one dependent load
@@ -243,6 +254,7 @@ void evictPriorityOwner(Parameters p, uint owner)
     releaseAllocation(p, allocation.node);
     allocation.node = kInvalid;
     allocation.status = 0u;
+    allocation.prepareDecision = kPrepareStorageRejected;
     allocation.rejectedEpoch = p.state[kEpoch];
     // Retain encodedBytes and the semantic cut for negative caching.
     p.allocations[owner] = allocation;
@@ -330,6 +342,7 @@ void preparePriorityBuilds(Parameters p, uint lane)
                             if (p.state[kPriorityEvicted] < p.relocateScanCount) evictPriorityOwner(p, owner);
                         } else {
                             allocation.rejectedEpoch = p.state[kEpoch];
+                            allocation.prepareDecision = kPrepareStorageRejected;
                             info = rejectedInfo(info);
                             info.cachedValid = 2u;
                             g_PriorityAllocations[local] = allocation;
@@ -350,8 +363,10 @@ void preparePriorityBuilds(Parameters p, uint lane)
                         // but does not reserve real storage or evict an existing cache.
                         info = rejectedInfo(info);
                         info.cachedValid = 2u;
+                        allocation.prepareDecision = kPrepareProjected;
+                        g_PriorityAllocations[local] = allocation;
                         g_PriorityInfo[local] = info;
-                        g_PriorityWrites[local] = 1u;
+                        g_PriorityWrites[local] = 3u;
                         ++storageRejected;
                         ++suppressed;
                         ++projectedDeferred;
@@ -363,8 +378,10 @@ void preparePriorityBuilds(Parameters p, uint lane)
                         info = rejectedInfo(info);
                         // Keep measured negative entries; an unbuilt cut remains invalid.
                         if (allocation.encodedBytes == 0u) info.cachedValid = 0u;
+                        allocation.prepareDecision = referencesFit ? kPrepareBuildRejected : kPrepareReferenceRejected;
+                        g_PriorityAllocations[local] = allocation;
                         g_PriorityInfo[local] = info;
-                        g_PriorityWrites[local] = 1u;
+                        g_PriorityWrites[local] = 3u;
                         if (referencesFit) ++buildRejected;
                         else ++referenceRejected;
                         continue;
@@ -394,6 +411,7 @@ void preparePriorityBuilds(Parameters p, uint lane)
                     }
                     if (bytes > p.state[kLargestFree] || p.state[kFreeBytes] < unallocatedClaim) {
                         allocation.status = kPriorityWaiting;
+                        allocation.prepareDecision = kPrepareWaiting;
                         ++waitingCount;
                         waitingBytes += bytes;
                         maxWaitingBytes = max(maxWaitingBytes, bytes);
@@ -413,6 +431,7 @@ void preparePriorityBuilds(Parameters p, uint lane)
                         info.flags |= kBLASInstanceDirty;
                         info.cachedValid = 0u;
                         allocation.status = kPriorityBuilding;
+                        allocation.prepareDecision = kPrepareNone;
                         ++dirtyCount;
                         referenceCount += info.selectedClusterCount;
                         if (!known) {
@@ -437,9 +456,11 @@ void preparePriorityBuilds(Parameters p, uint lane)
             if (bytes != 0u && bytes <= g_PriorityStorageRemaining) {
                 // Projection-only deferrals retain their entire measured history.
                 InterlockedAdd(g_PriorityDeferredCount, 1u);
-                g_PriorityWrites[lane] = 1u;
+                g_PriorityAllocations[lane].prepareDecision = kPrepareProjected;
+                g_PriorityWrites[lane] = 3u;
             } else {
                 g_PriorityAllocations[lane].rejectedEpoch = p.state[kEpoch];
+                g_PriorityAllocations[lane].prepareDecision = kPrepareStorageRejected;
                 g_PriorityWrites[lane] = 3u;
             }
         }
@@ -483,12 +504,65 @@ void preparePriorityBuilds(Parameters p, uint lane)
         p.state[kUnknownBuilds] = unknownBuilds;
         p.state[kProjectedRetryDeferred] = projectedDeferred;
         p.state[kProjectedDirtyClaimBytes] = projectedDirtyBytes;
+        if (p.priorityCacheControl != nullptr) {
+            // No native size or residency decision remains outstanding. Later
+            // clean Moves may change addresses, but admission depends only on
+            // total free bytes and the largest gap, not the individual gaps.
+            p.state[kCacheValid] = buildCount == 0u && p.state[kPriorityEvicted] == 0u ? 1u : 0u;
+            p.state[kCachedFree] = p.state[kFreeBytes];
+            p.state[kCachedLargest] = p.state[kLargestFree];
+            p.state[kCachedReferenceCapacity] = p.referenceCapacity;
+            p.state[kCachedBuildCapacity] = p.buildCapacity;
+            p.state[kCachedStorageBytes] = p.storageBytes;
+            p.state[kCachedEvictionCapacity] = p.relocateScanCount;
+            p.state[kCachedStorageRejected] = storageRejected;
+            p.state[kCachedWaitingCount] = waitingCount;
+            p.state[kCachedWaitingBytes] = waitingBytes;
+            p.state[kCachedMaxWaitingBytes] = maxWaitingBytes;
+            p.state[kCachedReferenceRejected] = referenceRejected;
+            p.state[kCachedBuildRejected] = buildRejected;
+        }
+    }
+}
+
+void restorePriorityAdmission(Parameters p, uint owner)
+{
+    if (owner < p.ownerCount) {
+        Allocation allocation = p.allocations[owner];
+        GPUDrivenStreamAssetInstanceBLAS info = p.owners[owner];
+        if (allocation.inputDynamic != 0u && allocation.node == kInvalid) {
+            info = rejectedInfo(info);
+            // Unknown/dirty cuts invalidate the cache in phase 5. These are
+            // measured negative entries with the same semantic cut and demand.
+            info.cachedValid = 2u;
+            if (allocation.prepareDecision == kPrepareStorageRejected ||
+                allocation.prepareDecision == kPrepareWaiting) allocation.rejectedEpoch = p.state[kEpoch];
+            if (allocation.prepareDecision == kPrepareWaiting) allocation.status = kPriorityWaiting;
+            p.allocations[owner] = allocation;
+            p.owners[owner] = info;
+        }
+    }
+    if (owner == 0u) {
+        uint storageRejected = p.state[kCachedStorageRejected];
+        uint referenceRejected = p.state[kCachedReferenceRejected];
+        uint buildRejected = p.state[kCachedBuildRejected];
+        p.header[0].storageRejected += storageRejected;
+        p.header[0].referenceBudgetRejected += referenceRejected;
+        p.header[0].buildBudgetRejected += buildRejected;
+        p.header[0].overflowCount += storageRejected + referenceRejected + buildRejected;
+        p.state[kSuppressed] = storageRejected;
+        p.state[kPriorityWaitingCount] = p.state[kCachedWaitingCount];
+        p.state[kWaitingClaimBytes] = p.state[kCachedWaitingBytes];
+        p.state[kMaxWaitingBytes] = p.state[kCachedMaxWaitingBytes];
     }
 }
 
 void allocatePriorityBuilds(Parameters p, uint lane)
 {
-    if (p.header[0].blasBuildCount == 0u && p.state[kPriorityWaitingCount] == 0u) return;
+    // Without new native sizes, phase 6 already performed this exact selection.
+    // Waiting claims still reach the common bounded compaction planner below.
+    if (p.header[0].blasBuildCount == 0u &&
+        (p.priorityCacheControl != nullptr || p.state[kPriorityWaitingCount] == 0u)) return;
     uint storageRemaining = p.storageBytes;
     uint victimCount = 0u, budgetRejected = 0u;
     // Native sizes make the same ranked selection exact. Waiting higher-ranked
@@ -624,7 +698,7 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint id = dispatchThreadID.x + dispatchThreadID.y * 65535u * 64u;
     if (gPush.phase == 0u) {
         if (id < p.ownerCount) {
-            Allocation allocation = { kInvalid, 0u, 0u, kInvalid, kInvalid, 0u, 0u, 0u };
+            Allocation allocation = { kInvalid, 0u, 0u, kInvalid, kInvalid, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
             p.allocations[id] = allocation;
         }
         if (id == 0u) {
@@ -650,6 +724,14 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         allocation.pendingNode = kInvalid;
         bool dynamic = (info.flags & kBLASInstanceDynamic) != 0u;
         bool dirty = (info.flags & kBLASInstanceDirty) != 0u || p.reuseEnable == 0u;
+        if (p.priorityCacheControl != nullptr) {
+            if (allocation.inputDynamic != uint(dynamic) || allocation.inputSelectedClusterCount != info.selectedClusterCount ||
+                (dynamic && (dirty || (allocation.node == kInvalid && allocation.encodedBytes == 0u)))) {
+                InterlockedOr(p.state[kInputsChanged], 1u);
+            }
+            allocation.inputDynamic = uint(dynamic);
+            allocation.inputSelectedClusterCount = info.selectedClusterCount;
+        }
         if (p.priorityOrder != nullptr && dirty && allocation.node == kInvalid) allocation.encodedBytes = 0u;
         if (allocation.node != kInvalid && (!dynamic || dirty)) {
             uint index;
@@ -661,6 +743,10 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     }
     if (gPush.phase == 6u) {
         if (p.priorityOrder != nullptr) {
+            if (p.state[kAdmissionReused] != 0u) {
+                restorePriorityAdmission(p, id);
+                return;
+            }
             if (id < 64u) preparePriorityBuilds(p, id);
             return;
         }
@@ -798,7 +884,16 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         p.header[0].blasBuildCount = 0u;
         p.header[0].arenaRepack = 0u;
         p.state[kPriorityWaitingCount] = 0u;
-        for (uint word = kRequestedVisible; word < kStateWords; ++word) p.state[word] = 0u;
+        for (uint word = kRequestedVisible; word < kSortReused; ++word) p.state[word] = 0u;
+        bool cacheEnabled = p.priorityCacheControl != nullptr;
+        p.state[kSortReused] = cacheEnabled ? p.priorityCacheControl[1] : 0u;
+        p.state[kAdmissionReused] = cacheEnabled && p.priorityOrder != nullptr && p.reuseEnable != 0u &&
+            p.state[kCacheValid] != 0u && p.priorityCacheControl[0] == 0u && p.state[kInputsChanged] == 0u &&
+            p.state[kCachedFree] == p.state[kFreeBytes] && p.state[kCachedLargest] == p.state[kLargestFree] &&
+            p.state[kCachedReferenceCapacity] == p.referenceCapacity && p.state[kCachedBuildCapacity] == p.buildCapacity &&
+            p.state[kCachedStorageBytes] == p.storageBytes && p.state[kCachedEvictionCapacity] == p.relocateScanCount ? 1u : 0u;
+        if (!cacheEnabled) p.state[kCacheValid] = 0u;
+        p.state[kInputsChanged] = 0u;
         return;
     }
     if (gPush.phase == 2u) {

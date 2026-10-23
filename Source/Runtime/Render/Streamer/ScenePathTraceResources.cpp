@@ -3049,6 +3049,26 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
     return {};
 }
 
+std::string ScenePathTraceResources::diagnosticTextureResidencyIdentity(uint64_t frameIndex) const
+{
+    uint64_t hash = 14695981039346656037ull;
+    const auto hashBytes = [&](const void* data, size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < size; ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
+    };
+    const auto prepared = std::find_if(impl_->textureFeedback.begin(), impl_->textureFeedback.end(),
+        [&](const auto& value) { return value.frame == frameIndex; });
+    if (prepared != impl_->textureFeedback.end()) {
+        hashBytes(prepared->buffers.metadata.data(), prepared->buffers.metadata.size() * sizeof(TextureSamplingMetadata));
+    }
+    hashBytes(impl_->ktxFirstMips.data(), impl_->ktxFirstMips.size() * sizeof(uint32_t));
+    // Object identity is intentionally process-local. Immutable generations and
+    // metadata equality establish that these variants sample the same textures.
+    return std::to_string(reinterpret_cast<uintptr_t>(impl_->textureGeneration.get())) + ":" +
+        std::to_string(reinterpret_cast<uintptr_t>(impl_->materialBinding.get())) + ":" +
+        std::to_string(impl_->materialTextures.size()) + ":" + std::to_string(hash);
+}
+
 Result<> ScenePathTraceResources::endTextureStreaming(
     CommandBuffer& commands,
     uint64_t frameIndex,

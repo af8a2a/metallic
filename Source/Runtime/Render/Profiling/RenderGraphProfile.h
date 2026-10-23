@@ -68,6 +68,7 @@ struct SceneStreamingProfile {
     std::string passName;
     std::string assetPath;
     std::string softwareRasterIdentity; // Resolved module/entry/SPIR-V hash and runtime mode, JSON.
+    std::string diagnosticSourceIdentity; // Same-process frozen source identity; diagnostics only.
     uint64_t generation = 0;
     uint64_t frameIndex = 0;
     uint64_t feedbackFrame = UINT64_MAX;
@@ -110,6 +111,9 @@ struct SceneStreamingProfile {
     uint32_t blasArenaRepack = 0;
     bool blasGPUAllocatorEnabled = false;
     bool blasPriorityEnabled = false;
+    bool blasPriorityCacheEnabled = false;
+    uint32_t blasPrioritySortReused = 0;
+    uint32_t blasPriorityAdmissionReused = 0;
     uint32_t blasRequestedVisibleConsumers = 0, blasRequestedOffscreenConsumers = 0;
     uint32_t blasRejectedVisibleConsumers = 0, blasRejectedOffscreenConsumers = 0;
     uint32_t blasAdmittedOffscreenConsumers = 0, blasPriorityEvictedOwners = 0;

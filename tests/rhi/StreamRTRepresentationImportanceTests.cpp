@@ -37,7 +37,7 @@ constexpr uint32_t kOwnerCount = kPrimitiveCount * 3;
 constexpr uint32_t kPrimitiveBase = kLevelCount * 4;
 constexpr uint32_t kInstanceBase = kPrimitiveBase + kPrimitiveCount * 12;
 constexpr uint32_t kImportanceBase = kInstanceBase + kInstanceCount * 4;
-constexpr uint32_t kStateWords = kImportanceBase + kOwnerCount * 9;
+constexpr uint32_t kStateWords = kImportanceBase + kOwnerCount * 12 + 2;
 using ImportanceState = std::array<uint32_t, kStateWords>;
 using Importance = std::array<uint32_t, 6>;
 using ImportanceOwners = std::array<Importance, kOwnerCount>;
@@ -171,7 +171,7 @@ struct ImportanceFixture {
         ImportanceState value; std::memcpy(value.data(), mapped, sizeof(value)); buffers[State]->unmap(); return value;
     }
 
-    void dispatch(uint32_t phase, uint32_t traversal = 0)
+    void dispatch(uint32_t phase, uint32_t traversal = 0, bool cancel = false)
     {
         if (submitted) { importanceChecked(fence->reset()); importanceChecked(pool->reset()); }
         importanceChecked(commands->begin()); commands->hostWriteBarrier();
@@ -188,6 +188,7 @@ struct ImportanceFixture {
         }
         importanceChecked(commands->synchronize({.buffers = barriers}));
         importanceChecked(commands->end()); CommandBuffer* list[]{commands.get()};
+        if (cancel) { return; }
         importanceChecked(queue.submit({.commandBuffers = list, .signalFence = fence.get()}));
         importanceChecked(fence->wait()); submitted = true;
     }
@@ -234,16 +235,33 @@ struct ImportanceFixture {
         return output;
     }
 
-    std::vector<uint32_t> sort(const ImportanceOwners& values, uint32_t count = kOwnerCount)
+    std::vector<uint32_t> sort(const ImportanceOwners& values, uint32_t count = kOwnerCount,
+        bool cache = false, bool initialize = true, bool expectedReuse = false, bool cancelSort = false)
     {
         params.rtRepresentationCount = count;
         params.enableBlasPriority = 1;
+        params.enableBlasPriorityCache = cache;
         write(Params, params);
+        // Production owns exactly three representations per primitive. Smaller
+        // counts below exercise the sorter alone, so seed only its reset words
+        // rather than aliasing that artificial tail with full-scene importance.
+        if (count == kOwnerCount) { dispatch(20, initialize ? 1u : 0u); }
         auto state = readState();
+        if (count != kOwnerCount) {
+            state[kImportanceBase + count * 12] = !cache || initialize ? 1u : 0u;
+            state[kImportanceBase + count * 12 + 1] = 0u;
+        }
         for (uint32_t owner = 0; owner < count; ++owner) {
             std::copy(values[owner].begin(), values[owner].end(), state.begin() + kImportanceBase + owner * 6);
         }
         write(State, state);
+        dispatch(41, initialize ? 1u : 0u);
+        if (cancelSort) {
+            const auto before = readState();
+            dispatch(35, 0, true);
+            importanceRequire(before == readState(), "Canceled sort recording mutated submitted GPU state");
+            return {};
+        }
         dispatch(35);
         uint32_t parity = 0;
         for (uint32_t runLog2 = 6; (1u << runLog2) < count; ++runLog2) {
@@ -261,6 +279,8 @@ struct ImportanceFixture {
             return a < b;
         });
         const uint32_t orderBase = kImportanceBase + count * 6;
+        importanceRequire(state[orderBase + count * 6 + 1] == uint32_t(expectedReuse),
+            "Exact sort cache reuse diagnostic disagrees with expected invalidation");
         for (uint32_t rank = 0; rank < count; ++rank) {
             importanceRequire(state[orderBase + rank] == expected[rank] &&
                 state[orderBase + count * 2 + expected[rank]] == rank,
@@ -435,6 +455,36 @@ public:
             // 65 owners exercises final normalization from B; 137 ends in A.
             fixture.sort(keys, 65);
             fixture.sort(keys, 64);
+            phase = "exact priority cache consecutive frames and cancellation";
+            fixture.sort(keys, kOwnerCount, true, true, false);
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                fixture.sort(keys, kOwnerCount, true, false, true);
+            }
+            // Every comparator word is exact, including one-bit changes which
+            // can leave the total order unchanged. Consumer telemetry alone is
+            // not an input to sorting (admission validates its own demand).
+            for (uint32_t word = 0; word < 3; ++word) {
+                ++keys[136][word];
+                fixture.sort(keys, kOwnerCount, true, false, false);
+                fixture.sort(keys, kOwnerCount, true, false, true);
+            }
+            ++keys[136][3]; ++keys[136][5];
+            fixture.sort(keys, kOwnerCount, true, false, true);
+            keys[128] = empty[0]; // Offscreen membership loss must invalidate.
+            fixture.sort(keys, kOwnerCount, true, false, false);
+            ++keys[127][0];
+            fixture.sort(keys, kOwnerCount, true, false, false, true);
+            fixture.sort(keys, kOwnerCount, true, false, false);
+            fixture.sort(keys, kOwnerCount, true, false, true);
+            // Baseline always sorts and publishes history, even while caching
+            // is disabled. Toggling caching back on can reuse that exact order.
+            ++keys[127][1];
+            fixture.sort(keys, kOwnerCount, false, false, false);
+            fixture.sort(keys, kOwnerCount, true, false, true);
+            fixture.sort(keys, 65, true, true, false);
+            fixture.sort(keys, 65, true, false, true);
+            fixture.sort(keys, 64, true, true, false);
+            fixture.sort(keys, 64, true, false, true);
             importanceRequire(validationErrors.load() == 0, "Vulkan validation errors in importance regression");
             const auto directory = context.outputDirectory / "RTRepresentationImportance";
             std::filesystem::create_directories(directory);
@@ -443,6 +493,7 @@ public:
                 {"shared", aggregate}, {"side", side}, {"behind", behind}, {"farOrtho", farOrtho},
                 {"nearPlane", nearPlane}, {"insideSphere", insideSphere}, {"negativeNonuniform", negativeNonuniform},
                 {"priorityOwnerCount", 137}, {"priorityOrder", sortedOwners},
+                {"exactPriorityCacheStableFrames", 32}, {"priorityCacheCancellationVerified", true},
                 {"nearOrtho", nearOrtho}, {"scale", scale}, {"shear", shear}, {"zeroError", zero},
                 {"validationErrors", validationErrors.load()},
                 {"scope", "Production phase20/23; classified LOD bounds seeded; no admission or native BLAS build"}}.dump(2);

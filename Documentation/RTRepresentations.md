@@ -104,6 +104,22 @@ can delay a retry until the next stationary frame; an underestimate still underg
 exact native-size admission. Homogeneous inactive, fitting clean, and non-fitting
 negative tiles use parallel fast paths; mixed tiles retain greedy backfill.
 
+`METALLIC_BLAS_PRIORITY_CACHE=0/1` disables/enables the exact GPU admission
+cache independently of priority policy. After recomputing owner importance,
+the GPU compares all three ordering keys with the last executed sort's snapshot.
+Unchanged keys reuse the sorted IDs and inverse ranks; consumer counts still
+update each frame. Recorded but cancelled commands do not publish the snapshot.
+
+The allocator caches a completed admission decision only when it submitted no
+builds and evicted no owners. Reuse requires unchanged owner demand, no dirty or
+unknown-size cut, unchanged ordering, budgets, total free bytes and largest gap.
+The existing parallel owner pass restores measured rejections and waiting claims
+without repeating the serial ranked scan. Clean relocation remains bounded and
+can continue; changed free-space conditions invalidate admission reuse. With no
+new native build sizes, exact storage selection is skipped while the common
+compaction planner still runs. This preserves waiting-owner recovery instead of
+treating camera stillness as permission to stop allocation work.
+
 Projection-only deferrals are excluded from `storageRejected`, because the next
 frame uses this field to decide whether idle discrete caches face real capacity
 pressure. They remain in suppressed/overflow and rejected-consumer diagnostics,
@@ -205,3 +221,27 @@ reflection pass. Compare identical sample indices against a larger-capacity
 reference, check its rejection counters and residency, and retain texture/CLAS
 streaming differences as confounders. This diagnostic is excluded from performance
 comparisons.
+
+For a bounded MiniZorah cache comparison, set the roam config `sample` to
+`gpu-driven-sample` and compare `METALLIC_BLAS_PRIORITY_CACHE=0/1` with priority
+enabled on both sides. `AnalyzeBLASPriority.py --compare-cache` checks those modes
+and records exact-sort and admission reuse counters. Explicit `maxClasBytes` and
+`maxResidentBytes` config overrides can remove source-pool pressure from this
+experiment; their effective values remain in the captured graph. A stationary
+camera does not imply stationary BLAS inputs while source residency is changing.
+
+The separate `blasQualityComparison` diagnostic runs A1/A2 (priority off),
+B0/B1 (priority on, admission cache off/on), then a larger-budget reference in
+one MiniZorah process. It freezes source geometry, CLAS and texture publication,
+but continues RT preparation. Each variant drains prior submissions before
+cold-resetting the RT allocator/cache and changing the effective storage limit.
+This reset requires the full-drain harness contract and is not a production
+asynchronous reset API. Source identities, budgets, completed feedback and images
+are exported for `Tools/AnalyzeFrozenBLASQuality.py`.
+
+Controlled quality requires DLSS Off, no temporal jitter, deterministic texture
+filtering and `shadowOverrides.sigmaDenoise=false`. It fixes exposure and the
+shadow/path-trace sample seed without changing the light distribution. A/A and
+B0/B1 image equality are explicit gates; reference rejections and missing CLAS
+invalidate a clean-reference claim. These readback/drain diagnostics are not
+performance measurements or isolated specular-radiance captures.

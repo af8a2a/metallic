@@ -156,7 +156,7 @@ struct Frame {
 struct AllocatorScenario {
     AllocatorFixture fixture;
     Buffer &state, &gaps, &allocations, &owners, &header, &buildInfos, &buildOwners;
-    Buffer &sizes, &sourceAddresses, &moveSources, &moveDestinations, &moveCounts, &parameters, &priorityOrder, &importance;
+    Buffer &sizes, &sourceAddresses, &moveSources, &moveDestinations, &moveCounts, &parameters, &priorityOrder, &importance, &priorityCacheControl;
     MeshletStreamBLASAllocatorParameters params{};
     std::array<uint32_t, kOwners> encoded{};
     nlohmann::json frames = nlohmann::json::array();
@@ -171,7 +171,7 @@ struct AllocatorScenario {
         sourceAddresses(fixture.buffer(kOwners * 8)), moveSources(fixture.buffer(kOwners * 2 * 8)),
         moveDestinations(fixture.buffer(kOwners * 2 * 8)), moveCounts(fixture.buffer(8)),
         parameters(fixture.buffer(sizeof(params))), priorityOrder(fixture.buffer(sizeof(PriorityOrder))),
-        importance(fixture.buffer(sizeof(PriorityImportance)))
+        importance(fixture.buffer(sizeof(PriorityImportance))), priorityCacheControl(fixture.buffer(8))
     {
         params = {state.deviceAddress(), gaps.deviceAddress(), allocations.deviceAddress(), owners.deviceAddress(),
             header.deviceAddress(), buildInfos.deviceAddress(), buildOwners.deviceAddress(), sizes.deviceAddress(),
@@ -206,6 +206,13 @@ struct AllocatorScenario {
         const MeshletStreamBLASAllocatorPush push{parameters.deviceAddress(), phase, 0};
         checked(fixture.commands->bindExecution(fixture.pipeline->execution(), &push, sizeof(push)));
         checked(fixture.commands->dispatch((kOwners + 63) / 64)); fixture.barrier();
+    }
+
+    void admissionCache(bool enabled, bool sortChanged = false)
+    {
+        fixture.write(priorityCacheControl, std::array<uint32_t, 2>{sortChanged ? 1u : 0u, sortChanged ? 0u : 1u});
+        params.priorityCacheControl = enabled ? priorityCacheControl.deviceAddress() : 0;
+        fixture.write(parameters, params);
     }
 
     Owners inputs()
@@ -319,6 +326,8 @@ struct AllocatorScenario {
             {"unknownBuildCount", output.state[kBLASAllocatorUnknownBuildCountWord]},
             {"projectedRetryDeferredCount", output.state[kBLASAllocatorProjectedRetryDeferredCountWord]},
             {"projectedDirtyClaimBytes", output.state[kBLASAllocatorProjectedDirtyClaimBytesWord]},
+            {"sortReused", output.state[kBLASAllocatorSortReusedWord]},
+            {"admissionReused", output.state[kBLASAllocatorAdmissionReusedWord]},
             {"storageRejected", output.header.storageRejected}});
         return output;
     }
@@ -362,7 +371,7 @@ struct AllocatorScenario {
 // an active clean survivor in the allocator frame that produced the header.
 struct IdleCacheAdmissionProbe {
     enum Input { Params, Primitives, RTState, Header, Active, Representations, InputCount };
-    static constexpr uint32_t kCapacity = 8, kRTStateWords = 16 + 3 * 9;
+    static constexpr uint32_t kCapacity = 8, kRTStateWords = 16 + 3 * 12 + 2;
     AllocatorFixture& fixture;
     std::unique_ptr<BindlessHeap> heap;
     std::unique_ptr<ShaderModule> shader;
@@ -454,6 +463,164 @@ struct IdleCacheAdmissionProbe {
             "Idle-cache pressure probe changed the allocator rejection counter it was meant to consume");
     }
 };
+
+// Keep large frame snapshots in a separate stack frame from the main allocator
+// suite. A Frame contains all 137 owners and 549 gap records.
+nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
+{
+    Owners owners{};
+    Frame value{};
+    phase = "exact stationary admission cache invalidation and current consumer metrics";
+    AllocatorScenario cachedAdmission(device, 1024, 0);
+    PriorityImportance cachePriorities{};
+    for (auto& priority : cachePriorities) { priority[1] = 0x7f7fffffu; }
+    owners = cachedAdmission.inputs();
+    for (const uint32_t owner : {0u, 64u, 136u}) {
+        cachePriorities[owner] = {std::bit_cast<uint32_t>(float(owner + 1)) + 1,
+            std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+        owners[owner].selectedClusterCount = 4;
+        owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+        cachedAdmission.encoded[owner] = 512;
+    }
+    cachedAdmission.priority(cachePriorities, 64, kOwners);
+    cachedAdmission.admissionCache(true, true);
+    value = cachedAdmission.frame(owners);
+    cachedAdmission.admissionCache(true);
+    value = cachedAdmission.frame(cachedAdmission.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 0 && value.header.blasBuildCount == 0,
+        "Native builds armed an admission cache before a complete quiet selection");
+    for (uint32_t frame = 0; frame < 32; ++frame) {
+        value = cachedAdmission.frame(cachedAdmission.inputs());
+        require(value.state[kBLASAllocatorAdmissionReusedWord] == 1 && value.header.blasBuildCount == 0 &&
+            value.header.reusedInstances == 2 && value.header.storageRejected == 1 &&
+            value.state[kBLASAllocatorSuppressedBuildsWord] == 1,
+            "Stable exact negative and resident admission did not reuse its decision for 32 frames");
+    }
+    cachePriorities[0][3] = 11; cachePriorities[0][4] = 7; cachePriorities[0][5] = 4;
+    cachedAdmission.priority(cachePriorities, 64, kOwners);
+    value = cachedAdmission.frame(cachedAdmission.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 1 &&
+        value.state[kBLASAllocatorRequestedVisibleWord] == 9 && value.state[kBLASAllocatorRejectedVisibleWord] == 7 &&
+        value.state[kBLASAllocatorRequestedOffscreenWord] == 4 && value.state[kBLASAllocatorRejectedOffscreenWord] == 4,
+        "Admission reuse cached stale consumer feedback instead of aggregating current consumers");
+    cachePriorities[0][0] = std::bit_cast<uint32_t>(1000.f) + 1;
+    cachedAdmission.priority(cachePriorities, 64, kOwners);
+    cachedAdmission.admissionCache(true, true);
+    owners = cachedAdmission.inputs();
+    const auto beforeCacheCancel = cachedAdmission.snapshot();
+    const auto afterCacheCancel = cachedAdmission.frame(owners, true);
+    require(std::memcmp(beforeCacheCancel.allocations.data(), afterCacheCancel.allocations.data(), sizeof(Allocations)) == 0 &&
+        std::memcmp(beforeCacheCancel.state.data(), afterCacheCancel.state.data(), sizeof(State)) == 0,
+        "Cancelled sorted admission changed its input history or cached decision");
+    value = cachedAdmission.frame(owners);
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 0 && value.header.blasBuildCount == 1 &&
+        value.owners[0].cachedValid == 1 && value.owners[64].cachedValid == 2,
+        "Changed exact priority order reused stale storage admission");
+    cachedAdmission.admissionCache(true);
+    cachedAdmission.frame(cachedAdmission.inputs());
+    value = cachedAdmission.frame(cachedAdmission.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 1, "New priority order did not converge to a reusable decision");
+    owners = cachedAdmission.inputs(); owners[136].flags |= kDirty;
+    value = cachedAdmission.frame(owners);
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 0 && value.header.blasBuildCount == 1,
+        "A dirty cut with unchanged counts/order incorrectly reused admission");
+    cachedAdmission.frame(cachedAdmission.inputs());
+    cachedAdmission.frame(cachedAdmission.inputs());
+    owners = cachedAdmission.inputs(); owners[64].selectedClusterCount = 8;
+    value = cachedAdmission.frame(owners);
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 0 && value.header.blasBuildCount == 0,
+        "Changed rejected-owner demand reused an old decision");
+    cachedAdmission.priority(cachePriorities, 4, 1);
+    value = cachedAdmission.frame(cachedAdmission.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 0, "Changed work quotas did not invalidate admission");
+    value = cachedAdmission.frame(cachedAdmission.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 1, "Unchanged new work quotas did not converge");
+
+    phase = "cached waiting admission follows useful compaction changes, not address-only epochs";
+    AllocatorScenario cachedWaiting(device, 4096, 0);
+    PriorityImportance compactPriorities{};
+    for (auto& priority : compactPriorities) { priority[1] = 0x7f7fffffu; }
+    owners = cachedWaiting.inputs();
+    for (uint32_t owner = 0; owner < 8; ++owner) {
+        compactPriorities[owner] = {std::bit_cast<uint32_t>(float(100 - owner)) + 1,
+            std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+        owners[owner].selectedClusterCount = 1;
+        owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+        cachedWaiting.encoded[owner] = 512;
+    }
+    cachedWaiting.priority(compactPriorities, kOwners, kOwners);
+    cachedWaiting.admissionCache(true, true);
+    cachedWaiting.frame(owners);
+    owners = cachedWaiting.inputs();
+    for (uint32_t owner = 0; owner < 8; owner += 2) { owners[owner] = {}; }
+    compactPriorities[136] = {std::bit_cast<uint32_t>(1000.f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+    owners[136].selectedClusterCount = 1;
+    owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+    cachedWaiting.encoded[136] = 1024;
+    cachedWaiting.priority(compactPriorities, kOwners, kOwners);
+    cachedWaiting.frame(owners);
+    cachedWaiting.admissionCache(true);
+    cachedWaiting.frame(cachedWaiting.inputs());
+    value = cachedWaiting.frame(cachedWaiting.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 1 && value.header.blasBuildCount == 0 &&
+        value.state[kBLASAllocatorWaitingCountWord] == 1 && value.state[kBLASAllocatorWaitingClaimBytesWord] == 1024,
+        "Known fragmented waiting state did not reuse its exact claim without native builds");
+    auto cursorState = value.state;
+    cursorState[100] = 7; // First compact the last live block: largest gap stays 512.
+    cachedWaiting.fixture.write(cachedWaiting.state, cursorState);
+    cachedWaiting.params.relocateBudget = 512;
+    cachedWaiting.fixture.write(cachedWaiting.parameters, cachedWaiting.params);
+    const auto epochBeforeMove = value.state[kBLASAllocatorEpochWord];
+    value = cachedWaiting.frame(cachedWaiting.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 1 && value.moves[1] == 1 &&
+        value.state[kBLASAllocatorLargestFreeWord] == 512 && value.state[kBLASAllocatorEpochWord] != epochBeforeMove,
+        "A cache hit suppressed bounded clean compaction or changed an address-only gap result");
+    value = cachedWaiting.frame(cachedWaiting.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 1 && value.moves[1] == 1 &&
+        value.state[kBLASAllocatorLargestFreeWord] >= 1024,
+        "An address-only epoch change needlessly invalidated admission or stopped compaction progress");
+    value = cachedWaiting.frame(cachedWaiting.inputs());
+    require(value.state[kBLASAllocatorAdmissionReusedWord] == 0 && value.header.blasBuildCount == 1 &&
+        value.owners[136].cachedValid == 1,
+        "A newly fitting largest gap did not invalidate the cached wait and admit its owner");
+
+    phase = "zero-build exact allocation skip preserves an exhausted eviction cap";
+    nlohmann::json exhaustedCacheFrames = nlohmann::json::array();
+    for (bool cacheEnabled : {false, true}) {
+        AllocatorScenario exhaustedCache(device, 4096, 0, 1);
+        PriorityImportance exhaustPriorities{};
+        for (auto& priority : exhaustPriorities) { priority[1] = 0x7f7fffffu; }
+        owners = exhaustedCache.inputs();
+        for (uint32_t owner = 0; owner < 8; ++owner) {
+            exhaustPriorities[owner] = {std::bit_cast<uint32_t>(float(100 + owner)) + 1,
+                std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            owners[owner].selectedClusterCount = 1;
+            owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            exhaustedCache.encoded[owner] = 512;
+        }
+        exhaustPriorities[136] = {std::bit_cast<uint32_t>(1.f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+        owners[136].selectedClusterCount = 1; owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+        exhaustedCache.encoded[136] = 1024;
+        exhaustedCache.priority(exhaustPriorities, kOwners, kOwners);
+        exhaustedCache.admissionCache(cacheEnabled, true);
+        exhaustedCache.frame(owners);
+        exhaustPriorities[136][0] = std::bit_cast<uint32_t>(1000.f) + 1;
+        exhaustedCache.priority(exhaustPriorities, kOwners, kOwners);
+        value = exhaustedCache.frame(exhaustedCache.inputs());
+        require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 7 &&
+            value.state[kBLASAllocatorPriorityEvictedWord] == 1 && value.state[kBLASAllocatorWaitingCountWord] == 1 &&
+            value.state[kBLASAllocatorAllocatedBytesWord] == 3584 && value.state[kBLASAllocatorFreeBytesWord] == 512,
+            "Skipping a redundant no-build exact pass changed cap-limited eviction or waiting claims");
+        value = exhaustedCache.frame(exhaustedCache.inputs());
+        require(value.header.blasBuildCount == 1 && value.owners[136].cachedValid == 1 &&
+            value.state[kBLASAllocatorAllocatedBytesWord] == 4096,
+            "A cap-limited waiting owner failed to progress after the next bounded eviction");
+        exhaustedCacheFrames.push_back({{"enabled", cacheEnabled}, {"frames", exhaustedCache.frames}});
+    }
+
+    return {{"cachedAdmission", cachedAdmission.frames}, {"cachedWaiting", cachedWaiting.frames},
+        {"exhaustedEvictionCache", exhaustedCacheFrames}};
+}
 
 class StreamBLASAllocatorTest final : public RHITest {
 public:
@@ -1191,6 +1358,8 @@ public:
                     "Inactive lanes changed resident-tile budget accounting or static-frame convergence");
             }
 
+            auto admissionCacheFrames = runAdmissionCacheRegression(*device, phase);
+
             require(validationErrors.load() == 0, "Vulkan validation errors during allocator regression");
             const auto directory = context.outputDirectory / "BLASAllocator";
             std::filesystem::create_directories(directory);
@@ -1207,6 +1376,7 @@ public:
                 {"nextFrameIdleCachePressure", "production phase 26 and legacy/priority admission consume actual allocator headers; projection preserves newly idle cache, actual and mixed pressure evict it"},
                 {"projectedWorkBudget", projectedWorkBudget.frames},
                 {"negativeTiles", negativeTileFrames}, {"residentTiles", residentTiles.frames},
+                {"admissionCache", std::move(admissionCacheFrames)},
                 {"relocationAccounting", "logical bytes; native scratch round-trip copies twice this amount"},
                 {"validationErrors", validationErrors.load()},
                 {"sizeInput", "deterministic driver-size synthesis; native Move fixture covers real build outputs"}}.dump(2);

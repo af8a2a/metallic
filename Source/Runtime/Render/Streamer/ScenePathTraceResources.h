@@ -134,6 +134,8 @@ public:
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot() const;
     // Source-image indexed KTX tail selection; non-KTX entries are zero.
     const std::vector<uint32_t>& materialTextureFirstMips() const;
+    // Same-process identity for a publication-frozen diagnostic, including exact sampling metadata.
+    std::string diagnosticTextureResidencyIdentity(uint64_t frameIndex) const;
 
 private:
     struct Impl;

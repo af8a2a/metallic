@@ -127,6 +127,9 @@ public:
         view.jitter[2] = previousValid ? history_->view.jitter[0] : info.jitter[0];
         view.jitter[3] = previousValid ? history_->view.jitter[1] : info.jitter[1];
         view.frame[0] = static_cast<uint32_t>(info.frameIndex);
+        if (context.properties().contains("diagnosticSampleFrame")) {
+            view.frame[0] = context.properties().at("diagnosticSampleFrame").get<uint32_t>();
+        }
         view.frame[1] = previousValid ? 1u : 0u;
         view.frame[2] = sharedView != nullptr ? sharedView->frame[2] : info.temporalJitter;
         view.frame[3] = sharedView != nullptr ? sharedView->frame[3] : 0u;

@@ -20,8 +20,12 @@ struct MeshletStreamBLASAllocatorParameters
     uint64_t relocationArena;
     uint64_t priorityOrder, importance;
     uint32_t referenceCapacity, buildCapacity;
+    // Optional GPU control words: exact sort-input change, sort-reused feedback.
+    // Null preserves uncached priority admission. Storage-budget changes require
+    // an arena reset, because budget comparisons cannot resize the gap topology.
+    uint64_t priorityCacheControl;
 };
-static_assert(sizeof(MeshletStreamBLASAllocatorParameters) == 176);
+static_assert(sizeof(MeshletStreamBLASAllocatorParameters) == 184);
 
 struct MeshletStreamBLASAllocatorGap
 {
@@ -32,9 +36,12 @@ struct MeshletStreamBLASAllocatorAllocation
 {
     uint32_t node, encodedBytes, rejectedEpoch, oldNode;
     uint32_t pendingNode, pendingOffset, pendingBytes, status;
+    // Submitted GPU history only: phase 5 compares inputs before overwriting;
+    // phase 6 records the rejection/wait decision for parallel idle restoration.
+    uint32_t inputDynamic, inputSelectedClusterCount, prepareDecision, reserved;
 };
 static_assert(sizeof(MeshletStreamBLASAllocatorGap) == 32);
-static_assert(sizeof(MeshletStreamBLASAllocatorAllocation) == 32);
+static_assert(sizeof(MeshletStreamBLASAllocatorAllocation) == 48);
 
 struct MeshletStreamBLASAllocatorPush
 {
@@ -43,7 +50,7 @@ struct MeshletStreamBLASAllocatorPush
 };
 static_assert(sizeof(MeshletStreamBLASAllocatorPush) == 16);
 
-inline constexpr uint32_t kBLASAllocatorStateWords = 128;
+inline constexpr uint32_t kBLASAllocatorStateWords = 144;
 inline constexpr uint32_t kBLASAllocatorEpochWord = 99;
 inline constexpr uint32_t kBLASAllocatorEncodedBytesWord = 102;
 inline constexpr uint32_t kBLASAllocatorAllocatedBytesWord = 103;
@@ -71,4 +78,6 @@ inline constexpr uint32_t kBLASAllocatorMaxWaitingBytesWord = 123;
 inline constexpr uint32_t kBLASAllocatorUnknownBuildCountWord = 124;
 inline constexpr uint32_t kBLASAllocatorProjectedRetryDeferredCountWord = 125;
 inline constexpr uint32_t kBLASAllocatorProjectedDirtyClaimBytesWord = 126;
+inline constexpr uint32_t kBLASAllocatorSortReusedWord = 128;
+inline constexpr uint32_t kBLASAllocatorAdmissionReusedWord = 129;
 } // namespace metallic::render

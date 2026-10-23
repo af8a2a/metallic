@@ -329,7 +329,8 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
                 {
                     CPUProfileScope profile(&profiler, "Texture streaming");
                     result = resources->beginTextureStreaming(context.commandBuffer(), context.frameIndex(),
-                        entry->second.feedback, &profiler, context.properties().value("benchmarkFreezeStreaming", false),
+                        entry->second.feedback, &profiler, context.properties().value("benchmarkFreezeStreaming", false) ||
+                            context.properties().value("benchmarkFreezeResidency", false),
                         &entry->second.captureDemand);
                 }
                 context.publishCpuProfile(profiler.sections);
@@ -407,6 +408,16 @@ Result<> StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, Ren
     if (result) { result = prepared.geometry->cmdEndFrame(context.commandBuffer()); }
     if (result) {
         auto profile = prepared.geometry->profilingStats();
+        if (context.properties().value("benchmarkFreezeResidency", false)) {
+            const auto push = prepared.geometry->userPush();
+            profile.diagnosticSourceIdentity = std::to_string(push.pageBuffer) + ":" +
+                std::to_string(push.pageTableBuffer) + ":" + std::to_string(push.pageTableMutationSerial) + ":" +
+                std::to_string(push.clasPublicationRevision);
+            if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
+                profile.diagnosticSourceIdentity += ":" +
+                    prepared.snapshot->pathTraceResources->diagnosticTextureResidencyIdentity(context.frameIndex());
+            }
+        }
         profile.softwareRasterIdentity = prepared.softwareRasterIdentity;
         if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
             const auto textures = prepared.snapshot->pathTraceResources->textureStats();

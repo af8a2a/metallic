@@ -12,6 +12,7 @@
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -19,6 +20,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -31,6 +33,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
 {
     return {{"pass",s.passName},{"asset",s.assetPath},
         {"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
+        {"diagnosticSourceIdentity",s.diagnosticSourceIdentity.empty() ? Json(nullptr) : Json(s.diagnosticSourceIdentity)},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"lodTransitions", {{"enabled",s.lodTransitionTelemetryEnabled},{"historyBytes",s.lodTransitionHistoryBytes},
             {"demandedGroups",s.lodDemandedGroups},{"ownPageBlockedGroups",s.lodOwnPageBlockedGroups},
@@ -102,6 +105,9 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"blasArenaRepack",s.blasArenaRepack},
         {"blasGPUAllocatorEnabled",s.blasGPUAllocatorEnabled},
         {"blasPriorityEnabled",s.blasPriorityEnabled},
+        {"blasPriorityCacheEnabled",s.blasPriorityCacheEnabled},
+        {"blasPrioritySortReused",s.blasPrioritySortReused},
+        {"blasPriorityAdmissionReused",s.blasPriorityAdmissionReused},
         {"blasRequestedVisibleConsumers",s.blasRequestedVisibleConsumers},
         {"blasRequestedOffscreenConsumers",s.blasRequestedOffscreenConsumers},
         {"blasRejectedVisibleConsumers",s.blasRejectedVisibleConsumers},
@@ -212,8 +218,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     bool passed = false;
     RasterWorkloadObserver workloadObserver;
     auto qualityCapture = std::make_unique<RayQualityCapture>();
-    struct FrozenProperty { uint32_t node; bool existed; Json value; };
+    struct FrozenProperty { uint32_t node; std::string key; bool existed; Json value; };
     std::vector<FrozenProperty> frozenProperties;
+    std::optional<scene::LightingSettings> controlledLighting;
     const auto drain = [&]() {
         if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { throw std::runtime_error("GPU drain failed"); }
         std::vector<render::RenderGraphExecutionStats> completed;
@@ -232,6 +239,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             throw std::runtime_error("benchmarkFreezeStreaming must be a boolean");
         }
         const bool freezeStreaming = config.value("benchmarkFreezeStreaming", false);
+        const Json blasComparison = config.value("blasQualityComparison", Json::object());
+        if (!blasComparison.is_object()) { throw std::runtime_error("blasQualityComparison must be an object"); }
+        const bool controlledBlas = !blasComparison.empty();
         constexpr uint32_t kFreezeSettleFrames = 16;
         const Json deferredOverrides = config.value("deferredOverrides", Json::object());
         if (!deferredOverrides.is_object()) { throw std::runtime_error("deferredOverrides must be an object"); }
@@ -255,11 +265,14 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const uint32_t workloadEvery = config.value("workloadEvery", 0u);
         const bool captureQuality = config.value("captureQuality", false);
         const bool captureReflections = config.value("captureReflections", false);
+        const uint32_t reflectionSamples = config.value("reflectionSamples", 8u);
+        if (reflectionSamples == 0u || reflectionSamples > 16u) { throw std::runtime_error("reflectionSamples must be [1,16]"); }
         if (captureReflections && !captureQuality) { throw std::runtime_error("captureReflections requires captureQuality"); }
         if (captureQuality && workloadEvery) { throw std::runtime_error("Quality and workload captures require separate runs"); }
         report["captureQuality"] = captureQuality;
         report["captureReflections"] = captureReflections;
         qualityCapture->captureReflections = captureReflections;
+        qualityCapture->captureRasterInputs = controlledBlas;
         workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
@@ -305,6 +318,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         if (workloadEvery) { graphExecutor_->setDebugObserver(&workloadObserver); }
         if (captureQuality) { graphExecutor_->setDebugObserver(qualityCapture.get()); }
         const std::string sampleId = config.value("sample", std::string(render::kGPUDrivenZorahFullSampleId));
+        if (controlledBlas && (sampleId != "gpu-driven-sample" || !captureQuality || !captureReflections || freezeStreaming)) {
+            throw std::runtime_error("blasQualityComparison requires MiniZorah quality/reflection capture without the full raster snapshot freeze");
+        }
         if (!render::isGPUDrivenSceneSample(sampleId)) { throw std::runtime_error("Roam requires MiniZorah or ZorahFull sample"); }
         loadBuiltInSample(sampleId.c_str());
         if (config.contains("shadowPointLight")) {
@@ -346,6 +362,13 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "cullHardwareClassification", config.value("cullHardwareClassification", false));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "metadataFastClassification", config.value("metadataFastClassification", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "initialLoad", config.value("initialLoad", true));
+        for (const char* key : {"maxClasBytes", "maxResidentBytes"}) {
+            if (config.contains(key)) {
+                const auto bytes = config.at(key).get<uint64_t>();
+                if (bytes == 0u) { throw std::runtime_error(std::string(key) + " must be nonzero"); }
+                renderGraph_.setNodeRuntimeProperty(vbuffer->id, key, bytes);
+            }
+        }
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "deviceImmutableMetadata", config.value("deviceImmutableMetadata", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "predictivePrefetch", config.value("predictivePrefetch", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "adaptivePageRetention", config.value("adaptivePageRetention", true));
@@ -388,7 +411,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             properties["viewBinding"] = "global";
             properties["bsdf"] = "openpbr";
             properties["cacheMode"] = "off";
-            properties["samples"] = 8;
+            properties["samples"] = reflectionSamples;
             properties["maxDepth"] = 3;
             properties["accumulate"] = false;
             properties["outputLinear"] = true;
@@ -470,7 +493,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             report["streamingFreeze"]["beforeFreeze"] = streamSnapshot(graphExecutor_->executionStats());
             for (const auto* node : {vbuffer, deferred}) {
                 const bool existed = node->runtimeProperties.contains("benchmarkFreezeStreaming");
-                frozenProperties.push_back({node->id, existed, existed ? node->runtimeProperties.at("benchmarkFreezeStreaming") : Json(nullptr)});
+                frozenProperties.push_back({node->id, "benchmarkFreezeStreaming", existed, existed ? node->runtimeProperties.at("benchmarkFreezeStreaming") : Json(nullptr)});
                 if (!renderGraph_.setNodeRuntimeProperty(node->id, "benchmarkFreezeStreaming", true)) {
                     throw std::runtime_error("Failed to freeze streaming");
                 }
@@ -500,6 +523,145 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             camera["camera"]["center"][2]=camera["camera"]["eye"][2].get<double>()-std::sin(angle)*dx+std::cos(angle)*dz;
             return camera;
         };
+        if (controlledBlas) {
+            if (dlssMode != "Off" || viewportView_.temporalJitter() || config.value("stochasticTextureFiltering", false)) {
+                throw std::runtime_error("Controlled BLAS quality requires DLSS Off, temporalJitter false and deterministic texture filtering");
+            }
+            if (!config.contains("shadowOverrides") || config.at("shadowOverrides").value("sigmaDenoise", true)) {
+                throw std::runtime_error("Controlled BLAS quality requires shadowOverrides.sigmaDenoise false");
+            }
+            const auto pressureBytes = blasComparison.at("storageBytes").get<uint32_t>();
+            const auto referenceBytes = blasComparison.at("referenceBytes").get<uint32_t>();
+            const uint32_t settleFrames = blasComparison.value("settleFrames", 16u);
+            const uint32_t primeFrames = blasComparison.value("primeFrames", 16u);
+            const Json poses = blasComparison.value("poses", Json::array({{{"forward",0.0},{"yaw",0.0}}}));
+            const auto seeds = blasComparison.value("seeds", std::vector<uint32_t>{0u});
+            if (pressureBytes == 0u || referenceBytes < pressureBytes || settleFrames < 4u || settleFrames > 16u ||
+                primeFrames < 1u || primeFrames > 32u || !poses.is_array() || poses.empty() || poses.size() > 2u ||
+                seeds.empty() || seeds.size() > 2u || std::set<uint32_t>(seeds.begin(), seeds.end()).size() != seeds.size()) {
+                throw std::runtime_error("Invalid bounded MiniZorah BLAS comparison configuration");
+            }
+            const auto setProperty = [&](const std::string& nodeName, const std::string& key, const Json& value) {
+                const auto* node = renderGraph_.findNode(nodeName);
+                if (!node) { throw std::runtime_error("Missing diagnostic node " + nodeName); }
+                if (std::none_of(frozenProperties.begin(), frozenProperties.end(), [&](const auto& saved) {
+                        return saved.node == node->id && saved.key == key;
+                    })) {
+                    const bool existed = node->runtimeProperties.contains(key);
+                    frozenProperties.push_back({node->id, key, existed, existed ? node->runtimeProperties.at(key) : Json(nullptr)});
+                }
+                if (!renderGraph_.setNodeRuntimeProperty(node->id, key, value)) { throw std::runtime_error("Failed diagnostic property " + key); }
+            };
+            const auto snapshot = [&]() {
+                const auto& profiles = graphExecutor_->executionStats().streaming;
+                const auto found = std::find_if(profiles.begin(), profiles.end(), [](const auto& s) { return s.passName == "VBuffer"; });
+                if (found == profiles.end()) { throw std::runtime_error("Missing diagnostic stream profile"); }
+                return streamSample(*found);
+            };
+            const auto initial = snapshot();
+            if (!initial.at("blasGPUAllocatorEnabled").get<bool>() || !initial.at("blasRepresentationsEnabled").get<bool>() ||
+                initial.at("blasPriorityEnabled").get<bool>() || initial.at("blasPersistentBytes").get<uint64_t>() != referenceBytes) {
+                throw std::runtime_error("Controlled BLAS requires priority-off initialization and physical storage equal to referenceBytes");
+            }
+            report["protocol"] = "minizorah-blas-frozen-quality-v1";
+            report["diagnosticRun"] = true;
+            report["config"] = config;
+            report["frames"] = 0u;
+            controlledLighting = renderWorld_.lighting();
+            auto fixedLighting = *controlledLighting;
+            fixedLighting.autoExposure.enabled = false;
+            renderWorld_.setLighting(std::move(fixedLighting));
+            report["controlledBlas"] = {{"sourceScope","One process; geometry/CLAS/raster cut and texture publication frozen per pose. RT cache/allocator cold-reset after drain for every policy."},
+                {"identityScope","Exact process-local buffer/generation identity and publication serials, plus FNV-1a hash of texture sampling metadata/first mips; not a portable geometry snapshot."},
+                {"shadowScope","Fixed-seed soft-shadow sample with SIGMA disabled; scene light distribution unchanged. Not denoised production output."},
+                {"fixedExposureEV100",controlledLighting->exposureEV100},
+                {"captureRasterInputs",true},
+                {"performanceComparable",false},{"variants",Json::array()}};
+            std::ofstream controlledFrames(output / "ControlledFrames.jsonl");
+            controlledFrames.exceptions(std::ios::badbit | std::ios::failbit);
+            uint32_t epoch = 0u;
+            struct Variant { const char* name; bool priority; bool cache; uint32_t bytes; };
+            const std::array variants{Variant{"A1",false,false,pressureBytes}, Variant{"A2",false,false,pressureBytes},
+                Variant{"B0",true,false,pressureBytes}, Variant{"B1",true,true,pressureBytes}, Variant{"R",false,false,referenceBytes}};
+            for (size_t poseIndex = 0; poseIndex < poses.size(); ++poseIndex) {
+                const double forward = poses[poseIndex].at("forward").get<double>();
+                const double yaw = poses[poseIndex].at("yaw").get<double>();
+                if (!std::isfinite(forward) || !std::isfinite(yaw) || std::abs(forward) > 10.0 || std::abs(yaw) > 360.0) {
+                    throw std::runtime_error("Invalid controlled BLAS pose");
+                }
+                drain();
+                setProperty("VBuffer", "benchmarkFreezeResidency", false);
+                setProperty("Deferred", "benchmarkFreezeResidency", false);
+                setProperty("ReflectionQuality", "benchmarkFreezeResidency", false);
+                applyViewportCameraProperties(cameraAt(forward, yaw), nullptr);
+                for (uint32_t i = 0; i < primeFrames; ++i) {
+                    if (!draw()) { throw std::runtime_error("Controlled pose priming failed"); }
+                }
+                drain();
+                for (const char* node : {"VBuffer", "Deferred", "ReflectionQuality"}) { setProperty(node, "benchmarkFreezeResidency", true); }
+                std::string sourceIdentity;
+                for (const auto& variant : variants) {
+                    drain();
+                    setProperty("VBuffer", "benchmarkBlasStorageBytes", variant.bytes);
+                    setProperty("VBuffer", "benchmarkBlasPriority", variant.priority);
+                    setProperty("VBuffer", "benchmarkBlasPriorityCache", variant.cache);
+                    setProperty("VBuffer", "benchmarkBlasResetEpoch", ++epoch);
+                    Json variantReport{{"pose",poseIndex},{"name",variant.name},{"priority",variant.priority},{"cache",variant.cache},
+                        {"storageBytes",variant.bytes},{"resetEpoch",epoch},{"camera",viewportCameraProperties()},{"settle",Json::array()},{"captures",Json::array()}};
+                    const auto record = [&](const char* phase) {
+                        auto state = snapshot();
+                        const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
+                        if (identity.empty()) { throw std::runtime_error("Missing frozen source identity"); }
+                        if (sourceIdentity.empty()) { sourceIdentity = identity; }
+                        if (identity != sourceIdentity || state.at("blasPriorityEnabled") != variant.priority ||
+                            state.at("blasPriorityCacheEnabled") != (variant.priority && variant.cache)) {
+                            throw std::runtime_error("Frozen source identity or effective policy changed");
+                        }
+                        controlledFrames << Json{{"pose",poseIndex},{"variant",variant.name},{"phase",phase},{"state",state}}.dump() << '\n';
+                        report["frames"] = report.at("frames").get<uint32_t>() + 1u;
+                        return state;
+                    };
+                    for (uint32_t i = 0; i < settleFrames; ++i) {
+                        if (!draw()) { throw std::runtime_error("Controlled BLAS settling failed"); }
+                        variantReport["settle"].push_back(record("settle"));
+                    }
+                    for (uint32_t seed : seeds) {
+                        drain();
+                        setProperty("ReflectionQuality", "diagnosticSampleFrame", seed);
+                        setProperty("Shadows", "diagnosticSampleFrame", seed);
+                        qualityCapture->capture = true;
+                        if (!draw()) { throw std::runtime_error("Controlled BLAS image capture failed"); }
+                        qualityCapture->capture = false;
+                        auto state = record("image");
+                        drain();
+                        const std::string directory = "Controlled/pose" + std::to_string(poseIndex) + "/" + variant.name + "/seed" + std::to_string(seed);
+                        variantReport["captures"].push_back({{"seed",seed},{"directory",directory},{"state",state},
+                            {"images",qualityCapture->exportAfterDrain(output / directory)}});
+                        qualityCapture = std::make_unique<RayQualityCapture>();
+                        qualityCapture->captureReflections = true;
+                        qualityCapture->captureRasterInputs = true;
+                        graphExecutor_->setDebugObserver(qualityCapture.get());
+                    }
+                    variantReport["sourceIdentity"] = sourceIdentity;
+                    report["controlledBlas"]["variants"].push_back(std::move(variantReport));
+                }
+            }
+            controlledFrames.close();
+            report["outputExtent"] = {fullRoamWidth_,fullRoamHeight_};
+            auto* depth = graphExecutor_->outputResource("VBuffer.depth");
+            if (!depth) { throw std::runtime_error("Missing controlled VBuffer render extent"); }
+            report["renderExtent"] = {depth->desc.width,depth->desc.height};
+            report["timingValidation"] = "Not a performance capture; per-variant drains and image readbacks are intentional.";
+            report["loadingFrames"] = loadingFrames;
+            report["loadingSeconds"] = std::chrono::duration<double>(readyAt-loadingStart).count();
+            report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
+            report["graph"] = Json::array();
+            for (const auto& node : renderGraph_.nodes()) {
+                auto properties = node.properties;
+                properties.merge_patch(node.runtimeProperties);
+                report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
+            }
+        } else {
         report["config"]={{"durationSeconds",duration},{"warmupSeconds",warmup},{"distance",distance},{"keyframes",points},
             {"routeFrames",routeFrames},{"sample",sampleId},{"cullHardwareClassification",config.value("cullHardwareClassification",false)},
             {"metadataFastClassification",config.value("metadataFastClassification",true)},
@@ -692,6 +854,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 ? "One untimed final-route frame; shadow mask, deferred lighting, final output and fixed-sample OpenPBR path tracing including reflections. The diagnostic graph is excluded from performance comparisons."
                 : "One untimed final-route frame; shadow mask, deferred lighting and final output. This scene has no secondary reflection pass.";
         }
+        }
         report["status"]="capture_complete";
         passed=true;
     } catch (const std::exception& error) {
@@ -704,12 +867,13 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     for (const auto& property : frozenProperties) {
         if (const auto* node = renderGraph_.findNode(property.node)) {
             auto properties = node->runtimeProperties;
-            if (property.existed) { properties["benchmarkFreezeStreaming"] = property.value; }
-            else { properties.erase("benchmarkFreezeStreaming"); }
+            if (property.existed) { properties[property.key] = property.value; }
+            else { properties.erase(property.key); }
             if (!renderGraph_.setNodeRuntimeProperties(property.node, std::move(properties))) { passed = false; report["status"] = "failed"; }
         } else { passed = false; report["status"] = "failed"; }
     }
     graphExecutor_->setDebugObserver(debugRuntime_.get());
+    if (controlledLighting) { renderWorld_.setLighting(std::move(*controlledLighting)); }
     fullRoamActive_=false; fullRoamWidth_=fullRoamHeight_=0;
     profiler_.beginCapture(); profiler_.endCapture(); // Release retained capture samples after export.
     try {

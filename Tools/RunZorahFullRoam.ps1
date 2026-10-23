@@ -60,6 +60,10 @@ if ($SoftwareGroupSize) {
     $config.softwareGroupSize=$SoftwareGroupSize
 }
 if ($WorkloadCounters) { $config.workloadCounters=$true; $config.workloadEvery=60 }
+$sampleId=if ($config.sample) { [string]$config.sample } else { 'gpu-driven-zorah-full' }
+if ($sampleId -notin @('gpu-driven-sample','gpu-driven-zorah-full')) { throw 'Roam requires MiniZorah or ZorahFull sample' }
+$controlledBlas=[bool]$config.blasQualityComparison
+if ($controlledBlas -and ($sampleId -ne 'gpu-driven-sample' -or $Runs -ne 1 -or $RasterComparison)) { throw 'Controlled BLAS quality requires MiniZorah, one process and no raster comparison' }
 $analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
 New-Item -ItemType Directory -Path $output | Out-Null
 $config | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $output 'Config.json') -Encoding utf8
@@ -74,15 +78,18 @@ function Get-ShaderDigest {
     try { return [Convert]::ToHexString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($records -join "`n")))) }
     finally { $hash.Dispose() }
 }
-$manifest=@{protocol=$(if ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
+$manifest=@{protocol=$(if ($controlledBlas) {'minizorah-blas-frozen-quality-v1'} elseif ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
     executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash; shaderSha256=(Get-ShaderDigest)
     config=$config; validation=[bool]$Validation; nsightCaptureRequested=[bool]$NsightCapture; shaderCaptureSymbols=([bool]$NsightCapture -or [bool]$ShaderCaptureSymbols); hidden=$true; vsync=(!$NoVSync); reflexMode=$env:METALLIC_REFLEX_MODE; blasInstanceReuse=$env:METALLIC_BLAS_INSTANCE_REUSE; streamMaintenanceBeforePacing=$env:METALLIC_STREAM_MAINTENANCE_BEFORE_PACING; runs=$Runs; gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)
     dirty=(& git -C $repo status --short --ignore-submodules)
 }
-$asset=Get-Item -LiteralPath (Join-Path $repo 'Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin')
+$assetRelative=if ($sampleId -eq 'gpu-driven-sample') { 'Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin' } else { 'Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin' }
+$asset=Get-Item -LiteralPath (Join-Path $repo $assetRelative)
+$manifest.sample=$sampleId
 $manifest.blasRepresentations=$env:METALLIC_BLAS_REPRESENTATIONS
 $manifest.blasAllocator=$env:METALLIC_BLAS_ALLOCATOR
 $manifest.blasPriority=$env:METALLIC_BLAS_PRIORITY
+$manifest.blasPriorityCache=$env:METALLIC_BLAS_PRIORITY_CACHE
 $manifest.blasStorageBytes=$env:METALLIC_BLAS_STORAGE_BYTES
 $manifest.blasRelocateBytes=$env:METALLIC_BLAS_RELOCATE_BYTES
 $manifest.clasAllocator=$env:METALLIC_CLAS_ALLOCATOR
@@ -106,7 +113,7 @@ try {
         $competition=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'MeasureGPUCompetition.ps1')+'"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'GpuProcesses.csv') -RedirectStandardError (Join-Path $directory 'GpuProcesses.stderr.txt')
         $process=$null
         try {
-            $process=Start-Process -FilePath $exe -WorkingDirectory $repo -ArgumentList @('--sample','gpu-driven-zorah-full') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'stdout.log') -RedirectStandardError (Join-Path $directory 'stderr.log')
+            $process=Start-Process -FilePath $exe -WorkingDirectory $repo -ArgumentList @('--sample',$sampleId) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'stdout.log') -RedirectStandardError (Join-Path $directory 'stderr.log')
             $started=Get-Date
             $completeAt=$null
             while (-not $process.WaitForExit(1000)) {
@@ -125,8 +132,12 @@ try {
             $capture=Get-Content -LiteralPath $capturePath -Raw | ConvertFrom-Json
             if ($capture.status -ne 'capture_complete') { throw "Capture failed: $($capture.error)" }
             if (Select-String -LiteralPath (Join-Path $directory 'stdout.log'),(Join-Path $directory 'stderr.log') -Pattern 'Validation Error|VUID-|DeviceLost' -Quiet) { throw 'Validation/device error in capture' }
-            python (Join-Path $PSScriptRoot $analyzer) $directory
-            if ($LASTEXITCODE -ne 0) { throw 'Capture analysis failed' }
+            if ($controlledBlas) {
+                if ($capture.protocol -ne 'minizorah-blas-frozen-quality-v1') { throw 'Unexpected controlled BLAS capture protocol' }
+            } else {
+                python (Join-Path $PSScriptRoot $analyzer) $directory
+                if ($LASTEXITCODE -ne 0) { throw 'Capture analysis failed' }
+            }
             $frameCount=if ($RasterComparison) { ($capture.cases | Measure-Object -Property frames -Sum).Sum } else { $capture.frames }
             Write-Output "Full capture $run/$Runs complete: $frameCount frames, output $($capture.outputExtent), render $($capture.renderExtent)"
         } finally {
@@ -135,7 +146,9 @@ try {
             if (-not $monitor.HasExited) { Stop-Process -Id $monitor.Id -Force }
         }
     }
-    python (Join-Path $PSScriptRoot $analyzer) $output
-    if ($LASTEXITCODE -ne 0) { throw 'Cross-run conditions differ' }
+    if (-not $controlledBlas) {
+        python (Join-Path $PSScriptRoot $analyzer) $output
+        if ($LASTEXITCODE -ne 0) { throw 'Cross-run conditions differ' }
+    }
     if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ne $manifest.executableSha256 -or (Get-ShaderDigest) -ne $manifest.shaderSha256) { throw 'Binary or shader changed during replay' }
 } finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key,$previous[$key],'Process') } }

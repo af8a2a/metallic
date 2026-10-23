@@ -24,6 +24,7 @@ ALLOCATION_DIAGNOSTICS = (
     "blasCompactionTargetBytes", "blasWaitingBuildCount", "blasPostBuildBudgetRejected",
     "blasPhysicalAllocationFailed", "blasWaitingClaimBytes", "blasMaxWaitingBytes", "blasUnknownBuildCount",
     "blasProjectedRetryDeferredCount", "blasProjectedDirtyClaimBytes",
+    "blasPrioritySortReused", "blasPriorityAdmissionReused",
 )
 PRIORITY_ONLY_DIAGNOSTICS = {
     "blasPostBuildBudgetRejected", "blasPhysicalAllocationFailed", "blasUnknownBuildCount",
@@ -47,7 +48,7 @@ PROXY_DEFINITION = (
 )
 
 
-def validate_conditions(manifest, capture, quality=False):
+def validate_conditions(manifest, capture, quality=False, comparison="priority"):
     storage_semantics = capture.get("blasStorageRejectedSemantics", LEGACY_STORAGE_SEMANTICS)
     if storage_semantics not in (LEGACY_STORAGE_SEMANTICS, CURRENT_STORAGE_SEMANTICS):
         raise ValueError("Unknown blasStorageRejectedSemantics: " + str(storage_semantics))
@@ -55,6 +56,8 @@ def validate_conditions(manifest, capture, quality=False):
         raise ValueError("Priority A/B requires explicit GPU allocator and representations=1 in both variants")
     if manifest.get("blasPriority") not in ("0", "1"):
         raise ValueError("Set METALLIC_BLAS_PRIORITY explicitly to 0 or 1, including the default-on variant")
+    if comparison == "cache" and (manifest["blasPriority"] != "1" or manifest.get("blasPriorityCache") not in ("0", "1")):
+        raise ValueError("Cache comparison requires priority=1 and explicit METALLIC_BLAS_PRIORITY_CACHE=0/1")
     if not manifest.get("blasStorageBytes") or int(manifest["blasStorageBytes"]) <= 0:
         raise ValueError("Priority A/B requires an explicit shared storage budget")
     if manifest.get("blasRelocateBytes") is None or int(manifest["blasRelocateBytes"]) < 0:
@@ -67,17 +70,21 @@ def validate_conditions(manifest, capture, quality=False):
         raise ValueError("Validation, workload and quality captures are separate from performance acceptance")
     if capture.get("trajectoryClock") != "deterministic frame index" or capture.get("streamingFreeze", {}).get("enabled"):
         raise ValueError("Priority pressure replay requires a live deterministic route")
-    return {
+    conditions = {
         "manifest": {key: manifest.get(key) for key in (
             "executableSha256", "shaderSha256", "asset", "gpu", "config", "validation", "vsync", "hidden",
             "blasAllocator", "blasRepresentations", "blasInstanceReuse", "clasAllocator", "blasStorageBytes",
-            "blasRelocateBytes", "reflexMode", "streamMaintenanceBeforePacing")},
+            "blasRelocateBytes", "blasPriorityCache", "reflexMode", "streamMaintenanceBeforePacing")},
         "capture": {**{key: capture.get(key) for key in (
             "outputExtent", "renderExtent", "config", "absoluteKeyframes", "graph", "hidden", "vsync",
             "shaderDebugMode", "graphicsCaptureInjected", "frameTimeDefinition", "gpuTimeDefinition",
             "captureQuality", "captureReflections", "reflectionDiagnostic")},
             "blasStorageRejectedSemantics": storage_semantics},
     }
+    if comparison == "cache":
+        del conditions["manifest"]["blasPriorityCache"]
+        conditions["manifest"]["blasPriority"] = manifest["blasPriority"]
+    return conditions
 
 
 def finite(value, name):
@@ -140,10 +147,10 @@ def competition_evidence(directory):
         "inputs": [file_identity(path) for path in (csv_path, error_path) if path.exists()]}
 
 
-def analyze_run(directory, discard_first):
+def analyze_run(directory, discard_first, comparison="priority"):
     paths = [directory.parent / "Manifest.json", directory / "Capture.json", directory / "Frames.jsonl"]
     manifest, capture = map(read_json, paths[:2])
-    conditions = validate_conditions(manifest, capture)
+    conditions = validate_conditions(manifest, capture, comparison=comparison)
     all_rows = [json.loads(line) for line in paths[2].read_text(encoding="utf-8-sig").splitlines() if line]
     if len(all_rows) != capture["frames"] or len(all_rows) != capture["config"].get("routeFrames"):
         raise ValueError("Capture does not contain the full deterministic route")
@@ -166,6 +173,7 @@ def analyze_run(directory, discard_first):
     reflex_ids = {entry["id"] for entry in capture["scopes"] if entry["path"] == "Frame/Idle / Reflex Frame Pacing"}
     timings, stream_rows, route = [], [], {}
     expected_priority = manifest["blasPriority"] == "1"
+    expected_cache = manifest.get("blasPriorityCache") == "1"
     for row in rows:
         if row.get("diagnostic"):
             raise ValueError("Diagnostic frame in performance route")
@@ -200,6 +208,8 @@ def analyze_run(directory, discard_first):
         if stream.get("blasGPUAllocatorEnabled") is not True or stream.get("blasRepresentationsEnabled") is not True or \
                 stream.get("blasPriorityEnabled") is not expected_priority:
             raise ValueError("Requested priority/allocator/representations differ from effective runtime settings")
+        if comparison == "cache" and stream.get("blasPriorityCacheEnabled") is not expected_cache:
+            raise ValueError("Requested priority cache differs from effective runtime settings")
         if stream["frame"] in route:
             raise ValueError("Repeated runtime frame identity")
         route[stream["frame"]] = row
@@ -245,6 +255,7 @@ def analyze_run(directory, discard_first):
     timing_keys = ("frameMs", "rtPreparationGpuMs", "rtPreparationCpuMs", "blasBuildGpuMs", "graphGpuEnvelopeMs", "reflexPacingCpuMs")
     settled = [sample for sample in samples if sample["stage"] == "final-static"]
     result = {"run": directory.parent.name + "/" + directory.name, "priority": expected_priority,
+        "comparison": comparison, "comparisonEnabled": expected_cache if comparison == "cache" else expected_priority,
         "started": manifest.get("started"), "recordedFrames": len(all_rows), "measuredFrames": len(rows),
         "discardedFirstFrames": discard_first, "feedbackSamples": len(samples), "missingRouteFeedback": len(rows) - len(samples),
         "duplicateFeedback": duplicates, "outsideRouteFeedback": outside,
@@ -258,6 +269,7 @@ def analyze_run(directory, discard_first):
             "statistics": distribution([sample[key] for sample in samples if key in sample]) if expected_priority or key not in PRIORITY_ONLY_DIAGNOSTICS else None,
             "scope": "Only the priority-on allocator branch is instrumented. Baseline raw zeros are retained but are not evidence of zero failures and are excluded from statistics." if key in PRIORITY_ONLY_DIAGNOSTICS else
                      "Priority-policy waiting state; priority-off zeros describe an inactive policy, not equivalent baseline failure instrumentation." if key in PRIORITY_POLICY_DIAGNOSTICS else
+                     "Exact ordering/admission cache reuse, reported for the completed BLAS producer; cache-off is zero." if key in ("blasPrioritySortReused", "blasPriorityAdmissionReused") else
                      "Compaction target is instrumented on all GPU allocator paths.",
         } for key in ALLOCATION_DIAGNOSTICS},
         "screenErrorBounds": {key: {
@@ -274,7 +286,9 @@ def analyze_run(directory, discard_first):
         "deviceSampledPeakMiB": device_peak(directory / "Gpu.csv"),
         "gpuCompetition": competition_evidence(directory),
         "finalStatic": {"samples": len(settled), "last32Builds": [sample["blasBuildCount"] for sample in settled[-32:]],
-            "last32Evictions": [sample["blasPriorityEvictedOwners"] for sample in settled[-32:]]},
+            "last32Evictions": [sample["blasPriorityEvictedOwners"] for sample in settled[-32:]],
+            "last32SortReused": [sample.get("blasPrioritySortReused") for sample in settled[-32:]],
+            "last32AdmissionReused": [sample.get("blasPriorityAdmissionReused") for sample in settled[-32:]]},
         "inputs": [file_identity(path) for path in paths] + ([file_identity(directory / "Gpu.csv")] if (directory / "Gpu.csv").exists() else [])}
     return conditions, result, samples
 
@@ -285,7 +299,7 @@ def plot(output, results, observations):
     import matplotlib.pyplot as plt
     figure, axes = plt.subplots(3, 2, figsize=(14, 11), constrained_layout=True)
     for run_index, result in enumerate(results):
-        label = f"{result['run']} priority={'on' if result['priority'] else 'off'}"
+        label = f"{result['run']} {result.get('comparison', 'priority')}={'on' if result.get('comparisonEnabled', result['priority']) else 'off'}"
         rows = result["frameTimings"]
         for axis, key, title in ((axes[0, 0], "rtPreparationGpuMs", "Full RT preparation GPU ms"),
                                  (axes[0, 1], "graphGpuEnvelopeMs", "RenderGraph GPU envelope ms")):
@@ -537,6 +551,7 @@ def main():
     parser.add_argument("--discard-first", type=int, default=0)
     parser.add_argument("--exploratory", action="store_true", help="Permit incomplete ABBA blocks; report descriptive data only")
     parser.add_argument("--no-plot", action="store_true")
+    parser.add_argument("--compare-cache", action="store_true", help="Compare admission caching off/on with owner priority enabled on both sides")
     parser.add_argument("--quality", action="store_true", help="Compare a separate off/on diagnostic pair and matched image samples; no performance analysis")
     parser.add_argument("--quality-reference", type=Path, help="Separate higher-budget priority-off quality run or capture root; only storage budget may differ")
     args = parser.parse_args()
@@ -544,6 +559,8 @@ def main():
         parser.error("--discard-first must be nonnegative")
     if args.quality_reference and not args.quality:
         parser.error("--quality-reference requires --quality")
+    if args.compare_cache and args.quality:
+        parser.error("--compare-cache is a performance comparison; use separate matched quality diagnostics")
     directories = sorted(path.parent for path in args.root.glob("*/run*/Capture.json"))
     if not directories:
         parser.error("No captures matching */run*/Capture.json")
@@ -554,16 +571,16 @@ def main():
         return
     results, observations, expected = [], {}, None
     for directory in directories:
-        conditions, result, samples = analyze_run(directory, args.discard_first)
+        conditions, result, samples = analyze_run(directory, args.discard_first, "cache" if args.compare_cache else "priority")
         if expected is not None and conditions != expected:
             raise ValueError(f"Workload, budget, binary, shader or warmup mismatch: {directory}")
         expected = conditions
         results.append(result)
         observations[result["run"]] = samples
     results.sort(key=lambda value: value["started"] or "")
-    if {result["priority"] for result in results} != {False, True}:
-        raise ValueError("Comparison requires explicit priority off and on captures")
-    modes = [result["priority"] for result in results]
+    if {result["comparisonEnabled"] for result in results} != {False, True}:
+        raise ValueError("Comparison requires explicit selected mode off and on captures")
+    modes = [result["comparisonEnabled"] for result in results]
     abba = len(modes) % 4 == 0 and all(modes[index:index + 4] == [False, True, True, False] for index in range(0, len(modes), 4))
     if not abba and not args.exploratory:
         raise ValueError("Capture start order must form off/on/on/off ABBA blocks; use --exploratory for incomplete evidence")
@@ -588,6 +605,8 @@ def main():
         command.append("--exploratory")
     if args.no_plot:
         command.append("--no-plot")
+    if args.compare_cache:
+        command.append("--compare-cache")
     caveats = [PROXY_DEFINITION, STORAGE_SEMANTICS_NOTE,
         "Full RT preparation is the per-execution sum of same-parent/same-queue RT representation and BLAS siblings, including priority sort inside classify and group admission inside cut. It excludes Fallback BLAS, traversal parents and TLAS; stage P99 values are never added.",
         "Frame time includes Reflex pacing and presentation. The GPU envelope excludes editor composite/present and independent texture submissions; neither metric is a pure BLAS kernel duration.",
@@ -609,18 +628,18 @@ def main():
                 values = [result["timings"][metric]["mean"] for result in block]
                 gains[metric] = math.exp((math.log(values[0]) + math.log(values[3]) - math.log(values[1]) - math.log(values[2])) / 2) if min(values) > 0 else None
             blocks.append({"runs": [result["run"] for result in block], "baselineOverCandidateGeometricRatio": gains})
-    report = {"conditions": expected, "runs": results, "completeABBABlocks": len(blocks), "blocks": blocks,
+    report = {"conditions": expected, "comparison": "cache" if args.compare_cache else "priority", "runs": results, "completeABBABlocks": len(blocks), "blocks": blocks,
         "exploratory": args.exploratory, "proxyDefinition": PROXY_DEFINITION, "caveats": caveats,
         "reproducibility": {"python": sys.version, "platform": platform.platform(), "dependencies": versions,
             "scripts": scripts, "commandArguments": command, "windowsCommand": "& " + subprocess.list2cmdline(command)}}
     (output / "Report.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
     (output / "Samples.json").write_text(json.dumps(observations, indent=2, allow_nan=False), encoding="utf-8")
     lines = ["# BLAS owner-priority comparison", "", PROXY_DEFINITION, "",
-        "| Run | Priority | Frame mean/P99 ms | Full RT prep GPU mean/P99 ms | Graph GPU mean/P99 ms | Selected BLAS peak MiB | Device sampled peak MiB |",
+        f"| Run | {'Admission cache (priority on)' if args.compare_cache else 'Priority'} | Frame mean/P99 ms | Full RT prep GPU mean/P99 ms | Graph GPU mean/P99 ms | Selected BLAS peak MiB | Device sampled peak MiB |",
         "|---|---|---:|---:|---:|---:|---:|"]
     for result in results:
         values = [f"{result['timings'][key]['mean']:.3f}/{result['timings'][key]['p99']:.3f}" for key in ("frameMs", "rtPreparationGpuMs", "graphGpuEnvelopeMs")]
-        lines.append(f"| {result['run']} | {'on' if result['priority'] else 'off'} | " + " | ".join(values) +
+        lines.append(f"| {result['run']} | {'on' if result['comparisonEnabled'] else 'off'} | " + " | ".join(values) +
                      f" | {result['metrics']['blasBufferBytes']['max']/MIB:.3f} | {result['deviceSampledPeakMiB']} |")
     lines += ["", "| Run | Rejected visible consumers mean/P99 | Finite visible error bound px mean/P99 | Admitted offscreen consumers mean | Evicted owners total | Reflex CPU wait mean/P99 ms |",
               "|---|---:|---:|---:|---:|---:|"]

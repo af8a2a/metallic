@@ -2580,6 +2580,11 @@ struct RenderGraphExecutor::Impl {
             auto scope = context.profileScope("Streamer prepare");
             MeshletStreamFrameDesc view;
             view.freezeRasterSnapshot = context.properties().value("benchmarkFreezeStreaming", false);
+            view.freezeSourceResidency = context.properties().value("benchmarkFreezeResidency", false);
+            view.diagnosticBlasResetEpoch = context.properties().value("benchmarkBlasResetEpoch", 0u);
+            view.diagnosticBlasStorageBytes = context.properties().value("benchmarkBlasStorageBytes", 0u);
+            view.diagnosticBlasPriority = context.properties().value("benchmarkBlasPriority", false);
+            view.diagnosticBlasPriorityCache = context.properties().value("benchmarkBlasPriorityCache", false);
             result = upload->recordSceneBegin(*node.preparedScene, node.sceneRequirements, context, view, streamingLog);
         }
         const bool sceneReady = !node.preparedScene || node.preparedScene->ready;
