@@ -468,6 +468,7 @@ public:
         if (streamingProfile_) { streamingProfile_(std::move(sample)); }
     }
     bool debugEnabled() const { return debugObserver_ != nullptr; }
+    bool detailedDebugSnapshots() const;
     void debugCheckpoint(std::string_view name, std::span<const DebugResourceBinding> resources = {},
         const RenderGraphProperties& values = RenderGraphProperties::object());
 

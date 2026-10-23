@@ -703,6 +703,11 @@ void RenderGraphExecutionContext::ProfileScope::next(std::string_view name)
     begin_ = std::chrono::steady_clock::now();
 }
 
+bool RenderGraphExecutionContext::detailedDebugSnapshots() const
+{
+    return debugObserver_ && debugObserver_->detailedSnapshots();
+}
+
 void RenderGraphExecutionContext::debugCheckpoint(std::string_view name,
     std::span<const DebugResourceBinding> privateResources, const RenderGraphProperties& values)
 {

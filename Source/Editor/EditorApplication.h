@@ -69,6 +69,7 @@ private:
     bool runMaterialInspectorSmokeTest();
     bool runMaterialGraphSmokeTest();
     bool runResourceInspectorSmokeTest(const char* outputDirectory = nullptr);
+    bool runResourceInspectorBenchmark(const std::filesystem::path& output, const char* sample);
     void drawMaterialGraphEditor();
     bool applyMaterialGraph(int32_t materialIndex, const material::CompiledMaterialFrontend& compiled);
     EditorMaterialGraph materialGraphEditor_;

@@ -47,6 +47,13 @@ self-submitted execution use this boundary; the latter joins every graph queue
 first. Existing state-restoring readback and submission tracking apply.
 Normal execution does not enumerate or copy debug resources.
 
+The local Resources panel collects resource descriptors and capture provenance
+without constructing CPU instance/geometry lists or streaming page/telemetry
+tables at every checkpoint. Allocation changes and disappearing resources still
+update every execution, including while the displayed capture is frozen.
+An explicit `--debug-control` session retains full snapshots for its queries and
+watches. Snapshot `debugControl.detail` identifies `resources` or `full` mode.
+
 `rg.describe` lists these owners separately under `subsystems`, without adding
 synthetic graph passes. `capture.batch` routes via
 `pass: "subsystem.<subsystem-id>"`, `checkpoint: "AfterGraph"`; each resource uses
@@ -258,6 +265,39 @@ In a tests-enabled build, build `Metallic` first and run
 `ctest --test-dir <build-dir> -R '^MetallicResourceInspectorSmoke$' --output-on-failure`.
 The smoke uses an isolated generated graph, does not save scene/graph changes, and
 does not overwrite the user's ImGui layout. Artifacts belong in local output folders.
+
+### GPUDrivenSample inspector performance
+
+The native benchmark runs the real sample with a fixed camera, including DLSS-SR,
+then measures closed, frozen and Live Resources states in forward/reverse order:
+
+```powershell
+$env:METALLIC_SMOKE_TEST_HIDDEN = '1'
+# Enable Streamline at device creation; the inspector smoke initially loads triangle.
+$env:METALLIC_SMOKE_TEST_REFLEX = '1'
+$env:METALLIC_INSPECTOR_BENCHMARK_SAMPLE = 'gpu-driven-sample'
+.\build-release\Source\Metallic.exe --skip-shader-warmup `
+    --resource-inspector-smoke .cache\InspectorPerformance
+Remove-Item Env:METALLIC_SMOKE_TEST_HIDDEN, Env:METALLIC_SMOKE_TEST_REFLEX, Env:METALLIC_INSPECTOR_BENCHMARK_SAMPLE
+```
+
+Omit `--debug-control` here to measure the local panel. The benchmark waits for
+streaming readiness and warmup; attachment/recompile and settling are excluded
+from measured frame blocks. Each block contains at least 120 frames; Live also
+runs for at least five seconds to exercise the normal 2 Hz refresh cadence.
+`benchmark.json` records mean/median/p95/max frame latency, capture counts and
+capture-frame latency, snapshot size, resolution and camera. The measured scope
+is `renderFrame` plus editor GPU completion, not uncapped FPS or isolated GPU time.
+Use identical build/workload settings, warmed shader caches and validation state
+for comparisons, and avoid concurrent builds or GPU workloads. Source edits during
+shader compilation invalidate the compiler's source epoch and must be avoided.
+The exported `.bin` files contain original RG16F motion vectors and matching `.ppm`
+files contain the actual GPU preview, including automatic-range mapping.
+
+Preview conversion resolves its texture layout once per rebuild. Half conversion
+preserves subnormals (common in stationary-camera motion vectors), signed zero and
+non-finite values. Native smoke compares all 65,536 half encodings against an
+independent arithmetic decoder and checks their uploaded RG16F preview colors.
 
 For a running editor started with `--debug-control`, `metallicctl --pid <pid> hello
 --json` exposes `result.engine.resourceInspector`, including the selected resource,

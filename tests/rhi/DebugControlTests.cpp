@@ -68,7 +68,8 @@ public:
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
-        context.debugCheckpoint("Late", std::span(&binding, 1), {{"sourcePhase", "Late"}});
+        context.debugCheckpoint("Late", std::span(&binding, 1), {{"sourcePhase", "Late"},
+            {"detailedSnapshots", context.detailedDebugSnapshots()}});
         return context.properties().value("fail", false) ? makeError(Error::Failure) : Result<>{};
     }
 private:
@@ -124,10 +125,20 @@ public:
     DebugControlCaptureTest() { name = "DebugControl checkpoint capture and lifetime"; type = RHITestType::Command; }
     RHITestResult run(RHITestContext& context) override
     {
+        for (const auto detail : {RenderDebugDetail::Full, RenderDebugDetail::Resources}) {
+            const auto result = runMode(context, detail);
+            if (!result.passed) { return result; }
+        }
+        return RHITestResult::pass("Full/resource-only checkpoint copies, provenance, resize and cancellation verified");
+    }
+
+private:
+    RHITestResult runMode(RHITestContext& context, RenderDebugDetail detail)
+    {
         registerRenderGraphPassType("DebugCheckpointPass", "Debug capture fixture", [] { return std::make_unique<DebugCheckpointPass>(); });
         RenderGraph graph;
         graph.addNode("DebugCheckpointPass", "Probe"); graph.markOutput("Probe.values");
-        RenderDebugRuntime runtime;
+        RenderDebugRuntime runtime({}, detail);
         RenderGraphExecutor executor;
         FrameCommands frame;
         std::string log;
@@ -157,6 +168,15 @@ public:
         const auto inspectorCapture = runtime.core().completedCapture(late);
         if (!inspectorCapture || inspectorCapture->artifacts[0].bytes.size() != 16 || !runtime.core().latestSnapshot()) {
             return RHITestResult::fail("Inspector did not receive completed buffer bytes");
+        }
+        const auto snapshot = runtime.core().latestSnapshot();
+        const bool full = detail == RenderDebugDetail::Full;
+        if (snapshot->values.contains("gpuScene") != full || snapshot->values.contains("tasks") != full ||
+            snapshot->values.contains("validation") != full ||
+            snapshot->values.at("debugControl").at("detail") != (full ? "full" : "resources") ||
+            inspectorCapture->snapshot.values.at("detailedSnapshots") != full ||
+            !snapshot->values.at("resources").contains("Probe.values") || !snapshot->values.contains("rg")) {
+            return RHITestResult::fail("Debug detail policy lost resource evidence or retained unrelated diagnostics");
         }
         for (const auto& [id, expected] : {std::pair{early, 11u}, std::pair{late, 22u}}) {
             const auto result = call(runtime, "eval", {{"job", id}, {"expression", "buffers[\"Ids\"][0]"}});

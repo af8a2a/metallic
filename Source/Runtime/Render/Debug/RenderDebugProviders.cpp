@@ -177,8 +177,11 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
                 binding.metadata["validity"] = "Sparse storage; capacity is not a live record count";
             }
         }
-        values["streaming"] = {{"instances", DebugValue::array({streaming->debugSnapshot(
-            context.properties().value("debugStreamingPages", true))})}};
+        // Local resource inspection needs producer identity, not the CPU page
+        // table and telemetry rebuilt at each culling/raster checkpoint.
+        values["streaming"] = {{"instances", DebugValue::array({context.detailedDebugSnapshots()
+            ? streaming->debugSnapshot(context.properties().value("debugStreamingPages", true))
+            : streaming->debugCaptureProvenance()})}};
         values["streaming"]["instances"][0]["pass"] = context.passName();
     }
     for (auto& binding : bindings) {

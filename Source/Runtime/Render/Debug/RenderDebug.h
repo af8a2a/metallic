@@ -34,6 +34,7 @@ struct DebugResourceBinding {
 class IRenderDebugObserver {
 public:
     virtual ~IRenderDebugObserver() = default;
+    virtual bool detailedSnapshots() const { return true; }
     virtual void compiled(debug::DebugValue graph) = 0;
     virtual void beginExecution(Device& device, debug::DebugEvidenceStamp evidence,
         RenderSubsystemHost* subsystems) = 0;
@@ -43,9 +44,11 @@ public:
     virtual void endExecution(bool success) = 0;
 };
 
+enum class RenderDebugDetail { Full, Resources };
+
 class RenderDebugRuntime final : public IRenderDebugObserver {
 public:
-    explicit RenderDebugRuntime(debug::DebugLimits limits = {});
+    explicit RenderDebugRuntime(debug::DebugLimits limits = {}, RenderDebugDetail detail = RenderDebugDetail::Full);
     ~RenderDebugRuntime();
     debug::DebugCore& core() { return core_; }
     debug::DebugResult<void> start();
@@ -54,6 +57,7 @@ public:
     // Owner-thread polling. GPU memory is not mapped before completion.
     void poll();
     void drain();
+    bool detailedSnapshots() const override { return detail_ == RenderDebugDetail::Full; }
     void compiled(debug::DebugValue graph) override;
     void beginExecution(Device& device, debug::DebugEvidenceStamp evidence,
         RenderSubsystemHost* subsystems) override;
@@ -71,6 +75,7 @@ private:
         std::span<const DebugResourceBinding> resources, const debug::DebugSnapshot& snapshot);
     debug::DebugCore core_;
     debug::DebugServer server_;
+    const RenderDebugDetail detail_;
     std::unordered_map<std::string, debug::DebugTypeDesc> layouts_;
     debug::DebugValue graph_;
     Device* device_ = nullptr;

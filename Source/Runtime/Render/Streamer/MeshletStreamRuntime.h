@@ -750,6 +750,7 @@ public:
     void setDebugReadbackEnabled(bool enabled) { debugReadbackEnabled_ = enabled; }
     void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const;
     void appendReplayBindings(std::vector<profiling::WorkControlReplayBinding>& bindings) const;
+    nlohmann::json debugCaptureProvenance() const;
     nlohmann::json debugSnapshot(bool includePages = true) const;
     SceneStreamingProfile profilingStats() const;
     MeshletStreamCLASPool* clasPool() const { return clasPool_.get(); }

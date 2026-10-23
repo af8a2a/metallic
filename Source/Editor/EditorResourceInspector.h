@@ -21,16 +21,17 @@ public:
 
 private:
     friend class EditorApplication;
+    struct PixelDecoder;
     void cancel(debug::DebugCore& core);
     void request(render::RenderDebugRuntime& runtime, const debug::DebugSnapshot& snapshot,
         const debug::DebugValue& resource);
     void drawTexture(render::Device& device, render::vulkan::VulkanImGuiBackend& backend);
     void drawCube();
     void drawBuffer();
-    void updateAutoRange();
+    void updateAutoRange(const PixelDecoder& decode);
     bool rebuildImage(render::Device& device, render::vulkan::VulkanImGuiBackend& backend);
 
-    render::RenderDebugRuntime runtime_;
+    render::RenderDebugRuntime runtime_{{}, render::RenderDebugDetail::Resources};
     std::string selected_, job_, status_, graph_;
     std::string bufferLayout_;
     uint64_t generation_ = 0;

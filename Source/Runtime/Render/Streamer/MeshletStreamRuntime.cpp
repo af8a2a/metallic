@@ -5468,6 +5468,12 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     return result;
 }
 
+nlohmann::json MeshletStreamRuntime::debugCaptureProvenance() const
+{
+    return {{"generation", debugGeneration_}, {"frame", frameIndex_},
+        {"requestSourceFrame", debugRequestSourceKnown_ ? debug::DebugValue(debugRequestSourceFrame_) : debug::DebugValue(nullptr)}};
+}
+
 nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
 {
     const auto recentDemandLatency = residency_.recentDemandLatency();

@@ -171,8 +171,8 @@ struct RenderDebugRuntime::TaskSink final : task::ITaskEventSink {
     }
 };
 
-RenderDebugRuntime::RenderDebugRuntime(debug::DebugLimits limits)
-    : core_(limits), server_(core_), layouts_(renderDebugLayouts())
+RenderDebugRuntime::RenderDebugRuntime(debug::DebugLimits limits, RenderDebugDetail detail)
+    : core_(limits), server_(core_), detail_(detail), layouts_(renderDebugLayouts())
 {
     DebugValue layouts = DebugValue::object();
     for (const auto& [name, type] : layouts_) { layouts[name] = type.schema(); }
@@ -254,7 +254,9 @@ void RenderDebugRuntime::beginExecution(Device& device, debug::DebugEvidenceStam
         {"rg", graph_}, {"resources", DebugValue::object()}, {"streaming", {{"instances", DebugValue::array()}}}};
     values["engine"] = {{"frame", values["frame"]}, {"device", {{"independentCopyQueue", device.capabilities().independentCopyQueue},
         {"meshShader", device.capabilities().meshShader}, {"rayQuery", device.capabilities().rayQuery}}}};
-    GPUSceneProvider(subsystems ? subsystems->get<GPUSceneSubsystem>() : nullptr).publish(values["gpuScene"]);
+    if (detailedSnapshots()) {
+        GPUSceneProvider(subsystems ? subsystems->get<GPUSceneSubsystem>() : nullptr).publish(values["gpuScene"]);
+    }
     current_->requests = core_.takeRequests(current_->snapshot.evidence.graph, current_->snapshot.evidence.generation);
     executions_.push_back(current_);
 }
@@ -540,9 +542,12 @@ void RenderDebugRuntime::endExecution(bool success)
     current_->ended = true; current_->success = success;
     current_->snapshot.evidence.provenance["executionComplete"] = success;
     for (const auto& request : current_->requests) { core_.fail(request.id, {"NotCaptured", "Execution did not reach requested checkpoint"}); }
-    current_->snapshot.values["tasks"] = core_.events("tasks");
-    current_->snapshot.values["validation"] = core_.events("validation");
-    current_->snapshot.values["debugControl"] = {{"recordedBytes", current_->capturedBytes},
+    if (detailedSnapshots()) {
+        current_->snapshot.values["tasks"] = core_.events("tasks");
+        current_->snapshot.values["validation"] = core_.events("validation");
+    }
+    current_->snapshot.values["debugControl"] = {{"detail", detailedSnapshots() ? "full" : "resources"},
+        {"recordedBytes", current_->capturedBytes},
         {"captureRecordingNs", current_->recordingNs}, {"gpuCaptureTimeNs", nullptr}, {"gpuProbesEnabled", true},
         {"probeScanBytes", current_->probeScanBytes}, {"probeReadbackBytes", current_->probeReadbackBytes},
         {"probeRecordingNs", current_->probeRecordingNs}, {"gpuProbeTimeNs", nullptr}};

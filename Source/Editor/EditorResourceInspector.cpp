@@ -2,10 +2,13 @@
 
 #include <imgui.h>
 #include <algorithm>
+#include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <set>
+#include <utility>
 
 namespace metallic {
 namespace {
@@ -27,30 +30,17 @@ T read(const uint8_t* data)
 float halfFloat(const uint8_t* data)
 {
     const auto h = read<uint16_t>(data);
-    const int exponent = (h >> 10) & 31, mantissa = h & 1023;
-    const float magnitude = exponent == 31
-        ? (mantissa ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity())
-        : std::ldexp(exponent ? 1.0f + mantissa / 1024.0f : mantissa / 1024.0f, exponent ? exponent - 15 : -14);
-    return h & 0x8000 ? -magnitude : magnitude;
-}
-
-std::array<double, 4> pixel(const debug::DebugArtifact& artifact, size_t index)
-{
-    const auto* p = artifact.bytes.data() + index * artifact.layout.stride;
-    const auto& name = artifact.layout.name;
-    if (name == "RGBA8") { return {p[0] / 255.f, p[1] / 255.f, p[2] / 255.f, p[3] / 255.f}; }
-    if (name == "BGRA8") { return {p[2] / 255.f, p[1] / 255.f, p[0] / 255.f, p[3] / 255.f}; }
-    if (name == "RGBA16F") { return {halfFloat(p), halfFloat(p + 2), halfFloat(p + 4), halfFloat(p + 6)}; }
-    if (name == "RGBA32F") { return {read<float>(p), read<float>(p + 4), read<float>(p + 8), read<float>(p + 12)}; }
-    std::array<double, 4> result{0, 0, 0, 1};
-    for (size_t c = 0; c < std::min(size_t(4), artifact.layout.fields.size()); ++c) {
-        const auto& field = artifact.layout.fields[c];
-        const auto* data = p + field.offset;
-        result[c] = field.type == "f16" ? double(halfFloat(data)) : field.type == "u32" ? double(read<uint32_t>(data)) :
-            field.type == "i32" ? double(read<int32_t>(data)) : double(read<float>(data));
+    const uint32_t exponent = (h >> 10) & 31, mantissa = h & 1023;
+    if (!exponent) {
+        // Half subnormals are normal float32 values. Preserve tiny motion
+        // vectors and signed zero without a library ldexp call per component.
+        const float magnitude = float(mantissa) * 0x1p-24f;
+        return h & 0x8000 ? -magnitude : magnitude;
     }
-    if (artifact.layout.fields.size() == 1) { result[1] = result[2] = result[0]; }
-    return result;
+    const uint32_t bits = (uint32_t(h & 0x8000) << 16) |
+        ((exponent == 31 ? 255u : exponent + 112) << 23) | (mantissa << 13) |
+        (exponent == 31 && mantissa ? 0x00400000u : 0u);
+    return std::bit_cast<float>(bits);
 }
 
 std::string displayValue(const DebugValue& value)
@@ -71,6 +61,51 @@ std::string displayValue(const DebugValue& value)
     return value.dump();
 }
 } // namespace
+
+struct EditorResourceInspector::PixelDecoder {
+    enum class Scalar { UNorm8, Float16, Float32, UInt32, Int32 };
+    const uint8_t* bytes;
+    size_t stride, channels;
+    std::array<uint32_t, 4> offsets{};
+    Scalar scalar;
+
+    explicit PixelDecoder(const debug::DebugArtifact& artifact)
+        : bytes(artifact.bytes.data()), stride(artifact.layout.stride), channels(artifact.layout.fields.size())
+    {
+        // RenderDebugRuntime supplies validated, homogeneous texture layouts.
+        assert(channels >= 1 && channels <= 4);
+        const auto& type = artifact.layout.fields[0].type;
+        if (type == "u8") { scalar = Scalar::UNorm8; }
+        else if (type == "f16") { scalar = Scalar::Float16; }
+        else if (type == "u32") { scalar = Scalar::UInt32; }
+        else if (type == "i32") { scalar = Scalar::Int32; }
+        else { assert(type == "f32"); scalar = Scalar::Float32; }
+        for (size_t c = 0; c < channels; ++c) { offsets[c] = artifact.layout.fields[c].offset; }
+        if (artifact.layout.name == "BGRA8") { std::swap(offsets[0], offsets[2]); }
+    }
+
+    template<typename Read>
+    std::array<double, 4> components(const uint8_t* source, Read readScalar) const
+    {
+        std::array<double, 4> result{0, 0, 0, 1};
+        for (size_t c = 0; c < channels; ++c) { result[c] = readScalar(source + offsets[c]); }
+        if (channels == 1) { result[1] = result[2] = result[0]; }
+        return result;
+    }
+
+    std::array<double, 4> operator()(size_t index) const
+    {
+        const auto* source = bytes + index * stride;
+        switch (scalar) {
+        case Scalar::UNorm8: return components(source, [](const uint8_t* p) { return *p / 255.f; });
+        case Scalar::Float16: return components(source, halfFloat);
+        case Scalar::UInt32: return components(source, read<uint32_t>);
+        case Scalar::Int32: return components(source, read<int32_t>);
+        case Scalar::Float32: return components(source, read<float>);
+        }
+        std::unreachable();
+    }
+};
 
 void EditorResourceInspector::select(std::string resource)
 {
@@ -343,7 +378,7 @@ void EditorResourceInspector::draw(render::RenderDebugRuntime& runtime, render::
     ImGui::EndChild();
 }
 
-void EditorResourceInspector::updateAutoRange()
+void EditorResourceInspector::updateAutoRange(const PixelDecoder& decode)
 {
     const auto& artifact = capture_->artifacts[0];
     double low = std::numeric_limits<double>::infinity(), high = -low;
@@ -355,7 +390,7 @@ void EditorResourceInspector::updateAutoRange()
     // range across the volume; slice mode sees only its captured slice/ROI.
     const size_t channels = channel_ ? 1 : std::min(size_t(3), artifact.layout.fields.size());
     for (size_t i = 0; i < artifact.bytes.size() / artifact.layout.stride; ++i) {
-        const auto p = pixel(artifact, i);
+        const auto p = decode(i);
         for (size_t c = 0; c < channels; ++c) {
             const double value = p[channel_ ? size_t(channel_ - 1) : c];
             if (!std::isfinite(value)) { continue; }
@@ -394,7 +429,8 @@ bool EditorResourceInspector::rebuildImage(render::Device& device, render::vulka
 {
     using namespace render;
     const auto& artifact = capture_->artifacts[0];
-    if (autoRange_) { updateAutoRange(); }
+    const PixelDecoder decode(artifact);
+    if (autoRange_) { updateAutoRange(decode); }
     const uint32_t w = artifact.metadata.at("roi").at("width"), h = artifact.metadata.at("roi").at("height");
     const uint32_t d = artifact.metadata.value("sliceCount", 1u);
     const bool cube = cube_ && artifact.metadata.value("textureType", 0u) == static_cast<uint32_t>(TextureType::Texture3D);
@@ -412,7 +448,7 @@ bool EditorResourceInspector::rebuildImage(render::Device& device, render::vulka
     std::memset(bytes, 0, size_t(width) * height * 4);
     const double gain = std::exp2(double(exposure_)), span = std::max(rangeMax_ - rangeMin_, 1e-300);
     const auto writePixel = [&](size_t destination, size_t source) {
-        const auto p = pixel(artifact, source);
+        const auto p = decode(source);
         bool finite = true;
         for (size_t c = 0; c < 3; ++c) {
             const double value = (p[channel_ ? size_t(channel_ - 1) : c] * gain - rangeMin_) / span;

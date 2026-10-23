@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -12,6 +13,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <chrono>
+#include <numeric>
 
 namespace metallic {
 namespace {
@@ -252,12 +255,104 @@ bool writePPM(const std::filesystem::path& path, std::span<const uint8_t> bytes,
 }
 } // namespace
 
+bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::path& output, const char* sample)
+{
+    using Clock = std::chrono::steady_clock;
+    // This measures synchronized editor frame latency, not uncapped throughput.
+    // Keep validation/cache settings identical between before/after runs.
+    if (debugRuntime_) { spdlog::error("Inspector benchmark requires the local observer; omit --debug-control"); return false; }
+    debug::DebugValue report{{"sample", sample}, {"passed", false}, {"runs", debug::DebugValue::array()},
+        {"scope", "CPU renderFrame plus submitted editor GPU completion; fixed camera, warmed shaders/streaming, no desktop automation"}};
+    const auto save = [&] { std::ofstream file(output / "benchmark.json"); file << report.dump(2); };
+    const auto frame = [&] { return renderFrame() && !viewportCompileFailed_ && frameSubmissions_.wait(); };
+    scene_.setDirty(false);
+    renderGraphEditorOpen_ = false; resourceInspectorVisible_ = false;
+    loadBuiltInSample(sample);
+    if (!waitForPendingSceneLoad(60000)) { return false; }
+    const auto start = Clock::now();
+    auto ready = Clock::time_point{};
+    while (ready == Clock::time_point{} || Clock::now() - ready < std::chrono::seconds(5)) {
+        if (!frame()) { return false; }
+        const auto* streamer = subsystemHost_.get<render::StreamerSubsystem>();
+        if (streamer && streamer->sceneReadiness().ready && streamer->sceneReadiness().requiredPages && ready == Clock::time_point{}) {
+            ready = Clock::now();
+        }
+        if (Clock::now() - start > std::chrono::seconds(180)) { spdlog::error("Inspector benchmark readiness timeout"); return false; }
+    }
+    report["warmupSeconds"] = std::chrono::duration<double>(Clock::now() - start).count();
+    auto& inspector = resourceInspector_;
+    const auto summarize = [](std::vector<double> values) {
+        std::sort(values.begin(), values.end());
+        return debug::DebugValue{{"mean", std::accumulate(values.begin(), values.end(), 0.0) / values.size()},
+            {"p50", values[values.size() / 2]}, {"p95", values[(values.size() - 1) * 95 / 100]}, {"max", values.back()}};
+    };
+    // Reverse the phase order on the second round to expose warmup/order bias.
+    for (const char* mode : {"closed", "frozen", "live", "live", "frozen", "closed"}) {
+        const bool open = std::string_view(mode) != "closed";
+        renderGraphEditorOpen_ = open; resourceInspectorVisible_ = open;
+        resourceInspectorSelectTab_ = open;
+        inspector.live_ = std::string_view(mode) == "live";
+        if (open) { inspector.select("Deferred.motionVectors"); inspector.refresh_ = true; }
+        const auto transition = Clock::now();
+        for (int i = 0; i < 40; ++i) { if (!frame()) { return false; } }
+        // Observer attachment can recreate streaming allocations. Settle the
+        // actual debug-enabled session before measuring its steady state.
+        const auto settled = Clock::now();
+        while (Clock::now() - settled < std::chrono::seconds(3) ||
+            !subsystemHost_.get<render::StreamerSubsystem>()->sceneReadiness().ready) {
+            if (!frame()) { return false; }
+            if (Clock::now() - transition > std::chrono::seconds(180)) { return false; }
+        }
+        if (open && (!inspector.capture_ || !inspector.descriptor_)) {
+            spdlog::error("Inspector benchmark capture failed: {}", inspector.status_); return false;
+        }
+        const double transitionSeconds = std::chrono::duration<double>(Clock::now() - transition).count();
+        std::vector<double> frameMs, captureFrameMs;
+        uint64_t captureChanges = 0;
+        const auto measurementStart = Clock::now();
+        for (int i = 0; i < 120 || (inspector.live_ && Clock::now() - measurementStart < std::chrono::seconds(5)); ++i) {
+            const auto capture = inspector.capture_;
+            const auto before = Clock::now();
+            if (!frame()) { return false; }
+            const double elapsed = std::chrono::duration<double, std::milli>(Clock::now() - before).count();
+            frameMs.push_back(elapsed);
+            if (capture != inspector.capture_) { ++captureChanges; captureFrameMs.push_back(elapsed); }
+        }
+        debug::DebugValue result{{"mode", mode}, {"frames", frameMs.size()}, {"frameMs", summarize(frameMs)},
+            {"captureChanges", captureChanges}, {"transitionAndSettleSeconds", transitionSeconds},
+            {"renderResolution", viewportView_.renderResolutionProperties()}, {"camera", viewportView_.cameraProperties()}};
+        if (!captureFrameMs.empty()) { result["captureFrameMs"] = summarize(captureFrameMs); }
+        if (open) {
+            result["inspector"] = debug::encodeLossless(inspector.diagnostics());
+            const auto snapshot = inspector.runtime().core().latestSnapshot();
+            result["snapshotBytes"] = snapshot->values.dump().size();
+            result["debugDetail"] = snapshot->values.at("debugControl").at("detail");
+            const auto& artifact = inspector.capture_->artifacts[0];
+            result["resourceBytes"] = artifact.bytes.size();
+            std::vector<uint8_t> pixels;
+            if (!readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *inspector.image_, pixels)) { return false; }
+            const auto name = std::string(mode) + std::to_string(report["runs"].size());
+            if (!writePPM(output / (name + ".ppm"), pixels, inspector.image_->desc().width, inspector.image_->desc().height,
+                render::Format::RGBA8Unorm, displayOutput_.paperWhiteNits)) { return false; }
+            std::ofstream data(output / (name + ".bin"), std::ios::binary);
+            data.write(reinterpret_cast<const char*>(artifact.bytes.data()), artifact.bytes.size());
+        }
+        report["runs"].push_back(result); save();
+        spdlog::info("[Inspector benchmark] {}: {}", mode, result.at("frameMs").dump());
+    }
+    report["passed"] = true; save();
+    return true;
+}
+
 bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirectory)
 {
     const auto output = outputDirectory ? std::filesystem::path(outputDirectory) : std::filesystem::path(".cache/InspectorSmoke");
     std::error_code error;
     std::filesystem::create_directories(output, error);
     if (error) { spdlog::error("Cannot create inspector evidence directory: {}", error.message()); return false; }
+    if (const char* sample = std::getenv("METALLIC_INSPECTOR_BENCHMARK_SAMPLE"); sample && *sample) {
+        return runResourceInspectorBenchmark(output, sample);
+    }
     struct Report {
         std::filesystem::path path;
         debug::DebugValue value{{"schema", "metallic-resource-inspector-smoke-v1"}, {"passed", false},
@@ -368,6 +463,32 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
         probe.channel_ = 0; probe.autoRange_ = false; probe.rangeMin_ = -5; probe.rangeMax_ = 5;
         if (!expect(previewValues({-2, 0, 2}) && probe.rangeMin_ == -5 && probe.rangeMax_ == 5 && gray(1, 128),
             "Manual bounds survive replacement capture data")) { return false; }
+        // Include every half encoding: motion vectors frequently use subnormals.
+        // Compare actual GPU preview bytes against the original arithmetic decode.
+        auto halfCapture = std::make_shared<debug::DebugCapture>();
+        debug::DebugArtifact halfArtifact;
+        halfArtifact.layout = probe.runtime().layouts().at("RG16F");
+        halfArtifact.metadata = {{"kind", "texture"}, {"roi", {{"width", 256}, {"height", 256}}}};
+        halfArtifact.bytes.resize(65536 * 4);
+        for (uint32_t i = 0; i < 65536; ++i) {
+            const uint16_t pair[] = {uint16_t(i), uint16_t(i)};
+            std::memcpy(halfArtifact.bytes.data() + i * 4, pair, sizeof(pair));
+        }
+        halfCapture->artifacts.push_back(std::move(halfArtifact));
+        probe.capture_ = std::move(halfCapture);
+        probe.rangeMin_ = -0.00006; probe.rangeMax_ = 0.00006;
+        if (!probe.rebuildImage(*device_, imguiBackend_) ||
+            !readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *probe.image_, pixels, nullptr, &probe)) { return false; }
+        bool halfMatches = true;
+        for (uint32_t i = 0; i < 65536; ++i) {
+            const int exponent = (i >> 10) & 31, mantissa = i & 1023;
+            if (exponent == 31) { halfMatches &= magenta(i); continue; }
+            const float magnitude = std::ldexp(exponent ? 1.0f + mantissa / 1024.0f : mantissa / 1024.0f, exponent ? exponent - 15 : -14);
+            const double value = i & 0x8000 ? -magnitude : magnitude;
+            const auto expected = uint8_t(std::clamp((value - probe.rangeMin_) / (probe.rangeMax_ - probe.rangeMin_), 0.0, 1.0) * 255.0 + 0.5);
+            halfMatches &= pixels[i * 4] == expected && pixels[i * 4 + 1] == expected && pixels[i * 4 + 2] == 128;
+        }
+        if (!expect(halfMatches, "All 65536 RG16F encodings preserve subnormals, finite values and non-finite preview colors")) { return false; }
     }
     const auto exportCapture = [&](const char* name) {
         const auto& capture = *inspector.capture_;
