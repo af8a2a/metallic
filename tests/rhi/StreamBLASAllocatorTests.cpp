@@ -143,6 +143,18 @@ using Gaps = std::array<MeshletStreamBLASAllocatorGap, kNodes>;
 using State = std::array<uint32_t, kBLASAllocatorStateWords>;
 using PriorityOrder = std::array<uint32_t, kOwners>;
 using PriorityImportance = std::array<std::array<uint32_t, 6>, kOwners>;
+enum class GatherOrder { Native, Ascending, Descending, Rotated };
+
+void reorderGather(std::array<uint32_t, kOwners>& ids, uint32_t count, GatherOrder order)
+{
+    require(count <= kOwners, "Gather count exceeds the fixture capacity");
+    std::sort(ids.begin(), ids.begin() + count);
+    if (order == GatherOrder::Descending) {
+        std::reverse(ids.begin(), ids.begin() + count);
+    } else if (order == GatherOrder::Rotated) {
+        std::rotate(ids.begin(), ids.begin() + count / 2, ids.begin() + count);
+    }
+}
 
 struct Frame {
     Owners owners;
@@ -232,20 +244,43 @@ struct AllocatorScenario {
             fixture.read<std::array<uint32_t, 2>>(moveCounts)};
     }
 
-    Frame frame(const Owners& input, bool cancel = false, bool inspectPendingMoves = false)
+    Frame frame(const Owners& input, bool cancel = false, bool inspectPendingMoves = false,
+        GatherOrder gatherOrder = GatherOrder::Native)
     {
         fixture.write(owners, input);
         fixture.write(header, MeshletStreamGPUBLASHeader{});
         // Driver-size synthesis belongs only to this state-machine fixture.
         // Real build/allocate/Move ordering is exercised by the native fixture.
-        fixture.begin(); dispatch(5); dispatch(1); dispatch(6);
+        fixture.begin(); dispatch(5);
+        if (gatherOrder != GatherOrder::Native && !cancel) {
+            require(params.priorityOrder == 0, "Gather permutation is a baseline-only regression control");
+            fixture.finish();
+            auto releases = fixture.read<std::array<uint32_t, kOwners>>(buildOwners);
+            // Phase 5's transient release count is allocator state word 101.
+            reorderGather(releases, fixture.read<State>(state)[101], gatherOrder);
+            fixture.write(buildOwners, releases);
+            fixture.begin();
+        }
+        dispatch(1); dispatch(6);
         if (cancel) { dispatch(2); dispatch(8); dispatch(3); }
         fixture.finish(cancel);
         if (cancel) { return snapshot(); }
         const auto prepared = snapshot();
-        const auto ids = fixture.read<std::array<uint32_t, kOwners>>(buildOwners);
+        auto ids = fixture.read<std::array<uint32_t, kOwners>>(buildOwners);
         std::array<uint32_t, kOwners> bytes{};
         auto inserted = prepared.owners;
+        if (gatherOrder != GatherOrder::Native) {
+            const auto originalInfos = fixture.read<std::array<MeshletStreamGPUBLASBuildInfo, kOwners>>(buildInfos);
+            auto reorderedInfos = originalInfos;
+            reorderGather(ids, prepared.header.blasBuildCount, gatherOrder);
+            for (uint32_t build = 0; build < prepared.header.blasBuildCount; ++build) {
+                auto& owner = inserted[ids[build]];
+                reorderedInfos[build] = originalInfos[owner.blasBuildIndex];
+                owner.blasBuildIndex = build;
+            }
+            fixture.write(buildInfos, reorderedInfos);
+            fixture.write(buildOwners, ids);
+        }
         for (uint32_t i = 0; i < prepared.header.blasBuildCount; ++i) {
             bytes[i] = encoded[ids[i]];
             // Model the production reference-insertion stage before Build.
@@ -307,6 +342,19 @@ struct AllocatorScenario {
         dispatch(3); fixture.finish();
         const auto output = snapshot();
         check(output);
+        if (gatherOrder != GatherOrder::Native) {
+            const auto sources = fixture.read<std::array<uint64_t, 2 * kOwners>>(moveSources);
+            const auto destinations = fixture.read<std::array<uint64_t, 2 * kOwners>>(moveDestinations);
+            uint32_t move = 0;
+            for (uint32_t owner = 0; owner < kOwners; ++owner) {
+                if (output.allocations[owner].status != 1) { continue; }
+                require(sources[move] == 0x400000000ull + uint64_t(output.owners[owner].blasBuildIndex) * 65536 &&
+                    destinations[move] == params.arena + output.owners[owner].storageOffset,
+                    "Stable owner admission lost the permuted native Build source/address mapping");
+                ++move;
+            }
+            require(move == output.moves[0], "Deterministic admission published an unexpected Build Move count");
+        }
         frames.push_back({{"builds", output.header.blasBuildCount}, {"repack", output.header.arenaRepack},
             {"encodedBytes", output.state[kBLASAllocatorEncodedBytesWord]},
             {"allocatedBytes", output.state[kBLASAllocatorAllocatedBytesWord]},
@@ -365,6 +413,126 @@ struct AllocatorScenario {
             "Live/free byte accounting leaks or double-counts storage");
     }
 };
+
+// Keep snapshots on the heap and this regression out of the main test's large
+// stack frame. The fixture deliberately changes atomic gather order instead of
+// relying on the GPU scheduler to reproduce an unlucky ordering.
+nlohmann::json runDeterministicBaselineRegression(Device& device, std::string& phase)
+{
+    AllocatorScenario scenario(device, 4096, 0);
+    auto value = std::make_unique<Frame>();
+    std::array<std::unique_ptr<Frame>, 3> reference;
+    const auto reset = [&] {
+        scenario.encoded.fill(0);
+        scenario.fixture.write(scenario.gaps, Gaps{});
+        scenario.fixture.write(scenario.owners, Owners{});
+        scenario.fixture.begin(); scenario.dispatch(0); scenario.fixture.finish();
+    };
+    const auto compare = [&](uint32_t checkpoint) {
+        if (!reference[checkpoint]) {
+            reference[checkpoint] = std::make_unique<Frame>(*value);
+            return;
+        }
+        const auto& expected = *reference[checkpoint];
+        require(std::memcmp(value->allocations.data(), expected.allocations.data(), sizeof(Allocations)) == 0 &&
+            std::memcmp(value->gaps.data(), expected.gaps.data(), sizeof(Gaps)) == 0 &&
+            std::memcmp(value->state.data(), expected.state.data(), sizeof(State)) == 0,
+            "Baseline gather order changed persistent allocation or free topology");
+        require(value->header.blasBuildCount == expected.header.blasBuildCount &&
+            value->header.storageRejected == expected.header.storageRejected &&
+            value->header.reusedInstances == expected.header.reusedInstances,
+            "Baseline gather order changed admission accounting");
+        for (uint32_t owner = 0; owner < kOwners; ++owner) {
+            const auto& actual = value->owners[owner];
+            const auto& prior = expected.owners[owner];
+            require(actual.cachedValid == prior.cachedValid && actual.flags == prior.flags &&
+                actual.storageOffset == prior.storageOffset && actual.storageCapacity == prior.storageCapacity,
+                "Baseline gather order changed an owner's published representation");
+        }
+    };
+    constexpr std::array orders{GatherOrder::Ascending, GatherOrder::Descending, GatherOrder::Rotated};
+    constexpr std::array coldOwners{0u, 7u, 63u, 64u, 65u, 127u, 136u};
+    constexpr std::array coldSizes{1281u, 256u, 257u, 1793u, 511u, 769u, 256u};
+    for (uint32_t repeat = 0; repeat < 2; ++repeat) {
+        for (const auto order : orders) {
+            phase = "baseline deterministic cold admission and static convergence";
+            reset();
+            Owners input{};
+            for (uint32_t index = 0; index < coldOwners.size(); ++index) {
+                const uint32_t owner = coldOwners[index];
+                input[owner].selectedClusterCount = index + 1;
+                input[owner].clusterReferenceOffset = index * 16;
+                input[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                scenario.encoded[owner] = coldSizes[index];
+            }
+            *value = scenario.frame(input, false, false, order);
+            uint32_t remaining = scenario.params.storageBytes;
+            for (const uint32_t owner : coldOwners) {
+                const uint32_t bytes = (scenario.encoded[owner] + kAlignment - 1) & ~(kAlignment - 1);
+                const bool admitted = bytes <= remaining;
+                require(value->owners[owner].cachedValid == (admitted ? 1u : 2u),
+                    "Baseline cold admission does not follow stable owner order with oversized-item backfill");
+                if (admitted) { remaining -= bytes; }
+            }
+            require(remaining == 0 && value->header.blasBuildCount == coldOwners.size() &&
+                value->header.storageRejected == 1, "Cold deterministic fixture did not exercise tight storage");
+            compare(0);
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                *value = scenario.frame(scenario.inputs(), false, false, order);
+                require(value->header.blasBuildCount == 0 && value->header.reusedInstances == 6 &&
+                    value->header.storageRejected == 1 && value->state[kBLASAllocatorSuppressedBuildsWord] == 1,
+                    "Deterministic baseline rebuilt a stable resident or unchanged rejected cut");
+            }
+        }
+    }
+    for (const auto order : orders) {
+        phase = "baseline deterministic dirty/dead release and cancellation";
+        reset();
+        Owners input{};
+        constexpr std::array residentOwners{0u, 7u, 32u, 63u, 64u, 95u, 127u, 136u};
+        for (const uint32_t owner : residentOwners) {
+            input[owner].selectedClusterCount = 1;
+            input[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            scenario.encoded[owner] = 512;
+        }
+        *value = scenario.frame(input, false, false, order);
+        input = scenario.inputs();
+        input[0] = {};
+        for (const uint32_t owner : {32u, 64u, 127u}) {
+            input[owner].flags |= kDirty;
+            scenario.encoded[owner] = owner == 64 ? 768 : 256;
+        }
+        auto cancelled = std::make_unique<Frame>(scenario.frame(input, true, false, order));
+        require(std::memcmp(cancelled->allocations.data(), value->allocations.data(), sizeof(Allocations)) == 0 &&
+            std::memcmp(cancelled->gaps.data(), value->gaps.data(), sizeof(Gaps)) == 0 &&
+            std::memcmp(cancelled->state.data(), value->state.data(), sizeof(State)) == 0,
+            "Cancelled baseline release/build recording changed persistent state");
+        *value = scenario.frame(input, false, false, order);
+        require(value->header.blasBuildCount == 3 && value->header.storageRejected == 1 &&
+            value->header.reusedInstances == 4 && value->owners[64].cachedValid == 2,
+            "Dirty/dead release fixture did not exercise fragmented baseline rejection");
+        compare(1);
+        for (uint32_t frame = 0; frame < 32; ++frame) {
+            *value = scenario.frame(scenario.inputs(), false, false, order);
+            require(value->header.blasBuildCount == 0 && value->header.reusedInstances == 6 &&
+                value->state[kBLASAllocatorSuppressedBuildsWord] == 1,
+                "Fragmented baseline negative cache did not converge without rebuilding");
+        }
+        // Releasing this intervening survivor joins two 512-byte holes. The
+        // same previously rejected owner must retry once under every ordering.
+        input = scenario.inputs(); input[7] = {};
+        *value = scenario.frame(input, false, false, order);
+        require(value->header.blasBuildCount == 1 && value->owners[64].cachedValid == 1 &&
+            value->header.storageRejected == 0, "Deterministic baseline failed to retry after a fitting gap appeared");
+        compare(2);
+        for (uint32_t frame = 0; frame < 32; ++frame) {
+            *value = scenario.frame(scenario.inputs(), false, false, order);
+            require(value->header.blasBuildCount == 0 && value->header.reusedInstances == 6 &&
+                value->header.storageRejected == 0, "Recovered deterministic baseline did not remain stable");
+        }
+    }
+    return std::move(scenario.frames);
+}
 
 // Consume an actual allocator frame's header through the next frame's
 // production representation planner. The cache becomes idle only here; it was
@@ -1359,6 +1527,7 @@ public:
             }
 
             auto admissionCacheFrames = runAdmissionCacheRegression(*device, phase);
+            auto deterministicBaselineFrames = runDeterministicBaselineRegression(*device, phase);
 
             require(validationErrors.load() == 0, "Vulkan validation errors during allocator regression");
             const auto directory = context.outputDirectory / "BLASAllocator";
@@ -1377,6 +1546,7 @@ public:
                 {"projectedWorkBudget", projectedWorkBudget.frames},
                 {"negativeTiles", negativeTileFrames}, {"residentTiles", residentTiles.frames},
                 {"admissionCache", std::move(admissionCacheFrames)},
+                {"deterministicBaseline", std::move(deterministicBaselineFrames)},
                 {"relocationAccounting", "logical bytes; native scratch round-trip copies twice this amount"},
                 {"validationErrors", validationErrors.load()},
                 {"sizeInput", "deterministic driver-size synthesis; native Move fixture covers real build outputs"}}.dump(2);

@@ -318,6 +318,17 @@ public static const uint kOpenPBRPrimaryHitStride = 100;
 public static const uint kScenePrimaryHitsOffset = 392;
 #endif
 
+// Opt-in path diagnostics extend only their own packet; production offsets stay fixed.
+DR_PUBLIC struct ScenePathDiagnosticResourceParameters
+{
+    DR_PUBLIC SceneResourceParameters scene;
+    DR_PUBLIC DR_STORAGE(2D<float4>) pathDiagnostics;
+};
+#ifdef __cplusplus
+static_assert(offsetof(ScenePathDiagnosticResourceParameters, pathDiagnostics) == 392);
+static_assert(sizeof(ScenePathDiagnosticResourceParameters) == 400);
+#endif
+
 DR_PUBLIC struct OutputImageResourceParameters
 {
     DR_PUBLIC DR_STORAGE(2D<float4>) output;

@@ -50,6 +50,7 @@ static const uint kEncodedBytes = 102u, kAllocatedBytes = 103u, kLargestFree = 1
 static const uint kSuppressed = 106u, kRelocated = 107u, kRelocatedBytes = 108u, kFailures = 109u;
 static const uint kCompactionTarget = 110u, kPriorityWaitingCount = 111u;
 static const uint kPendingBuild = 1u, kPendingRelocate = 2u, kRejected = 3u;
+static const uint kBaselineRelease = 4u, kBaselineBuilding = 5u;
 static const uint kPriorityBuilding = 6u;
 static const uint kPriorityWaiting = 7u;
 static const uint kRequestedVisible = 112u, kRequestedOffscreen = 113u;
@@ -734,6 +735,7 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         }
         if (p.priorityOrder != nullptr && dirty && allocation.node == kInvalid) allocation.encodedBytes = 0u;
         if (allocation.node != kInvalid && (!dynamic || dirty)) {
+            if (p.priorityOrder == nullptr) allocation.status = kBaselineRelease;
             uint index;
             InterlockedAdd(p.state[kReleaseCount], 1u, index);
             p.buildOwners[index] = id;
@@ -782,6 +784,9 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
             buildInfo.clusterReferencesAddressHigh = uint(references >> 32u);
             p.buildInfos[build] = buildInfo;
             p.buildOwners[build] = id;
+            // Native Build order may follow thread arrival. Storage admission
+            // follows owner ID instead and reads this owner's resulting index.
+            p.allocations[id].status = kBaselineBuilding;
             InterlockedAdd(p.header[0].dirtyInstances, 1u);
             InterlockedAdd(p.header[0].clusterReferenceCount, info.selectedClusterCount);
             InterlockedOr(p.header[0].padding0, 1u);
@@ -861,13 +866,19 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (gPush.phase == 1u) {
         uint releaseCount = p.state[kReleaseCount];
         // Readers of the previous frame have completed before arena mutation.
-        // Only dirty/dead owners, gathered in parallel, require topology work.
-        for (uint index = 0u; index < releaseCount; ++index) {
-            uint owner = p.buildOwners[index];
+        // Baseline releases must have a stable order too: inserting disjoint
+        // holes in atomic-gather order changes free-bin first-fit selection.
+        // An empty release list skips the owner scan entirely.
+        uint releaseLimit = releaseCount == 0u ? 0u :
+            (p.priorityOrder == nullptr ? p.ownerCount : releaseCount);
+        for (uint index = 0u; index < releaseLimit; ++index) {
+            uint owner = p.priorityOrder == nullptr ? index : p.buildOwners[index];
             Allocation allocation = p.allocations[owner];
+            if (p.priorityOrder == nullptr && allocation.status != kBaselineRelease) continue;
             releaseAllocation(p, allocation.node);
             allocation.node = kInvalid;
             allocation.encodedBytes = 0u;
+            if (p.priorityOrder == nullptr) allocation.status = 0u;
             p.allocations[owner] = allocation;
             p.owners[owner].storageOffset = 0u;
             p.owners[owner].storageCapacity = 0u;
@@ -899,9 +910,14 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (gPush.phase == 2u) {
         if (p.priorityOrder == nullptr) {
             uint moveCount = 0u;
-            for (uint build = 0u; build < p.header[0].blasBuildCount; ++build) {
-                uint owner = p.buildOwners[build];
+            // Preserve parallel native Build packing while making budget
+            // winners independent of workgroup/atomic arrival order. Only
+            // actual Builds scan owners; stable frames retain zero work.
+            uint ownerLimit = p.header[0].blasBuildCount == 0u ? 0u : p.ownerCount;
+            for (uint owner = 0u; owner < ownerLimit; ++owner) {
                 Allocation allocation = p.allocations[owner];
+                if (allocation.status != kBaselineBuilding) continue;
+                uint build = p.owners[owner].blasBuildIndex;
                 uint encodedBytes = p.sizes[build];
                 uint bytes = encodedBytes <= 0xffffffffu - (p.alignment - 1u)
                     ? (encodedBytes + p.alignment - 1u) & ~(p.alignment - 1u) : 0u;

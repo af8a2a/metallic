@@ -18,6 +18,8 @@ public:
     bool capture = false;
     bool captureReflections = false;
     bool captureRasterInputs = false;
+    bool capturePathDiagnostics = false;
+    uint32_t diagnosticRows = 0;
     void compiled(Json) override {}
     void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
     {
@@ -30,8 +32,36 @@ public:
         using namespace render;
         if (!capture || checkpoint != "AfterPass") { return; }
         for (const auto& resource : resources) {
+            if (capturePathDiagnostics && resource.buffer &&
+                (resource.id == "streaming.VBuffer.rtRepresentations" ||
+                 resource.id == "streaming.VBuffer.rtRepresentationState" ||
+                 resource.id == "streaming.VBuffer.tlasInstances")) {
+                if (copies_.contains(resource.id)) { continue; }
+                const uint64_t bytes = resource.size ? resource.size : resource.buffer->desc().size - resource.offset;
+                Copy copy;
+                copy.diagnostic = true;
+                copy.metadata = {{"resource", resource.id}, {"bytes", bytes}, {"layout", resource.layout},
+                    {"allocation", resource.allocation}, {"metadata", resource.metadata}};
+                if (!device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
+                    .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { copy.buffer = std::move(value); })) {
+                    throw std::runtime_error("RT diagnostic readback allocation failed");
+                }
+                BufferBarrierDesc barrier{.buffer = resource.buffer,
+                    .before = resourceSyncScope(resource.state, PipelineStageBits::AllCommands),
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    .range = {.offset = resource.offset, .size = bytes}};
+                if (!commands.synchronize({.buffers = {&barrier, 1}})) { throw std::runtime_error("RT diagnostic barrier failed"); }
+                if (!resource.buffer->slice({resource.offset, bytes}).and_then([&](const auto& source) {
+                    return copy.buffer->slice().and_then([&](const auto& destination) { return commands.copyBuffer(source, destination); });
+                })) { throw std::runtime_error("RT diagnostic copy failed"); }
+                std::swap(barrier.before, barrier.after);
+                if (!commands.synchronize({.buffers = {&barrier, 1}})) { throw std::runtime_error("RT diagnostic restore failed"); }
+                copies_.emplace(resource.id, std::move(copy));
+                continue;
+            }
             if (resource.id != "Shadows.shadow" && resource.id != "Deferred.color" && resource.id != "FinalBlit.color" &&
                 !(captureReflections && resource.id == "ReflectionQuality.color") &&
+                !(capturePathDiagnostics && resource.id == "ReflectionQuality.pathDiagnostics") &&
                 !(captureRasterInputs && (resource.id == "VBuffer.depth" || resource.id == "VBuffer.visibility"))) { continue; }
             if (!resource.texture || copies_.contains(resource.id)) { continue; }
             const auto& desc = resource.texture->desc();
@@ -51,8 +81,11 @@ public:
             default: throw std::runtime_error("Unsupported quality capture texture format: " + resource.id);
             }
             Copy copy;
-            copy.metadata = {{"resource", resource.id}, {"width", desc.width}, {"height", desc.height}, {"format", format}};
-            const uint64_t bytes = uint64_t(desc.width) * desc.height * info.bytesPerBlock;
+            copy.diagnostic = resource.id == "ReflectionQuality.pathDiagnostics";
+            const uint32_t width = copy.diagnostic ? 104u : desc.width;
+            const uint32_t height = copy.diagnostic ? diagnosticRows : desc.height;
+            copy.metadata = {{"resource", resource.id}, {"width", width}, {"height", height}, {"format", format}};
+            const uint64_t bytes = uint64_t(width) * height * info.bytesPerBlock;
             if (!device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { copy.buffer = std::move(value); })) {
                 throw std::runtime_error("Quality readback allocation failed");
@@ -63,7 +96,8 @@ public:
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
             if (!commands.synchronize({.textures = {&barrier, 1}})) { throw std::runtime_error("Quality capture barrier failed"); }
             if (!copy.buffer->slice().and_then([&](const auto& slice) {
-                return commands.copyTextureToBuffer({.texture = resource.texture, .buffer = slice, .width = desc.width, .height = desc.height});
+                return commands.copyTextureToBuffer({.texture = resource.texture, .buffer = slice,
+                    .bufferRowPitch = width * info.bytesPerBlock, .width = width, .height = height});
             })) { throw std::runtime_error("Quality capture copy failed"); }
             std::swap(barrier.before, barrier.after);
             std::swap(barrier.oldLayout, barrier.newLayout);
@@ -82,8 +116,14 @@ public:
         if (captureRasterInputs && (!copies_.contains("VBuffer.depth") || !copies_.contains("VBuffer.visibility"))) {
             throw std::runtime_error("Quality capture is missing raster diagnostic inputs");
         }
+        if (capturePathDiagnostics && (!copies_.contains("ReflectionQuality.pathDiagnostics") ||
+            !copies_.contains("streaming.VBuffer.rtRepresentations") ||
+            !copies_.contains("streaming.VBuffer.rtRepresentationState") || !copies_.contains("streaming.VBuffer.tlasInstances"))) {
+            throw std::runtime_error("Quality capture is missing path or RT owner diagnostics");
+        }
         std::filesystem::create_directories(directory);
         Json report = Json::array();
+        Json diagnostics = Json::array();
         for (auto& [name, copy] : copies_) {
             copy.buffer->invalidate();
             const void* data = copy.buffer->map();
@@ -93,15 +133,20 @@ public:
             copy.buffer->unmap();
             if (!file) { throw std::runtime_error("Quality capture export failed"); }
             copy.metadata["file"] = name + ".bin";
-            report.push_back(copy.metadata);
+            (copy.diagnostic ? diagnostics : report).push_back(copy.metadata);
         }
         std::ofstream manifest(directory / "Images.json");
         manifest << report.dump(2) << '\n';
         if (!manifest) { throw std::runtime_error("Quality manifest export failed"); }
+        if (capturePathDiagnostics) {
+            std::ofstream diagnosticManifest(directory / "Diagnostics.json");
+            diagnosticManifest << diagnostics.dump(2) << '\n';
+            if (!diagnosticManifest) { throw std::runtime_error("Diagnostic manifest export failed"); }
+        }
         return report;
     }
 private:
-    struct Copy { std::unique_ptr<render::Buffer> buffer; Json metadata; };
+    struct Copy { std::unique_ptr<render::Buffer> buffer; Json metadata; bool diagnostic = false; };
     render::Device* device_ = nullptr;
     std::map<std::string, Copy> copies_;
 };

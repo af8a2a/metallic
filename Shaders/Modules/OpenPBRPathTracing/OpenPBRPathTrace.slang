@@ -1,4 +1,5 @@
 implementing OpenPBRPathTracing;
+import PathDiagnostics;
 
 import Core;
 import MaterialTextureDecode;
@@ -341,6 +342,9 @@ public float3 pathTraceOpenPBRWithPrimaryQuery(
     out float specularHitDistance,
     inout OpenPBRPrimaryQuery primaryQuery,
     uint2 guidePixel = uint2(0xffffffffu)
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    , uint diagnosticRow = 0xffffffffu
+#endif
 )
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
@@ -356,6 +360,9 @@ public float3 pathTraceOpenPBRWithPrimaryQuery(
     float3 primaryOrigin = ray.origin;
     bool primarySurface = false;
     bool primaryQueryConsumed = false;
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    uint diagnosticVisits = 0u;
+#endif
 #if (SHARC_UPDATE || SHARC_QUERY)
 #if METALLIC_PT_CACHE_QUERY_SPECIALIZATION
     // Select only numeric values and engine handle indices across the policy branch.
@@ -427,6 +434,23 @@ public float3 pathTraceOpenPBRWithPrimaryQuery(
 #endif
             }
         }
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        uint diagnosticDepth = depth;
+        ++diagnosticVisits;
+        Metallic.PathDiagnostics.write(diagnosticRow, 5u, asfloat(uint4(diagnosticVisits, alphaLayers, 0u, 0u)));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 0u, asfloat(uint4(1u, found ? 1u : 0u, seed, found ? sceneSurfaceMaterialFamily(hit.materialIndex) : 0xffffffffu)));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 6u, float4(ray.origin, rayCone.width));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 7u, float4(ray.direction, rayCone.spreadAngle));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 8u, float4(throughput, previousBsdfPdf));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 9u, float4(radiance, previousScatterDelta ? 1.0 : 0.0));
+        if (found) {
+            Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 1u, asfloat(uint4(hit.materialIndex, hit.instanceIndex, hit.primitiveIndex, hit.triangleIndex)));
+            Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 2u, float4(asfloat(uint2(hit.diagnosticStreamInstance, hit.diagnosticCluster)), hit.diagnosticBarycentrics));
+            Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 3u, float4(hit.position, hit.t));
+            Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 4u, float4(hit.geometryNormal, hit.frontFace ? 1.0 : 0.0));
+            Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 5u, float4(hit.normal, hit.rayConeLodConstant));
+        }
+#endif
         let control = shadeOpenPBRPathVertex(found, hit, push,
             ray, rayCone, seed, depth, radiance, throughput,
             previousBsdfPdf, previousScatterDelta, interiorStack,
@@ -435,7 +459,16 @@ public float3 pathTraceOpenPBRWithPrimaryQuery(
 #if (SHARC_UPDATE || SHARC_QUERY)
             , cache
 #endif
+#if METALLIC_PT_PATH_DIAGNOSTICS
+            , diagnosticRow
+#endif
         );
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        Metallic.PathDiagnostics.vertex(diagnosticRow, diagnosticDepth, 19u, float4(throughput, asfloat(seed)));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, diagnosticDepth, 20u, float4(radiance, asfloat(uint(control))));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, diagnosticDepth, 21u, float4(ray.origin, float(depth)));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, diagnosticDepth, 22u, float4(ray.direction, 0.0));
+#endif
         if (control == OpenPBRPathControl.Return) { return radiance; }
         if (control == OpenPBRPathControl.Stop) { break; }
     }
@@ -603,7 +636,13 @@ public void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
         pixel.y * push.width +
         (sampleFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    Metallic.PathDiagnostics.clearPixel(pixel);
+#endif
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        uint diagnosticSeedBeforeJitter = seed;
+#endif
         float2 jitter = push.temporalJitter != 0u
             ? float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY)
             : (samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed)));
@@ -614,7 +653,20 @@ public void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
         ray.direction = rayDirectionFromPixel(samplePixel, push);
         RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
         float ignoredSpecularHitDistance;
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        uint diagnosticRow = Metallic.PathDiagnostics.row(pixel, sampleIndex);
+        Metallic.PathDiagnostics.write(diagnosticRow, 0u, asfloat(uint4(pixel, sampleIndex, diagnosticSeedBeforeJitter)));
+        Metallic.PathDiagnostics.write(diagnosticRow, 1u, float4(ray.origin, asfloat(seed)));
+        Metallic.PathDiagnostics.write(diagnosticRow, 2u, float4(ray.direction, asfloat(sampleFrame)));
+        Metallic.PathDiagnostics.write(diagnosticRow, 4u, float4(jitter, asfloat(uint2(samples, push.maxDepth))));
+        OpenPBRPrimaryQuery diagnosticQuery = (OpenPBRPrimaryQuery)0;
+        float3 sampleRadiance = pathTraceOpenPBRWithPrimaryQuery(ray, rayCone, push, seed,
+            ignoredSpecularHitDistance, diagnosticQuery, uint2(0xffffffffu), diagnosticRow);
+        Metallic.PathDiagnostics.write(diagnosticRow, 3u, float4(sampleRadiance, asfloat(seed)));
+        color += sampleRadiance;
+#else
         color += pathTraceOpenPBR(ray, rayCone, push, seed, ignoredSpecularHitDistance);
+#endif
     }
     color /= float(samples);
 

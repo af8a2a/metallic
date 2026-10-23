@@ -353,6 +353,11 @@ public:
         return boolProperty(properties(), "diagnosticUseVisibilityStream", false);
     }
 
+    bool pathDiagnosticsEnabled() const
+    {
+        return properties().contains("diagnosticPixels");
+    }
+
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
         const bool ownsGeometry = !visibilityDeferred_ && !diagnosticUsesVisibilityStream();
@@ -429,6 +434,11 @@ public:
         // Preserve absolute solar disk radiance before exposure (~1e9 cd/m2),
         // including when exporting denoiser or upscaler guides.
         color.format = Format::RGBA32Sfloat;
+        if (pathDiagnosticsEnabled()) {
+            auto& diagnostic = reflection.addTextureOutput("pathDiagnostics", "Selected path samples; uint fields bitcast into RGBA32float")
+                .texture2D().storageWrite();
+            diagnostic.format = Format::RGBA32Sfloat;
+        }
         if (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false)) {
             reflection.addTextureOutput("motionVectors", "Unjittered current-to-previous UV motion")
                 .storageReadWrite().format = Format::RG16Sfloat;
@@ -666,6 +676,26 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (pathDiagnosticsEnabled()) {
+            const auto& pixels = properties().at("diagnosticPixels");
+            if (!diagnosticUsesVisibilityStream() || !useOpenPBRBsdf(properties()) || rayPipelineEnabled(properties()) ||
+                properties().value("maxDepth", 3u) > 3u || !pixels.is_array() || pixels.empty() || pixels.size() > 8u ||
+                context.width < 104u || context.height < 16u * pixels.size()) {
+                log = "Path diagnostics require visibility-stream OpenPBR ray-query, <=3 vertices and 1..8 pixels";
+                return makeError(Error::InvalidArgument);
+            }
+            for (const auto& pixel : pixels) {
+                if (!pixel.is_array() || pixel.size() != 2u || !pixel[0].is_number_unsigned() || !pixel[1].is_number_unsigned() ||
+                    pixel[0].get<uint32_t>() >= context.width || pixel[1].get<uint32_t>() >= context.height) {
+                    log = "Path diagnostic pixel is outside the render extent";
+                    return makeError(Error::InvalidArgument);
+                }
+                if (std::count(pixels.begin(), pixels.end(), pixel) != 1) {
+                    log = "Path diagnostic pixels must be unique";
+                    return makeError(Error::InvalidArgument);
+                }
+            }
+        }
         if (diagnosticUsesVisibilityStream() && (visibilityDeferred_ || realtime_ ||
                 cacheModeFromProperties(properties()) != kScenePathTraceCacheModeOff ||
                 boolProperty(properties(), "accumulate", true) || exportDenoiserGuides(properties()))) {
@@ -763,6 +793,7 @@ public:
         const bool globalView = visibilityDeferred_ && context.renderView != nullptr &&
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
+            "|pathDiagnostics=" + (pathDiagnosticsEnabled() ? properties().at("diagnosticPixels").dump() : "off") +
             "|valuePrograms=" + std::to_string(hasValuePrograms() ? valuePrograms->key() : 0) +
             "|coveragePrograms=" + std::to_string(materialCoverageShaderKey(valuePrograms.get())) +
             "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
@@ -968,6 +999,10 @@ public:
             });
         }
         baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer});
+        if (pathDiagnosticsEnabled()) {
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(ScenePathDiagnosticResourceParameters, pathDiagnostics),
+                .kind = ComputeResourceBindingKind::StorageImage});
+        }
         if (splitPrimaryGuides) {
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(ScenePrimarySplitResourceParameters, primaryHits),
                 .kind = ComputeResourceBindingKind::StorageBuffer});
@@ -1022,6 +1057,19 @@ public:
             // Compile the one-ray continuation without retaining the generic
             // multi-sample integrator in its live program. Training is unchanged.
             std::vector<SlangMacroDefine> defines(extraDefines.begin(), extraDefines.end());
+            std::array<std::pair<std::string, std::string>, 17> diagnosticDefines;
+            if (pathDiagnosticsEnabled()) {
+                const auto& pixels = properties().at("diagnosticPixels");
+                defines.push_back({"METALLIC_PT_PATH_DIAGNOSTICS", "1"});
+                diagnosticDefines[0] = {"METALLIC_PT_DIAGNOSTIC_COUNT", std::to_string(pixels.size())};
+                for (size_t i = 0; i < 8u; ++i) {
+                    diagnosticDefines[1 + i * 2] = {"METALLIC_PT_DIAGNOSTIC_X" + std::to_string(i), std::to_string(i < pixels.size() ? pixels[i][0].get<uint32_t>() : 0u)};
+                    diagnosticDefines[2 + i * 2] = {"METALLIC_PT_DIAGNOSTIC_Y" + std::to_string(i), std::to_string(i < pixels.size() ? pixels[i][1].get<uint32_t>() : 0u)};
+                }
+                for (const auto& [name, value] : diagnosticDefines) {
+                    defines.push_back({name.c_str(), value.c_str()});
+                }
+            }
             if (singleSampleGuides && permutation != PathTracePermutation::SharcUpdate) {
                 defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
             }
@@ -1040,7 +1088,8 @@ public:
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
-                    .resourceParameterSize = splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) : sizeof(SceneResourceParameters),
+                    .resourceParameterSize = pathDiagnosticsEnabled() ? sizeof(ScenePathDiagnosticResourceParameters) :
+                        splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) : sizeof(SceneResourceParameters),
                     .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines),
                     .rootTransport = sourcePolicy.rootTransport()},
                 outProgram, artifact, diagnostics,
@@ -1048,7 +1097,7 @@ public:
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
-                if (splitPrimaryGuides || inlineComputeRoot) {
+                if (splitPrimaryGuides || inlineComputeRoot || pathDiagnosticsEnabled()) {
                     clearPrograms();
                     compiledShaderKey_.clear();
                     return compiled;
@@ -1754,6 +1803,11 @@ public:
         }
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = sceneResources_.materialBinding()->valueBuffer()
             ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()});
+        if (pathDiagnosticsEnabled()) {
+            auto diagnostic = context.outputTexture("pathDiagnostics");
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(ScenePathDiagnosticResourceParameters, pathDiagnostics),
+                .textureView = diagnostic.view()});
+        }
         if (visibilityDeferred_) {
             std::erase_if(bindings, [](const auto& binding) {
                 return binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene);
@@ -2100,14 +2154,14 @@ private:
     bool trustedSceneParametersEnabled(const RenderGraphProperties& properties) const
     {
         return boolProperty(properties, "trustedSceneParameters",
-            supportsInlineComputeRoot(properties) && inlineComputeRootEnabled(properties));
+            !properties.contains("diagnosticPixels") && supportsInlineComputeRoot(properties) && inlineComputeRootEnabled(properties));
     }
 
     bool validateTrustedSceneParameters(const RenderGraphProperties& properties, std::string& log) const
     {
         if (trustedSceneParametersEnabled(properties) &&
-            (!supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
-            log += "trustedSceneParameters requires the unsplit compute path tracer with inlineComputeRoot\n";
+            (properties.contains("diagnosticPixels") || !supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
+            log += "trustedSceneParameters requires the unextended Scene packet and unsplit compute path tracer with inlineComputeRoot\n";
             return false;
         }
         return true;

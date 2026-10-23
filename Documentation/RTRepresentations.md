@@ -34,6 +34,14 @@ storage gives way to active demand. A rejected shared/cache selection may use
 an already-ready merged representation of the same primitive; otherwise it
 uses the existing terminal fallback.
 
+The GPU allocator's priority-off control uses ascending owner ID for storage
+admission and releases. Native dirty Builds still pack in parallel; their
+returned size/address records are accessed through each owner's build index.
+Atomic arrival order therefore cannot choose budget winners or reorder free
+bins. Empty build/release lists skip these owner scans, preserving stationary
+zero-build behavior. Priority-on sorting and cached admission are independent
+of this control path.
+
 ## Owner demand importance
 
 Each owner also carries demand metadata aggregated from **all** instances that
@@ -245,3 +253,15 @@ shadow/path-trace sample seed without changing the light distribution. A/A and
 B0/B1 image equality are explicit gates; reference rejections and missing CLAS
 invalidate a clean-reference claim. These readback/drain diagnostics are not
 performance measurements or isolated specular-radiance captures.
+
+An optional `diagnosticPixels` array in the controlled MiniZorah config records
+the actual OpenPBR sample paths at up to eight output pixels. This selects a
+diagnostic shader permutation; ordinary shaders contain no path recording.
+`Diagnostics.json` exports the raw path texture and the published representation
+and instance-selection buffers separately from image-quality data. Integer
+fields in the float texture are bit representations, not radiance values.
+The original RNG sequence is retained: a shared initial seed does not guarantee
+identical later sample rays after geometry or material branches diverge.
+Use `Tools/AnalyzeBLASPathDiagnostics.py` to inspect the first differing ray,
+hit and lighting contribution; a changed final pixel alone does not establish
+a normal, material or PDF defect.

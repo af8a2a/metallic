@@ -113,6 +113,11 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     hit.t = t;
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
     hit.materialIndex = instance.materialIndex;
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    hit.diagnosticStreamInstance = instanceIndex;
+    hit.diagnosticCluster = clusterId;
+    hit.diagnosticBarycentrics = bary;
+#endif
     hit.instanceIndex = instance.gpuSceneInstanceIndex;
     hit.primitiveIndex = instance.primitiveIndex;
     hit.triangleIndex = triangle;

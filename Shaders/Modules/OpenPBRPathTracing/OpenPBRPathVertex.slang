@@ -1,6 +1,7 @@
 implementing OpenPBRPathTracing;
 
 import Core;
+import PathDiagnostics;
 import MaterialTextureDecode;
 import RTXCRMaterialAdapter;
 import RayMaterialExecution;
@@ -74,6 +75,9 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
 #if (SHARC_UPDATE || SHARC_QUERY)
     , inout OpenPBRCacheContext cache
 #endif
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    , uint diagnosticRow = 0xffffffffu
+#endif
 )
 {
     float3 shadingNormal = hit.normal;
@@ -88,6 +92,12 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     hit = program.program.hit;
     seed = program.program.seed;
     float4 normalSample = program.program.normalSample;
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    // Local lighting is multiplied after segment volume attenuation.
+    Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 8u, float4(throughput, previousBsdfPdf));
+    Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 10u, float4(hit.normal, materialEval.inputs.specular_roughness));
+    Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 11u, float4(hit.texcoord, materialEval.inputs.base_metalness, openPbrMaterialIor(material)));
+#endif
     if (depth == 0u &&
         push.debugView != kOpenPBRDebugViewFinal &&
         push.debugView != kOpenPBRDebugViewShadowTransmittance) {
@@ -213,6 +223,9 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
         let prepared = prepareRaySurface(materialEval, work, sampling);
 
         emission = max(prepared.emission(), float3(0.0));
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 12u, float4(emission, 0.0));
+#endif
         if (material.emissive.w != 0.0) {
             radiance += throughput * emission;
 #if (SHARC_UPDATE || SHARC_QUERY)
@@ -243,7 +256,14 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
 
     // Only sampled light data and continuation results cross these traversals.
     // Resolve shadows and accumulate direct sources in their original order.
-    OpenPBRDiffuseSpecular localComponents = openPbrResolveDirectComponents(directLighting, lights);
+    OpenPBRDiffuseSpecular localComponents = openPbrResolveDirectComponents(directLighting, lights
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        , diagnosticRow, depth
+#endif
+    );
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 13u, float4(openPBRGetSumOfDiffuseSpecular(localComponents), 0.0));
+#endif
     if (sampledEnvironment) {
         float3 lightWeight = openPBRGetSumOfDiffuseSpecular(lightComponents);
         float3 shadowTransmittance = float3(0.0, 0.0, 0.0);
@@ -280,6 +300,10 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
                     push);
             }
         }
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 15u, float4(shadowTransmittance, 1.0));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 16u, float4(lightSample.direction, lightSample.pdfSolidAngle));
+#endif
         if (depth == 0u && push.debugView == kOpenPBRDebugViewShadowTransmittance) {
             radiance = shadowTransmittance;
             return OpenPBRPathControl.Return;
@@ -292,6 +316,9 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
             float3 incident = materialEval.occlusion * shadowTransmittance *
                 (lightSample.radiance * lightMisWeight / max(lightSample.pdfSolidAngle, 0.000001));
             localComponents = openPBRAddDiffuseSpecular(localComponents, openPBRScaleDiffuseSpecular(lightComponents, incident));
+#if METALLIC_PT_PATH_DIAGNOSTICS
+            Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 14u, float4(openPBRGetSumOfDiffuseSpecular(openPBRScaleDiffuseSpecular(lightComponents, incident)), 0.0));
+#endif
         }
     }
     if (depth == 0u && push.debugView == kOpenPBRDebugViewShadowTransmittance) {
@@ -309,6 +336,10 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
 
     scatterComponents = openPbrSelectComponents(scatterComponents, replacedMask);
     scatter.weight = openPBRGetSumOfDiffuseSpecular(scatterComponents);
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 17u, float4(scatter.wiWS, scatter.pdf));
+    Metallic.PathDiagnostics.vertex(diagnosticRow, depth, 18u, float4(scatter.weight, asfloat(scatter.flags)));
+#endif
     if (scatter.pdf <= 0.0 || scatter.flags == 0u) { return OpenPBRPathControl.Stop; }
     float3 sampledDirection = scatter.wiWS;
 
@@ -458,6 +489,9 @@ public OpenPBRPathControl shadeOpenPBRPathVertex(
 #if (SHARC_UPDATE || SHARC_QUERY)
     , inout OpenPBRCacheContext cache
 #endif
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    , uint diagnosticRow = 0xffffffffu
+#endif
 )
 {
     if (!found) {
@@ -557,6 +591,9 @@ public OpenPBRPathControl shadeOpenPBRPathVertex(
         previousScatterDelta, interiorStack, captureSpecularHitDistance
 #if (SHARC_UPDATE || SHARC_QUERY)
         , cache
+#endif
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        , diagnosticRow
 #endif
     );
 }

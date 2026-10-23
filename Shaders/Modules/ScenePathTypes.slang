@@ -110,6 +110,11 @@ public struct RayCone
 
 public struct HitInfo
 {
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    public uint diagnosticStreamInstance;
+    public uint diagnosticCluster;
+    public float2 diagnosticBarycentrics;
+#endif
     public float t;
     public float3 position;
     public float3 normal;

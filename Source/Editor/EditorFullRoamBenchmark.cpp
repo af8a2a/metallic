@@ -265,6 +265,10 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const uint32_t workloadEvery = config.value("workloadEvery", 0u);
         const bool captureQuality = config.value("captureQuality", false);
         const bool captureReflections = config.value("captureReflections", false);
+        const bool capturePathDiagnostics = config.contains("diagnosticPixels");
+        if (capturePathDiagnostics && (!controlledBlas || !captureReflections)) {
+            throw std::runtime_error("diagnosticPixels requires the controlled MiniZorah reflection comparison");
+        }
         const uint32_t reflectionSamples = config.value("reflectionSamples", 8u);
         if (reflectionSamples == 0u || reflectionSamples > 16u) { throw std::runtime_error("reflectionSamples must be [1,16]"); }
         if (captureReflections && !captureQuality) { throw std::runtime_error("captureReflections requires captureQuality"); }
@@ -273,6 +277,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["captureReflections"] = captureReflections;
         qualityCapture->captureReflections = captureReflections;
         qualityCapture->captureRasterInputs = controlledBlas;
+        qualityCapture->capturePathDiagnostics = capturePathDiagnostics;
+        qualityCapture->diagnosticRows = capturePathDiagnostics ? 16u * uint32_t(config.at("diagnosticPixels").size()) : 0u;
         workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
@@ -419,11 +425,15 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             properties["diagnosticSampleFrame"] = 0u;
             properties["diagnosticUseVisibilityStream"] = true;
             properties["stochasticTextureFiltering"] = false;
+            if (capturePathDiagnostics) { properties["diagnosticPixels"] = config.at("diagnosticPixels"); }
             if (!renderGraph_.addNode("ScenePathTracePass", "ReflectionQuality", properties) ||
                 !renderGraph_.addEdge("VBuffer.rasterInfo", "ReflectionQuality.rasterInfo") ||
                 !renderGraph_.addEdge("VBuffer.accelerationStructure", "ReflectionQuality.accelerationStructure") ||
                 !renderGraph_.markOutput("FinalBlit.color") || !renderGraph_.markOutput("ReflectionQuality.color")) {
                 throw std::runtime_error("Failed to add path-traced reflection quality diagnostic");
+            }
+            if (capturePathDiagnostics && !renderGraph_.markOutput("ReflectionQuality.pathDiagnostics")) {
+                throw std::runtime_error("Failed to retain path diagnostics");
             }
             // addNode can reallocate the graph's node storage.
             vbuffer = renderGraph_.findNode("VBuffer");
@@ -640,6 +650,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                         qualityCapture = std::make_unique<RayQualityCapture>();
                         qualityCapture->captureReflections = true;
                         qualityCapture->captureRasterInputs = true;
+                        qualityCapture->capturePathDiagnostics = capturePathDiagnostics;
+                        qualityCapture->diagnosticRows = capturePathDiagnostics ? 16u * uint32_t(config.at("diagnosticPixels").size()) : 0u;
                         graphExecutor_->setDebugObserver(qualityCapture.get());
                     }
                     variantReport["sourceIdentity"] = sourceIdentity;

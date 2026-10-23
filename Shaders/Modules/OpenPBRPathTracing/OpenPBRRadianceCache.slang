@@ -1,6 +1,7 @@
 implementing OpenPBRPathTracing;
 
 import Core;
+import PathDiagnostics;
 import MaterialTextureDecode;
 import RTXCRMaterialAdapter;
 import RayMaterialExecution;
@@ -82,13 +83,25 @@ public OpenPBRDirectLighting openPbrPrepareDirectComponents(
 }
 
 public OpenPBRDiffuseSpecular openPbrResolveDirectComponents(
-    OpenPBRDirectLighting lighting, PathSurfaceLights lights)
+    OpenPBRDirectLighting lighting, PathSurfaceLights lights
+#if METALLIC_PT_PATH_DIAGNOSTICS
+    , uint diagnosticRow = 0xffffffffu, uint diagnosticDepth = 0u
+#endif
+)
 {
     OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
     for (uint index = 0u; index < kOpenPBRPathDirectLightCount; ++index) {
         if ((lighting.activeMask & (1u << index)) == 0u) { continue; }
         SurfaceLightSample light = lighting.samples[index].light;
+#if METALLIC_PT_PATH_DIAGNOSTICS
+        float3 visibility = lights.visibility(light);
+        float3 incident = light.illuminance * visibility * light.inverseSourcePdf;
+        Metallic.PathDiagnostics.vertex(diagnosticRow, diagnosticDepth, 23u + 3u * index, float4(light.direction, light.distance));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, diagnosticDepth, 24u + 3u * index, float4(visibility, asfloat(light.source)));
+        Metallic.PathDiagnostics.vertex(diagnosticRow, diagnosticDepth, 25u + 3u * index, float4(openPBRGetSumOfDiffuseSpecular(openPBRScaleDiffuseSpecular(lighting.samples[index].weight, incident)), light.inverseSourcePdf));
+#else
         float3 incident = light.illuminance * lights.visibility(light) * light.inverseSourcePdf;
+#endif
         result = openPBRAddDiffuseSpecular(result, openPBRScaleDiffuseSpecular(lighting.samples[index].weight, incident));
     }
     return result;
