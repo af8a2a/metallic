@@ -82,6 +82,7 @@ $manifest=@{protocol=$(if ($RasterComparison) {'zorah-full-raster-comparison-v1'
 $asset=Get-Item -LiteralPath (Join-Path $repo 'Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin')
 $manifest.blasRepresentations=$env:METALLIC_BLAS_REPRESENTATIONS
 $manifest.blasAllocator=$env:METALLIC_BLAS_ALLOCATOR
+$manifest.blasPriority=$env:METALLIC_BLAS_PRIORITY
 $manifest.blasStorageBytes=$env:METALLIC_BLAS_STORAGE_BYTES
 $manifest.blasRelocateBytes=$env:METALLIC_BLAS_RELOCATE_BYTES
 $manifest.clasAllocator=$env:METALLIC_CLAS_ALLOCATOR

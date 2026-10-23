@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
 #include <json.hpp>
@@ -30,13 +31,13 @@ void importanceRequire(bool condition, const char* reason)
 }
 
 constexpr uint32_t kInstanceCount = 137;
-constexpr uint32_t kPrimitiveCount = 3;
+constexpr uint32_t kPrimitiveCount = 46;
 constexpr uint32_t kLevelCount = kPrimitiveCount * 4;
 constexpr uint32_t kOwnerCount = kPrimitiveCount * 3;
 constexpr uint32_t kPrimitiveBase = kLevelCount * 4;
 constexpr uint32_t kInstanceBase = kPrimitiveBase + kPrimitiveCount * 12;
 constexpr uint32_t kImportanceBase = kInstanceBase + kInstanceCount * 4;
-constexpr uint32_t kStateWords = kImportanceBase + kOwnerCount * 6;
+constexpr uint32_t kStateWords = kImportanceBase + kOwnerCount * 9;
 using ImportanceState = std::array<uint32_t, kStateWords>;
 using Importance = std::array<uint32_t, 6>;
 using ImportanceOwners = std::array<Importance, kOwnerCount>;
@@ -170,12 +171,13 @@ struct ImportanceFixture {
         ImportanceState value; std::memcpy(value.data(), mapped, sizeof(value)); buffers[State]->unmap(); return value;
     }
 
-    void dispatch(uint32_t phase)
+    void dispatch(uint32_t phase, uint32_t traversal = 0)
     {
         if (submitted) { importanceChecked(fence->reset()); importanceChecked(pool->reset()); }
         importanceChecked(commands->begin()); commands->hostWriteBarrier();
         importanceChecked(commands->bindBindlessHeap(*heap));
         push.activeBuildPhase = phase;
+        push.traversalPhase = traversal;
         importanceChecked(commands->bindExecution(pipeline->execution(), &push, sizeof(push)));
         importanceChecked(commands->dispatch((kInstanceCount + 63) / 64));
         std::array<BufferBarrierDesc, InputCount> barriers;
@@ -230,6 +232,44 @@ struct ImportanceFixture {
             }
         }
         return output;
+    }
+
+    std::vector<uint32_t> sort(const ImportanceOwners& values, uint32_t count = kOwnerCount)
+    {
+        params.rtRepresentationCount = count;
+        params.enableBlasPriority = 1;
+        write(Params, params);
+        auto state = readState();
+        for (uint32_t owner = 0; owner < count; ++owner) {
+            std::copy(values[owner].begin(), values[owner].end(), state.begin() + kImportanceBase + owner * 6);
+        }
+        write(State, state);
+        dispatch(35);
+        uint32_t parity = 0;
+        for (uint32_t runLog2 = 6; (1u << runLog2) < count; ++runLog2) {
+            dispatch(36, runLog2 | (parity << 8));
+            parity ^= 1;
+        }
+        dispatch(37, parity << 8);
+        state = readState();
+        std::vector<uint32_t> expected(count);
+        std::iota(expected.begin(), expected.end(), 0);
+        std::sort(expected.begin(), expected.end(), [&](uint32_t a, uint32_t b) {
+            if (values[a][0] != values[b][0]) { return values[a][0] > values[b][0]; }
+            if (values[a][1] != values[b][1]) { return values[a][1] < values[b][1]; }
+            if (values[a][2] != values[b][2]) { return values[a][2] > values[b][2]; }
+            return a < b;
+        });
+        const uint32_t orderBase = kImportanceBase + count * 6;
+        for (uint32_t rank = 0; rank < count; ++rank) {
+            importanceRequire(state[orderBase + rank] == expected[rank] &&
+                state[orderBase + count * 2 + expected[rank]] == rank,
+                "GPU tile sort/merge/normalization disagrees with the stable importance oracle or inverse ranks");
+        }
+        params.rtRepresentationCount = kOwnerCount;
+        params.enableBlasPriority = 0;
+        write(Params, params);
+        return expected;
     }
 };
 
@@ -371,6 +411,30 @@ public:
                 importanceRequire(owner[0] == 0 && owner[2] == 0 && owner[3] == 0,
                     "Removing all consumers failed to reset owner importance");
             }
+            phase = "137-owner partial-tail priority sort";
+            ImportanceOwners keys{};
+            for (uint32_t owner = 0; owner < kOwnerCount; ++owner) {
+                keys[owner] = {std::bit_cast<uint32_t>(float(owner % 7)) + 1,
+                    std::bit_cast<uint32_t>(float(owner % 5)),
+                    std::bit_cast<uint32_t>(float(owner % 3) * .25f), 1, 1, 0};
+            }
+            keys[0] = far;
+            keys[136] = near;
+            // Consumer counts are telemetry, not an extra ranking factor.
+            keys[11] = keys[12] = aggregate[1];
+            keys[11][3] = keys[11][4] = 1;
+            keys[127] = side; keys[128] = behind;
+            keys[129] = zero[7]; keys[130] = empty[0];
+            auto sortedOwners = fixture.sort(keys, 137);
+            importanceRequire(std::find(sortedOwners.begin(), sortedOwners.end(), 136) <
+                std::find(sortedOwners.begin(), sortedOwners.end(), 0), "High-index near owner lost to low-index far owner");
+            for (uint32_t iteration = 0; iteration < 8; ++iteration) {
+                std::rotate(keys.begin(), keys.begin() + 17, keys.begin() + 137);
+                sortedOwners = fixture.sort(keys, 137);
+            }
+            // 65 owners exercises final normalization from B; 137 ends in A.
+            fixture.sort(keys, 65);
+            fixture.sort(keys, 64);
             importanceRequire(validationErrors.load() == 0, "Vulkan validation errors in importance regression");
             const auto directory = context.outputDirectory / "RTRepresentationImportance";
             std::filesystem::create_directories(directory);
@@ -378,6 +442,7 @@ public:
             report << nlohmann::json{{"frames", frames}, {"far", far}, {"near", near},
                 {"shared", aggregate}, {"side", side}, {"behind", behind}, {"farOrtho", farOrtho},
                 {"nearPlane", nearPlane}, {"insideSphere", insideSphere}, {"negativeNonuniform", negativeNonuniform},
+                {"priorityOwnerCount", 137}, {"priorityOrder", sortedOwners},
                 {"nearOrtho", nearOrtho}, {"scale", scale}, {"shear", shear}, {"zeroError", zero},
                 {"validationErrors", validationErrors.load()},
                 {"scope", "Production phase20/23; classified LOD bounds seeded; no admission or native BLAS build"}}.dump(2);

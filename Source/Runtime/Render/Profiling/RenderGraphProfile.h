@@ -109,6 +109,15 @@ struct SceneStreamingProfile {
     uint32_t blasArenaUsedBytes = 0;
     uint32_t blasArenaRepack = 0;
     bool blasGPUAllocatorEnabled = false;
+    bool blasPriorityEnabled = false;
+    uint32_t blasRequestedVisibleConsumers = 0, blasRequestedOffscreenConsumers = 0;
+    uint32_t blasRejectedVisibleConsumers = 0, blasRejectedOffscreenConsumers = 0;
+    uint32_t blasAdmittedOffscreenConsumers = 0, blasPriorityEvictedOwners = 0;
+    uint32_t blasCompactionTargetBytes = 0, blasWaitingBuildCount = 0;
+    uint32_t blasPostBuildBudgetRejected = 0, blasPhysicalAllocationFailed = 0;
+    uint32_t blasWaitingClaimBytes = 0, blasMaxWaitingBytes = 0, blasUnknownBuildCount = 0;
+    uint32_t blasProjectedRetryDeferredCount = 0, blasProjectedDirtyClaimBytes = 0;
+    float blasRejectedMaxErrorPixels = 0, blasRejectedVisibleMaxErrorPixels = 0;
     uint32_t blasEncodedBytes = 0, blasAllocatedBytes = 0;
     uint32_t blasFreeBytes = 0, blasLargestFreeBytes = 0;
     uint32_t blasRelocatedCount = 0, blasRelocatedBytes = 0;

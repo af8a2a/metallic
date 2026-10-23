@@ -537,6 +537,7 @@ public struct GPUDrivenStreamAssetParams
     public uint rtRepresentationCachePadding1;
     public uint rtRepresentationCachePadding2;
     public uint enableBlasGPUAllocator;
+    public uint enableBlasPriority;
 };
 
 public struct GPUDrivenStreamAssetVertexOutput
@@ -3459,11 +3460,83 @@ uint streamRTOwnerImportanceBase(GPUDrivenStreamAssetParams p, uint owner)
     return streamRTInstanceBase(p, p.sceneInstanceCount) + owner * 6u;
 }
 
+uint streamRTOwnerOrderBase(GPUDrivenStreamAssetParams p)
+{
+    return streamRTOwnerImportanceBase(p, p.rtRepresentationCount);
+}
+
+uint4 streamRTOwnerPriorityKey(RWStructuredBuffer<uint> state, uint owner, GPUDrivenStreamAssetParams p)
+{
+    if (owner == 0xffffffffu) { return uint4(0xffffffffu); }
+    uint base = streamRTOwnerImportanceBase(p, owner);
+    return uint4(~state[base], state[base + 1u], ~state[base + 2u], owner);
+}
+
+bool streamRTPriorityBefore(uint4 a, uint4 b)
+{
+    return a.x != b.x ? a.x < b.x : a.y != b.y ? a.y < b.y : a.z != b.z ? a.z < b.z : a.w < b.w;
+}
+
+public groupshared uint4 g_RTPriorityKeys[64];
+
+void sortStreamRTOwners(uint item, GPUDrivenStreamAssetPush push, GPUDrivenStreamAssetParams p)
+{
+    RWStructuredBuffer<uint> state = resolveUniform(
+        ResourceHandle<RWStructuredBuffer<uint>>(p.rtRepresentationStateBuffer));
+    uint count = p.rtRepresentationCount;
+    uint base = streamRTOwnerOrderBase(p);
+    uint lane = item & 63u;
+    if (push.activeBuildPhase == 35u) {
+        uint4 key = streamRTOwnerPriorityKey(state, item < count ? item : 0xffffffffu, p);
+        g_RTPriorityKeys[lane] = key;
+        GroupMemoryBarrierWithGroupSync();
+        for (uint width = 2u; width <= 64u; width <<= 1u) {
+            for (uint stride = width >> 1u; stride != 0u; stride >>= 1u) {
+                uint4 other = g_RTPriorityKeys[lane ^ stride];
+                bool takeMinimum = ((lane & width) == 0u) == ((lane & stride) == 0u);
+                bool otherBefore = streamRTPriorityBefore(other, key);
+                if (takeMinimum ? otherBefore : streamRTPriorityBefore(key, other)) { key = other; }
+                GroupMemoryBarrierWithGroupSync();
+                g_RTPriorityKeys[lane] = key;
+                GroupMemoryBarrierWithGroupSync();
+            }
+        }
+        if (item < count) { state[base + item] = key.w; }
+        return;
+    }
+    if (item >= count) { return; }
+    uint source = base + ((push.traversalPhase >> 8u) & 1u) * count;
+    uint owner = state[source + item];
+    if (push.activeBuildPhase == 37u) {
+        if (source != base) { state[base + item] = owner; }
+        state[base + count * 2u + owner] = item;
+        return;
+    }
+    // Each input run is sorted. Its element's binary-search rank in the other
+    // run plus its own rank gives a unique output position (owner IDs break ties).
+    uint width = 1u << (push.traversalPhase & 31u);
+    uint pairBase = (item / width) & ~1u;
+    pairBase *= width;
+    uint ownBase = (item / width) * width;
+    uint otherBase = ownBase == pairBase ? min(pairBase + width, count) : pairBase;
+    uint low = otherBase;
+    uint high = otherBase + min(width, count - otherBase);
+    uint4 key = streamRTOwnerPriorityKey(state, owner, p);
+    while (low < high) {
+        uint middle = low + (high - low) / 2u;
+        uint4 other = streamRTOwnerPriorityKey(state, state[source + middle], p);
+        if (streamRTPriorityBefore(other, key)) { low = middle + 1u; }
+        else { high = middle; }
+    }
+    uint destination = base + (source == base ? count : 0u);
+    state[destination + pairBase + (item - ownBase) + (low - otherBase)] = owner;
+}
+
 void streamAccumulateRTOwnerImportance(RWStructuredBuffer<uint> state, uint owner,
     GPUDrivenStreamAssetInstance instance, GPUDrivenStreamAssetParams params)
 {
-    // Primary-view estimates of terminal fallback error in render pixels, not
-    // secondary-ray importance or admission priority. Each aggregate is independent.
+    // Primary-view estimates of terminal fallback error in render pixels serve
+    // as admission proxies, not exact secondary-ray errors. Aggregates are independent.
     StructuredBuffer<float4> metadata = resolveUniform(
         ResourceHandle<StructuredBuffer<float4>>(params.rtRepresentationMetadataBuffer));
     uint metadataIndex = (params.sceneLodLevelCount + instance.primitiveIndex) * 2u;
@@ -3553,6 +3626,13 @@ uint4 scanRTRepresentationCounts(uint4 demand, uint lane)
 void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAssetPush push,
     GPUDrivenStreamAssetParams params)
 {
+    if (push.activeBuildPhase >= 35u && push.activeBuildPhase <= 37u) {
+        sortStreamRTOwners(item + groupRow * (65535u * 64u), push, params);
+        return;
+    }
+    if (push.activeBuildPhase == 38u || push.activeBuildPhase == 40u) {
+        item += groupRow * (65535u * 64u);
+    }
     uint lane = item & 63u;
     if (push.activeBuildPhase == 22u || push.activeBuildPhase == 25u || push.activeBuildPhase == 27u) {
         item = (item >> 6u) + groupRow * 65535u;
@@ -3933,6 +4013,64 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         }
         return;
     }
+    if (push.activeBuildPhase >= 38u && push.activeBuildPhase <= 40u) {
+        RWStructuredBuffer<uint4> scan = resolveUniform(
+            ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
+        uint scratch = 8u + params.rtRepresentationGroupCapacity;
+        if (push.activeBuildPhase == 39u) {
+            if (item != 0u) { return; }
+            uint prefix = 0u;
+            for (uint block = 0u; block < (params.rtRepresentationCount + 63u) / 64u; ++block) {
+                uint count = scan[scratch + block].x;
+                scan[scratch + block] = uint4(prefix, 0u, 0u, 0u);
+                prefix += min(count, 0xffffffffu - prefix);
+            }
+            return;
+        }
+        uint owner = 0u;
+        uint base = 0u;
+        uint count = 0u;
+        bool first = false;
+        if (item < params.rtRepresentationCount) {
+            uint order = streamRTOwnerOrderBase(params);
+            owner = state[order + item];
+            uint primitive = owner / 3u;
+            uint ranks = order + params.rtRepresentationCount * 2u + primitive * 3u;
+            first = item == min(state[ranks], min(state[ranks + 1u], state[ranks + 2u]));
+            base = streamRTPrimitiveBase(params, primitive);
+            if (first) {
+                count = state[base + 6u];
+                if (push.activeBuildPhase == 38u && header[0].representationPadding != 0u &&
+                    (state[base + 11u] & kRTIdleCache) != 0u) {
+                    StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> representations = resolveUniform(
+                        ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(params.rtRepresentationBuffer));
+                    count -= representations[primitive * 3u + 2u].previousGroupCount;
+                    state[base + 11u] |= kRTEvictIdleCache;
+                    InterlockedAdd(header[0].representationCount, 0xffffffffu);
+                    state[base + 6u] = count;
+                }
+            }
+        }
+        if (push.activeBuildPhase == 38u) {
+            // Only the primitive's highest-priority owner reserves its complete
+            // group range. Impossible single requests cannot block smaller ones.
+            uint demand = count <= params.rtRepresentationGroupCapacity ? count : 0u;
+            uint4 before = scanRTRepresentationCounts(uint4(demand, 0u, 0u, 0u), lane);
+            if (first) { state[base + 7u] = before.x; }
+            if (lane == 63u) { scan[scratch + item / 64u] = g_StreamBlasStoragePrefix[63]; }
+        } else if (first && count != 0u) {
+            uint prefix = scan[scratch + item / 64u].x;
+            prefix += min(state[base + 7u], 0xffffffffu - prefix);
+            bool fits = prefix <= params.rtRepresentationGroupCapacity &&
+                count <= params.rtRepresentationGroupCapacity - prefix;
+            if (!fits) {
+                state[base + 11u] |= kRTGroupOverflow;
+                state[base + 6u] = 0u;
+                InterlockedAdd(header[0].representationGroupOverflow, 1u);
+            }
+        }
+        return;
+    }
     if (push.activeBuildPhase == 31u || push.activeBuildPhase == 32u) {
         RWStructuredBuffer<uint4> scan = resolveUniform(
             ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
@@ -3944,7 +4082,8 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
                 demand = uint4(state[scratch], state[scratch + 1u], state[base + 6u], 0u);
             } else {
                 uint count = state[base + 6u];
-                if (header[0].representationPadding != 0u && (state[base + 11u] & kRTIdleCache) != 0u) {
+                if (params.enableBlasPriority == 0u && header[0].representationPadding != 0u &&
+                    (state[base + 11u] & kRTIdleCache) != 0u) {
                     StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> representations = resolveUniform(
                         ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(params.rtRepresentationBuffer));
                     count -= representations[item * 3u + 2u].previousGroupCount;
@@ -3979,9 +4118,10 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             // unreferenced discrete caches without predicting bucket sizes.
             bool actualStoragePressure = params.enableBlasGPUAllocator != 0u &&
                 (push.traversalPhase & 1u) == 0u && header[0].storageRejected != 0u;
-            bool evictIdle = prefix.x > params.blasClusterReferenceCapacity || prefix.y > params.blasStorageBytes ||
-                prefix.z > params.rtRepresentationGroupCapacity || header[0].representationCount > params.blasBuildCapacity ||
-                actualStoragePressure;
+            bool buildBudgetPressure = params.enableBlasPriority == 0u &&
+                (prefix.x > params.blasClusterReferenceCapacity || header[0].representationCount > params.blasBuildCapacity);
+            bool evictIdle = buildBudgetPressure || prefix.y > params.blasStorageBytes ||
+                prefix.z > params.rtRepresentationGroupCapacity || actualStoragePressure;
             header[0].representationPadding = evictIdle ? 1u : 0u;
         }
         return;
@@ -4353,7 +4493,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         uint buildIndex = info.blasBuildIndex + min(blockPrefix.y, 0xffffffffu - info.blasBuildIndex);
         bool referencesFit = referenceOffset < params.blasClusterReferenceCapacity &&
             info.selectedClusterCount <= params.blasClusterReferenceCapacity - referenceOffset;
-        if (!referencesFit || buildIndex >= params.blasBuildCapacity) {
+        if (params.enableBlasPriority == 0u && (!referencesFit || buildIndex >= params.blasBuildCapacity)) {
             InterlockedOr(instanceBlas[itemIndex].flags, kBLASInstanceFallback | kBLASInstanceOverflow);
             instanceBlas[itemIndex].blasBuildIndex = kInvalidClusterIndex;
             instanceBlas[itemIndex].clusterReferenceCapacity = 0u;

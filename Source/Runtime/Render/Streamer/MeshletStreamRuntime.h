@@ -425,6 +425,7 @@ struct MeshletStreamGPUParams {
     uint32_t rtRepresentationCacheBuffer = UINT32_MAX;
     uint32_t rtRepresentationCachePadding[3] = {};
     uint32_t enableBlasGPUAllocator = 0;
+    uint32_t enableBlasPriority = 0;
 };
 
 struct MeshletStreamGPURasterBindings {
@@ -538,7 +539,7 @@ static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGPUParams) == 692);
+static_assert(sizeof(MeshletStreamGPUParams) == 696);
 static_assert(sizeof(MeshletStreamGPURTRepresentationGroup) == 16);
 static_assert(sizeof(MeshletStreamGPURTRepresentationLODMetadata) == 32);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
@@ -585,6 +586,7 @@ struct MeshletStreamRuntimeDesc {
     // to device memory; this cap does not reduce the selected RT cut on failure.
     uint64_t maxBlasStagingBytes = 512ull * 1024ull * 1024ull;
     bool enableBlasGPUAllocator = true;
+    bool enableBlasPriority = true; // Owner importance; requires representations and the GPU allocator.
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBLASBuilds;
     bool enableBlasRepresentations = true;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
@@ -796,7 +798,7 @@ private:
     Result<> buildBlasInputs(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
     Result<> cmdBuildBlas(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
     Result<> dispatchBlasPhase(CommandBuffer& commandBuffer, uint32_t phase, uint32_t threadCount,
-        bool publicationWrapped = false);
+        bool publicationWrapped = false, uint32_t sortParameters = 0);
     Result<> cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
     Result<> buildTlasInstances(CommandBuffer& commandBuffer);
     Result<> cmdBuildTlas(CommandBuffer& commandBuffer);
@@ -1014,6 +1016,7 @@ private:
     std::array<uint32_t, 32> blasSizeClasses_{};
     bool blasInstanceReuse_ = true;
     bool blasRepresentationsEnabled_ = false;
+    bool blasPriorityEnabled_ = false;
     uint32_t rtRepresentationCount_ = 0;
     uint32_t rtRepresentationGroupCapacity_ = 0;
     uint32_t rtRepresentationStateWordCount_ = 0;

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <cstddef>
@@ -659,18 +660,20 @@ public:
     std::unique_ptr<Buffer> parameters, staging, relocationStaging, scratch;
     std::unique_ptr<ShaderModule> shader;
     std::unique_ptr<ComputePipeline> pipeline;
-    std::array<Buffer*, 5> referenced{};
+    std::array<Buffer*, 6> referenced{};
     std::shared_ptr<bool> initialized = std::make_shared<bool>(false);
 
     Result<> initialize(Device& device, Buffer& owners, Buffer& header, Buffer& infos,
         Buffer& sizes, Buffer& addresses, Buffer& arena, uint64_t referenceAddress, uint32_t count,
         uint64_t stagingBytes, const ClusterAccelerationStructureProperties& properties,
-        bool reuse, bool useGPU, uint32_t moveBudget, std::string& log, PipelineCache* pipelineCache)
+        bool reuse, bool useGPU, uint32_t moveBudget, Buffer* priorityState,
+        uint64_t importanceAddress, uint64_t priorityOrderAddress, uint32_t referenceCapacity,
+        uint32_t buildCapacity, std::string& log, PipelineCache* pipelineCache)
     {
         enabled = useGPU;
         ownerCount = count;
         relocateBudget = moveBudget;
-        referenced = {&owners, &header, &infos, &sizes, &addresses};
+        referenced = {&owners, &header, &infos, &sizes, &addresses, priorityState};
         const auto buffer = [&](uint64_t bytes, std::unique_ptr<Buffer>& output, std::string_view label,
                                 MemoryLocation location = MemoryLocation::Device,
                                 BufferUsageBits usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
@@ -709,7 +712,8 @@ public:
             addresses.deviceAddress(), moveSources->deviceAddress(), moveDestinations->deviceAddress(), moveCounts->deviceAddress(),
             referenceAddress, arena.deviceAddress(), count, uint32_t(properties.bottomLevelStorageAlignment),
             uint32_t(arena.desc().size), moveBudget, uint32_t(nodeCount), std::min(count, 256u), reuse ? 1u : 0u, 0u,
-            relocationStaging ? relocationStaging->deviceAddress() : 0u};
+            relocationStaging ? relocationStaging->deviceAddress() : 0u,
+            priorityOrderAddress, importanceAddress, referenceCapacity, buildCapacity};
         if (!(result = updateHostBuffer(*parameters, &params, sizeof(params)))) { return result; }
         ShaderCompileResult compiled;
         result = ShaderRegistry::instance().getShader({.moduleName = "Features/GPUDriven/StreamBLASAllocator",
@@ -735,6 +739,7 @@ public:
     Result<> dispatch(CommandBuffer& commandBuffer, BindlessHeap& heap, uint32_t phase)
     {
         for (Buffer* buffer : referenced) {
+            if (!buffer) { continue; } // Representation priority metadata is optional.
             if (auto result = commandBuffer.retainResource(buffer->retainAllocation()); !result) { return result; }
         }
         for (Buffer* buffer : {state.get(), gaps.get(), allocations.get(), buildOwners.get(), moveSources.get(),
@@ -1534,7 +1539,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             kMeshletStreamRTRepresentationsPerPrimitive;
         const uint64_t representationStateWords = uint64_t(asset_.groupCount()) * 3u +
             uint64_t(asset_.lodLevelCount()) * 4u + uint64_t(asset_.primitiveCount()) * 12u +
-            uint64_t(asset_.instanceCount()) * 4u + representationCount * kMeshletStreamRTImportanceWords;
+            uint64_t(asset_.instanceCount()) * 4u + representationCount * (kMeshletStreamRTImportanceWords + 3u);
         if (blasRepresentationsEnabled_ &&
             (representationCount > UINT32_MAX || representationStateWords > UINT32_MAX)) {
             log = "MeshletStreamRuntime RT representation metadata exceeds GPU addressing limits";
@@ -1653,6 +1658,16 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 return makeError(Error::InvalidArgument);
             }
         }
+        bool priority = desc.enableBlasPriority;
+        if (const char* value = std::getenv("METALLIC_BLAS_PRIORITY")) {
+            if (std::strcmp(value, "0") == 0) { priority = false; }
+            else if (std::strcmp(value, "1") == 0) { priority = true; }
+            else {
+                log = "METALLIC_BLAS_PRIORITY must be 0 or 1";
+                return makeError(Error::InvalidArgument);
+            }
+        }
+        blasPriorityEnabled_ = priority && gpuAllocator && blasRepresentationsEnabled_;
         uint64_t persistentBytes = blasSizes.accelerationStructureSize;
         if (gpuAllocator && blasSizes.accelerationStructureSize > desc.maxBlasStagingBytes) {
             log = "Dirty BLAS implicit build arena exceeds maxBlasStagingBytes";
@@ -1703,7 +1718,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                                             std::unique_ptr<Buffer>& buffer, std::string_view label) {
                 return createNamedBuffer(device, BufferDesc{
                     .size = bytes, .structureStride = stride,
-                    .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                    .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::ShaderDeviceAddress,
                     .memoryLocation = MemoryLocation::Device,
                 }, buffer, log, label);
             };
@@ -1895,15 +1910,23 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         }
 
         gpuBlasAllocator_ = std::make_unique<GPUBLASAllocator>();
+        const uint64_t importanceOffset = (uint64_t(asset_.groupCount()) * 3u +
+            uint64_t(asset_.lodLevelCount()) * 4u + uint64_t(asset_.primitiveCount()) * 12u +
+            uint64_t(asset_.instanceCount()) * 4u) * sizeof(uint32_t);
+        const uint64_t importanceAddress = blasRepresentationsEnabled_
+            ? rtRepresentationStateBuffer_->deviceAddress() + importanceOffset : 0u;
+        const uint64_t priorityOrderAddress = blasPriorityEnabled_ ? importanceAddress +
+            uint64_t(rtRepresentationCount_) * sizeof(MeshletStreamGPURTRepresentationImportance) : 0u;
         result = gpuBlasAllocator_->initialize(device,
             *(blasRepresentationsEnabled_ ? rtRepresentationBuffer_ : instanceBlasBuffer_),
             *blasHeaderBuffer_, *blasBuildInfoBuffer_, *blasSizeBuffer_, *blasAddressBuffer_, *blasStorageBuffer_,
             blasClusterReferenceAddress_, instanceCapacity, blasSizes.accelerationStructureSize,
-            clusterProperties, blasInstanceReuse_, gpuAllocator, relocationBytes, log, pipelineCache);
+            clusterProperties, blasInstanceReuse_, gpuAllocator, relocationBytes, rtRepresentationStateBuffer_.get(),
+            importanceAddress, priorityOrderAddress, blasClusterReferenceCapacity_, blasBuildCapacity_, log, pipelineCache);
         if (!result) { return result; }
-        spdlog::info("[MeshletStreamRuntime] BLAS allocator={} persistentBytes={} stagingBytes={} relocationBudget={}",
+        spdlog::info("[MeshletStreamRuntime] BLAS allocator={} persistentBytes={} stagingBytes={} relocationBudget={} priority={}",
             gpuAllocator ? "gpu" : "legacy", persistentBytes,
-            gpuAllocator ? blasSizes.accelerationStructureSize : 0u, relocationBytes);
+            gpuAllocator ? blasSizes.accelerationStructureSize : 0u, relocationBytes, blasPriorityEnabled_);
 
         if (desc.maxFallbackBlasBytes == 0) {
             log = "MeshletStreamRuntime fallback BLAS budget must be non-zero";
@@ -2805,6 +2828,7 @@ void MeshletStreamRuntime::reset()
     blasClusterReferenceCapacity_ = 0;
     blasBuildCapacity_ = 0;
     blasRepresentationsEnabled_ = false;
+    blasPriorityEnabled_ = false;
     rtRepresentationCount_ = 0;
     rtRepresentationGroupCapacity_ = 0;
     rtRepresentationStateWordCount_ = 0;
@@ -4366,6 +4390,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.maxBlasClustersPerBuild = maxBlasClustersPerBuild_;
     params.blasStorageBytes = blasStorageBuffer_ ? static_cast<uint32_t>(blasStorageBuffer_->desc().size) : 0u;
     params.enableBlasGPUAllocator = gpuBlasAllocator_ && gpuBlasAllocator_->enabled ? 1u : 0u;
+    params.enableBlasPriority = blasPriorityEnabled_ ? 1u : 0u;
     const uint64_t blasStorageAddress = blasStorageBuffer_ ? blasStorageBuffer_->deviceAddress() : 0u;
     params.blasStorageAddressLow = static_cast<uint32_t>(blasStorageAddress);
     params.blasStorageAddressHigh = static_cast<uint32_t>(blasStorageAddress >> 32u);
@@ -4558,11 +4583,12 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
 }
 
 Result<> MeshletStreamRuntime::dispatchBlasPhase(CommandBuffer& commandBuffer, uint32_t phase,
-    uint32_t threadCount, bool publicationWrapped)
+    uint32_t threadCount, bool publicationWrapped, uint32_t sortParameters)
 {
     MeshletStreamUserPush push = userPush();
     push.activeBuildPhase = phase;
     push.traversalPhase = (*blasCacheInitialized_ ? 0u : 1u) | (publicationWrapped ? 2u : 0u);
+    if (phase == 36u || phase == 37u) { push.traversalPhase = sortParameters; }
     const auto transitionRT = [&](bool force) -> Result<> {
         if (!blasRepresentationsEnabled_) { return {}; }
         for (auto [buffer, state] : {
@@ -4638,11 +4664,26 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
         if (result) { result = dispatchPhase(29u, asset_.instanceCount()); }
         if (result) { result = dispatchPhase(22u, asset_.primitiveCount()); }
         if (result) { result = dispatchPhase(23u, asset_.instanceCount()); }
+        if (result && blasPriorityEnabled_) {
+            result = dispatchPhase(35u, rtRepresentationCount_);
+            uint32_t parity = 0u;
+            for (uint32_t width = 6u; result && (uint64_t(1) << width) < rtRepresentationCount_; ++width) {
+                result = dispatchBlasPhase(commandBuffer, 36u, rtRepresentationCount_, publicationWrapped,
+                    width | (parity << 8u));
+                parity ^= 1u;
+            }
+            if (result) { result = dispatchBlasPhase(commandBuffer, 37u, rtRepresentationCount_, publicationWrapped, parity << 8u); }
+        }
         if (!result) { return result; }
         if (checkpoint) { checkpoint("BeforeRTRepresentationCut"); }
         result = dispatchPhase(25u, asset_.primitiveCount());
         if (result) { result = dispatchPhase(31u, asset_.primitiveCount()); }
         if (result) { result = dispatchPhase(26u, 1u); }
+        if (result && blasPriorityEnabled_) {
+            result = dispatchPhase(38u, rtRepresentationCount_);
+            if (result) { result = dispatchPhase(39u, 1u); }
+            if (result) { result = dispatchPhase(40u, rtRepresentationCount_); }
+        }
         if (result) { result = dispatchPhase(32u, asset_.primitiveCount()); }
         if (result) { result = dispatchPhase(33u, 1u); }
         if (result) { result = dispatchPhase(34u, asset_.primitiveCount()); }
@@ -5193,6 +5234,25 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.blasArenaRepack = recentBlasHeader_.arenaRepack;
     if (gpuBlasAllocator_) {
         result.blasGPUAllocatorEnabled = gpuBlasAllocator_->enabled;
+        result.blasPriorityEnabled = blasPriorityEnabled_;
+        result.blasRequestedVisibleConsumers = recentBlasAllocatorState_[kBLASAllocatorRequestedVisibleWord];
+        result.blasRequestedOffscreenConsumers = recentBlasAllocatorState_[kBLASAllocatorRequestedOffscreenWord];
+        result.blasRejectedVisibleConsumers = recentBlasAllocatorState_[kBLASAllocatorRejectedVisibleWord];
+        result.blasRejectedOffscreenConsumers = recentBlasAllocatorState_[kBLASAllocatorRejectedOffscreenWord];
+        const auto errorPixels = [](uint32_t key) { return key == 0u ? 0.0f : std::bit_cast<float>(key - 1u); };
+        result.blasRejectedMaxErrorPixels = errorPixels(recentBlasAllocatorState_[kBLASAllocatorRejectedMaxErrorWord]);
+        result.blasRejectedVisibleMaxErrorPixels = errorPixels(recentBlasAllocatorState_[kBLASAllocatorRejectedVisibleMaxErrorWord]);
+        result.blasAdmittedOffscreenConsumers = recentBlasAllocatorState_[kBLASAllocatorAdmittedOffscreenWord];
+        result.blasPriorityEvictedOwners = recentBlasAllocatorState_[kBLASAllocatorPriorityEvictedWord];
+        result.blasCompactionTargetBytes = recentBlasAllocatorState_[kBLASAllocatorCompactionTargetWord];
+        result.blasWaitingBuildCount = recentBlasAllocatorState_[kBLASAllocatorWaitingCountWord];
+        result.blasPostBuildBudgetRejected = recentBlasAllocatorState_[kBLASAllocatorPostBuildBudgetRejectedWord];
+        result.blasPhysicalAllocationFailed = recentBlasAllocatorState_[kBLASAllocatorPhysicalAllocationFailedWord];
+        result.blasWaitingClaimBytes = recentBlasAllocatorState_[kBLASAllocatorWaitingClaimBytesWord];
+        result.blasMaxWaitingBytes = recentBlasAllocatorState_[kBLASAllocatorMaxWaitingBytesWord];
+        result.blasUnknownBuildCount = recentBlasAllocatorState_[kBLASAllocatorUnknownBuildCountWord];
+        result.blasProjectedRetryDeferredCount = recentBlasAllocatorState_[kBLASAllocatorProjectedRetryDeferredCountWord];
+        result.blasProjectedDirtyClaimBytes = recentBlasAllocatorState_[kBLASAllocatorProjectedDirtyClaimBytesWord];
         result.blasEncodedBytes = recentBlasAllocatorState_[kBLASAllocatorEncodedBytesWord];
         result.blasAllocatedBytes = recentBlasAllocatorState_[kBLASAllocatorAllocatedBytesWord];
         result.blasFreeBytes = recentBlasAllocatorState_[kBLASAllocatorFreeBytesWord];

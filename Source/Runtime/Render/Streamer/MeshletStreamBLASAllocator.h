@@ -18,8 +18,10 @@ struct MeshletStreamBLASAllocatorParameters
     uint32_t ownerCount, alignment, storageBytes, relocateBudget;
     uint32_t nodeCapacity, relocateScanCount, reuseEnable, reserved;
     uint64_t relocationArena;
+    uint64_t priorityOrder, importance;
+    uint32_t referenceCapacity, buildCapacity;
 };
-static_assert(sizeof(MeshletStreamBLASAllocatorParameters) == 152);
+static_assert(sizeof(MeshletStreamBLASAllocatorParameters) == 176);
 
 struct MeshletStreamBLASAllocatorGap
 {
@@ -41,7 +43,7 @@ struct MeshletStreamBLASAllocatorPush
 };
 static_assert(sizeof(MeshletStreamBLASAllocatorPush) == 16);
 
-inline constexpr uint32_t kBLASAllocatorStateWords = 112;
+inline constexpr uint32_t kBLASAllocatorStateWords = 128;
 inline constexpr uint32_t kBLASAllocatorEpochWord = 99;
 inline constexpr uint32_t kBLASAllocatorEncodedBytesWord = 102;
 inline constexpr uint32_t kBLASAllocatorAllocatedBytesWord = 103;
@@ -52,4 +54,21 @@ inline constexpr uint32_t kBLASAllocatorRelocatedCountWord = 107;
 inline constexpr uint32_t kBLASAllocatorRelocatedBytesWord = 108;
 inline constexpr uint32_t kBLASAllocatorFailedAllocationsWord = 109;
 inline constexpr uint32_t kBLASAllocatorPressureTargetWord = 110;
+inline constexpr uint32_t kBLASAllocatorRequestedVisibleWord = 112;
+inline constexpr uint32_t kBLASAllocatorRequestedOffscreenWord = 113;
+inline constexpr uint32_t kBLASAllocatorRejectedVisibleWord = 114;
+inline constexpr uint32_t kBLASAllocatorRejectedOffscreenWord = 115;
+inline constexpr uint32_t kBLASAllocatorRejectedMaxErrorWord = 116;
+inline constexpr uint32_t kBLASAllocatorRejectedVisibleMaxErrorWord = 117;
+inline constexpr uint32_t kBLASAllocatorAdmittedOffscreenWord = 118;
+inline constexpr uint32_t kBLASAllocatorPriorityEvictedWord = 119;
+inline constexpr uint32_t kBLASAllocatorCompactionTargetWord = 110;
+inline constexpr uint32_t kBLASAllocatorWaitingCountWord = 111;
+inline constexpr uint32_t kBLASAllocatorPostBuildBudgetRejectedWord = 120;
+inline constexpr uint32_t kBLASAllocatorPhysicalAllocationFailedWord = 121;
+inline constexpr uint32_t kBLASAllocatorWaitingClaimBytesWord = 122;
+inline constexpr uint32_t kBLASAllocatorMaxWaitingBytesWord = 123;
+inline constexpr uint32_t kBLASAllocatorUnknownBuildCountWord = 124;
+inline constexpr uint32_t kBLASAllocatorProjectedRetryDeferredCountWord = 125;
+inline constexpr uint32_t kBLASAllocatorProjectedDirtyClaimBytesWord = 126;
 } // namespace metallic::render

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstring>
 #include <fstream>
 #include <numeric>
@@ -140,6 +141,8 @@ using Owners = std::array<MeshletStreamGPUInstanceBLAS, kOwners>;
 using Allocations = std::array<MeshletStreamBLASAllocatorAllocation, kOwners>;
 using Gaps = std::array<MeshletStreamBLASAllocatorGap, kNodes>;
 using State = std::array<uint32_t, kBLASAllocatorStateWords>;
+using PriorityOrder = std::array<uint32_t, kOwners>;
+using PriorityImportance = std::array<std::array<uint32_t, 6>, kOwners>;
 
 struct Frame {
     Owners owners;
@@ -153,7 +156,7 @@ struct Frame {
 struct AllocatorScenario {
     AllocatorFixture fixture;
     Buffer &state, &gaps, &allocations, &owners, &header, &buildInfos, &buildOwners;
-    Buffer &sizes, &sourceAddresses, &moveSources, &moveDestinations, &moveCounts, &parameters;
+    Buffer &sizes, &sourceAddresses, &moveSources, &moveDestinations, &moveCounts, &parameters, &priorityOrder, &importance;
     MeshletStreamBLASAllocatorParameters params{};
     std::array<uint32_t, kOwners> encoded{};
     nlohmann::json frames = nlohmann::json::array();
@@ -167,7 +170,8 @@ struct AllocatorScenario {
         buildOwners(fixture.buffer(kOwners * 4)), sizes(fixture.buffer(kOwners * 4)),
         sourceAddresses(fixture.buffer(kOwners * 8)), moveSources(fixture.buffer(kOwners * 2 * 8)),
         moveDestinations(fixture.buffer(kOwners * 2 * 8)), moveCounts(fixture.buffer(8)),
-        parameters(fixture.buffer(sizeof(params)))
+        parameters(fixture.buffer(sizeof(params))), priorityOrder(fixture.buffer(sizeof(PriorityOrder))),
+        importance(fixture.buffer(sizeof(PriorityImportance)))
     {
         params = {state.deviceAddress(), gaps.deviceAddress(), allocations.deviceAddress(), owners.deviceAddress(),
             header.deviceAddress(), buildInfos.deviceAddress(), buildOwners.deviceAddress(), sizes.deviceAddress(),
@@ -179,6 +183,22 @@ struct AllocatorScenario {
         for (uint32_t i = 0; i < kOwners; ++i) { sources[i] = 0x400000000ull + uint64_t(i) * 65536; }
         fixture.write(sourceAddresses, sources);
         fixture.begin(); dispatch(0); fixture.finish();
+    }
+
+    void priority(const PriorityImportance& values, uint32_t referenceCapacity, uint32_t buildCapacity)
+    {
+        PriorityOrder order;
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+            if (values[a][0] != values[b][0]) { return values[a][0] > values[b][0]; }
+            if (values[a][1] != values[b][1]) { return values[a][1] < values[b][1]; }
+            if (values[a][2] != values[b][2]) { return values[a][2] > values[b][2]; }
+            return a < b;
+        });
+        fixture.write(priorityOrder, order); fixture.write(importance, values);
+        params.priorityOrder = priorityOrder.deviceAddress(); params.importance = importance.deviceAddress();
+        params.referenceCapacity = referenceCapacity; params.buildCapacity = buildCapacity;
+        fixture.write(parameters, params);
     }
 
     void dispatch(uint32_t phase)
@@ -218,7 +238,13 @@ struct AllocatorScenario {
         const auto prepared = snapshot();
         const auto ids = fixture.read<std::array<uint32_t, kOwners>>(buildOwners);
         std::array<uint32_t, kOwners> bytes{};
-        for (uint32_t i = 0; i < prepared.header.blasBuildCount; ++i) { bytes[i] = encoded[ids[i]]; }
+        auto inserted = prepared.owners;
+        for (uint32_t i = 0; i < prepared.header.blasBuildCount; ++i) {
+            bytes[i] = encoded[ids[i]];
+            // Model the production reference-insertion stage before Build.
+            inserted[ids[i]].insertedClusterCount = inserted[ids[i]].selectedClusterCount;
+        }
+        fixture.write(owners, inserted);
         fixture.write(sizes, bytes);
         fixture.begin(); dispatch(2);
         if (inspectPendingMoves) {
@@ -283,6 +309,16 @@ struct AllocatorScenario {
             {"relocatedBytes", output.state[kBLASAllocatorRelocatedBytesWord]},
             {"suppressedBuilds", output.state[kBLASAllocatorSuppressedBuildsWord]},
             {"pressureTargetBytes", output.state[kBLASAllocatorPressureTargetWord]},
+            {"referenceBudgetRejected", output.header.referenceBudgetRejected},
+            {"buildBudgetRejected", output.header.buildBudgetRejected},
+            {"priorityEvicted", output.state[kBLASAllocatorPriorityEvictedWord]},
+            {"postBuildBudgetRejected", output.state[kBLASAllocatorPostBuildBudgetRejectedWord]},
+            {"physicalAllocationFailed", output.state[kBLASAllocatorPhysicalAllocationFailedWord]},
+            {"waitingClaimBytes", output.state[kBLASAllocatorWaitingClaimBytesWord]},
+            {"maxWaitingBytes", output.state[kBLASAllocatorMaxWaitingBytesWord]},
+            {"unknownBuildCount", output.state[kBLASAllocatorUnknownBuildCountWord]},
+            {"projectedRetryDeferredCount", output.state[kBLASAllocatorProjectedRetryDeferredCountWord]},
+            {"projectedDirtyClaimBytes", output.state[kBLASAllocatorProjectedDirtyClaimBytesWord]},
             {"storageRejected", output.header.storageRejected}});
         return output;
     }
@@ -318,6 +354,104 @@ struct AllocatorScenario {
             encodedBytes == output.state[kBLASAllocatorEncodedBytesWord] &&
             allocated + output.state[kBLASAllocatorFreeBytesWord] == params.storageBytes,
             "Live/free byte accounting leaks or double-counts storage");
+    }
+};
+
+// Consume an actual allocator frame's header through the next frame's
+// production representation planner. The cache becomes idle only here; it was
+// an active clean survivor in the allocator frame that produced the header.
+struct IdleCacheAdmissionProbe {
+    enum Input { Params, Primitives, RTState, Header, Active, Representations, InputCount };
+    static constexpr uint32_t kCapacity = 8, kRTStateWords = 16 + 3 * 9;
+    AllocatorFixture& fixture;
+    std::unique_ptr<BindlessHeap> heap;
+    std::unique_ptr<ShaderModule> shader;
+    std::unique_ptr<ComputePipeline> pipeline;
+    std::array<Buffer*, InputCount> buffers;
+    std::array<BindlessHandle, InputCount> handles;
+
+    explicit IdleCacheAdmissionProbe(AllocatorFixture& value) : fixture(value)
+    {
+        heap = checked(fixture.device.createBindlessHeap({.maxBuffers = InputCount}));
+        const uint64_t sizes[] = {sizeof(MeshletStreamGPUParams), sizeof(MeshletStreamGPUPrimitive),
+            kRTStateWords * 4, sizeof(MeshletStreamGPUBLASHeader) + (kCapacity + 1) * 16,
+            sizeof(MeshletStreamGPUActiveHeader), 3 * sizeof(MeshletStreamGPUInstanceBLAS)};
+        for (uint32_t input = 0; input < InputCount; ++input) {
+            buffers[input] = &fixture.buffer(sizes[input]);
+            handles[input] = checked(heap->allocate(BindlessHandleKind::Buffer));
+            checked(heap->writeStorageBuffer(handles[input], checked(buffers[input]->slice())));
+        }
+        std::string diagnostics;
+        auto compiled = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+            .entryPointName = kMeshletStreamBLASInputEntryPoint, .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, diagnostics);
+        if (!compiled) { throw std::runtime_error(diagnostics); }
+        shader = checked(fixture.device.createShaderModule({.spirv = compiled->spirv}));
+        pipeline = checked(fixture.device.createComputePipeline({.computeShader = {shader.get()},
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}));
+    }
+
+    void check(MeshletStreamGPUBLASHeader precedingHeader, bool priority, bool expectEviction)
+    {
+        MeshletStreamGPUParams params{};
+        params.scenePrimitiveCount = params.sceneLodLevelCount = 1;
+        params.rtRepresentationCount = 3;
+        params.rtRepresentationGroupCapacity = kCapacity;
+        params.rtRepresentationStateBuffer = handles[RTState].shaderIndex;
+        params.rtRepresentationHeaderBuffer = handles[Active].shaderIndex;
+        params.rtRepresentationBuffer = handles[Representations].shaderIndex;
+        params.lodTopologyBuffer = params.lodStateBuffer = handles[RTState].shaderIndex;
+        params.enableBlasRepresentations = params.enableBlasGPUAllocator = 1;
+        params.enableBlasPriority = priority;
+        params.blasClusterReferenceCapacity = params.blasStorageBytes = params.blasBuildCapacity = UINT32_MAX;
+        MeshletStreamGPUPrimitive primitive{};
+        primitive.lodLevelCount = 1;
+        std::array<MeshletStreamGPUInstanceBLAS, 3> representations{};
+        representations[2].previousGroupCount = 1;
+        std::array<uint32_t, kRTStateWords> rtState{};
+        rtState[0] = rtState[10] = 3;
+        rtState[1] = 3 * 64;
+        rtState[15] = 1u << 29; // The discrete cache became idle in this frame.
+        for (uint32_t owner = 0; owner < 3; ++owner) { rtState[16 + owner * 6 + 1] = 0x7f7fffffu; }
+        rtState[16] = 1;
+        rtState[19] = rtState[20] = 1;
+        // Representation counts belong to this probe scene. All allocator
+        // rejection/overflow counters are passed through without modification.
+        precedingHeader.representationCount = 2;
+        precedingHeader.representationGroupCount = precedingHeader.representationGroupOverflow = 0;
+        MeshletStreamGPUActiveHeader active{};
+        active.activeGroupCapacity = kCapacity;
+        fixture.write(*buffers[Params], params);
+        fixture.write(*buffers[Primitives], primitive);
+        fixture.write(*buffers[RTState], rtState);
+        fixture.write(*buffers[Header], precedingHeader);
+        fixture.write(*buffers[Active], active);
+        fixture.write(*buffers[Representations], representations);
+        MeshletStreamUserPush push{.pageTableBuffer = handles[RTState].shaderIndex,
+            .paramsBuffer = handles[Params].shaderIndex, .instanceBuffer = handles[Primitives].shaderIndex,
+            .primitiveBuffer = handles[Primitives].shaderIndex, .groupBuffer = handles[Primitives].shaderIndex,
+            .blasHeaderBuffer = handles[Header].shaderIndex};
+        fixture.begin();
+        checked(fixture.commands->bindBindlessHeap(*heap));
+        const auto dispatch = [&](uint32_t phase) {
+            push.activeBuildPhase = phase;
+            checked(fixture.commands->bindExecution(pipeline->execution(), &push, sizeof(push)));
+            checked(fixture.commands->dispatch(1)); fixture.barrier();
+        };
+        if (priority) { dispatch(35); dispatch(37); }
+        dispatch(31); dispatch(26);
+        if (priority) { dispatch(38); dispatch(39); dispatch(40); }
+        dispatch(32); dispatch(33); dispatch(34);
+        fixture.finish();
+        rtState = fixture.read<decltype(rtState)>(*buffers[RTState]);
+        const auto header = fixture.read<MeshletStreamGPUBLASHeader>(*buffers[Header]);
+        active = fixture.read<MeshletStreamGPUActiveHeader>(*buffers[Active]);
+        require(((rtState[15] & (1u << 30)) != 0) == expectEviction &&
+            header.representationPadding == uint32_t(expectEviction) &&
+            header.representationCount == (expectEviction ? 1u : 2u) &&
+            rtState[10] == (expectEviction ? 2u : 3u) && active.activeGroupCount == rtState[10],
+            "Next-frame production representation planning confused projected retry delay with actual storage pressure");
+        require(header.storageRejected == precedingHeader.storageRejected,
+            "Idle-cache pressure probe changed the allocator rejection counter it was meant to consume");
     }
 };
 
@@ -566,6 +700,497 @@ public:
             require(suppressedAfterRelocationFrames >= 2 && recoveryBuilds == 1,
                 "Fragmented rejection did not survive multiple relocation epochs and retry exactly once when a fitting gap appeared");
 
+            phase = "priority dirty-only reference and build budgets";
+            PriorityImportance priorities{};
+            for (auto& priority : priorities) { priority[1] = 0x7f7fffffu; }
+            for (const uint32_t owner : {0u, 64u, 136u}) {
+                priorities[owner] = {std::bit_cast<uint32_t>(float(owner + 1)) + 1,
+                    std::bit_cast<uint32_t>(float(kOwners - owner)), std::bit_cast<uint32_t>(.25f), 1, 1, 0};
+            }
+            priorities[0][3] = 4; priorities[0][5] = 3;
+            nlohmann::json dirtyBudgetFrames = nlohmann::json::array();
+            for (const bool referenceLimited : {true, false}) {
+                AllocatorScenario budget(*device, 4096, 0);
+                const uint32_t referenceCapacity = referenceLimited ? 4u : 64u;
+                const uint32_t buildCapacity = referenceLimited ? kOwners : 1u;
+                budget.priority(priorities, referenceCapacity, buildCapacity);
+                owners = budget.inputs();
+                for (const uint32_t owner : {0u, 64u, 136u}) {
+                    owners[owner].selectedClusterCount = 4;
+                    owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                    budget.encoded[owner] = 512;
+                }
+                for (const uint32_t expected : {136u, 64u, 0u}) {
+                    value = budget.frame(owners);
+                    require(value.header.blasBuildCount == 1 && value.header.clusterReferenceCount == 4 &&
+                        value.owners[expected].cachedValid == 1 && value.owners[expected].clusterReferenceOffset == 0,
+                        "Priority did not admit the highest dirty owner or charged a clean cached owner against the build/reference budget");
+                    require(value.header.blasBuildCount <= buildCapacity && value.header.clusterReferenceCount <= referenceCapacity,
+                        "Dirty priority work exceeded its reference/build capacity");
+                    owners = budget.inputs();
+                }
+                for (uint32_t frame = 0; frame < 32; ++frame) {
+                    value = budget.frame(budget.inputs());
+                    require(value.header.blasBuildCount == 0 && value.header.clusterReferenceCount == 0 &&
+                        value.header.reusedInstances == 3 && value.header.liveClusterReferences == 12 &&
+                        value.header.referenceBudgetRejected == 0 && value.header.buildBudgetRejected == 0,
+                        "Clean priority owners consumed dirty-only budgets or failed to converge to zero builds");
+                }
+                dirtyBudgetFrames.push_back({{"referenceLimited", referenceLimited}, {"frames", budget.frames}});
+            }
+
+            phase = "known-size priority-only storage replacement";
+            AllocatorScenario rankedStorage(*device, 1024, 0);
+            rankedStorage.priority(priorities, 64, kOwners);
+            owners = rankedStorage.inputs();
+            for (const uint32_t owner : {0u, 64u, 136u}) {
+                owners[owner].selectedClusterCount = 4;
+                owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                rankedStorage.encoded[owner] = 512;
+            }
+            value = rankedStorage.frame(owners);
+            require(value.owners[136].cachedValid == 1 && value.owners[64].cachedValid == 1 &&
+                value.owners[0].cachedValid == 2 && value.header.storageRejected == 1,
+                "Actual-size storage did not preserve the highest-priority owners");
+            require(value.state[kBLASAllocatorUnknownBuildCountWord] == 3 &&
+                value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 1 &&
+                value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 0 &&
+                value.state[kBLASAllocatorWaitingClaimBytesWord] == 0 && value.state[kBLASAllocatorMaxWaitingBytesWord] == 0,
+                "Initial unknown-size budget rejection was confused with fragmentation or a known waiting claim");
+            require(value.state[kBLASAllocatorRequestedVisibleWord] == 3 &&
+                value.state[kBLASAllocatorRequestedOffscreenWord] == 3 &&
+                value.state[kBLASAllocatorRejectedVisibleWord] == 1 &&
+                value.state[kBLASAllocatorRejectedOffscreenWord] == 3 &&
+                value.state[kBLASAllocatorRejectedMaxErrorWord] == priorities[0][0],
+                "Priority feedback did not count all shared visible/offscreen consumers of the rejected owner");
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = rankedStorage.frame(rankedStorage.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.storageRejected == 1 &&
+                    value.state[kBLASAllocatorPriorityEvictedWord] == 0 &&
+                    value.state[kBLASAllocatorUnknownBuildCountWord] == 0 &&
+                    value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 0 &&
+                    value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 0 &&
+                    value.state[kBLASAllocatorWaitingClaimBytesWord] == 0 && value.state[kBLASAllocatorMaxWaitingBytesWord] == 0,
+                    "Stable ranked storage rebuilt its negative cache or oscillated clean admission");
+            }
+            const uint32_t survivorOffset = value.owners[136].storageOffset;
+            priorities[0][0] = std::bit_cast<uint32_t>(1000.f) + 1;
+            rankedStorage.priority(priorities, 64, kOwners);
+            const auto beforePriorityCancel = rankedStorage.snapshot();
+            owners = rankedStorage.inputs();
+            const auto cancelledPriority = rankedStorage.frame(owners, true);
+            require(std::memcmp(cancelledPriority.allocations.data(), beforePriorityCancel.allocations.data(), sizeof(Allocations)) == 0 &&
+                std::memcmp(cancelledPriority.state.data(), beforePriorityCancel.state.data(), sizeof(State)) == 0,
+                "Cancelled priority admission changed persistent allocations or negative-cache state");
+            value = rankedStorage.frame(owners);
+            require(value.header.blasBuildCount == 1 && value.owners[0].cachedValid == 1 &&
+                value.owners[136].cachedValid == 1 && value.owners[136].storageOffset == survivorOffset &&
+                value.owners[64].cachedValid == 2 && value.state[kBLASAllocatorPriorityEvictedWord] == 1,
+                "A priority-only change did not replace exactly the lower-priority clean owner while preserving its survivor");
+            require(value.state[kBLASAllocatorUnknownBuildCountWord] == 0 &&
+                value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 0 &&
+                value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 0 &&
+                value.state[kBLASAllocatorWaitingClaimBytesWord] == 0 && value.state[kBLASAllocatorMaxWaitingBytesWord] == 0,
+                "Priority-only rebuilding of a measured negative entry was counted as unknown work or a failed allocation");
+            require(value.state[kBLASAllocatorRejectedVisibleWord] == 1 &&
+                value.state[kBLASAllocatorRejectedOffscreenWord] == 0 &&
+                value.state[kBLASAllocatorAdmittedOffscreenWord] == 3 &&
+                value.state[kBLASAllocatorRejectedMaxErrorWord] == priorities[64][0],
+                "Priority replacement did not publish the new rejected owner and admitted offscreen consumers");
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = rankedStorage.frame(rankedStorage.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.storageRejected == 1 &&
+                    value.moves[0] == 0 && value.moves[1] == 0 && value.state[kBLASAllocatorPriorityEvictedWord] == 0 &&
+                    value.owners[0].cachedValid == 1 && value.owners[136].cachedValid == 1 && value.owners[64].cachedValid == 2,
+                    "Priority-only storage replacement did not settle for 32 consecutive frames");
+            }
+
+            phase = "fragmented high-priority wait must not starve fitting dirty work";
+            AllocatorScenario fragmentedPriority(*device, 4096, 0);
+            PriorityImportance waitingPriorities{};
+            for (auto& priority : waitingPriorities) { priority[1] = 0x7f7fffffu; }
+            owners = fragmentedPriority.inputs();
+            for (uint32_t owner = 0; owner < 8; ++owner) {
+                owners[owner].selectedClusterCount = 4;
+                owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                fragmentedPriority.encoded[owner] = 512;
+                waitingPriorities[owner] = {std::bit_cast<uint32_t>(float(100 + owner)) + 1,
+                    std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            }
+            fragmentedPriority.priority(waitingPriorities, 64, kOwners);
+            value = fragmentedPriority.frame(owners);
+            require(value.state[kBLASAllocatorFreeBytesWord] == 0, "Priority starvation fixture did not fill its arena");
+            std::iota(byOffset.begin(), byOffset.end(), 0);
+            std::sort(byOffset.begin(), byOffset.end(), [&](uint32_t a, uint32_t b) {
+                return value.owners[a].storageOffset < value.owners[b].storageOffset;
+            });
+            owners = fragmentedPriority.inputs();
+            for (const uint32_t position : {1u, 3u, 5u, 7u}) {
+                const uint32_t owner = byOffset[position];
+                owners[owner] = {};
+                waitingPriorities[owner] = {0, 0x7f7fffffu, 0, 0, 0, 0};
+            }
+            owners[136].selectedClusterCount = 4;
+            owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            fragmentedPriority.encoded[136] = 1024;
+            waitingPriorities[136] = {std::bit_cast<uint32_t>(1000.f) + 1,
+                std::bit_cast<uint32_t>(.1f), 0, 1, 1, 0};
+            fragmentedPriority.priority(waitingPriorities, 4, 1);
+            value = fragmentedPriority.frame(owners);
+            require(value.header.blasBuildCount == 1 && value.owners[136].cachedValid == 2 &&
+                value.state[kBLASAllocatorFreeBytesWord] == 2048 && value.state[kBLASAllocatorLargestFreeWord] == 512,
+                "Priority starvation fixture lacks a known high-priority request waiting on fragmented space");
+            require(value.state[kBLASAllocatorUnknownBuildCountWord] == 1 &&
+                value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 1 &&
+                value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 0 &&
+                value.state[kBLASAllocatorWaitingClaimBytesWord] == 0 && value.state[kBLASAllocatorMaxWaitingBytesWord] == 0,
+                "An initially unknown fitting-budget request failed physically without the matching fragmentation counter");
+            // The waiting 1024-byte owner retains its storage claim, but must
+            // not reserve the sole build slot or four-reference work budget.
+            // Four lower-ranked 256-byte owners can fit; a fifth would invade
+            // that claim and must remain rejected after its actual size is known.
+            for (uint32_t index = 0; index < 5; ++index) {
+                const uint32_t owner = 135 - index;
+                owners = fragmentedPriority.inputs();
+                owners[owner].selectedClusterCount = 4;
+                owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                fragmentedPriority.encoded[owner] = 256;
+                waitingPriorities[owner] = {std::bit_cast<uint32_t>(float(50 - index)) + 1,
+                    std::bit_cast<uint32_t>(10.f), 0, 1, 1, 0};
+                fragmentedPriority.priority(waitingPriorities, 4, 1);
+                value = fragmentedPriority.frame(owners);
+                require(value.header.blasBuildCount == 1 && value.header.clusterReferenceCount == 4 &&
+                    value.owners[136].cachedValid == 2 && value.moves[1] == 0 &&
+                    value.state[kBLASAllocatorPriorityEvictedWord] == 0,
+                    "A non-fitting high-priority negative entry starved lower-ranked fitting dirty work");
+                require(value.owners[owner].cachedValid == (index < 4 ? 1u : 2u) &&
+                    value.state[kBLASAllocatorAllocatedBytesWord] == 2048 + std::min(index + 1, 4u) * 256 &&
+                    value.state[kBLASAllocatorPressureTargetWord] == 1024,
+                    "Lower-ranked dirty work consumed the waiting owner's persistent storage claim");
+                require(value.state[kBLASAllocatorUnknownBuildCountWord] == 1 &&
+                    value.state[kBLASAllocatorWaitingClaimBytesWord] == 1024 && value.state[kBLASAllocatorMaxWaitingBytesWord] == 1024 &&
+                    value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 0 &&
+                    value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == (index == 4 ? 1u : 0u),
+                    "Waiting claims, newly measured builds and post-build budget failures were not distinguished");
+            }
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = fragmentedPriority.frame(fragmentedPriority.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.clusterReferenceCount == 0 &&
+                    value.header.storageRejected == 2 && value.state[kBLASAllocatorSuppressedBuildsWord] == 2 &&
+                    value.state[kBLASAllocatorAllocatedBytesWord] == 3072 &&
+                    value.state[kBLASAllocatorFreeBytesWord] == 1024 && value.state[kBLASAllocatorLargestFreeWord] == 512 &&
+                    value.state[kBLASAllocatorPressureTargetWord] == 1024 && value.moves[0] == 0 && value.moves[1] == 0,
+                    "Disabled compaction failed to retain the high-priority storage claim and converge without rebuilds");
+                require(value.state[kBLASAllocatorUnknownBuildCountWord] == 0 &&
+                    value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 0 &&
+                    value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 0 &&
+                    value.state[kBLASAllocatorWaitingClaimBytesWord] == 1024 && value.state[kBLASAllocatorMaxWaitingBytesWord] == 1024,
+                    "Stationary waiting state retained stale build/failure counters or lost its reserved claim");
+                for (const uint32_t owner : {132u, 133u, 134u, 135u}) {
+                    require(value.owners[owner].cachedValid == 1, "Fitting lower-priority work was lost after admission");
+                }
+            }
+
+            phase = "projected dirty overestimate delays exact negative retry without eviction";
+            AllocatorScenario projectedShrink(*device, 1536, 0);
+            PriorityImportance projectedPriorities{};
+            for (auto& priority : projectedPriorities) { priority[1] = 0x7f7fffffu; }
+            for (const uint32_t owner : {0u, 64u, 136u}) {
+                projectedPriorities[owner] = {std::bit_cast<uint32_t>(float(owner + 1)) + 1,
+                    std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            }
+            projectedShrink.priority(projectedPriorities, 64, kOwners);
+            owners = projectedShrink.inputs();
+            for (const uint32_t owner : {0u, 64u, 136u}) {
+                owners[owner].selectedClusterCount = 4;
+                owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            }
+            projectedShrink.encoded[136] = 1280;
+            projectedShrink.encoded[64] = 256;
+            projectedShrink.encoded[0] = 512;
+            value = projectedShrink.frame(owners);
+            require(value.owners[136].cachedValid == 1 && value.owners[64].cachedValid == 1 &&
+                value.owners[0].cachedValid == 2 && value.allocations[0].encodedBytes == 512 &&
+                value.allocations[136].pendingBytes == 1280,
+                "Projected shrink fixture lacks resident size history and an exact negative cache");
+            const auto exactNegative = value.allocations[0];
+            const uint32_t projectedSurvivorOffset = value.owners[64].storageOffset;
+            projectedPriorities[0][0] = std::bit_cast<uint32_t>(100.f) + 1;
+            projectedShrink.priority(projectedPriorities, 64, kOwners);
+            projectedShrink.encoded[136] = 256;
+            owners = projectedShrink.inputs();
+            owners[136].flags |= kDirty;
+            const auto beforeProjectedCancel = projectedShrink.snapshot();
+            const auto cancelledProjected = projectedShrink.frame(owners, true);
+            require(std::memcmp(cancelledProjected.allocations.data(), beforeProjectedCancel.allocations.data(), sizeof(Allocations)) == 0 &&
+                std::memcmp(cancelledProjected.state.data(), beforeProjectedCancel.state.data(), sizeof(State)) == 0,
+                "Cancelled projected admission changed actual-size history or negative-cache state");
+            value = projectedShrink.frame(owners);
+            require(value.header.blasBuildCount == 1 && value.header.clusterReferenceCount == 4 &&
+                value.state[kBLASAllocatorUnknownBuildCountWord] == 1 && value.owners[136].cachedValid == 1 &&
+                value.allocations[136].encodedBytes == 256 && value.allocations[136].pendingBytes == 256 &&
+                value.owners[0].cachedValid == 2 && value.allocations[0].encodedBytes == exactNegative.encodedBytes &&
+                value.allocations[0].pendingBytes == exactNegative.pendingBytes &&
+                value.allocations[0].rejectedEpoch == exactNegative.rejectedEpoch &&
+                value.owners[64].cachedValid == 1 && value.owners[64].storageOffset == projectedSurvivorOffset &&
+                value.state[kBLASAllocatorAllocatedBytesWord] == 512 && value.state[kBLASAllocatorPriorityEvictedWord] == 0 &&
+                value.state[kBLASAllocatorWaitingClaimBytesWord] == 0 && value.state[kBLASAllocatorPressureTargetWord] == 0 &&
+                value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 0 && value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 0,
+                "An old-size overestimate rebuilt or claimed storage for a deferred negative entry, evicted a clean owner, or replaced exact history");
+            require(value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 1 &&
+                value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 1280 &&
+                value.header.storageRejected == 0 && value.state[kBLASAllocatorSuppressedBuildsWord] == 1 &&
+                value.header.overflowCount != 0,
+                "Dirty shrink did not separately account its old-size prediction and deferred exact retry");
+            IdleCacheAdmissionProbe idleCacheProbe(projectedShrink.fixture);
+            idleCacheProbe.check(value.header, false, false);
+            idleCacheProbe.check(value.header, true, false);
+            value = projectedShrink.frame(projectedShrink.inputs());
+            require(value.header.blasBuildCount == 1 && value.header.clusterReferenceCount == 4 &&
+                value.state[kBLASAllocatorUnknownBuildCountWord] == 0 && value.owners[0].cachedValid == 1 &&
+                value.owners[136].cachedValid == 1 && value.owners[64].cachedValid == 1 &&
+                value.state[kBLASAllocatorAllocatedBytesWord] == 1024 && value.state[kBLASAllocatorPriorityEvictedWord] == 0,
+                "A deferred exact negative entry did not recover on the next stationary frame after dirty shrink");
+            require(value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0 &&
+                value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 0,
+                "Known retry incorrectly consumed dirty prediction or retained the previous frame's deferral");
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = projectedShrink.frame(projectedShrink.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.clusterReferenceCount == 0 &&
+                    value.header.storageRejected == 0 && value.header.reusedInstances == 3 &&
+                    value.state[kBLASAllocatorAllocatedBytesWord] == 1024 && value.moves[0] == 0 && value.moves[1] == 0,
+                    "Projected shrink recovery failed to settle for 32 stationary frames");
+            }
+
+            phase = "projected dirty underestimate still uses native actual-size admission";
+            AllocatorScenario projectedGrow(*device, 1024, 0);
+            projectedPriorities[0][0] = std::bit_cast<uint32_t>(1.f) + 1;
+            projectedGrow.priority(projectedPriorities, 64, kOwners);
+            owners = projectedGrow.inputs();
+            for (const uint32_t owner : {0u, 64u, 136u}) {
+                owners[owner].selectedClusterCount = 4;
+                owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            }
+            projectedGrow.encoded[136] = 256;
+            projectedGrow.encoded[64] = 768;
+            projectedGrow.encoded[0] = 512;
+            value = projectedGrow.frame(owners);
+            require(value.owners[136].cachedValid == 1 && value.owners[64].cachedValid == 1 && value.owners[0].cachedValid == 2,
+                "Projected growth fixture lacks its clean working set and measured rejected owner");
+            projectedPriorities[0][0] = std::bit_cast<uint32_t>(100.f) + 1;
+            projectedGrow.priority(projectedPriorities, 64, kOwners);
+            projectedGrow.encoded[136] = 1024;
+            owners = projectedGrow.inputs();
+            owners[136].flags |= kDirty;
+            value = projectedGrow.frame(owners);
+            require(value.header.blasBuildCount == 2 && value.header.clusterReferenceCount == 8 &&
+                value.state[kBLASAllocatorUnknownBuildCountWord] == 1 && value.owners[136].cachedValid == 1 &&
+                value.allocations[136].encodedBytes == 1024 && value.allocations[136].pendingBytes == 1024 &&
+                value.owners[0].cachedValid == 2 && value.allocations[0].encodedBytes == 512 && value.allocations[0].pendingBytes == 512 &&
+                value.owners[64].cachedValid == 2 && value.state[kBLASAllocatorAllocatedBytesWord] == 1024 &&
+                value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 1 && value.state[kBLASAllocatorPhysicalAllocationFailedWord] == 0,
+                "An underestimated dirty cut bypassed native actual-size budget rejection or poisoned the measured negative cache");
+            require(value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0 &&
+                value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 256 && value.header.storageRejected != 0,
+                "Dirty growth replaced its separate old-size prediction with actual allocation accounting");
+            idleCacheProbe.check(value.header, false, true);
+            idleCacheProbe.check(value.header, true, true);
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = projectedGrow.frame(projectedGrow.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.clusterReferenceCount == 0 &&
+                    value.header.storageRejected == 2 && value.state[kBLASAllocatorSuppressedBuildsWord] == 2 &&
+                    value.owners[136].cachedValid == 1 && value.owners[0].cachedValid == 2 && value.owners[64].cachedValid == 2 &&
+                    value.state[kBLASAllocatorPostBuildBudgetRejectedWord] == 0 && value.state[kBLASAllocatorPriorityEvictedWord] == 0,
+                    "Actual-size rejection after underestimated growth did not converge to a stable negative cache");
+            }
+
+            phase = "mixed actual rejection and projected deferral retain next-frame idle-cache pressure";
+            AllocatorScenario projectedMixed(*device, 1536, 0);
+            auto mixedPriorities = projectedPriorities;
+            mixedPriorities[0][0] = std::bit_cast<uint32_t>(1.f) + 1;
+            mixedPriorities[1] = {std::bit_cast<uint32_t>(.5f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            projectedMixed.priority(mixedPriorities, 64, kOwners);
+            owners = projectedMixed.inputs();
+            for (const uint32_t owner : {0u, 1u, 64u, 136u}) {
+                owners[owner].selectedClusterCount = 4;
+                owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            }
+            projectedMixed.encoded[136] = 1280;
+            projectedMixed.encoded[64] = 256;
+            projectedMixed.encoded[0] = 512;
+            projectedMixed.encoded[1] = 2048;
+            value = projectedMixed.frame(owners);
+            require(value.owners[136].cachedValid == 1 && value.owners[64].cachedValid == 1 &&
+                value.owners[0].cachedValid == 2 && value.owners[1].cachedValid == 2,
+                "Mixed pressure fixture did not establish two independently measured negative entries");
+            mixedPriorities[0][0] = std::bit_cast<uint32_t>(100.f) + 1;
+            projectedMixed.priority(mixedPriorities, 64, kOwners);
+            projectedMixed.encoded[136] = 256;
+            owners = projectedMixed.inputs();
+            owners[136].flags |= kDirty;
+            value = projectedMixed.frame(owners);
+            require(value.header.blasBuildCount == 1 && value.header.storageRejected == 1 &&
+                value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 1 &&
+                value.state[kBLASAllocatorSuppressedBuildsWord] == 2 && value.header.overflowCount == 2 &&
+                value.owners[64].cachedValid == 1 && value.owners[0].cachedValid == 2 && value.owners[1].cachedValid == 2,
+                "Subtracting projected deferral hid real storage pressure or lost deferred-consumer diagnostics");
+            idleCacheProbe.check(value.header, false, true);
+            idleCacheProbe.check(value.header, true, true);
+
+            phase = "work-budget denied dirty history must not consume projected retry capacity";
+            AllocatorScenario projectedWorkBudget(*device, 1024, 0);
+            PriorityImportance workPriorities{};
+            for (auto& priority : workPriorities) { priority[1] = 0x7f7fffffu; }
+            workPriorities[136] = {std::bit_cast<uint32_t>(100.f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            workPriorities[0] = {std::bit_cast<uint32_t>(1.f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            projectedWorkBudget.priority(workPriorities, 64, kOwners);
+            owners = projectedWorkBudget.inputs();
+            owners[136].selectedClusterCount = 8;
+            owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            owners[0].selectedClusterCount = 4;
+            owners[0].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            projectedWorkBudget.encoded[136] = 1024;
+            projectedWorkBudget.encoded[0] = 512;
+            value = projectedWorkBudget.frame(owners);
+            require(value.owners[136].cachedValid == 1 && value.owners[0].cachedValid == 2,
+                "Projected work-budget fixture lacks measured resident and negative sizes");
+            projectedWorkBudget.priority(workPriorities, 4, 1);
+            owners = projectedWorkBudget.inputs();
+            owners[136].flags |= kDirty;
+            value = projectedWorkBudget.frame(owners);
+            require(value.header.blasBuildCount == 1 && value.header.clusterReferenceCount == 4 &&
+                value.header.referenceBudgetRejected == 1 && value.header.buildBudgetRejected == 0 &&
+                value.state[kBLASAllocatorUnknownBuildCountWord] == 0 && value.owners[0].cachedValid == 1 &&
+                value.owners[136].cachedValid == 0 && value.allocations[136].encodedBytes == 0 &&
+                value.allocations[136].pendingBytes == 1024 && value.state[kBLASAllocatorAllocatedBytesWord] == 512 &&
+                value.state[kBLASAllocatorWaitingClaimBytesWord] == 0 && value.state[kBLASAllocatorPriorityEvictedWord] == 0,
+                "Reference-denied dirty work charged its old-size prediction, lost history, or starved a fitting exact retry");
+            require(value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0 &&
+                value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 0,
+                "Work-budget rejection charged a dirty estimate despite submitting no dirty build");
+            workPriorities[64] = {std::bit_cast<uint32_t>(1000.f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            projectedWorkBudget.priority(workPriorities, 64, 1);
+            owners = projectedWorkBudget.inputs();
+            owners[64].selectedClusterCount = 4;
+            owners[64].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            owners[136].selectedClusterCount = 4;
+            owners[136].flags |= kDirty;
+            projectedWorkBudget.encoded[64] = 256;
+            projectedWorkBudget.encoded[136] = 256;
+            value = projectedWorkBudget.frame(owners);
+            require(value.header.blasBuildCount == 1 && value.header.clusterReferenceCount == 4 &&
+                value.header.buildBudgetRejected == 1 && value.header.referenceBudgetRejected == 0 &&
+                value.owners[64].cachedValid == 1 && value.owners[0].cachedValid == 1 && value.owners[136].cachedValid == 0 &&
+                value.allocations[136].pendingBytes == 1024 && value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 0 &&
+                value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0,
+                "Build-slot denial consumed or erased dirty size history despite submitting only a new unmeasured owner");
+            value = projectedWorkBudget.frame(projectedWorkBudget.inputs());
+            require(value.header.blasBuildCount == 1 && value.owners[136].cachedValid == 1 &&
+                value.allocations[136].encodedBytes == 256 && value.allocations[136].pendingBytes == 256 &&
+                value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 1024 &&
+                value.state[kBLASAllocatorAllocatedBytesWord] == 1024 && value.state[kBLASAllocatorPriorityEvictedWord] == 0,
+                "Budget-delayed dirty work lost its historical estimate or used prediction as actual allocation size");
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = projectedWorkBudget.frame(projectedWorkBudget.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 3 &&
+                    value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 0 &&
+                    value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0,
+                    "Work-budget recovery did not settle or retained stale prediction counters");
+            }
+
+            phase = "known-negative tiles must preserve fitting tail backfill";
+            nlohmann::json negativeTileFrames = nlohmann::json::array();
+            for (const bool fittingTail : {false, true}) {
+                AllocatorScenario negativeTile(*device, 256, 0);
+                PriorityImportance tilePriorities{};
+                for (auto& priority : tilePriorities) { priority[1] = 0x7f7fffffu; }
+                owners = negativeTile.inputs();
+                for (uint32_t owner = 0; owner < 64; ++owner) {
+                    tilePriorities[owner] = {std::bit_cast<uint32_t>(float(owner + 1)) + 1,
+                        std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+                    owners[owner].selectedClusterCount = 1;
+                    owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                    negativeTile.encoded[owner] = fittingTail && owner == 0 ? 256 : 512;
+                }
+                tilePriorities[136] = {std::bit_cast<uint32_t>(1000.f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+                owners[136].selectedClusterCount = 1;
+                owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                negativeTile.encoded[136] = 256;
+                negativeTile.priority(tilePriorities, kOwners, kOwners);
+                value = negativeTile.frame(owners);
+                require(value.owners[136].cachedValid == 1 && value.header.storageRejected == 64,
+                    "Negative tile fixture did not produce 64 measured rejected entries");
+                owners = negativeTile.inputs();
+                owners[136] = {};
+                tilePriorities[136] = {0, 0x7f7fffffu, 0, 0, 0, 0};
+                negativeTile.priority(tilePriorities, kOwners, kOwners);
+                value = negativeTile.frame(owners);
+                require(value.header.blasBuildCount == (fittingTail ? 1u : 0u) &&
+                    value.header.clusterReferenceCount == (fittingTail ? 1u : 0u) &&
+                    value.header.storageRejected == (fittingTail ? 63u : 64u) &&
+                    value.state[kBLASAllocatorUnknownBuildCountWord] == 0 &&
+                    value.owners[0].cachedValid == (fittingTail ? 1u : 2u),
+                    "Known-negative tile skip suppressed a fitting final-ranked owner or rebuilt a non-fitting entry");
+                for (uint32_t frame = 0; frame < 32; ++frame) {
+                    value = negativeTile.frame(negativeTile.inputs());
+                    require(value.header.blasBuildCount == 0 && value.header.clusterReferenceCount == 0 &&
+                        value.header.storageRejected == (fittingTail ? 63u : 64u) &&
+                        value.state[kBLASAllocatorAllocatedBytesWord] == (fittingTail ? 256u : 0u) &&
+                        value.state[kBLASAllocatorPriorityEvictedWord] == 0,
+                        "Known-negative tile backfill failed to settle without repeated builds or evictions");
+                }
+                negativeTileFrames.push_back({{"fittingTail", fittingTail}, {"frames", negativeTile.frames}});
+            }
+
+            phase = "clean resident tile exact boundary, actual-size overflow and inactive lanes";
+            AllocatorScenario residentTiles(*device, 128 * 256, 0);
+            PriorityImportance residentPriorities{};
+            for (auto& priority : residentPriorities) { priority[1] = 0x7f7fffffu; }
+            owners = residentTiles.inputs();
+            for (uint32_t owner = 0; owner < 128; ++owner) {
+                residentPriorities[owner] = {std::bit_cast<uint32_t>(float(owner + 1)) + 1,
+                    std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+                owners[owner].selectedClusterCount = 1;
+                owners[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+                residentTiles.encoded[owner] = 256;
+            }
+            residentTiles.priority(residentPriorities, kOwners, kOwners);
+            value = residentTiles.frame(owners);
+            require(value.header.blasBuildCount == 128 && value.state[kBLASAllocatorFreeBytesWord] == 0,
+                "Resident tile fixture did not exactly fill two clean owner blocks");
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = residentTiles.frame(residentTiles.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 128 &&
+                    value.header.storageRejected == 0 && value.state[kBLASAllocatorAllocatedBytesWord] == 128 * 256,
+                    "An exactly fitting clean resident tile was rejected or rebuilt");
+            }
+            residentPriorities[136] = {std::bit_cast<uint32_t>(1000.f) + 1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0};
+            residentTiles.priority(residentPriorities, kOwners, kOwners);
+            owners = residentTiles.inputs();
+            owners[136].selectedClusterCount = 1;
+            owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
+            residentTiles.encoded[136] = 512;
+            value = residentTiles.frame(owners);
+            require(value.header.blasBuildCount == 1 && value.owners[136].cachedValid == 1 &&
+                value.owners[0].cachedValid == 2 && value.owners[1].cachedValid == 2 &&
+                value.state[kBLASAllocatorPriorityEvictedWord] == 2 && value.state[kBLASAllocatorAllocatedBytesWord] == 128 * 256,
+                "A clean tile exceeding the remaining actual-size budget skipped ranked eviction");
+            for (uint32_t owner = 2; owner < 128; ++owner) {
+                require(value.owners[owner].cachedValid == 1, "Actual-size tile admission evicted a higher-priority survivor");
+            }
+            owners = residentTiles.inputs();
+            // Keep these owners' sort keys to leave inactive lanes inside both
+            // resident tiles, and remove the two negative entries from demand.
+            for (const uint32_t owner : {0u, 1u, 31u, 95u}) { owners[owner] = {}; }
+            value = residentTiles.frame(owners);
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                value = residentTiles.frame(residentTiles.inputs());
+                require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 125 &&
+                    value.header.storageRejected == 0 && value.state[kBLASAllocatorAllocatedBytesWord] == 126 * 256 &&
+                    value.state[kBLASAllocatorPriorityEvictedWord] == 0,
+                    "Inactive lanes changed resident-tile budget accounting or static-frame convergence");
+            }
+
             require(validationErrors.load() == 0, "Vulkan validation errors during allocator regression");
             const auto directory = context.outputDirectory / "BLASAllocator";
             std::filesystem::create_directories(directory);
@@ -575,6 +1200,13 @@ public:
                 {"noPressure", noPressure.frames}, {"deferredPressure", deferredPressure.frames},
                 {"suppressedAfterRelocationFrames", suppressedAfterRelocationFrames},
                 {"fragmentedRecoveryBuilds", recoveryBuilds},
+                {"dirtyPriorityBudgets", dirtyBudgetFrames}, {"rankedStorage", rankedStorage.frames},
+                {"fragmentedPriorityWait", fragmentedPriority.frames},
+                {"projectedDirtyShrink", projectedShrink.frames}, {"projectedDirtyGrow", projectedGrow.frames},
+                {"projectedMixedPressure", projectedMixed.frames},
+                {"nextFrameIdleCachePressure", "production phase 26 and legacy/priority admission consume actual allocator headers; projection preserves newly idle cache, actual and mixed pressure evict it"},
+                {"projectedWorkBudget", projectedWorkBudget.frames},
+                {"negativeTiles", negativeTileFrames}, {"residentTiles", residentTiles.frames},
                 {"relocationAccounting", "logical bytes; native scratch round-trip copies twice this amount"},
                 {"validationErrors", validationErrors.load()},
                 {"sizeInput", "deterministic driver-size synthesis; native Move fixture covers real build outputs"}}.dump(2);

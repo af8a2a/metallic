@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdexcept>
 
@@ -100,6 +101,24 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"blasArenaUsedBytes",s.blasArenaUsedBytes},
         {"blasArenaRepack",s.blasArenaRepack},
         {"blasGPUAllocatorEnabled",s.blasGPUAllocatorEnabled},
+        {"blasPriorityEnabled",s.blasPriorityEnabled},
+        {"blasRequestedVisibleConsumers",s.blasRequestedVisibleConsumers},
+        {"blasRequestedOffscreenConsumers",s.blasRequestedOffscreenConsumers},
+        {"blasRejectedVisibleConsumers",s.blasRejectedVisibleConsumers},
+        {"blasRejectedOffscreenConsumers",s.blasRejectedOffscreenConsumers},
+        {"blasAdmittedOffscreenConsumers",s.blasAdmittedOffscreenConsumers},
+        {"blasPriorityEvictedOwners",s.blasPriorityEvictedOwners},
+        {"blasCompactionTargetBytes",s.blasCompactionTargetBytes},
+        {"blasWaitingBuildCount",s.blasWaitingBuildCount},
+        {"blasPostBuildBudgetRejected",s.blasPostBuildBudgetRejected},
+        {"blasPhysicalAllocationFailed",s.blasPhysicalAllocationFailed},
+        {"blasWaitingClaimBytes",s.blasWaitingClaimBytes},
+        {"blasMaxWaitingBytes",s.blasMaxWaitingBytes},
+        {"blasUnknownBuildCount",s.blasUnknownBuildCount},
+        {"blasProjectedRetryDeferredCount",s.blasProjectedRetryDeferredCount},
+        {"blasProjectedDirtyClaimBytes",s.blasProjectedDirtyClaimBytes},
+        {"blasRejectedMaxErrorPixels",s.blasRejectedMaxErrorPixels},
+        {"blasRejectedVisibleMaxErrorPixels",s.blasRejectedVisibleMaxErrorPixels},
         {"blasEncodedBytes",s.blasEncodedBytes},{"blasAllocatedBytes",s.blasAllocatedBytes},
         {"blasFreeBytes",s.blasFreeBytes},{"blasLargestFreeBytes",s.blasLargestFreeBytes},
         {"blasRelocatedCount",s.blasRelocatedCount},{"blasRelocatedBytes",s.blasRelocatedBytes},
@@ -192,7 +211,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     fullRoamHeight_ = viewportTextureHeight_;
     bool passed = false;
     RasterWorkloadObserver workloadObserver;
-    RayQualityCapture qualityCapture;
+    auto qualityCapture = std::make_unique<RayQualityCapture>();
     struct FrozenProperty { uint32_t node; bool existed; Json value; };
     std::vector<FrozenProperty> frozenProperties;
     const auto drain = [&]() {
@@ -232,6 +251,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const bool focusProfiler = config.value("focusProfiler", false);
         report["profilerOpen"] = profilerOpen_;
         report["focusProfiler"] = focusProfiler;
+        report["blasStorageRejectedSemantics"] = "physical-and-known-storage-only-v2";
         const uint32_t workloadEvery = config.value("workloadEvery", 0u);
         const bool captureQuality = config.value("captureQuality", false);
         const bool captureReflections = config.value("captureReflections", false);
@@ -239,7 +259,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         if (captureQuality && workloadEvery) { throw std::runtime_error("Quality and workload captures require separate runs"); }
         report["captureQuality"] = captureQuality;
         report["captureReflections"] = captureReflections;
-        qualityCapture.captureReflections = captureReflections;
+        qualityCapture->captureReflections = captureReflections;
         workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
@@ -283,7 +303,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             lastT=t;
         }
         if (workloadEvery) { graphExecutor_->setDebugObserver(&workloadObserver); }
-        if (captureQuality) { graphExecutor_->setDebugObserver(&qualityCapture); }
+        if (captureQuality) { graphExecutor_->setDebugObserver(qualityCapture.get()); }
         const std::string sampleId = config.value("sample", std::string(render::kGPUDrivenZorahFullSampleId));
         if (!render::isGPUDrivenSceneSample(sampleId)) { throw std::runtime_error("Roam requires MiniZorah or ZorahFull sample"); }
         loadBuiltInSample(sampleId.c_str());
@@ -393,6 +413,17 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         }
         const uint32_t routeFrames = config.value("routeFrames", 0u);
         if (routeFrames && (routeFrames < 8 || routeFrames > 10000)) { throw std::runtime_error("routeFrames must be 0 or [8,10000]"); }
+        std::set<uint32_t> qualitySamples;
+        const Json requestedQualitySamples = config.value("qualitySamples", Json::array());
+        if (!requestedQualitySamples.is_array()) { throw std::runtime_error("qualitySamples must be an array of route sample indices"); }
+        for (const auto& value : requestedQualitySamples) {
+            if (!captureQuality || !routeFrames || !value.is_number_integer() ||
+                (!value.is_number_unsigned() && value.get<int64_t>() < 0) ||
+                value.get<uint64_t>() >= routeFrames || !qualitySamples.insert(value.get<uint32_t>()).second) {
+                throw std::runtime_error("qualitySamples requires captureQuality, deterministic routeFrames and unique indices within the route");
+            }
+        }
+        report["qualitySamples"] = Json::array();
         report["sample"] = sampleId;
         report["trajectoryClock"] = routeFrames ? "deterministic frame index" : "wall time";
         const auto workloadSetting = [&](bool enabled) {
@@ -480,7 +511,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             {"stochasticTextureFiltering",config.value("stochasticTextureFiltering",false)},
             {"benchmarkFreezeStreaming",freezeStreaming},{"deferredOverrides",deferredOverrides},
             {"dlssMode",dlssMode}, {"textureMipTransitionMilliseconds",1000.0 * render::TextureMipTransition::kDurationSeconds},
-            {"temporalJitter",viewportView_.temporalJitter()}, {"softwareGroupSize",groupSize}};
+            {"temporalJitter",viewportView_.temporalJitter()}, {"softwareGroupSize",groupSize},
+            {"qualitySamples",requestedQualitySamples}};
         report["absoluteKeyframes"]=Json::array();
         for (const auto& p : points) { report["absoluteKeyframes"].push_back({{"seconds",p.at("t").get<double>()*duration},
             {"stage",p.at("stage")},{"camera",cameraAt(p.at("forward"),p.at("yaw"))}}); }
@@ -527,7 +559,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             applyViewportCameraProperties(cameraAt(blend("forward"),blend("yaw")),nullptr);
             samples.push_back({profiler_.nextFrameIndex(),seconds,0,segment,device_->memoryBudget().availableBytes});
             const bool diagnostic = workloadEvery && (samples.size() - 1) % workloadEvery == 0;
-            samples.back().diagnostic = diagnostic || freezeStreaming || !deferredOverrides.empty();
+            samples.back().diagnostic = diagnostic || captureQuality || freezeStreaming || !deferredOverrides.empty();
+            qualityCapture->capture = qualitySamples.contains(static_cast<uint32_t>(samples.size() - 1));
             if (workloadEvery) {
                 workloadSetting(diagnostic && config.value("softwareWorkloadCounters", true));
                 workloadObserver.capture = diagnostic;
@@ -541,6 +574,22 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             samples.back().graphPreparation = {{"executionId", execution.executionId},
                 {"drainReasonMask", execution.drainReasonMask}, {"externalCompletionCount", execution.externalCompletionCount},
                 {"overlapBlockingPasses", execution.overlapBlockingPasses}};
+            if (qualityCapture->capture) {
+                // Quality-only routes copy the requested execution without an
+                // extra draw. Their drains/export time is never performance data.
+                qualityCapture->capture = false;
+                drain();
+                const uint32_t sample = static_cast<uint32_t>(samples.size() - 1);
+                const auto directory = std::filesystem::path("Quality") / ("sample" + std::to_string(sample));
+                report["qualitySamples"].push_back({{"routeSample",sample},{"frame",samples.back().frame},
+                    {"camera",viewportCameraProperties()},{"directory",directory.generic_string()},
+                    {"images",qualityCapture->exportAfterDrain(output / directory)}});
+                // Release completed copies before collecting the next sample;
+                // on failure the current observer survives the outer GPU drain.
+                qualityCapture = std::make_unique<RayQualityCapture>();
+                qualityCapture->captureReflections = captureReflections;
+                graphExecutor_->setDebugObserver(qualityCapture.get());
+            }
             if (profiler_.captureOverflow()) { throw std::runtime_error("Profiler capture limit exceeded"); }
             if (viewportTextureWidth_!=fullRoamWidth_ || viewportTextureHeight_!=fullRoamHeight_ ||
                 graphExecutor_->executionStats().graphGeneration!=graphGeneration) { throw std::runtime_error("Viewport or graph changed during capture"); }
@@ -632,12 +681,13 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         if (captureQuality) {
             // Readback is deliberately a separate, untimed execution after the
             // measured route. Its completion owns all exported image bytes.
-            qualityCapture.capture = true;
+            qualityCapture->capture = true;
             if (!draw()) { throw std::runtime_error("Quality capture rendering failed"); }
-            qualityCapture.capture = false;
+            qualityCapture->capture = false;
             drain();
             report["qualityCamera"] = viewportCameraProperties();
-            report["qualityImages"] = qualityCapture.exportAfterDrain(output / "Quality");
+            report["qualityImages"] = qualityCapture->exportAfterDrain(output / "Quality");
+            report["qualitySamplingScope"] = "Optional requested deterministic route executions plus one extra final-route execution. Readback drains perturb quality runs; none of their timings are performance acceptance data.";
             report["qualityScope"] = captureReflections
                 ? "One untimed final-route frame; shadow mask, deferred lighting, final output and fixed-sample OpenPBR path tracing including reflections. The diagnostic graph is excluded from performance comparisons."
                 : "One untimed final-route frame; shadow mask, deferred lighting and final output. This scene has no secondary reflection pass.";
