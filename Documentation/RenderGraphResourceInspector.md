@@ -101,6 +101,30 @@ the hovered texel. Grid lines follow fractional zoom and panning; only visible
 boundaries are generated. Both controls apply to 2D textures and Z slices, reuse
 the existing GPU image, and leave raw hover values unchanged.
 
+Environment SH buffers offer **SH sphere** (the default) and **Coefficients**
+views. Only producer-tagged `sh-irradiance-l2-rgb` captures enable the sphere;
+ordinary float4 buffers keep their table. HDRI and physical-atmosphere publications
+both expose this semantic. The sphere requires all nine float4 slots, starting at
+element zero. Partial captures show a range correction message and retain access
+to the coefficient table.
+
+The sphere evaluates the renderer's real L2 basis at unit surface normals, using
+RGB in xyz and ignoring the reserved w component. These coefficients already
+contain cosine-convolved irradiance, so the viewer does not convolve them again.
+It shows a white Lambert surface, `max(E(N), 0) / pi`, without scene intensity,
+environment rotation, material tint or extra lighting. At reset, +X points right,
++Y up and +Z toward the viewer. Drag to rotate the sampled directions; use the
+wheel to resize the sphere. Hover shows the exact sampled normal, signed raw RGB
+irradiance and white Lambert response, independently of display exposure.
+
+**Normalize brightness** uses a conservative, rotation-independent SH magnitude
+bound to keep HDR values visible. **Exposure (EV)** then adjusts the display;
+disable normalization for absolute exposure. The display clamps and encodes sRGB,
+with non-finite results in magenta. The sphere uses a bounded hemisphere mesh with
+SH evaluated per vertex and interpolated colors; tooltip evaluation is analytic.
+Rotation and display changes reuse the captured coefficients without GPU readback
+or preview-image uploads. Live refresh replaces the coefficients normally.
+
 **Auto range** is enabled by default. Each new texture snapshot (including Live
 refreshes) derives Min/Max from the finite values of the selected channels in the
 captured ROI. RGB excludes alpha and missing channels; selecting a single channel
@@ -270,6 +294,13 @@ GPU readbacks of the known RGB volume fixture compare nearest and linear
 sampling, grid boundaries and interiors, fractional zoom and the grid threshold.
 The hover check verifies voxel coordinates and raw bytes with nonzero ROI offsets.
 `pixel-grid-ui.ppm` and `pixel-hover-ui.ppm` record the native grid and tooltip.
+SH checks cover independent analytic L2 basis values, constant irradiance,
+reserved-W packing, partial-capture rejection, GPU-rendered sphere colors,
+opposite-hemisphere rotation, direct mouse interaction and exact hover values.
+`environment-sh/` and `atmosphere-sh/` contain real captured coefficients;
+`environment-sh-sphere-ui.ppm`, `environment-sh-rotated-ui.ppm`,
+`environment-sh-table-ui.ppm`, `atmosphere-sh-sphere-ui.ppm` and
+`sh-sphere-hover-ui.ppm` provide the corresponding native UI evidence.
 
 Evidence includes:
 

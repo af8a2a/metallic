@@ -944,17 +944,18 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
 
 void EnvironmentLightingSubsystem::appendDebugBindings(const RenderSubsystemFrameContext&, std::vector<DebugResourceBinding>& bindings)
 {
-    const auto addBuffer = [&](const std::string& name, Buffer* buffer, uint64_t revision, const char* layout = "float4") {
+    const auto addBuffer = [&](const std::string& name, Buffer* buffer, uint64_t revision, const char* layout = "float4", bool irradianceSH = false) {
         if (buffer) {
             bindings.push_back({.id = name, .buffer = buffer, .state = ResourceState::ShaderRead,
                 .layout = layout, .allocation = revision});
+            if (irradianceSH) { bindings.back().metadata["visualization"] = "sh-irradiance-l2-rgb"; }
         }
     };
     if (resources_) {
         const size_t begin = bindings.size();
         bindings.push_back({.id = "radiance", .texture = resources_->radiance.get(), .state = ResourceState::ShaderRead});
         resources_->pdf.appendDebugBindings(bindings, "pdf");
-        addBuffer("sphericalHarmonics", resources_->sphericalHarmonicsBuffer.get(), resourceRevision_);
+        addBuffer("sphericalHarmonics", resources_->sphericalHarmonicsBuffer.get(), resourceRevision_, "float4", true);
         addBuffer("prefilteredSpecular", resources_->prefilteredSpecularBuffer.get(), resourceRevision_);
         for (size_t i = begin; i < bindings.size(); ++i) {
             bindings[i].allocation = resourceRevision_;
@@ -970,7 +971,7 @@ void EnvironmentLightingSubsystem::appendDebugBindings(const RenderSubsystemFram
         const size_t begin = bindings.size();
         publication->atmosphere.appendDebugBindings(bindings, prefix);
         publication->pdf.appendDebugBindings(bindings, prefix + "pdf");
-        addBuffer(prefix + "sphericalHarmonics", publication->sphericalHarmonicsBuffer.get(), publication->revision);
+        addBuffer(prefix + "sphericalHarmonics", publication->sphericalHarmonicsBuffer.get(), publication->revision, "float4", true);
         addBuffer(prefix + "prefilteredSpecular", publication->prefilteredSpecularBuffer.get(), publication->revision);
         for (size_t i = begin; i < bindings.size(); ++i) {
             bindings[i].allocation = publication->revision;

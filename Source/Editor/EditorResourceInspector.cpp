@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <numbers>
 #include <set>
 #include <utility>
 
@@ -123,6 +124,7 @@ void EditorResourceInspector::select(std::string resource)
     fit_ = true;
     zoom_ = 1;
     imageCenter_ = {0.5f, 0.5f};
+    shSphere_ = true; shYaw_ = shPitch_ = shExposure_ = 0; shZoom_ = 1;
     status_.clear();
 }
 
@@ -136,6 +138,11 @@ debug::DebugValue EditorResourceInspector::diagnostics() const
         result["capture"]["byteCount"] = capture_->artifacts[0].bytes.size();
         result["capture"]["evidence"] = capture_->snapshot.evidence.value();
         result["capture"]["schema"] = capture_->artifacts[0].layout.schema();
+        if (capture_->artifacts[0].metadata.value("visualization", "") == "sh-irradiance-l2-rgb") {
+            SHCoefficients coefficients;
+            result["shView"] = {{"sphere", shSphere_}, {"ready", readSH(coefficients)},
+                {"normalize", shNormalize_}, {"exposure", shExposure_}, {"yaw", shYaw_}, {"pitch", shPitch_}, {"zoom", shZoom_}};
+        }
         if (capture_->artifacts[0].metadata.value("kind", "") == "texture") {
             result["displayRange"] = {{"auto", autoRange_}, {"trimFlatExtremes", trimRange_},
                 {"trimmed", rangeTrimmed_}, {"finiteComponents", rangeFinite_},
@@ -735,9 +742,139 @@ void EditorResourceInspector::drawCube()
     ImGui::EndChild();
 }
 
+std::array<double, 3> EditorResourceInspector::evaluateSH(const SHCoefficients& coefficients, std::array<double, 3> normal)
+{
+    // Match ShaderCore.SH::basis. Environment coefficients already contain the
+    // cosine convolution; applying it again would incorrectly blur and scale E.
+    const auto [x, y, z] = normal;
+    const double basis[] = {0.2820947918, 0.4886025119 * y, 0.4886025119 * z, 0.4886025119 * x,
+        1.0925484306 * x * y, 1.0925484306 * y * z, 0.3153915653 * (3 * z * z - 1),
+        1.0925484306 * x * z, 0.5462742153 * (x * x - y * y)};
+    std::array<double, 3> result{};
+    for (size_t i = 0; i < 9; ++i) {
+        for (size_t c = 0; c < 3; ++c) { result[c] += coefficients[i][c] * basis[i]; }
+    }
+    return result;
+}
+
+bool EditorResourceInspector::readSH(SHCoefficients& coefficients) const
+{
+    const auto& artifact = capture_->artifacts[0];
+    // User-selected capture ranges can omit coefficients. Only the producer's
+    // explicit semantic and complete float4 ABI enable this interpretation.
+    if (artifact.metadata.value("visualization", "") != "sh-irradiance-l2-rgb" || artifact.layout.name != "float4" ||
+        artifact.layout.stride != 16 || artifact.metadata.value("elementOffset", uint64_t(0)) != 0 || artifact.bytes.size() != sizeof(coefficients)) { return false; }
+    std::memcpy(coefficients.data(), artifact.bytes.data(), sizeof(coefficients));
+    return true;
+}
+
+void EditorResourceInspector::drawSH()
+{
+    SHCoefficients coefficients;
+    if (!readSH(coefficients)) {
+        ImGui::TextWrapped("SH sphere requires all 9 float4 coefficients. Set First element to 0 and Count to 9, then Refresh. The coefficient table remains available.");
+        return;
+    }
+    ImGui::Checkbox("Normalize brightness", &shNormalize_);
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Use a rotation-independent bound on SH magnitude to fit the display. Raw values are unchanged."); }
+    ImGui::SameLine(); ImGui::SetNextItemWidth(160); ImGui::SliderFloat("Exposure (EV)", &shExposure_, -16, 16);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset sphere")) { shYaw_ = shPitch_ = shExposure_ = 0; shZoom_ = 1; }
+    ImGui::TextDisabled("White Lambert: max(E(N), 0) / pi | drag: rotate | wheel: zoom | hover: raw E and normal");
+    ImGui::TextDisabled("Buffer-space directions; scene intensity/rotation excluded. Display: exposure, clamp, sRGB; magenta = non-finite.");
+    // Analytic per-basis bounds keep normalization stable while rotating.
+    constexpr double bounds[] = {0.2820947918, 0.4886025119, 0.4886025119, 0.4886025119,
+        0.5462742153, 0.5462742153, 0.6307831306, 0.5462742153, 0.5462742153};
+    double peak = 0;
+    for (size_t c = 0; c < 3; ++c) {
+        double bound = 0;
+        for (size_t i = 0; i < 9; ++i) { bound += std::abs(double(coefficients[i][c])) * bounds[i] / std::numbers::pi; }
+        peak = std::max(peak, bound);
+    }
+    const double gain = std::exp2(double(shExposure_)) * (shNormalize_ && peak > 0 && std::isfinite(peak) ? 0.8 / peak : 1.0);
+    ImGui::Text("Display multiplier: %.6g | +X right, +Y up, +Z toward viewer at reset", gain);
+    ImGui::BeginChild("SHSphere", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const auto origin = ImGui::GetCursorScreenPos();
+    const auto available = ImGui::GetContentRegionAvail();
+    const ImVec2 size(std::max(1.f, available.x), std::max(1.f, available.y));
+    const ImVec2 center(origin.x + size.x * 0.5f, origin.y + size.y * 0.5f);
+    ImGui::InvisibleButton("SH navigation", size, ImGuiButtonFlags_MouseButtonLeft);
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        shYaw_ = std::remainder(shYaw_ - ImGui::GetIO().MouseDelta.x * 0.01f, 2.f * std::numbers::pi_v<float>);
+        shPitch_ = std::remainder(shPitch_ - ImGui::GetIO().MouseDelta.y * 0.01f, 2.f * std::numbers::pi_v<float>);
+    }
+    const bool hovered = ImGui::IsItemHovered();
+    const bool ownsWheel = ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+    if (hovered && ownsWheel) { shZoom_ = std::clamp(shZoom_ * std::pow(1.2f, ImGui::GetIO().MouseWheel), 0.25f, 2.f); }
+    const float radius = std::min(size.x, size.y) * 0.45f * shZoom_;
+    const double cy = std::cos(shYaw_), sy = std::sin(shYaw_), cp = std::cos(shPitch_), sp = std::sin(shPitch_);
+    const auto normal = [&](double x, double y, double z) {
+        const double py = cp * y - sp * z, pz = sp * y + cp * z;
+        return std::array<double, 3>{cy * x + sy * pz, py, -sy * x + cy * pz};
+    };
+    const auto color = [&](const std::array<double, 3>& value) {
+        std::array<float, 3> rgb{};
+        for (size_t c = 0; c < 3; ++c) {
+            if (!std::isfinite(value[c])) { return IM_COL32(255, 0, 255, 255); }
+            const double linear = std::clamp(std::max(0.0, value[c]) / std::numbers::pi * gain, 0.0, 1.0);
+            rgb[c] = float(linear <= 0.0031308 ? linear * 12.92 : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055);
+        }
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(rgb[0], rgb[1], rgb[2], 1));
+    };
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+    draw->PushTexture(ImGui::GetIO().Fonts->TexRef);
+    // Fixed-resolution hemisphere: bounded work, no resource readback or image
+    // conversion on rotation. Each vertex evaluates SH at its unit normal.
+    constexpr int rings = 32, segments = 96;
+    draw->PrimReserve(rings * segments * 6, (rings + 1) * (segments + 1));
+    const unsigned base = draw->_VtxCurrentIdx;
+    const auto uv = ImGui::GetFontTexUvWhitePixel();
+    for (int ring = 0; ring <= rings; ++ring) {
+        const double theta = ring * (std::numbers::pi / 2) / rings;
+        const double r = std::sin(theta), z = std::cos(theta);
+        for (int segment = 0; segment <= segments; ++segment) {
+            const double phi = segment * (2 * std::numbers::pi) / segments;
+            const double x = r * std::cos(phi), y = r * std::sin(phi);
+            draw->PrimWriteVtx(ImVec2(center.x + float(x) * radius, center.y - float(y) * radius), uv, color(evaluateSH(coefficients, normal(x, y, z))));
+        }
+    }
+    for (int ring = 0; ring < rings; ++ring) {
+        for (int segment = 0; segment < segments; ++segment) {
+            const unsigned a = base + ring * (segments + 1) + segment, b = a + segments + 1;
+            for (const unsigned index : {a, b, a + 1, a + 1, b, b + 1}) { draw->PrimWriteIdx(ImDrawIdx(index)); }
+        }
+    }
+    draw->PopTexture();
+    draw->AddCircle(center, radius, IM_COL32(160, 160, 160, 255), segments);
+    draw->PopClipRect();
+    if (hovered && !ImGui::IsItemActive()) {
+        const auto mouse = ImGui::GetMousePos();
+        const double x = (mouse.x - center.x) / radius, y = (center.y - mouse.y) / radius;
+        const double r2 = x * x + y * y;
+        if (r2 <= 1) {
+            const auto n = normal(x, y, std::sqrt(1 - r2));
+            const auto e = evaluateSH(coefficients, n);
+            ImGui::BeginTooltip();
+            ImGui::Text("N: (%.6f, %.6f, %.6f)", n[0], n[1], n[2]);
+            ImGui::Text("Irradiance E: (%.9g, %.9g, %.9g)", e[0], e[1], e[2]);
+            ImGui::Text("White Lambert: (%.9g, %.9g, %.9g)", std::max(0.0, e[0]) / std::numbers::pi,
+                std::max(0.0, e[1]) / std::numbers::pi, std::max(0.0, e[2]) / std::numbers::pi);
+            ImGui::EndTooltip();
+        }
+    }
+    ImGui::EndChild();
+}
+
 void EditorResourceInspector::drawBuffer()
 {
     const auto& artifact = capture_->artifacts[0];
+    if (artifact.metadata.value("visualization", "") == "sh-irradiance-l2-rgb") {
+        if (ImGui::RadioButton("SH sphere", shSphere_)) { shSphere_ = true; }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Coefficients", !shSphere_)) { shSphere_ = false; }
+        if (shSphere_) { drawSH(); return; }
+    }
     const bool scalar = artifact.layout.name == "u32" || artifact.layout.name == "i32" || artifact.layout.name == "f32";
     if (!scalar) { ImGui::Checkbox("Raw 32-bit words", &rawBuffer_); }
     const bool raw = scalar || rawBuffer_;

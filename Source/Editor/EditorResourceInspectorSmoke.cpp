@@ -15,6 +15,8 @@
 #include <limits>
 #include <chrono>
 #include <numeric>
+#include <numbers>
+#include <cstdio>
 
 namespace metallic {
 namespace {
@@ -818,6 +820,141 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
     inspector.select("subsystem.render.environment.sphericalHarmonics");
     if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "float4" &&
         inspector.capture_->artifacts[0].bytes.size() == 9 * 16, "Real environment SH supports typed buffer inspection")) { return false; }
+    {
+        using Coefficients = EditorResourceInspector::SHCoefficients;
+        constexpr double pi = std::numbers::pi;
+        const double dc = std::sqrt(1.0 / (4.0 * pi)), linear = std::sqrt(3.0 / (4.0 * pi));
+        Coefficients coefficients{};
+        if (!expect(inspector.readSH(coefficients) && inspector.shSphere_,
+            "Environment producer metadata enables the full irradiance SH sphere") ||
+            !expect(exportCapture("environment-sh") && exportUI("environment-sh-sphere-ui"),
+                "Export real environment SH coefficients and native sphere")) { return false; }
+        const auto frozenSH = inspector.capture_;
+        inspector.shYaw_ = 1.2f;
+        if (!frames(2) || !expect(inspector.capture_ == frozenSH && exportUI("environment-sh-rotated-ui"),
+            "SH sphere rotation reuses frozen environment coefficients")) { return false; }
+        inspector.shSphere_ = false;
+        if (!frames(2) || !expect(exportUI("environment-sh-table-ui"), "SH coefficients remain available in the typed table")) { return false; }
+        inspector.shSphere_ = true; inspector.offset_ = 1; inspector.count_ = 8; inspector.refresh_ = true;
+        if (!frames(5) || !expect(inspector.capture_ && !inspector.readSH(coefficients),
+            "Partial SH captures cannot be interpreted as a complete sphere")) { return false; }
+        inspector.offset_ = 0; inspector.count_ = 9; inspector.refresh_ = true;
+        if (!frames(5) || !expect(inspector.readSH(coefficients), "Refreshing all nine coefficients restores the SH sphere")) { return false; }
+
+        // Independent analytic basis values exercise signs, ordering and packing.
+        const std::array<std::array<double, 3>, 7> directions{{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0},
+            {0, 0, 1}, {0, 0, -1}, {2.0 / 3, -1.0 / 3, 2.0 / 3}}};
+        bool basisMatches = true;
+        for (const auto& n : directions) {
+            const auto [x, y, z] = n;
+            const std::array<double, 9> basis{dc, linear * y, linear * z, linear * x,
+                std::sqrt(15.0 / (4 * pi)) * x * y, std::sqrt(15.0 / (4 * pi)) * y * z,
+                std::sqrt(5.0 / (16 * pi)) * (3 * z * z - 1), std::sqrt(15.0 / (4 * pi)) * x * z,
+                std::sqrt(15.0 / (16 * pi)) * (x * x - y * y)};
+            for (size_t i = 0; i < 9; ++i) {
+                coefficients = {};
+                coefficients[i] = {1, -2, 3, std::numeric_limits<float>::quiet_NaN()};
+                const auto value = EditorResourceInspector::evaluateSH(coefficients, n);
+                basisMatches &= std::abs(value[0] - basis[i]) < 1e-8 && std::abs(value[1] + 2 * basis[i]) < 1e-8 &&
+                    std::abs(value[2] - 3 * basis[i]) < 1e-8;
+            }
+        }
+        if (!expect(basisMatches, "SH evaluation matches independent L2 basis values, signs, RGB channels and ignores reserved W")) { return false; }
+        coefficients = {};
+        coefficients[0] = {float(pi * 0.25 / dc), float(pi * 0.5 / dc), float(pi * 0.75 / dc), 0};
+        bool constantMatches = true;
+        for (const auto& n : directions) {
+            const auto value = EditorResourceInspector::evaluateSH(coefficients, n);
+            for (size_t c = 0; c < 3; ++c) { constantMatches &= std::abs(value[c] / pi - (c + 1) * 0.25) < 1e-7; }
+        }
+        if (!expect(constantMatches, "Constant irradiance gives a direction-independent white Lambert response without double convolution")) { return false; }
+
+        EditorResourceInspector probe;
+        auto capture = std::make_shared<debug::DebugCapture>();
+        debug::DebugArtifact artifact;
+        artifact.layout = probe.runtime().layouts().at("float4");
+        artifact.metadata = {{"visualization", "sh-irradiance-l2-rgb"}, {"elementOffset", 0}};
+        artifact.bytes.resize(sizeof(coefficients));
+        std::memcpy(artifact.bytes.data(), coefficients.data(), sizeof(coefficients));
+        capture->artifacts.push_back(std::move(artifact)); probe.capture_ = capture;
+        Coefficients decoded;
+        if (!expect(probe.readSH(decoded) && decoded == coefficients, "SH sphere decodes the explicit nine-float4 capture ABI")) { return false; }
+        capture->artifacts[0].metadata.erase("visualization");
+        if (!expect(!probe.readSH(decoded), "Ordinary float4 buffers are not guessed to be spherical harmonics")) { return false; }
+        capture->artifacts[0].metadata["visualization"] = "sh-irradiance-l2-rgb";
+        probe.shNormalize_ = false;
+        auto& io = ImGui::GetIO();
+        struct RestoreInput {
+            ImGuiIO& io; ImVec2 mouse; bool focused, trickle;
+            ~RestoreInput() {
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); io.AddMousePosEvent(mouse.x, mouse.y);
+                io.AddFocusEvent(focused); io.ConfigInputTrickleEventQueue = trickle;
+            }
+        } restore{io, io.MousePos, !io.AppFocusLost, io.ConfigInputTrickleEventQueue};
+        io.ConfigInputTrickleEventQueue = false;
+        ImGuiWindow* window = nullptr;
+        ImRect canvas;
+        std::string logged;
+        const auto drawSphere = [&](ImVec2 mouse, bool down = false, float wheel = 0) {
+            io.AddFocusEvent(true); io.AddMousePosEvent(mouse.x, mouse.y); io.AddMouseButtonEvent(ImGuiMouseButton_Left, down);
+            if (wheel) { io.AddMouseWheelEvent(0, wheel); }
+            ImGui::NewFrame();
+            ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+            ImGui::SetNextWindowPos(ImVec2(20, 20)); ImGui::SetNextWindowSize(ImVec2(1000, 750));
+            ImGui::Begin("SH sphere regression", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking);
+            window = ImGui::GetCurrentWindow(); ImGui::LogToBuffer(); probe.drawBuffer();
+            logged = GImGui->LogBuffer.c_str(); ImGui::LogFinish();
+            for (auto* child : GImGui->Windows) {
+                if (child->ParentWindow == window && std::strstr(child->Name, "SHSphere")) { canvas = ImRect(child->DC.CursorStartPos, child->WorkRect.Max); }
+            }
+            ImGui::End(); ImGui::Render();
+        };
+        const auto format = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ ? render::Format::RGBA16Sfloat : swapchain_->format();
+        const size_t pixelBytes = format == render::Format::RGBA16Sfloat ? 8 : 4;
+        uint32_t width = 0, height = 0;
+        ImDrawData draw;
+        const auto readSphere = [&](std::vector<uint8_t>& pixels) {
+            draw = *window->Viewport->DrawData; draw.DisplayPos = window->Pos; draw.DisplaySize = window->Size;
+            width = uint32_t(draw.DisplaySize.x * draw.FramebufferScale.x); height = uint32_t(draw.DisplaySize.y * draw.FramebufferScale.y);
+            auto target = device_->createTexture({.usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
+                .format = format, .width = width, .height = height});
+            return target && readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, **target, pixels, &draw);
+        };
+        const auto pixel = [&](const std::vector<uint8_t>& pixels, ImVec2 p) {
+            const auto x = uint32_t((p.x - draw.DisplayPos.x) * draw.FramebufferScale.x);
+            const auto y = uint32_t((p.y - draw.DisplayPos.y) * draw.FramebufferScale.y);
+            return debug::hexEncode(std::span(pixels).subspan((size_t(y) * width + x) * pixelBytes, pixelBytes));
+        };
+        drawSphere(ImVec2(-1000, -1000)); drawSphere(ImVec2(-1000, -1000));
+        const auto center = canvas.GetCenter();
+        const float radius = std::min(canvas.GetWidth(), canvas.GetHeight()) * 0.45f;
+        std::vector<uint8_t> pixels, rotated;
+        if (!expect(readSphere(pixels) && pixel(pixels, center) == pixel(pixels, ImVec2(center.x + radius * 0.5f, center.y)) &&
+            pixel(pixels, center) != pixel(pixels, ImVec2(canvas.Min.x + 4, canvas.Min.y + 4)),
+            "Native Vulkan sphere renders constant SH uniformly with a distinct background")) { return false; }
+        // Add a +Z lobe to red. Rotating to -Z must change its Lambert response.
+        coefficients[2][0] = float(pi * 0.5 / linear);
+        std::memcpy(capture->artifacts[0].bytes.data(), coefficients.data(), sizeof(coefficients));
+        drawSphere(ImVec2(-1000, -1000));
+        if (!readSphere(pixels)) { return false; }
+        probe.shYaw_ = float(pi); drawSphere(ImVec2(-1000, -1000));
+        if (!expect(readSphere(rotated) && pixel(pixels, center) != pixel(rotated, center),
+            "Native sphere rotation evaluates the opposite SH hemisphere")) { return false; }
+        probe.shYaw_ = 0; drawSphere(center); drawSphere(center);
+        const auto raw = logged.find("Irradiance E:");
+        std::array<double, 3> value{};
+        const bool parsed = raw != std::string::npos && std::sscanf(logged.c_str() + raw, "Irradiance E: (%lf, %lf, %lf)", &value[0], &value[1], &value[2]) == 3;
+        if (!expect(parsed && logged.find("N: (0.000000, 0.000000, 1.000000)") != std::string::npos &&
+            std::abs(value[0] - pi * 0.75) < 1e-6 && std::abs(value[1] - pi * 0.5) < 1e-6 && std::abs(value[2] - pi * 0.75) < 1e-6,
+            "SH sphere hover reports the exact normal and unmodified irradiance") ||
+            !expect(readSphere(pixels) && writePPM(output / "sh-sphere-hover-ui.ppm", pixels, width, height, format, displayOutput_.paperWhiteNits),
+                "Export native analytic SH sphere and raw irradiance tooltip")) { return false; }
+        drawSphere(center, true); drawSphere(ImVec2(center.x + 30, center.y + 15), true);
+        if (!expect(probe.shYaw_ != 0 && probe.shPitch_ != 0, "Native mouse drag rotates the SH sampling directions")) { return false; }
+        drawSphere(center); drawSphere(center, false, 1);
+        if (!expect(std::abs(probe.shZoom_ - 1.2f) < 1e-6f && probe.capture_ == capture && !probe.image_ && !probe.upload_,
+            "SH wheel zoom and rotation reuse coefficient evidence without a preview texture upload")) { return false; }
+    }
     inspector.select("subsystem.render.environment.pdf");
     if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "f32" && inspector.descriptor_,
         "Environment PDF supports single-channel texture inspection")) { return false; }
@@ -838,6 +975,12 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
         inspector.capture_->artifacts[0].metadata.at("environmentSource") == "PhysicalAtmosphere",
         "Physical atmosphere transmittance LUT supports GPU readback") ||
         !expect(exportCapture("subsystem-atmosphere") && exportUI("subsystem-atmosphere-ui"), "Export physical atmosphere LUT and grouped UI")) { return false; }
+    inspector.select(transmittance.substr(0, transmittance.size() - std::string("transmittance").size()) + "sphericalHarmonics");
+    EditorResourceInspector::SHCoefficients atmosphereSH;
+    if (!frames(6) || !expect(inspector.capture_ && inspector.readSH(atmosphereSH) &&
+        inspector.capture_->artifacts[0].metadata.at("environmentSource") == "PhysicalAtmosphere",
+        "Physical atmosphere publishes the same explicit irradiance SH visualization contract") ||
+        !expect(exportCapture("atmosphere-sh") && exportUI("atmosphere-sh-sphere-ui"), "Export native physical-atmosphere SH sphere")) { return false; }
     inspector.sourceFilter_ = 0;
     inspector.select("Data.values");
     if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].metadata.at("id") == "Data.values", "Buffer snapshot ready")) { return false; }

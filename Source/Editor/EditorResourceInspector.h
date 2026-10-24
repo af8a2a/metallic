@@ -28,6 +28,10 @@ private:
     void drawTexture(render::Device& device, render::vulkan::VulkanImGuiBackend& backend);
     void drawCube();
     void drawBuffer();
+    using SHCoefficients = std::array<std::array<float, 4>, 9>;
+    static std::array<double, 3> evaluateSH(const SHCoefficients& coefficients, std::array<double, 3> normal);
+    bool readSH(SHCoefficients& coefficients) const;
+    void drawSH();
     void updateAutoRange(const PixelDecoder& decode);
     bool rebuildImage(render::Device& device, render::vulkan::VulkanImGuiBackend& backend);
 
@@ -49,6 +53,8 @@ private:
     float exposure_ = 0, zoom_ = 1;
     std::array<float, 2> imageCenter_ = {0.5f, 0.5f};
     bool nearest_ = true, pixelGrid_ = true;
+    bool shSphere_ = true, shNormalize_ = true;
+    float shYaw_ = 0, shPitch_ = 0, shZoom_ = 1, shExposure_ = 0;
     uint64_t offset_ = 0;
     int count_ = 256;
     std::array<int, 4> roi_ = {0, 0, 0, 0};
