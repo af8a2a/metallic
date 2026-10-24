@@ -513,16 +513,16 @@ public struct GPUDrivenStreamAssetParams
     public uint blasStorageBytes;
     public uint blasStorageAddressLow;
     public uint blasStorageAddressHigh;
-    public uint enableBlasInstanceReuse;
+    public uint blasInstanceReusePadding;
     public uint gpuSceneInstanceBufferIndexPlusOne;
-    public uint blasSizeClasses[32];
+    public uint blasStoragePadding[32];
     public float4 prefetchEye;
     public float4 prefetchCenter;
     public float4 prefetchUp;
     public uint enableLodTransitionTelemetry;
     public float previousLodPixelError;
     public uint rayClasPageTableBuffer;
-    public uint lodTelemetryPadding;
+    public uint enableTerminalMaskDiagnostics;
     public float rtOffscreenErrorScale;
     public float rtLodHysteresis;
     public uint rtLodFlags;
@@ -540,11 +540,11 @@ public struct GPUDrivenStreamAssetParams
     public uint rtRepresentationCachePadding0;
     public uint rtRepresentationCachePadding1;
     public uint rtRepresentationCachePadding2;
-    public uint enableBlasGPUAllocator;
-    public uint enableBlasPriority;
-    public uint enableBlasPriorityCache;
-    public uint enableBlasMergedSharing;
-    public uint blasFallbackPolicy;
+    public uint blasGPUAllocatorPadding;
+    public uint blasPriorityPadding;
+    public uint blasPriorityCachePadding;
+    public uint blasMergedSharingPadding;
+    public uint blasFallbackPadding;
 };
 
 public struct GPUDrivenStreamAssetVertexOutput
@@ -833,28 +833,23 @@ float streamLodMetric(float4 sphere, float error, GPUDrivenStreamAssetInstance i
 
 // Demand owns hysteresis. Parent activation, CLAS readiness and the complete
 // frontier still decide which complementary cluster masks can be published.
-bool streamRayLodWasWanted(RWStructuredBuffer<uint> state, uint history, uint address, bool packed)
+bool streamRayLodWasWanted(RWStructuredBuffer<uint> state, uint history, uint address)
 {
     uint previousToken = state[history];
     if (previousToken == 0u || state[address] != previousToken) { return false; }
-    if (packed) { return true; }
     return state[address + 1u] != 0u;
 }
 
-void publishStreamRayLodDemand(RWStructuredBuffer<uint> state, uint history, uint address, bool wanted,
+void publishStreamRayLodDemand(RWStructuredBuffer<uint> state, uint address, bool wanted,
     bool updateHistory, GPUDrivenStreamAssetParams params)
 {
     if (!updateHistory || !streamRayLodEnabled(params)) { return; }
-    bool packed = (params.rtLodFlags & 16u) != 0u;
-    bool sparseWrites = (params.rtLodFlags & 128u) != 0u;
-    if (wanted || (!packed && !sparseWrites)) {
-        // Tokens are unique across executed traversals, including cancelled CPU
-        // frame gaps. A false/pruned group expires when the instance header advances.
-        // Each group has one authoritative demand writer per token; the frontier
-        // consumes its demand bit rather than evaluating and overwriting it again.
-        state[address] = (params.rtLodFlags & 32u) != 0u ? params.rtLodFrameToken : state[history + 1u];
-        if (!packed) { state[address + 1u] = wanted ? 1u : 0u; }
-    }
+    // Tokens are unique across executed traversals, including cancelled CPU
+    // frame gaps. A pruned group expires when the instance header advances.
+    // Each group has one authoritative demand writer per token; the frontier
+    // consumes its demand bit rather than evaluating and overwriting it again.
+    state[address] = params.rtLodFrameToken;
+    state[address + 1u] = wanted ? 1u : 0u;
 }
 
 bool streamLodGroupDemand(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
@@ -864,50 +859,24 @@ bool streamLodGroupDemand(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetI
     if ((group.flags & 1u) != 0u) { return true; }
     if (manualLevel != 0xffffffffu) { return group.lodLevel >= manualLevel; }
     bool rayEnabled = streamRayLodEnabled(params);
-    bool packed = (params.rtLodFlags & 16u) != 0u;
     uint history = streamRayLodHistoryBase(base, groupCount);
-    uint address = history + 3u + localGroup * (packed ? 1u : 2u);
+    uint address = history + 3u + localGroup * 2u;
     float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
-    bool rayFirst = rayEnabled && (params.rtLodFlags & 64u) != 0u;
-    float rayError = 0.0;
-    if (rayFirst) {
-        rayError = meshletLodRayProjectedError(sphere, group.maxQuadricError,
-            instance.world0, instance.world1, instance.world2, instance.world3, eye, forward, projection);
-        // Ray error is a lower bound of the raster-preserving metric. Only
-        // accept here: a small ray error cannot reject visible refinement descendants.
-        if (rayError > projection.w * max(params.rtOffscreenErrorScale, 1.0)) {
-            publishStreamRayLodDemand(state, history, address, true, updateHistory, params);
-            return true;
-        }
-    }
     bool visible = streamRefinementDemandVisible(group, instance, params);
     if (!rayEnabled && !visible) { return false; }
     float threshold = projection.w;
-    bool lateHistory = rayEnabled && (params.rtLodFlags & 32u) != 0u;
     if (rayEnabled) {
         threshold *= visible ? 1.0 : max(params.rtOffscreenErrorScale, 1.0);
-        if (!lateHistory && updateHistory && streamRayLodWasWanted(state, history, address, packed)) {
-            threshold *= 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9);
-        }
     }
-    float error;
-    if (rayFirst) {
-        error = rayError;
-        if (visible && (params.rtLodFlags & 2u) != 0u) {
-            error = max(error, meshletLodProjectedError(sphere, group.maxQuadricError,
-                instance.world0, instance.world1, instance.world2, instance.world3, eye, forward, projection));
-        }
-    } else {
-        error = streamLodMetric(sphere, group.maxQuadricError, instance, eye, forward, projection, params, visible);
-    }
+    float error = streamLodMetric(sphere, group.maxQuadricError, instance, eye, forward, projection, params, visible);
     bool wanted = error > threshold;
-    if (lateHistory && updateHistory && !wanted &&
+    if (rayEnabled && updateHistory && !wanted &&
         error > threshold * (1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9))) {
         // Explicit > preserves equality and NaN behavior; an unordered error
         // must not fall through to stale retained demand.
-        wanted = streamRayLodWasWanted(state, history, address, packed);
+        wanted = streamRayLodWasWanted(state, history, address);
     }
-    publishStreamRayLodDemand(state, history, address, wanted, updateHistory, params);
+    publishStreamRayLodDemand(state, address, wanted, updateHistory, params);
     return wanted;
 }
 
@@ -2156,15 +2125,12 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
     float pruneThreshold = threshold - max(abs(threshold) * 1e-4, 1e-5);
     float error = asfloat(topology[offset + 4u]);
     float upperError;
-    if (streamRayLodEnabled(params) && (params.rtLodFlags & 6u) == 2u) {
+    if (streamRayLodEnabled(params) && (params.rtLodFlags & 2u) != 0u) {
         upperError = streamLodMetric(sphere, error,
             instance, eye, forward, projection, params, false, worldPadding);
-        float offscreenThreshold = threshold;
-        if ((params.rtLodFlags & 8u) == 0u) {
-            // Every descendant uses at least this threshold, including retained
-            // fine groups. Scale the threshold, never the ray error bound.
-            offscreenThreshold *= max(params.rtOffscreenErrorScale, 1.0);
-        }
+        // Every descendant uses at least this threshold, including retained
+        // fine groups. Scale the threshold, never the ray error bound.
+        float offscreenThreshold = threshold * max(params.rtOffscreenErrorScale, 1.0);
         float offscreenPruneThreshold = offscreenThreshold - max(abs(offscreenThreshold) * 1e-4, 1e-5);
         // Classification can only help below the largest possible threshold.
         // Retain near/inside-sphere and non-finite bounds without metadata reads.
@@ -2196,7 +2162,7 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
 uint streamLodHistoryBase(uint base, uint groupCount, GPUDrivenStreamAssetParams params)
 {
     return base + groupCount * 3u + 4u + (streamRayLodEnabled(params)
-        ? 3u + groupCount * ((params.rtLodFlags & 16u) != 0u ? 1u : 2u) : 0u);
+        ? 3u + groupCount * 2u : 0u);
 }
 
 bool beginStreamLodTelemetry(RWStructuredBuffer<uint> state, uint base, uint groupCount,
@@ -2991,8 +2957,38 @@ void streamCooperativeLod(uint3 workgroup, uint lane, GPUDrivenStreamAssetPush p
     uint base = topology[params.lodInstanceOffsetsOffset + instanceIndex];
     uint sparse = base + primitive.groupCount * 2u;
     if (push.activeBuildPhase == kActiveBuildPhaseMask) {
+        uint count = state[sparse];
+        bool ready = state[header + 3u] != 0u;
+        bool terminalOnly = ready && count == state[header + 2u];
+        bool diagnostic = params.enableTerminalMaskDiagnostics != 0u && params.demandStatsBuffer != 0xffffffffu;
+        if (diagnostic && lane == 0u) {
+            RWStructuredBuffer<uint> stats = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandStatsBuffer));
+            if (ready) { InterlockedAdd(stats[29], 1u); }
+            if (terminalOnly) { InterlockedAdd(stats[30], 1u); }
+        }
+        if (terminalOnly) {
+            // Split Frontier has published every active group and all ready
+            // terminals. Equal counts prove that no refined group is active.
+            // This does not imply absent fine demand: residency may block it.
+            uint clusters = 0u;
+            for (uint index = lane; index < count; index += 64u) {
+                uint localGroup = state[sparse + 4u + index];
+                uint clusterCount = groups[primitive.groupOffset + localGroup].clusterCount;
+                state[base + localGroup * 2u + 1u] = clusterCount == 32u ? 0xffffffffu : (1u << clusterCount) - 1u;
+                if (diagnostic) { clusters += clusterCount; }
+            }
+            if (diagnostic) {
+                uint total = WaveActiveSum(clusters);
+                if (WaveIsFirstLane() && total != 0u) {
+                    RWStructuredBuffer<uint> stats = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandStatsBuffer));
+                    InterlockedAdd(stats[31], total);
+                }
+            }
+            if (lane == 0u) { state[header] = count; }
+            return;
+        }
         streamCooperativeMasks(groups, topology, state, primitive, header, base, sparse,
-            state[sparse], state[header + 3u] != 0u, lane);
+            count, ready, lane);
         return;
     }
     if (push.activeBuildPhase == kActiveBuildPhaseEmit) {
@@ -3552,19 +3548,6 @@ uint2 streamPublishedBlasAddress(GPUDrivenStreamAssetInstanceBLAS blas,
 }
 public groupshared uint4 g_StreamBlasStoragePrefix[64];
 
-uint blasInstanceStorageBytes(uint count, GPUDrivenStreamAssetParams params)
-{
-    uint bucket = count <= 1u ? 0u : firstbithigh(count - 1u) + 1u;
-    return params.blasSizeClasses[min(bucket, 31u)];
-}
-
-bool blasInstanceNeedsStorage(GPUDrivenStreamAssetInstanceBLAS info, uint size,
-    GPUDrivenStreamAssetParams params)
-{
-    return info.storageCapacity < size || info.storageOffset > params.blasStorageBytes ||
-        info.storageCapacity > params.blasStorageBytes - min(info.storageOffset, params.blasStorageBytes);
-}
-
 // RT representations own allocations and dependency keys. TLAS instances only
 // select one of three canonical slots: highest drawable cut, shared view cut,
 // complete discrete cut. Raster's per-instance frontier remains independent.
@@ -3613,11 +3596,6 @@ uint4 streamRTOwnerPriorityKey(RWStructuredBuffer<uint> state, uint owner, GPUDr
     if (owner == 0xffffffffu) { return uint4(0xffffffffu); }
     uint base = streamRTOwnerImportanceBase(p, owner);
     uint errorKey = ~state[base];
-    // A bounded intermediate cut is admitted before optional fine upgrades.
-    // The remaining key still orders all consumers by error, distance, coverage.
-    if (p.blasFallbackPolicy == 1u && owner % 3u == 2u && state[base] != 0u) {
-        errorKey &= 0x7fffffffu;
-    }
     return uint4(errorKey, state[base + 1u], ~state[base + 2u], owner);
 }
 
@@ -3636,7 +3614,7 @@ void sortStreamRTOwners(uint item, GPUDrivenStreamAssetPush push, GPUDrivenStrea
     uint base = streamRTOwnerOrderBase(p);
     uint control = streamRTOwnerPriorityControlBase(p);
     if (push.activeBuildPhase == 41u) {
-        if (item >= count || p.enableBlasPriorityCache == 0u || (push.traversalPhase & 1u) != 0u) { return; }
+        if (item >= count || (push.traversalPhase & 1u) != 0u) { return; }
         uint importance = streamRTOwnerImportanceBase(p, item);
         uint history = streamRTOwnerPriorityHistoryBase(p) + item * 3u;
         // Exact inputs to the total order, including owners without consumers.
@@ -3662,7 +3640,7 @@ void sortStreamRTOwners(uint item, GPUDrivenStreamAssetPush push, GPUDrivenStrea
         }
     }
     // The decision is uniform across every sort workgroup, before its barriers.
-    if (p.enableBlasPriorityCache != 0u && state[control] == 0u) {
+    if (state[control] == 0u) {
         if (item == 0u && push.activeBuildPhase == 35u) { state[control + 1u] = 1u; }
         return;
     }
@@ -3779,11 +3757,8 @@ void streamAccumulateRTOwnerImportance(RWStructuredBuffer<uint> state, uint owne
     InterlockedAdd(state[base + (frustumVisible ? 4u : 5u)], 1u);
 }
 
-GPUDrivenStreamAssetActiveGroup streamBlasGroup(uint index,
-    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> rasterGroups,
-    GPUDrivenStreamAssetParams params)
+GPUDrivenStreamAssetActiveGroup streamBlasGroup(uint index, GPUDrivenStreamAssetParams params)
 {
-    if (params.enableBlasRepresentations == 0u) { return rasterGroups[index]; }
     StructuredBuffer<uint4> groups = resolveUniform(
         ResourceHandle<StructuredBuffer<uint4>>(params.rtRepresentationGroupBuffer));
     uint4 key = groups[index];
@@ -3796,8 +3771,6 @@ GPUDrivenStreamAssetActiveGroup streamBlasGroup(uint index,
 }
 
 public groupshared uint g_RTCacheMissing;
-public groupshared uint g_RTFloorTerminalClusters;
-public groupshared uint g_RTFloorFirstLevel;
 
 uint4 scanRTRepresentationCounts(uint4 demand, uint lane)
 {
@@ -3891,19 +3864,17 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             }
         }
         if (item == 0u) {
-            if (params.enableBlasPriority != 0u) {
-                uint priorityControl = streamRTOwnerPriorityControlBase(params);
-                state[priorityControl] = params.enableBlasPriorityCache == 0u || (push.traversalPhase & 1u) != 0u ? 1u : 0u;
-                state[priorityControl + 1u] = 0u;
-                state[priorityControl + 2u] = 0xffffffffu;
-                // Feedback can lag the captured GPU state. Retain the latest
-                // mismatch through hits so its input transition stays inspectable.
-                if ((push.traversalPhase & 1u) != 0u) {
-                    state[priorityControl + 3u] = 0u;
-                    state[priorityControl + 4u] = 0u;
-                    state[priorityControl + 5u] = 0u;
-                    state[priorityControl + 6u] = 0xffffffffu;
-                }
+            uint priorityControl = streamRTOwnerPriorityControlBase(params);
+            state[priorityControl] = (push.traversalPhase & 1u) != 0u ? 1u : 0u;
+            state[priorityControl + 1u] = 0u;
+            state[priorityControl + 2u] = 0xffffffffu;
+            // Feedback can lag the captured GPU state. Retain the latest
+            // mismatch through hits so its input transition stays inspectable.
+            if ((push.traversalPhase & 1u) != 0u) {
+                state[priorityControl + 3u] = 0u;
+                state[priorityControl + 4u] = 0u;
+                state[priorityControl + 5u] = 0u;
+                state[priorityControl + 6u] = 0xffffffffu;
             }
             GPUDrivenStreamAssetActiveHeader value = (GPUDrivenStreamAssetActiveHeader)0;
             value.activeGroupCapacity = params.rtRepresentationGroupCapacity;
@@ -4024,97 +3995,49 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         }
         GroupMemoryBarrierWithGroupSync();
         if (g_RTCacheMissing == 0x80000000u) { return; }
-        if (params.blasFallbackPolicy == 1u) {
-            StructuredBuffer<GPUDrivenStreamAssetLODLevel> levels = resolveUniform(
-                ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>>(push.lodLevelBuffer));
-            // A missing nonterminal page excludes that level and every finer
-            // complete cut. Missing terminal pages exclude the entire floor.
-            // This reduction works for arbitrary LOD counts, without a bitmask.
-            if (lane == 0u) {
-                g_RTCacheMissing = 0u;
-                g_RTFloorTerminalClusters = 0u;
-                g_RTFloorFirstLevel = primitive.lodLevelCount;
-                for (uint level = 0u; level + 1u < primitive.lodLevelCount; ++level) {
-                    if (levels[primitive.lodLevelOffset + level].clusterCount <= 12u) {
-                        g_RTFloorFirstLevel = level;
-                        break;
-                    }
+        uint firstCacheLevel = primitive.lodLevelCount > 3u ? primitive.lodLevelCount - 3u : 0u;
+        uint missing = 0u;
+        for (uint local = lane; local < primitive.groupCount; local += 64u) {
+            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + local];
+            if (group.lodLevel < firstCacheLevel && (group.flags & 1u) == 0u) { continue; }
+            if (groupPageDrawable(pageTable, params, group)) { continue; }
+            for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
+                if (group.lodLevel >= level || (group.flags & 1u) != 0u) {
+                    missing |= 1u << (level - firstCacheLevel);
                 }
             }
-            GroupMemoryBarrierWithGroupSync();
-            uint missingLevel = 0u, terminalClusters = 0u;
-            for (uint local = lane; local < primitive.groupCount; local += 64u) {
-                GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + local];
-                bool terminal = (group.flags & 1u) != 0u;
-                if (terminal) { terminalClusters += group.clusterCount; }
-                if (!terminal && group.lodLevel < g_RTFloorFirstLevel) { continue; }
-                if (!groupPageDrawable(pageTable, params, group)) {
-                    missingLevel = max(missingLevel, terminal ? 0xffffffffu : group.lodLevel + 1u);
-                }
-            }
-            InterlockedMax(g_RTCacheMissing, missingLevel);
-            InterlockedAdd(g_RTFloorTerminalClusters, terminalClusters);
-            GroupMemoryBarrierWithGroupSync();
-            if (lane == 0u) {
-                for (uint level = max(g_RTCacheMissing, g_RTFloorFirstLevel); level + 1u < primitive.lodLevelCount &&
-                    level != 0xffffffffu; ++level) {
-                    uint clusters = levels[primitive.lodLevelOffset + level].clusterCount;
-                    // Include early terminal branches, even though this bound
-                    // may count some terminal clusters twice. Actual bytes are
-                    // still charged by the native-size GPU allocator.
-                    if (clusters <= 12u && g_RTFloorTerminalClusters <= 12u - clusters) {
-                        state[base + 2u] = level;
-                        break;
-                    }
-                }
-            }
-        } else {
-            uint firstCacheLevel = primitive.lodLevelCount > 3u ? primitive.lodLevelCount - 3u : 0u;
-            uint missing = 0u;
-            for (uint local = lane; local < primitive.groupCount; local += 64u) {
-                GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + local];
-                if (group.lodLevel < firstCacheLevel && (group.flags & 1u) == 0u) { continue; }
-                if (groupPageDrawable(pageTable, params, group)) { continue; }
-                for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
-                    if (group.lodLevel >= level || (group.flags & 1u) != 0u) {
-                        missing |= 1u << (level - firstCacheLevel);
-                    }
-                }
-            }
-            InterlockedOr(g_RTCacheMissing, missing);
-            GroupMemoryBarrierWithGroupSync();
-            if (lane == 0u) {
-                for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
-                    if ((g_RTCacheMissing & (1u << (level - firstCacheLevel))) == 0u) {
-                        state[base + 2u] = level;
-                        break;
-                    }
+        }
+        InterlockedOr(g_RTCacheMissing, missing);
+        GroupMemoryBarrierWithGroupSync();
+        if (lane == 0u) {
+            for (uint level = firstCacheLevel; level + 1u < primitive.lodLevelCount; ++level) {
+                if ((g_RTCacheMissing & (1u << (level - firstCacheLevel))) == 0u) {
+                    state[base + 2u] = level;
+                    break;
                 }
             }
         }
         GroupMemoryBarrierWithGroupSync();
         if (lane == 0u) {
             // The fourth histogram word is classification scratch until phase
-            // 25 replaces it with cached storage demand. Decide before phase 23
+            // 25 clears it. Decide before phase 23
             // atomically aggregates consumers, so no instance races the choice.
             uint canonicalMerged = 0u;
-            if (params.enableBlasPriority != 0u && params.enableBlasMergedSharing != 0u) {
-                uint threshold = min(primitive.lodLevelCount - 1u,
-                    min(state[base + 1u], state[base + 2u]));
-                uint mergedConsumers = 0u;
-                for (uint level = 0u; level < threshold; ++level) {
-                    uint histogram = streamRTHistogramBase(params) + (primitive.lodLevelOffset + level) * 4u;
-                    mergedConsumers += state[histogram];
-                }
-                // The representative is allowed its own cut even if its LOD
-                // interval spans the sharing threshold; it is not merged demand.
-                uint representative = state[base];
-                if (representative != 0xffffffffu &&
-                    state[streamRTInstanceBase(params, representative)] < threshold) {
-                    --mergedConsumers;
-                }
-                canonicalMerged = mergedConsumers != 0u ? 1u : 0u;
+            uint threshold = min(primitive.lodLevelCount - 1u,
+                min(state[base + 1u], state[base + 2u]));
+            uint mergedConsumers = 0u;
+            for (uint level = 0u; level < threshold; ++level) {
+                uint histogram = streamRTHistogramBase(params) + (primitive.lodLevelOffset + level) * 4u;
+                mergedConsumers += state[histogram];
             }
+            // The representative is allowed its own cut even if its LOD
+            // interval spans the sharing threshold; it is not merged demand.
+            uint representative = state[base];
+            if (representative != 0xffffffffu &&
+                state[streamRTInstanceBase(params, representative)] < threshold) {
+                --mergedConsumers;
+            }
+            canonicalMerged = mergedConsumers != 0u ? 1u : 0u;
             state[streamRTHistogramBase(params) + primitive.lodLevelOffset * 4u + 3u] = canonicalMerged;
         }
         return;
@@ -4128,23 +4051,6 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         uint base = streamRTPrimitiveBase(params, instance.primitiveIndex);
         uint minimum = state[output];
         if (primitive.lodLevelCount == 0u || minimum >= primitive.lodLevelCount - 1u) { return; }
-        if (params.blasFallbackPolicy == 2u) {
-            uint owner = instance.primitiveIndex * 3u;
-            state[output + 2u] = owner;
-            InterlockedAdd(state[base + 3u], 1u);
-            streamAccumulateRTOwnerImportance(state, owner, instance, params);
-            return;
-        }
-        bool floorAvailable = params.blasFallbackPolicy == 1u && state[base + 2u] != 0xffffffffu;
-        if (floorAvailable) {
-            uint floorOwner = instance.primitiveIndex * 3u + 2u;
-            InterlockedAdd(state[base + 5u], 1u);
-            streamAccumulateRTOwnerImportance(state, floorOwner, instance, params);
-            if (minimum >= state[base + 2u]) {
-                state[output + 2u] = floorOwner;
-                return;
-            }
-        }
         uint mode = minimum >= state[base + 2u] ? 2u : minimum >= state[base + 1u] ? 1u : 0u;
         // The representative itself retains its own view cut even when its
         // interval spans several levels. Other users satisfy the conservative test.
@@ -4152,16 +4058,13 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         // A demanded highest-drawable cut can serve every consumer of the same
         // primitive. Charge and prioritize that owner once rather than retaining
         // redundant shared/cache builds while other primitives use terminal cuts.
-        if (params.enableBlasPriority != 0u && params.enableBlasMergedSharing != 0u &&
-            state[streamRTHistogramBase(params) + primitive.lodLevelOffset * 4u + 3u] != 0u) {
+        if (state[streamRTHistogramBase(params) + primitive.lodLevelOffset * 4u + 3u] != 0u) {
             mode = 0u;
         }
         uint owner = instance.primitiveIndex * 3u + mode;
         state[output + 2u] = owner;
-        if (!floorAvailable || mode != 2u) {
-            InterlockedAdd(state[base + 3u + mode], 1u);
-            streamAccumulateRTOwnerImportance(state, owner, instance, params);
-        }
+        InterlockedAdd(state[base + 3u + mode], 1u);
+        streamAccumulateRTOwnerImportance(state, owner, instance, params);
         return;
     }
     if (push.activeBuildPhase == 25u) {
@@ -4170,8 +4073,8 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         uint base = streamRTPrimitiveBase(params, item);
         StructuredBuffer<GPUDrivenStreamAssetLODLevel> levels = resolveUniform(
             ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>>(push.lodLevelBuffer));
-        uint total = 0u, references = 0u, storage = 0u;
-        uint cachedReferences = 0u, cachedStorage = 0u;
+        uint total = 0u, references = 0u;
+        uint cachedReferences = 0u;
         uint cacheBase = item * 16u;
         bool scratchWritten = false;
         // Mode 1 is temporary reachability scratch until merged/cache masks
@@ -4300,17 +4203,14 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             references += totals.y;
             // The persistent GPU allocator admits using actual encoded bytes.
             // Its idle-cache eviction policy must not charge power-of-two bounds.
-            uint bytes = totals.y != 0u && params.enableBlasGPUAllocator == 0u
-                ? blasInstanceStorageBytes(totals.y, params) : 0u;
-            storage += min(bytes, 0xffffffffu - storage);
-            if (mode == 2u) { cachedReferences = totals.y; cachedStorage = bytes; }
+            if (mode == 2u) { cachedReferences = totals.y; }
         }
         if (lane == 0u) {
             if (scratchWritten && state[base + 4u] == 0u) { cutCache[cacheBase + 12u] = 0u; }
             state[base + 6u] = total;
             uint scratch = streamRTHistogramBase(params) + primitive.lodLevelOffset * 4u;
-            state[scratch] = references; state[scratch + 1u] = storage;
-            state[scratch + 2u] = cachedReferences; state[scratch + 3u] = cachedStorage;
+            state[scratch] = references; state[scratch + 1u] = 0u;
+            state[scratch + 2u] = cachedReferences; state[scratch + 3u] = 0u;
         }
         return;
     }
@@ -4383,14 +4283,6 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
                 demand = uint4(state[scratch], state[scratch + 1u], state[base + 6u], 0u);
             } else {
                 uint count = state[base + 6u];
-                if (params.enableBlasPriority == 0u && header[0].representationPadding != 0u &&
-                    (state[base + 11u] & kRTIdleCache) != 0u) {
-                    StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> representations = resolveUniform(
-                        ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(params.rtRepresentationBuffer));
-                    count -= representations[item * 3u + 2u].previousGroupCount;
-                    state[base + 11u] |= kRTEvictIdleCache;
-                    InterlockedAdd(header[0].representationCount, 0xffffffffu);
-                }
                 state[base + 6u] = count;
                 demand.x = count;
             }
@@ -4417,12 +4309,8 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             // Representation planning precedes the BLAS header reset. A real
             // allocation rejection from the last submitted frame may evict
             // unreferenced discrete caches without predicting bucket sizes.
-            bool actualStoragePressure = params.enableBlasGPUAllocator != 0u &&
-                (push.traversalPhase & 1u) == 0u && header[0].storageRejected != 0u;
-            bool buildBudgetPressure = params.enableBlasPriority == 0u &&
-                (prefix.x > params.blasClusterReferenceCapacity || header[0].representationCount > params.blasBuildCapacity);
-            bool evictIdle = buildBudgetPressure || prefix.y > params.blasStorageBytes ||
-                prefix.z > params.rtRepresentationGroupCapacity || actualStoragePressure;
+            bool actualStoragePressure = (push.traversalPhase & 1u) == 0u && header[0].storageRejected != 0u;
+            bool evictIdle = prefix.z > params.rtRepresentationGroupCapacity || actualStoragePressure;
             header[0].representationPadding = evictIdle ? 1u : 0u;
         }
         return;
@@ -4498,13 +4386,6 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
                     dynamic = true;
                 }
             }
-            if (!dynamic && params.blasFallbackPolicy == 1u) {
-                uint floorOwner = instance.primitiveIndex * 3u + 2u;
-                if (streamBlasDynamicReady(representations[floorOwner])) {
-                    selected = floorOwner;
-                    dynamic = true;
-                }
-            }
             if (!dynamic) { selected = 0xffffffffu; }
         }
         // TLAS consumes this resolved selection, exactly matching semantic
@@ -4536,18 +4417,18 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uniform GPUDrivenStreamAssetPush push)
 {
+    // The runtime dispatches BLAS/TLAS work only after cluster RT has created
+    // the representation buffers and persistent GPU allocator.
     StructuredBuffer<GPUDrivenStreamAssetParams> initialParams =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
     GPUDrivenStreamAssetParams rtParams = initialParams[0];
-    if (rtParams.enableBlasRepresentations != 0u && push.activeBuildPhase >= 20u) {
+    if (push.activeBuildPhase >= 20u) {
         buildStreamRTRepresentations(dispatchThreadID.x, dispatchThreadID.y, push, rtParams);
         return;
     }
-    uint ownerCount = rtParams.enableBlasRepresentations != 0u ? rtParams.rtRepresentationCount : rtParams.sceneInstanceCount;
-    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroupHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+    uint ownerCount = rtParams.rtRepresentationCount;
     StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaderHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(rtParams.enableBlasRepresentations != 0u ? rtParams.rtRepresentationHeaderBuffer : push.activeHeaderBuffer));
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(rtParams.rtRepresentationHeaderBuffer));
     StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry> clasPageTableHandle =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry>>(push.clasPageTableBuffer));
     StructuredBuffer<uint2> clasAddressHandle =
@@ -4555,21 +4436,17 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     RWStructuredBuffer<GPUDrivenStreamAssetBLASHeader> blasHeaderHandle =
         resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASHeader>>(push.blasHeaderBuffer));
     RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> instanceBlasHandle =
-        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(rtParams.enableBlasRepresentations != 0u ? rtParams.rtRepresentationBuffer : push.instanceBlasBuffer));
-    RWStructuredBuffer<GPUDrivenStreamAssetBLASBuildInfo> blasBuildInfoHandle =
-        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASBuildInfo>>(push.blasBuildInfoBuffer));
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(rtParams.rtRepresentationBuffer));
     RWStructuredBuffer<uint2> blasClusterReferenceHandle =
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.blasClusterReferenceBuffer));
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
 
-    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
     StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader = activeHeaderHandle;
     StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry> clasPageTable = clasPageTableHandle;
     StructuredBuffer<uint2> clasAddresses = clasAddressHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetBLASHeader> blasHeader = blasHeaderHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> instanceBlas = instanceBlasHandle;
-    RWStructuredBuffer<GPUDrivenStreamAssetBLASBuildInfo> blasBuildInfos = blasBuildInfoHandle;
     RWStructuredBuffer<uint2> blasClusterReferences = blasClusterReferenceHandle;
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
 
@@ -4592,15 +4469,13 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             header.arenaUsedBytes = previous.arenaUsedBytes;
             header.arenaBase = previous.arenaUsedBytes;
             header.padding1 = activeCount;
-            if (params.enableBlasRepresentations != 0u) {
-                GPUDrivenStreamAssetBLASHeader representationStats = blasHeader[0];
-                header.representationCount = representationStats.representationCount;
-                header.sharingInstanceCount = representationStats.sharingInstanceCount;
-                header.mergedInstanceCount = representationStats.mergedInstanceCount;
-                header.cachedInstanceCount = representationStats.cachedInstanceCount;
-                header.representationGroupCount = representationStats.representationGroupCount;
-                header.representationGroupOverflow = representationStats.representationGroupOverflow;
-            }
+            GPUDrivenStreamAssetBLASHeader representationStats = blasHeader[0];
+            header.representationCount = representationStats.representationCount;
+            header.sharingInstanceCount = representationStats.sharingInstanceCount;
+            header.mergedInstanceCount = representationStats.mergedInstanceCount;
+            header.cachedInstanceCount = representationStats.cachedInstanceCount;
+            header.representationGroupCount = representationStats.representationGroupCount;
+            header.representationGroupOverflow = representationStats.representationGroupOverflow;
             blasHeader[0] = header;
         }
         return;
@@ -4610,7 +4485,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
     RWStructuredBuffer<uint4> cache = cacheHandle;
     if (push.activeBuildPhase == 4u || push.activeBuildPhase == 11u) {
-        if (push.activeBuildPhase == 11u && params.enableBlasRepresentations != 0u && itemIndex < ownerCount) {
+        if (push.activeBuildPhase == 11u && itemIndex < ownerCount) {
             GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
             if (streamBlasDynamicReady(info)) {
                 RWStructuredBuffer<uint> representationState = resolveUniform(
@@ -4625,33 +4500,8 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
                 }
             }
         }
-        if (push.activeBuildPhase == 11u && params.enableBlasRepresentations == 0u && itemIndex < ownerCount) {
-            // Finalize only after insertion/admission, using the same effective
-            // representation as TLAS input. Stable fallback is not a cut change.
-            StructuredBuffer<GPUDrivenStreamAssetInstance> instances =
-                resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
-            StructuredBuffer<uint2> fallbackAddresses =
-                resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.fallbackBlasAddressBuffer));
-            GPUDrivenStreamAssetInstance instance = instances[itemIndex];
-            GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
-            uint2 fallbackAddress = instance.primitiveIndex < params.scenePrimitiveCount
-                ? fallbackAddresses[instance.primitiveIndex] : uint2(0u, 0u);
-            uint2 address = streamPublishedBlasAddress(info, params, fallbackAddress);
-            bool visible = instance.visible != 0u && any(address != uint2(0u, 0u));
-            uint previousMode = info.flags & kBLASInstancePublishedMask;
-            uint publishedMode = !visible ? 0u : (streamBlasDynamicReady(info)
-                ? kBLASInstancePublishedDynamic : kBLASInstancePublishedFallback);
-            bool semanticChanged = publishedMode != previousMode ||
-                (publishedMode == kBLASInstancePublishedDynamic &&
-                    (info.flags & kBLASInstanceSemanticCutDirty) != 0u);
-            if (semanticChanged) {
-                // Global: an offscreen instance can affect reflections/shadows.
-                InterlockedAdd(blasHeader[0].semanticChangeCount, 1u);
-            }
-            instanceBlas[itemIndex].flags = (info.flags & ~kBLASInstancePublishedMask) | publishedMode;
-        }
         if (itemIndex < activeCount) {
-            GPUDrivenStreamAssetActiveGroup group = streamBlasGroup(itemIndex, activeGroups, params);
+            GPUDrivenStreamAssetActiveGroup group = streamBlasGroup(itemIndex, params);
             if (group.instanceIndex >= ownerCount || group.pageIndex >= params.scenePageCount) { return; }
             uint4 key = uint4(group.pageIndex, group.clusterSelectionMask, group.clusterCount,
                 clasPageTable[group.pageIndex].publicationGeneration);
@@ -4671,7 +4521,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
                     semanticDirty = any(previous.xyz != key.xyz);
                     if (previous.w != key.w) {
                         InterlockedAdd(blasHeader[0].publicationInvalidated, 1u);
-                        if (params.enableBlasRepresentations != 0u && group.instanceIndex % 3u == 2u) {
+                        if (group.instanceIndex % 3u == 2u) {
                             InterlockedAdd(blasHeader[0].cacheDependencyInvalidations, 1u);
                         }
                     }
@@ -4709,7 +4559,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         if (itemIndex >= activeCount) {
             return;
         }
-        GPUDrivenStreamAssetActiveGroup group = streamBlasGroup(itemIndex, activeGroups, params);
+        GPUDrivenStreamAssetActiveGroup group = streamBlasGroup(itemIndex, params);
         if (group.instanceIndex >= ownerCount ||
             group.pageIndex >= params.scenePageCount ||
             group.clusterCount == 0u ||
@@ -4743,7 +4593,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     RWStructuredBuffer<uint4> scanHandle =
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
     RWStructuredBuffer<uint4> scan = scanHandle;
-    uint scratchBase = 8u + (params.enableBlasRepresentations != 0u ? params.rtRepresentationGroupCapacity : params.activeGroupCount);
+    uint scratchBase = 8u + params.rtRepresentationGroupCapacity;
     if (push.activeBuildPhase == 6u) {
         uint lane = itemIndex & 63u;
         uint2 demand = 0u;
@@ -4799,167 +4649,21 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         uint2 blockPrefix = scan[scratchBase + itemIndex / 64u].xy;
         uint referenceOffset = info.clusterReferenceOffset + min(blockPrefix.x, 0xffffffffu - info.clusterReferenceOffset);
         uint buildIndex = info.blasBuildIndex + min(blockPrefix.y, 0xffffffffu - info.blasBuildIndex);
-        bool referencesFit = referenceOffset < params.blasClusterReferenceCapacity &&
-            info.selectedClusterCount <= params.blasClusterReferenceCapacity - referenceOffset;
-        if (params.enableBlasPriority == 0u && (!referencesFit || buildIndex >= params.blasBuildCapacity)) {
-            InterlockedOr(instanceBlas[itemIndex].flags, kBLASInstanceFallback | kBLASInstanceOverflow);
-            instanceBlas[itemIndex].blasBuildIndex = kInvalidClusterIndex;
-            instanceBlas[itemIndex].clusterReferenceCapacity = 0u;
-            instanceBlas[itemIndex].cachedValid = 0u;
-            InterlockedAdd(blasHeader[0].overflowCount, 1u);
-            if (!referencesFit) { InterlockedAdd(blasHeader[0].referenceBudgetRejected, 1u); }
-            else { InterlockedAdd(blasHeader[0].buildBudgetRejected, 1u); }
-            return;
-        }
         instanceBlas[itemIndex].clusterReferenceOffset = referenceOffset;
         instanceBlas[itemIndex].blasBuildIndex = buildIndex;
         bool dirty = info.cachedValid == 0u || info.previousGroupCount != info.groupCount ||
-            params.enableBlasInstanceReuse == 0u || (info.flags & kBLASInstanceDirty) != 0u;
+            (info.flags & kBLASInstanceDirty) != 0u;
         bool semanticDirty = info.previousGroupCount != info.groupCount;
         InterlockedOr(instanceBlas[itemIndex].flags, kBLASInstanceDynamic |
             (dirty ? kBLASInstanceDirty : 0u) | (semanticDirty ? kBLASInstanceSemanticCutDirty : 0u));
         InterlockedAdd(blasHeader[0].admittedInstances, 1u);
         return;
     }
-    if (push.activeBuildPhase == 8u || push.activeBuildPhase == 12u) {
-        uint lane = itemIndex & 63u;
-        uint4 demand = 0u;
-        if (itemIndex < ownerCount) {
-            GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
-            if ((info.flags & kBLASInstanceDynamic) != 0u) {
-                uint size = blasInstanceStorageBytes(info.selectedClusterCount, params);
-                if (push.activeBuildPhase == 8u) {
-                    // Decide complete-instance storage admission before growth.
-                    // Rejected instances must not force another repack next frame.
-                    demand.y = size;
-                } else {
-                    uint packedOffset = scan[scratchBase + itemIndex / 64u].y;
-                    packedOffset += min(info.packedPrefix, 0xffffffffu - packedOffset);
-                    bool fits = size != 0u && packedOffset < params.blasStorageBytes &&
-                        size <= params.blasStorageBytes - packedOffset;
-                    if (!fits) {
-                        info.flags = (info.flags & kBLASInstancePublishedMask) | kBLASInstanceFallback | kBLASInstanceOverflow;
-                        info.cachedValid = 0u;
-                        info.storageOffset = 0u;
-                        info.storageCapacity = 0u;
-                        InterlockedAdd(blasHeader[0].storageRejected, 1u);
-                        InterlockedAdd(blasHeader[0].overflowCount, 1u);
-                    } else {
-                        bool needsStorage = blasInstanceNeedsStorage(info, size, params);
-                        if (needsStorage) { info.flags |= kBLASInstanceDirty; }
-                        demand = uint4(needsStorage ? size : 0u, size,
-                            (info.flags & kBLASInstanceDirty) != 0u ? 1u : 0u, 1u);
-                    }
-                    instanceBlas[itemIndex] = info;
-                }
-            }
-        }
-        g_StreamBlasStoragePrefix[lane] = demand;
-        GroupMemoryBarrierWithGroupSync();
-        for (uint stride = 1u; stride < 64u; stride *= 2u) {
-            uint4 prior = lane >= stride ? g_StreamBlasStoragePrefix[max(lane, stride) - stride] : uint4(0u);
-            GroupMemoryBarrierWithGroupSync();
-            uint4 current = g_StreamBlasStoragePrefix[lane];
-            g_StreamBlasStoragePrefix[lane] = current + min(prior, 0xffffffffu - current);
-            GroupMemoryBarrierWithGroupSync();
-        }
-        uint4 before = lane == 0u ? uint4(0u) : g_StreamBlasStoragePrefix[lane - 1u];
-        if (itemIndex < ownerCount) {
-            instanceBlas[itemIndex].allocationPrefix = before.x;
-            instanceBlas[itemIndex].packedPrefix = before.y;
-            instanceBlas[itemIndex].buildPrefix = before.z;
-            if (push.activeBuildPhase == 12u) { instanceBlas[itemIndex].blasBuildIndex = before.w; }
-        }
-        if (lane == 63u) { scan[scratchBase + itemIndex / 64u] = g_StreamBlasStoragePrefix[63]; }
-        return;
-    }
-    if (push.activeBuildPhase == 9u || push.activeBuildPhase == 13u) {
-        if (itemIndex == 0u) {
-            uint4 prefix = 0u;
-            for (uint block = 0u; block < (ownerCount + 63u) / 64u; ++block) {
-                uint4 count = scan[scratchBase + block];
-                scan[scratchBase + block] = prefix;
-                prefix += min(count, 0xffffffffu - prefix);
-            }
-            if (push.activeBuildPhase == 13u) {
-                uint base = blasHeader[0].arenaBase;
-                bool repack = base > params.blasStorageBytes || prefix.x > params.blasStorageBytes - min(base, params.blasStorageBytes);
-                blasHeader[0].arenaRepack = repack ? 1u : 0u;
-                blasHeader[0].arenaUsedBytes = repack ? prefix.y : base + prefix.x;
-            }
-        }
-        return;
-    }
-    if (push.activeBuildPhase == 10u) {
-        if (itemIndex >= ownerCount) { return; }
-        GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
-        bool repack = blasHeader[0].arenaRepack != 0u;
-        if ((info.flags & kBLASInstanceDynamic) == 0u) {
-            if (repack) { info.storageOffset = 0u; info.storageCapacity = 0u; }
-            info.cachedValid = 0u;
-            instanceBlas[itemIndex] = info;
-            return;
-        }
-        uint4 prefix = scan[scratchBase + itemIndex / 64u];
-        uint size = blasInstanceStorageBytes(info.selectedClusterCount, params);
-        bool grow = blasInstanceNeedsStorage(info, size, params);
-        uint packedOffset = prefix.y + min(info.packedPrefix, 0xffffffffu - prefix.y);
-        uint growthOffset = prefix.x + min(info.allocationPrefix, 0xffffffffu - prefix.x);
-        growthOffset += min(blasHeader[0].arenaBase, 0xffffffffu - growthOffset);
-        uint offset = repack ? packedOffset : grow ? growthOffset : info.storageOffset;
-        if (size == 0u || offset >= params.blasStorageBytes || size > params.blasStorageBytes - offset) {
-            info.flags = (info.flags & kBLASInstancePublishedMask) | kBLASInstanceFallback | kBLASInstanceOverflow;
-            info.cachedValid = 0u;
-            info.storageOffset = 0u; info.storageCapacity = 0u;
-            instanceBlas[itemIndex] = info;
-            InterlockedAdd(blasHeader[0].storageRejected, 1u);
-            InterlockedAdd(blasHeader[0].overflowCount, 1u);
-            return;
-        }
-        InterlockedAdd(blasHeader[0].liveClusterReferences, info.selectedClusterCount);
-        bool dirty = repack || grow || (info.flags & kBLASInstanceDirty) != 0u;
-        info.storageOffset = offset;
-        if (repack || grow) { info.storageCapacity = size; }
-        info.previousFirstGroup = info.firstGroup;
-        info.previousGroupCount = info.groupCount;
-        info.cachedValid = 1u;
-        if (!dirty) {
-            info.insertedClusterCount = info.selectedClusterCount;
-            instanceBlas[itemIndex] = info;
-            InterlockedAdd(blasHeader[0].reusedInstances, 1u);
-            return;
-        }
-        uint buildIndex = repack ? prefix.w + info.blasBuildIndex : prefix.z + info.buildPrefix;
-        info.blasBuildIndex = buildIndex;
-        info.flags |= kBLASInstanceDirty;
-        instanceBlas[itemIndex] = info;
-        InterlockedOr(blasHeader[0].padding0, 1u);
-        InterlockedAdd(blasHeader[0].dirtyInstances, 1u);
-        InterlockedMax(blasHeader[0].blasBuildCount, buildIndex + 1u);
-        InterlockedAdd(blasHeader[0].clusterReferenceCount, info.selectedClusterCount);
-        uint low = info.clusterReferenceOffset << 3u;
-        uint addressLow = params.blasClusterReferenceAddressLow + low;
-        GPUDrivenStreamAssetBLASBuildInfo buildInfo;
-        buildInfo.clusterReferencesCount = info.selectedClusterCount;
-        buildInfo.clusterReferencesStride = 8u;
-        buildInfo.clusterReferencesAddressLow = addressLow;
-        buildInfo.clusterReferencesAddressHigh = params.blasClusterReferenceAddressHigh +
-            (info.clusterReferenceOffset >> 29u) + (addressLow < params.blasClusterReferenceAddressLow ? 1u : 0u);
-        blasBuildInfos[buildIndex] = buildInfo;
-        RWStructuredBuffer<uint2> destinationHandle =
-            resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.dynamicBlasAddressBuffer));
-        RWStructuredBuffer<uint2> destinations = destinationHandle;
-        uint destinationLow = params.blasStorageAddressLow + offset;
-        destinations[buildIndex] = uint2(destinationLow, params.blasStorageAddressHigh +
-            (destinationLow < params.blasStorageAddressLow ? 1u : 0u));
-        return;
-    }
-
     if (push.activeBuildPhase != kBLASInputPhaseInsert || itemIndex >= activeCount) {
         return;
     }
 
-    GPUDrivenStreamAssetActiveGroup group = streamBlasGroup(itemIndex, activeGroups, params);
+    GPUDrivenStreamAssetActiveGroup group = streamBlasGroup(itemIndex, params);
     if (group.instanceIndex >= ownerCount ||
         group.pageIndex >= params.scenePageCount ||
         group.clusterCount == 0u ||
@@ -5006,21 +4710,15 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
 {
     StructuredBuffer<GPUDrivenStreamAssetInstance> instanceHandle =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
-    StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> instanceBlasHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(push.instanceBlasBuffer));
     StructuredBuffer<uint2> fallbackBlasAddressHandle =
         resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.fallbackBlasAddressBuffer));
-    StructuredBuffer<uint2> dynamicBlasAddressHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.dynamicBlasAddressBuffer));
     RWStructuredBuffer<GPUDrivenStreamAssetTLASInstance> tlasInstanceHandle =
         resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetTLASInstance>>(push.tlasInstanceBuffer));
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
 
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
-    StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> instanceBlas = instanceBlasHandle;
     StructuredBuffer<uint2> fallbackBlasAddresses = fallbackBlasAddressHandle;
-    StructuredBuffer<uint2> dynamicBlasAddresses = dynamicBlasAddressHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetTLASInstance> tlasInstances = tlasInstanceHandle;
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
 
@@ -5031,16 +4729,13 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
     }
 
     GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
-    GPUDrivenStreamAssetInstanceBLAS blas = instanceBlas[instanceIndex];
-    if (params.enableBlasRepresentations != 0u) {
-        StructuredBuffer<uint> representationState = resolveUniform(
-            ResourceHandle<StructuredBuffer<uint>>(params.rtRepresentationStateBuffer));
-        StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> representations = resolveUniform(
-            ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(params.rtRepresentationBuffer));
-        uint selected = representationState[streamRTInstanceBase(params, instanceIndex) + 2u];
-        blas = (GPUDrivenStreamAssetInstanceBLAS)0;
-        if (selected != 0xffffffffu) { blas = representations[selected]; }
-    }
+    GPUDrivenStreamAssetInstanceBLAS blas = (GPUDrivenStreamAssetInstanceBLAS)0;
+    StructuredBuffer<uint> representationState = resolveUniform(
+        ResourceHandle<StructuredBuffer<uint>>(params.rtRepresentationStateBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> representations = resolveUniform(
+        ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(params.rtRepresentationBuffer));
+    uint selected = representationState[streamRTInstanceBase(params, instanceIndex) + 2u];
+    if (selected != 0xffffffffu) { blas = representations[selected]; }
     uint2 fallbackAddress = instance.primitiveIndex < params.scenePrimitiveCount
         ? fallbackBlasAddresses[instance.primitiveIndex] : uint2(0u, 0u);
     uint2 accelerationStructureReference = streamPublishedBlasAddress(blas, params, fallbackAddress);

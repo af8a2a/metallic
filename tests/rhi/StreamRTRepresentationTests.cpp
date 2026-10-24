@@ -51,7 +51,8 @@ static_assert(sizeof(NativeInstance) == 64);
 struct Snapshot {
     MeshletStreamGPUBLASHeader header;
     std::array<NativeInstance, kInstanceCount> instances;
-    std::array<MeshletStreamGPUInstanceBLAS, kInstanceCount> allocations;
+    std::array<MeshletStreamGPUInstanceBLAS, kInstanceCount> publications;
+    std::array<MeshletStreamGPUInstanceBLAS, 3> owners;
     std::array<uint32_t, 16> cutCache;
     std::array<MeshletStreamGPURTRepresentationImportance, 3> importance;
     MeshletStreamGPURTRepresentationLODMetadata fallbackMetadata;
@@ -209,7 +210,7 @@ public:
                 .enableClusterRtx = true, .enableClas = true, .compactClas = true,
                 .maxClasBytes = 64ull << 20, .maxClasBuildClusters = 8192,
                 .maxBlasClusterReferences = 8192, .maxBlasBytes = 32ull << 20,
-                .enableBlasGPUAllocator = true, .enableBlasIntermediateFallback = false, .maxBlasBuilds = 3,
+                .maxBlasBuilds = 3,
                 .maxFallbackBlasBytes = 4ull << 20, .prefetchPages = false};
             {
                 MeshletStreamRuntime rejected;
@@ -262,7 +263,7 @@ public:
                 }
             } drain{*queue, slots};
             constexpr uint64_t kReadbackBytes = sizeof(MeshletStreamGPUBLASHeader) +
-                kInstanceCount * (sizeof(NativeInstance) + sizeof(MeshletStreamGPUInstanceBLAS)) + sizeof(Snapshot::cutCache);
+                sizeof(Snapshot::instances) + sizeof(Snapshot::publications) + sizeof(Snapshot::owners) + sizeof(Snapshot::cutCache);
             const uint64_t representationReadbackBytes = uint64_t(asset.groupCount()) * 3 * sizeof(MeshletStreamGPURTRepresentationGroup);
             const uint64_t importanceReadbackOffset = kReadbackBytes + representationReadbackBytes;
             const uint64_t fallbackMetadataReadbackOffset = importanceReadbackOffset + sizeof(Snapshot::importance);
@@ -360,7 +361,9 @@ public:
                 std::memcpy(&snapshot.header, data, sizeof(snapshot.header));
                 lastHeader = snapshot.header;
                 std::memcpy(snapshot.instances.data(), data + sizeof(snapshot.header), sizeof(snapshot.instances));
-                std::memcpy(snapshot.allocations.data(), data + sizeof(snapshot.header) + sizeof(snapshot.instances), sizeof(snapshot.allocations));
+                std::memcpy(snapshot.publications.data(), data + sizeof(snapshot.header) + sizeof(snapshot.instances), sizeof(snapshot.publications));
+                std::memcpy(snapshot.owners.data(), data + sizeof(snapshot.header) + sizeof(snapshot.instances) +
+                    sizeof(snapshot.publications), sizeof(snapshot.owners));
                 if (slot.hasCutCache) {
                     std::memcpy(snapshot.cutCache.data(), data + kReadbackBytes - sizeof(snapshot.cutCache), sizeof(snapshot.cutCache));
                     std::memcpy(snapshot.importance.data(), data + importanceReadbackOffset, sizeof(snapshot.importance));
@@ -407,10 +410,7 @@ public:
                             std::isfinite(distance) && distance >= 0.0f && std::isfinite(coverage) && coverage >= 0.0f && coverage <= 1.0f,
                             "Owner importance contains invalid error, distance or coverage");
                     }
-                    const uint32_t floorConsumers = runtimeDesc.enableBlasIntermediateFallback
-                        ? snapshot.importance[2].consumerCount : 0;
-                    require(floorConsumers <= kInstanceCount && consumers - floorConsumers <= kInstanceCount,
-                        "Owner importance duplicated a consumer within the floor or fine tier");
+                    require(consumers <= kInstanceCount, "Owner importance duplicated a consumer");
                 }
                 checkLegalCuts(snapshot);
                 if (slot.traced) {
@@ -452,6 +452,7 @@ public:
                     std::pair{"test.blasHeader", uint64_t(sizeof(MeshletStreamGPUBLASHeader))},
                     std::pair{"test.tlasInstances", uint64_t(kInstanceCount * sizeof(NativeInstance))},
                     std::pair{"test.instanceBlas", uint64_t(kInstanceCount * sizeof(MeshletStreamGPUInstanceBLAS))},
+                    std::pair{"test.rtRepresentations", uint64_t(sizeof(Snapshot::owners))},
                     std::pair{"test.rtRepresentationCache", uint64_t(sizeof(Snapshot::cutCache))}}) {
                     const auto found = std::find_if(bindings.begin(), bindings.end(), [&](const auto& entry) { return entry.id == name; });
                     if (std::string_view(name) == "test.rtRepresentationCache") {
@@ -757,13 +758,11 @@ public:
             require((stable.cutCache[15] & 1u) != 0, "Retried dependency change never converged to a merged cut-cache hit");
             checkIdentity(stable);
 
-            // Correctness oracle uses the unchanged per-instance path with a
-            // generous budget. It is not a performance comparison: only the
-            // submitted finest geometry and the authored rays are held equal.
-            phase = "legacy finest oracle";
+            // Reinitialize the production owner path with a generous budget.
+            // This checks cold-restart geometry/identity reproducibility after
+            // retirement; it is not an independent geometry algorithm oracle.
+            phase = "cold restarted finest reference";
             runtime.reset();
-            runtimeDesc.enableBlasRepresentations = false;
-            runtimeDesc.enableBlasGPUAllocator = false;
             runtimeDesc.maxBlasBuilds = kInstanceCount;
             runtimeDesc.maxBlasClusterReferences = 64 * 1024;
             runtimeDesc.maxBlasBytes = 128ull << 20;
@@ -772,34 +771,44 @@ public:
                 record(slots[i % 2]); stable = complete(slots[i % 2]);
             }
             checkIdentity(stable);
-            require(stable.header.blasBuildCount == 0 && stable.header.reusedInstances == kInstanceCount,
-                "Legacy oracle did not converge to eight per-instance BLAS");
-            require(!runtime.profilingStats().blasGPUAllocatorEnabled, "Legacy ray oracle used the candidate allocator");
-            const Snapshot finestLegacy = stable;
+            require(stable.header.blasBuildCount == 0 && stable.header.semanticChangeCount == 0,
+                "Cold restarted owner path failed to converge");
+            require(runtime.profilingStats().blasGPUAllocatorEnabled, "Cold restarted reference lost the GPU allocator");
+            const Snapshot finestRestarted = stable;
             float maximumDistanceError = 0;
             for (uint32_t ray = 0; ray < finestCandidate.rays.size(); ++ray) {
                 const auto& candidate = finestCandidate.rays[ray];
                 const auto& baseline = stable.rays[ray];
                 require(candidate.directInstance == baseline.directInstance &&
                     candidate.reflectedInstance == baseline.reflectedInstance,
-                    "Shared finest representation changed legacy direct/secondary hit coverage or identity");
+                    "Cold restart changed finest direct/secondary hit coverage or identity");
                 const float error = std::max(std::abs(candidate.directDistance - baseline.directDistance),
                     std::abs(candidate.reflectedDistance - baseline.reflectedDistance));
                 maximumDistanceError = std::max(maximumDistanceError, error);
-                require(error <= 2e-5f, "Shared finest representation changed legacy ray hit distance");
+                require(error <= 2e-5f, "Cold restart changed finest ray hit distance");
             }
 
             // An exact one-cut reference budget and one build slot must serve
             // all eight instances. Populate the discrete cache first, then
             // demand fine geometry so idle-cache eviction is exercised too.
             phase = "candidate one-representation budget";
+            const uint32_t finestOwner = finestRestarted.publications[0].previousFirstGroup;
+            require(finestOwner < finestRestarted.owners.size() &&
+                std::all_of(finestRestarted.publications.begin(), finestRestarted.publications.end(),
+                    [&](const auto& publication) { return publication.previousFirstGroup == finestOwner; }),
+                "Finest instances did not resolve to one valid owner");
+            const auto& finestAllocation = finestRestarted.owners[finestOwner];
+            uint32_t finestReferences = 0;
+            for (const auto& group : finestRestarted.groups) {
+                if (group.representationIndex == finestOwner) { finestReferences += std::popcount(group.clusterMask); }
+            }
+            require(finestReferences > 0 && finestAllocation.selectedClusterCount == finestReferences &&
+                finestAllocation.insertedClusterCount == finestReferences && finestAllocation.cachedValid == 1u,
+                "Finest owner allocation disagrees with the complete authored cut");
             runtime.reset();
-            runtimeDesc.enableBlasRepresentations = true;
-            runtimeDesc.enableBlasGPUAllocator = true;
             runtimeDesc.maxBlasBuilds = 1;
-            runtimeDesc.maxBlasClusterReferences = finestLegacy.allocations[0].selectedClusterCount;
+            runtimeDesc.maxBlasClusterReferences = finestReferences;
             runtimeDesc.maxBlasBytes = 32ull << 20;
-            require(runtimeDesc.maxBlasClusterReferences > 0, "Legacy oracle did not expose the finest reference count");
             require(bool(runtime.initialize(*device, runtimeDesc, log)), log);
             for (uint32_t i = 0; i < 100; ++i) { record(slots[i % 2]); stable = complete(slots[i % 2]); }
             require(stable.header.blasBuildCount == 0 && stable.header.requestedInstances == 1 &&
@@ -845,44 +854,6 @@ public:
                         "Representation overflow changed complete terminal-fallback ray coverage");
                 }
             }
-            // Exercise the real floor cut, native Build/Move, publication and
-            // two in-flight submissions under a budget that denies the fine cut.
-            // Earlier stages remain explicit policy-0 coverage of the old paths.
-            phase = "intermediate floor under storage pressure";
-            runtime.reset();
-            runtimeDesc.enableBlasIntermediateFallback = true;
-            runtimeDesc.maxBlasClusterReferences = 8192;
-            runtimeDesc.maxBlasBuilds = 3;
-            // Initialization derives reference/group capacity from the worst-case
-            // native size query. Keep those capacities generous, then constrain
-            // only persistent storage so this tests storage-pressure fallback.
-            runtimeDesc.maxBlasBytes = 32ull << 20;
-            view.selectedLodLevel = 0;
-            require(bool(runtime.initialize(*device, runtimeDesc, log)), log);
-            // No submissions exist for this newly initialized runtime; the
-            // diagnostic reset's full-drain requirement is satisfied.
-            checked(runtime.resetDiagnosticBLAS(4096, true, true, true, 1), "Floor storage-only budget reset");
-            for (uint32_t i = 0; i < 100; ++i) { record(slots[i % 2]); stable = complete(slots[i % 2]); }
-            require(stable.header.cachedInstanceCount == kInstanceCount && stable.importance[2].consumerCount == kInstanceCount,
-                "Budget-denied fine owners failed to publish the complete intermediate floor to every consumer");
-            uint32_t floorClusters = 0;
-            for (const auto& group : stable.groups) {
-                if (group.representationIndex == 2) { floorClusters += std::popcount(group.clusterMask); }
-            }
-            require(floorClusters != 0 && floorClusters <= 12,
-                "Intermediate floor exceeded its complete-cut cluster bound");
-            for (uint32_t frame = 0; frame < 32; frame += 2) {
-                if (frame == 8) { record(slots[0], true); }
-                record(slots[0]); record(slots[1]);
-                for (auto& slot : slots) {
-                    stable = complete(slot);
-                    require(stable.header.cachedInstanceCount == kInstanceCount && stable.header.blasBuildCount == 0 &&
-                        stable.header.arenaRepack == 0 && stable.header.semanticChangeCount == 0 &&
-                        (stable.cutCache[15] & 4u) != 0,
-                        "Stable intermediate floor or cancelled retry rebuilt, republished or lost its exact cut cache");
-                    checkIdentity(stable);
-                }
-            }
             require(validationErrors.load() == 0, "Vulkan validation errors during representation lifetime regression");
             { std::ofstream report(directory / "Frames.json"); report << frames.dump(2); }
             { std::ofstream report(directory / "RayComparison.json"); report << nlohmann::json({
@@ -890,19 +861,17 @@ public:
                 {"maximumDistanceError", maximumDistanceError}, {"tolerance", 2e-5f},
                 {"sharingFrames", sharingFrames}, {"mergedFrames", mergedFrames}, {"sharedCutCacheHits", sharedCutCacheHits},
                 {"mergedCutCacheHits", mergedCutCacheHits},
-                {"intermediateFloorStableFrames", 32}, {"intermediateFloorClusters", floorClusters},
-                {"intermediateFloorStorageBytes", 4096}, {"intermediateFloorCancelledRetry", true},
-                {"candidateBuildBudget", 3}, {"legacyBuildBudget", kInstanceCount},
-                {"candidateAllocator", "gpu"}, {"legacyAllocator", "legacy"},
+                {"candidateBuildBudget", 3}, {"restartBuildBudget", kInstanceCount},
+                {"candidateAllocator", "gpu"}, {"restartAllocator", "gpu"},
                 {"stableAllocatorSamples", stableAllocatorSamples}, {"stagingCapFailureRejected", true},
                 {"fallbackApproximationError", expectedFallbackError}, {"terminalSentinelExcluded", hasTerminalSentinel},
                 {"importanceStableFrames", 32}, {"importanceCancellationRestored", true}}).dump(2); }
             for (const auto& [name, snapshot] : {std::pair{"CandidateRays.bin", &finestCandidate},
-                    std::pair{"LegacyRays.bin", &finestLegacy}}) {
+                    std::pair{"RestartedRays.bin", &finestRestarted}}) {
                 std::ofstream output(directory / name, std::ios::binary);
                 output.write(reinterpret_cast<const char*>(snapshot->rays.data()), kRayReadbackBytes);
             }
-            return RHITestResult::pass("Eight instances; Sharing/Merging/Discrete Caching; 32 stable frames; unique budgets; cancellation; in-flight CLAS retirement; 4096 direct/secondary rays against legacy hit coverage, identity and distance");
+            return RHITestResult::pass("Eight instances; Sharing/Merging/Discrete Caching; 32 stable frames; unique budgets; cancellation; in-flight CLAS retirement; 4096 direct/secondary rays preserve cold-restart coverage, identity and distance");
         } catch (const std::exception& error) {
             return RHITestResult::fail(phase + ": " + error.what() + "; builds=" + std::to_string(lastHeader.blasBuildCount) +
                 ", sharing=" + std::to_string(lastHeader.sharingInstanceCount) + ", merged=" + std::to_string(lastHeader.mergedInstanceCount) +

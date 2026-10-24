@@ -103,7 +103,6 @@ public:
             // Exercise the production prefix/admission phases with their real
             // GPU-generated count ABI, independently of the cut selector.
             for (uint32_t scenario = 0; scenario < 8; ++scenario) {
-                const bool priority = scenario >= 5;
                 const bool idleCache = scenario == 3 || scenario == 4 || scenario == 7;
                 const bool evictCache = scenario == 3 || scenario == 7;
                 std::array<uint32_t, kPrimitives> counts{};
@@ -130,7 +129,6 @@ public:
                 params.lodTopologyBuffer = handles[State].shaderIndex;
                 params.lodStateBuffer = handles[State].shaderIndex;
                 params.enableBlasRepresentations = 1;
-                params.enableBlasPriority = priority;
                 params.blasClusterReferenceCapacity = evictCache ? kPrimitives * 2 : UINT32_MAX;
                 params.blasStorageBytes = UINT32_MAX;
                 params.blasBuildCapacity = UINT32_MAX;
@@ -138,10 +136,12 @@ public:
                 std::vector<uint32_t> previous;
                 for (uint32_t frame = 0; frame < 16; ++frame) {
                     std::vector<uint32_t> state(kStateWords);
+                    // Each synthetic frame supplies fresh owner keys and must
+                    // invalidate the production sort cache before admission.
+                    state[kImportanceBase + kOwners * 12] = 1;
                     for (uint32_t primitive = 0; primitive < kPrimitives; ++primitive) {
                         const uint32_t base = kPrimitives * 4 + primitive * 12;
                         state[primitive * 4] = counts[primitive];
-                        state[primitive * 4 + 1] = counts[primitive] * 64;
                         state[base + 6] = counts[primitive];
                         state[base + 11] = idleCache ? 1u << 29 : 0;
                         for (uint32_t mode = 0; mode < 3; ++mode) {
@@ -177,16 +177,14 @@ public:
                             bool(commands->dispatch(groups)) &&
                             bool(commands->synchronize({.buffers = barriers})), "Production admission phase");
                     };
-                    if (priority) {
-                        dispatch(35, kOwnerBlocks);
-                        uint32_t parity = 0;
-                        for (uint32_t runLog2 = 6; (1u << runLog2) < kOwners; ++runLog2) {
-                            dispatch(36, kOwnerBlocks, runLog2 | (parity << 8)); parity ^= 1;
-                        }
-                        dispatch(37, kOwnerBlocks, parity << 8);
+                    dispatch(35, kOwnerBlocks);
+                    uint32_t parity = 0;
+                    for (uint32_t runLog2 = 6; (1u << runLog2) < kOwners; ++runLog2) {
+                        dispatch(36, kOwnerBlocks, runLog2 | (parity << 8)); parity ^= 1;
                     }
+                    dispatch(37, kOwnerBlocks, parity << 8);
                     dispatch(31, kBlocks); dispatch(26, 1);
-                    if (priority) { dispatch(38, kOwnerBlocks); dispatch(39, 1); dispatch(40, kOwnerBlocks); }
+                    dispatch(38, kOwnerBlocks); dispatch(39, 1); dispatch(40, kOwnerBlocks);
                     dispatch(32, kBlocks); dispatch(33, 1); dispatch(34, kBlocks);
                     for (auto& barrier : barriers) { barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead}; }
                     require(bool(commands->synchronize({.buffers = barriers})), "Readback barrier");
@@ -209,22 +207,19 @@ public:
                     readback->unmap();
                     uint32_t prefix = 0, acceptedEnd = 0, rejected = 0;
                     std::array<bool, kPrimitives> rankedAccepted{};
-                    if (priority) {
-                        uint32_t rankedPrefix = 0;
-                        for (uint32_t remaining = kPrimitives; remaining != 0; --remaining) {
-                            const uint32_t primitive = remaining - 1;
-                            const uint32_t count = counts[primitive] - (evictCache ? 1u : 0u);
-                            rankedAccepted[primitive] = count <= capacity && rankedPrefix <= capacity && count <= capacity - rankedPrefix;
-                            // Individually impossible cuts do not reserve a prefix.
-                            if (count <= capacity) { rankedPrefix += count; }
-                        }
+                    uint32_t rankedPrefix = 0;
+                    for (uint32_t remaining = kPrimitives; remaining != 0; --remaining) {
+                        const uint32_t primitive = remaining - 1;
+                        const uint32_t count = counts[primitive] - (evictCache ? 1u : 0u);
+                        rankedAccepted[primitive] = count <= capacity && rankedPrefix <= capacity && count <= capacity - rankedPrefix;
+                        // Individually impossible cuts do not reserve a prefix.
+                        if (count <= capacity) { rankedPrefix += count; }
                     }
                     for (uint32_t primitive = 0; primitive < kPrimitives; ++primitive) {
                         const uint32_t requested = counts[primitive] - (evictCache ? 1u : 0u);
-                        const uint32_t count = priority && !rankedAccepted[primitive] ? 0u : requested;
+                        const uint32_t count = !rankedAccepted[primitive] ? 0u : requested;
                         const uint32_t base = kPrimitives * 4 + primitive * 12;
-                        const bool overflow = priority ? requested != 0 && !rankedAccepted[primitive] :
-                            count != 0 && (prefix > capacity || count > capacity - prefix);
+                        const bool overflow = requested != 0 && !rankedAccepted[primitive];
                         require(state[base + 6] == count && state[base + 7] == prefix,
                             "Cross-block count/prefix mismatch");
                         require(((state[base + 11] >> 31) != 0) == overflow, "Whole-primitive suffix admission mismatch");
@@ -240,7 +235,7 @@ public:
                     previous = std::move(state);
                 }
             }
-            return RHITestResult::pass("137 primitives; legacy exact-fit/suffix/idle-cache cases; priority high-index winners, oversized top cut skipped, unique-primitive charging across owner modes; 128 deterministic production GPU admissions");
+            return RHITestResult::pass("137 primitives; exact-fit, empty-prefix and idle-cache pressure cases; high-index priority winners, oversized top cut skipped, unique-primitive charging across owner modes; 128 deterministic production GPU admissions");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

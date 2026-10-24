@@ -541,7 +541,6 @@ add_executable(MetallicRHITests
     rhi/StreamTriangleDecodeTests.cpp
     rhi/StreamerTests.cpp
     rhi/StreamerConcurrencyTests.cpp
-    rhi/StreamBLASAllocationTests.cpp
     rhi/StreamBLASAllocatorTests.cpp
     rhi/StreamRTRepresentationTests.cpp
     rhi/StreamRTRepresentationAdmissionTests.cpp

@@ -8,7 +8,7 @@ namespace metallic::render
 // immutable for the lifetime of an arena; only submitted GPU work mutates it.
 // Phases 5/1/6 gather releases, retire them and prepare dirty builds; phase 2
 // allocates/plans moves. Phase 8 retires staged move sources and plans their
-// return; phase 3 publishes after that return. Phases 9/4 measure the legacy path.
+// return; phase 3 publishes after that return.
 // nodeCapacity >= 4 * ownerCount + 1 covers live sources and pending targets.
 struct MeshletStreamBLASAllocatorParameters
 {
@@ -16,12 +16,12 @@ struct MeshletStreamBLASAllocatorParameters
     uint64_t buildOwners, sizes, sourceAddresses, moveSources, moveDestinations, moveCounts;
     uint64_t clusterReferenceAddress, arena;
     uint32_t ownerCount, alignment, storageBytes, relocateBudget;
-    uint32_t nodeCapacity, relocateScanCount, reuseEnable, reserved;
+    uint32_t nodeCapacity, relocateScanCount, reusePadding, mixedTilePadding;
     uint64_t relocationArena;
     uint64_t priorityOrder, importance;
     uint32_t referenceCapacity, buildCapacity;
-    // Optional GPU control words: exact sort-input change, sort-reused feedback.
-    // Null preserves uncached priority admission. Storage-budget changes require
+    // GPU control words: exact sort-input change, sort-reused feedback.
+    // Storage-budget changes require
     // an arena reset, because budget comparisons cannot resize the gap topology.
     uint64_t priorityCacheControl;
 };

@@ -8,23 +8,11 @@ chain. It does not, by itself, establish a scene-loading or frame-time speedup.
 
 ## Backend selection
 
-`METALLIC_CLAS_ALLOCATOR` selects the backend when `compactClas` is enabled:
-
-| Value | Allocation and publication | Storage |
-| --- | --- | --- |
-| `cpu` | Existing build, asynchronous size collection, CPU allocation, then Move/publication | Independent compact chunks |
-| `gpu` | GPU size reduction, allocation, Move and publication in the same submission | One ordinary arena, physically allocated at initialization |
-| `sparse` | Same GPU allocation/publication path | One virtual arena with append-only physical commitment |
-
-With the variable unset, compact CLAS uses `sparse` on devices exposing the RHI
-`sparseBuffers` capability; otherwise it retains the CPU compact backend. An
-explicit unsupported `sparse` request fails initialization rather than silently
-changing the requested backend. Other values are rejected. Disabling
-`compactClas` keeps the fixed-stride path and does not enable GPU compaction.
-
-For reproducible comparisons, set the variable explicitly even when measuring
-the default. The roam runner records it in its manifest. The current default is
-an implementation choice; performance acceptance still requires measurements.
+Compact CLAS automatically uses the sparse GPU allocator on devices exposing
+the RHI `sparseBuffers` capability. Otherwise it retains the CPU compact backend
+as a compatibility fallback. Disabling `compactClas` keeps the fixed-stride
+path. The environment backend A/B selector has been removed. Direct allocator
+tests may still construct ordinary or sparse pools to exercise their contracts.
 
 ## Ordered GPU work
 
@@ -146,12 +134,8 @@ cmake --build build-pass-stages-nrd --target MetallicRHITests
 # and fragmented budgets smaller than sparse allocation granularity.
 .\build-pass-stages-nrd\tests\MetallicRHITests.exe --gtest_filter='*clas_gpu_allocator_lifecycle*:*sparse_buffer_append_cancel_lifetime*' --rhi-validation --rhi-bindless --output-dir build/clas-direct-regression
 
-# Exercise fallback/traversal integration with both backing implementations.
-$env:METALLIC_CLAS_ALLOCATOR = 'gpu'
-.\build-pass-stages-nrd\tests\MetallicRHITests.exe --gtest_filter='*stream_rt_representation_lifecycle*' --rhi-validation --rhi-bindless --output-dir build/clas-runtime-gpu
-$env:METALLIC_CLAS_ALLOCATOR = 'sparse'
-.\build-pass-stages-nrd\tests\MetallicRHITests.exe --gtest_filter='*stream_rt_representation_lifecycle*' --rhi-validation --rhi-bindless --output-dir build/clas-runtime-sparse
-Remove-Item Env:METALLIC_CLAS_ALLOCATOR
+# Exercise the production capability-selected backend.
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --gtest_filter='*stream_rt_representation_lifecycle*' --rhi-validation --rhi-bindless --output-dir build/clas-runtime
 ```
 
 `clas_gpu_allocator_lifecycle` uses real CLAS, BLAS, TLAS and analytic ray queries

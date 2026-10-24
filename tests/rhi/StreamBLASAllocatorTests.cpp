@@ -143,19 +143,6 @@ using Gaps = std::array<MeshletStreamBLASAllocatorGap, kNodes>;
 using State = std::array<uint32_t, kBLASAllocatorStateWords>;
 using PriorityOrder = std::array<uint32_t, kOwners>;
 using PriorityImportance = std::array<std::array<uint32_t, 6>, kOwners>;
-enum class GatherOrder { Native, Ascending, Descending, Rotated };
-
-void reorderGather(std::array<uint32_t, kOwners>& ids, uint32_t count, GatherOrder order)
-{
-    require(count <= kOwners, "Gather count exceeds the fixture capacity");
-    std::sort(ids.begin(), ids.begin() + count);
-    if (order == GatherOrder::Descending) {
-        std::reverse(ids.begin(), ids.begin() + count);
-    } else if (order == GatherOrder::Rotated) {
-        std::rotate(ids.begin(), ids.begin() + count / 2, ids.begin() + count);
-    }
-}
-
 struct Frame {
     Owners owners;
     Allocations allocations;
@@ -171,6 +158,7 @@ struct AllocatorScenario {
     Buffer &sizes, &sourceAddresses, &moveSources, &moveDestinations, &moveCounts, &parameters, &priorityOrder, &importance, &priorityCacheControl;
     MeshletStreamBLASAllocatorParameters params{};
     std::array<uint32_t, kOwners> encoded{};
+    PriorityImportance previousPriorities{};
     nlohmann::json frames = nlohmann::json::array();
     // Keep the large readback payload out of each caller's return-value slots.
     // Tests take value copies explicitly when comparing across submissions.
@@ -191,9 +179,12 @@ struct AllocatorScenario {
         params = {state.deviceAddress(), gaps.deviceAddress(), allocations.deviceAddress(), owners.deviceAddress(),
             header.deviceAddress(), buildInfos.deviceAddress(), buildOwners.deviceAddress(), sizes.deviceAddress(),
             sourceAddresses.deviceAddress(), moveSources.deviceAddress(), moveDestinations.deviceAddress(), moveCounts.deviceAddress(),
-            0x100000000ull, 0x200000000ull, kOwners, kAlignment, storageBytes, relocateBudget, kNodes, scanCount, 1, 1,
+            0x100000000ull, 0x200000000ull, kOwners, kAlignment, storageBytes, relocateBudget, kNodes, scanCount, 0, 0,
             0x600000000ull};
-        fixture.write(parameters, params);
+        params.priorityCacheControl = priorityCacheControl.deviceAddress();
+        PriorityImportance priorities{};
+        for (auto& value : priorities) { value = {1, std::bit_cast<uint32_t>(1.f), 0, 1, 1, 0}; }
+        priority(priorities, UINT32_MAX, kOwners);
         std::array<uint64_t, kOwners> sources{};
         for (uint32_t i = 0; i < kOwners; ++i) { sources[i] = 0x400000000ull + uint64_t(i) * 65536; }
         fixture.write(sourceAddresses, sources);
@@ -210,6 +201,14 @@ struct AllocatorScenario {
             if (values[a][2] != values[b][2]) { return values[a][2] > values[b][2]; }
             return a < b;
         });
+        bool sortChanged = false;
+        for (uint32_t owner = 0; owner < kOwners; ++owner) {
+            for (uint32_t key = 0; key < 3; ++key) {
+                sortChanged |= values[owner][key] != previousPriorities[owner][key];
+            }
+        }
+        previousPriorities = values;
+        if (sortChanged) { sortState(true); }
         fixture.write(priorityOrder, order); fixture.write(importance, values);
         params.priorityOrder = priorityOrder.deviceAddress(); params.importance = importance.deviceAddress();
         params.referenceCapacity = referenceCapacity; params.buildCapacity = buildCapacity;
@@ -223,11 +222,10 @@ struct AllocatorScenario {
         checked(fixture.commands->dispatch((kOwners + 63) / 64)); fixture.barrier();
     }
 
-    void admissionCache(bool enabled, bool sortChanged = false)
+    // Model production sort invalidation; admission caching is always active.
+    void sortState(bool sortChanged = false)
     {
         fixture.write(priorityCacheControl, std::array<uint32_t, 2>{sortChanged ? 1u : 0u, sortChanged ? 0u : 1u});
-        params.priorityCacheControl = enabled ? priorityCacheControl.deviceAddress() : 0;
-        fixture.write(parameters, params);
     }
 
     Owners inputs()
@@ -247,23 +245,13 @@ struct AllocatorScenario {
             fixture.read<std::array<uint32_t, 2>>(moveCounts)};
     }
 
-    const Frame& frame(const Owners& input, bool cancel = false, bool inspectPendingMoves = false,
-        GatherOrder gatherOrder = GatherOrder::Native)
+    const Frame& frame(const Owners& input, bool cancel = false, bool inspectPendingMoves = false)
     {
         fixture.write(owners, input);
         fixture.write(header, MeshletStreamGPUBLASHeader{});
         // Driver-size synthesis belongs only to this state-machine fixture.
         // Real build/allocate/Move ordering is exercised by the native fixture.
         fixture.begin(); dispatch(5);
-        if (gatherOrder != GatherOrder::Native && !cancel) {
-            require(params.priorityOrder == 0, "Gather permutation is a baseline-only regression control");
-            fixture.finish();
-            auto releases = fixture.read<std::array<uint32_t, kOwners>>(buildOwners);
-            // Phase 5's transient release count is allocator state word 101.
-            reorderGather(releases, fixture.read<State>(state)[101], gatherOrder);
-            fixture.write(buildOwners, releases);
-            fixture.begin();
-        }
         dispatch(1); dispatch(6);
         if (cancel) { dispatch(2); dispatch(8); dispatch(3); }
         fixture.finish(cancel);
@@ -272,18 +260,6 @@ struct AllocatorScenario {
         auto ids = fixture.read<std::array<uint32_t, kOwners>>(buildOwners);
         std::array<uint32_t, kOwners> bytes{};
         auto inserted = prepared.owners;
-        if (gatherOrder != GatherOrder::Native) {
-            const auto originalInfos = fixture.read<std::array<MeshletStreamGPUBLASBuildInfo, kOwners>>(buildInfos);
-            auto reorderedInfos = originalInfos;
-            reorderGather(ids, prepared.header.blasBuildCount, gatherOrder);
-            for (uint32_t build = 0; build < prepared.header.blasBuildCount; ++build) {
-                auto& owner = inserted[ids[build]];
-                reorderedInfos[build] = originalInfos[owner.blasBuildIndex];
-                owner.blasBuildIndex = build;
-            }
-            fixture.write(buildInfos, reorderedInfos);
-            fixture.write(buildOwners, ids);
-        }
         for (uint32_t i = 0; i < prepared.header.blasBuildCount; ++i) {
             bytes[i] = encoded[ids[i]];
             // Model the production reference-insertion stage before Build.
@@ -346,19 +322,7 @@ struct AllocatorScenario {
         *lastFrame = snapshot();
         const auto& output = *lastFrame;
         check(output);
-        if (gatherOrder != GatherOrder::Native) {
-            const auto sources = fixture.read<std::array<uint64_t, 2 * kOwners>>(moveSources);
-            const auto destinations = fixture.read<std::array<uint64_t, 2 * kOwners>>(moveDestinations);
-            uint32_t move = 0;
-            for (uint32_t owner = 0; owner < kOwners; ++owner) {
-                if (output.allocations[owner].status != 1) { continue; }
-                require(sources[move] == 0x400000000ull + uint64_t(output.owners[owner].blasBuildIndex) * 65536 &&
-                    destinations[move] == params.arena + output.owners[owner].storageOffset,
-                    "Stable owner admission lost the permuted native Build source/address mapping");
-                ++move;
-            }
-            require(move == output.moves[0], "Deterministic admission published an unexpected Build Move count");
-        }
+        sortState();
         frames.push_back({{"builds", output.header.blasBuildCount}, {"repack", output.header.arenaRepack},
             {"encodedBytes", output.state[kBLASAllocatorEncodedBytesWord]},
             {"allocatedBytes", output.state[kBLASAllocatorAllocatedBytesWord]},
@@ -418,129 +382,6 @@ struct AllocatorScenario {
     }
 };
 
-// Keep snapshots on the heap and this regression out of the main test's large
-// stack frame. The fixture deliberately changes atomic gather order instead of
-// relying on the GPU scheduler to reproduce an unlucky ordering.
-nlohmann::json runDeterministicBaselineRegression(Device& device, std::string& phase)
-{
-    AllocatorScenario scenario(device, 4096, 0);
-    auto value = std::make_unique<Frame>();
-    std::array<std::unique_ptr<Frame>, 3> reference;
-    const auto reset = [&] {
-        scenario.encoded.fill(0);
-        scenario.fixture.write(scenario.gaps, Gaps{});
-        scenario.fixture.write(scenario.owners, Owners{});
-        scenario.fixture.begin(); scenario.dispatch(0); scenario.fixture.finish();
-    };
-    const auto compare = [&](uint32_t checkpoint) {
-        if (!reference[checkpoint]) {
-            reference[checkpoint] = std::make_unique<Frame>(*value);
-            return;
-        }
-        const auto& expected = *reference[checkpoint];
-        require(std::memcmp(value->allocations.data(), expected.allocations.data(), sizeof(Allocations)) == 0 &&
-            std::memcmp(value->gaps.data(), expected.gaps.data(), sizeof(Gaps)) == 0 &&
-            std::memcmp(value->state.data(), expected.state.data(), sizeof(State)) == 0,
-            "Baseline gather order changed persistent allocation or free topology");
-        require(value->header.blasBuildCount == expected.header.blasBuildCount &&
-            value->header.storageRejected == expected.header.storageRejected &&
-            value->header.reusedInstances == expected.header.reusedInstances,
-            "Baseline gather order changed admission accounting");
-        for (uint32_t owner = 0; owner < kOwners; ++owner) {
-            const auto& actual = value->owners[owner];
-            const auto& prior = expected.owners[owner];
-            require(actual.cachedValid == prior.cachedValid && actual.flags == prior.flags &&
-                actual.storageOffset == prior.storageOffset && actual.storageCapacity == prior.storageCapacity,
-                "Baseline gather order changed an owner's published representation");
-        }
-    };
-    constexpr std::array orders{GatherOrder::Ascending, GatherOrder::Descending, GatherOrder::Rotated};
-    constexpr std::array coldOwners{0u, 7u, 63u, 64u, 65u, 127u, 136u};
-    constexpr std::array coldSizes{1281u, 256u, 257u, 1793u, 511u, 769u, 256u};
-    for (uint32_t repeat = 0; repeat < 2; ++repeat) {
-        for (const auto order : orders) {
-            phase = "baseline deterministic cold admission and static convergence";
-            reset();
-            Owners input{};
-            for (uint32_t index = 0; index < coldOwners.size(); ++index) {
-                const uint32_t owner = coldOwners[index];
-                input[owner].selectedClusterCount = index + 1;
-                input[owner].clusterReferenceOffset = index * 16;
-                input[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
-                scenario.encoded[owner] = coldSizes[index];
-            }
-            *value = scenario.frame(input, false, false, order);
-            uint32_t remaining = scenario.params.storageBytes;
-            for (const uint32_t owner : coldOwners) {
-                const uint32_t bytes = (scenario.encoded[owner] + kAlignment - 1) & ~(kAlignment - 1);
-                const bool admitted = bytes <= remaining;
-                require(value->owners[owner].cachedValid == (admitted ? 1u : 2u),
-                    "Baseline cold admission does not follow stable owner order with oversized-item backfill");
-                if (admitted) { remaining -= bytes; }
-            }
-            require(remaining == 0 && value->header.blasBuildCount == coldOwners.size() &&
-                value->header.storageRejected == 1, "Cold deterministic fixture did not exercise tight storage");
-            compare(0);
-            for (uint32_t frame = 0; frame < 32; ++frame) {
-                *value = scenario.frame(scenario.inputs(), false, false, order);
-                require(value->header.blasBuildCount == 0 && value->header.reusedInstances == 6 &&
-                    value->header.storageRejected == 1 && value->state[kBLASAllocatorSuppressedBuildsWord] == 1,
-                    "Deterministic baseline rebuilt a stable resident or unchanged rejected cut");
-            }
-        }
-    }
-    for (const auto order : orders) {
-        phase = "baseline deterministic dirty/dead release and cancellation";
-        reset();
-        Owners input{};
-        constexpr std::array residentOwners{0u, 7u, 32u, 63u, 64u, 95u, 127u, 136u};
-        for (const uint32_t owner : residentOwners) {
-            input[owner].selectedClusterCount = 1;
-            input[owner].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
-            scenario.encoded[owner] = 512;
-        }
-        *value = scenario.frame(input, false, false, order);
-        input = scenario.inputs();
-        input[0] = {};
-        for (const uint32_t owner : {32u, 64u, 127u}) {
-            input[owner].flags |= kDirty;
-            scenario.encoded[owner] = owner == 64 ? 768 : 256;
-        }
-        auto cancelled = std::make_unique<Frame>(scenario.frame(input, true, false, order));
-        require(std::memcmp(cancelled->allocations.data(), value->allocations.data(), sizeof(Allocations)) == 0 &&
-            std::memcmp(cancelled->gaps.data(), value->gaps.data(), sizeof(Gaps)) == 0 &&
-            std::memcmp(cancelled->state.data(), value->state.data(), sizeof(State)) == 0,
-            "Cancelled baseline release/build recording changed persistent state");
-        *value = scenario.frame(input, false, false, order);
-        require(value->header.blasBuildCount == 3 && value->header.storageRejected == 1 &&
-            value->header.reusedInstances == 4 && value->owners[64].cachedValid == 2,
-            "Dirty/dead release fixture did not exercise fragmented baseline rejection");
-        compare(1);
-        for (uint32_t frame = 0; frame < 32; ++frame) {
-            *value = scenario.frame(scenario.inputs(), false, false, order);
-            require(value->header.blasBuildCount == 0 && value->header.reusedInstances == 6 &&
-                value->state[kBLASAllocatorSuppressedBuildsWord] == 1,
-                "Fragmented baseline negative cache did not converge without rebuilding");
-        }
-        // Releasing this intervening survivor joins two 512-byte holes. The
-        // same previously rejected owner must retry once under every ordering.
-        input = scenario.inputs(); input[7] = {};
-        *value = scenario.frame(input, false, false, order);
-        require(value->header.blasBuildCount == 1 && value->owners[64].cachedValid == 1 &&
-            value->header.storageRejected == 0, "Deterministic baseline failed to retry after a fitting gap appeared");
-        compare(2);
-        for (uint32_t frame = 0; frame < 32; ++frame) {
-            *value = scenario.frame(scenario.inputs(), false, false, order);
-            require(value->header.blasBuildCount == 0 && value->header.reusedInstances == 6 &&
-                value->header.storageRejected == 0, "Recovered deterministic baseline did not remain stable");
-        }
-    }
-    return std::move(scenario.frames);
-}
-
-// Consume an actual allocator frame's header through the next frame's
-// production representation planner. The cache becomes idle only here; it was
-// an active clean survivor in the allocator frame that produced the header.
 struct IdleCacheAdmissionProbe {
     enum Input { Params, Primitives, RTState, Header, Active, Representations, InputCount };
     static constexpr uint32_t kCapacity = 8, kRTStateWords = 16 + 3 * 12 + kMeshletStreamRTPriorityControlWords;
@@ -571,7 +412,7 @@ struct IdleCacheAdmissionProbe {
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}));
     }
 
-    void check(MeshletStreamGPUBLASHeader precedingHeader, bool priority, bool expectEviction)
+    void check(MeshletStreamGPUBLASHeader precedingHeader, bool expectEviction)
     {
         MeshletStreamGPUParams params{};
         params.scenePrimitiveCount = params.sceneLodLevelCount = 1;
@@ -581,8 +422,7 @@ struct IdleCacheAdmissionProbe {
         params.rtRepresentationHeaderBuffer = handles[Active].shaderIndex;
         params.rtRepresentationBuffer = handles[Representations].shaderIndex;
         params.lodTopologyBuffer = params.lodStateBuffer = handles[RTState].shaderIndex;
-        params.enableBlasRepresentations = params.enableBlasGPUAllocator = 1;
-        params.enableBlasPriority = priority;
+        params.enableBlasRepresentations = 1;
         params.blasClusterReferenceCapacity = params.blasStorageBytes = params.blasBuildCapacity = UINT32_MAX;
         MeshletStreamGPUPrimitive primitive{};
         primitive.lodLevelCount = 1;
@@ -618,9 +458,9 @@ struct IdleCacheAdmissionProbe {
             checked(fixture.commands->bindExecution(pipeline->execution(), &push, sizeof(push)));
             checked(fixture.commands->dispatch(1)); fixture.barrier();
         };
-        if (priority) { dispatch(35); dispatch(37); }
+        dispatch(35); dispatch(37);
         dispatch(31); dispatch(26);
-        if (priority) { dispatch(38); dispatch(39); dispatch(40); }
+        dispatch(38); dispatch(39); dispatch(40);
         dispatch(32); dispatch(33); dispatch(34);
         fixture.finish();
         rtState = fixture.read<decltype(rtState)>(*buffers[RTState]);
@@ -655,9 +495,9 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
         cachedAdmission.encoded[owner] = 512;
     }
     cachedAdmission.priority(cachePriorities, 64, kOwners);
-    cachedAdmission.admissionCache(true, true);
+    cachedAdmission.sortState(true);
     value = cachedAdmission.frame(owners);
-    cachedAdmission.admissionCache(true);
+    cachedAdmission.sortState();
     value = cachedAdmission.frame(cachedAdmission.inputs());
     require(value.state[kBLASAllocatorAdmissionReusedWord] == 0 && value.header.blasBuildCount == 0,
         "Native builds armed an admission cache before a complete quiet selection");
@@ -677,7 +517,7 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
         "Admission reuse cached stale consumer feedback instead of aggregating current consumers");
     cachePriorities[0][0] = std::bit_cast<uint32_t>(1000.f) + 1;
     cachedAdmission.priority(cachePriorities, 64, kOwners);
-    cachedAdmission.admissionCache(true, true);
+    cachedAdmission.sortState(true);
     owners = cachedAdmission.inputs();
     const auto beforeCacheCancel = cachedAdmission.snapshot();
     const auto afterCacheCancel = cachedAdmission.frame(owners, true);
@@ -688,7 +528,7 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
     require(value.state[kBLASAllocatorAdmissionReusedWord] == 0 && value.header.blasBuildCount == 1 &&
         value.owners[0].cachedValid == 1 && value.owners[64].cachedValid == 2,
         "Changed exact priority order reused stale storage admission");
-    cachedAdmission.admissionCache(true);
+    cachedAdmission.sortState();
     cachedAdmission.frame(cachedAdmission.inputs());
     value = cachedAdmission.frame(cachedAdmission.inputs());
     require(value.state[kBLASAllocatorAdmissionReusedWord] == 1, "New priority order did not converge to a reusable decision");
@@ -721,7 +561,7 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
         cachedWaiting.encoded[owner] = 512;
     }
     cachedWaiting.priority(compactPriorities, kOwners, kOwners);
-    cachedWaiting.admissionCache(true, true);
+    cachedWaiting.sortState(true);
     cachedWaiting.frame(owners);
     owners = cachedWaiting.inputs();
     for (uint32_t owner = 0; owner < 8; owner += 2) { owners[owner] = {}; }
@@ -731,7 +571,7 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
     cachedWaiting.encoded[136] = 1024;
     cachedWaiting.priority(compactPriorities, kOwners, kOwners);
     cachedWaiting.frame(owners);
-    cachedWaiting.admissionCache(true);
+    cachedWaiting.sortState();
     cachedWaiting.frame(cachedWaiting.inputs());
     value = cachedWaiting.frame(cachedWaiting.inputs());
     require(value.state[kBLASAllocatorAdmissionReusedWord] == 1 && value.header.blasBuildCount == 0 &&
@@ -758,7 +598,7 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
 
     phase = "zero-build exact allocation skip preserves an exhausted eviction cap";
     nlohmann::json exhaustedCacheFrames = nlohmann::json::array();
-    for (bool cacheEnabled : {false, true}) {
+    {
         AllocatorScenario exhaustedCache(device, 4096, 0, 1);
         PriorityImportance exhaustPriorities{};
         for (auto& priority : exhaustPriorities) { priority[1] = 0x7f7fffffu; }
@@ -774,7 +614,7 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
         owners[136].selectedClusterCount = 1; owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
         exhaustedCache.encoded[136] = 1024;
         exhaustedCache.priority(exhaustPriorities, kOwners, kOwners);
-        exhaustedCache.admissionCache(cacheEnabled, true);
+        exhaustedCache.sortState(true);
         exhaustedCache.frame(owners);
         exhaustPriorities[136][0] = std::bit_cast<uint32_t>(1000.f) + 1;
         exhaustedCache.priority(exhaustPriorities, kOwners, kOwners);
@@ -787,24 +627,17 @@ nlohmann::json runAdmissionCacheRegression(Device& device, std::string& phase)
         require(value.header.blasBuildCount == 1 && value.owners[136].cachedValid == 1 &&
             value.state[kBLASAllocatorAllocatedBytesWord] == 4096,
             "A cap-limited waiting owner failed to progress after the next bounded eviction");
-        exhaustedCacheFrames.push_back({{"enabled", cacheEnabled}, {"frames", exhaustedCache.frames}});
+        exhaustedCacheFrames = exhaustedCache.frames;
     }
 
     return {{"cachedAdmission", cachedAdmission.frames}, {"cachedWaiting", cachedWaiting.frames},
         {"exhaustedEvictionCache", exhaustedCacheFrames}};
 }
 
-struct MixedTileRegressionResult {
-    nlohmann::json frames;
-    std::vector<Frame> checkpoints;
-};
-
-MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string& phase, bool fastPath)
+nlohmann::json runMixedPriorityTileRegression(Device& device, std::string& phase)
 {
-    MixedTileRegressionResult result;
     phase = "interleaved resident and oversized negative priority tiles";
     auto scenario = std::make_unique<AllocatorScenario>(device, 4096, 0);
-    scenario->params.reserved = uint32_t(fastPath);
     PriorityImportance priorities{};
     // Retain inactive ranks, so the live/negative pairs straddle both full
     // tiles and the partial tail instead of being compacted into one tile.
@@ -820,23 +653,21 @@ MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string&
         scenario->encoded[owner] = owner == 1 || owner == 62 || owner == 65 || owner == 126 ? 8192 : 256;
     }
     auto value = scenario->frame(owners);
-    result.checkpoints.push_back(value);
     require(value.header.blasBuildCount == 9 && value.header.storageRejected == 4 &&
         value.state[kBLASAllocatorAllocatedBytesWord] == 1280,
         "Mixed priority fixture did not establish five residents and four measured negative entries");
     const auto residentOffsets = value.owners;
-    for (const bool cached : {false, true}) {
-        scenario->admissionCache(cached, true);
-        result.checkpoints.push_back(scenario->frame(scenario->inputs()));
-        scenario->admissionCache(cached);
+    {
+        scenario->sortState(true);
+        scenario->frame(scenario->inputs());
+        scenario->sortState();
         for (uint32_t frame = 0; frame < 32; ++frame) {
             value = scenario->frame(scenario->inputs());
-            result.checkpoints.push_back(value);
             require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 5 &&
                 value.header.storageRejected == 4 && value.state[kBLASAllocatorSuppressedBuildsWord] == 4 &&
                 value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0 &&
                 value.state[kBLASAllocatorPriorityEvictedWord] == 0 &&
-                value.state[kBLASAllocatorAdmissionReusedWord] == uint32_t(cached),
+                value.state[kBLASAllocatorAdmissionReusedWord] == 1,
                 "Mixed resident/negative tiles changed rejection accounting or stationary cache behavior");
             for (const uint32_t owner : {0u, 63u, 64u, 127u, 136u}) {
                 require(value.owners[owner].cachedValid == 1 &&
@@ -852,7 +683,6 @@ MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string&
     owners[2].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
     scenario->encoded[2] = 256;
     value = scenario->frame(owners);
-    result.checkpoints.push_back(value);
     require(value.header.blasBuildCount == 2 && value.owners[2].cachedValid == 1 &&
         value.owners[63].cachedValid == 1 && value.state[kBLASAllocatorAllocatedBytesWord] == 1536 &&
         value.state[kBLASAllocatorAdmissionReusedWord] == 0,
@@ -860,7 +690,6 @@ MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string&
 
     phase = "mixed negative exact remaining-budget boundary must retry";
     auto equality = std::make_unique<AllocatorScenario>(device, 4096, 0);
-    equality->params.reserved = uint32_t(fastPath);
     auto equalityPriorities = priorities;
     equalityPriorities[1][0] = 1;
     equality->priority(equalityPriorities, kOwners, kOwners);
@@ -871,12 +700,10 @@ MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string&
         equality->encoded[owner] = owner == 1 ? 3840 : 256;
     }
     value = equality->frame(owners);
-    result.checkpoints.push_back(value);
     require(value.owners[1].cachedValid == 2 && value.state[kBLASAllocatorAllocatedBytesWord] == 1280,
         "Exact-boundary fixture lacks a measured negative cut");
     equality->priority(priorities, kOwners, kOwners);
     value = equality->frame(equality->inputs());
-    result.checkpoints.push_back(value);
     require(value.header.blasBuildCount == 1 && value.owners[0].cachedValid == 1 &&
         value.owners[1].cachedValid == 1 && value.state[kBLASAllocatorAllocatedBytesWord] == 4096 &&
         value.state[kBLASAllocatorPriorityEvictedWord] == 4,
@@ -884,7 +711,6 @@ MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string&
 
     phase = "mixed resident sum exceeding a preceding waiting claim stays serialized";
     auto exhausted = std::make_unique<AllocatorScenario>(device, 32768, 0, 1);
-    exhausted->params.reserved = uint32_t(fastPath);
     exhausted->priority(priorities, kOwners, kOwners);
     owners = exhausted->inputs();
     for (uint32_t owner = 0; owner < 128; ++owner) {
@@ -896,14 +722,12 @@ MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string&
     owners[136].flags = kMeshletStreamBLASInstanceDynamic | kDirty;
     exhausted->encoded[136] = 8192;
     value = exhausted->frame(owners);
-    result.checkpoints.push_back(value);
     require(value.state[kBLASAllocatorAllocatedBytesWord] == 127 * 256 && value.owners[136].cachedValid == 2,
         "Resident-sum fixture did not retain its waiting candidate and oversized negative");
     auto exhaustedPriorities = priorities;
     exhaustedPriorities[136][0] = std::bit_cast<uint32_t>(1000.f) + 1;
     exhausted->priority(exhaustedPriorities, kOwners, kOwners);
     value = exhausted->frame(exhausted->inputs());
-    result.checkpoints.push_back(value);
     require(value.header.blasBuildCount == 0 && value.header.reusedInstances == 126 &&
         value.state[kBLASAllocatorPriorityEvictedWord] == 1 &&
         value.state[kBLASAllocatorWaitingCountWord] == 1 &&
@@ -911,29 +735,8 @@ MixedTileRegressionResult runMixedPriorityTileCases(Device& device, std::string&
         value.state[kBLASAllocatorAllocatedBytesWord] == 126 * 256 &&
         value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0,
         "Mixed tile resident overflow skipped the eviction cap or corrupted waiting claims");
-    result.frames = {{"mixedTiles", scenario->frames}, {"exactBoundary", equality->frames},
+    return {{"mixedTiles", scenario->frames}, {"exactBoundary", equality->frames},
         {"residentSumExhaustion", exhausted->frames}};
-    return result;
-}
-
-nlohmann::json runMixedPriorityTileRegression(Device& device, std::string& phase)
-{
-    const auto serial = runMixedPriorityTileCases(device, phase, false);
-    const auto optimized = runMixedPriorityTileCases(device, phase, true);
-    phase = "mixed tile fast path preserves every serial allocator output";
-    require(serial.checkpoints.size() == optimized.checkpoints.size(), "Mixed tile comparison frame counts differ");
-    for (size_t frame = 0; frame < serial.checkpoints.size(); ++frame) {
-        const auto& a = serial.checkpoints[frame];
-        const auto& b = optimized.checkpoints[frame];
-        require(std::memcmp(a.owners.data(), b.owners.data(), sizeof(Owners)) == 0 &&
-            std::memcmp(a.allocations.data(), b.allocations.data(), sizeof(Allocations)) == 0 &&
-            std::memcmp(a.gaps.data(), b.gaps.data(), sizeof(Gaps)) == 0 &&
-            std::memcmp(a.state.data(), b.state.data(), sizeof(State)) == 0 &&
-            std::memcmp(&a.header, &b.header, sizeof(a.header)) == 0 && a.moves == b.moves,
-            "Mixed tile fast path changed owner, allocator, gap, budget, or Move state");
-    }
-    return {{"serial", serial.frames}, {"optimized", optimized.frames},
-        {"identicalFrames", serial.checkpoints.size()}};
 }
 
 class StreamBLASAllocatorTest final : public RHITest {
@@ -1424,8 +1227,7 @@ public:
                 value.header.overflowCount != 0,
                 "Dirty shrink did not separately account its old-size prediction and deferred exact retry");
             IdleCacheAdmissionProbe idleCacheProbe(projectedShrink.fixture);
-            idleCacheProbe.check(value.header, false, false);
-            idleCacheProbe.check(value.header, true, false);
+            idleCacheProbe.check(value.header, false);
             value = projectedShrink.frame(projectedShrink.inputs());
             require(value.header.blasBuildCount == 1 && value.header.clusterReferenceCount == 4 &&
                 value.state[kBLASAllocatorUnknownBuildCountWord] == 0 && value.owners[0].cachedValid == 1 &&
@@ -1474,8 +1276,7 @@ public:
             require(value.state[kBLASAllocatorProjectedRetryDeferredCountWord] == 0 &&
                 value.state[kBLASAllocatorProjectedDirtyClaimBytesWord] == 256 && value.header.storageRejected != 0,
                 "Dirty growth replaced its separate old-size prediction with actual allocation accounting");
-            idleCacheProbe.check(value.header, false, true);
-            idleCacheProbe.check(value.header, true, true);
+            idleCacheProbe.check(value.header, true);
             for (uint32_t frame = 0; frame < 32; ++frame) {
                 value = projectedGrow.frame(projectedGrow.inputs());
                 require(value.header.blasBuildCount == 0 && value.header.clusterReferenceCount == 0 &&
@@ -1515,8 +1316,7 @@ public:
                 value.state[kBLASAllocatorSuppressedBuildsWord] == 2 && value.header.overflowCount == 2 &&
                 value.owners[64].cachedValid == 1 && value.owners[0].cachedValid == 2 && value.owners[1].cachedValid == 2,
                 "Subtracting projected deferral hid real storage pressure or lost deferred-consumer diagnostics");
-            idleCacheProbe.check(value.header, false, true);
-            idleCacheProbe.check(value.header, true, true);
+            idleCacheProbe.check(value.header, true);
 
             phase = "work-budget denied dirty history must not consume projected retry capacity";
             AllocatorScenario projectedWorkBudget(*device, 1024, 0);
@@ -1673,7 +1473,6 @@ public:
             }
 
             auto admissionCacheFrames = runAdmissionCacheRegression(*device, phase);
-            auto deterministicBaselineFrames = runDeterministicBaselineRegression(*device, phase);
             auto mixedPriorityTileFrames = runMixedPriorityTileRegression(*device, phase);
 
             require(validationErrors.load() == 0, "Vulkan validation errors during allocator regression");
@@ -1689,11 +1488,10 @@ public:
                 {"fragmentedPriorityWait", fragmentedPriority.frames},
                 {"projectedDirtyShrink", projectedShrink.frames}, {"projectedDirtyGrow", projectedGrow.frames},
                 {"projectedMixedPressure", projectedMixed.frames},
-                {"nextFrameIdleCachePressure", "production phase 26 and legacy/priority admission consume actual allocator headers; projection preserves newly idle cache, actual and mixed pressure evict it"},
+                {"nextFrameIdleCachePressure", "production phase 26 and priority admission consume actual allocator headers; projection preserves newly idle cache, actual and mixed pressure evict it"},
                 {"projectedWorkBudget", projectedWorkBudget.frames},
                 {"negativeTiles", negativeTileFrames}, {"residentTiles", residentTiles.frames},
                 {"admissionCache", std::move(admissionCacheFrames)},
-                {"deterministicBaseline", std::move(deterministicBaselineFrames)},
                 {"mixedPriorityTiles", std::move(mixedPriorityTileFrames)},
                 {"relocationAccounting", "logical bytes; native scratch round-trip copies twice this amount"},
                 {"validationErrors", validationErrors.load()},

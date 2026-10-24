@@ -1,4 +1,8 @@
-"""Compare same-allocator owner-priority captures; quality captures are separate evidence."""
+"""Analyze archived owner-priority A/B captures; current runtime has one production policy.
+
+Historical manifest fields remain required. This tool does not enable retired runtime paths.
+Quality captures are separate evidence.
+"""
 import argparse
 import csv
 import importlib.metadata
@@ -55,12 +59,12 @@ def validate_conditions(manifest, capture, quality=False, comparison="priority")
     if manifest.get("blasAllocator") != "gpu" or manifest.get("blasRepresentations") != "1":
         raise ValueError("Priority A/B requires explicit GPU allocator and representations=1 in both variants")
     if manifest.get("blasPriority") not in ("0", "1"):
-        raise ValueError("Set METALLIC_BLAS_PRIORITY explicitly to 0 or 1, including the default-on variant")
+        raise ValueError("Archived A/B manifest must record blasPriority=0 or 1")
     if comparison == "cache" and (manifest["blasPriority"] != "1" or manifest.get("blasPriorityCache") not in ("0", "1")):
-        raise ValueError("Cache comparison requires priority=1 and explicit METALLIC_BLAS_PRIORITY_CACHE=0/1")
+        raise ValueError("Archived cache comparison requires blasPriority=1 and blasPriorityCache=0/1")
     if comparison == "merged-sharing" and (manifest["blasPriority"] != "1" or manifest.get("blasPriorityCache") != "1" or
                                           manifest.get("blasMergedSharing") not in ("0", "1")):
-        raise ValueError("Merged-sharing comparison requires priority/cache=1 and explicit METALLIC_BLAS_MERGED_SHARING=0/1")
+        raise ValueError("Archived merged-sharing comparison requires priority/cache=1 and blasMergedSharing=0/1")
     if comparison == "intermediate-fallback" and (manifest["blasPriority"] != "1" or
             manifest.get("blasPriorityCache") != "1" or manifest.get("blasMergedSharing") != "1" or
             manifest.get("blasFallbackPolicy") not in ("0", "1") or

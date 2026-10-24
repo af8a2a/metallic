@@ -104,6 +104,9 @@ struct SceneStreamingProfile {
     bool nodeDemandC2 = false; // Effective offscreen node threshold pruning; requires C1.
     uint32_t rtDemandMode = 0;
     bool frontierWave32 = false;
+    bool terminalOnlyMask = false;
+    bool terminalMaskDiagnostics = false;
+    uint64_t maskShaderHash = 0;
     uint64_t frontierShaderHash = 0;
     uint32_t frontierSubgroupSize = 0;
     bool rtHistoryPacked = false;

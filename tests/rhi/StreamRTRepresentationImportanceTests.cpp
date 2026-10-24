@@ -48,8 +48,6 @@ struct ImportanceInput {
     bool orthographic = false;
     bool allowSaturatedError = false;
     bool classifyRepresentations = false;
-    bool mergedSharing = false;
-    uint32_t fallbackPolicy = 0;
     bool cancelClassification = false;
 
     ImportanceInput() { minimumLevels.fill(1); }
@@ -211,9 +209,6 @@ struct ImportanceFixture {
     {
         params.frameIndex = ++frameNumber;
         params.upProjection[3] = input.orthographic ? 1.f : 0.f;
-        params.enableBlasPriority = input.classifyRepresentations;
-        params.enableBlasMergedSharing = input.mergedSharing;
-        params.blasFallbackPolicy = input.fallbackPolicy;
         write(Params, params); write(Instances, input.instances);
         dispatch(20);
         auto state = readState();
@@ -283,12 +278,10 @@ struct ImportanceFixture {
     }
 
     std::vector<uint32_t> sort(const ImportanceOwners& values, uint32_t count = kOwnerCount,
-        bool cache = false, bool initialize = true, bool expectedReuse = false, bool cancelSort = false)
+        bool initialize = true, bool expectedReuse = false, bool cancelSort = false)
     {
         params.frameIndex = ++frameNumber;
         params.rtRepresentationCount = count;
-        params.enableBlasPriority = 1;
-        params.enableBlasPriorityCache = cache;
         write(Params, params);
         // Production owns exactly three representations per primitive. Smaller
         // counts below exercise the sorter alone, so seed only its reset words
@@ -296,7 +289,7 @@ struct ImportanceFixture {
         if (count == kOwnerCount) { dispatch(20, initialize ? 1u : 0u); }
         auto state = readState();
         if (count != kOwnerCount) {
-            state[kImportanceBase + count * 12] = !cache || initialize ? 1u : 0u;
+            state[kImportanceBase + count * 12] = initialize ? 1u : 0u;
             state[kImportanceBase + count * 12 + 1] = 0u;
             state[kImportanceBase + count * 12 + 2] = UINT32_MAX;
             if (initialize) {
@@ -310,7 +303,7 @@ struct ImportanceFixture {
         std::array<uint32_t, 4> lastMismatch;
         std::copy_n(state.begin() + control + 3, lastMismatch.size(), lastMismatch.begin());
         uint32_t firstChanged = UINT32_MAX;
-        if (cache && !initialize) {
+        if (!initialize) {
             for (uint32_t owner = 0; owner < count && firstChanged == UINT32_MAX; ++owner) {
                 for (uint32_t word = 0; word < 3; ++word) {
                     const uint32_t old = state[kImportanceBase + count * 9 + owner * 3 + word];
@@ -344,11 +337,6 @@ struct ImportanceFixture {
         std::vector<uint32_t> expected(count);
         std::iota(expected.begin(), expected.end(), 0);
         std::sort(expected.begin(), expected.end(), [&](uint32_t a, uint32_t b) {
-            if (params.blasFallbackPolicy == 1) {
-                const bool floorA = a % 3 == 2 && values[a][0] != 0;
-                const bool floorB = b % 3 == 2 && values[b][0] != 0;
-                if (floorA != floorB) { return floorA; }
-            }
             if (values[a][0] != values[b][0]) { return values[a][0] > values[b][0]; }
             if (values[a][1] != values[b][1]) { return values[a][1] < values[b][1]; }
             if (values[a][2] != values[b][2]) { return values[a][2] > values[b][2]; }
@@ -366,7 +354,6 @@ struct ImportanceFixture {
                 "GPU tile sort/merge/normalization disagrees with the stable importance oracle or inverse ranks");
         }
         params.rtRepresentationCount = kOwnerCount;
-        params.enableBlasPriority = 0;
         write(Params, params);
         return expected;
     }
@@ -516,18 +503,12 @@ public:
             canonicalInput.minimumLevels[0] = 0;
             canonicalInput.minimumLevels[136] = 0;
             canonicalInput.instances[5] = importanceInstance(40.f, -4.f);
-            const auto separateOwners = fixture.frame(canonicalInput);
-            importanceRequire(separateOwners[0][3] == 1 && separateOwners[1][3] == 1 && separateOwners[2][3] == 134,
-                "Fixture did not produce merged, representative-shared and discrete consumers");
-            Importance combined{};
-            combined[1] = 0x7f7fffffu;
-            for (uint32_t owner = 0; owner < 3; ++owner) {
-                combined[0] = std::max(combined[0], separateOwners[owner][0]);
-                combined[1] = std::min(combined[1], separateOwners[owner][1]);
-                combined[2] = std::max(combined[2], separateOwners[owner][2]);
-                for (uint32_t word = 3; word < 6; ++word) { combined[word] += separateOwners[owner][word]; }
-            }
-            canonicalInput.mergedSharing = true;
+            // The near consumer still defines all metric extrema. Replacing
+            // one far consumer with a side contributor changes only coverage
+            // membership; ownership must aggregate every remaining consumer.
+            Importance combined = aggregate[1];
+            combined[4] = 135;
+            combined[5] = 1;
             const auto canonicalOwners = fixture.frame(canonicalInput);
             importanceRequire(canonicalOwners[0] == combined && canonicalOwners[1][3] == 0 && canonicalOwners[2][3] == 0 &&
                 canonicalOwners[0][5] == 1,
@@ -547,34 +528,6 @@ public:
             for (const auto& owner : terminalOnly) {
                 importanceRequire(owner[3] == 0, "Terminal-only consumers created unnecessary dynamic demand");
             }
-            phase = "intermediate floor aggregation, migration and cache";
-            canonicalInput.minimumLevels.fill(1);
-            canonicalInput.minimumLevels[0] = canonicalInput.minimumLevels[136] = 0;
-            canonicalInput.fallbackPolicy = 1;
-            const auto floorOwners = fixture.frame(canonicalInput);
-            importanceRequire(floorOwners[2] == combined && floorOwners[0][3] == 2 && floorOwners[1][3] == 0,
-                "Intermediate floor lost all-consumer importance or duplicated fine demand for coarse consumers");
-            auto floorOrder = fixture.sort(floorOwners, kOwnerCount, true);
-            importanceRequire(floorOrder.front() == 2, "Intermediate floor did not precede its optional fine upgrade");
-            for (uint32_t frame = 0; frame < 32; ++frame) {
-                canonicalInput.cancelClassification = frame == 7;
-                importanceRequire(fixture.frame(canonicalInput) == floorOwners,
-                    "Stationary floor or cancelled classification changed ownership");
-                importanceRequire(fixture.sort(floorOwners, kOwnerCount, true, false, true) == floorOrder,
-                    "Unchanged floor priority missed its exact cached ordering");
-            }
-            canonicalInput.cancelClassification = false;
-            canonicalInput.instances[136].primitiveIndex = 1;
-            const auto migratedFloor = fixture.frame(canonicalInput);
-            importanceRequire(migratedFloor[2][3] == 135 && migratedFloor[5][3] == 1 &&
-                migratedFloor[2][5] + migratedFloor[5][5] == combined[5],
-                "Migrating a fine consumer left stale floor consumers or lost offscreen coverage");
-            canonicalInput.instances[136].primitiveIndex = 0;
-            canonicalInput.fallbackPolicy = 2;
-            const auto finestOwners = fixture.frame(canonicalInput);
-            importanceRequire(finestOwners[0] == combined && finestOwners[1][3] == 0 && finestOwners[2][3] == 0,
-                "Finest reference failed to request one merged owner for all eligible consumers");
-            fixture.params.blasFallbackPolicy = 0;
             phase = "137-owner partial-tail priority sort";
             ImportanceOwners keys{};
             for (uint32_t owner = 0; owner < kOwnerCount; ++owner) {
@@ -600,35 +553,35 @@ public:
             fixture.sort(keys, 65);
             fixture.sort(keys, 64);
             phase = "exact priority cache consecutive frames and cancellation";
-            fixture.sort(keys, kOwnerCount, true, true, false);
+            fixture.sort(keys, kOwnerCount, true, false);
             for (uint32_t frame = 0; frame < 32; ++frame) {
-                fixture.sort(keys, kOwnerCount, true, false, true);
+                fixture.sort(keys, kOwnerCount, false, true);
             }
             // Every comparator word is exact, including one-bit changes which
             // can leave the total order unchanged. Consumer telemetry alone is
             // not an input to sorting (admission validates its own demand).
             for (uint32_t word = 0; word < 3; ++word) {
                 ++keys[136][word];
-                fixture.sort(keys, kOwnerCount, true, false, false);
-                fixture.sort(keys, kOwnerCount, true, false, true);
+                fixture.sort(keys, kOwnerCount, false, false);
+                fixture.sort(keys, kOwnerCount, false, true);
             }
             ++keys[136][3]; ++keys[136][5];
-            fixture.sort(keys, kOwnerCount, true, false, true);
+            fixture.sort(keys, kOwnerCount, false, true);
             keys[128] = empty[0]; // Offscreen membership loss must invalidate.
-            fixture.sort(keys, kOwnerCount, true, false, false);
+            fixture.sort(keys, kOwnerCount, false, false);
             ++keys[127][0];
-            fixture.sort(keys, kOwnerCount, true, false, false, true);
-            fixture.sort(keys, kOwnerCount, true, false, false);
-            fixture.sort(keys, kOwnerCount, true, false, true);
-            // Baseline always sorts and publishes history, even while caching
-            // is disabled. Toggling caching back on can reuse that exact order.
+            fixture.sort(keys, kOwnerCount, false, false, true);
+            fixture.sort(keys, kOwnerCount, false, false);
+            fixture.sort(keys, kOwnerCount, false, true);
+            // An explicit reset sorts again and publishes an order that the
+            // following identical frame can reuse.
             ++keys[127][1];
-            fixture.sort(keys, kOwnerCount, false, false, false);
-            fixture.sort(keys, kOwnerCount, true, false, true);
-            fixture.sort(keys, 65, true, true, false);
-            fixture.sort(keys, 65, true, false, true);
-            fixture.sort(keys, 64, true, true, false);
-            fixture.sort(keys, 64, true, false, true);
+            fixture.sort(keys, kOwnerCount, true, false);
+            fixture.sort(keys, kOwnerCount, false, true);
+            fixture.sort(keys, 65, true, false);
+            fixture.sort(keys, 65, false, true);
+            fixture.sort(keys, 64, true, false);
+            fixture.sort(keys, 64, false, true);
             importanceRequire(validationErrors.load() == 0, "Vulkan validation errors in importance regression");
             const auto directory = context.outputDirectory / "RTRepresentationImportance";
             std::filesystem::create_directories(directory);
@@ -639,7 +592,7 @@ public:
                 {"priorityOwnerCount", 137}, {"priorityOrder", sortedOwners},
                 {"exactPriorityCacheStableFrames", 32}, {"priorityCacheCancellationVerified", true},
                 {"mergedSharingStableFrames", 32}, {"mergedSharingCancellationVerified", true},
-                {"mergedSharingOwners", canonicalOwners}, {"separateOwners", separateOwners},
+                {"mergedSharingOwners", canonicalOwners},
                 {"representativeExceptionVerified", true}, {"terminalOnlyVerified", true},
                 {"nearOrtho", nearOrtho}, {"scale", scale}, {"shear", shear}, {"zeroError", zero},
                 {"validationErrors", validationErrors.load()},

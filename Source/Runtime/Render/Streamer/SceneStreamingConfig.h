@@ -154,7 +154,6 @@ MeshletStreamRuntimeDesc sceneStreamRuntimeDesc(
         .maxBlasClusterReferences = sceneStreamUintProperty(properties, "maxBlasClusterReferences", 0),
         .maxBlasBytes = sceneStreamUint64Property(properties, "maxBlasBytes", 512ull * 1024ull * 1024ull),
         .maxBlasStagingBytes = sceneStreamUint64Property(properties, "maxBlasStagingBytes", 512ull * 1024ull * 1024ull),
-        .enableBlasGPUAllocator = boolProperty(&properties, "enableBlasGPUAllocator", true),
         .maxBlasBuilds = sceneStreamUintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBLASBuilds),
         .maxFallbackBlasBytes = sceneStreamUint64Property(properties, "maxFallbackBlasBytes", 512ull * 1024ull * 1024ull),
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),

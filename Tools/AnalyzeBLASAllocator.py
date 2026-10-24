@@ -1,4 +1,8 @@
-"""Compare measured BLAS allocator captures; never infer visual correctness from timings."""
+"""Analyze archived BLAS allocator A/B captures; current runtime has one production allocator.
+
+Historical manifest fields remain required. This tool does not enable retired runtime paths.
+Never infer visual correctness from timings.
+"""
 import argparse
 import csv
 import hashlib
@@ -34,7 +38,7 @@ def file_identity(path):
 
 def validate_conditions(manifest, capture):
     if manifest.get("blasAllocator") not in ("legacy", "gpu"):
-        raise ValueError("A/B requires explicit METALLIC_BLAS_ALLOCATOR=legacy or gpu")
+        raise ValueError("Archived A/B manifest must record blasAllocator=legacy or gpu")
     if not manifest.get("blasStorageBytes"):
         raise ValueError("Capacity-pressure comparison requires an explicit shared BLAS storage budget")
     if capture.get("status") != "capture_complete" or not capture.get("frames"):

@@ -403,9 +403,9 @@ struct MeshletStreamGPUParams {
     uint32_t blasStorageBytes = 0;
     uint32_t blasStorageAddressLow = 0;
     uint32_t blasStorageAddressHigh = 0;
-    uint32_t enableBlasInstanceReuse = 1;
+    uint32_t blasInstanceReusePadding = 0;
     uint32_t gpuSceneInstanceBufferIndexPlusOne = 0;
-    uint32_t blasSizeClasses[32] = {};
+    uint32_t blasStoragePadding[32] = {};
     float prefetchEye[4] = {};
     float prefetchCenter[4] = {};
     float prefetchUp[4] = {};
@@ -413,12 +413,10 @@ struct MeshletStreamGPUParams {
     float previousLodPixelError = 1.5f;
     // RT selection may replace an ancestor only after the finer CLAS is published.
     uint32_t rayClasPageTableBuffer = UINT32_MAX;
-    uint32_t lodTelemetryPadding = 0;
+    uint32_t enableTerminalMaskDiagnostics = 0; // Untimed eligibility counters only.
     float rtOffscreenErrorScale = 2.0f;
     float rtLodHysteresis = 0.2f;
-    // Bits 0/1: RT policy/visible raster quality; 2/3: disable C1/C2;
-    // 4: packed true-token history; 5/6: late history/ray-first demand;
-    // 7: skip false history writes without changing the history layout.
+    // Bits 0/1: RT policy and visible raster quality.
     uint32_t rtLodFlags = 0;
     uint32_t rtLodPolicyRevision = 1;
     uint32_t rtLodFrameToken = 0;
@@ -432,11 +430,11 @@ struct MeshletStreamGPUParams {
     uint32_t enableBlasRepresentations = 0;
     uint32_t rtRepresentationCacheBuffer = UINT32_MAX;
     uint32_t rtRepresentationCachePadding[3] = {};
-    uint32_t enableBlasGPUAllocator = 0;
-    uint32_t enableBlasPriority = 0;
-    uint32_t enableBlasPriorityCache = 0;
-    uint32_t enableBlasMergedSharing = 0;
-    uint32_t blasFallbackPolicy = 0; // 0: original, 1: intermediate floor, 2: diagnostic finest reference.
+    uint32_t blasGPUAllocatorPadding = 0;
+    uint32_t blasPriorityPadding = 0;
+    uint32_t blasPriorityCachePadding = 0;
+    uint32_t blasMergedSharingPadding = 0;
+    uint32_t blasFallbackPadding = 0;
 };
 
 struct MeshletStreamGPURasterBindings {
@@ -599,13 +597,7 @@ struct MeshletStreamRuntimeDesc {
     // Separate hard cap for dirty implicit build output. Both arenas are charged
     // to device memory; this cap does not reduce the selected RT cut on failure.
     uint64_t maxBlasStagingBytes = 512ull * 1024ull * 1024ull;
-    bool enableBlasGPUAllocator = true;
-    bool enableBlasPriority = true; // Owner importance; requires representations and the GPU allocator.
-    bool enableBlasPriorityCache = true; // Exact GPU sort/admission reuse; requires owner priority.
-    bool enableBlasMergedSharing = true; // Reuse a demanded merged cut across all primitive consumers.
-    bool enableBlasIntermediateFallback = false; // Experimental: budget a small resident cut before fine upgrades.
     uint32_t maxBlasBuilds = kMeshletStreamDefaultMaxBLASBuilds;
-    bool enableBlasRepresentations = true;
     uint64_t maxFallbackBlasBytes = 512ull * 1024ull * 1024ull;
     bool screenSpacePagePriority = true;
     bool viewDrivenPageDemand = true;
@@ -655,10 +647,7 @@ struct MeshletStreamFrameDesc {
     float rtOffscreenErrorScale = 2.0f; // Multiplies the RT pixel budget outside the primary frustum.
     float rtLodHysteresis = 0.2f; // Refine at T; coarsen below T * (1 - hysteresis).
     bool preserveRasterLod = false; // Shared raster/RT cuts preserve visible raster projection quality.
-    bool nodeDemandC1 = true; // Benchmark override; C1 changes pruning only, not leaf demand thresholds.
-    bool nodeDemandC2 = true; // Benchmark override; C2 uses the existing offscreen leaf threshold lower bound.
-    uint32_t rtDemandMode = 1; // 0: baseline; 1: late history reads (default); 2: ray-first experiment.
-    bool frontierWave32 = true; // Complete single-wave distributed frontier on supported devices.
+    bool terminalMaskDiagnostics = false; // Untimed ready/eligible/query counters only.
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
     MeshletStreamCameraDesc renderCamera;
@@ -673,10 +662,6 @@ struct MeshletStreamFrameDesc {
     bool benchmarkDemandTraversal = false;
     uint32_t diagnosticBlasResetEpoch = 0;
     uint32_t diagnosticBlasStorageBytes = 0;
-    bool diagnosticBlasPriority = false;
-    bool diagnosticBlasPriorityCache = false;
-    bool diagnosticBlasMergedSharing = false;
-    uint32_t diagnosticBlasFallbackPolicy = 0;
 };
 
 // RT tokens identify recorded traversals independently of the request-frame
@@ -764,8 +749,7 @@ public:
         const std::function<Result<>()>& flushUploads = {});
     // Diagnostic harness only: all preceding submissions/readers must be drained,
     // and no other command buffer may be recording against this runtime.
-    Result<> resetDiagnosticBLAS(uint32_t storageBytes, bool priorityEnabled, bool priorityCacheEnabled,
-        bool mergedSharingEnabled, uint32_t fallbackPolicy);
+    Result<> resetDiagnosticBLAS(uint32_t storageBytes);
     // Record one bounded root-only batch in a dedicated, completion-tracked
     // submission. Drain it before another batch or any normal graph recording.
     Result<> cmdLoadInitialResources(CommandBuffer& commandBuffer, Streamer& streamer,
@@ -978,10 +962,6 @@ private:
     uint64_t geometryDemandReserveBytes_ = 0;
     uint64_t maxDevicePageBytes_ = 0;
     bool clusterRtxEnabled_ = false;
-    bool rtNodeDemandC1_ = true;
-    bool rtNodeDemandC2_ = true;
-    bool rtHistoryPacked_ = false;
-    bool rtHistorySparseWrites_ = false;
     MeshletStreamGPUBLASHeader recentBlasHeader_;
     std::array<uint32_t, kBLASAllocatorStateWords> recentBlasAllocatorState_{};
     ResourceLease pageHandle_;
@@ -1095,13 +1075,7 @@ private:
     uint32_t blasClusterReferenceCapacity_ = 0;
     uint32_t blasBuildCapacity_ = 0;
     uint32_t maxBlasClustersPerBuild_ = 0;
-    std::array<uint32_t, 32> blasSizeClasses_{};
-    bool blasInstanceReuse_ = true;
     bool blasRepresentationsEnabled_ = false;
-    bool blasPriorityEnabled_ = false;
-    bool blasPriorityCacheEnabled_ = false;
-    bool blasMergedSharingEnabled_ = false;
-    uint32_t blasFallbackPolicy_ = 0;
     uint32_t diagnosticBlasStorageBytes_ = 0;
     uint32_t rtRepresentationCount_ = 0;
     uint32_t rtRepresentationGroupCapacity_ = 0;

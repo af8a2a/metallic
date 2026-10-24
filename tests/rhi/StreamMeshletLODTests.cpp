@@ -281,6 +281,31 @@ StreamLODFixture rtDemandFixture(uint32_t leafCount)
     return fixture;
 }
 
+StreamLODFixture terminalMaskFixture(uint32_t leafCount)
+{
+    auto fixture = rtDemandFixture(leafCount);
+    // Three independent terminal groups at different DAG depths, with the
+    // mask shift boundaries 1/31/32. Removing the corresponding refinement
+    // edges establishes their no-parent terminal contract.
+    const uint32_t root = static_cast<uint32_t>(fixture.groups.size()) - 1u;
+    fixture.groups[2].flags = kMeshletLODTerminalGroup;
+    fixture.groups[root - 1u].flags = kMeshletLODTerminalGroup;
+    const auto oldRanges = fixture.ranges;
+    const auto oldRefined = fixture.refined;
+    fixture.refined.clear();
+    for (uint32_t group = 0; group <= root; ++group) {
+        const uint32_t count = group == root ? 32u : group == root - 1u ? 31u : oldRanges[group].clusterCount;
+        fixture.ranges[group] = {static_cast<uint32_t>(fixture.refined.size()), count};
+        for (uint32_t cluster = 0; cluster < count; ++cluster) {
+            uint32_t child = cluster < oldRanges[group].clusterCount ?
+                oldRefined[oldRanges[group].clusterOffset + cluster] : UINT32_MAX;
+            if (child == 2u || child == root - 1u) { child = UINT32_MAX; }
+            fixture.refined.push_back(child);
+        }
+    }
+    return fixture;
+}
+
 // Independent cut oracle: consume the brute-force leaf demand decisions, then
 // apply dependency/residency gating in descending DAG order. This intentionally
 // does not visit BVH nodes or substitute altered LOD errors for boolean demand.
@@ -308,7 +333,13 @@ StreamMeshletLODReference cutFromDemand(const StreamLODFixture& fixture,
         result.activeGroups[group] = std::all_of(parents[group].begin(), parents[group].end(),
             [&](uint32_t parent) { return result.activeGroups[parent] != 0; });
     }
+    bool rootsReady = true;
     for (uint32_t group = 0; group < count; ++group) {
+        if ((fixture.groups[group].flags & kMeshletLODTerminalGroup) != 0 && !fixture.drawable[group]) {
+            rootsReady = false;
+        }
+    }
+    for (uint32_t group = 0; rootsReady && group < count; ++group) {
         if (!result.activeGroups[group]) { continue; }
         const auto& range = fixture.ranges[group];
         for (uint32_t cluster = 0; cluster < range.clusterCount; ++cluster) {
@@ -608,10 +639,13 @@ public:
         return RHITestResult::pass("872 linear/BVH/cooperative/view-driven/prefetch/split/distributed/switching GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
     }
     RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256,
-        bool rtDemand = false, bool rtDemandC2 = false, bool rtDemandC3 = false, bool packedHistory = false,
-        bool sparseHistoryComparison = false, bool frontier32Comparison = false, bool frontierTileBoundaries = false)
+        bool rtDemand = false, bool demandBoundsCases = false, bool historyCases = false,
+        bool frontier32Comparison = false, bool frontierTileBoundaries = false,
+        bool terminalMaskRegression = false)
     {
-        StreamLODFixture fixture = rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
+        const bool wave32Cases = frontier32Comparison || terminalMaskRegression;
+        StreamLODFixture fixture = terminalMaskRegression ? terminalMaskFixture(leafCount) :
+            rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
         const uint32_t kRequestCapacity = kGroupCount + 2;
         const uint32_t kPriorityOffset = 16 + kRequestCapacity * 2;
@@ -704,7 +738,7 @@ public:
         const uint32_t demandTaskOffset = static_cast<uint32_t>(topology.size());
         for (uint32_t root : demandRoots) { topology.push_back(root); }
         std::vector<uint32_t> invalidDemandTopology;
-        if (rtDemandC2) {
+        if (demandBoundsCases) {
             invalidDemandTopology = topology;
             constexpr uint32_t kNodeWords = sizeof(MeshletLODBVHNode) / sizeof(uint32_t);
             constexpr uint32_t kBoundsWord = offsetof(MeshletLODBVHNode, demandBounds) / sizeof(uint32_t);
@@ -724,7 +758,7 @@ public:
             sizeof(MeshletStreamGPUActiveGroup), sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUDrawIndirect), 4, 4, sizeof(MeshletStreamGPUTraversalWorkItem)};
         // Retain the ordinary pair/sparse layout; diagnostic history is an
         // optional two words per instance-group and one visible-frame stamp.
-        const uint32_t rtHistoryWords = 3u + kGroupCount * (packedHistory ? 1u : 2u);
+        const uint32_t rtHistoryWords = 3u + kGroupCount * 2u;
         const uint64_t logicalStateBytes = (rtDemand ? 4u + kGroupCount * 3u + 4u + rtHistoryWords :
             4u + kGroupCount * 5u + 5u) * sizeof(uint32_t);
         // Cross the maximum X dispatch dimension and leave a partial last row.
@@ -739,7 +773,7 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
         STREAM_LOD_REQUIRE(created);
-        if (frontier32Comparison) {
+        if (wave32Cases) {
             const auto& caps = device->capabilities();
             if (!caps.computeSubgroupBallotArithmetic || caps.subgroupSize != 32 ||
                     caps.minSubgroupSize != 32 || caps.maxSubgroupSize != 32) {
@@ -799,7 +833,7 @@ public:
         }).transform([&](auto rhiValue) { cooperativePipeline = std::move(rhiValue); }));
         std::unique_ptr<ShaderModule> cooperative32Shader;
         std::unique_ptr<ComputePipeline> cooperative32Pipeline;
-        if (frontier32Comparison) {
+        if (wave32Cases) {
             ShaderCompileResult candidate;
             STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
                 .entryPointName = kMeshletStreamCooperativeBuild32EntryPoint,
@@ -864,7 +898,7 @@ public:
         const uint64_t tailOffset = outputBytes;
         if (large && !rtDemand) { outputBytes += 3 * sizeof(uint32_t); }
         const uint64_t prefetchHistoryOffset = outputBytes;
-        if (rtDemandC3) { outputBytes += rtHistoryWords * sizeof(uint32_t); }
+        if (historyCases) { outputBytes += rtHistoryWords * sizeof(uint32_t); }
         STREAM_LOD_REQUIRE(device->createBuffer({.size = outputBytes, .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         Queue* queue = device->getQueue(QueueType::Graphics);
@@ -878,34 +912,28 @@ public:
         const uint32_t ordinaryFrames = caseCount * 8;
         MeshletStreamGPUParams priorParams;
         std::vector<uint8_t> previousWanted(kGroupCount), expectedWanted(kGroupCount);
-        std::array<uint64_t, 2> rtGroupTests{};
-        std::array<std::array<uint64_t, 2>, 2> rtUnitScaleTests{};
-        const uint32_t rtSequenceFrames = frontier32Comparison ? 40u : rtDemandC3 ? 36u : rtDemandC2 ? 28u : 16u;
-        const uint32_t rtModes = rtDemandC3 && !sparseHistoryComparison && !frontier32Comparison ? 3u : 2u;
-        const uint32_t frameCount = frontier32Comparison ? rtSequenceFrames * 2u :
-            rtDemand ? rtSequenceFrames * rtModes * 2u : ordinaryFrames + (large ? 0u : 80u);
-        std::vector<std::vector<uint8_t>> frontier64Outputs(rtSequenceFrames);
-        std::vector<uint32_t> eagerGroupTests(rtSequenceFrames * 2u);
-        std::vector<uint32_t> previousHistoryWords(rtHistoryWords);
-        uint64_t baselineFalseWrites = 0, sparseFalsePreserved = 0, sparseExpiredWanted = 0;
+        const uint32_t rtSequenceFrames = terminalMaskRegression ? 48u : frontier32Comparison ? 40u : historyCases ? 36u : demandBoundsCases ? 28u : 16u;
+        const uint32_t frameCount = terminalMaskRegression ? rtSequenceFrames :
+            rtDemand ? rtSequenceFrames * 2u : ordinaryFrames + (large ? 0u : 80u);
+        std::vector<std::vector<uint8_t>> baselineOutputs(rtSequenceFrames);
+        uint32_t terminalOnlyFrames = 0, mixedFrames = 0, unreadyFrames = 0, blockedDetailFrames = 0;
         uint32_t previousHistoryToken = 0u, previousHistoryPolicy = 0u;
         for (uint32_t frame = 0; frame < frameCount; ++frame) {
             const uint32_t rtStep = frame % rtSequenceFrames;
-            const uint32_t rtMode = (frame / rtSequenceFrames) % rtModes;
-            const bool rtBaseline = (frame / rtSequenceFrames) % 2u == 0;
+            const bool frontier32 = terminalMaskRegression || (frontier32Comparison && frame >= rtSequenceFrames);
             float rtOffscreenScale = 2.f;
             float rtHysteresis = .2f;
             uint32_t rtPolicyRevision = 1u;
             const bool telemetrySequence = frame >= ordinaryFrames;
             const uint32_t telemetryStep = telemetrySequence ? (frame - ordinaryFrames) % 20u : 0u;
             const uint32_t telemetryPath = telemetrySequence ? (frame - ordinaryFrames) / 20u : 0u;
-            const uint32_t test = frontier32Comparison ? rtStep : telemetrySequence ? 0u : frame % caseCount;
+            const uint32_t test = wave32Cases ? rtStep : telemetrySequence ? 0u : frame % caseCount;
             const bool useBvh = rtDemand || (telemetrySequence ? telemetryPath != 0 : frame >= caseCount);
             const bool cooperative = rtDemand || (telemetrySequence ? telemetryPath >= 2 : frame >= caseCount * 2);
             const bool viewDriven = rtDemand || telemetrySequence || frame >= caseCount * 3;
-            const bool prefetch = rtDemandC3 ? rtStep == 28u : !rtDemand && !telemetrySequence && frame >= caseCount * 4;
+            const bool prefetch = historyCases ? rtStep == 28u : !rtDemand && !telemetrySequence && frame >= caseCount * 4;
             const bool switching = !rtDemand && !telemetrySequence && frame >= caseCount * 7;
-            const bool distributed = frontier32Comparison || (rtDemand ? frame >= rtSequenceFrames * rtModes : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0));
+            const bool distributed = wave32Cases || (rtDemand ? frame >= rtSequenceFrames : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0));
             const bool split = rtDemand ? distributed : telemetrySequence ? distributed : switching ? distributed : frame >= caseCount * 5;
             const float viewAspect = !rtDemand && viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
@@ -952,12 +980,12 @@ public:
                 available = fixture.drawable;
             }
             if (rtDemand) {
-                fixture = rtDemandFixture(leafCount);
+                fixture = terminalMaskRegression ? terminalMaskFixture(leafCount) : rtDemandFixture(leafCount);
                 available.assign(kGroupCount, 1);
                 manual = UINT32_MAX;
                 capacity = kGroupCount;
                 bool resetHistory = rtStep == 0;
-                if (!rtDemandC2) {
+                if (!demandBoundsCases) {
                     if (rtStep == 2) { fixture.view.forward = {0, 0, 1, 0}; }
                     if (rtStep == 3) { fixture.view.forward = {1, 0, 0, 0}; }
                     if (rtStep == 5) {
@@ -1016,14 +1044,14 @@ public:
                     fixture.view.projection[3] = rayError / (rtOffscreenScale * ratio);
                     if (rtStep == 15) {
                         // This parent metric is behind the eye but its demand
-                        // subtree contains the visible leaf: C2 must not scale
+                        // subtree contains the visible leaf: node demand must not scale
                         // its threshold as though that whole subtree were offscreen.
                         fixture.view.projection[3] = meshletLodRayPixelError(fixture.groups[leafCount],
                             fixture.instance, fixture.view) * .5f;
                     }
                     if (rtStep == 16) { fixture.view.projection[3] = 1.5f; } // Unknown node bounds must descend.
                     if (rtStep == 21) { manual = 0; }
-                    if (rtDemandC3 && rtStep >= 28 && rtStep < 32) {
+                    if (historyCases && rtStep >= 28 && rtStep < 32) {
                         rtOffscreenScale = 2.f;
                         rtHysteresis = .2f;
                         rtPolicyRevision = 13u;
@@ -1040,7 +1068,7 @@ public:
                             available[0] = 0;
                         }
                     }
-                    if (rtDemandC3 && rtStep >= 32 && rtStep < 36) {
+                    if (historyCases && rtStep >= 32 && rtStep < 36) {
                         // Identity scale and equal power-of-two projection
                         // factors preserve the authored error bits exactly on
                         // both CPU and GPU. No approximate boundary allowance:
@@ -1057,21 +1085,40 @@ public:
                         constexpr float kThresholdMultipliers[]{.5f, 1.f, 2.f, 1.f};
                         fixture.view.projection[3] = exactError * kThresholdMultipliers[rtStep - 32u];
                         if (meshletLodRayPixelError(fixture.groups[leafCount - 1u], fixture.instance, fixture.view) != exactError) {
-                            return RHITestResult::fail("C3 equality fixture did not preserve the exact error bits");
+                            return RHITestResult::fail("History equality fixture did not preserve the exact error bits");
                         }
                     }
                 }
-                if (frontier32Comparison && rtStep >= 36) {
+                if (wave32Cases && rtStep >= 36) {
                     // Missing terminal, invisible, then identical refined frames.
                     if (rtStep == 36) { fixture.drawable.back() = 0; available.back() = 0; }
                     if (rtStep == 37) { fixture.instance.identity[3] = 0; }
                     if (rtStep >= 38) { manual = 0; }
                     resetHistory = true;
                 }
+                if (terminalMaskRegression && rtStep >= 40) {
+                    // Fine -> coarse -> wanted-but-unavailable -> fine in the
+                    // same GPU state allocation; no extra history-buffer clear.
+                    manual = rtStep == 40 || rtStep >= 46 ? UINT32_MAX : 0u;
+                    fixture.view.projection[3] = rtStep == 40 || rtStep == 46 ? 1e6f : 1e-6f;
+                    if (rtStep == 40 || rtStep == 46) { fixture.view.forward = {0, 0, 1, 0}; }
+                    if (rtStep == 41 || rtStep == 42) {
+                        for (uint32_t group = 0; group < kGroupCount; ++group) {
+                            if ((fixture.groups[group].flags & kMeshletLODTerminalGroup) != 0) { continue; }
+                            // Step 42 has resident leaves blocked by absent
+                            // parents; they must not escape the terminal cut.
+                            fixture.drawable[group] = rtStep == 42 && fixture.groups[group].level == 0;
+                            available[group] = fixture.drawable[group];
+                        }
+                    }
+                    if (rtStep == 43) { fixture.drawable.back() = 0; available.back() = 0; }
+                    if (rtStep == 44) { fixture.instance.identity[3] = 0; }
+                    resetHistory = true; // Retention is irrelevant to these strict coarse/fine decisions.
+                }
                 if (resetHistory) { std::fill(previousWanted.begin(), previousWanted.end(), uint8_t{0}); }
                 for (uint32_t group = 0; group < kGroupCount; ++group) {
                     const auto& metric = fixture.groups[group];
-                    if (frontier32Comparison && fixture.instance.identity[3] == 0) { expectedWanted[group] = 0; continue; }
+                    if (wave32Cases && fixture.instance.identity[3] == 0) { expectedWanted[group] = 0; continue; }
                     if ((metric.flags & kMeshletLODTerminalGroup) != 0) { expectedWanted[group] = 1; continue; }
                     if (manual != UINT32_MAX) { expectedWanted[group] = metric.level >= manual; continue; }
                     const bool visible = meshletLodBoundsVisible(refinementBounds[group], fixture.instance,
@@ -1082,15 +1129,15 @@ public:
                     expectedWanted[group] = meshletLodRayNeedsFine(error,
                         fixture.view.projection[3] * (visible ? 1.f : rtOffscreenScale), rtHysteresis, retained);
                 }
-                if (rtDemandC2 && rtStep < 15 && bool(expectedWanted[leafCount - 1u]) !=
+                if (demandBoundsCases && rtStep < 15 && bool(expectedWanted[leafCount - 1u]) !=
                     (rtStep % 5u == 2u || rtStep % 5u == 3u)) {
-                    return RHITestResult::fail("C2 fixture failed to exercise the offscreen hysteresis roundtrip");
+                    return RHITestResult::fail("Offscreen demand fixture failed to exercise the offscreen hysteresis roundtrip");
                 }
-                if (rtDemandC2 && rtStep >= 24 && rtStep < 28 && bool(expectedWanted[leafCount - 1u]) != (rtStep == 25 || rtStep == 26)) {
-                    return RHITestResult::fail("C2 fixture failed to straddle the zero/maximum hysteresis boundaries");
+                if (demandBoundsCases && rtStep >= 24 && rtStep < 28 && bool(expectedWanted[leafCount - 1u]) != (rtStep == 25 || rtStep == 26)) {
+                    return RHITestResult::fail("Offscreen demand fixture failed to straddle the zero/maximum hysteresis boundaries");
                 }
-                if (rtDemandC3 && rtStep >= 32 && rtStep < 36 && bool(expectedWanted[leafCount - 1u]) != (rtStep < 34)) {
-                    return RHITestResult::fail("C3 exact upper/lower equality fixture changed the strict leaf predicate");
+                if (historyCases && rtStep >= 32 && rtStep < 36 && bool(expectedWanted[leafCount - 1u]) != (rtStep < 34)) {
+                    return RHITestResult::fail("History exact upper/lower equality fixture changed the strict leaf predicate");
                 }
                 if (rtStep == 0 && !expectedWanted[leafCount]) {
                     return RHITestResult::fail("RT fixture failed to expose a visible refinement descendant of a behind-eye metric sphere");
@@ -1151,35 +1198,27 @@ public:
             params.scenePrimitiveCount = 1;
             params.sceneGroupCount = kGroupCount;
             params.scenePageCount = kGroupCount;
-            params.maxActiveGroupClusters = 2;
+            params.maxActiveGroupClusters = terminalMaskRegression ? 32u : 2u;
             params.activeGroupCount = capacity;
-            params.drawTaskCount = capacity * 4;
+            params.drawTaskCount = capacity * params.maxActiveGroupClusters * 2u;
             params.frameIndex = frame + 1;
             if (telemetrySequence && telemetryStep >= 18) { params.frameIndex = 0x04000000u + telemetryStep - 18u; }
             params.selectedLodLevel = manual;
             params.enableGpuLodSelection = manual == UINT32_MAX;
             if (rtDemand) {
-                // C1 remains isolated from C2. C2 compares the same C1 path
-                // with only its node offscreen-threshold scaling toggled.
-                params.rtLodFlags = rtDemandC2 ? (rtBaseline ? 11u : 3u) : (rtBaseline ? 15u : 11u);
-                if (rtDemandC3) {
-                    params.rtLodFlags = 3u | (packedHistory ? 16u : 0u) |
-                        (rtMode >= 1u ? 32u : 0u) | (rtMode >= 2u ? 64u : 0u);
+                params.rtLodFlags = 3u; // RT demand with visible raster quality preserved.
+                if (terminalMaskRegression) {
+                    // Exercise ordinary noninstrumented coarse/fine frames too.
+                    params.enableTerminalMaskDiagnostics = rtStep < 46u ? 1u : 0u;
                 }
-                if (sparseHistoryComparison) {
-                    // Isolate write suppression: both arms retain the same
-                    // two-word allocation, late reads and visibility-first metric.
-                    params.rtLodFlags = 3u | 32u | (rtMode == 1u ? 128u : 0u);
-                }
-                if (frontier32Comparison) { params.rtLodFlags = 3u | 32u; }
                 params.rtOffscreenErrorScale = rtOffscreenScale;
                 params.rtLodHysteresis = rtHysteresis;
                 params.rtLodPolicyRevision = rtPolicyRevision;
                 params.rtLodFrameToken = frame + 1u;
-                if (rtDemandC3) {
+                if (historyCases) {
                     // Tokens and editor frame indices are deliberately not
                     // adjacent; only the last submitted token owns history.
-                    const uint32_t sequenceFrame = frontier32Comparison ? rtStep : frame;
+                    const uint32_t sequenceFrame = wave32Cases ? rtStep : frame;
                     params.rtLodFrameToken = sequenceFrame * 7u + 1u;
                     params.frameIndex = sequenceFrame * 11u + 1u;
                     if (rtStep == 29) { params.rtLodFrameToken = UINT32_MAX; params.frameIndex = UINT32_MAX; }
@@ -1232,14 +1271,14 @@ public:
             requests[11] = cooperative ? kPriorityOffset : 0u;
             requests[12] = cooperative ? kPriorityTable : 0u;
             requests[13] = prefetch && test % 5 != 0 ? std::max(kRequestCapacity / 4u, 1u) : 0u;
-            if (rtDemandC3 && prefetch) { requests[13] = 8u; }
+            if (historyCases && prefetch) { requests[13] = 8u; }
             if (prefetch && test % 3 == 1) {
                 requests[0] = std::max(static_cast<uint32_t>(expected.requestedGroups.size()), 1u);
             }
             std::fill(requests.begin() + kPriorityTable, requests.end(), 0x7fc00000u);
-            if (rtDemandC2 && !upload(Topology,
+            if (demandBoundsCases && !upload(Topology,
                 rtStep == 16 ? invalidDemandTopology.data() : topology.data(), sizes[Topology])) {
-                return RHITestResult::fail("C2 node demand bounds upload failed");
+                return RHITestResult::fail("Node demand bounds upload failed");
             }
             if (!upload(Instance, &instance, sizeof(instance)) || !upload(Params, &params, sizeof(params)) ||
                 !upload(Primitive, &primitive, sizeof(primitive)) ||
@@ -1250,9 +1289,9 @@ public:
             if (frame != 0) { STREAM_LOD_REQUIRE(fence->reset()); STREAM_LOD_REQUIRE(pool->reset()); }
             // Drop a fully recorded, never submitted frame, then retry it.
             // Recording must not publish history or clear the previous GPU cut.
-            const uint32_t attempts = frontier32Comparison && rtStep == 23 ? 2u : 1u;
+            const uint32_t attempts = wave32Cases && rtStep == 23 ? 2u : 1u;
             bool capturedPrefetchHistory = false;
-            const bool clearRTState = rtDemand && (rtStep == 0 || (rtDemandC3 && rtStep == 30));
+            const bool clearRTState = rtDemand && (rtStep == 0 || (historyCases && rtStep == 30));
             for (uint32_t attempt = 0; attempt < attempts; ++attempt) {
                 STREAM_LOD_REQUIRE(commands->begin());
                 std::array<BufferBarrierDesc, BufferCount> barriers{};
@@ -1287,7 +1326,7 @@ public:
                     if (phase == 9u && !prefetch) { continue; }
                     if ((phase == 10u || phase == 11u) && !split) { continue; }
                     if ((phase == 12u || phase == 13u) && !distributed) { continue; }
-                    if (rtDemandC3 && phase == 9u && !capturedPrefetchHistory) {
+                    if (historyCases && phase == 9u && !capturedPrefetchHistory) {
                         BufferBarrierDesc historyBarrier{.buffer = buffers[State].get(),
                             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                             .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
@@ -1295,13 +1334,13 @@ public:
                         const uint64_t historyByteOffset = (4ull + kGroupCount * 3ull + 4ull) * sizeof(uint32_t);
                         auto source = buffers[State]->slice({historyByteOffset, rtHistoryWords * sizeof(uint32_t)});
                         auto destination = readback->slice({prefetchHistoryOffset, rtHistoryWords * sizeof(uint32_t)});
-                        if (!source || !destination) { return RHITestResult::fail("C3 prefetch history snapshot slice failed"); }
+                        if (!source || !destination) { return RHITestResult::fail("History prefetch history snapshot slice failed"); }
                         STREAM_LOD_REQUIRE(commands->copyBuffer(*source, *destination));
                         std::swap(historyBarrier.before, historyBarrier.after);
                         STREAM_LOD_REQUIRE(commands->synchronize({.buffers = {&historyBarrier, 1}}));
                         capturedPrefetchHistory = true;
                     }
-                    if (auto commandResult = commands->bindExecution((frontier32Comparison && rtMode == 1 && phase == 5u ? *cooperative32Pipeline :
+                    if (auto commandResult = commands->bindExecution((frontier32 && phase == 5u ? *cooperative32Pipeline :
                         phase == 12u || phase == 13u ? *demandPipeline :
                         cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     push.activeBuildPhase = phase;
@@ -1365,6 +1404,51 @@ public:
             std::memcpy(state.data(), mapped + offsets[4], logicalStateBytes);
             std::array<uint32_t, kMeshletStreamDemandStatsWords> demandStats{};
             std::memcpy(demandStats.data(), mapped + offsets[5], sizeof(demandStats));
+            if (terminalMaskRegression) {
+                bool ready = instance.visible != 0u;
+                bool onlyTerminals = true;
+                uint32_t terminalClusters = 0u;
+                for (uint32_t group = 0; group < kGroupCount; ++group) {
+                    const bool terminal = (fixture.groups[group].flags & kMeshletLODTerminalGroup) != 0u;
+                    if (terminal) {
+                        ready = ready && fixture.drawable[group] != 0u;
+                        terminalClusters += fixture.ranges[group].clusterCount;
+                    } else if (expected.activeGroups[group] != 0u) { onlyTerminals = false; }
+                }
+                const bool eligible = ready && onlyTerminals;
+                const bool diagnostic = params.enableTerminalMaskDiagnostics != 0u;
+                if (demandStats[29] != uint32_t(diagnostic && ready) || demandStats[30] != uint32_t(diagnostic && eligible) ||
+                        demandStats[31] != (diagnostic && eligible ? terminalClusters : 0u)) {
+                    readback->unmap();
+                    return RHITestResult::fail("Terminal Mask diagnostic counters disagree with the independent cut: " + caseLabel);
+                }
+                for (uint32_t group = 0; group < kGroupCount; ++group) {
+                    uint32_t mask = 0u;
+                    const auto& range = fixture.ranges[group];
+                    for (uint32_t cluster = 0; ready && expected.activeGroups[group] != 0u && cluster < range.clusterCount; ++cluster) {
+                        const uint32_t child = fixture.refined[range.clusterOffset + cluster];
+                        if (child == UINT32_MAX || expected.activeGroups[child] == 0u) { mask |= 1u << cluster; }
+                    }
+                    if (state[4u + group * 2u + 1u] != mask) {
+                        readback->unmap();
+                        return RHITestResult::fail("Terminal Mask differs from per-cluster refined-state oracle: " + caseLabel);
+                    }
+                }
+                terminalOnlyFrames += eligible;
+                mixedFrames += ready && !onlyTerminals;
+                unreadyFrames += instance.visible != 0u && !ready;
+                if (rtStep == 41 || rtStep == 42) {
+                    if (!eligible || expected.requestedGroups.empty()) {
+                        readback->unmap();
+                        return RHITestResult::fail("Missing detail/dependency fixture did not retain requests with a terminal-only cut");
+                    }
+                    ++blockedDetailFrames;
+                }
+                if ((rtStep == 40 || rtStep == 46) && (!eligible || terminalClusters != 64u)) {
+                    readback->unmap();
+                    return RHITestResult::fail("Coarse fixture missed the mixed-depth 1/31/32 terminal masks");
+                }
+            }
             if (frontier32Comparison) {
                 if (header.activeGroupCount > kGroupCount || requests[2] > kRequestCapacity) {
                     readback->unmap();
@@ -1385,10 +1469,10 @@ public:
                 std::vector<uint32_t> requestSet(requests.begin() + 16, requests.begin() + 16 + requests[2]);
                 std::sort(requestSet.begin(), requestSet.end());
                 append(requestSet.data(), requestSet.size() * sizeof(uint32_t));
-                if (rtMode == 0) { frontier64Outputs[rtStep] = std::move(signature); }
-                else if (signature != frontier64Outputs[rtStep]) {
+                if (!frontier32) { baselineOutputs[rtStep] = std::move(signature); }
+                else if (signature != baselineOutputs[rtStep]) {
                     readback->unmap();
-                    return RHITestResult::fail("WG32/64 frontier state, sparse order, masks, output or requests differ: " + caseLabel);
+                    return RHITestResult::fail("Hardware fallback/Wave32 state, sparse order, masks, output or requests differ: " + caseLabel);
                 }
             }
             if (rtDemand) {
@@ -1405,55 +1489,25 @@ public:
                 if (manual == UINT32_MAX) {
                     for (uint32_t group = 0; group < kGroupCount; ++group) {
                         if ((fixture.groups[group].flags & kMeshletLODTerminalGroup) != 0) { continue; }
-                        const uint32_t address = history + 3u + group * (packedHistory ? 1u : 2u);
-                        const bool actualWanted = state[address] == params.rtLodFrameToken && (packedHistory || state[address + 1u] != 0u);
+                        const uint32_t address = history + 3u + group * 2u;
+                        const bool actualWanted = state[address] == params.rtLodFrameToken && state[address + 1u] != 0u;
                         if (actualWanted != bool(expectedWanted[group])) {
                             readback->unmap();
                             return RHITestResult::fail("Brute-force leaf / GPU RT demand mismatch at group " +
                                 std::to_string(group) + ", " + caseLabel);
                         }
-                        if (sparseHistoryComparison && !expectedWanted[group]) {
-                            if (rtMode == 0u) {
-                                baselineFalseWrites += state[address] == params.rtLodFrameToken && state[address + 1u] == 0u;
-                            } else {
-                                // A false/pruned leaf must expire by header token,
-                                // without overwriting either legacy-layout word.
-                                const uint32_t oldToken = clearRTState ? 0u : previousHistoryWords[address - history];
-                                const uint32_t oldWanted = clearRTState ? 0u : previousHistoryWords[address + 1u - history];
-                                if (state[address] != oldToken || state[address + 1u] != oldWanted) {
-                                    readback->unmap();
-                                    return RHITestResult::fail("Sparse false demand wrote legacy history words at group " +
-                                        std::to_string(group) + ", " + caseLabel);
-                                }
-                                ++sparseFalsePreserved;
-                                sparseExpiredWanted += oldToken != 0u && oldWanted == 1u;
-                            }
-                        }
                     }
                 }
-                if (sparseHistoryComparison) {
-                    std::copy_n(state.begin() + history, rtHistoryWords, previousHistoryWords.begin());
-                }
-                if (rtDemandC3 && prefetch && (!capturedPrefetchHistory ||
+                if (historyCases && prefetch && (!capturedPrefetchHistory ||
                     std::memcmp(mapped + prefetchHistoryOffset, state.data() + history, rtHistoryWords * sizeof(uint32_t)) != 0)) {
                     readback->unmap();
                     return RHITestResult::fail("RT prefetch mutated demand history despite updateHistory=false");
                 }
                 previousWanted = expectedWanted;
                 const uint32_t testedGroups = distributed ? demandStats[3] : state[4u + kGroupCount * 2u + 2u];
-                rtGroupTests[rtBaseline ? 0u : 1u] += testedGroups;
-                if (rtDemandC3) {
-                    const uint32_t index = (distributed ? rtSequenceFrames : 0u) + rtStep;
-                    if (rtMode == 0) { eagerGroupTests[index] = testedGroups; }
-                    else if (eagerGroupTests[index] != testedGroups) {
-                        readback->unmap();
-                        return RHITestResult::fail("RT leaf candidate changed traversal work instead of only leaf demand evaluation: " + caseLabel);
-                    }
-                }
-                if (rtDemandC2 && rtStep < 5) { rtUnitScaleTests[distributed ? 1u : 0u][rtBaseline ? 0u : 1u] += testedGroups; }
-                if (rtDemandC2 && rtStep == 16 && testedGroups != kGroupCount) {
+                if (demandBoundsCases && rtStep == 16 && testedGroups != kGroupCount) {
                     readback->unmap();
-                    return RHITestResult::fail("C2 pruned unknown node demand bounds instead of descending conservatively");
+                    return RHITestResult::fail("Node pruning removed unknown node demand bounds instead of descending conservatively");
                 }
             }
             if (telemetrySequence) {
@@ -1520,8 +1574,8 @@ public:
                 return RHITestResult::fail("stream frontier request overflow or invalid page");
             }
             std::vector<uint32_t> requested(requests.begin() + 16, requests.begin() + 16 + requests[2]);
-            if (rtDemandC3 && prefetch && std::find(requested.begin(), requested.end(), kStreamPrefetchPageTag) == requested.end()) {
-                return RHITestResult::fail("C3 read-only history fixture did not issue its forecast-only leaf request");
+            if (historyCases && prefetch && std::find(requested.begin(), requested.end(), kStreamPrefetchPageTag) == requested.end()) {
+                return RHITestResult::fail("Read-only history history fixture did not issue its forecast-only leaf request");
             }
             if (forecastExclusive && std::find(requested.begin(), requested.end(), 1u | kStreamPrefetchPageTag) == requested.end()) {
                 return RHITestResult::fail("Predicted approach did not request the forecast-exclusive page");
@@ -1584,12 +1638,12 @@ public:
             std::sort(requested.begin(), requested.end());
             if (actual != expected.selectedClusters || requested != expected.requestedGroups ||
                 (expected.valid && bool(header.padding0) != expected.capacityFallback) ||
-                arguments.groupCountX != header.activeGroupCount * 4 || arguments.groupCountY != 1 || arguments.groupCountZ != 1) {
+                arguments.groupCountX != header.activeGroupCount * params.maxActiveGroupClusters * 2u || arguments.groupCountY != 1 || arguments.groupCountZ != 1) {
                 return RHITestResult::fail("CPU/GPU stream cut, requests, capacity fallback or indirect arguments mismatch in case " +
                     caseLabel + ": expected " + std::to_string(expected.selectedClusters.size()) +
                     " clusters, actual " + std::to_string(actual.size()));
             }
-            const uint32_t tessellationTasks = header.activeGroupCount * 16;
+            const uint32_t tessellationTasks = header.activeGroupCount * params.maxActiveGroupClusters * 8u;
             if (tessellationArguments.groupCountX != std::min(tessellationTasks, 65535u) ||
                 tessellationArguments.groupCountY != std::max(1u, (tessellationTasks + 65534u) / 65535u) ||
                 tessellationArguments.groupCountZ != 1) {
@@ -1629,34 +1683,20 @@ public:
             }
         }
         if (rtDemand) {
+            if (terminalMaskRegression) {
+                if (terminalOnlyFrames == 0u || mixedFrames == 0u || unreadyFrames == 0u || blockedDetailFrames != 2u) {
+                    return RHITestResult::fail("Terminal Mask fixture missed positive, mixed, unready or blocked-detail coverage");
+                }
+                return RHITestResult::pass(std::to_string(frameCount) +
+                    " consecutive production Mask frames on Wave32 Frontier match independent leaf, cluster mask, history, sparse state, request and indirect oracles; " +
+                    std::to_string(terminalOnlyFrames) + " terminal-only, " + std::to_string(mixedFrames) +
+                    " mixed, " + std::to_string(unreadyFrames) + " unready frames; mixed-depth 1/31/32 roots and requested-but-blocked detail covered");
+            }
             if (frontier32Comparison) {
                 return RHITestResult::pass("80 WG64/WG32 late-history distributed frames match exact frontier state/sparse order/masks/outputs and independent per-leaf oracle; missing terminal, hidden/reentry, recorded cancellation, history gaps/wrap and static repeat covered");
             }
-            if (sparseHistoryComparison) {
-                if (baselineFalseWrites == 0u || sparseFalsePreserved == 0u || sparseExpiredWanted == 0u) {
-                    return RHITestResult::fail("Sparse history fixture did not observe baseline false stores and expired wanted tokens");
-                }
-                return RHITestResult::pass(std::to_string(frameCount) +
-                    " dual-word late-history frames match per-leaf demand, cuts, requests and traversal counts; " +
-                    std::to_string(baselineFalseWrites) + " baseline false stores, " +
-                    std::to_string(sparseFalsePreserved) + " sparse false records untouched, " +
-                    std::to_string(sparseExpiredWanted) + " old wanted tokens expire; exact hysteresis boundaries, token gaps, wrap and readonly prefetch preserved");
-            }
-            if (rtDemandC3) {
-                return RHITestResult::pass("216 eager/late/ray-first ordered/distributed frames match brute-force leaf demand, cut and requests with " +
-                    std::string(packedHistory ? "packed" : "legacy") + " history; gaps, wrap and read-only prefetch preserved");
-            }
-            if (rtDemandC2 && (rtUnitScaleTests[0][0] != rtUnitScaleTests[0][1] ||
-                rtUnitScaleTests[1][0] != rtUnitScaleTests[1][1])) {
-                return RHITestResult::fail("C2 changed traversal work at unit offscreen scale");
-            }
-            if (rtGroupTests[1] >= rtGroupTests[0]) {
-                return RHITestResult::fail(std::string(rtDemandC2 ? "C2" : "C1") + " did not reduce behind-eye leaf tests versus the baseline: " +
-                    std::to_string(rtGroupTests[1]) + "/" + std::to_string(rtGroupTests[0]));
-            }
-            return RHITestResult::pass(std::to_string(frameCount) + " consecutive " + (rtDemandC2 ? "C1/C2" : "baseline/C1") +
-                " ordered/distributed frames match brute-force leaf demand, cuts and requests; leaf tests " +
-                std::to_string(rtGroupTests[0]) + " -> " + std::to_string(rtGroupTests[1]));
+            return RHITestResult::pass(std::to_string(frameCount) +
+                " production ordered/distributed frames match independent leaf demand, cut, requests and two-word history");
         }
         if (positivePriorities == 0) { return RHITestResult::fail("Visible requests never generated screen benefit"); }
         if (speculativeRequests == 0) { return RHITestResult::fail("Lookahead never requested a missing descendant"); }
@@ -1667,50 +1707,20 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODGPUTest);
 
-class StreamMeshletLODRTDemandC1Test final : public RHITest {
+class StreamMeshletLODRTDemandTest final : public RHITest {
 public:
-    StreamMeshletLODRTDemandC1Test() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_demand_c1"; }
+    StreamMeshletLODRTDemandTest() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_demand"; }
     RHITestResult run(RHITestContext& context) override
     {
-        return StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true);
-    }
-};
-METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC1Test);
-
-class StreamMeshletLODRTDemandC2Test final : public RHITest {
-public:
-    StreamMeshletLODRTDemandC2Test() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_demand_c2"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        return StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true, true);
-    }
-};
-METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC2Test);
-
-class StreamMeshletLODRTDemandC3Test final : public RHITest {
-public:
-    StreamMeshletLODRTDemandC3Test() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_demand_c3"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        for (bool packed : {false, true}) {
-            const auto result = StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true, true, true, packed);
-            if (!result.passed) { return result; }
+        for (bool historyCases : {false, true}) {
+            const auto result = StreamMeshletLODGPUTest{}.runFixture(context, true, 256,
+                true, historyCases, historyCases);
+            if (!result.passed || result.skipped) { return result; }
         }
-        return RHITestResult::pass("432 eager/late/ray-first frames match the per-leaf oracle in both history layouts");
+        return RHITestResult::pass("104 production ordered/distributed frames match leaf demand, cut, requests and history; conservative bounds, hysteresis equality, token gaps/wrap and readonly prefetch covered");
     }
 };
-METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC3Test);
-
-class StreamMeshletLODRTSparseHistoryTest final : public RHITest {
-public:
-    StreamMeshletLODRTSparseHistoryTest() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_sparse_history"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        return StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true, true, true, false, true);
-    }
-};
-METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTSparseHistoryTest);
-
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandTest);
 
 class StreamMeshletLODFrontier32Test final : public RHITest {
 public:
@@ -1719,13 +1729,24 @@ public:
     {
         for (bool boundaries : {false, true}) {
             const auto result = StreamMeshletLODGPUTest{}.runFixture(context, true, 256,
-                true, true, true, false, false, true, boundaries);
+                true, true, true, true, boundaries);
             if (!result.passed || result.skipped) { return result; }
         }
         return RHITestResult::pass("160 consecutive 64/32 frontier frames match CPU leaf demand and exact GPU state/output; production BVH and 1/8/31/32/33/63/64-group leaves");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODFrontier32Test);
+
+class StreamMeshletLODTerminalMaskTest final : public RHITest {
+public:
+    StreamMeshletLODTerminalMaskTest() { type = RHITestType::Rendering; name = "meshlet_lod_stream_terminal_mask"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        return StreamMeshletLODGPUTest{}.runFixture(context, true, 256,
+            true, true, true, false, false, true);
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODTerminalMaskTest);
 
 class StreamLODTileHierarchyTest final : public RHITest {
 public:

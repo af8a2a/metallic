@@ -1,41 +1,58 @@
-# Single-wave LOD frontier
+# Production streaming LOD
 
-The complete 32-thread, per-instance Frontier path is enabled by default on
-supported configurations. Set the render-pass runtime property
-`streamFrontierWave32=false` to retain the 64-thread path explicitly.
-`applyStreamRayLODSettings` consumes this property; direct callers can set
-`MeshletStreamFrameDesc::frontierWave32`, which also defaults to true.
+RT demand uses conservative aggregated refinement bounds (C1) and the offscreen
+hysteresis threshold lower bound (C2). Only completely offscreen subtrees omit
+raster error. Leaf history is read only inside the hysteresis band. History
+uses two words per group and publishes both the token and wanted bit; ray-first,
+packed history and sparse-history-write experiments have been removed.
 
-Selection requires distributed demand with a split Frontier/Mask dispatch and
-a device exposing fixed subgroup size 32 with compute ballot/arithmetic support.
-Other configurations retain `streamCooperativeLodMain`. Clear, Mask, Emit and
-Prefetch always retain their 64-thread entry; the new entry is only dispatched
-for Frontier. Both pipelines are created during initialization on supported
-devices, so switching modes does not compile a pipeline during measurement.
+## Single-wave frontier
 
-`streamCooperativeLod32Main` uses the same traversal body and per-instance state.
-A leaf with more than 32 groups is processed in two ordered batches. Wave
-prefix/sum replaces only Frontier's cross-wave LDS scan. The sparse list keeps
-its original descending local-group order, and the second batch starts after
-the first batch's selected count. Groups within a leaf have the same LOD and
-cannot depend on one another. Cross-LOD and final device-memory publication
-barriers remain intact. Generic Mask/Emit/RT prefix helpers are unchanged.
+Distributed split Frontier uses `streamCooperativeLod32Main` on devices with a
+fixed subgroup size of 32 and compute ballot/arithmetic support. Unsupported
+configurations retain the 64-thread `streamCooperativeLodMain`. This is a hardware
+compatibility choice, with no runtime or environment A/B override. Clear, Mask,
+Emit and Prefetch still use their 64-thread entry.
 
-The mode neither resets history nor changes RT ownership, residency, budgets or
-cache invalidation keys. Command recording uses the existing submission and
-resource-retention path; no additional allocation or CPU instance scan is
-required. Runtime reset clears the selected-mode diagnostic flag.
+The 32-thread frontier processes wider leaves in ordered batches. Wave prefix
+and sum replace its cross-wave LDS scan; descending sparse order, cross-LOD
+barriers, final publication, history and residency dependencies are retained.
 
-`SceneStreamingProfile` and the full-roam benchmark export the effective mode,
-workgroup size, device subgroup size and selected shader module content hash.
-The hash is the RHI's length-prefixed device SPIR-V identity, not a SHA-256 file
-digest. `detailDemandComparison.frontier32=true` with `candidate="C3"` and
-`packingOnly=true` runs fixed late-history A1/B1/B2/A2 arms. It requires packed
-history and sparse history writes to remain disabled. Deferred diagnostics
-restore the corresponding execution mode without resetting owner/history state.
+## Terminal-only split Mask
 
-The `meshlet_lod_stream_frontier32` RHI test compares both entries with independent
-per-leaf reference demand and continuous-frame state. It covers production BVH
-leaves and 1/8/31/32/33/63/64-group boundaries, missing pages/terminal groups,
-visibility transitions, manual LOD, history token reset/wrap and an unsubmitted
-recording followed by retry. Unsupported fixed Wave32 devices report a skip.
+After split Frontier publishes readiness and the complete terminal count,
+`ready && activeCount == terminalCount` proves that no nonterminal group is
+active. Mask directly writes full masks (including 32-cluster groups) and the
+selected count, without refined-target queries or a workgroup reduction.
+Combined Frontier/Mask retains its original mask generation because its header
+is published afterward. This does not implement full Frontier direct output.
+
+The condition can hold while fine demand is blocked by residency. Demand,
+history, page requests, active words and sparse ordering continue through the
+same production path. No ownership, cache-key or submission-lifetime change is
+introduced. `benchmarkTerminalMaskStats=true` only adds untimed counters in
+demand words 29–31: ready instances, terminal-only instances and their total
+cluster count. It does not select an implementation.
+
+## Regression and diagnostics
+
+`meshlet_lod_stream_rt_demand` validates production demand against independent
+per-leaf references. `meshlet_lod_stream_frontier32` directly compares the
+hardware-compatible 64-thread entry with the 32-thread entry.
+`meshlet_lod_stream_terminal_mask` checks 48 consecutive production frames,
+including mixed-depth 1/31/32-cluster terminals, unavailable detail and blocked
+parents, missing terminals, visibility/manual transitions, history boundaries,
+unsubmitted commands and diagnostic counters on/off.
+
+The roam config `streamingRegression` runs one production implementation after
+source convergence and a canonical owner/history reset. It accepts bounded
+`sampleFrames` (16–64), `settleFrames` (4–16), and one or two fixed `seeds`.
+Timing and readback snapshots are separate. Optional `prepareProfile` and
+`cpuThreadDiagnostics` are diagnostics, not ordinary timing. Effective shader
+module, entry, workgroup size and RHI SPIR-V content hash are exported.
+
+The old `detailDemandComparison` and `blasQualityComparison` configuration
+sections are rejected. Their archived captures remain historical evidence;
+they are not executable A/B policies in the current renderer. The old C1/C2,
+history mode, Frontier32 and terminal Mask properties/environment switches no
+longer select alternate implementations.

@@ -12,12 +12,10 @@ authored cut or select a different LOD to make a temporary allocation fit. See
 [RT representations](RTRepresentations.md) for selection and residency rules,
 and [GPU CLAS allocation](GPUCLASAllocation.md) for the referenced CLAS lifetime.
 
-## Selection and budgets
+## Budgets
 
 | Setting | Meaning |
 | --- | --- |
-| `METALLIC_BLAS_ALLOCATOR=gpu` | GPU actual-size allocator; also the default when unset |
-| `METALLIC_BLAS_ALLOCATOR=legacy` | Existing size-class append allocator and whole-arena Repack, for comparison |
 | `METALLIC_BLAS_STORAGE_BYTES` | Explicit persistent capacity, nonzero, device-aligned, and no larger than `maxBlasBytes` or `UINT32_MAX` |
 | `METALLIC_BLAS_RELOCATE_BYTES` | Maximum clean-relocation bytes per allocator submission; default 4 MiB; zero disables clean relocation |
 | `maxBlasBytes` | Persistent arena hard cap; default 512 MiB |
@@ -33,7 +31,7 @@ useful for a controlled capacity-pressure comparison.
 GPU staging is sized for the queried worst case of the admitted build batch.
 If that requirement exceeds `maxBlasStagingBytes`, initialization fails with an
 error. It does not silently lower RT quality, truncate the cut or fall back to a
-different allocator. The legacy backend does not allocate this staging arena.
+different allocator. GPU actual-size allocation is the sole streamed RT implementation.
 
 Both arenas are ordinary physically allocated buffers, not sparse reservations.
 The staging allocation remains present on stable frames, even when the indirect
@@ -46,8 +44,8 @@ default); setting the budget to zero omits this buffer. Its physical capacity is
 reported as `blasRelocationStagingBytes`. Neither size cap is a total renderer
 VRAM limit; other resources and the RHI device allocation policy still apply.
 
-Unsupported allocator values, malformed capacity overrides and out-of-range
-relocation budgets are errors. Set the backend explicitly for comparisons.
+Malformed capacity overrides and out-of-range relocation budgets are errors.
+The retired allocator A/B selector is no longer read.
 
 ## Ordered GPU work
 
@@ -55,7 +53,8 @@ The implementation is in
 [`MeshletStreamRuntime.cpp`](../Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp),
 [`StreamBLASAllocator.slang`](../Shaders/Features/GPUDriven/StreamBLASAllocator.slang)
 and its [CPU ABI](../Source/Runtime/Render/Streamer/MeshletStreamBLASAllocator.h).
-The parameter ABI is 152 bytes, including the relocation-staging device address.
+The parameter ABI is 184 bytes, including relocation-staging, owner-priority
+and admission-cache addresses. Retired selector words remain padding.
 Allocator configuration is immutable for one runtime. GPU commands own its
 changing allocation state; CPU feedback is observational.
 Free bytes are updated by the serialized allocation/release operations. Finding
@@ -88,7 +87,7 @@ allocations independently so tests can verify live plus free equals capacity.
    owner follows the existing complete fallback policy; it never exposes a
    partially allocated BLAS.
 
-Owner preparation, publication and legacy statistics run in parallel. Serial
+Owner preparation and publication run in parallel. Serial
 work is restricted to applying dirty releases, actual-size allocation, planning
 clean moves and modifying their free-gap topology. GPU allocation is not a
 parallel per-cluster allocator, and its cost is not constant in the number of
@@ -202,15 +201,14 @@ Focused regressions are registered in `MetallicRHITests`:
   surviving independent copies over 32 frames, including hit identity, distance,
   barycentrics and masks. This validates the native Move contract, not full-scene
   allocator convergence or shadow/reflection quality.
-- [`stream_blas_selected_allocation`](../tests/rhi/StreamBLASAllocationTests.cpp),
-  [`stream_rt_representation_lifecycle`](../tests/rhi/StreamRTRepresentationTests.cpp)
+- [`stream_rt_representation_lifecycle`](../tests/rhi/StreamRTRepresentationTests.cpp)
   and [`stream_rt_representation_parallel_admission`](../tests/rhi/StreamRTRepresentationAdmissionTests.cpp)
   exercise the integration and existing representation behavior. Their results,
   validation settings and any skips must be recorded for the actual binary tested.
 
 A performance acceptance run must use the same scene, camera pressure trajectory,
-render settings and cache/warmup conditions for explicit `legacy` and `gpu`
-backends. Record live encoded bytes, allocated bytes, free bytes, largest hole,
+render settings and cache/warmup conditions for the implementations under
+comparison. Retired legacy A/B backends are not available in production. Record live encoded bytes, allocated bytes, free bytes, largest hole,
 build counts, Repack events, clean Move counts/logical bytes, negative-cache
 suppressions, allocation failures and physical arena/staging/scratch allocations.
 Distinguish logical relocation bytes from the two native copies. Report pass timings

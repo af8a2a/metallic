@@ -858,7 +858,6 @@ public:
                 .enableClusterRtx = true, .enableClas = true, .compactClas = true,
                 .maxClasBytes = 16ull << 20, .maxClasBuildClusters = 4096,
                 .maxBlasClusterReferences = 4096, .maxBlasBytes = 16ull << 20, .maxBlasBuilds = 4,
-                .enableBlasRepresentations = false,
                 .maxFallbackBlasBytes = 4ull << 20, .prefetchPages = false}, log)), log);
             auto* queue = device->getQueue(QueueType::Graphics);
             QueueSubmissionTracker tracker;
@@ -867,9 +866,15 @@ public:
             std::unique_ptr<CommandBuffer> commands;
             std::unique_ptr<Streamer> streamer;
             std::unique_ptr<Buffer> readback;
+            const uint64_t publicationOffset = sizeof(MeshletStreamGPUBLASHeader) + sizeof(MeshletStreamGPUActiveHeader) +
+                2048 * sizeof(MeshletStreamGPUActiveGroup);
+            std::vector<MeshletStreamGPUInstanceBLAS> publications(asset.instanceCount());
+            std::vector<MeshletStreamGPUInstanceBLAS> owners(asset.primitiveCount() * kMeshletStreamRTRepresentationsPerPrimitive);
+            const uint64_t publicationBytes = publications.size() * sizeof(publications[0]);
+            const uint64_t ownerBytes = owners.size() * sizeof(owners[0]);
             require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) &&
                 bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) && bool(createStreamer(*device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) &&
-                bool(device->createBuffer({.size = sizeof(MeshletStreamGPUBLASHeader) + sizeof(MeshletStreamGPUActiveHeader) + 2048 * sizeof(MeshletStreamGPUActiveGroup), .usage = BufferUsageBits::TransferDestination,
+                bool(device->createBuffer({.size = publicationOffset + publicationBytes + ownerBytes, .usage = BufferUsageBits::TransferDestination,
                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Frame resources failed");
             MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
             view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
@@ -915,7 +920,8 @@ public:
                 if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 uint64_t readOffset = sizeof(header);
                 for (const auto& [name, bytes] : {std::pair{"test.activeHeader", uint64_t(sizeof(MeshletStreamGPUActiveHeader))},
-                        std::pair{"test.activeGroups", uint64_t(2048 * sizeof(MeshletStreamGPUActiveGroup))}}) {
+                        std::pair{"test.activeGroups", uint64_t(2048 * sizeof(MeshletStreamGPUActiveGroup))},
+                        std::pair{"test.instanceBlas", publicationBytes}, std::pair{"test.rtRepresentations", ownerBytes}}) {
                     const auto source = std::find_if(bindings.begin(), bindings.end(), [&](const auto& binding) { return binding.id == name; });
                     require(source != bindings.end(), "Active cut telemetry missing");
                     BufferBarrierDesc copyBarrier{.buffer = source->buffer,
@@ -952,6 +958,8 @@ public:
                 const auto* data = readback->map();
                 require(data != nullptr, "BLAS readback failed");
                 std::memcpy(&header, data, sizeof(header));
+                std::memcpy(publications.data(), static_cast<const uint8_t*>(data) + publicationOffset, publicationBytes);
+                std::memcpy(owners.data(), static_cast<const uint8_t*>(data) + publicationOffset + publicationBytes, ownerBytes);
                 MeshletStreamGPUActiveHeader active;
                 std::memcpy(&active, static_cast<const uint8_t*>(data) + sizeof(header), sizeof(active));
                 referencedPages.clear();
@@ -962,11 +970,43 @@ public:
                 }
                 readback->unmap();
             };
+            const auto publishedCut = [&]() {
+                std::vector<std::array<uint32_t, 3>> cut;
+                for (const auto& publication : publications) {
+                    require(publication.previousFirstGroup < owners.size(), "Instance lost its published dynamic owner");
+                    const auto& owner = owners[publication.previousFirstGroup];
+                    require(owner.cachedValid == 1u && owner.selectedClusterCount != 0u &&
+                        owner.insertedClusterCount == owner.selectedClusterCount && owner.storageCapacity != 0u,
+                        "Published owner has no complete cached geometry");
+                    cut.push_back({publication.previousFirstGroup, publication.previousGroupCount, owner.selectedClusterCount});
+                }
+                return cut;
+            };
+            const auto publicationDiagnostics = [&]() {
+                std::string detail = "; lod=" + std::to_string(view.selectedLodLevel) +
+                    ", builds=" + std::to_string(header.blasBuildCount) +
+                    ", semantic=" + std::to_string(header.semanticChangeCount) +
+                    ", merged=" + std::to_string(header.mergedInstanceCount) +
+                    ", shared=" + std::to_string(header.sharingInstanceCount) +
+                    ", cached=" + std::to_string(header.cachedInstanceCount) +
+                    ", references=" + std::to_string(header.liveClusterReferences);
+                for (const auto& publication : publications) {
+                    detail += "; owner=" + std::to_string(publication.previousFirstGroup) +
+                        ", version=" + std::to_string(publication.previousGroupCount);
+                    if (publication.previousFirstGroup < owners.size()) {
+                        const auto& owner = owners[publication.previousFirstGroup];
+                        detail += ", selected=" + std::to_string(owner.selectedClusterCount) +
+                            ", inserted=" + std::to_string(owner.insertedClusterCount) +
+                            ", valid=" + std::to_string(owner.cachedValid);
+                    }
+                }
+                return detail;
+            };
             uint32_t builds = 0, reused = 0;
             for (uint32_t i = 0; i < 100; ++i) {
                 record();
                 builds += header.blasBuildCount;
-                reused += i >= 90 && header.padding0 == 0 && header.blasBuildCount == 0;
+                reused += i >= 90 && header.semanticChangeCount == 0 && header.blasBuildCount == 0;
             }
             require(builds > 0 && reused == 10 && header.padding1 > 0 && runtime.tlasReady(), "Stable geometry did not reuse a built BLAS");
             require(cancelledInitialFallback && runtime.sceneReady(), "Cancelled initial fallback did not rebuild and become ready");
@@ -977,27 +1017,55 @@ public:
             record();
             require(runtime.sceneReady() && runtime.debugSnapshot(false).at("sceneReadinessScans") == scans,
                 "Steady queries / frame advance rescanned all roots");
-            view.selectedLodLevel = 2;
+            const auto finestCut = publishedCut();
+            const auto finestRasterPages = referencedPages;
+            require(asset.primitiveCount() == 1u && asset.primitives()[0].lodLevelCount > 4u,
+                "Fixture needs one primitive with separate intermediate and discrete-cache levels");
+            const uint32_t coarseLevel = asset.primitives()[0].lodLevelCount - 3u;
+            // One consumer cannot use dynamic sharing. Until the first cached
+            // tail level, its RT owner deliberately keeps the highest drawable
+            // merged cut even when the manual raster cut becomes coarser.
+            view.selectedLodLevel = coarseLevel - 1u;
             record();
-            require(header.padding0 != 0, "Changed cut reused stale BLAS");
+            require(referencedPages != finestRasterPages, "Intermediate manual LOD did not change the raster cut");
+            require(publishedCut() == finestCut && header.mergedInstanceCount == publications.size() &&
+                header.blasBuildCount == 0u && header.semanticChangeCount == 0u,
+                "Raster-only cut change invalidated the unchanged merged RT owner" + publicationDiagnostics());
+            view.selectedLodLevel = coarseLevel;
+            record();
+            const auto coarseCut = publishedCut();
+            require(header.semanticChangeCount != 0 && coarseCut != finestCut &&
+                header.cachedInstanceCount == publications.size(),
+                "Discrete cut retained the previous semantic publication" + publicationDiagnostics());
+            for (size_t instance = 0; instance < coarseCut.size(); ++instance) {
+                require(coarseCut[instance][2] < finestCut[instance][2], "Coarser LOD retained the finest owner geometry");
+            }
             view.selectedLodLevel = 0;
             record(); record();
-            require(header.padding0 == 0, "Restored cut did not settle");
-            view.selectedLodLevel = 2;
+            const auto restoredCut = publishedCut();
+            require(header.semanticChangeCount == 0 && header.blasBuildCount == 0, "Restored cut did not settle");
+            for (size_t instance = 0; instance < restoredCut.size(); ++instance) {
+                require(restoredCut[instance][2] == finestCut[instance][2], "Restored LOD lost finest owner geometry");
+            }
+            view.selectedLodLevel = coarseLevel;
             record(true);
             view.selectedLodLevel = 0;
             record();
-            require(header.padding0 == 0 && header.blasBuildCount == 0 && header.semanticChangeCount == 0,
-                "Cancelled recording discarded the previously submitted BLAS cut/history");
+            require(publishedCut() == restoredCut && header.blasBuildCount == 0 && header.semanticChangeCount == 0,
+                "Cancelled recording discarded the previously submitted BLAS cut/history" + publicationDiagnostics());
             record();
-            require(header.padding0 == 0, "Retry did not restore reuse");
-            view.selectedLodLevel = 2;
+            require(publishedCut() == restoredCut && header.semanticChangeCount == 0, "Retry did not restore reuse");
+            view.selectedLodLevel = coarseLevel;
             record(true);
             record();
-            require(header.blasBuildCount > 0 && header.semanticChangeCount != 0,
-                "Retrying a cancelled new cut reused stale geometry/history");
+            const auto retriedCut = publishedCut();
+            require(retriedCut != restoredCut && header.semanticChangeCount != 0,
+                "Retrying a cancelled new cut retained stale geometry/history" + publicationDiagnostics());
+            for (size_t instance = 0; instance < retriedCut.size(); ++instance) {
+                require(retriedCut[instance][2] == coarseCut[instance][2], "Cancelled retry selected different coarse geometry");
+            }
             record();
-            require(header.blasBuildCount == 0 && header.semanticChangeCount == 0,
+            require(publishedCut() == retriedCut && header.blasBuildCount == 0 && header.semanticChangeCount == 0,
                 "Accepted retry invalidated another stable frame");
             view.selectedLodLevel = 0;
             record();
@@ -1012,7 +1080,8 @@ public:
             runtime.clasPool()->retirePages(std::span(&page, 1));
             require(runtime.sceneReady(), "Non-root retirement invalidated root readiness");
             record();
-            require(header.padding0 != 0, "Retired CLAS did not invalidate cached references");
+            require(header.semanticChangeCount != 0,
+                "Retired CLAS did not invalidate the published geometry" + publicationDiagnostics());
             const auto currentResidents = runtime.residency().residentPages();
             const auto root = std::find_if(currentResidents.begin(), currentResidents.end(), [&](uint32_t id) {
                 return runtime.residency().pageState(id) == MeshletStreamPageResidencyState::LockedFallback;

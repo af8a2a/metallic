@@ -10,17 +10,16 @@
 #include "Runtime/Scene/Scene.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,27 +28,6 @@ namespace metallic::tests {
 namespace {
 
 using namespace render;
-
-class StreamHistoryLayoutEnvironment {
-public:
-    explicit StreamHistoryLayoutEnvironment(bool packed)
-    {
-        if (const char* previous = std::getenv("METALLIC_STREAM_RT_HISTORY_PACKED")) { previous_ = previous; }
-        set(packed ? "1" : "0");
-    }
-    ~StreamHistoryLayoutEnvironment() { set(previous_ ? previous_->c_str() : nullptr); }
-private:
-    static void set(const char* value)
-    {
-#ifdef _WIN32
-        _putenv_s("METALLIC_STREAM_RT_HISTORY_PACKED", value ? value : "");
-#else
-        if (value) { setenv("METALLIC_STREAM_RT_HISTORY_PACKED", value, 1); }
-        else { unsetenv("METALLIC_STREAM_RT_HISTORY_PACKED"); }
-#endif
-    }
-    std::optional<std::string> previous_;
-};
 
 class StreamCLASCutReadinessTest final : public RHITest {
 public:
@@ -120,20 +98,15 @@ public:
             }
             require(targetGroup != UINT32_MAX, "Fixture has no finite nonterminal demand group");
             nlohmann::json report = nlohmann::json::array();
-            for (uint32_t layoutCase = 0; layoutCase < 4; ++layoutCase) {
-                const bool compact = (layoutCase & 1u) != 0u;
-                const bool packedHistory = (layoutCase & 2u) != 0u;
-                StreamHistoryLayoutEnvironment historyEnvironment(packedHistory);
+            for (bool compact : {false, true}) {
                 for (bool distributed : {false, true}) {
                     MeshletStreamRuntime runtime;
                     runtime.setDebugReadbackEnabled(true);
                     const uint32_t groupCapacity = std::min(2048u, asset.groupCount());
                     constexpr uint64_t kGeometryBudget = 32ull << 20;
                     constexpr uint64_t kCLASBudget = 64ull << 20;
-                    // This test compares the per-instance frontier directly
-                    // with BLAS semantic changes. Shared/discrete owners may
-                    // legally publish a different cut and are covered by the
-                    // representation tests and full-scene A/B validation.
+                    // Demand still has a per-instance raster cut. Its effective
+                    // RT owner may publish a different legal cut, observed below.
                     MeshletStreamRuntimeDesc desc{.sourcePath = sourcePath, .streamAssetPath = assetPath,
                         .maxResidentBytes = kGeometryBudget, .maxResidentPages = 1024,
                         .maxPageUploadsPerFrame = 256, .maxGpuPageRequests = 1024, .maxGpuPageUnloadRequests = 1024,
@@ -142,7 +115,6 @@ public:
                         .enableClusterRtx = true, .enableClas = true, .compactClas = compact,
                         .maxClasBytes = kCLASBudget, .growClasBytes = 4ull << 20, .maxClasBuildClusters = maxPageClusters,
                         .maxBlasClusterReferences = 8192, .maxBlasBytes = 16ull << 20, .maxBlasBuilds = 4,
-                        .enableBlasRepresentations = false,
                         .maxFallbackBlasBytes = 4ull << 20, .distributedPageDemand = distributed,
                         .distributedDemandMinGroups = 0, .prefetchPages = false, .predictivePrefetch = false,
                         .enableLodTransitionTelemetry = compact && distributed};
@@ -159,11 +131,16 @@ public:
                     const uint64_t pagesOffset = groupsOffset + groupCapacity * sizeof(MeshletStreamGPUActiveGroup);
                     const uint64_t lodOffset = pagesOffset + asset.pageCount() * sizeof(StreamPageTableEntry);
                     const uint32_t historyOffset = 4u + asset.groupCount() * 3u + 4u;
-                    const uint32_t historyStride = packedHistory ? 1u : 2u;
+                    constexpr uint32_t historyStride = 2u;
                     const uint32_t lodWords = historyOffset + 3u + asset.groupCount() * historyStride;
                     const uint64_t tlasOffset = lodOffset + lodWords * sizeof(uint32_t);
                     const uint64_t clasOffset = tlasOffset + sizeof(RayTracingGPUInstance);
-                    const uint64_t readbackBytes = clasOffset + asset.pageCount() * sizeof(MeshletStreamCLASPageEntry);
+                    const uint64_t instanceBlasOffset = clasOffset + asset.pageCount() * sizeof(MeshletStreamCLASPageEntry);
+                    const uint64_t representationOffset = instanceBlasOffset + sizeof(MeshletStreamGPUInstanceBLAS);
+                    const uint64_t representationBytes = uint64_t(asset.groupCount()) * 3u * sizeof(MeshletStreamGPURTRepresentationGroup);
+                    const uint64_t ownersOffset = representationOffset + representationBytes;
+                    const uint64_t fallbackOffset = ownersOffset + 3u * sizeof(MeshletStreamGPUInstanceBLAS);
+                    const uint64_t readbackBytes = fallbackOffset + sizeof(uint64_t);
                     StreamerDesc streamerDesc;
                     streamerDesc.constantBufferSize = 4096;
                     streamerDesc.dynamicBufferSizePerFrame = 1024;
@@ -183,16 +160,20 @@ public:
                     } drain{queue, frame};
                     MeshletStreamFrameDesc view{.width = 192, .height = 128,
                         .selectedLodLevel = intermediate, .enableGpuLodSelection = false};
-                    view.rtDemandMode = compact ? 2u : 1u;
                     view.camera = {.eye = {-.0168404f, .110154f, .22f},
                         .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
                     uint64_t frameIndex = 0;
                     MeshletStreamGPUBLASHeader blas{};
+                    MeshletStreamGPUInstanceBLAS instanceBlas{};
+                    std::array<MeshletStreamGPUInstanceBLAS, 3> rtOwners{};
+                    uint64_t fallbackAddress = 0;
+                    bool rtCoverageReady = false;
                     RayTracingGPUInstance tlasInstance{};
                     std::vector<MeshletStreamGPUActiveGroup> active;
                     std::vector<StreamPageTableEntry> pages(asset.pageCount());
                     std::vector<MeshletStreamCLASPageEntry> clas(asset.pageCount());
                     std::vector<uint32_t> masks(asset.groupCount());
+                    std::vector<uint32_t> rtMasks(asset.groupCount());
                     std::vector<uint32_t> lodState(lodWords), previousLodState(lodWords);
                     MeshletStreamGPUParams params{}, previousParams{};
                     uint64_t peakGeometryBytes = 0, peakCLASBytes = 0;
@@ -230,6 +211,15 @@ public:
                         copy("cut.pageTable", pagesOffset, pages.size() * sizeof(StreamPageTableEntry));
                         copy("cut.lodState", lodOffset, lodWords * sizeof(uint32_t));
                         copy("cut.tlasInstances", tlasOffset, sizeof(tlasInstance));
+                        copy("cut.instanceBlas", instanceBlasOffset, sizeof(instanceBlas));
+                        copy("cut.rtRepresentations", ownersOffset, sizeof(rtOwners));
+                        copy("cut.fallbackBlasAddresses", fallbackOffset, sizeof(fallbackAddress));
+                        const auto representationBinding = std::find_if(bindings.begin(), bindings.end(),
+                            [](const auto& binding) { return binding.id == "cut.rtRepresentationGroups"; });
+                        require(representationBinding != bindings.end() &&
+                            representationBinding->buffer->desc().size <= representationBytes,
+                            "RT representation groups exceeded readback allocation");
+                        copy("cut.rtRepresentationGroups", representationOffset, representationBinding->buffer->desc().size);
                         // Compact GPU allocation publishes into device memory;
                         // inspect the completed submission through a readback,
                         // rather than assuming the publication table is mappable.
@@ -283,6 +273,19 @@ public:
                         previousLodState = lodState;
                         std::memcpy(lodState.data(), data + lodOffset, lodState.size() * sizeof(uint32_t));
                         std::memcpy(&tlasInstance, data + tlasOffset, sizeof(tlasInstance));
+                        std::memcpy(&instanceBlas, data + instanceBlasOffset, sizeof(instanceBlas));
+                        std::memcpy(rtOwners.data(), data + ownersOffset, sizeof(rtOwners));
+                        std::memcpy(&fallbackAddress, data + fallbackOffset, sizeof(fallbackAddress));
+                        require(uint64_t(blas.representationGroupCount) * sizeof(MeshletStreamGPURTRepresentationGroup) <=
+                            representationBinding->buffer->desc().size, "RT representation live range overflow");
+                        std::fill(rtMasks.begin(), rtMasks.end(), 0u);
+                        for (uint32_t index = 0; index < blas.representationGroupCount; ++index) {
+                            MeshletStreamGPURTRepresentationGroup group;
+                            std::memcpy(&group, data + representationOffset + index * sizeof(group), sizeof(group));
+                            if (group.representationIndex != instanceBlas.previousFirstGroup) { continue; }
+                            require(group.pageIndex < asset.pageCount(), "RT owner selected an invalid page");
+                            rtMasks[asset.pages()[group.pageIndex].lodGroupIndex] |= group.clusterMask;
+                        }
                         if (runtime.clasPool()->usesGPUAllocation()) {
                             std::memcpy(clas.data(), data + clasOffset, clas.size() * sizeof(clas[0]));
                         }
@@ -311,6 +314,66 @@ public:
                             require(state == MeshletStreamPageResidencyState::Resident || state == MeshletStreamPageResidencyState::LockedFallback,
                                 "Published RT cut lost its geometry page");
                             masks[asset.pages()[group.pageIndex].lodGroupIndex] |= group.clusterSelectionMask;
+                        }
+                        rtCoverageReady = runtime.tlasReady() && tlasInstance.accelerationStructureReference != 0 &&
+                            (tlasInstance.customIndexAndMask >> 24u) != 0;
+                        if (rtCoverageReady) {
+                            uint32_t expectedReferences = 0;
+                            if (instanceBlas.previousFirstGroup == UINT32_MAX) {
+                                // Terminal-only classification publishes the prebuilt fallback,
+                                // which does not participate in the dynamic allocator counters.
+                                require(fallbackAddress != 0 && tlasInstance.accelerationStructureReference == fallbackAddress,
+                                    "Terminal RT selection did not publish the ready fallback BLAS");
+                                for (uint32_t group : asset.primitiveTerminalGroups(0)) {
+                                    const uint32_t clusters = asset.groups()[group].clusterCount;
+                                    rtMasks[group] = clusters == 32u ? UINT32_MAX : (1u << clusters) - 1u;
+                                    expectedReferences += clusters;
+                                }
+                            } else {
+                                require(instanceBlas.previousFirstGroup < rtOwners.size(), "Published RT owner is out of range");
+                                const auto& owner = rtOwners[instanceBlas.previousFirstGroup];
+                                const uint64_t arenaAddress = uint64_t(params.blasStorageAddressLow) |
+                                    (uint64_t(params.blasStorageAddressHigh) << 32u);
+                                require((owner.flags & kMeshletStreamBLASInstanceDynamic) != 0 &&
+                                    (owner.flags & (kMeshletStreamBLASInstanceFallback | kMeshletStreamBLASInstanceOverflow)) == 0 &&
+                                    owner.cachedValid == 1 && owner.storageCapacity != 0 && owner.selectedClusterCount != 0 &&
+                                    owner.insertedClusterCount == owner.selectedClusterCount &&
+                                    tlasInstance.accelerationStructureReference == arenaAddress + owner.storageOffset &&
+                                    blas.liveClusterReferences >= owner.selectedClusterCount,
+                                    "Dynamic RT selection did not publish a complete ready owner");
+                                expectedReferences = owner.selectedClusterCount;
+                            }
+                            uint32_t references = 0;
+                            for (uint32_t group = 0; group < rtMasks.size(); ++group) {
+                                if (rtMasks[group] == 0) { continue; }
+                                const auto& record = asset.groups()[group];
+                                const uint32_t validMask = record.clusterCount == 32u ? UINT32_MAX : (1u << record.clusterCount) - 1u;
+                                const auto residency = streamPageTableState(pages[record.pageIndex]);
+                                require((rtMasks[group] & ~validMask) == 0 &&
+                                    meshletStreamClasPageState(clas[record.pageIndex]) == MeshletStreamCLASPageState::Active &&
+                                    (residency == MeshletStreamPageResidencyState::Resident ||
+                                     residency == MeshletStreamPageResidencyState::LockedFallback),
+                                    "Effective RT owner references an invalid cluster or unready geometry/CLAS page");
+                                references += std::popcount(rtMasks[group]);
+                            }
+                            require(references != 0 && references == expectedReferences,
+                                "Effective RT cut differs from the published BLAS cluster count");
+                            std::vector<int8_t> coverage(asset.groupCount(), -1);
+                            std::function<bool(uint32_t)> covered = [&](uint32_t group) {
+                                if (coverage[group] >= 0) { return coverage[group] != 0; }
+                                coverage[group] = 0;
+                                const auto& record = asset.groups()[group];
+                                for (uint32_t cluster = 0; cluster < record.clusterCount; ++cluster) {
+                                    if ((rtMasks[group] & (1u << cluster)) != 0) { continue; }
+                                    const uint32_t child = asset.refinedGroups()[record.clusterRefinedOffset + cluster];
+                                    if (child == UINT32_MAX || child >= coverage.size() || !covered(child)) { return false; }
+                                }
+                                coverage[group] = 1;
+                                return true;
+                            };
+                            for (uint32_t terminal : asset.primitiveTerminalGroups(0)) {
+                                require(covered(terminal), "Effective RT owner leaves a hole in terminal-root coverage");
+                            }
                         }
                         const auto geometry = runtime.residency().stats();
                         const auto acceleration = runtime.clasPool()->stats();
@@ -408,7 +471,7 @@ public:
                         for (uint32_t group = 0; group < wanted.size(); ++group) {
                             const uint32_t address = historyOffset + 3u + group * historyStride;
                             wanted[group] = (metrics[group].flags & kMeshletLODTerminalGroup) != 0 ||
-                                (lodState[address] == lodState[historyOffset + 1u] && (packedHistory || lodState[address + 1u] != 0));
+                                (lodState[address] == lodState[historyOffset + 1u] && lodState[address + 1u] != 0);
                         }
                         return wanted;
                     };
@@ -420,8 +483,7 @@ public:
                         const uint32_t expectedPrevious = continuous ? previousLodState[historyOffset + 1u] : 0u;
                         require(lodState[historyOffset] == expectedPrevious &&
                             lodState[historyOffset + 1u] == params.rtLodFrameToken && params.rtLodFrameToken != 0u &&
-                            lodState[historyOffset + 2u] == params.rtLodPolicyRevision &&
-                            ((params.rtLodFlags & 16u) != 0u) == packedHistory,
+                            lodState[historyOffset + 2u] == params.rtLodPolicyRevision,
                             "RT GPU history token/revision did not follow the last submitted frame");
                         const auto metricView = cpuView();
                         const auto wanted = wantedGroups();
@@ -429,7 +491,7 @@ public:
                             if ((metrics[group].flags & kMeshletLODTerminalGroup) != 0) { continue; }
                             const uint32_t address = historyOffset + 3u + group * historyStride;
                             const bool wasWanted = continuous && expectedPrevious != 0 &&
-                                previousLodState[address] == expectedPrevious && (packedHistory || previousLodState[address + 1u] != 0);
+                                previousLodState[address] == expectedPrevious && previousLodState[address + 1u] != 0;
                             const bool visible = meshletLodBoundsVisible(refinementBounds[group], metricInstance, metricView,
                                 {params.upProjection[0], params.upProjection[1], params.upProjection[2]},
                                 params.viewport[0], params.clipOrtho[1]);
@@ -450,7 +512,7 @@ public:
                         }
                         const bool publishedCoverage = runtime.tlasReady() && tlasInstance.accelerationStructureReference != 0 &&
                             (tlasInstance.customIndexAndMask >> 24u) != 0;
-                        require(blas.missingClasInstances == 0 && blas.liveClusterReferences != 0 && publishedCoverage,
+                        require(blas.missingClasInstances == 0 && rtCoverageReady && publishedCoverage,
                             "RT policy transition lost ready CLAS coverage: stage=" + policyStage +
                             ", frame=" + std::to_string(params.frameIndex) +
                             ", verified=" + std::to_string(verifiedPolicyFrames) +
@@ -547,16 +609,20 @@ public:
                     float offscreenIntermediateRatio = 0.f;
                     bool offscreenIntermediate = false;
                     bool offscreenSemanticChange = false;
+                    bool offscreenRasterChange = false;
                     for (const float ratio : {1.5f, 2.5f, 4.f, 8.f, 16.f, 32.f}) {
                         view.rtOffscreenErrorScale = 1.f;
                         placeAtErrorRatio(ratio);
                         policyFrame();
                         const auto onScreen = wantedGroups();
                         const auto onScreenMasks = masks;
+                        const auto onScreenRTMasks = rtMasks;
+                        const auto onScreenOwner = instanceBlas.previousFirstGroup;
                         view.camera.center = view.camera.eye + float3(0, 0, 1);
                         view.rtOffscreenErrorScale = 2.f;
                         policyFrame();
-                        if (masks != onScreenMasks) {
+                        offscreenRasterChange |= masks != onScreenMasks;
+                        if (rtMasks != onScreenRTMasks || instanceBlas.previousFirstGroup != onScreenOwner) {
                             require(blas.semanticChangeCount == 1,
                                 "Offscreen cut change omitted the global same-frame shading invalidation");
                             offscreenSemanticChange = true;
@@ -567,14 +633,15 @@ public:
                             require(offscreenDemand[group] <= onScreen[group], "Offscreen multiplier increased RT detail demand");
                             reducedGroups += onScreen[group] && !offscreenDemand[group];
                         }
-                        offscreenIntermediate = std::any_of(active.begin(), active.end(), [&](const auto& group) {
-                            return group.lodLevel < asset.primitives()[0].lodLevelCount - 1u;
-                        });
+                        offscreenIntermediate = instanceBlas.previousFirstGroup != UINT32_MAX &&
+                            std::any_of(active.begin(), active.end(), [&](const auto& group) {
+                                return group.lodLevel < asset.primitives()[0].lodLevelCount - 1u;
+                            });
                         if (reducedGroups != 0 && offscreenIntermediate) { offscreenIntermediateRatio = ratio; break; }
                     }
                     require(reducedGroups != 0 && offscreenIntermediate,
                         "Offscreen policy failed to reduce demand while preserving non-root geometry");
-                    require(offscreenSemanticChange, "Offscreen fixture did not exercise a published semantic cut change");
+                    require(offscreenRasterChange, "Offscreen fixture did not exercise a per-instance cut change");
                     policyFrame();
                     require(blas.semanticChangeCount == 0, "Offscreen semantic change invalidated another stable frame");
                     view.camera.center = targetCenter;
@@ -632,7 +699,7 @@ public:
                         if (frame == 8) { require(!record(true), "Cancelled stable offscreen frame was submitted"); }
                         policyFrame();
                         require(masks == stableOffscreenMasks && wantedGroups() == stableOffscreenDemand,
-                            "C1 changed stable offscreen demand/cut across consecutive frames");
+                            "Conservative demand changed stable offscreen demand/cut across consecutive frames");
                         require(blas.blasBuildCount == 0 && blas.reusedInstances != 0 &&
                             blas.cacheDependencyInvalidations == 0 && blas.semanticChangeCount == 0,
                             "Stable raster-preserving offscreen demand lost cached BLAS reuse or triggered a rebuild");
@@ -649,11 +716,12 @@ public:
                     policyFrame();
                     require(params.rtOffscreenErrorScale == 1.f && params.rtLodHysteresis == .9f,
                         "RT policy values escaped their safe bounds");
-                    report.push_back({{"compact", compact}, {"distributed", distributed}, {"packedHistory", packedHistory},
-                        {"demandMode", view.rtDemandMode}, {"frames", frameIndex},
+                    report.push_back({{"compact", compact}, {"distributed", distributed}, {"historyWordsPerGroup", historyStride},
+                        {"frames", frameIndex},
                         {"cancelledInitialFallback", cancelledInitialFallback},
                         {"cancelledInitialFrame", cancelledInitialFrame}, {"verifiedPolicyFrames", verifiedPolicyFrames},
                         {"targetGroup", targetGroup}, {"offscreenReducedGroups", reducedGroups},
+                        {"offscreenRTSemanticChange", offscreenSemanticChange},
                         {"rasterAddedGroups", rasterAddedGroups},
                         {"intermediateLod", intermediate}, {"warmReferences", warmReferences},
                         {"pendingFrames", pendingFrames}, {"retainedFrames", retainedFrames},

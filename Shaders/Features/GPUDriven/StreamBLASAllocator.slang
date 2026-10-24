@@ -32,7 +32,7 @@ struct Parameters
     uint* moveCounts;
     uint64_t clusterReferenceAddress, arena;
     uint ownerCount, alignment, storageBytes, relocateBudget;
-    uint nodeCapacity, relocateScanCount, reuseEnable, reserved;
+    uint nodeCapacity, relocateScanCount, reusePadding, mixedTilePadding;
     uint64_t relocationArena;
     uint* priorityOrder;
     uint* importance;
@@ -50,7 +50,6 @@ static const uint kEncodedBytes = 102u, kAllocatedBytes = 103u, kLargestFree = 1
 static const uint kSuppressed = 106u, kRelocated = 107u, kRelocatedBytes = 108u, kFailures = 109u;
 static const uint kCompactionTarget = 110u, kPriorityWaitingCount = 111u;
 static const uint kPendingBuild = 1u, kPendingRelocate = 2u, kRejected = 3u;
-static const uint kBaselineRelease = 4u, kBaselineBuilding = 5u;
 static const uint kPriorityBuilding = 6u;
 static const uint kPriorityWaiting = 7u;
 static const uint kRequestedVisible = 112u, kRequestedOffscreen = 113u;
@@ -297,7 +296,7 @@ void preparePriorityBuilds(Parameters p, uint lane)
             Allocation allocation = g_PriorityAllocations[lane];
             if ((info.flags & kBLASInstanceDynamic) != 0u) {
                 InterlockedAdd(g_PriorityActiveCount, 1u);
-                bool dirty = (info.flags & kBLASInstanceDirty) != 0u || p.reuseEnable == 0u;
+                bool dirty = (info.flags & kBLASInstanceDirty) != 0u;
                 uint bytes = alignedBytes(p, allocation.encodedBytes);
                 if (!dirty && allocation.node != kInvalid && bytes != 0u) addPriorityResidentBytes(bytes);
                 else if (!dirty && allocation.node == kInvalid && allocation.encodedBytes != 0u) {
@@ -323,8 +322,7 @@ void preparePriorityBuilds(Parameters p, uint lane)
                 storageRejected += g_PriorityActiveCount;
                 suppressed += g_PriorityActiveCount;
                 g_PriorityFastPath = 2u;
-            } else if (p.reserved != 0u &&
-                g_PriorityResidentCount + g_PriorityNegativeCount == g_PriorityActiveCount &&
+            } else if (g_PriorityResidentCount + g_PriorityNegativeCount == g_PriorityActiveCount &&
                 g_PriorityResidentOverflow == 0u && g_PriorityResidentBytes <= storageRemaining &&
                 g_PriorityMinNegativeBytes > storageRemaining) {
                 // Even the first negative owner cannot fit, while all resident
@@ -345,7 +343,7 @@ void preparePriorityBuilds(Parameters p, uint lane)
                     GPUDrivenStreamAssetInstanceBLAS info = g_PriorityInfo[local];
                     Allocation allocation = g_PriorityAllocations[local];
                     if ((info.flags & kBLASInstanceDynamic) == 0u) continue;
-                    bool dirty = (info.flags & kBLASInstanceDirty) != 0u || p.reuseEnable == 0u;
+                    bool dirty = (info.flags & kBLASInstanceDirty) != 0u;
                     bool resident = !dirty && allocation.node != kInvalid;
                     // A changed cut has no trustworthy size until native Build.
                     uint bytes = dirty ? 0u : alignedBytes(p, allocation.encodedBytes);
@@ -519,24 +517,22 @@ void preparePriorityBuilds(Parameters p, uint lane)
         p.state[kUnknownBuilds] = unknownBuilds;
         p.state[kProjectedRetryDeferred] = projectedDeferred;
         p.state[kProjectedDirtyClaimBytes] = projectedDirtyBytes;
-        if (p.priorityCacheControl != nullptr) {
-            // No native size or residency decision remains outstanding. Later
-            // clean Moves may change addresses, but admission depends only on
-            // total free bytes and the largest gap, not the individual gaps.
-            p.state[kCacheValid] = buildCount == 0u && p.state[kPriorityEvicted] == 0u ? 1u : 0u;
-            p.state[kCachedFree] = p.state[kFreeBytes];
-            p.state[kCachedLargest] = p.state[kLargestFree];
-            p.state[kCachedReferenceCapacity] = p.referenceCapacity;
-            p.state[kCachedBuildCapacity] = p.buildCapacity;
-            p.state[kCachedStorageBytes] = p.storageBytes;
-            p.state[kCachedEvictionCapacity] = p.relocateScanCount;
-            p.state[kCachedStorageRejected] = storageRejected;
-            p.state[kCachedWaitingCount] = waitingCount;
-            p.state[kCachedWaitingBytes] = waitingBytes;
-            p.state[kCachedMaxWaitingBytes] = maxWaitingBytes;
-            p.state[kCachedReferenceRejected] = referenceRejected;
-            p.state[kCachedBuildRejected] = buildRejected;
-        }
+        // No native size or residency decision remains outstanding. Later
+        // clean Moves may change addresses, but admission depends only on
+        // total free bytes and the largest gap, not the individual gaps.
+        p.state[kCacheValid] = buildCount == 0u && p.state[kPriorityEvicted] == 0u ? 1u : 0u;
+        p.state[kCachedFree] = p.state[kFreeBytes];
+        p.state[kCachedLargest] = p.state[kLargestFree];
+        p.state[kCachedReferenceCapacity] = p.referenceCapacity;
+        p.state[kCachedBuildCapacity] = p.buildCapacity;
+        p.state[kCachedStorageBytes] = p.storageBytes;
+        p.state[kCachedEvictionCapacity] = p.relocateScanCount;
+        p.state[kCachedStorageRejected] = storageRejected;
+        p.state[kCachedWaitingCount] = waitingCount;
+        p.state[kCachedWaitingBytes] = waitingBytes;
+        p.state[kCachedMaxWaitingBytes] = maxWaitingBytes;
+        p.state[kCachedReferenceRejected] = referenceRejected;
+        p.state[kCachedBuildRejected] = buildRejected;
     }
 }
 
@@ -576,8 +572,7 @@ void allocatePriorityBuilds(Parameters p, uint lane)
 {
     // Without new native sizes, phase 6 already performed this exact selection.
     // Waiting claims still reach the common bounded compaction planner below.
-    if (p.header[0].blasBuildCount == 0u &&
-        (p.priorityCacheControl != nullptr || p.state[kPriorityWaitingCount] == 0u)) return;
+    if (p.header[0].blasBuildCount == 0u) return;
     uint storageRemaining = p.storageBytes;
     uint victimCount = 0u, budgetRejected = 0u;
     // Native sizes make the same ranked selection exact. Waiting higher-ranked
@@ -690,7 +685,6 @@ void allocatePriorityBuilds(Parameters p, uint lane)
 
 void recordImportance(Parameters p, uint owner, bool live)
 {
-    if (p.importance == nullptr) return;
     uint base = owner * 6u;
     uint visible = p.importance[base + 4u];
     uint offscreen = p.importance[base + 5u];
@@ -738,18 +732,15 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         allocation.oldNode = kInvalid;
         allocation.pendingNode = kInvalid;
         bool dynamic = (info.flags & kBLASInstanceDynamic) != 0u;
-        bool dirty = (info.flags & kBLASInstanceDirty) != 0u || p.reuseEnable == 0u;
-        if (p.priorityCacheControl != nullptr) {
-            if (allocation.inputDynamic != uint(dynamic) || allocation.inputSelectedClusterCount != info.selectedClusterCount ||
-                (dynamic && (dirty || (allocation.node == kInvalid && allocation.encodedBytes == 0u)))) {
-                InterlockedOr(p.state[kInputsChanged], 1u);
-            }
-            allocation.inputDynamic = uint(dynamic);
-            allocation.inputSelectedClusterCount = info.selectedClusterCount;
+        bool dirty = (info.flags & kBLASInstanceDirty) != 0u;
+        if (allocation.inputDynamic != uint(dynamic) || allocation.inputSelectedClusterCount != info.selectedClusterCount ||
+            (dynamic && (dirty || (allocation.node == kInvalid && allocation.encodedBytes == 0u)))) {
+            InterlockedOr(p.state[kInputsChanged], 1u);
         }
-        if (p.priorityOrder != nullptr && dirty && allocation.node == kInvalid) allocation.encodedBytes = 0u;
+        allocation.inputDynamic = uint(dynamic);
+        allocation.inputSelectedClusterCount = info.selectedClusterCount;
+        if (dirty && allocation.node == kInvalid) allocation.encodedBytes = 0u;
         if (allocation.node != kInvalid && (!dynamic || dirty)) {
-            if (p.priorityOrder == nullptr) allocation.status = kBaselineRelease;
             uint index;
             InterlockedAdd(p.state[kReleaseCount], 1u, index);
             p.buildOwners[index] = id;
@@ -758,54 +749,11 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
     }
     if (gPush.phase == 6u) {
-        if (p.priorityOrder != nullptr) {
-            if (p.state[kAdmissionReused] != 0u) {
-                restorePriorityAdmission(p, id);
-                return;
-            }
-            if (id < 64u) preparePriorityBuilds(p, id);
+        if (p.state[kAdmissionReused] != 0u) {
+            restorePriorityAdmission(p, id);
             return;
         }
-        if (id >= p.ownerCount) return;
-        GPUDrivenStreamAssetInstanceBLAS info = p.owners[id];
-        Allocation allocation = p.allocations[id];
-        if ((info.flags & kBLASInstanceDynamic) == 0u) return;
-        bool dirty = (info.flags & kBLASInstanceDirty) != 0u || p.reuseEnable == 0u;
-        // Relocating unrelated objects changes the epoch without necessarily
-        // creating a fitting hole. Retry an unchanged rejected cut only when
-        // current free topology can hold its previously measured size.
-        if (info.cachedValid == 2u && !dirty &&
-            (allocation.rejectedEpoch == p.state[kEpoch] || allocation.encodedBytes > p.state[kLargestFree])) {
-            rejectOwner(p, id);
-            InterlockedAdd(p.state[kSuppressed], 1u);
-            return;
-        }
-        if (!dirty && allocation.node != kInvalid) {
-            info.insertedClusterCount = info.selectedClusterCount;
-            InterlockedAdd(p.header[0].reusedInstances, 1u);
-            InterlockedAdd(p.header[0].liveClusterReferences, info.selectedClusterCount);
-        } else {
-            uint build;
-            InterlockedAdd(p.header[0].blasBuildCount, 1u, build);
-            info.blasBuildIndex = build;
-            info.flags |= kBLASInstanceDirty;
-            info.cachedValid = 0u;
-            uint64_t references = p.clusterReferenceAddress + uint64_t(info.clusterReferenceOffset) * 8ul;
-            GPUDrivenStreamAssetBLASBuildInfo buildInfo;
-            buildInfo.clusterReferencesCount = info.selectedClusterCount;
-            buildInfo.clusterReferencesStride = 8u;
-            buildInfo.clusterReferencesAddressLow = uint(references);
-            buildInfo.clusterReferencesAddressHigh = uint(references >> 32u);
-            p.buildInfos[build] = buildInfo;
-            p.buildOwners[build] = id;
-            // Native Build order may follow thread arrival. Storage admission
-            // follows owner ID instead and reads this owner's resulting index.
-            p.allocations[id].status = kBaselineBuilding;
-            InterlockedAdd(p.header[0].dirtyInstances, 1u);
-            InterlockedAdd(p.header[0].clusterReferenceCount, info.selectedClusterCount);
-            InterlockedOr(p.header[0].padding0, 1u);
-        }
-        p.owners[id] = info;
+        if (id < 64u) preparePriorityBuilds(p, id);
         return;
     }
     if (gPush.phase == 3u) {
@@ -837,7 +785,7 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         bool resident = allocation.node != kInvalid && (info.flags & kBLASInstanceDynamic) != 0u &&
             (info.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
             info.cachedValid == 1u && info.storageCapacity != 0u;
-        if (p.priorityOrder != nullptr && resident && allocation.status != kPendingBuild) {
+        if (resident && allocation.status != kPendingBuild) {
             info.insertedClusterCount = info.selectedClusterCount;
             InterlockedAdd(p.header[0].reusedInstances, 1u);
             InterlockedAdd(p.header[0].liveClusterReferences, info.selectedClusterCount);
@@ -847,52 +795,20 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         p.owners[id] = info;
         return;
     }
-    if (gPush.phase == 4u) {
-        if (id >= p.ownerCount) return;
-        // Baseline instrumentation preserves the legacy allocation policy.
-        GPUDrivenStreamAssetInstanceBLAS info = p.owners[id];
-        bool live = (info.flags & kBLASInstanceDynamic) != 0u &&
-            (info.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
-            info.cachedValid == 1u && info.storageCapacity != 0u;
-        if (!live) p.allocations[id].encodedBytes = 0u;
-        else {
-            if ((info.flags & kBLASInstanceDirty) != 0u)
-                p.allocations[id].encodedBytes = p.sizes[info.blasBuildIndex];
-            InterlockedAdd(p.state[kEncodedBytes], p.allocations[id].encodedBytes);
-            InterlockedAdd(p.state[kAllocatedBytes], info.storageCapacity);
-            InterlockedAdd(p.state[kFreeBytes], 0u - info.storageCapacity);
-        }
-        return;
-    }
-    if (gPush.phase == 2u && p.priorityOrder != nullptr) {
+    if (gPush.phase == 2u) {
         if (id >= 64u) return;
         allocatePriorityBuilds(p, id);
     }
     if (id != 0u) return;
-    if (gPush.phase == 9u) {
-        p.state[kEncodedBytes] = 0u;
-        p.state[kAllocatedBytes] = 0u;
-        p.state[kFreeBytes] = p.storageBytes;
-        // The legacy allocator can only use its tail without a full repack.
-        p.state[kLargestFree] = p.storageBytes - min(p.header[0].arenaUsedBytes, p.storageBytes);
-        return;
-    }
     if (gPush.phase == 1u) {
         uint releaseCount = p.state[kReleaseCount];
         // Readers of the previous frame have completed before arena mutation.
-        // Baseline releases must have a stable order too: inserting disjoint
-        // holes in atomic-gather order changes free-bin first-fit selection.
-        // An empty release list skips the owner scan entirely.
-        uint releaseLimit = releaseCount == 0u ? 0u :
-            (p.priorityOrder == nullptr ? p.ownerCount : releaseCount);
-        for (uint index = 0u; index < releaseLimit; ++index) {
-            uint owner = p.priorityOrder == nullptr ? index : p.buildOwners[index];
+        for (uint index = 0u; index < releaseCount; ++index) {
+            uint owner = p.buildOwners[index];
             Allocation allocation = p.allocations[owner];
-            if (p.priorityOrder == nullptr && allocation.status != kBaselineRelease) continue;
             releaseAllocation(p, allocation.node);
             allocation.node = kInvalid;
             allocation.encodedBytes = 0u;
-            if (p.priorityOrder == nullptr) allocation.status = 0u;
             p.allocations[owner] = allocation;
             p.owners[owner].storageOffset = 0u;
             p.owners[owner].storageCapacity = 0u;
@@ -910,52 +826,16 @@ void allocatorMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         p.header[0].arenaRepack = 0u;
         p.state[kPriorityWaitingCount] = 0u;
         for (uint word = kRequestedVisible; word < kSortReused; ++word) p.state[word] = 0u;
-        bool cacheEnabled = p.priorityCacheControl != nullptr;
-        p.state[kSortReused] = cacheEnabled ? p.priorityCacheControl[1] : 0u;
-        p.state[kAdmissionReused] = cacheEnabled && p.priorityOrder != nullptr && p.reuseEnable != 0u &&
+        p.state[kSortReused] = p.priorityCacheControl[1];
+        p.state[kAdmissionReused] =
             p.state[kCacheValid] != 0u && p.priorityCacheControl[0] == 0u && p.state[kInputsChanged] == 0u &&
             p.state[kCachedFree] == p.state[kFreeBytes] && p.state[kCachedLargest] == p.state[kLargestFree] &&
             p.state[kCachedReferenceCapacity] == p.referenceCapacity && p.state[kCachedBuildCapacity] == p.buildCapacity &&
             p.state[kCachedStorageBytes] == p.storageBytes && p.state[kCachedEvictionCapacity] == p.relocateScanCount ? 1u : 0u;
-        if (!cacheEnabled) p.state[kCacheValid] = 0u;
         p.state[kInputsChanged] = 0u;
         return;
     }
     if (gPush.phase == 2u) {
-        if (p.priorityOrder == nullptr) {
-            uint moveCount = 0u;
-            // Preserve parallel native Build packing while making budget
-            // winners independent of workgroup/atomic arrival order. Only
-            // actual Builds scan owners; stable frames retain zero work.
-            uint ownerLimit = p.header[0].blasBuildCount == 0u ? 0u : p.ownerCount;
-            for (uint owner = 0u; owner < ownerLimit; ++owner) {
-                Allocation allocation = p.allocations[owner];
-                if (allocation.status != kBaselineBuilding) continue;
-                uint build = p.owners[owner].blasBuildIndex;
-                uint encodedBytes = p.sizes[build];
-                uint bytes = encodedBytes <= 0xffffffffu - (p.alignment - 1u)
-                    ? (encodedBytes + p.alignment - 1u) & ~(p.alignment - 1u) : 0u;
-                uint node = bytes != 0u && bytes <= p.storageBytes ? allocate(p, bytes) : kInvalid;
-                if (node == kInvalid) {
-                    allocation.rejectedEpoch = p.state[kEpoch];
-                    allocation.status = kRejected;
-                    allocation.encodedBytes = encodedBytes;
-                    p.state[kFailures] += 1u;
-                    if (bytes <= p.storageBytes) p.state[kCompactionTarget] = max(p.state[kCompactionTarget], bytes);
-                } else {
-                    allocation.pendingNode = node;
-                    allocation.pendingOffset = p.gaps[node].offset;
-                    allocation.pendingBytes = bytes;
-                    allocation.encodedBytes = encodedBytes;
-                    allocation.status = kPendingBuild;
-                    p.moveSources[moveCount] = p.sourceAddresses[build];
-                    p.moveDestinations[moveCount] = p.arena + uint64_t(allocation.pendingOffset);
-                    ++moveCount;
-                }
-                p.allocations[owner] = allocation;
-            }
-            p.moveCounts[0] = moveCount;
-        }
         uint target = p.state[kCompactionTarget];
         if (target != 0u && p.relocateBudget != 0u) {
             // Releases and dirty allocations changed the bins this frame; the

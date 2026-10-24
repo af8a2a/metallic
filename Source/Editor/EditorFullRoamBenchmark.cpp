@@ -30,9 +30,9 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-// The demand comparison snapshots live cut records only outside timed frames.
+// The streaming regression snapshots live cut records only outside timed frames.
 // Source residency is frozen, but demand/frontier/BLAS execution remains live.
-class DemandComparisonCapture final : public render::IRenderDebugObserver {
+class StreamingRegressionCapture final : public render::IRenderDebugObserver {
 public:
     bool capture = false;
     bool semanticSource = false;
@@ -61,12 +61,12 @@ public:
                 !(semanticSource && (name == "instances" || name == "clasPageTable" ||
                     name == "fallbackBlasAddresses" || name == "rtRepresentationState"))) { continue; }
             const uint64_t bytes = resource.size ? resource.size : resource.buffer->desc().size - resource.offset;
-            if (bytes > 128ull * 1024 * 1024) { throw std::runtime_error("Demand comparison snapshot exceeds bounded MiniZorah size"); }
+            if (bytes > 128ull * 1024 * 1024) { throw std::runtime_error("Streaming regression snapshot exceeds bounded MiniZorah size"); }
             Copy copy;
             copy.metadata = {{"resource",resource.id},{"layout",resource.layout},{"bytes",bytes},{"metadata",resource.metadata}};
             if (!device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { copy.buffer = std::move(value); })) {
-                throw std::runtime_error("Demand comparison readback allocation failed");
+                throw std::runtime_error("Streaming regression readback allocation failed");
             }
             BufferBarrierDesc barrier{.buffer = resource.buffer,
                 .before = resourceSyncScope(resource.state, PipelineStageBits::AllCommands),
@@ -74,9 +74,9 @@ public:
             if (!commands.synchronize({.buffers = {&barrier, 1}}) ||
                 !resource.buffer->slice({resource.offset, bytes}).and_then([&](const auto& source) {
                     return copy.buffer->slice().and_then([&](const auto& destination) { return commands.copyBuffer(source, destination); });
-                })) { throw std::runtime_error("Demand comparison snapshot copy failed"); }
+                })) { throw std::runtime_error("Streaming regression snapshot copy failed"); }
             std::swap(barrier.before, barrier.after);
-            if (!commands.synchronize({.buffers = {&barrier, 1}})) { throw std::runtime_error("Demand comparison snapshot restore failed"); }
+            if (!commands.synchronize({.buffers = {&barrier, 1}})) { throw std::runtime_error("Streaming regression snapshot restore failed"); }
             copies_.emplace(resource.id, std::move(copy));
         }
     }
@@ -87,18 +87,18 @@ public:
         for (auto& [name, copy] : copies_) {
             copy.buffer->invalidate();
             const void* data = copy.buffer->map();
-            if (!data) { throw std::runtime_error("Demand comparison snapshot map failed"); }
+            if (!data) { throw std::runtime_error("Streaming regression snapshot map failed"); }
             std::ofstream file(directory / (name + ".bin"), std::ios::binary);
             file.write(static_cast<const char*>(data), static_cast<std::streamsize>(copy.buffer->desc().size));
             copy.buffer->unmap();
-            if (!file) { throw std::runtime_error("Demand comparison snapshot export failed"); }
+            if (!file) { throw std::runtime_error("Streaming regression snapshot export failed"); }
             copy.metadata["file"] = name + ".bin";
             result.push_back(copy.metadata);
         }
-        if (result.size() != (semanticSource ? 14u : 10u)) { throw std::runtime_error("Demand comparison missing required stream snapshots"); }
+        if (result.size() != (semanticSource ? 14u : 10u)) { throw std::runtime_error("Streaming regression missing required stream snapshots"); }
         std::ofstream manifest(directory / "Buffers.json");
         manifest << result.dump(2) << '\n';
-        if (!manifest) { throw std::runtime_error("Demand comparison buffer manifest failed"); }
+        if (!manifest) { throw std::runtime_error("Streaming regression buffer manifest failed"); }
         return result;
     }
 private:
@@ -118,6 +118,10 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"rtDemandMode",s.rtDemandMode},{"rtHistoryPacked",s.rtHistoryPacked},{"rtLodHistoryBytes",s.rtLodHistoryBytes},
         {"rtHistorySparseWrites",s.rtHistorySparseWrites},
         {"frontierWave32",s.frontierWave32},
+        {"terminalOnlyMask",s.terminalOnlyMask},{"terminalMaskDiagnostics",s.terminalMaskDiagnostics},
+        {"maskShaderIdentity",{{"module",render::kMeshletStreamShaderModuleName},
+            {"entryPoint",render::kMeshletStreamCooperativeBuildEntryPoint},
+            {"spirvHash",s.maskShaderHash},{"workgroupSize",64u},{"subgroupSize",s.frontierSubgroupSize}}},
         {"frontierShaderIdentity",{{"module",render::kMeshletStreamShaderModuleName},
             {"entryPoint",s.frontierWave32 ? render::kMeshletStreamCooperativeBuild32EntryPoint : render::kMeshletStreamCooperativeBuildEntryPoint},
             {"spirvHash",s.frontierShaderHash},{"workgroupSize",s.frontierWave32 ? 32u : 64u},
@@ -314,7 +318,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     bool passed = false;
     RasterWorkloadObserver workloadObserver;
     auto qualityCapture = std::make_unique<RayQualityCapture>();
-    std::unique_ptr<DemandComparisonCapture> demandCapture;
+    std::unique_ptr<StreamingRegressionCapture> demandCapture;
     struct FrozenProperty { uint32_t node; std::string key; bool existed; Json value; };
     std::vector<FrozenProperty> frozenProperties;
     std::optional<scene::LightingSettings> controlledLighting;
@@ -336,24 +340,14 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             throw std::runtime_error("benchmarkFreezeStreaming must be a boolean");
         }
         const bool freezeStreaming = config.value("benchmarkFreezeStreaming", false);
-        const Json blasComparison = config.value("blasQualityComparison", Json::object());
-        if (!blasComparison.is_object()) { throw std::runtime_error("blasQualityComparison must be an object"); }
-        const bool controlledBlas = !blasComparison.empty();
-        const Json demandComparison = config.value("detailDemandComparison", Json::object());
-        if (!demandComparison.is_object()) { throw std::runtime_error("detailDemandComparison must be an object"); }
-        const bool controlledDemand = !demandComparison.empty();
-        const std::string demandCandidate = demandComparison.value("candidate", std::string("C1"));
-        const bool packingOnly = demandComparison.value("packingOnly", false);
-        const bool compareFrontier32 = demandComparison.value("frontier32", false);
-        if (compareFrontier32 && !packingOnly) { throw std::runtime_error("Frontier32 comparison requires frozen packing protocol"); }
-        if (packingOnly && demandCandidate != "C3") { throw std::runtime_error("Packing comparison requires C3"); }
-        if (demandCandidate != "C1" && demandCandidate != "C2" && demandCandidate != "C3") {
-            throw std::runtime_error("Detail demand candidate must be C1, C2 or C3");
+        if (config.contains("detailDemandComparison") || config.contains("blasQualityComparison")) {
+            throw std::runtime_error("Retired streaming A/B configuration; use streamingRegression for the production path");
         }
-        const bool compareDemandC2 = demandCandidate == "C2";
-        const bool compareDemandC3 = demandCandidate == "C3";
-        if (controlledDemand && (controlledBlas || freezeStreaming)) {
-            throw std::runtime_error("Detail demand comparison requires its own residency-only freeze");
+        const Json streamingRegression = config.value("streamingRegression", Json::object());
+        if (!streamingRegression.is_object()) { throw std::runtime_error("streamingRegression must be an object"); }
+        const bool controlledStreaming = !streamingRegression.empty();
+        if (controlledStreaming && freezeStreaming) {
+            throw std::runtime_error("Streaming regression requires its own residency-only freeze");
         }
         constexpr uint32_t kFreezeSettleFrames = 16;
         const Json deferredOverrides = config.value("deferredOverrides", Json::object());
@@ -379,8 +373,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const bool captureQuality = config.value("captureQuality", false);
         const bool captureReflections = config.value("captureReflections", false);
         const bool capturePathDiagnostics = config.contains("diagnosticPixels");
-        if (capturePathDiagnostics && (!controlledBlas || !captureReflections)) {
-            throw std::runtime_error("diagnosticPixels requires the controlled MiniZorah reflection comparison");
+        if (capturePathDiagnostics && (!controlledStreaming || !captureReflections)) {
+            throw std::runtime_error("diagnosticPixels requires the controlled MiniZorah streaming regression");
         }
         const uint32_t reflectionSamples = config.value("reflectionSamples", 8u);
         if (reflectionSamples == 0u || reflectionSamples > 16u) { throw std::runtime_error("reflectionSamples must be [1,16]"); }
@@ -389,7 +383,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["captureQuality"] = captureQuality;
         report["captureReflections"] = captureReflections;
         qualityCapture->captureReflections = captureReflections;
-        qualityCapture->captureRasterInputs = controlledBlas || controlledDemand;
+        qualityCapture->captureRasterInputs = controlledStreaming;
         qualityCapture->capturePathDiagnostics = capturePathDiagnostics;
         qualityCapture->diagnosticRows = capturePathDiagnostics ? 16u * uint32_t(config.at("diagnosticPixels").size()) : 0u;
         workloadObserver.captureCull = config.value("classifyCounters", false);
@@ -436,21 +430,18 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         }
         if (workloadEvery) { graphExecutor_->setDebugObserver(&workloadObserver); }
         if (captureQuality) { graphExecutor_->setDebugObserver(qualityCapture.get()); }
-        if (controlledDemand) {
+        if (controlledStreaming) {
             // Compile transfer-readable, non-aliasing allocations before the
             // source is frozen. Attaching a late readback observer could rebuild
-            // the graph and invalidate the source identity between ABBA arms.
+            // the graph and invalidate the source identity before the production capture.
             // The inactive observer records no copies during loading/warmup.
-            demandCapture = std::make_unique<DemandComparisonCapture>();
+            demandCapture = std::make_unique<StreamingRegressionCapture>();
             graphExecutor_->setDebugObserver(demandCapture.get());
         }
         const std::string sampleId = config.value("sample", std::string(render::kGPUDrivenZorahFullSampleId));
-        if (controlledDemand && (sampleId != "gpu-driven-sample" || workloadEvery || capturePathDiagnostics ||
+        if (controlledStreaming && (sampleId != "gpu-driven-sample" || workloadEvery ||
             captureQuality != captureReflections)) {
-            throw std::runtime_error("Detail demand comparison requires MiniZorah and separate timing or shadow/reflection quality modes");
-        }
-        if (controlledBlas && (sampleId != "gpu-driven-sample" || !captureQuality || !captureReflections || freezeStreaming)) {
-            throw std::runtime_error("blasQualityComparison requires MiniZorah quality/reflection capture without the full raster snapshot freeze");
+            throw std::runtime_error("Detail streaming regression requires MiniZorah and separate timing or shadow/reflection quality modes");
         }
         if (!render::isGPUDrivenSceneSample(sampleId)) { throw std::runtime_error("Roam requires MiniZorah or ZorahFull sample"); }
         loadBuiltInSample(sampleId.c_str());
@@ -504,12 +495,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "predictivePrefetch", config.value("predictivePrefetch", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "adaptivePageRetention", config.value("adaptivePageRetention", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "enableLodTransitionTelemetry", config.value("enableLodTransitionTelemetry", false));
-        if (controlledDemand) {
-            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkDemandC1", compareDemandC2 || compareDemandC3);
-            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkDemandC2", compareDemandC3);
-            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkDemandMode", packingOnly ? 1u : 0u);
-            // Keep the selected scheduling path fixed across A/B; this benchmark
-            // measures node pruning without the adaptive ordered-demand fallback.
+        if (controlledStreaming) {
+            // Keep the distributed production path fixed for a reproducible capture.
             renderGraph_.setNodeRuntimeProperty(vbuffer->id, "distributedDemandMinGroups", 0u);
         }
         const auto* deferred = renderGraph_.findNode("Deferred");
@@ -666,26 +653,25 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             camera["camera"]["center"][2]=camera["camera"]["eye"][2].get<double>()-std::sin(angle)*dx+std::cos(angle)*dz;
             return camera;
         };
-        if (controlledDemand) {
-            const uint32_t settleFrames = demandComparison.value("settleFrames", 16u);
-            const uint32_t sampleFrames = demandComparison.value("sampleFrames", 64u);
-            const bool prepareProfile = demandComparison.value("prepareProfile", false);
-            const bool cpuThreadDiagnostics = demandComparison.value("cpuThreadDiagnostics", false);
-            const bool deferDiagnostics = demandComparison.value("deferDiagnostics", false);
-            const auto seeds = demandComparison.value("seeds", std::vector<uint32_t>{0u, 1u});
+        if (controlledStreaming) {
+            const uint32_t settleFrames = streamingRegression.value("settleFrames", 16u);
+            const uint32_t sampleFrames = streamingRegression.value("sampleFrames", 64u);
+            const bool prepareProfile = streamingRegression.value("prepareProfile", false);
+            const bool cpuThreadDiagnostics = streamingRegression.value("cpuThreadDiagnostics", false);
+            const bool deferDiagnostics = !captureQuality;
+            const auto seeds = streamingRegression.value("seeds", std::vector<uint32_t>{0u, 1u});
             if (settleFrames < 4u || settleFrames > 16u || sampleFrames < 16u || sampleFrames > 64u ||
-                (prepareProfile && (!packingOnly || captureQuality)) ||
+                (prepareProfile && captureQuality) ||
                 (cpuThreadDiagnostics && !prepareProfile) ||
-                (deferDiagnostics && (!packingOnly || captureQuality)) ||
                 seeds.empty() || seeds.size() > 2u || std::set<uint32_t>(seeds.begin(), seeds.end()).size() != seeds.size() ||
                 viewportView_.temporalJitter() || config.value("stochasticTextureFiltering", false) ||
                 (captureQuality && (dlssMode != "Off" || !config.contains("shadowOverrides") ||
                     config.at("shadowOverrides").value("sigmaDenoise", true)))) {
-                throw std::runtime_error("Invalid bounded deterministic MiniZorah detail demand configuration");
+                throw std::runtime_error("Invalid bounded deterministic MiniZorah streaming regression configuration");
             }
             const auto setProperty = [&](const std::string& nodeName, const std::string& key, const Json& value) {
                 const auto* node = renderGraph_.findNode(nodeName);
-                if (!node) { throw std::runtime_error("Missing demand comparison node " + nodeName); }
+                if (!node) { throw std::runtime_error("Missing streaming regression node " + nodeName); }
                 if (std::none_of(frozenProperties.begin(), frozenProperties.end(), [&](const auto& saved) {
                     return saved.node == node->id && saved.key == key;
                 })) {
@@ -693,13 +679,13 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     frozenProperties.push_back({node->id, key, existed, existed ? node->runtimeProperties.at(key) : Json(nullptr)});
                 }
                 if (!renderGraph_.setNodeRuntimeProperty(node->id, key, value)) {
-                    throw std::runtime_error("Failed demand comparison property " + key);
+                    throw std::runtime_error("Failed streaming regression property " + key);
                 }
             };
             const auto snapshot = [&]() {
                 const auto& profiles = graphExecutor_->executionStats().streaming;
                 const auto found = std::find_if(profiles.begin(), profiles.end(), [](const auto& s) { return s.passName == "VBuffer"; });
-                if (found == profiles.end()) { throw std::runtime_error("Missing demand comparison stream profile"); }
+                if (found == profiles.end()) { throw std::runtime_error("Missing streaming regression stream profile"); }
                 return streamSample(*found);
             };
             setProperty("VBuffer", "benchmarkPrepareProfile", prepareProfile);
@@ -711,7 +697,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             auto fixedLighting = *controlledLighting;
             fixedLighting.autoExposure.enabled = false;
             renderWorld_.setLighting(std::move(fixedLighting));
-            if (packingOnly) {
+            {
                 // Readiness covers terminal fallback only. Keep CPU maintenance,
                 // CLAS publication and texture reveal live until their work and
                 // the actual submitted sampling metadata have stopped changing.
@@ -766,15 +752,11 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             for (const char* node : {"VBuffer", "Deferred"}) { setProperty(node, "benchmarkFreezeResidency", true); }
             if (captureReflections) { setProperty("ReflectionQuality", "benchmarkFreezeResidency", true); }
             setProperty("VBuffer", "benchmarkDemandTraversal", true);
-            if (packingOnly) {
+            {
                 // Loaded pages arrive in different batches. Start admission from
                 // one empty owner/history state after the source is frozen.
                 const auto before = snapshot();
                 setProperty("VBuffer", "benchmarkBlasStorageBytes", before.at("blasPersistentBytes"));
-                setProperty("VBuffer", "benchmarkBlasPriority", before.at("blasPriorityEnabled"));
-                setProperty("VBuffer", "benchmarkBlasPriorityCache", before.at("blasPriorityCacheEnabled"));
-                setProperty("VBuffer", "benchmarkBlasMergedSharing", before.at("blasMergedSharingEnabled"));
-                setProperty("VBuffer", "benchmarkBlasFallbackPolicy", before.at("blasFallbackPolicy"));
                 setProperty("VBuffer", "benchmarkBlasResetEpoch", 1u);
                 Json resetFrames = Json::array();
                 uint64_t previousFeedback = UINT64_MAX;
@@ -801,8 +783,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 if (!report["canonicalOwnerReset"].at("completed").get<bool>()) { throw std::runtime_error("Canonical owner reset did not settle within 64 frames"); }
                 drain();
             }
-            report["protocol"] = compareFrontier32 ? "minizorah-frontier32-v1" : packingOnly ? "minizorah-detail-demand-packed-v1" : compareDemandC3 ? "minizorah-detail-demand-c3-v1" :
-                compareDemandC2 ? "minizorah-detail-demand-c2-v1" : "minizorah-detail-demand-c1-v1";
+            report["protocol"] = "minizorah-streaming-regression-v1";
             report["diagnosticRun"] = captureQuality || prepareProfile;
             report["config"] = config;
             report["frames"] = 0u;
@@ -810,58 +791,42 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             report["loadingSeconds"] = std::chrono::duration<double>(readyAt-loadingStart).count();
             report["outputExtent"] = {fullRoamWidth_,fullRoamHeight_};
             auto* depth = graphExecutor_->outputResource("VBuffer.depth");
-            if (!depth) { throw std::runtime_error("Missing demand comparison render extent"); }
+            if (!depth) { throw std::runtime_error("Missing streaming regression render extent"); }
             report["renderExtent"] = {depth->desc.width,depth->desc.height};
             report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
-            report["demandComparison"] = {{"scope",packingOnly ?
-                    "Converged frozen source; one canonical owner/history reset before live demand/frontier/BLAS measurement" :
-                    "One frozen geometry/CLAS/texture source; live demand/frontier/BLAS, no RT reset"},
-                {"candidate",demandCandidate},{"packingOnly",packingOnly},{"prepareProfile",prepareProfile},
-                {"frontier32",compareFrontier32},
-                {"timingDiagnosticsDeferred",deferDiagnostics},{"cpuThreadDiagnostics",cpuThreadDiagnostics},
-                {"statisticalUnit",compareFrontier32 ? "One in-process frontier64/frontier32 ABBA block; fixed late history; aggregate by independent process" : packingOnly ? "Two fixed late-history A/A arms per process; process packing ABBA block, n=1; no CI" : compareDemandC3 ?
-                    "One in-process ABC-CBA block; combine only under the predeclared cross-process packing ABBA protocol; no CI" :
-                    "One in-process ABBA block, n=1; descriptive only, no confidence interval or independent-process replication"},
+            report["streamingRegression"] = {
+                {"scope","Converged frozen source; canonical owner/history reset; production implementation only"},
+                {"prepareProfile",prepareProfile},{"timingDiagnosticsDeferred",deferDiagnostics},
+                {"cpuThreadDiagnostics",cpuThreadDiagnostics},{"statisticalUnit","One bounded production run; no A/B or speedup inference"},
                 {"distributedDemandMinGroups",0u},{"fixedExposureEV100",controlledLighting->exposureEV100},
-                {"performanceComparable",!captureQuality && !prepareProfile},{"camera",viewportCameraProperties()},{"variants",Json::array()}};
+                {"performanceComparable",!captureQuality && !prepareProfile},{"camera",viewportCameraProperties()}};
             graphExecutor_->setDebugObserver(nullptr);
             std::string sourceIdentity;
-            std::optional<bool> historyPacked;
-            struct Arm { const char* name; bool enabled; uint32_t mode = 0; bool frontier32 = false; };
-            const std::vector<Arm> arms = compareFrontier32 ?
-                std::vector<Arm>{{"A1",true,1,false},{"B1",true,1,true},{"B2",true,1,true},{"A2",true,1,false}} :
-                packingOnly ? std::vector<Arm>{{"A1",true,1}, {"A2",true,1}} : compareDemandC3 ?
-                std::vector<Arm>{{"A1",true,0}, {"B1",true,1}, {"C1",true,2}, {"C2",true,2}, {"B2",true,1}, {"A2",true,0}} :
-                std::vector<Arm>{{"A1",false}, {"B1",true}, {"B2",true}, {"A2",false}};
-            const auto checkState = [&](const Arm& arm) {
-                const bool c1 = compareDemandC3 || compareDemandC2 || arm.enabled;
-                const bool c2 = compareDemandC3 || (compareDemandC2 && arm.enabled);
+            const auto checkState = [&](bool maskDiagnostics = false) {
                 auto state = snapshot();
                 const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
                 if (sourceIdentity.empty()) { sourceIdentity = identity; }
-                if (!historyPacked) { historyPacked = state.at("rtHistoryPacked").get<bool>(); }
-                if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != c1 ||
-                    state.at("nodeDemandC2") != c2 || state.at("rtDemandMode") != arm.mode ||
-                    state.at("rtHistoryPacked") != *historyPacked ||
-                    (compareFrontier32 && (state.at("frontierWave32") != arm.frontier32 ||
-                        state.at("rtHistoryPacked") != false || state.at("rtHistorySparseWrites") != false))) {
-                    throw std::runtime_error("Demand comparison source identity, mode or static history layout changed");
+                if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != true ||
+                    state.at("nodeDemandC2") != true || state.at("rtDemandMode") != 1u ||
+                    state.at("rtHistoryPacked") != false || state.at("rtHistorySparseWrites") != false ||
+                    state.at("terminalOnlyMask") != true || state.at("terminalMaskDiagnostics") != maskDiagnostics) {
+                    throw std::runtime_error("Streaming regression source or production implementation changed");
                 }
                 return state;
             };
-            const auto exportTiming = [&](const Arm& arm, const std::vector<uint64_t>& frameIds) {
+            const auto exportTiming = [&](const std::vector<uint64_t>& frameIds) {
                 const auto& frames = profiler_.capturedFrames();
-                const auto directory = output / arm.name;
+                const auto directory = output / "steady";
                 std::filesystem::create_directories(directory);
                 std::ofstream file(directory / "Frames.jsonl");
                 file.exceptions(std::ios::badbit | std::ios::failbit);
                 for (size_t i = 0; i < frameIds.size(); ++i) {
                     const auto found = std::lower_bound(frames.begin(), frames.end(), frameIds[i],
                         [](const auto& frame, uint64_t id) { return frame.index < id; });
-                    if (found == frames.end()) { throw std::runtime_error("Demand comparison timing frame missing"); }
+                    if (found == frames.end()) { throw std::runtime_error("Streaming regression timing frame missing"); }
                     const auto& frame = *found;
-                    if (frame.index != frameIds[i] || frame.profilingOverflow) { throw std::runtime_error("Demand comparison timing frame identity mismatch"); }
-                    Json row{{"frame",frame.index},{"arm",arm.name},{"diagnostic",prepareProfile},{"scopes",Json::array()},{"streaming",Json::array()}};
+                    if (frame.index != frameIds[i] || frame.profilingOverflow) { throw std::runtime_error("Streaming regression timing frame identity mismatch"); }
+                    Json row{{"frame",frame.index},{"sample","steady"},{"diagnostic",prepareProfile},{"scopes",Json::array()},{"streaming",Json::array()}};
                     std::vector<std::string> paths;
                     bool completeGpu = false;
                     for (size_t n = 0; n < frame.nodes.size(); ++n) {
@@ -875,266 +840,81 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                             {"cpuWork",std::move(work)}});
                         if (node.name == "RenderGraph GPU envelope") { completeGpu = node.gpuTimingAvailable; }
                     }
-                    if (!completeGpu) { throw std::runtime_error("Demand comparison incomplete GPU timing coverage"); }
+                    if (!completeGpu) { throw std::runtime_error("Streaming regression incomplete GPU timing coverage"); }
                     for (const auto& profile : frame.streaming) { row["streaming"].push_back(streamSample(profile)); }
                     file << row.dump() << '\n';
                 }
             };
-            const auto captureArm = [&](const Arm& arm, Json& variant) {
+            const auto captureSnapshot = [&](Json& sample) {
                 for (uint32_t seed : captureQuality ? seeds : std::vector<uint32_t>{0u}) {
                     drain();
                     if (captureQuality) {
-                        qualityCapture->capturePostprocessInputs = packingOnly &&
-                            demandComparison.value("capturePostprocessInputs", false);
+                        qualityCapture->capturePostprocessInputs = streamingRegression.value("capturePostprocessInputs", false);
                         setProperty("ReflectionQuality", "diagnosticSampleFrame", seed);
                         setProperty("Shadows", "diagnosticSampleFrame", seed);
                         qualityCapture->capture = true;
                     }
-                    demandCapture = std::make_unique<DemandComparisonCapture>();
+                    demandCapture = std::make_unique<StreamingRegressionCapture>();
                     demandCapture->capture = true;
-                    demandCapture->semanticSource = compareDemandC3;
+                    demandCapture->semanticSource = true;
                     demandCapture->images = captureQuality ? qualityCapture.get() : nullptr;
-                    if (compareDemandC3) { setProperty("VBuffer", "benchmarkCaptureSemanticSource", true); }
+                    setProperty("VBuffer", "benchmarkCaptureSemanticSource", true);
+                    setProperty("VBuffer", "benchmarkTerminalMaskStats", true);
                     graphExecutor_->setDebugObserver(demandCapture.get());
-                    if (!draw()) { throw std::runtime_error("Demand comparison snapshot frame failed"); }
-                    if (compareDemandC3) { setProperty("VBuffer", "benchmarkCaptureSemanticSource", false); }
+                    if (!draw()) { throw std::runtime_error("Streaming regression snapshot frame failed"); }
+                    setProperty("VBuffer", "benchmarkCaptureSemanticSource", false);
+                    setProperty("VBuffer", "benchmarkTerminalMaskStats", false);
                     qualityCapture->capture = false;
-                    auto state = checkState(arm);
+                    auto state = checkState(true);
                     drain();
-                    const std::string directory = std::string(arm.name) + "/seed" + std::to_string(seed);
+                    const std::string directory = std::string("steady/seed") + std::to_string(seed);
                     Json capture{{"seed",seed},{"directory",directory},{"state",state},
                         {"buffers",demandCapture->exportAfterDrain(output / directory)}};
                     if (captureQuality) { capture["images"] = qualityCapture->exportAfterDrain(output / directory); }
-                    variant["captures"].push_back(std::move(capture));
+                    sample["captures"].push_back(std::move(capture));
                     graphExecutor_->setDebugObserver(nullptr);
                     demandCapture.reset();
                     qualityCapture = std::make_unique<RayQualityCapture>();
                     qualityCapture->captureReflections = captureReflections;
                     qualityCapture->captureRasterInputs = true;
+                    qualityCapture->capturePathDiagnostics = capturePathDiagnostics;
+                    qualityCapture->diagnosticRows = capturePathDiagnostics ? 16u * uint32_t(config.at("diagnosticPixels").size()) : 0u;
                 }
             };
-            std::vector<std::vector<uint64_t>> timedFrameIds;
-            // Keep ordinary timing uninterrupted; delayed GPU timestamps retain
-            // their recorded frame identity across every arm.
-            if (deferDiagnostics) { profiler_.beginCapture(); }
-            for (const auto& arm : arms) {
-                if (!deferDiagnostics) { drain(); }
-                const bool c1 = compareDemandC3 || compareDemandC2 || arm.enabled;
-                const bool c2 = compareDemandC3 || (compareDemandC2 && arm.enabled);
-                setProperty("VBuffer", "benchmarkDemandC1", c1);
-                setProperty("VBuffer", "benchmarkDemandC2", c2);
-                setProperty("VBuffer", "benchmarkDemandMode", arm.mode);
-                if (compareFrontier32) { setProperty("VBuffer", "streamFrontierWave32", arm.frontier32); }
-                Json variant{{"name",arm.name},{"nodeDemandC1",c1},{"nodeDemandC2",c2},{"rtDemandMode",arm.mode},
-                    {"frontierWave32",arm.frontier32},
-                    {"settle",Json::array()},{"captures",Json::array()}};
-                for (uint32_t i = 0; i < settleFrames; ++i) {
-                    if (!draw()) { throw std::runtime_error("Demand comparison settle failed"); }
-                    variant["settle"].push_back(checkState(arm));
-                }
-                if (compareFrontier32) { variant["frontierShaderIdentity"] = checkState(arm).at("frontierShaderIdentity"); }
-                if (!captureQuality) {
-                    if (!deferDiagnostics) { drain(); profiler_.beginCapture(); }
-                    std::vector<uint64_t> frameIds;
-                    frameIds.reserve(sampleFrames);
-                    for (uint32_t i = 0; i < sampleFrames; ++i) {
-                        frameIds.push_back(profiler_.nextFrameIndex());
-                        if (!draw()) { throw std::runtime_error("Demand comparison timed frame failed"); }
-                    }
-                    if (!deferDiagnostics) {
-                        profiler_.endCapture();
-                        drain();
-                        if (profiler_.capturedFrames().size() != sampleFrames) {
-                            throw std::runtime_error("Demand comparison timing frame count mismatch");
-                        }
-                        exportTiming(arm, frameIds);
-                    }
-                    timedFrameIds.push_back(std::move(frameIds));
-                    variant["timings"] = std::string(arm.name) + "/Frames.jsonl";
-                    report["frames"] = report.at("frames").get<uint32_t>() + sampleFrames;
-                }
-                if (!deferDiagnostics) { captureArm(arm, variant); }
-                report["demandComparison"]["variants"].push_back(std::move(variant));
+            setProperty("VBuffer", "benchmarkTerminalMaskStats", false);
+            Json sample{{"name","steady"},{"settle",Json::array()},{"captures",Json::array()}};
+            for (uint32_t frame = 0; frame < settleFrames; ++frame) {
+                if (!draw()) { throw std::runtime_error("Streaming regression settle failed"); }
+                sample["settle"].push_back(checkState());
             }
-            if (deferDiagnostics) {
+            const auto implementation = checkState();
+            sample["frontierShaderIdentity"] = implementation.at("frontierShaderIdentity");
+            sample["maskShaderIdentity"] = implementation.at("maskShaderIdentity");
+            if (!captureQuality) {
+                std::vector<uint64_t> frameIds;
+                frameIds.reserve(sampleFrames);
+                profiler_.beginCapture();
+                for (uint32_t frame = 0; frame < sampleFrames; ++frame) {
+                    frameIds.push_back(profiler_.nextFrameIndex());
+                    if (!draw()) { throw std::runtime_error("Streaming regression timed frame failed"); }
+                }
                 profiler_.endCapture();
                 drain();
-                if (profiler_.capturedFrames().size() != arms.size() * (settleFrames + sampleFrames)) {
-                    throw std::runtime_error("Deferred demand comparison frame count mismatch");
+                if (profiler_.capturedFrames().size() != sampleFrames) {
+                    throw std::runtime_error("Streaming regression timing frame count mismatch");
                 }
-                for (size_t i = 0; i < arms.size(); ++i) { exportTiming(arms[i], timedFrameIds[i]); }
-                // Restore each execution variant for post-block diagnostics of
-                // the same frozen source, without resetting owner/history state.
-                for (size_t i = 0; i < arms.size(); ++i) {
-                    if (compareFrontier32) { setProperty("VBuffer", "streamFrontierWave32", arms[i].frontier32); }
-                    auto& variant = report["demandComparison"]["variants"][i];
-                    variant["diagnosticSettle"] = Json::array();
-                    for (uint32_t frame = 0; frame < settleFrames; ++frame) {
-                        if (!draw()) { throw std::runtime_error("Demand diagnostic recovery failed"); }
-                        variant["diagnosticSettle"].push_back(checkState(arms[i]));
-                    }
-                    captureArm(arms[i], variant);
+                exportTiming(frameIds);
+                sample["timings"] = "steady/Frames.jsonl";
+                report["frames"] = sampleFrames;
+                sample["diagnosticSettle"] = Json::array();
+                for (uint32_t frame = 0; frame < settleFrames; ++frame) {
+                    if (!draw()) { throw std::runtime_error("Streaming diagnostic recovery failed"); }
+                    sample["diagnosticSettle"].push_back(checkState());
                 }
             }
-            report["demandComparison"]["sourceIdentity"] = sourceIdentity;
-            report["demandComparison"]["rtHistoryPacked"] = *historyPacked;
-            report["graph"] = Json::array();
-            for (const auto& node : renderGraph_.nodes()) {
-                auto properties = node.properties;
-                properties.merge_patch(node.runtimeProperties);
-                report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
-            }
-        } else if (controlledBlas) {
-            if (dlssMode != "Off" || viewportView_.temporalJitter() || config.value("stochasticTextureFiltering", false)) {
-                throw std::runtime_error("Controlled BLAS quality requires DLSS Off, temporalJitter false and deterministic texture filtering");
-            }
-            if (!config.contains("shadowOverrides") || config.at("shadowOverrides").value("sigmaDenoise", true)) {
-                throw std::runtime_error("Controlled BLAS quality requires shadowOverrides.sigmaDenoise false");
-            }
-            const auto pressureBytes = blasComparison.at("storageBytes").get<uint32_t>();
-            const auto referenceBytes = blasComparison.at("referenceBytes").get<uint32_t>();
-            const bool mergedSharingComparison = blasComparison.value("mergedSharingComparison", false);
-            const bool intermediateFallbackComparison = blasComparison.value("intermediateFallbackComparison", false);
-            if (mergedSharingComparison && intermediateFallbackComparison) {
-                throw std::runtime_error("Choose one controlled BLAS comparison policy");
-            }
-            const uint32_t settleFrames = blasComparison.value("settleFrames", 16u);
-            const uint32_t primeFrames = blasComparison.value("primeFrames", 16u);
-            const Json poses = blasComparison.value("poses", Json::array({{{"forward",0.0},{"yaw",0.0}}}));
-            const auto seeds = blasComparison.value("seeds", std::vector<uint32_t>{0u});
-            if (pressureBytes == 0u || referenceBytes < pressureBytes || settleFrames < 4u || settleFrames > 16u ||
-                primeFrames < 1u || primeFrames > 32u || !poses.is_array() || poses.empty() || poses.size() > 2u ||
-                seeds.empty() || seeds.size() > 2u || std::set<uint32_t>(seeds.begin(), seeds.end()).size() != seeds.size()) {
-                throw std::runtime_error("Invalid bounded MiniZorah BLAS comparison configuration");
-            }
-            const auto setProperty = [&](const std::string& nodeName, const std::string& key, const Json& value) {
-                const auto* node = renderGraph_.findNode(nodeName);
-                if (!node) { throw std::runtime_error("Missing diagnostic node " + nodeName); }
-                if (std::none_of(frozenProperties.begin(), frozenProperties.end(), [&](const auto& saved) {
-                        return saved.node == node->id && saved.key == key;
-                    })) {
-                    const bool existed = node->runtimeProperties.contains(key);
-                    frozenProperties.push_back({node->id, key, existed, existed ? node->runtimeProperties.at(key) : Json(nullptr)});
-                }
-                if (!renderGraph_.setNodeRuntimeProperty(node->id, key, value)) { throw std::runtime_error("Failed diagnostic property " + key); }
-            };
-            const auto snapshot = [&]() {
-                const auto& profiles = graphExecutor_->executionStats().streaming;
-                const auto found = std::find_if(profiles.begin(), profiles.end(), [](const auto& s) { return s.passName == "VBuffer"; });
-                if (found == profiles.end()) { throw std::runtime_error("Missing diagnostic stream profile"); }
-                return streamSample(*found);
-            };
-            const auto initial = snapshot();
-            if (!initial.at("blasGPUAllocatorEnabled").get<bool>() || !initial.at("blasRepresentationsEnabled").get<bool>() ||
-                initial.at("blasPriorityEnabled").get<bool>() || initial.at("blasPersistentBytes").get<uint64_t>() != referenceBytes) {
-                throw std::runtime_error("Controlled BLAS requires priority-off initialization and physical storage equal to referenceBytes");
-            }
-            report["protocol"] = intermediateFallbackComparison ? "minizorah-blas-frozen-quality-v3" : mergedSharingComparison ? "minizorah-blas-frozen-quality-v2" : "minizorah-blas-frozen-quality-v1";
-            report["diagnosticRun"] = true;
-            report["config"] = config;
-            report["frames"] = 0u;
-            controlledLighting = renderWorld_.lighting();
-            auto fixedLighting = *controlledLighting;
-            fixedLighting.autoExposure.enabled = false;
-            renderWorld_.setLighting(std::move(fixedLighting));
-            report["controlledBlas"] = {{"sourceScope","One process; geometry/CLAS/raster cut and texture publication frozen per pose. RT cache/allocator cold-reset after drain for every policy."},
-                {"identityScope","Exact process-local buffer/generation identity and publication serials, plus FNV-1a hash of texture sampling metadata/first mips; not a portable geometry snapshot."},
-                {"shadowScope","Fixed-seed soft-shadow sample with SIGMA disabled; scene light distribution unchanged. Not denoised production output."},
-                {"fixedExposureEV100",controlledLighting->exposureEV100},
-                {"captureRasterInputs",true},
-                {"performanceComparable",false},{"variants",Json::array()}};
-            std::ofstream controlledFrames(output / "ControlledFrames.jsonl");
-            controlledFrames.exceptions(std::ios::badbit | std::ios::failbit);
-            uint32_t epoch = 0u;
-            struct Variant { const char* name; bool priority; bool cache; bool mergedSharing; uint32_t fallbackPolicy; uint32_t bytes; };
-            const std::vector<Variant> variants = intermediateFallbackComparison
-                ? std::vector<Variant>{{"A1",true,true,true,0u,pressureBytes}, {"A2",true,true,true,0u,pressureBytes},
-                    {"B0",true,false,true,1u,pressureBytes}, {"B1",true,true,true,1u,pressureBytes},
-                    {"R",true,true,true,2u,referenceBytes}, {"R0",true,true,true,0u,referenceBytes}}
-                : std::vector<Variant>{{"A1",mergedSharingComparison,mergedSharingComparison,false,0u,pressureBytes},
-                    {"A2",mergedSharingComparison,mergedSharingComparison,false,0u,pressureBytes},
-                    {"B0",true,false,mergedSharingComparison,0u,pressureBytes},
-                    {"B1",true,true,mergedSharingComparison,0u,pressureBytes}, {"R",false,false,false,0u,referenceBytes}};
-            for (size_t poseIndex = 0; poseIndex < poses.size(); ++poseIndex) {
-                const double forward = poses[poseIndex].at("forward").get<double>();
-                const double yaw = poses[poseIndex].at("yaw").get<double>();
-                if (!std::isfinite(forward) || !std::isfinite(yaw) || std::abs(forward) > 10.0 || std::abs(yaw) > 360.0) {
-                    throw std::runtime_error("Invalid controlled BLAS pose");
-                }
-                drain();
-                setProperty("VBuffer", "benchmarkFreezeResidency", false);
-                setProperty("Deferred", "benchmarkFreezeResidency", false);
-                setProperty("ReflectionQuality", "benchmarkFreezeResidency", false);
-                applyViewportCameraProperties(cameraAt(forward, yaw), nullptr);
-                for (uint32_t i = 0; i < primeFrames; ++i) {
-                    if (!draw()) { throw std::runtime_error("Controlled pose priming failed"); }
-                }
-                drain();
-                for (const char* node : {"VBuffer", "Deferred", "ReflectionQuality"}) { setProperty(node, "benchmarkFreezeResidency", true); }
-                std::string sourceIdentity;
-                for (const auto& variant : variants) {
-                    drain();
-                    setProperty("VBuffer", "benchmarkBlasStorageBytes", variant.bytes);
-                    setProperty("VBuffer", "benchmarkBlasPriority", variant.priority);
-                    setProperty("VBuffer", "benchmarkBlasPriorityCache", variant.cache);
-                    if (mergedSharingComparison || intermediateFallbackComparison) { setProperty("VBuffer", "benchmarkBlasMergedSharing", variant.mergedSharing); }
-                    if (intermediateFallbackComparison) { setProperty("VBuffer", "benchmarkBlasFallbackPolicy", variant.fallbackPolicy); }
-                    setProperty("VBuffer", "benchmarkBlasResetEpoch", ++epoch);
-                    Json variantReport{{"pose",poseIndex},{"name",variant.name},{"priority",variant.priority},{"cache",variant.cache},
-                        {"storageBytes",variant.bytes},{"resetEpoch",epoch},{"camera",viewportCameraProperties()},{"settle",Json::array()},{"captures",Json::array()}};
-                    if (mergedSharingComparison || intermediateFallbackComparison) { variantReport["mergedSharing"] = variant.mergedSharing; }
-                    if (intermediateFallbackComparison) { variantReport["fallbackPolicy"] = variant.fallbackPolicy; }
-                    const auto record = [&](const char* phase) {
-                        auto state = snapshot();
-                        const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
-                        if (identity.empty()) { throw std::runtime_error("Missing frozen source identity"); }
-                        if (sourceIdentity.empty()) { sourceIdentity = identity; }
-                        if (identity != sourceIdentity || state.at("blasPriorityEnabled") != variant.priority ||
-                            state.at("blasPriorityCacheEnabled") != (variant.priority && variant.cache) ||
-                            ((mergedSharingComparison || intermediateFallbackComparison) && state.at("blasMergedSharingEnabled") != variant.mergedSharing) ||
-                            (intermediateFallbackComparison && state.at("blasFallbackPolicy") != variant.fallbackPolicy)) {
-                            throw std::runtime_error("Frozen source identity or effective policy changed");
-                        }
-                        controlledFrames << Json{{"pose",poseIndex},{"variant",variant.name},{"phase",phase},{"state",state}}.dump() << '\n';
-                        report["frames"] = report.at("frames").get<uint32_t>() + 1u;
-                        return state;
-                    };
-                    for (uint32_t i = 0; i < settleFrames; ++i) {
-                        if (!draw()) { throw std::runtime_error("Controlled BLAS settling failed"); }
-                        variantReport["settle"].push_back(record("settle"));
-                    }
-                    for (uint32_t seed : seeds) {
-                        drain();
-                        setProperty("ReflectionQuality", "diagnosticSampleFrame", seed);
-                        setProperty("Shadows", "diagnosticSampleFrame", seed);
-                        qualityCapture->capture = true;
-                        if (!draw()) { throw std::runtime_error("Controlled BLAS image capture failed"); }
-                        qualityCapture->capture = false;
-                        auto state = record("image");
-                        drain();
-                        const std::string directory = "Controlled/pose" + std::to_string(poseIndex) + "/" + variant.name + "/seed" + std::to_string(seed);
-                        variantReport["captures"].push_back({{"seed",seed},{"directory",directory},{"state",state},
-                            {"images",qualityCapture->exportAfterDrain(output / directory)}});
-                        qualityCapture = std::make_unique<RayQualityCapture>();
-                        qualityCapture->captureReflections = true;
-                        qualityCapture->captureRasterInputs = true;
-                        qualityCapture->capturePathDiagnostics = capturePathDiagnostics;
-                        qualityCapture->diagnosticRows = capturePathDiagnostics ? 16u * uint32_t(config.at("diagnosticPixels").size()) : 0u;
-                        graphExecutor_->setDebugObserver(qualityCapture.get());
-                    }
-                    variantReport["sourceIdentity"] = sourceIdentity;
-                    report["controlledBlas"]["variants"].push_back(std::move(variantReport));
-                }
-            }
-            controlledFrames.close();
-            report["outputExtent"] = {fullRoamWidth_,fullRoamHeight_};
-            auto* depth = graphExecutor_->outputResource("VBuffer.depth");
-            if (!depth) { throw std::runtime_error("Missing controlled VBuffer render extent"); }
-            report["renderExtent"] = {depth->desc.width,depth->desc.height};
-            report["timingValidation"] = "Not a performance capture; per-variant drains and image readbacks are intentional.";
-            report["loadingFrames"] = loadingFrames;
-            report["loadingSeconds"] = std::chrono::duration<double>(readyAt-loadingStart).count();
-            report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
+            captureSnapshot(sample);
+            report["streamingRegression"]["sample"] = std::move(sample);
+            report["streamingRegression"]["sourceIdentity"] = sourceIdentity;
             report["graph"] = Json::array();
             for (const auto& node : renderGraph_.nodes()) {
                 auto properties = node.properties;
