@@ -189,6 +189,18 @@ public:
         resetSerial_ = resetSerial;
         automatic_ = settings.enabled;
         lastTime_ = now;
+        if (context.detailedDebugSnapshots()) {
+            context.debugCheckpoint("PostprocessParameters", {}, {
+                {"width", push.width}, {"height", push.height}, {"tileCount", push.tileCount},
+                {"resetHistory", push.resetHistory}, {"minEV100", push.minEV100}, {"maxEV100", push.maxEV100},
+                {"compensation", push.compensation}, {"manualEV100", push.manualEV100},
+                {"lowPercent", push.lowPercent}, {"highPercent", push.highPercent},
+                {"histogramMin", push.histogramMin}, {"histogramMax", push.histogramMax},
+                {"speedUp", push.speedUp}, {"speedDown", push.speedDown},
+                {"transitionDistance", push.transitionDistance}, {"deltaSeconds", push.deltaSeconds},
+                {"automatic", push.automatic}, {"sourceExposure", push.sourceExposure},
+                {"artisticExposure", push.artisticExposure}, {"bypass", push.bypass}});
+        }
         return {};
     }
 

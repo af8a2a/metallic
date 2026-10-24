@@ -13,6 +13,7 @@ inline void applyStreamRayLODSettings(const RenderGraphProperties& properties,
     view.preserveRasterLod = preserveRasterLod;
     view.nodeDemandC1 = properties.value("benchmarkDemandC1", true);
     view.nodeDemandC2 = properties.value("benchmarkDemandC2", true);
+    view.rtDemandMode = properties.value("benchmarkDemandMode", 1u);
     view.benchmarkDemandTraversal = properties.value("benchmarkDemandTraversal", false);
 }
 

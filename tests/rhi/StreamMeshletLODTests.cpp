@@ -385,6 +385,42 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODDemandBoundsTest);
 
+class StreamMeshletLODHistoryTokenTest final : public RHITest {
+public:
+    StreamMeshletLODHistoryTokenTest() { type = RHITestType::Validation; name = "meshlet_lod_stream_history_token"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        MeshletStreamLODHistoryState history;
+        history.frameToken = UINT32_MAX - 1u;
+        history.initialized = true;
+        if (history.advanceFrameToken() != UINT32_MAX || !history.initialized ||
+            history.advanceFrameToken() != 1u || history.initialized || history.generation == 0u) {
+            return RHITestResult::fail("RT history wrap reused zero or failed to invalidate initialization");
+        }
+        const uint64_t wrappedGeneration = history.generation;
+        // No traversal is submitted while frozen: later tokens must not make
+        // the required wrap clear disappear before recording resumes.
+        if (history.advanceFrameToken() != 2u || history.advanceFrameToken() != 3u ||
+            history.initialized || history.generation != wrappedGeneration) {
+            return RHITestResult::fail("Paused RT traversal forgot the pending wrap clear");
+        }
+        const uint64_t cancelled = history.beginInitialization();
+        history.finishInitialization(cancelled, false);
+        if (history.initialized) { return RHITestResult::fail("Cancelled history clear published initialization"); }
+        const uint64_t retry = history.beginInitialization();
+        history.finishInitialization(cancelled, true);
+        if (history.initialized) { return RHITestResult::fail("An older accepted clear initialized the retry generation"); }
+        history.finishInitialization(retry, true);
+        history.finishInitialization(cancelled, false);
+        if (!history.initialized) { return RHITestResult::fail("An older cancellation undid an accepted retry"); }
+        history.invalidate();
+        history.finishInitialization(retry, true);
+        if (history.initialized) { return RHITestResult::fail("A stale submission undid a newer history invalidation"); }
+        return RHITestResult::pass("RT tokens skip zero at wrap and retain invalidation until the matching GPU clear is accepted");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODHistoryTokenTest);
+
 class StreamMeshletLODBVHReferenceTest final : public RHITest {
 public:
     StreamMeshletLODBVHReferenceTest() { type = RHITestType::Validation; name = "meshlet_lod_stream_bvh_reference"; }
@@ -572,7 +608,7 @@ public:
         return RHITestResult::pass("872 linear/BVH/cooperative/view-driven/prefetch/split/distributed/switching GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
     }
     RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256,
-        bool rtDemand = false, bool rtDemandC2 = false)
+        bool rtDemand = false, bool rtDemandC2 = false, bool rtDemandC3 = false, bool packedHistory = false)
     {
         StreamLODFixture fixture = rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
@@ -659,7 +695,9 @@ public:
             sizeof(MeshletStreamGPUActiveGroup), sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUDrawIndirect), 4, 4, sizeof(MeshletStreamGPUTraversalWorkItem)};
         // Retain the ordinary pair/sparse layout; diagnostic history is an
         // optional two words per instance-group and one visible-frame stamp.
-        const uint64_t logicalStateBytes = (4 + kGroupCount * 5 + (rtDemand ? 7u : 5u)) * sizeof(uint32_t);
+        const uint32_t rtHistoryWords = 3u + kGroupCount * (packedHistory ? 1u : 2u);
+        const uint64_t logicalStateBytes = (rtDemand ? 4u + kGroupCount * 3u + 4u + rtHistoryWords :
+            4u + kGroupCount * 5u + 5u) * sizeof(uint32_t);
         // Cross the maximum X dispatch dimension and leave a partial last row.
         const uint64_t allocatedStateBytes = large && !rtDemand ? (65535ull * 64 + 67) * sizeof(uint32_t) : logicalStateBytes;
         const uint64_t sizes[] = {strides[Instance], sizeof(primitive), groups.size() * sizeof(groups[0]), strides[Params],
@@ -777,6 +815,8 @@ public:
         for (uint32_t index = 0; index < std::size(outputs); ++index) { offsets[index] = outputBytes; outputBytes += outputSizes[index]; }
         const uint64_t tailOffset = outputBytes;
         if (large && !rtDemand) { outputBytes += 3 * sizeof(uint32_t); }
+        const uint64_t prefetchHistoryOffset = outputBytes;
+        if (rtDemandC3) { outputBytes += rtHistoryWords * sizeof(uint32_t); }
         STREAM_LOD_REQUIRE(device->createBuffer({.size = outputBytes, .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         Queue* queue = device->getQueue(QueueType::Graphics);
@@ -792,10 +832,14 @@ public:
         std::vector<uint8_t> previousWanted(kGroupCount), expectedWanted(kGroupCount);
         std::array<uint64_t, 2> rtGroupTests{};
         std::array<std::array<uint64_t, 2>, 2> rtUnitScaleTests{};
-        const uint32_t rtSequenceFrames = rtDemandC2 ? 28u : 16u;
-        const uint32_t frameCount = rtDemand ? rtSequenceFrames * 4u : ordinaryFrames + (large ? 0u : 80u);
+        const uint32_t rtSequenceFrames = rtDemandC3 ? 36u : rtDemandC2 ? 28u : 16u;
+        const uint32_t rtModes = rtDemandC3 ? 3u : 2u;
+        const uint32_t frameCount = rtDemand ? rtSequenceFrames * rtModes * 2u : ordinaryFrames + (large ? 0u : 80u);
+        std::vector<uint32_t> eagerGroupTests(rtSequenceFrames * 2u);
+        uint32_t previousHistoryToken = 0u, previousHistoryPolicy = 0u;
         for (uint32_t frame = 0; frame < frameCount; ++frame) {
             const uint32_t rtStep = frame % rtSequenceFrames;
+            const uint32_t rtMode = (frame / rtSequenceFrames) % rtModes;
             const bool rtBaseline = (frame / rtSequenceFrames) % 2u == 0;
             float rtOffscreenScale = 2.f;
             float rtHysteresis = .2f;
@@ -807,9 +851,9 @@ public:
             const bool useBvh = rtDemand || (telemetrySequence ? telemetryPath != 0 : frame >= caseCount);
             const bool cooperative = rtDemand || (telemetrySequence ? telemetryPath >= 2 : frame >= caseCount * 2);
             const bool viewDriven = rtDemand || telemetrySequence || frame >= caseCount * 3;
-            const bool prefetch = !rtDemand && !telemetrySequence && frame >= caseCount * 4;
+            const bool prefetch = rtDemandC3 ? rtStep == 28u : !rtDemand && !telemetrySequence && frame >= caseCount * 4;
             const bool switching = !rtDemand && !telemetrySequence && frame >= caseCount * 7;
-            const bool distributed = rtDemand ? frame >= rtSequenceFrames * 2u : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
+            const bool distributed = rtDemand ? frame >= rtSequenceFrames * rtModes : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
             const bool split = rtDemand ? distributed : telemetrySequence ? distributed : switching ? distributed : frame >= caseCount * 5;
             const float viewAspect = !rtDemand && viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
@@ -907,7 +951,7 @@ public:
                     }
                     const float rayError = meshletLodRayPixelError(fixture.groups[leafCount - 1u], fixture.instance, fixture.view);
                     float ratio = rtStep < 15 ? kRatios[rtStep % 5u] : rtStep >= 22 ? .9f : .75f;
-                    if (rtStep >= 24) {
+                    if (rtStep >= 24 && rtStep < 28) {
                         // A policy change resets retained demand. Seed again
                         // under h=.9, then straddle its remaining .1 threshold.
                         constexpr float kEdgeRatios[]{.9f, 1.05f, .11f, .09f};
@@ -927,6 +971,43 @@ public:
                     }
                     if (rtStep == 16) { fixture.view.projection[3] = 1.5f; } // Unknown node bounds must descend.
                     if (rtStep == 21) { manual = 0; }
+                    if (rtDemandC3 && rtStep >= 28 && rtStep < 32) {
+                        rtOffscreenScale = 2.f;
+                        rtHysteresis = .2f;
+                        rtPolicyRevision = 13u;
+                        resetHistory = rtStep == 28 || rtStep == 30;
+                        fixture.view.projection[3] = rayError / (rtOffscreenScale * (rtStep == 30 ? .9f : 1.05f));
+                        if (rtStep == 28) {
+                            // A false on-screen leaf is requested only by the
+                            // lookahead's lower threshold. That request must
+                            // leave both header and per-leaf history untouched.
+                            const float visibleError = std::max(meshletLodRayPixelError(fixture.groups[0], fixture.instance, fixture.view),
+                                meshletLodPixelError(fixture.groups[0], fixture.instance, fixture.view));
+                            fixture.view.projection[3] = visibleError / .95f;
+                            fixture.drawable[0] = 0;
+                            available[0] = 0;
+                        }
+                    }
+                    if (rtDemandC3 && rtStep >= 32) {
+                        // Identity scale and equal power-of-two projection
+                        // factors preserve the authored error bits exactly on
+                        // both CPU and GPU. No approximate boundary allowance:
+                        // seed true, E==T retains, E==T*(1-h) rejects, then E==T
+                        // must not resurrect the previous false/pruned demand.
+                        fixture.view.forward[3] = 1.f;
+                        fixture.view.projection[0] = 1024.f;
+                        fixture.view.projection[2] = 1024.f;
+                        rtOffscreenScale = 1.f;
+                        rtHysteresis = .5f;
+                        rtPolicyRevision = 14u;
+                        resetHistory = rtStep == 32;
+                        const float exactError = fixture.groups[leafCount - 1u].error;
+                        constexpr float kThresholdMultipliers[]{.5f, 1.f, 2.f, 1.f};
+                        fixture.view.projection[3] = exactError * kThresholdMultipliers[rtStep - 32u];
+                        if (meshletLodRayPixelError(fixture.groups[leafCount - 1u], fixture.instance, fixture.view) != exactError) {
+                            return RHITestResult::fail("C3 equality fixture did not preserve the exact error bits");
+                        }
+                    }
                 }
                 if (resetHistory) { std::fill(previousWanted.begin(), previousWanted.end(), uint8_t{0}); }
                 for (uint32_t group = 0; group < kGroupCount; ++group) {
@@ -945,8 +1026,11 @@ public:
                     (rtStep % 5u == 2u || rtStep % 5u == 3u)) {
                     return RHITestResult::fail("C2 fixture failed to exercise the offscreen hysteresis roundtrip");
                 }
-                if (rtDemandC2 && rtStep >= 24 && bool(expectedWanted[leafCount - 1u]) != (rtStep == 25 || rtStep == 26)) {
+                if (rtDemandC2 && rtStep >= 24 && rtStep < 28 && bool(expectedWanted[leafCount - 1u]) != (rtStep == 25 || rtStep == 26)) {
                     return RHITestResult::fail("C2 fixture failed to straddle the zero/maximum hysteresis boundaries");
+                }
+                if (rtDemandC3 && rtStep >= 32 && bool(expectedWanted[leafCount - 1u]) != (rtStep < 34)) {
+                    return RHITestResult::fail("C3 exact upper/lower equality fixture changed the strict leaf predicate");
                 }
                 if (rtStep == 0 && !expectedWanted[leafCount]) {
                     return RHITestResult::fail("RT fixture failed to expose a visible refinement descendant of a behind-eye metric sphere");
@@ -1018,9 +1102,23 @@ public:
                 // C1 remains isolated from C2. C2 compares the same C1 path
                 // with only its node offscreen-threshold scaling toggled.
                 params.rtLodFlags = rtDemandC2 ? (rtBaseline ? 11u : 3u) : (rtBaseline ? 15u : 11u);
+                if (rtDemandC3) {
+                    params.rtLodFlags = 3u | (packedHistory ? 16u : 0u) |
+                        (rtMode >= 1u ? 32u : 0u) | (rtMode >= 2u ? 64u : 0u);
+                }
                 params.rtOffscreenErrorScale = rtOffscreenScale;
                 params.rtLodHysteresis = rtHysteresis;
                 params.rtLodPolicyRevision = rtPolicyRevision;
+                params.rtLodFrameToken = frame + 1u;
+                if (rtDemandC3) {
+                    // Tokens and editor frame indices are deliberately not
+                    // adjacent; only the last submitted token owns history.
+                    params.rtLodFrameToken = frame * 7u + 1u;
+                    params.frameIndex = frame * 11u + 1u;
+                    if (rtStep == 29) { params.rtLodFrameToken = UINT32_MAX; params.frameIndex = UINT32_MAX; }
+                    if (rtStep == 30) { params.rtLodFrameToken = 1u; params.frameIndex = 0u; }
+                    if (rtStep == 31) { params.rtLodFrameToken = 5u; params.frameIndex = 7u; }
+                }
             }
             params.enableLodTransitionTelemetry = telemetrySequence && telemetryStep != 16;
             std::copy_n(priorParams.eye, 4, params.previousEye);
@@ -1067,6 +1165,7 @@ public:
             requests[11] = cooperative ? kPriorityOffset : 0u;
             requests[12] = cooperative ? kPriorityTable : 0u;
             requests[13] = prefetch && test % 5 != 0 ? std::max(kRequestCapacity / 4u, 1u) : 0u;
+            if (rtDemandC3 && prefetch) { requests[13] = 8u; }
             if (prefetch && test % 3 == 1) {
                 requests[0] = std::max(static_cast<uint32_t>(expected.requestedGroups.size()), 1u);
             }
@@ -1101,7 +1200,8 @@ public:
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-            if ((rtDemand ? rtStep == 0 : frame == caseCount) || (telemetrySequence && (telemetryStep == 0 || telemetryStep == 18))) {
+            const bool clearRTState = rtDemand && (rtStep == 0 || (rtDemandC3 && rtStep == 30));
+            if ((rtDemand ? clearRTState : frame == caseCount) || (telemetrySequence && (telemetryStep == 0 || telemetryStep == 18))) {
                 // The compatibility linear path predates sparse state. Run
                 // the production initializer once when changing algorithms.
                 push.activeBuildPhase = 8;
@@ -1110,10 +1210,25 @@ public:
                 if (auto commandResult = commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
+            bool capturedPrefetchHistory = false;
             for (uint32_t phase : {0u, 12u, 10u, 13u, 5u, 11u, 6u, 7u, 2u, 9u, 9u}) {
                 if (phase == 9u && !prefetch) { continue; }
                 if ((phase == 10u || phase == 11u) && !split) { continue; }
                 if ((phase == 12u || phase == 13u) && !distributed) { continue; }
+                if (rtDemandC3 && phase == 9u && !capturedPrefetchHistory) {
+                    BufferBarrierDesc historyBarrier{.buffer = buffers[State].get(),
+                        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                    STREAM_LOD_REQUIRE(commands->synchronize({.buffers = {&historyBarrier, 1}}));
+                    const uint64_t historyByteOffset = (4ull + kGroupCount * 3ull + 4ull) * sizeof(uint32_t);
+                    auto source = buffers[State]->slice({historyByteOffset, rtHistoryWords * sizeof(uint32_t)});
+                    auto destination = readback->slice({prefetchHistoryOffset, rtHistoryWords * sizeof(uint32_t)});
+                    if (!source || !destination) { return RHITestResult::fail("C3 prefetch history snapshot slice failed"); }
+                    STREAM_LOD_REQUIRE(commands->copyBuffer(*source, *destination));
+                    std::swap(historyBarrier.before, historyBarrier.after);
+                    STREAM_LOD_REQUIRE(commands->synchronize({.buffers = {&historyBarrier, 1}}));
+                    capturedPrefetchHistory = true;
+                }
                 if (auto commandResult = commands->bindExecution((phase == 12u || phase == 13u ? *demandPipeline :
                     cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.activeBuildPhase = phase;
@@ -1177,11 +1292,20 @@ public:
             std::memcpy(demandStats.data(), mapped + offsets[5], sizeof(demandStats));
             if (rtDemand) {
                 const uint32_t history = 4u + kGroupCount * 3u + 4u;
+                const uint32_t expectedPreviousToken = !clearRTState && manual == UINT32_MAX &&
+                    previousHistoryPolicy == params.rtLodPolicyRevision ? previousHistoryToken : 0u;
+                if (state[history] != expectedPreviousToken || state[history + 1u] != params.rtLodFrameToken ||
+                    state[history + 2u] != params.rtLodPolicyRevision) {
+                    readback->unmap();
+                    return RHITestResult::fail("Submitted RT history token/policy mismatch: " + caseLabel);
+                }
+                previousHistoryToken = params.rtLodFrameToken;
+                previousHistoryPolicy = params.rtLodPolicyRevision;
                 if (manual == UINT32_MAX) {
                     for (uint32_t group = 0; group < kGroupCount; ++group) {
                         if ((fixture.groups[group].flags & kMeshletLODTerminalGroup) != 0) { continue; }
-                        const uint32_t address = history + 3u + group * 2u;
-                        const bool actualWanted = state[address] == params.frameIndex + 1u && state[address + 1u] != 0u;
+                        const uint32_t address = history + 3u + group * (packedHistory ? 1u : 2u);
+                        const bool actualWanted = state[address] == params.rtLodFrameToken && (packedHistory || state[address + 1u] != 0u);
                         if (actualWanted != bool(expectedWanted[group])) {
                             readback->unmap();
                             return RHITestResult::fail("Brute-force leaf / GPU RT demand mismatch at group " +
@@ -1189,9 +1313,22 @@ public:
                         }
                     }
                 }
+                if (rtDemandC3 && prefetch && (!capturedPrefetchHistory ||
+                    std::memcmp(mapped + prefetchHistoryOffset, state.data() + history, rtHistoryWords * sizeof(uint32_t)) != 0)) {
+                    readback->unmap();
+                    return RHITestResult::fail("RT prefetch mutated demand history despite updateHistory=false");
+                }
                 previousWanted = expectedWanted;
                 const uint32_t testedGroups = distributed ? demandStats[3] : state[4u + kGroupCount * 2u + 2u];
                 rtGroupTests[rtBaseline ? 0u : 1u] += testedGroups;
+                if (rtDemandC3) {
+                    const uint32_t index = (distributed ? rtSequenceFrames : 0u) + rtStep;
+                    if (rtMode == 0) { eagerGroupTests[index] = testedGroups; }
+                    else if (eagerGroupTests[index] != testedGroups) {
+                        readback->unmap();
+                        return RHITestResult::fail("C3 changed traversal work instead of only leaf demand evaluation: " + caseLabel);
+                    }
+                }
                 if (rtDemandC2 && rtStep < 5) { rtUnitScaleTests[distributed ? 1u : 0u][rtBaseline ? 0u : 1u] += testedGroups; }
                 if (rtDemandC2 && rtStep == 16 && testedGroups != kGroupCount) {
                     readback->unmap();
@@ -1262,6 +1399,9 @@ public:
                 return RHITestResult::fail("stream frontier request overflow or invalid page");
             }
             std::vector<uint32_t> requested(requests.begin() + 16, requests.begin() + 16 + requests[2]);
+            if (rtDemandC3 && prefetch && std::find(requested.begin(), requested.end(), kStreamPrefetchPageTag) == requested.end()) {
+                return RHITestResult::fail("C3 read-only history fixture did not issue its forecast-only leaf request");
+            }
             if (forecastExclusive && std::find(requested.begin(), requested.end(), 1u | kStreamPrefetchPageTag) == requested.end()) {
                 return RHITestResult::fail("Predicted approach did not request the forecast-exclusive page");
             }
@@ -1368,6 +1508,10 @@ public:
             }
         }
         if (rtDemand) {
+            if (rtDemandC3) {
+                return RHITestResult::pass("216 eager/late/ray-first ordered/distributed frames match brute-force leaf demand, cut and requests with " +
+                    std::string(packedHistory ? "packed" : "legacy") + " history; gaps, wrap and read-only prefetch preserved");
+            }
             if (rtDemandC2 && (rtUnitScaleTests[0][0] != rtUnitScaleTests[0][1] ||
                 rtUnitScaleTests[1][0] != rtUnitScaleTests[1][1])) {
                 return RHITestResult::fail("C2 changed traversal work at unit offscreen scale");
@@ -1408,6 +1552,20 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC2Test);
+
+class StreamMeshletLODRTDemandC3Test final : public RHITest {
+public:
+    StreamMeshletLODRTDemandC3Test() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_demand_c3"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        for (bool packed : {false, true}) {
+            const auto result = StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true, true, true, packed);
+            if (!result.passed) { return result; }
+        }
+        return RHITestResult::pass("432 eager/late/ray-first frames match the per-leaf oracle in both history layouts");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC3Test);
 
 
 class StreamLODTileHierarchyTest final : public RHITest {

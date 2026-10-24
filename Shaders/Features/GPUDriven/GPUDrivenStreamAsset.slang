@@ -527,6 +527,7 @@ public struct GPUDrivenStreamAssetParams
     public float rtLodHysteresis;
     public uint rtLodFlags;
     public uint rtLodPolicyRevision;
+    public uint rtLodFrameToken;
     public uint rtRepresentationBuffer;
     public uint rtRepresentationGroupBuffer;
     public uint rtRepresentationHeaderBuffer;
@@ -809,7 +810,7 @@ void prepareStreamRayLodHistory(RWStructuredBuffer<uint> state, uint base, uint 
     uint history = streamRayLodHistoryBase(base, groupCount);
     bool eligible = visible && params.enableGpuLodSelection != 0u;
     state[history] = eligible && state[history + 2u] == params.rtLodPolicyRevision ? state[history + 1u] : 0u;
-    state[history + 1u] = params.frameIndex + 1u;
+    state[history + 1u] = params.rtLodFrameToken;
     state[history + 2u] = params.rtLodPolicyRevision;
 }
 
@@ -832,30 +833,78 @@ float streamLodMetric(float4 sphere, float error, GPUDrivenStreamAssetInstance i
 
 // Demand owns hysteresis. Parent activation, CLAS readiness and the complete
 // frontier still decide which complementary cluster masks can be published.
+bool streamRayLodWasWanted(RWStructuredBuffer<uint> state, uint history, uint address, bool packed)
+{
+    uint previousToken = state[history];
+    if (previousToken == 0u || state[address] != previousToken) { return false; }
+    if (packed) { return true; }
+    return state[address + 1u] != 0u;
+}
+
+void publishStreamRayLodDemand(RWStructuredBuffer<uint> state, uint history, uint address, bool wanted,
+    bool updateHistory, GPUDrivenStreamAssetParams params)
+{
+    if (!updateHistory || !streamRayLodEnabled(params)) { return; }
+    bool packed = (params.rtLodFlags & 16u) != 0u;
+    if (!packed || wanted) {
+        // Tokens are unique across executed traversals, including cancelled CPU
+        // frame gaps. A false/pruned group expires when the instance header advances.
+        state[address] = (params.rtLodFlags & 32u) != 0u ? params.rtLodFrameToken : state[history + 1u];
+        if (!packed) { state[address + 1u] = wanted ? 1u : 0u; }
+    }
+}
+
 bool streamLodGroupDemand(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
     float4 eye, float4 forward, float4 projection, uint manualLevel, GPUDrivenStreamAssetParams params,
     RWStructuredBuffer<uint> state, uint base, uint groupCount, uint localGroup, bool updateHistory = true)
 {
     if ((group.flags & 1u) != 0u) { return true; }
     if (manualLevel != 0xffffffffu) { return group.lodLevel >= manualLevel; }
-    bool visible = streamRefinementDemandVisible(group, instance, params);
-    if (!streamRayLodEnabled(params) && !visible) { return false; }
-    float threshold = projection.w;
+    bool rayEnabled = streamRayLodEnabled(params);
+    bool packed = (params.rtLodFlags & 16u) != 0u;
     uint history = streamRayLodHistoryBase(base, groupCount);
-    uint address = history + 3u + localGroup * 2u;
-    if (streamRayLodEnabled(params)) {
+    uint address = history + 3u + localGroup * (packed ? 1u : 2u);
+    float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
+    bool rayFirst = rayEnabled && (params.rtLodFlags & 64u) != 0u;
+    float rayError = 0.0;
+    if (rayFirst) {
+        rayError = meshletLodRayProjectedError(sphere, group.maxQuadricError,
+            instance.world0, instance.world1, instance.world2, instance.world3, eye, forward, projection);
+        // Ray error is a lower bound of the raster-preserving metric. Only
+        // accept here: a small ray error cannot reject visible refinement descendants.
+        if (rayError > projection.w * max(params.rtOffscreenErrorScale, 1.0)) {
+            publishStreamRayLodDemand(state, history, address, true, updateHistory, params);
+            return true;
+        }
+    }
+    bool visible = streamRefinementDemandVisible(group, instance, params);
+    if (!rayEnabled && !visible) { return false; }
+    float threshold = projection.w;
+    bool lateHistory = rayEnabled && (params.rtLodFlags & 32u) != 0u;
+    if (rayEnabled) {
         threshold *= visible ? 1.0 : max(params.rtOffscreenErrorScale, 1.0);
-        if (updateHistory && state[history] != 0u && state[address] == state[history] && state[address + 1u] != 0u) {
+        if (!lateHistory && updateHistory && streamRayLodWasWanted(state, history, address, packed)) {
             threshold *= 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9);
         }
     }
-    float error = streamLodMetric(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-        group.maxQuadricError, instance, eye, forward, projection, params, visible);
-    bool wanted = error > threshold;
-    if (updateHistory && streamRayLodEnabled(params)) {
-        state[address] = state[history + 1u];
-        state[address + 1u] = wanted ? 1u : 0u;
+    float error;
+    if (rayFirst) {
+        error = rayError;
+        if (visible && (params.rtLodFlags & 2u) != 0u) {
+            error = max(error, meshletLodProjectedError(sphere, group.maxQuadricError,
+                instance.world0, instance.world1, instance.world2, instance.world3, eye, forward, projection));
+        }
+    } else {
+        error = streamLodMetric(sphere, group.maxQuadricError, instance, eye, forward, projection, params, visible);
     }
+    bool wanted = error > threshold;
+    if (lateHistory && updateHistory && !wanted &&
+        error > threshold * (1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9))) {
+        // Explicit > preserves equality and NaN behavior; an unordered error
+        // must not fall through to stale retained demand.
+        wanted = streamRayLodWasWanted(state, history, address, packed);
+    }
+    publishStreamRayLodDemand(state, history, address, wanted, updateHistory, params);
     return wanted;
 }
 
@@ -2143,7 +2192,8 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
 // is required per frame; the runtime resets this state when the 26-bit tag wraps.
 uint streamLodHistoryBase(uint base, uint groupCount, GPUDrivenStreamAssetParams params)
 {
-    return base + groupCount * 3u + 4u + (streamRayLodEnabled(params) ? 3u + groupCount * 2u : 0u);
+    return base + groupCount * 3u + 4u + (streamRayLodEnabled(params)
+        ? 3u + groupCount * ((params.rtLodFlags & 16u) != 0u ? 1u : 2u) : 0u);
 }
 
 bool beginStreamLodTelemetry(RWStructuredBuffer<uint> state, uint base, uint groupCount,

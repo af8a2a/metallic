@@ -69,8 +69,12 @@ struct SceneStreamingProfile {
     std::string assetPath;
     std::string softwareRasterIdentity; // Resolved module/entry/SPIR-V hash and runtime mode, JSON.
     std::string diagnosticSourceIdentity; // Same-process frozen source identity; diagnostics only.
+    std::string diagnosticTextureSemanticIdentity; // Untimed capture only; source slots and published mip metadata.
     bool nodeDemandC1 = false; // Effective conservative RT node demand visibility pruning.
     bool nodeDemandC2 = false; // Effective offscreen node threshold pruning; requires C1.
+    uint32_t rtDemandMode = 0;
+    bool rtHistoryPacked = false;
+    uint64_t rtLodHistoryBytes = 0;
     uint64_t generation = 0;
     uint64_t frameIndex = 0;
     uint64_t feedbackFrame = UINT64_MAX;
@@ -95,6 +99,7 @@ struct SceneStreamingProfile {
     uint64_t coldResidentBytes = 0, pendingFreeBytes = 0, evictedGeometryBytes = 0;
     uint32_t evictedPrefetchPages = 0;
     bool blasFeedbackAvailable = false;
+    uint32_t blasDiagnosticResetEpoch = 0;
     uint64_t blasFeedbackFrame = 0;
     uint32_t blasBuildCount = 0, blasClusterReferences = 0, blasOverflowCount = 0;
     uint32_t blasRequestedClusterReferences = 0;
@@ -184,6 +189,11 @@ struct SceneStreamingProfile {
     uint32_t totalPages = 0;
     uint32_t residentPages = 0;
     uint32_t pendingPages = 0;
+    uint32_t gpuLoadRequests = 0; // Latest completed feedback; pair with feedbackFrame, unlike this frame's consumed requests.
+    uint64_t geometryPendingTasks = 0;
+    uint32_t geometryPendingPatches = 0;
+    uint32_t geometryPublicationRevision = 0;
+    uint64_t clasPublicationRevision = 0;
     uint32_t ioQueued = 0;
     uint32_t ioActive = 0;
     uint32_t uploadQueued = 0;

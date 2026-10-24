@@ -590,6 +590,160 @@ public:
     }
 };
 
+constexpr uint32_t kPostprocessAAFrameCount = 16;
+
+class PostprocessAASourcePass final : public render::RasterPass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        auto& color = reflection.addTextureOutput("color");
+        color.format = render::Format::RGBA32Sfloat;
+        color.colorEncoding = render::DisplayColorEncoding::SceneLinear;
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        // Include the exact scene-linear RGB values at three old A/A mismatch
+        // pixels, plus shadows, black and values well above display white.
+        const std::array<render::ColorValue, 8> colors{{
+            {2.791211128f, 2.636251450f, 1.659845114f, 1.0f},
+            {2.722398996f, 2.577578545f, 1.642159939f, 1.0f},
+            {7.425514221f, 7.198404312f, 5.764916897f, 1.0f},
+            {0.0002f, 0.003f, 0.02f, 1.0f},
+            {0.055f, 0.1f, 0.42f, 1.0f},
+            {16.0f, 4.0f, 1.0f, 1.0f},
+            {0.0f, 0.0f, 0.0f, 1.0f},
+            {65504.0f, 2048.0f, 0.18f, 1.0f},
+        }};
+        const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
+            .layout = render::TextureLayout::ColorAttachment, .loadOp = render::LoadOp::Clear,
+            .storeOp = render::StoreOp::Store, .clearColor = {0.0f, 0.0f, 0.0f, 1.0f}};
+        auto result = context.commandBuffer().beginRendering({
+            .renderArea = {0, 0, context.width(), context.height()}, .colorAttachments = {&attachment, 1}});
+        if (!result) { return result; }
+        const uint32_t stripeWidth = context.width() / uint32_t(colors.size());
+        for (uint32_t stripe = 0; stripe < colors.size(); ++stripe) {
+            context.commandBuffer().clearColorAttachment(0, colors[stripe],
+                {int32_t(stripe * stripeWidth), 0, stripeWidth, context.height()});
+        }
+        context.commandBuffer().endRendering();
+        return {};
+    }
+};
+
+class PostprocessAAReadbackPass final : public render::UnsafePass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA16Sfloat;
+        reflection.addBufferOutput("frames")
+            .buffer(uint64_t(kPostprocessAAFrameCount) * context.width * context.height * 8)
+            .transferWrite().hostReadback();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        const uint64_t frameBytes = uint64_t(context.width()) * context.height() * 8;
+        return context.outputBuffer("frames").buffer()->slice({context.frameIndex() * frameBytes, frameBytes})
+            .and_then([&](const auto& destination) {
+                return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+                    .buffer = destination, .bufferRowPitch = context.width() * 8,
+                    .bufferSlicePitch = context.width() * context.height() * 8,
+                    .width = context.width(), .height = context.height()});
+            });
+    }
+};
+
+class PostprocessFixedHDRAATest final : public RHITest {
+public:
+    PostprocessFixedHDRAATest() { type = RHITestType::Rendering; name = "postprocess_fixed_hdr_continuous_aa"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        std::atomic_uint validationErrors{};
+        std::unique_ptr<Device> device;
+        auto result = createDevice({.applicationName = "Fixed HDR continuous A/A",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
+                if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
+                    ++*static_cast<std::atomic_uint*>(data);
+                }
+            }, .context = &validationErrors}}).transform([&](auto value) { device = std::move(value); });
+        if (hasError(result, Error::Unsupported)) { return RHITestResult::skip("Bindless device unavailable"); }
+        if (!result) { return RHITestResult::fail(resultToString(result)); }
+        registerRenderGraphPassType("PostprocessAASource", "Fixed HDR A/A source",
+            [] { return std::make_unique<PostprocessAASourcePass>(); });
+        registerRenderGraphPassType("PostprocessAAReadback", "Final-only A/A history",
+            [] { return std::make_unique<PostprocessAAReadbackPass>(); });
+        RenderGraph graph;
+        graph.addNode("PostprocessAASource", "Source");
+        graph.addNode("AutoExposurePass", "Exposure");
+        graph.addNode("ColorGradingLUTPass", "Grading", {{"toneCurve", "aces2"}});
+        graph.addNode("FinalBlitPass", "Display");
+        graph.addNode("PostprocessAAReadback", "Readback");
+        graph.addEdge("Source.color", "Exposure.source");
+        graph.addEdge("Exposure.color", "Display.source");
+        graph.addEdge("Grading.lut", "Display.lut");
+        graph.addEdge("Display.color", "Readback.color");
+        graph.markOutput("Readback.frames");
+        RenderWorld world;
+        scene::LightingSettings lighting;
+        lighting.autoExposure.enabled = false;
+        lighting.exposureEV100 = 0.0f;
+        world.setLighting(lighting);
+        RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        RenderGraphCompileOptions options;
+        options.displayOutput.mode = DisplayOutputMode::HDRscRGB;
+        options.displayOutput.paperWhiteNits = 203.0f;
+        options.displayOutput.peakNits = 1000.0f;
+        constexpr uint32_t kWidth = 96, kHeight = 40;
+        constexpr size_t kFrameWords = size_t(kWidth) * kHeight * 4;
+        std::string log;
+        if (!executor.compile(*device, graph, kWidth, kHeight, options, log)) {
+            return RHITestResult::fail("Fixed HDR A/A compile: " + log);
+        }
+        // No debug observer or intermediate readback barriers. Preserve every
+        // final image in a distinct buffer range and read only after all frames.
+        for (uint32_t frame = 0; frame < kPostprocessAAFrameCount; ++frame) {
+            if (!executor.execute({.graphicsQueue = device->getQueue(QueueType::Graphics)})) {
+                return RHITestResult::fail("Fixed HDR A/A execute frame " + std::to_string(frame));
+            }
+        }
+        if (!executor.waitForSubmittedWork()) { return RHITestResult::fail("Fixed HDR A/A completion failed"); }
+        auto* buffer = executor.outputResource("Readback.frames")->buffer;
+        buffer->invalidate();
+        const auto* mapped = static_cast<const uint16_t*>(buffer->map());
+        if (!mapped) { return RHITestResult::fail("Fixed HDR A/A readback failed"); }
+        std::vector<uint16_t> pixels(mapped, mapped + kFrameWords * kPostprocessAAFrameCount);
+        buffer->unmap();
+        for (size_t word = 0; word < kFrameWords; ++word) {
+            if (!std::isfinite(halfToFloat(pixels[word])) || (word % 4 == 3 && pixels[word] != 0x3c00)) {
+                return RHITestResult::fail("Fixed HDR first frame has invalid RGB or alpha");
+            }
+        }
+        if (halfToFloat(pixels[0]) <= 1.0f) {
+            return RHITestResult::fail("Fixed HDR source did not retain above-white display values");
+        }
+        for (uint32_t frame = 1; frame < kPostprocessAAFrameCount; ++frame) {
+            for (size_t word = 0; word < kFrameWords; ++word) {
+                if (pixels[word] != pixels[size_t(frame) * kFrameWords + word]) {
+                    return RHITestResult::fail("Fixed HDR A/A changed frame " + std::to_string(frame) +
+                        " pixel " + std::to_string(word / 4) + " channel " + std::to_string(word % 4));
+                }
+            }
+        }
+        if (validationErrors != 0) { return RHITestResult::fail("Fixed HDR A/A emitted Vulkan VUID diagnostics"); }
+        return RHITestResult::pass("16 fixed HDR frames: manual exposure + ACES2 + FinalBlit bit-exact; final-only readback");
+    }
+};
+
+
+METALLIC_REGISTER_RHI_TEST(PostprocessFixedHDRAATest);
 METALLIC_REGISTER_RHI_TEST(DynamicDisplayEncodingTest);
 METALLIC_REGISTER_RHI_TEST(DisplaySurfaceFormatTest);
 METALLIC_REGISTER_RHI_TEST(DisplayOutputGPUTest);

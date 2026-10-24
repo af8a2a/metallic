@@ -155,7 +155,16 @@ public:
         auto encoded = writer.encode(params, kFinalBlitABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }
         ComputeKernel& program = sampleSource ? (hasLut ? lutProgram_ : blitProgram_) : uvProgram_;
-        return program.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
+        auto result = program.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
+        if (result && context.detailedDebugSnapshots()) {
+            context.debugCheckpoint("PostprocessParameters", {}, {
+                {"hdr", push.hdr}, {"inputEncoding", push.inputEncoding}, {"calibration", push.calibration},
+                {"sampledSrgb", push.sampledSrgb}, {"paperWhiteNits", push.paperWhiteNits},
+                {"peakNits", push.peakNits}, {"exposure", push.exposure}, {"toneCurve", push.toneCurve},
+                {"hasLut", push.hasLut}, {"sampleSource", sampleSource},
+                {"outputExtent", {color.desc().width, color.desc().height}}});
+        }
+        return result;
     }
 
 private:

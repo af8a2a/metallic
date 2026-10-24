@@ -136,6 +136,9 @@ public:
     const std::vector<uint32_t>& materialTextureFirstMips() const;
     // Same-process identity for a publication-frozen diagnostic, including exact sampling metadata.
     std::string diagnosticTextureResidencyIdentity(uint64_t frameIndex) const;
+    // Address-free published texture evidence. Caller requests this only in an
+    // untimed diagnostic snapshot; immutable source files are verified separately.
+    std::string diagnosticTextureSemanticIdentity(uint64_t frameIndex) const;
 
 private:
     struct Impl;

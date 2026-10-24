@@ -280,6 +280,9 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         if (!gpuScene) { return makeError(Error::InvalidArgument); }
         auto& stream = *prepared.geometry;
         const auto* scene = prepared.sourceScene;
+        CPUProfileRecorder prepareRecorder;
+        CPUProfileScope preparePhase(context.properties().value("benchmarkPrepareProfile", false) ? &prepareRecorder : nullptr,
+            "Stream instance mapping");
         std::vector<uint32_t> renderNodes(stream.asset().instanceCount(), UINT32_MAX);
         std::vector<uint32_t> mapping(renderNodes.size(), UINT32_MAX);
         prepared.geometryOwnerMask.assign(std::max<size_t>(gpuScene->instances().size(), 1), 0);
@@ -297,16 +300,21 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
                     ++prepared.mappedInstanceCount;
                 }
             }
+            preparePhase.next("Stream runtime scene sync");
             auto result = stream.syncRuntimeScene(*scene, renderNodes, log);
             if (!result) { return result; }
 
         }
+        preparePhase.next("Stream GPUScene mapping sync");
         auto result = stream.syncGPUSceneInstanceMapping(mapping);
         if (!result) { return result; }
+        preparePhase.next("Stream GPUScene binding");
         // recordPreGraph publishes GPUScene instance uploads with an AllCommands
         // shader-read barrier, including this stream TLAS input compute pass.
         result = stream.bindGPUSceneInstances(*gpuScene->globalBufferViews().instances.buffer);
         if (!result) { return result; }
+        preparePhase.end();
+        if (!prepareRecorder.sections.empty()) { context.publishCpuProfile(prepareRecorder.sections); }
         auto scope = context.profileScope("Stream Begin");
         result = stream.cmdBeginFrame(context.commandBuffer(), *streamer(), view, [&] {
             auto upload = context.profileScope("Upload preflight");
@@ -353,6 +361,8 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
     auto traversalProfile = context.profileScope("Stream traversal");
     auto phaseProfile = context.profileScope("Traversal setup");
     RenderGraphExecutionContext::ProfileScope clasProfile;
+    RenderGraphExecutionContext::ProfileScope rtCutProfile;
+    const bool profilePrepare = context.properties().value("benchmarkPrepareProfile", false);
     const auto result = prepared.geometry->cmdPreTraversal(context.commandBuffer(), view,
         [&](std::string_view point) {
             if (point == "BeforeStreamUpdates") { phaseProfile.next("Page updates"); }
@@ -376,8 +386,14 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             else if (point == "AfterStreamClasBuild") { clasProfile.end(); phaseProfile.end(); }
             else if (point == "BeforeFallbackBlas") { phaseProfile.next("Fallback BLAS"); }
             else if (point == "BeforeRTRepresentationClassify") { phaseProfile.next("RT representation classify"); }
-            else if (point == "BeforeRTRepresentationCut") { phaseProfile.next("RT representation cut"); }
-            else if (point == "BeforeBlasReset") { phaseProfile.next("BLAS reset"); }
+            else if (point == "BeforeRTRepresentationCut") {
+                phaseProfile.next("RT representation cut");
+                if (profilePrepare) { rtCutProfile = context.profileScope("RT cut count"); }
+            }
+            else if (point == "BeforeRTCutAdmission") { if (profilePrepare) { rtCutProfile.next("RT cut admission"); } }
+            else if (point == "BeforeRTCutCacheSelection") { if (profilePrepare) { rtCutProfile.next("RT cut cache selection"); } }
+            else if (point == "BeforeRTCutPublish") { if (profilePrepare) { rtCutProfile.next("RT cut publish"); } }
+            else if (point == "BeforeBlasReset") { rtCutProfile.end(); phaseProfile.next("BLAS reset"); }
             else if (point == "BeforeBlasCompare") { phaseProfile.next("BLAS cut compare"); }
             else if (point == "BeforeBlasCount") { phaseProfile.next("BLAS count"); }
             else if (point == "BeforeBlasSetup") { phaseProfile.next("BLAS setup"); }
@@ -395,6 +411,7 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
         }, context.output("accelerationStructure") != nullptr &&
             context.properties().value("AsyncComputePreferred", true) && context.supportsParallelCompute());
     clasProfile.end();
+    rtCutProfile.end();
     phaseProfile.end();
     if (result && checkpoint) { checkpoint("AfterTraversal"); }
     return result;
@@ -408,7 +425,8 @@ Result<> StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, Ren
     if (result) { result = prepared.geometry->cmdEndFrame(context.commandBuffer()); }
     if (result) {
         auto profile = prepared.geometry->profilingStats();
-        if (context.properties().value("benchmarkFreezeResidency", false)) {
+        const bool captureSemanticSource = context.properties().value("benchmarkCaptureSemanticSource", false);
+        if (context.properties().value("benchmarkFreezeResidency", false) || captureSemanticSource) {
             const auto push = prepared.geometry->userPush();
             profile.diagnosticSourceIdentity = std::to_string(push.pageBuffer) + ":" +
                 std::to_string(push.pageTableBuffer) + ":" + std::to_string(push.pageTableMutationSerial) + ":" +
@@ -416,6 +434,10 @@ Result<> StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, Ren
             if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
                 profile.diagnosticSourceIdentity += ":" +
                     prepared.snapshot->pathTraceResources->diagnosticTextureResidencyIdentity(context.frameIndex());
+                if (captureSemanticSource) {
+                    profile.diagnosticTextureSemanticIdentity =
+                        prepared.snapshot->pathTraceResources->diagnosticTextureSemanticIdentity(context.frameIndex());
+                }
             }
         }
         profile.softwareRasterIdentity = prepared.softwareRasterIdentity;

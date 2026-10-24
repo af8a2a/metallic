@@ -13,12 +13,14 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,6 +29,27 @@ namespace metallic::tests {
 namespace {
 
 using namespace render;
+
+class StreamHistoryLayoutEnvironment {
+public:
+    explicit StreamHistoryLayoutEnvironment(bool packed)
+    {
+        if (const char* previous = std::getenv("METALLIC_STREAM_RT_HISTORY_PACKED")) { previous_ = previous; }
+        set(packed ? "1" : "0");
+    }
+    ~StreamHistoryLayoutEnvironment() { set(previous_ ? previous_->c_str() : nullptr); }
+private:
+    static void set(const char* value)
+    {
+#ifdef _WIN32
+        _putenv_s("METALLIC_STREAM_RT_HISTORY_PACKED", value ? value : "");
+#else
+        if (value) { setenv("METALLIC_STREAM_RT_HISTORY_PACKED", value, 1); }
+        else { unsetenv("METALLIC_STREAM_RT_HISTORY_PACKED"); }
+#endif
+    }
+    std::optional<std::string> previous_;
+};
 
 class StreamCLASCutReadinessTest final : public RHITest {
 public:
@@ -97,7 +120,10 @@ public:
             }
             require(targetGroup != UINT32_MAX, "Fixture has no finite nonterminal demand group");
             nlohmann::json report = nlohmann::json::array();
-            for (bool compact : {false, true}) {
+            for (uint32_t layoutCase = 0; layoutCase < 4; ++layoutCase) {
+                const bool compact = (layoutCase & 1u) != 0u;
+                const bool packedHistory = (layoutCase & 2u) != 0u;
+                StreamHistoryLayoutEnvironment historyEnvironment(packedHistory);
                 for (bool distributed : {false, true}) {
                     MeshletStreamRuntime runtime;
                     runtime.setDebugReadbackEnabled(true);
@@ -133,7 +159,8 @@ public:
                     const uint64_t pagesOffset = groupsOffset + groupCapacity * sizeof(MeshletStreamGPUActiveGroup);
                     const uint64_t lodOffset = pagesOffset + asset.pageCount() * sizeof(StreamPageTableEntry);
                     const uint32_t historyOffset = 4u + asset.groupCount() * 3u + 4u;
-                    const uint32_t lodWords = historyOffset + 3u + asset.groupCount() * 2u;
+                    const uint32_t historyStride = packedHistory ? 1u : 2u;
+                    const uint32_t lodWords = historyOffset + 3u + asset.groupCount() * historyStride;
                     const uint64_t tlasOffset = lodOffset + lodWords * sizeof(uint32_t);
                     const uint64_t clasOffset = tlasOffset + sizeof(RayTracingGPUInstance);
                     const uint64_t readbackBytes = clasOffset + asset.pageCount() * sizeof(MeshletStreamCLASPageEntry);
@@ -156,6 +183,7 @@ public:
                     } drain{queue, frame};
                     MeshletStreamFrameDesc view{.width = 192, .height = 128,
                         .selectedLodLevel = intermediate, .enableGpuLodSelection = false};
+                    view.rtDemandMode = compact ? 2u : 1u;
                     view.camera = {.eye = {-.0168404f, .110154f, .22f},
                         .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
                     uint64_t frameIndex = 0;
@@ -378,9 +406,9 @@ public:
                     const auto wantedGroups = [&] {
                         std::vector<uint8_t> wanted(asset.groupCount());
                         for (uint32_t group = 0; group < wanted.size(); ++group) {
-                            const uint32_t address = historyOffset + 3u + group * 2u;
+                            const uint32_t address = historyOffset + 3u + group * historyStride;
                             wanted[group] = (metrics[group].flags & kMeshletLODTerminalGroup) != 0 ||
-                                (lodState[address] == lodState[historyOffset + 1u] && lodState[address + 1u] != 0);
+                                (lodState[address] == lodState[historyOffset + 1u] && (packedHistory || lodState[address + 1u] != 0));
                         }
                         return wanted;
                     };
@@ -391,16 +419,17 @@ public:
                             previousParams.rtLodPolicyRevision == params.rtLodPolicyRevision;
                         const uint32_t expectedPrevious = continuous ? previousLodState[historyOffset + 1u] : 0u;
                         require(lodState[historyOffset] == expectedPrevious &&
-                            lodState[historyOffset + 1u] == params.frameIndex + 1u &&
-                            lodState[historyOffset + 2u] == params.rtLodPolicyRevision,
+                            lodState[historyOffset + 1u] == params.rtLodFrameToken && params.rtLodFrameToken != 0u &&
+                            lodState[historyOffset + 2u] == params.rtLodPolicyRevision &&
+                            ((params.rtLodFlags & 16u) != 0u) == packedHistory,
                             "RT GPU history token/revision did not follow the last submitted frame");
                         const auto metricView = cpuView();
                         const auto wanted = wantedGroups();
                         for (uint32_t group = 0; group < metrics.size(); ++group) {
                             if ((metrics[group].flags & kMeshletLODTerminalGroup) != 0) { continue; }
-                            const uint32_t address = historyOffset + 3u + group * 2u;
+                            const uint32_t address = historyOffset + 3u + group * historyStride;
                             const bool wasWanted = continuous && expectedPrevious != 0 &&
-                                previousLodState[address] == expectedPrevious && previousLodState[address + 1u] != 0;
+                                previousLodState[address] == expectedPrevious && (packedHistory || previousLodState[address + 1u] != 0);
                             const bool visible = meshletLodBoundsVisible(refinementBounds[group], metricInstance, metricView,
                                 {params.upProjection[0], params.upProjection[1], params.upProjection[2]},
                                 params.viewport[0], params.clipOrtho[1]);
@@ -620,7 +649,8 @@ public:
                     policyFrame();
                     require(params.rtOffscreenErrorScale == 1.f && params.rtLodHysteresis == .9f,
                         "RT policy values escaped their safe bounds");
-                    report.push_back({{"compact", compact}, {"distributed", distributed}, {"frames", frameIndex},
+                    report.push_back({{"compact", compact}, {"distributed", distributed}, {"packedHistory", packedHistory},
+                        {"demandMode", view.rtDemandMode}, {"frames", frameIndex},
                         {"cancelledInitialFallback", cancelledInitialFallback},
                         {"cancelledInitialFrame", cancelledInitialFrame}, {"verifiedPolicyFrames", verifiedPolicyFrames},
                         {"targetGroup", targetGroup}, {"offscreenReducedGroups", reducedGroups},

@@ -412,8 +412,11 @@ struct MeshletStreamGPUParams {
     uint32_t lodTelemetryPadding = 0;
     float rtOffscreenErrorScale = 2.0f;
     float rtLodHysteresis = 0.2f;
-    uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: visible raster quality; bits 2/3: disable node demand C1/C2.
+    // Bits 0/1: RT policy/visible raster quality; 2/3: disable C1/C2;
+    // 4: packed true-token history; 5/6: late history/ray-first demand.
+    uint32_t rtLodFlags = 0;
     uint32_t rtLodPolicyRevision = 1;
+    uint32_t rtLodFrameToken = 0;
     uint32_t rtRepresentationBuffer = UINT32_MAX;
     uint32_t rtRepresentationGroupBuffer = UINT32_MAX;
     uint32_t rtRepresentationHeaderBuffer = UINT32_MAX;
@@ -545,7 +548,7 @@ static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGPUParams) == 708);
+static_assert(sizeof(MeshletStreamGPUParams) == 712);
 static_assert(sizeof(MeshletStreamGPURTRepresentationGroup) == 16);
 static_assert(sizeof(MeshletStreamGPURTRepresentationLODMetadata) == 32);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
@@ -649,6 +652,7 @@ struct MeshletStreamFrameDesc {
     bool preserveRasterLod = false; // Shared raster/RT cuts preserve visible raster projection quality.
     bool nodeDemandC1 = true; // Benchmark override; C1 changes pruning only, not leaf demand thresholds.
     bool nodeDemandC2 = true; // Benchmark override; C2 uses the existing offscreen leaf threshold lower bound.
+    uint32_t rtDemandMode = 1; // 0: baseline; 1: late history reads (default); 2: ray-first experiment.
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
     MeshletStreamCameraDesc renderCamera;
@@ -667,6 +671,41 @@ struct MeshletStreamFrameDesc {
     bool diagnosticBlasPriorityCache = false;
     bool diagnosticBlasMergedSharing = false;
     uint32_t diagnosticBlasFallbackPolicy = 0;
+};
+
+// RT tokens identify recorded traversals independently of the request-frame
+// encoding. Only accepted GPU clears publish initialization; generation guards
+// keep an older submission/cancellation from undoing a newer invalidation.
+struct MeshletStreamLODHistoryState {
+    uint32_t frameToken = 0;
+    uint64_t generation = 0;
+    bool initialized = false;
+
+    void invalidate()
+    {
+        initialized = false;
+        ++generation;
+    }
+
+    uint32_t advanceFrameToken()
+    {
+        if (++frameToken == 0u) {
+            frameToken = 1u;
+            invalidate();
+        }
+        return frameToken;
+    }
+
+    uint64_t beginInitialization()
+    {
+        invalidate();
+        return generation;
+    }
+
+    void finishInitialization(uint64_t recordedGeneration, bool accepted)
+    {
+        if (recordedGeneration == generation) { initialized = accepted; }
+    }
 };
 
 class MeshletStreamRuntime {
@@ -935,6 +974,7 @@ private:
     bool clusterRtxEnabled_ = false;
     bool rtNodeDemandC1_ = true;
     bool rtNodeDemandC2_ = true;
+    bool rtHistoryPacked_ = false;
     MeshletStreamGPUBLASHeader recentBlasHeader_;
     std::array<uint32_t, kBLASAllocatorStateWords> recentBlasAllocatorState_{};
     ResourceLease pageHandle_;
@@ -960,7 +1000,7 @@ private:
     ResourceState demandBufferState_ = ResourceState::Undefined;
     uint32_t lodInstanceOffsetsOffset_ = 0;
     ResourceState lodStateBufferState_ = ResourceState::Undefined;
-    std::shared_ptr<bool> lodStateInitialized_ = std::make_shared<bool>(false);
+    std::shared_ptr<MeshletStreamLODHistoryState> lodHistoryState_ = std::make_shared<MeshletStreamLODHistoryState>();
     uint64_t rtLodHistoryBytes_ = 0;
     uint32_t rtLodPolicyRevision_ = 1;
     float rtLodDisplayPixelError_ = 1.5f;

@@ -427,7 +427,7 @@ Result<> MeshletStreamCLASPool::initialize(
     result = createClasBuffer(
         device,
         static_cast<uint64_t>(desc.asset->pageCount()) * sizeof(MeshletStreamCLASPageEntry),
-        BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+        BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination,
         MemoryLocation::HostUpload,
         impl_->pageTableBuffer,
         "createBuffer(stream CLAS page table)",

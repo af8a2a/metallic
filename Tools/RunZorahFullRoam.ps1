@@ -65,7 +65,7 @@ if ($sampleId -notin @('gpu-driven-sample','gpu-driven-zorah-full')) { throw 'Ro
 $controlledBlas=[bool]$config.blasQualityComparison
 $controlledDemand=[bool]$config.detailDemandComparison
 $demandCandidate=if ($config.detailDemandComparison.candidate) { [string]$config.detailDemandComparison.candidate } else { 'C1' }
-if ($controlledDemand -and $demandCandidate -notin @('C1','C2')) { throw 'Detail demand candidate must be C1 or C2' }
+if ($controlledDemand -and $demandCandidate -notin @('C1','C2','C3')) { throw 'Detail demand candidate must be C1, C2 or C3' }
 if ($controlledBlas -and ($sampleId -ne 'gpu-driven-sample' -or $Runs -ne 1 -or $RasterComparison)) { throw 'Controlled BLAS quality requires MiniZorah, one process and no raster comparison' }
 if ($controlledDemand -and ($sampleId -ne 'gpu-driven-sample' -or $Runs -ne 1 -or $RasterComparison -or $controlledBlas)) { throw 'Controlled detail demand requires MiniZorah, one process and no other comparison' }
 $analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
@@ -82,7 +82,7 @@ function Get-ShaderDigest {
     try { return [Convert]::ToHexString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($records -join "`n")))) }
     finally { $hash.Dispose() }
 }
-$manifest=@{protocol=$(if ($controlledDemand) {'minizorah-detail-demand-'+$demandCandidate.ToLowerInvariant()+'-v1'} elseif ($controlledBlas -and $config.blasQualityComparison.intermediateFallbackComparison) {'minizorah-blas-frozen-quality-v3'} elseif ($controlledBlas -and $config.blasQualityComparison.mergedSharingComparison) {'minizorah-blas-frozen-quality-v2'} elseif ($controlledBlas) {'minizorah-blas-frozen-quality-v1'} elseif ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
+$manifest=@{protocol=$(if ($controlledDemand -and $config.detailDemandComparison.packingOnly) {'minizorah-detail-demand-packed-v1'} elseif ($controlledDemand) {'minizorah-detail-demand-'+$demandCandidate.ToLowerInvariant()+'-v1'} elseif ($controlledBlas -and $config.blasQualityComparison.intermediateFallbackComparison) {'minizorah-blas-frozen-quality-v3'} elseif ($controlledBlas -and $config.blasQualityComparison.mergedSharingComparison) {'minizorah-blas-frozen-quality-v2'} elseif ($controlledBlas) {'minizorah-blas-frozen-quality-v1'} elseif ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
     executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash; shaderSha256=(Get-ShaderDigest)
     config=$config; validation=[bool]$Validation; nsightCaptureRequested=[bool]$NsightCapture; shaderCaptureSymbols=([bool]$NsightCapture -or [bool]$ShaderCaptureSymbols); hidden=$true; vsync=(!$NoVSync); reflexMode=$env:METALLIC_REFLEX_MODE; blasInstanceReuse=$env:METALLIC_BLAS_INSTANCE_REUSE; streamMaintenanceBeforePacing=$env:METALLIC_STREAM_MAINTENANCE_BEFORE_PACING; runs=$Runs; gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)
     dirty=(& git -C $repo status --short --ignore-submodules)
@@ -102,6 +102,7 @@ $manifest.blasRelocateBytes=$env:METALLIC_BLAS_RELOCATE_BYTES
 $manifest.clasAllocator=$env:METALLIC_CLAS_ALLOCATOR
 $manifest.nodeDemandC1=$env:METALLIC_STREAM_RT_DEMAND_C1
 $manifest.nodeDemandC2=$env:METALLIC_STREAM_RT_DEMAND_C2
+$manifest.rtHistoryPacked=$env:METALLIC_STREAM_RT_HISTORY_PACKED
 $manifest.asset=@{path=$asset.FullName; bytes=$asset.Length; modifiedUtc=$asset.LastWriteTimeUtc.ToString('o')}
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $output 'Manifest.json') -Encoding utf8
 try {

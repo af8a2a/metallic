@@ -15,6 +15,7 @@
 #include "stb_image.h"
 
 #include <spdlog/spdlog.h>
+#include "json.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -29,6 +30,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -3067,6 +3069,54 @@ std::string ScenePathTraceResources::diagnosticTextureResidencyIdentity(uint64_t
     return std::to_string(reinterpret_cast<uintptr_t>(impl_->textureGeneration.get())) + ":" +
         std::to_string(reinterpret_cast<uintptr_t>(impl_->materialBinding.get())) + ":" +
         std::to_string(impl_->materialTextures.size()) + ":" + std::to_string(hash);
+}
+
+std::string ScenePathTraceResources::diagnosticTextureSemanticIdentity(uint64_t frameIndex) const
+{
+    const auto prepared = std::find_if(impl_->textureFeedback.begin(), impl_->textureFeedback.end(),
+        [&](const auto& value) { return value.frame == frameIndex; });
+    std::vector<TextureSamplingMetadata> metadataSnapshot;
+    if (prepared != impl_->textureFeedback.end()) {
+        metadataSnapshot = prepared->buffers.metadata;
+    } else {
+        // No streamable images uses the immutable HostUpload metadata bound by
+        // beginTextureStreaming. Read that exact allocation, not reconstructed
+        // desired mip state. The GPU only reads this buffer.
+        auto& buffer = impl_->emptyTextureFeedback.samplingMetadata;
+        if (!impl_->baseTextureMips.empty() || !buffer) {
+            throw std::runtime_error("Texture semantic diagnostic has no published sampling metadata");
+        }
+        const auto* mapped = static_cast<const TextureSamplingMetadata*>(buffer->map());
+        if (!mapped) { throw std::runtime_error("Texture semantic diagnostic metadata map failed"); }
+        metadataSnapshot.assign(mapped, mapped + buffer->desc().size / sizeof(TextureSamplingMetadata));
+        buffer->unmap();
+    }
+    using Json = nlohmann::json;
+    Json evidence{{"schema","published-texture-source-mips-v1"},{"scene",impl_->scenePath.generic_string()},
+        {"logicalTextureSlots",impl_->textureIndexMap},{"sourceImageSlots",impl_->asyncImageTextureIndexMap},
+        {"sourceFirstMips",impl_->ktxFirstMips},{"samplingWords",Json::array()},
+        {"slots",Json::array()},{"ktxSources",Json::array()}};
+    for (const auto& metadata : metadataSnapshot) {
+        evidence["samplingWords"].push_back({std::bit_cast<uint32_t>(metadata.samplingFloor),
+            std::bit_cast<uint32_t>(metadata.residentLodTerm),metadata.residentWidth,metadata.residentHeight,
+            metadata.residentMipCount,metadata.residentFirstMipAndFlags});
+    }
+    for (const auto& texture : impl_->materialTextures) {
+        evidence["slots"].push_back({{"width",texture.width},{"height",texture.height},{"mipCount",texture.mipCount},
+            {"sourceWidth",texture.sourceWidth},{"sourceHeight",texture.sourceHeight},{"sourceMipCount",texture.sourceMipCount},
+            {"residentFirstMip",texture.residentFirstMip},{"format",uint32_t(texture.format)},{"uploaded",texture.uploaded}});
+    }
+    for (uint32_t image = 0; image < impl_->ktxImages.size(); ++image) {
+        if (!impl_->ktxImages[image]) { continue; }
+        const auto& source = *impl_->ktxImages[image];
+        Json entry{{"image",image},{"path",source.path.generic_string()},{"width",source.width},{"height",source.height},
+            {"format",uint32_t(source.format)},{"supercompression",source.supercompression},{"levels",Json::array()}};
+        for (const auto& level : source.levels) {
+            entry["levels"].push_back({level.offset,level.storedBytes,level.decodedBytes});
+        }
+        evidence["ktxSources"].push_back(std::move(entry));
+    }
+    return evidence.dump();
 }
 
 Result<> ScenePathTraceResources::endTextureStreaming(

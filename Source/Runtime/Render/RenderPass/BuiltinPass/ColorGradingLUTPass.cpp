@@ -94,8 +94,17 @@ public:
         if (!encoded) { return makeError(encoded.error()); }
         // Match composeColorGradingLUT's 4x4x4 thread groups across the full volume.
         const auto& size = lut.desc();
-        return program_.dispatch(commands, *encoded,
+        auto result = program_.dispatch(commands, *encoded,
             (size.width + 3) / 4, (size.height + 3) / 4, (size.depth + 3) / 4);
+        if (result && context.detailedDebugSnapshots()) {
+            context.debugCheckpoint("PostprocessParameters", {}, {
+                {"transform", push.transform}, {"hdr", push.hdr}, {"peak", push.peak}, {"paperWhite", push.paperWhite},
+                {"saturation", push.grade.saturation}, {"contrast", push.grade.contrast},
+                {"gamma", push.grade.gamma}, {"gain", push.grade.gain}, {"offset", push.grade.offset},
+                {"film", push.grade.film}, {"filmExtra", push.grade.filmExtra}, {"lutWeights", push.grade.lutWeights},
+                {"outputExtent", {size.width, size.height, size.depth}}});
+        }
+        return result;
     }
 
 private:

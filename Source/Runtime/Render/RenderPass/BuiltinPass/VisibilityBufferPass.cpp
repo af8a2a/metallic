@@ -4,6 +4,7 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -615,6 +616,9 @@ public:
     Result<> prepareExecution(RenderGraphExecutionContext& context) override
     {
         auto profile = context.profileScope("Visibility prepare");
+        CPUProfileRecorder prepareRecorder;
+        CPUProfileScope preparePhase(context.properties().value("benchmarkPrepareProfile", false) ? &prepareRecorder : nullptr,
+            "Visibility geometry sync");
         preparedBindings_.reset();
         if (const auto* prepared = context.preparedScene(); prepared && prepared->snapshot) {
             sharedTextureResources_ = prepared->snapshot->pathTraceResources;
@@ -652,6 +656,7 @@ public:
         }
 
         std::string gpuSceneLog;
+        preparePhase.next("Visibility raster state sync");
         Result<> result = syncGPUSceneRasterState(
             *gpuSceneSubsystem,
             gpuSceneLog);
@@ -659,6 +664,7 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
+        preparePhase.next("Visibility frame resources");
         result = ensureFrameResources(
             context.width(),
             context.height(),
@@ -690,6 +696,7 @@ public:
                 observedReprojectionInvalidationRevision_ != invalidationRevision;
             observedReprojectionInvalidationRevision_ = invalidationRevision;
         }
+        preparePhase.next("Visibility view prepare");
         result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, context.properties(), context.viewConstants());
         if (!result) {
             return result;
@@ -697,6 +704,7 @@ public:
         if (context.subsystems() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
+        preparePhase.next("Visibility bindings validation");
         gpuSceneLog.clear();
         result = ensureGPUSceneBindings(
             *gpuSceneSubsystem,
@@ -706,6 +714,7 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
+        preparePhase.next("Visibility candidate upload");
         // prepareView filters scene visibility while retaining stable GPUScene IDs.
         // Each frame slot owns its upload, just like the camera parameters.
         const auto& candidates = gpuSceneSubsystem->visibleDrawSet(gpuSceneView_, activeFrameSlot_)->instances;
@@ -719,6 +728,7 @@ public:
                 candidateIds.data(), candidateIds.size() * sizeof(uint32_t));
             if (!result) { return result; }
         }
+        preparePhase.next("Visibility raster input bindings");
         // Streaming can render geometry before its material snapshot is ready.
         coverageBinding_ = sharedTextureResources_ ? sharedTextureResources_->materialBinding() : nullptr;
         coverageHandle_ = {};
@@ -729,8 +739,11 @@ public:
         result = registry_->sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
         if (result) { result = registry_->sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); }); }
         std::shared_ptr<PreparedBindings> bindings;
+        // Includes task dispatch/join, unlike the existing two task-body samples.
+        preparePhase.next("Visibility frame packet inclusive");
         if (result) { result = prepareFrame(context, bindings); }
         if (!result) { return result; }
+        preparePhase.next("Visibility raster metadata upload");
         const auto rasterInfo = context.outputBuffer("rasterInfo");
         if (!rasterInfo.valid()) { return makeError(Error::InvalidArgument); }
         VisibilityBufferFrameInfo info;
@@ -760,6 +773,7 @@ public:
         std::memcpy(mappedInfo, &info, sizeof(info));
         rasterInfo.buffer()->flush({0, sizeof(info)});
         rasterInfo.buffer()->unmap();
+        preparePhase.next("Visibility stream view bindings");
         if (streamEnabled_) {
             result = bindStreamViewResources(
                 *gpuSceneSubsystem,
@@ -780,6 +794,8 @@ public:
             }
         }
         preparedBindings_ = std::move(bindings);
+        preparePhase.end();
+        if (!prepareRecorder.sections.empty()) { context.publishCpuProfile(prepareRecorder.sections); }
         return {};
     }
 

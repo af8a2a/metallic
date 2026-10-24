@@ -2582,6 +2582,7 @@ struct RenderGraphExecutor::Impl {
             MeshletStreamFrameDesc view;
             view.freezeRasterSnapshot = context.properties().value("benchmarkFreezeStreaming", false);
             view.freezeSourceResidency = context.properties().value("benchmarkFreezeResidency", false);
+            view.benchmarkDemandTraversal = context.properties().value("benchmarkDemandTraversal", false);
             view.diagnosticBlasResetEpoch = context.properties().value("benchmarkBlasResetEpoch", 0u);
             view.diagnosticBlasStorageBytes = context.properties().value("benchmarkBlasStorageBytes", 0u);
             view.diagnosticBlasPriority = context.properties().value("benchmarkBlasPriority", false);
