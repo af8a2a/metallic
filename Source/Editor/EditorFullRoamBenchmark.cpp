@@ -109,6 +109,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
         {"diagnosticSourceIdentity",s.diagnosticSourceIdentity.empty() ? Json(nullptr) : Json(s.diagnosticSourceIdentity)},
         {"nodeDemandC1",s.nodeDemandC1},
+        {"nodeDemandC2",s.nodeDemandC2},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"lodTransitions", {{"enabled",s.lodTransitionTelemetryEnabled},{"historyBytes",s.lodTransitionHistoryBytes},
             {"demandedGroups",s.lodDemandedGroups},{"ownPageBlockedGroups",s.lodOwnPageBlockedGroups},
@@ -324,6 +325,11 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const Json demandComparison = config.value("detailDemandComparison", Json::object());
         if (!demandComparison.is_object()) { throw std::runtime_error("detailDemandComparison must be an object"); }
         const bool controlledDemand = !demandComparison.empty();
+        const std::string demandCandidate = demandComparison.value("candidate", std::string("C1"));
+        if (demandCandidate != "C1" && demandCandidate != "C2") {
+            throw std::runtime_error("Detail demand candidate must be C1 or C2");
+        }
+        const bool compareDemandC2 = demandCandidate == "C2";
         if (controlledDemand && (controlledBlas || freezeStreaming)) {
             throw std::runtime_error("Detail demand comparison requires its own residency-only freeze");
         }
@@ -477,7 +483,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "adaptivePageRetention", config.value("adaptivePageRetention", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "enableLodTransitionTelemetry", config.value("enableLodTransitionTelemetry", false));
         if (controlledDemand) {
-            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkDemandC1", false);
+            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkDemandC1", compareDemandC2);
+            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkDemandC2", false);
             // Keep the selected scheduling path fixed across A/B; this benchmark
             // measures node pruning without the adaptive ordered-demand fallback.
             renderGraph_.setNodeRuntimeProperty(vbuffer->id, "distributedDemandMinGroups", 0u);
@@ -674,7 +681,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             auto fixedLighting = *controlledLighting;
             fixedLighting.autoExposure.enabled = false;
             renderWorld_.setLighting(std::move(fixedLighting));
-            report["protocol"] = "minizorah-detail-demand-c1-v1";
+            report["protocol"] = compareDemandC2 ? "minizorah-detail-demand-c2-v1" : "minizorah-detail-demand-c1-v1";
             report["diagnosticRun"] = captureQuality;
             report["config"] = config;
             report["frames"] = 0u;
@@ -686,22 +693,26 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             report["renderExtent"] = {depth->desc.width,depth->desc.height};
             report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
             report["demandComparison"] = {{"scope","One frozen geometry/CLAS/texture source; live demand/frontier/BLAS, no RT reset; one in-process ABBA block"},
+                {"candidate",demandCandidate},
                 {"statisticalUnit","One in-process ABBA block, n=1; descriptive only, no confidence interval or independent-process replication"},
                 {"distributedDemandMinGroups",0u},{"fixedExposureEV100",controlledLighting->exposureEV100},
                 {"performanceComparable",!captureQuality},{"camera",viewportCameraProperties()},{"variants",Json::array()}};
             graphExecutor_->setDebugObserver(nullptr);
             std::string sourceIdentity;
-            struct Arm { const char* name; bool c1; };
+            struct Arm { const char* name; bool enabled; };
             for (const auto& arm : std::array{Arm{"A1",false}, Arm{"B1",true}, Arm{"B2",true}, Arm{"A2",false}}) {
                 drain();
-                setProperty("VBuffer", "benchmarkDemandC1", arm.c1);
-                Json variant{{"name",arm.name},{"nodeDemandC1",arm.c1},{"settle",Json::array()},{"captures",Json::array()}};
+                const bool c1 = compareDemandC2 || arm.enabled;
+                const bool c2 = compareDemandC2 && arm.enabled;
+                setProperty("VBuffer", "benchmarkDemandC1", c1);
+                setProperty("VBuffer", "benchmarkDemandC2", c2);
+                Json variant{{"name",arm.name},{"nodeDemandC1",c1},{"nodeDemandC2",c2},{"settle",Json::array()},{"captures",Json::array()}};
                 const auto checkState = [&]() {
                     auto state = snapshot();
                     const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
                     if (sourceIdentity.empty()) { sourceIdentity = identity; }
-                    if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != arm.c1) {
-                        throw std::runtime_error("Demand comparison source identity or effective C1 flag changed");
+                    if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != c1 || state.at("nodeDemandC2") != c2) {
+                        throw std::runtime_error("Demand comparison source identity or effective C1/C2 flags changed");
                     }
                     return state;
                 };

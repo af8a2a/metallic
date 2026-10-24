@@ -412,7 +412,7 @@ struct MeshletStreamGPUParams {
     uint32_t lodTelemetryPadding = 0;
     float rtOffscreenErrorScale = 2.0f;
     float rtLodHysteresis = 0.2f;
-    uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: visible raster quality; bit 2: disable node demand C1.
+    uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: visible raster quality; bits 2/3: disable node demand C1/C2.
     uint32_t rtLodPolicyRevision = 1;
     uint32_t rtRepresentationBuffer = UINT32_MAX;
     uint32_t rtRepresentationGroupBuffer = UINT32_MAX;
@@ -648,6 +648,7 @@ struct MeshletStreamFrameDesc {
     float rtLodHysteresis = 0.2f; // Refine at T; coarsen below T * (1 - hysteresis).
     bool preserveRasterLod = false; // Shared raster/RT cuts preserve visible raster projection quality.
     bool nodeDemandC1 = true; // Benchmark override; C1 changes pruning only, not leaf demand thresholds.
+    bool nodeDemandC2 = true; // Benchmark override; C2 uses the existing offscreen leaf threshold lower bound.
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
     MeshletStreamCameraDesc renderCamera;
@@ -933,6 +934,7 @@ private:
     uint64_t maxDevicePageBytes_ = 0;
     bool clusterRtxEnabled_ = false;
     bool rtNodeDemandC1_ = true;
+    bool rtNodeDemandC2_ = true;
     MeshletStreamGPUBLASHeader recentBlasHeader_;
     std::array<uint32_t, kBLASAllocatorStateWords> recentBlasAllocatorState_{};
     ResourceLease pageHandle_;

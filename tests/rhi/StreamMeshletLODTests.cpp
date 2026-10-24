@@ -571,7 +571,8 @@ public:
         if (!tiled.passed) { return tiled; }
         return RHITestResult::pass("872 linear/BVH/cooperative/view-driven/prefetch/split/distributed/switching GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
     }
-    RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256, bool rtDemand = false)
+    RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256,
+        bool rtDemand = false, bool rtDemandC2 = false)
     {
         StreamLODFixture fixture = rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
@@ -637,6 +638,20 @@ public:
         topology.push_back(static_cast<uint32_t>(demandRoots.size()));
         const uint32_t demandTaskOffset = static_cast<uint32_t>(topology.size());
         for (uint32_t root : demandRoots) { topology.push_back(root); }
+        std::vector<uint32_t> invalidDemandTopology;
+        if (rtDemandC2) {
+            invalidDemandTopology = topology;
+            constexpr uint32_t kNodeWords = sizeof(MeshletLODBVHNode) / sizeof(uint32_t);
+            constexpr uint32_t kBoundsWord = offsetof(MeshletLODBVHNode, demandBounds) / sizeof(uint32_t);
+            const MeshletLODRefinementBounds unknown;
+            for (const auto [offset, count] : {std::pair{primitive.lodBvhOffset, nodes.size()},
+                    std::pair{primitive.lodTileOffset + 1u, tiles.size()}}) {
+                for (size_t node = 0; node < count; ++node) {
+                    std::memcpy(invalidDemandTopology.data() + offset + node * kNodeWords + kBoundsWord,
+                        &unknown, sizeof(unknown));
+                }
+            }
+        }
         enum BufferIndex { Instance, Primitive, Groups, Params, Topology, State, PageTable,
             Requests, ActiveGroups, Header, Arguments, Dummy, Demand, DemandTasks, BufferCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGPUInstance), sizeof(primitive), sizeof(MeshletStreamGPUGroup),
@@ -776,10 +791,15 @@ public:
         MeshletStreamGPUParams priorParams;
         std::vector<uint8_t> previousWanted(kGroupCount), expectedWanted(kGroupCount);
         std::array<uint64_t, 2> rtGroupTests{};
-        const uint32_t frameCount = rtDemand ? 64u : ordinaryFrames + (large ? 0u : 80u);
+        std::array<std::array<uint64_t, 2>, 2> rtUnitScaleTests{};
+        const uint32_t rtSequenceFrames = rtDemandC2 ? 28u : 16u;
+        const uint32_t frameCount = rtDemand ? rtSequenceFrames * 4u : ordinaryFrames + (large ? 0u : 80u);
         for (uint32_t frame = 0; frame < frameCount; ++frame) {
-            const uint32_t rtStep = frame % 16u;
-            const bool rtBaseline = (frame / 16u) % 2u == 0;
+            const uint32_t rtStep = frame % rtSequenceFrames;
+            const bool rtBaseline = (frame / rtSequenceFrames) % 2u == 0;
+            float rtOffscreenScale = 2.f;
+            float rtHysteresis = .2f;
+            uint32_t rtPolicyRevision = 1u;
             const bool telemetrySequence = frame >= ordinaryFrames;
             const uint32_t telemetryStep = telemetrySequence ? (frame - ordinaryFrames) % 20u : 0u;
             const uint32_t telemetryPath = telemetrySequence ? (frame - ordinaryFrames) / 20u : 0u;
@@ -789,7 +809,7 @@ public:
             const bool viewDriven = rtDemand || telemetrySequence || frame >= caseCount * 3;
             const bool prefetch = !rtDemand && !telemetrySequence && frame >= caseCount * 4;
             const bool switching = !rtDemand && !telemetrySequence && frame >= caseCount * 7;
-            const bool distributed = rtDemand ? frame >= 32u : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
+            const bool distributed = rtDemand ? frame >= rtSequenceFrames * 2u : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
             const bool split = rtDemand ? distributed : telemetrySequence ? distributed : switching ? distributed : frame >= caseCount * 5;
             const float viewAspect = !rtDemand && viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
@@ -840,29 +860,75 @@ public:
                 available.assign(kGroupCount, 1);
                 manual = UINT32_MAX;
                 capacity = kGroupCount;
-                if (rtStep == 0) { std::fill(previousWanted.begin(), previousWanted.end(), uint8_t{0}); }
-                if (rtStep == 2) { fixture.view.forward = {0, 0, 1, 0}; }
-                if (rtStep == 3) { fixture.view.forward = {1, 0, 0, 0}; }
-                if (rtStep == 5) {
-                    fixture.instance.worldMatrix[0] = 2.f;
-                    fixture.instance.worldMatrix[4] = .75f;
-                    fixture.instance.worldMatrix[5] = 3.f;
+                bool resetHistory = rtStep == 0;
+                if (!rtDemandC2) {
+                    if (rtStep == 2) { fixture.view.forward = {0, 0, 1, 0}; }
+                    if (rtStep == 3) { fixture.view.forward = {1, 0, 0, 0}; }
+                    if (rtStep == 5) {
+                        fixture.instance.worldMatrix[0] = 2.f;
+                        fixture.instance.worldMatrix[4] = .75f;
+                        fixture.instance.worldMatrix[5] = 3.f;
+                    }
+                    if (rtStep == 6) { fixture.view.eye[2] = .05f; }
+                    if (rtStep == 7) { fixture.view.eye[2] = 0.f; }
+                    if (rtStep == 8) { fixture.view.forward[3] = 1.f; }
+                    if (rtStep == 9) {
+                        fixture.instance.worldMatrix[12] = 1000000.f;
+                        fixture.instance.worldMatrix[14] = -1000000.f;
+                        fixture.view.eye[0] = 1000000.f;
+                        fixture.view.eye[2] = -999990.f;
+                    }
+                    if (rtStep == 10 || rtStep == 11) {
+                        fixture.drawable[leafCount] = 0;
+                        available[leafCount] = rtStep == 11; // Pending upload is not a duplicate request.
+                    }
+                    if (rtStep == 12) { manual = 0; }
+                    if (rtStep == 14) { fixture.view.projection[3] = .1f; }
+                    resetHistory = resetHistory || rtStep == 13;
+                } else {
+                    constexpr float kRatios[]{.75f, .9f, 1.05f, .9f, .75f};
+                    constexpr float kScales[]{1.f, 2.f, 16.f};
+                    if (rtStep < 15) {
+                        rtOffscreenScale = kScales[rtStep / 5u];
+                        rtPolicyRevision = rtStep / 5u + 1u;
+                        resetHistory = rtStep % 5u == 0;
+                    } else {
+                        rtOffscreenScale = rtStep == 15 || rtStep == 16 || rtStep == 20 ? 16.f : 2.f;
+                        rtPolicyRevision = std::min(rtStep - 11u, 10u);
+                        resetHistory = rtStep != 23;
+                    }
+                    if (rtStep == 17) { fixture.view.forward = {0, 0, 1, 0}; }
+                    if (rtStep == 18) { fixture.view.eye[2] = 0.f; }
+                    if (rtStep == 19) { fixture.view.forward[3] = 1.f; }
+                    if (rtStep == 20) {
+                        fixture.instance.worldMatrix[0] = 2.f;
+                        fixture.instance.worldMatrix[4] = .75f;
+                        fixture.instance.worldMatrix[5] = 3.f;
+                    }
+                    const float rayError = meshletLodRayPixelError(fixture.groups[leafCount - 1u], fixture.instance, fixture.view);
+                    float ratio = rtStep < 15 ? kRatios[rtStep % 5u] : rtStep >= 22 ? .9f : .75f;
+                    if (rtStep >= 24) {
+                        // A policy change resets retained demand. Seed again
+                        // under h=.9, then straddle its remaining .1 threshold.
+                        constexpr float kEdgeRatios[]{.9f, 1.05f, .11f, .09f};
+                        ratio = kEdgeRatios[rtStep - 24u];
+                        rtOffscreenScale = 16.f;
+                        rtHysteresis = rtStep == 24 ? 0.f : .9f;
+                        rtPolicyRevision = rtStep == 24 ? 11u : 12u;
+                        resetHistory = rtStep <= 25;
+                    }
+                    fixture.view.projection[3] = rayError / (rtOffscreenScale * ratio);
+                    if (rtStep == 15) {
+                        // This parent metric is behind the eye but its demand
+                        // subtree contains the visible leaf: C2 must not scale
+                        // its threshold as though that whole subtree were offscreen.
+                        fixture.view.projection[3] = meshletLodRayPixelError(fixture.groups[leafCount],
+                            fixture.instance, fixture.view) * .5f;
+                    }
+                    if (rtStep == 16) { fixture.view.projection[3] = 1.5f; } // Unknown node bounds must descend.
+                    if (rtStep == 21) { manual = 0; }
                 }
-                if (rtStep == 6) { fixture.view.eye[2] = .05f; }
-                if (rtStep == 7) { fixture.view.eye[2] = 0.f; }
-                if (rtStep == 8) { fixture.view.forward[3] = 1.f; }
-                if (rtStep == 9) {
-                    fixture.instance.worldMatrix[12] = 1000000.f;
-                    fixture.instance.worldMatrix[14] = -1000000.f;
-                    fixture.view.eye[0] = 1000000.f;
-                    fixture.view.eye[2] = -999990.f;
-                }
-                if (rtStep == 10 || rtStep == 11) {
-                    fixture.drawable[leafCount] = 0;
-                    available[leafCount] = rtStep == 11; // Pending upload is not a duplicate request.
-                }
-                if (rtStep == 12) { manual = 0; }
-                if (rtStep == 14) { fixture.view.projection[3] = .1f; }
+                if (resetHistory) { std::fill(previousWanted.begin(), previousWanted.end(), uint8_t{0}); }
                 for (uint32_t group = 0; group < kGroupCount; ++group) {
                     const auto& metric = fixture.groups[group];
                     if ((metric.flags & kMeshletLODTerminalGroup) != 0) { expectedWanted[group] = 1; continue; }
@@ -871,9 +937,16 @@ public:
                         fixture.view, {0, 1, 0}, viewAspect, 1000000.f);
                     float error = meshletLodRayPixelError(metric, fixture.instance, fixture.view);
                     if (visible) { error = std::max(error, meshletLodPixelError(metric, fixture.instance, fixture.view)); }
-                    const bool retained = rtStep != 13 && previousWanted[group] != 0;
+                    const bool retained = previousWanted[group] != 0;
                     expectedWanted[group] = meshletLodRayNeedsFine(error,
-                        fixture.view.projection[3] * (visible ? 1.f : 2.f), .2f, retained);
+                        fixture.view.projection[3] * (visible ? 1.f : rtOffscreenScale), rtHysteresis, retained);
+                }
+                if (rtDemandC2 && rtStep < 15 && bool(expectedWanted[leafCount - 1u]) !=
+                    (rtStep % 5u == 2u || rtStep % 5u == 3u)) {
+                    return RHITestResult::fail("C2 fixture failed to exercise the offscreen hysteresis roundtrip");
+                }
+                if (rtDemandC2 && rtStep >= 24 && bool(expectedWanted[leafCount - 1u]) != (rtStep == 25 || rtStep == 26)) {
+                    return RHITestResult::fail("C2 fixture failed to straddle the zero/maximum hysteresis boundaries");
                 }
                 if (rtStep == 0 && !expectedWanted[leafCount]) {
                     return RHITestResult::fail("RT fixture failed to expose a visible refinement descendant of a behind-eye metric sphere");
@@ -942,10 +1015,12 @@ public:
             params.selectedLodLevel = manual;
             params.enableGpuLodSelection = manual == UINT32_MAX;
             if (rtDemand) {
-                params.rtLodFlags = rtBaseline ? 7u : 3u;
-                params.rtOffscreenErrorScale = 2.f;
-                params.rtLodHysteresis = .2f;
-                params.rtLodPolicyRevision = 1;
+                // C1 remains isolated from C2. C2 compares the same C1 path
+                // with only its node offscreen-threshold scaling toggled.
+                params.rtLodFlags = rtDemandC2 ? (rtBaseline ? 11u : 3u) : (rtBaseline ? 15u : 11u);
+                params.rtOffscreenErrorScale = rtOffscreenScale;
+                params.rtLodHysteresis = rtHysteresis;
+                params.rtLodPolicyRevision = rtPolicyRevision;
             }
             params.enableLodTransitionTelemetry = telemetrySequence && telemetryStep != 16;
             std::copy_n(priorParams.eye, 4, params.previousEye);
@@ -996,6 +1071,10 @@ public:
                 requests[0] = std::max(static_cast<uint32_t>(expected.requestedGroups.size()), 1u);
             }
             std::fill(requests.begin() + kPriorityTable, requests.end(), 0x7fc00000u);
+            if (rtDemandC2 && !upload(Topology,
+                rtStep == 16 ? invalidDemandTopology.data() : topology.data(), sizes[Topology])) {
+                return RHITestResult::fail("C2 node demand bounds upload failed");
+            }
             if (!upload(Instance, &instance, sizeof(instance)) || !upload(Params, &params, sizeof(params)) ||
                 !upload(Primitive, &primitive, sizeof(primitive)) ||
                 !upload(Groups, groups.data(), sizes[Groups]) ||
@@ -1111,7 +1190,13 @@ public:
                     }
                 }
                 previousWanted = expectedWanted;
-                rtGroupTests[rtBaseline ? 0u : 1u] += distributed ? demandStats[3] : state[4u + kGroupCount * 2u + 2u];
+                const uint32_t testedGroups = distributed ? demandStats[3] : state[4u + kGroupCount * 2u + 2u];
+                rtGroupTests[rtBaseline ? 0u : 1u] += testedGroups;
+                if (rtDemandC2 && rtStep < 5) { rtUnitScaleTests[distributed ? 1u : 0u][rtBaseline ? 0u : 1u] += testedGroups; }
+                if (rtDemandC2 && rtStep == 16 && testedGroups != kGroupCount) {
+                    readback->unmap();
+                    return RHITestResult::fail("C2 pruned unknown node demand bounds instead of descending conservatively");
+                }
             }
             if (telemetrySequence) {
                 const uint32_t expectedCatchup = telemetryStep == 4 ? 1u : telemetryStep == 6 ? 2u : 0u;
@@ -1283,11 +1368,16 @@ public:
             }
         }
         if (rtDemand) {
+            if (rtDemandC2 && (rtUnitScaleTests[0][0] != rtUnitScaleTests[0][1] ||
+                rtUnitScaleTests[1][0] != rtUnitScaleTests[1][1])) {
+                return RHITestResult::fail("C2 changed traversal work at unit offscreen scale");
+            }
             if (rtGroupTests[1] >= rtGroupTests[0]) {
-                return RHITestResult::fail("C1 did not reduce behind-eye leaf tests versus the baseline: " +
+                return RHITestResult::fail(std::string(rtDemandC2 ? "C2" : "C1") + " did not reduce behind-eye leaf tests versus the baseline: " +
                     std::to_string(rtGroupTests[1]) + "/" + std::to_string(rtGroupTests[0]));
             }
-            return RHITestResult::pass("64 consecutive baseline/C1 ordered/distributed frames match brute-force leaf demand, cuts and requests; leaf tests " +
+            return RHITestResult::pass(std::to_string(frameCount) + " consecutive " + (rtDemandC2 ? "C1/C2" : "baseline/C1") +
+                " ordered/distributed frames match brute-force leaf demand, cuts and requests; leaf tests " +
                 std::to_string(rtGroupTests[0]) + " -> " + std::to_string(rtGroupTests[1]));
         }
         if (positivePriorities == 0) { return RHITestResult::fail("Visible requests never generated screen benefit"); }
@@ -1308,6 +1398,16 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC1Test);
+
+class StreamMeshletLODRTDemandC2Test final : public RHITest {
+public:
+    StreamMeshletLODRTDemandC2Test() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_demand_c2"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        return StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true, true);
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC2Test);
 
 
 class StreamLODTileHierarchyTest final : public RHITest {

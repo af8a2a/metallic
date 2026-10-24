@@ -2097,8 +2097,8 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
             abs(instance.world2.xyz) * extent.z + abs(instance.world3.xyz) + abs(eye.xyz);
         worldPadding = (32.0 * 1.1920928955078125e-7) * (magnitude.x + magnitude.y + magnitude.z);
     }
-    // A node may contain retained fine groups or on-screen children. Prune
-    // only against the lowest hysteresis threshold, without an offscreen scale.
+    // A node may contain retained fine groups or on-screen children. Start at
+    // the lowest hysteresis threshold; only proven offscreen bounds may scale it.
     float threshold = projection.w * (streamRayLodEnabled(params)
         ? 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9) : 1.0);
     float pruneThreshold = threshold - max(abs(threshold) * 1e-4, 1e-5);
@@ -2107,9 +2107,16 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
     if (streamRayLodEnabled(params) && (params.rtLodFlags & 6u) == 2u) {
         upperError = streamLodMetric(sphere, error,
             instance, eye, forward, projection, params, false, worldPadding);
-        // Visibility can only help when the ray bound already permits pruning.
-        // Retain near/inside-sphere and non-finite bounds without extra metadata reads.
-        if (!(upperError < pruneThreshold)) { return true; }
+        float offscreenThreshold = threshold;
+        if ((params.rtLodFlags & 8u) == 0u) {
+            // Every descendant uses at least this threshold, including retained
+            // fine groups. Scale the threshold, never the ray error bound.
+            offscreenThreshold *= max(params.rtOffscreenErrorScale, 1.0);
+        }
+        float offscreenPruneThreshold = offscreenThreshold - max(abs(offscreenThreshold) * 1e-4, 1e-5);
+        // Classification can only help below the largest possible threshold.
+        // Retain near/inside-sphere and non-finite bounds without metadata reads.
+        if (!(upperError < offscreenPruneThreshold)) { return true; }
         float3 low = float3(asfloat(topology[offset + 10u]), asfloat(topology[offset + 11u]), asfloat(topology[offset + 12u]));
         float3 high = float3(asfloat(topology[offset + 13u]), asfloat(topology[offset + 14u]), asfloat(topology[offset + 15u]));
         // These bounds contain every group's refinement descendants, unlike
@@ -2118,6 +2125,8 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
             upperError = max(upperError, meshletLodProjectedError(sphere, error,
                 instance.world0, instance.world1, instance.world2, instance.world3,
                 eye, forward, projection, worldPadding));
+        } else {
+            pruneThreshold = offscreenPruneThreshold;
         }
     } else {
         upperError = streamLodMetric(sphere, error,

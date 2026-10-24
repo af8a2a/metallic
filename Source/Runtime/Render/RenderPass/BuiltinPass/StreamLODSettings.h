@@ -12,6 +12,7 @@ inline void applyStreamRayLODSettings(const RenderGraphProperties& properties,
     view.rtLodHysteresis = properties.value("rtLodHysteresis", 0.2f);
     view.preserveRasterLod = preserveRasterLod;
     view.nodeDemandC1 = properties.value("benchmarkDemandC1", true);
+    view.nodeDemandC2 = properties.value("benchmarkDemandC2", true);
     view.benchmarkDemandTraversal = properties.value("benchmarkDemandTraversal", false);
 }
 

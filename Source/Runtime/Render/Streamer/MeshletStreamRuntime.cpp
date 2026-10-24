@@ -1177,6 +1177,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (const char* value = std::getenv("METALLIC_STREAM_RT_DEMAND_C1")) {
         rtNodeDemandC1_ = std::string_view(value) != "0";
     }
+    if (const char* value = std::getenv("METALLIC_STREAM_RT_DEMAND_C2")) {
+        rtNodeDemandC2_ = std::string_view(value) != "0";
+    }
     maxResidentPages_ = desc.maxResidentPages;
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
     maxUploadBytesPerFrame_ = desc.maxUploadBytesPerFrame;
@@ -2811,6 +2814,7 @@ void MeshletStreamRuntime::reset()
     maxDevicePageBytes_ = 0;
     clusterRtxEnabled_ = false;
     rtNodeDemandC1_ = true;
+    rtNodeDemandC2_ = true;
     pageHandle_ = {};
     activeGroupHandle_ = {};
     activeHeaderHandle_ = {};
@@ -4514,14 +4518,15 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.rtOffscreenErrorScale = std::clamp(finiteOr(frame.rtOffscreenErrorScale, 2.0f), 1.0f, 16.0f);
     params.rtLodHysteresis = std::clamp(finiteOr(frame.rtLodHysteresis, 0.2f), 0.0f, 0.9f);
     params.rtLodFlags = clusterRtxEnabled_ ? 1u | (frame.preserveRasterLod ? 2u : 0u) |
-        (rtNodeDemandC1_ && frame.nodeDemandC1 ? 0u : 4u) : 0u;
+        (rtNodeDemandC1_ && frame.nodeDemandC1 ? 0u : 4u) |
+        (rtNodeDemandC2_ && frame.nodeDemandC2 ? 0u : 8u) : 0u;
     if (clusterRtxEnabled_ && previousFrameParamsValid_ &&
         (rtLodDisplayPixelError_ != displayPixelError ||
          previousFrameParams_.rtOffscreenErrorScale != params.rtOffscreenErrorScale ||
          previousFrameParams_.rtLodHysteresis != params.rtLodHysteresis ||
-         // C1 changes traversal acceleration only; toggling it must retain leaf
+         // C1/C2 change traversal acceleration only; toggling them must retain leaf
          // hysteresis and the same cached cut for fixed-residency comparisons.
-         (previousFrameParams_.rtLodFlags & ~4u) != (params.rtLodFlags & ~4u) ||
+         (previousFrameParams_.rtLodFlags & ~12u) != (params.rtLodFlags & ~12u) ||
          previousFrameParams_.enableGpuLodSelection != params.enableGpuLodSelection ||
          previousFrameParams_.selectedLodLevel != params.selectedLodLevel)) {
         ++rtLodPolicyRevision_;
@@ -5335,6 +5340,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.frameIndex = frameIndex_;
     result.feedbackFrame = debugRequestSourceKnown_ ? debugRequestSourceFrame_ : UINT64_MAX;
     result.nodeDemandC1 = clusterRtxEnabled_ && (previousFrameParams_.rtLodFlags & 4u) == 0u;
+    result.nodeDemandC2 = (previousFrameParams_.rtLodFlags & 15u) == 3u;
     result.deviceImmutableMetadata = deviceImmutableMetadata_;
     result.immutableMetadataReady = immutableMetadataReady();
     result.immutableGroupBytes = groupBuffer_ ? groupBuffer_->desc().size : 0;
@@ -5593,6 +5599,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"rtLod", {{"enabled", clusterRtxEnabled_}, {"historyBytes", rtLodHistoryBytes_},
             {"preserveRasterLod", (previousFrameParams_.rtLodFlags & 2u) != 0u},
             {"nodeDemandC1", (previousFrameParams_.rtLodFlags & 4u) == 0u},
+            {"nodeDemandC2", (previousFrameParams_.rtLodFlags & 15u) == 3u},
             {"offscreenErrorScale", previousFrameParams_.rtOffscreenErrorScale},
             {"hysteresis", previousFrameParams_.rtLodHysteresis},
             {"refineDisplayPixels", rtLodDisplayPixelError_},
