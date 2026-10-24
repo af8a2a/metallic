@@ -659,6 +659,96 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
     if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].bytes.size() == 24 &&
         inspector.capture_->artifacts[0].bytes[0] == 50 && inspector.capture_->artifacts[0].bytes[1] == 105 &&
         inspector.capture_->artifacts[0].bytes[2] == 210, "Volume ROI retains the selected Z slice")) { return false; }
+    {
+        // Exercise sampling and grid drawing through the native Vulkan backend.
+        // The ROI ramp has distinct neighboring texels and nonzero XYZ offsets.
+        const auto capture = inspector.capture_;
+        const auto image = inspector.image_.get();
+        const auto descriptor = inspector.descriptor_;
+        auto& io = ImGui::GetIO();
+        struct RestoreInput {
+            ImGuiIO& io; ImVec2 mouse; bool focused;
+            ~RestoreInput() { io.AddMousePosEvent(mouse.x, mouse.y); io.AddFocusEvent(focused); }
+        } restore{io, io.MousePos, !io.AppFocusLost};
+        inspector.fit_ = false; inspector.zoom_ = 32; inspector.pixelGrid_ = false;
+        ImGuiWindow* window = nullptr;
+        ImVec2 origin;
+        std::string logged;
+        const auto drawPreview = [&](ImVec2 mouse) {
+            io.AddFocusEvent(true); io.AddMousePosEvent(mouse.x, mouse.y);
+            ImGui::NewFrame();
+            ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+            ImGui::SetNextWindowPos(ImVec2(20, 20)); ImGui::SetNextWindowSize(ImVec2(1000, 750));
+            ImGui::Begin("Pixel inspection regression", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking);
+            window = ImGui::GetCurrentWindow();
+            ImGui::LogToBuffer();
+            inspector.drawTexture(*device_, imguiBackend_);
+            logged = GImGui->LogBuffer.c_str();
+            ImGui::LogFinish();
+            for (auto* child : GImGui->Windows) {
+                if (child->ParentWindow == window && std::strstr(child->Name, "TexturePixels")) {
+                    const auto center = ImRect(child->DC.CursorStartPos, child->WorkRect.Max).GetCenter();
+                    origin = ImVec2(center.x - 1.5f * inspector.zoom_, center.y - inspector.zoom_);
+                }
+            }
+            ImGui::End(); ImGui::Render();
+        };
+        const auto format = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ ? render::Format::RGBA16Sfloat : swapchain_->format();
+        const size_t pixelBytes = format == render::Format::RGBA16Sfloat ? 8 : 4;
+        uint32_t width = 0, height = 0;
+        ImDrawData draw;
+        const auto readPreview = [&](std::vector<uint8_t>& pixels) {
+            draw = *window->Viewport->DrawData;
+            draw.DisplayPos = window->Pos; draw.DisplaySize = window->Size;
+            width = uint32_t(draw.DisplaySize.x * draw.FramebufferScale.x);
+            height = uint32_t(draw.DisplaySize.y * draw.FramebufferScale.y);
+            auto target = device_->createTexture({.usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
+                .format = format, .width = width, .height = height});
+            return target && readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, **target, pixels, &draw);
+        };
+        const auto pixel = [&](const std::vector<uint8_t>& pixels, float u, float v) {
+            const auto x = uint32_t((origin.x + u * inspector.zoom_ - draw.DisplayPos.x) * draw.FramebufferScale.x);
+            const auto y = uint32_t((origin.y + v * inspector.zoom_ - draw.DisplayPos.y) * draw.FramebufferScale.y);
+            return debug::hexEncode(std::span(pixels).subspan((size_t(y) * width + x) * pixelBytes, pixelBytes));
+        };
+        drawPreview(ImVec2(-1000, -1000)); drawPreview(ImVec2(-1000, -1000));
+        std::vector<uint8_t> nearest, linear, grid;
+        if (!expect(readPreview(nearest), "Render nearest-sampled pixel fixture through Vulkan") ||
+            !expect(pixel(nearest, 1.15f, 0.5f) == pixel(nearest, 1.85f, 0.5f) &&
+                pixel(nearest, 0.5f, 0.5f) != pixel(nearest, 1.5f, 0.5f),
+                "Nearest sampling preserves flat texel interiors and distinct neighbors")) { return false; }
+        inspector.nearest_ = false; drawPreview(ImVec2(-1000, -1000));
+        if (!expect(readPreview(linear) && pixel(linear, 1.15f, 0.5f) != pixel(linear, 1.85f, 0.5f),
+            "Disabling nearest restores linear interpolation on the same GPU preview")) { return false; }
+        inspector.nearest_ = true; inspector.pixelGrid_ = true; drawPreview(ImVec2(-1000, -1000));
+        if (!expect(readPreview(grid) && pixel(grid, 1.5f, 0.5f) == pixel(nearest, 1.5f, 0.5f) &&
+            pixel(grid, 1.f, 0.5f) != pixel(nearest, 1.f, 0.5f) &&
+            pixel(grid, 1.5f, 1.f) != pixel(nearest, 1.5f, 1.f),
+            "Pixel grid marks horizontal and vertical texel boundaries without changing interiors")) { return false; }
+        if (!expect(writePPM(output / "pixel-grid-ui.ppm", grid, width, height, format, displayOutput_.paperWhiteNits),
+            "Export native nearest-sampled pixel grid")) { return false; }
+        const ImVec2 hover(origin.x + 1.5f * inspector.zoom_, origin.y + 0.5f * inspector.zoom_);
+        drawPreview(hover); drawPreview(hover);
+        const auto bytes = debug::hexEncode(std::span(capture->artifacts[0].bytes).subspan(4, 4));
+        if (!expect(logged.find("Voxel (3, 3, 3)") != std::string::npos && logged.find("Bytes: " + bytes) != std::string::npos,
+            "Magnified hover reports the exact voxel coordinates and raw bytes including ROI offsets") ||
+            !expect(readPreview(grid) && writePPM(output / "pixel-hover-ui.ppm", grid, width, height, format, displayOutput_.paperWhiteNits),
+                "Export native highlighted pixel and raw-value tooltip")) { return false; }
+        // A fractional zoom keeps grid lines registered to the image boundaries.
+        inspector.zoom_ = 19.3f; drawPreview(ImVec2(-1000, -1000));
+        if (!readPreview(grid)) { return false; }
+        inspector.pixelGrid_ = false; drawPreview(ImVec2(-1000, -1000));
+        if (!expect(readPreview(nearest) && pixel(grid, 1.f, 0.5f) != pixel(nearest, 1.f, 0.5f) &&
+            pixel(grid, 1.5f, 0.5f) == pixel(nearest, 1.5f, 0.5f), "Fractional zoom keeps the pixel grid aligned")) { return false; }
+        inspector.zoom_ = 4; drawPreview(ImVec2(-1000, -1000));
+        if (!readPreview(nearest)) { return false; }
+        inspector.pixelGrid_ = true; drawPreview(ImVec2(-1000, -1000));
+        if (!expect(readPreview(grid) && pixel(grid, 1.f, 0.5f) == pixel(nearest, 1.f, 0.5f),
+            "Pixel grid stays hidden below 8x") ||
+            !expect(inspector.capture_ == capture && inspector.image_.get() == image && inspector.descriptor_ == descriptor &&
+                !inspector.upload_ && !inspector.imageDirty_, "Sampling and grid changes reuse the capture without conversion or upload")) { return false; }
+        inspector.fit_ = true;
+    }
     inspector.cube_ = true; inspector.roi_ = {0, 0, 0, 0}; inspector.capture_.reset(); inspector.refresh_ = true;
     if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].bytes.size() == 8 * 6 * 4 * 4 &&
         inspector.capture_->artifacts[0].metadata.at("completeCoverage") == true, "Cube captures the full volume")) { return false; }

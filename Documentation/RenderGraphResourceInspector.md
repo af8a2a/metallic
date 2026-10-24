@@ -93,6 +93,14 @@ Navigation changes only drawing coordinates: it reuses the frozen GPU preview
 without a new capture, range scan, conversion or upload. Live updates retain the
 view; selecting another resource resets 2D navigation to Fit.
 
+**Nearest** (enabled by default) uses nearest-neighbor sampling at 1x or above,
+so magnified texels keep their individual colors. Below 1x the preview uses linear
+sampling. Disable Nearest to compare with linear interpolation. **Pixel grid**
+(also enabled by default) draws texel boundaries at 8x or above and highlights
+the hovered texel. Grid lines follow fractional zoom and panning; only visible
+boundaries are generated. Both controls apply to 2D textures and Z slices, reuse
+the existing GPU image, and leave raw hover values unchanged.
+
 **Auto range** is enabled by default. Each new texture snapshot (including Live
 refreshes) derives Min/Max from the finite values of the selected channels in the
 captured ROI. RGB excludes alpha and missing channels; selecting a single channel
@@ -258,6 +266,10 @@ The smoke also feeds mouse events directly to ImGui to check cursor-anchored
 wheel zoom, reversibility, panning, hover values, canvas-only wheel handling,
 zoom limits and double-click Fit. Navigation must retain the capture and GPU
 image without triggering conversion or upload; the desktop cursor is untouched.
+GPU readbacks of the known RGB volume fixture compare nearest and linear
+sampling, grid boundaries and interiors, fractional zoom and the grid threshold.
+The hover check verifies voxel coordinates and raw bytes with nonzero ROI offsets.
+`pixel-grid-ui.ppm` and `pixel-hover-ui.ppm` record the native grid and tooltip.
 
 Evidence includes:
 

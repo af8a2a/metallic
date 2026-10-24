@@ -140,7 +140,8 @@ debug::DebugValue EditorResourceInspector::diagnostics() const
             result["displayRange"] = {{"auto", autoRange_}, {"trimFlatExtremes", trimRange_},
                 {"trimmed", rangeTrimmed_}, {"finiteComponents", rangeFinite_},
                 {"min", rangeMin_}, {"max", rangeMax_}, {"channel", channel_}};
-            result["previewView"] = {{"fit", fit_}, {"zoom", zoom_}, {"center", imageCenter_}};
+            result["previewView"] = {{"fit", fit_}, {"zoom", zoom_}, {"center", imageCenter_},
+                {"nearest", nearest_}, {"pixelGrid", pixelGrid_}};
         }
     }
     return result;
@@ -534,6 +535,9 @@ void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan
         if (ImGui::Button("1:1")) { fit_ = false; zoom_ = 1; }
         ImGui::SameLine(); ImGui::SetNextItemWidth(160);
         if (ImGui::SliderFloat("Zoom", &zoom_, 0.01f, 64.f, "%.3fx", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) { fit_ = false; }
+        ImGui::SameLine(); ImGui::Checkbox("Nearest", &nearest_);
+        ImGui::SameLine(); ImGui::Checkbox("Pixel grid", &pixelGrid_);
+        if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Pixel boundaries appear at 8x or above. Nearest sampling applies at 1x or above."); }
         ImGui::TextDisabled("Wheel: zoom at cursor | drag: pan | double-click: fit");
     }
     ImGui::TextDisabled("Display: range/exposure + clamp; magenta = non-finite. Hover for raw values.");
@@ -585,12 +589,42 @@ void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan
     const ImVec2 origin(center.x - imageCenter_[0] * width * zoom_, center.y - imageCenter_[1] * height * zoom_);
     auto* draw = ImGui::GetWindowDrawList();
     draw->PushClipRect(canvas, ImVec2(canvas.x + size.x, canvas.y + size.y), true);
+    const bool nearest = nearest_ && zoom_ >= 1.f;
+    if (nearest) { draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_SetSamplerNearest, nullptr); }
     draw->AddImage(static_cast<ImTextureID>(descriptor_), origin, ImVec2(origin.x + width * zoom_, origin.y + height * zoom_));
+    if (nearest) { draw->AddCallback(ImGui::GetPlatformIO().DrawCallback_SetSamplerLinear, nullptr); }
+    const bool grid = pixelGrid_ && zoom_ >= 8.f;
+    if (grid) {
+        // Generate only visible texel boundaries, independent of capture size.
+        const ImVec2 end(origin.x + width * zoom_, origin.y + height * zoom_);
+        const int firstX = std::max(0, int(std::ceil((canvas.x - origin.x) / zoom_)));
+        const int lastX = std::min(width, int(std::floor((canvas.x + size.x - origin.x) / zoom_)));
+        const int firstY = std::max(0, int(std::ceil((canvas.y - origin.y) / zoom_)));
+        const int lastY = std::min(height, int(std::floor((canvas.y + size.y - origin.y) / zoom_)));
+        const auto line = [&](ImVec2 a, ImVec2 b) {
+            draw->AddLine(a, b, IM_COL32(0, 0, 0, 150), 2.f);
+            draw->AddLine(a, b, IM_COL32(255, 255, 255, 100), 1.f);
+        };
+        for (int x = firstX; x <= lastX; ++x) {
+            const float screenX = origin.x + x * zoom_;
+            line(ImVec2(screenX, std::max(canvas.y, origin.y)), ImVec2(screenX, std::min(canvas.y + size.y, end.y)));
+        }
+        for (int y = firstY; y <= lastY; ++y) {
+            const float screenY = origin.y + y * zoom_;
+            line(ImVec2(std::max(canvas.x, origin.x), screenY), ImVec2(std::min(canvas.x + size.x, end.x), screenY));
+        }
+    }
     draw->PopClipRect();
     if (hovered && !ImGui::IsItemActive() && mouse.x >= origin.x && mouse.y >= origin.y &&
         mouse.x < origin.x + width * zoom_ && mouse.y < origin.y + height * zoom_) {
         const int x = std::clamp(int((mouse.x - origin.x) / zoom_), 0, width - 1);
         const int y = std::clamp(int((mouse.y - origin.y) / zoom_), 0, height - 1);
+        if (grid) {
+            draw->PushClipRect(canvas, ImVec2(canvas.x + size.x, canvas.y + size.y), true);
+            draw->AddRect(ImVec2(origin.x + x * zoom_, origin.y + y * zoom_),
+                ImVec2(origin.x + (x + 1) * zoom_, origin.y + (y + 1) * zoom_), IM_COL32(255, 220, 0, 255), 0, 0, 2.f);
+            draw->PopClipRect();
+        }
         const auto index = size_t(y) * width + x;
         const auto values = debug::decodeBuffer(std::span(artifact.bytes).subspan(index * artifact.layout.stride, artifact.layout.stride), artifact.layout);
         ImGui::BeginTooltip();
