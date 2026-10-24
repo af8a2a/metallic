@@ -11,6 +11,7 @@ namespace metallic::render {
 struct CPUProfileRecorder {
     std::vector<RenderGraphProfileSection> sections;
     uint32_t parent = UINT32_MAX;
+    bool threadDiagnostics = false;
     void reset() { sections.clear(); parent = UINT32_MAX; }
 };
 
@@ -29,6 +30,10 @@ public:
     {
         if (!recorder_ || index_ == UINT32_MAX) { return; }
         recorder_->sections[index_].cpuMilliseconds = std::chrono::duration<double, std::milli>(Clock::now() - begin_).count();
+        if (recorder_->threadDiagnostics) {
+            const auto end = sampleCPUThread();
+            recorder_->sections[index_].cpuThreadProfile = std::make_shared<CPUThreadProfile>(cpuThreadProfile(threadBegin_, end));
+        }
         recorder_->parent = parent_;
         index_ = UINT32_MAX;
     }
@@ -39,7 +44,14 @@ public:
         index_ = static_cast<uint32_t>(recorder_->sections.size());
         recorder_->sections.push_back({.name = std::string(name), .parent = parent_, .cpuOnly = true});
         recorder_->parent = index_;
+        if (recorder_->threadDiagnostics) { threadBegin_ = sampleCPUThread(); }
         begin_ = Clock::now();
+    }
+    void work(std::string_view name, uint64_t value)
+    {
+        if (recorder_ && index_ != UINT32_MAX) {
+            recorder_->sections[index_].cpuWork.push_back({std::string(name), value});
+        }
     }
 private:
     using Clock = std::chrono::steady_clock;
@@ -47,6 +59,7 @@ private:
     uint32_t parent_ = UINT32_MAX;
     uint32_t index_ = UINT32_MAX;
     Clock::time_point begin_;
+    CPUThreadSample threadBegin_;
 };
 
 } // namespace metallic::render

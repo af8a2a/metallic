@@ -543,7 +543,7 @@ nlohmann::json runDeterministicBaselineRegression(Device& device, std::string& p
 // an active clean survivor in the allocator frame that produced the header.
 struct IdleCacheAdmissionProbe {
     enum Input { Params, Primitives, RTState, Header, Active, Representations, InputCount };
-    static constexpr uint32_t kCapacity = 8, kRTStateWords = 16 + 3 * 12 + 2;
+    static constexpr uint32_t kCapacity = 8, kRTStateWords = 16 + 3 * 12 + kMeshletStreamRTPriorityControlWords;
     AllocatorFixture& fixture;
     std::unique_ptr<BindlessHeap> heap;
     std::unique_ptr<ShaderModule> shader;

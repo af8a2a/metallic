@@ -846,9 +846,12 @@ void publishStreamRayLodDemand(RWStructuredBuffer<uint> state, uint history, uin
 {
     if (!updateHistory || !streamRayLodEnabled(params)) { return; }
     bool packed = (params.rtLodFlags & 16u) != 0u;
-    if (!packed || wanted) {
+    bool sparseWrites = (params.rtLodFlags & 128u) != 0u;
+    if (wanted || (!packed && !sparseWrites)) {
         // Tokens are unique across executed traversals, including cancelled CPU
         // frame gaps. A false/pruned group expires when the instance header advances.
+        // Each group has one authoritative demand writer per token; the frontier
+        // consumes its demand bit rather than evaluating and overwriting it again.
         state[address] = (params.rtLodFlags & 32u) != 0u ? params.rtLodFrameToken : state[history + 1u];
         if (!packed) { state[address + 1u] = wanted ? 1u : 0u; }
     }
@@ -3609,11 +3612,25 @@ void sortStreamRTOwners(uint item, GPUDrivenStreamAssetPush push, GPUDrivenStrea
         uint history = streamRTOwnerPriorityHistoryBase(p) + item * 3u;
         // Exact inputs to the total order, including owners without consumers.
         // Cut/residency/budget changes are validated separately by admission.
-        if (state[importance] != state[history] || state[importance + 1u] != state[history + 1u] ||
-            state[importance + 2u] != state[history + 2u]) {
+        bool errorChanged = state[importance] != state[history];
+        bool distanceChanged = state[importance + 1u] != state[history + 1u];
+        if (errorChanged || distanceChanged || state[importance + 2u] != state[history + 2u]) {
             InterlockedOr(state[control], 1u);
+            uint word = errorChanged ? 0u : distanceChanged ? 1u : 2u;
+            InterlockedMin(state[control + 2u], item * 3u + word);
         }
         return;
+    }
+    if (item == 0u && push.activeBuildPhase == 35u) {
+        // Phase 41 has completed. Capture the first changed comparator before
+        // phase 37 replaces history; one writer avoids racing provenance pairs.
+        uint changed = state[control + 2u];
+        if (changed != 0xffffffffu) {
+            state[control + 3u] = state[streamRTOwnerPriorityHistoryBase(p) + changed];
+            state[control + 4u] = state[streamRTOwnerImportanceBase(p, changed / 3u) + changed % 3u];
+            state[control + 5u] = p.frameIndex;
+            state[control + 6u] = changed;
+        }
     }
     // The decision is uniform across every sort workgroup, before its barriers.
     if (p.enableBlasPriorityCache != 0u && state[control] == 0u) {
@@ -3849,6 +3866,15 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
                 uint priorityControl = streamRTOwnerPriorityControlBase(params);
                 state[priorityControl] = params.enableBlasPriorityCache == 0u || (push.traversalPhase & 1u) != 0u ? 1u : 0u;
                 state[priorityControl + 1u] = 0u;
+                state[priorityControl + 2u] = 0xffffffffu;
+                // Feedback can lag the captured GPU state. Retain the latest
+                // mismatch through hits so its input transition stays inspectable.
+                if ((push.traversalPhase & 1u) != 0u) {
+                    state[priorityControl + 3u] = 0u;
+                    state[priorityControl + 4u] = 0u;
+                    state[priorityControl + 5u] = 0u;
+                    state[priorityControl + 6u] = 0xffffffffu;
+                }
             }
             GPUDrivenStreamAssetActiveHeader value = (GPUDrivenStreamAssetActiveHeader)0;
             value.activeGroupCapacity = params.rtRepresentationGroupCapacity;

@@ -616,14 +616,16 @@ public:
     Result<> prepareExecution(RenderGraphExecutionContext& context) override
     {
         auto profile = context.profileScope("Visibility prepare");
+        const bool profilePrepare = context.properties().value("benchmarkPrepareProfile", false);
         CPUProfileRecorder prepareRecorder;
-        CPUProfileScope preparePhase(context.properties().value("benchmarkPrepareProfile", false) ? &prepareRecorder : nullptr,
-            "Visibility geometry sync");
+        prepareRecorder.threadDiagnostics = context.properties().value("benchmarkCPUThreadDiagnostics", false);
+        CPUProfileScope preparePhase(profilePrepare ? &prepareRecorder : nullptr, "Visibility geometry sync");
+        CPUProfileScope* prepareWork = profilePrepare ? &preparePhase : nullptr;
         preparedBindings_.reset();
         if (const auto* prepared = context.preparedScene(); prepared && prepared->snapshot) {
             sharedTextureResources_ = prepared->snapshot->pathTraceResources;
         }
-        Result<> syncResult = syncRuntimeGeometry(context.runtimeScene());
+        Result<> syncResult = syncRuntimeGeometry(context.runtimeScene(), profilePrepare ? &prepareRecorder : nullptr);
         if (!syncResult) {
             return syncResult;
         }
@@ -659,7 +661,7 @@ public:
         preparePhase.next("Visibility raster state sync");
         Result<> result = syncGPUSceneRasterState(
             *gpuSceneSubsystem,
-            gpuSceneLog);
+            gpuSceneLog, prepareWork);
         if (!result) {
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
@@ -697,7 +699,7 @@ public:
             observedReprojectionInvalidationRevision_ = invalidationRevision;
         }
         preparePhase.next("Visibility view prepare");
-        result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, context.properties(), context.viewConstants());
+        result = prepareGPUSceneView(*gpuSceneSubsystem, cameraCut, context.properties(), context.viewConstants(), prepareWork);
         if (!result) {
             return result;
         }
@@ -723,6 +725,8 @@ public:
         for (GPUSceneInstanceId id : candidates) { candidateIds.push_back(id.index); }
         auto& candidateSlot = activeFrameResources();
         candidateSlot.candidateInstanceCount = static_cast<uint32_t>(candidateIds.size());
+        preparePhase.work("candidateInstances", candidateIds.size());
+        preparePhase.work("uploadBytes", candidateIds.size() * sizeof(uint32_t));
         if (!candidateIds.empty()) {
             result = updateHostStorageBuffer(*candidateSlot.candidateInstanceIdsBuffer,
                 candidateIds.data(), candidateIds.size() * sizeof(uint32_t));
@@ -741,6 +745,9 @@ public:
         std::shared_ptr<PreparedBindings> bindings;
         // Includes task dispatch/join, unlike the existing two task-body samples.
         preparePhase.next("Visibility frame packet inclusive");
+        preparePhase.work("joinedTasks", 2);
+        preparePhase.work("instanceCount", instanceCount_);
+        preparePhase.work("materialCount", materialCount_);
         if (result) { result = prepareFrame(context, bindings); }
         if (!result) { return result; }
         preparePhase.next("Visibility raster metadata upload");
@@ -1674,7 +1681,7 @@ private:
 
     Result<> syncGPUSceneRasterState(
         GPUSceneSubsystem& subsystem,
-        std::string& log)
+        std::string& log, CPUProfileScope* profile)
     {
         const GPUSceneDrawSet& drawSet = subsystem.drawSet();
         const GPUSceneGlobalBufferViews& views = subsystem.globalBufferViews();
@@ -1720,6 +1727,12 @@ private:
             capacityGrowth = capacityGrowth ||
                 requiredVisibleMeshletCapacity >
                     currentViewResources.desc.visibleMeshletCapacity[bucketIndex];
+        }
+        if (profile) {
+            profile->work("instanceCount", instanceCount_);
+            profile->work("materialCount", materialCount_);
+            profile->work("capacityGrowth", capacityGrowth);
+            profile->work("sourceDrawSetRevision", drawSet.revision);
         }
         if (capacityGrowth) {
             GPUSceneViewDesc grown = currentViewResources.desc;
@@ -2109,7 +2122,7 @@ private:
         GPUSceneSubsystem& subsystem,
         bool cameraCut,
         const RenderGraphProperties& frameProperties,
-        const ViewConstants* view)
+        const ViewConstants* view, CPUProfileScope* profile)
     {
         GPUSceneViewPrepareInfo prepareInfo{
             .width = frameWidth_,
@@ -2148,6 +2161,7 @@ private:
             lightGridDesc_.aspect * guardX / guardY,
             2.0f * std::atan(std::tan(lightGridDesc_.fovRadians * 0.5f) * guardY),
             lightGridDesc_.zNear, lightGridDesc_.zFar, lightGridDesc_.orthoHeight * guardY);
+        uint32_t prepareCalls = 1;
         if (!subsystem.prepareView(gpuSceneView_, prepareInfo)) {
             return makeError(Error::InvalidArgument);
         }
@@ -2159,6 +2173,7 @@ private:
         if (!visibleDrawSet->stats.hzbValid) {
             hzbValid_ = false;
         } else if (!hzbValid_) {
+            ++prepareCalls;
             if (!subsystem.markViewHzbValid(gpuSceneView_, activeFrameSlot_, false) ||
                 !subsystem.prepareView(gpuSceneView_, prepareInfo)) {
                 return makeError(Error::Failure);
@@ -2167,6 +2182,14 @@ private:
             if (visibleDrawSet == nullptr) {
                 return makeError(Error::Failure);
             }
+        }
+        if (profile) {
+            profile->work("prepareViewCalls", prepareCalls);
+            profile->work("instanceRecordsVisited", uint64_t(prepareCalls) * visibleDrawSet->stats.sourceInstanceCount);
+            profile->work("lightRecordsVisited", uint64_t(prepareCalls) * visibleDrawSet->lights.sourceLightCount);
+            profile->work("visibleInstances", visibleDrawSet->instances.size());
+            profile->work("visibleLights", visibleDrawSet->lights.localLights.size() + visibleDrawSet->lights.unboundedLocalLights.size());
+            profile->work("cameraCut", prepareInfo.cameraCut);
         }
         const uint32_t drawSetGeneration = subsystem.drawSet().generation;
         const uint64_t drawSetRevision = subsystem.drawSet().revision;
@@ -2192,17 +2215,28 @@ private:
         return result;
     }
 
-    Result<> syncRuntimeGeometry(const scene::Scene* runtimeScene)
+    Result<> syncRuntimeGeometry(const scene::Scene* runtimeScene, CPUProfileRecorder* profiler)
     {
+        CPUProfileScope pathProfile(profiler, "Visibility scene path resolve");
+        pathProfile.work("pathResolveCalls", 1);
+        pathProfile.work("compiledSceneSelected", compiledScene_ != nullptr);
         if (compiledScene_ != nullptr) {
             runtimeScene = compiledScene_;
         }
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
+        pathProfile.work("matchedScene", runtimeScene != nullptr);
+        pathProfile.end();
         if (runtimeScene == nullptr) {
             return {};
         }
-        if (runtimeScene->materialRevision() != sceneMaterialRevision_ ||
-            (sharedTextureResources_ && sharedTextureResources_->materialTextureSnapshot() != materialSnapshot_)) {
+        CPUProfileScope revisionProfile(profiler, "Visibility geometry revisions");
+        const bool refreshMaterial = runtimeScene->materialRevision() != sceneMaterialRevision_ ||
+            (sharedTextureResources_ && sharedTextureResources_->materialTextureSnapshot() != materialSnapshot_);
+        revisionProfile.work("materialRefresh", refreshMaterial);
+        revisionProfile.work("transformRevision", runtimeScene->transformRevision());
+        revisionProfile.work("visibilityRevision", runtimeScene->visibilityRevision());
+        revisionProfile.work("materialRevision", runtimeScene->materialRevision());
+        if (refreshMaterial) {
             if (device_ == nullptr) { return makeError(Error::InvalidArgument); }
             std::string log;
             const bool materialChanged = runtimeScene->materialRevision() != sceneMaterialRevision_;
@@ -2227,6 +2261,8 @@ private:
         const bool transformsChanged = runtimeScene->transformRevision() != sceneRevision_;
         const bool visibilityChanged =
             runtimeScene->visibilityRevision() != sceneVisibilityRevision_;
+        revisionProfile.work("transformRefresh", transformsChanged);
+        revisionProfile.work("visibilityRefresh", visibilityChanged);
         if (!transformsChanged && !visibilityChanged) {
             return {};
         }

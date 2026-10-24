@@ -142,6 +142,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/Profiling/NsightGraphicsCapture.cpp
     Runtime/Render/Profiling/RHIProfiling.cpp
+    Runtime/Render/Profiling/CPUThreadProfile.cpp
     Runtime/Render/GAPI/Vulkan/VulkanTooling.cpp
     Runtime/Render/GAPI/Vulkan/VulkanReplayEvidence.cpp
     Runtime/Render/Profiling/PacingTrace.cpp

@@ -456,6 +456,7 @@ add_executable(MetallicRHITests
     rhi/RHIRefinementTests.cpp
     rhi/GPUProfilingTests.cpp
     rhi/EditorProfilerTests.cpp
+    rhi/CPUThreadProfileTests.cpp
     rhi/RenderGraphViewerTests.cpp
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorProfiler.cpp"
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorRenderGraphViewer.cpp"

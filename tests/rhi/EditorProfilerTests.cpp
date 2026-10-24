@@ -219,6 +219,83 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerIdleAccountingTest);
 
+class EditorProfilerEditorAccountingTest final : public RHITest {
+public:
+    EditorProfilerEditorAccountingTest() { type = RHITestType::Command; name = "editor_profiler_editor_accounting"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        try {
+            EditorProfiler profiler;
+            { auto outside = profiler.editorScope("Outside Frame"); }
+            profiler.beginCapture();
+            {
+                auto frame = profiler.beginFrame();
+                auto render = profiler.scope("Render Frame");
+                {
+                    auto panels = profiler.editorScope("Panels");
+                    {
+                        auto child = profiler.editorScope("Profiler Panel");
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                    {
+                        auto wait = profiler.idleScope("Panel Wait");
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                }
+                {
+                    auto wait = profiler.idleScope("Outer Wait");
+                    auto child = profiler.editorScope("Editor During Wait");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                {
+                    auto work = profiler.scope("Scene Work");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            profiler.endCapture();
+            const auto& raw = profiler.history().back();
+            const auto find = [&](const char* name) -> const EditorProfiler::Node& {
+                const auto found = std::find_if(raw.nodes.begin(), raw.nodes.end(),
+                    [&](const auto& node) { return node.name == name; });
+                checkProfile(found != raw.nodes.end(), std::string("Missing editor accounting node: ") + name);
+                return *found;
+            };
+            const auto& panels = find("Panels");
+            const auto& child = find("Profiler Panel");
+            const auto& wait = find("Idle / Outer Wait");
+            const auto& work = find("Scene Work");
+            const auto& root = raw.nodes.front();
+            checkProfile(raw.nodes.size() == 8 && panels.cpuEditor && panels.cpuOnly && !panels.cpuIdle &&
+                child.cpuEditor && !find("Render Frame").cpuEditor && !work.cpuEditor,
+                "Editor classification leaked to normal work or outside the active frame");
+            checkProfile(panels.cpuMilliseconds >= child.cpuMilliseconds && child.cpuMilliseconds > 0 &&
+                raw.cpuEditorMilliseconds == panels.cpuMilliseconds && raw.cpuIdleMilliseconds == wait.cpuMilliseconds,
+                "Nested editor/idle intervals were excluded twice or raw UI timing was lost");
+            checkProfile(root.cpuMilliseconds >= work.cpuMilliseconds && root.cpuMilliseconds < raw.cpuWallMilliseconds &&
+                std::abs(root.cpuMilliseconds + raw.cpuIdleMilliseconds + raw.cpuEditorMilliseconds - raw.cpuWallMilliseconds) < 1e-9,
+                "Frame cost includes editor UI or excludes scene work");
+            const auto& captured = profiler.capturedFrames().front();
+            checkProfile(captured.cpuEditorMilliseconds == raw.cpuEditorMilliseconds &&
+                captured.nodes.front().cpuMilliseconds == root.cpuMilliseconds && captured.nodes[panels.scopeId].cpuEditor,
+                "Capture lost editor overhead metadata or uses different Frame cost");
+            const auto presented = profiler.presentationFrame();
+            checkProfile(presented.cpuEditorMilliseconds == raw.cpuEditorMilliseconds && presented.nodes[panels.scopeId].cpuEditor &&
+                presented.nodes.front().cpuMilliseconds == root.cpuMilliseconds,
+                "Presentation lost editor classification or Frame accounting");
+            checkProfile(profiler.historyStatistics(root.scopeId).cpu.average == root.cpuMilliseconds &&
+                profiler.historyStatistics(panels.scopeId).cpu.average == panels.cpuMilliseconds,
+                "History did not retain adjusted Frame and inclusive panel timings");
+            { auto frame = profiler.beginFrame(); }
+            const auto& active = profiler.history().back();
+            checkProfile(active.cpuEditorMilliseconds == 0 && active.cpuIdleMilliseconds == 0 &&
+                active.nodes.front().cpuMilliseconds == active.cpuWallMilliseconds,
+                "Editor exclusion leaked into a subsequent frame");
+            return RHITestResult::pass("Frame excludes editor overhead once, preserving raw UI scopes, scene work and metadata");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerEditorAccountingTest);
+
 EditorProfiler::Aggregate bruteProfilerAggregate(const EditorProfiler& profiler, size_t scopeId, bool gpu)
 {
     EditorProfiler::Aggregate result;

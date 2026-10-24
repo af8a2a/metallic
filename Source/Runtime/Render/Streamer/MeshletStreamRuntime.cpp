@@ -1183,6 +1183,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (const char* value = std::getenv("METALLIC_STREAM_RT_HISTORY_PACKED")) {
         rtHistoryPacked_ = std::string_view(value) != "0";
     }
+    if (const char* value = std::getenv("METALLIC_STREAM_RT_HISTORY_SPARSE_WRITES")) {
+        rtHistorySparseWrites_ = std::string_view(value) != "0";
+    }
     maxResidentPages_ = desc.maxResidentPages;
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
     maxUploadBytesPerFrame_ = desc.maxUploadBytesPerFrame;
@@ -1572,7 +1575,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             kMeshletStreamRTRepresentationsPerPrimitive;
         const uint64_t representationStateWords = uint64_t(asset_.groupCount()) * 3u +
             uint64_t(asset_.lodLevelCount()) * 4u + uint64_t(asset_.primitiveCount()) * 12u +
-            uint64_t(asset_.instanceCount()) * 4u + representationCount * (kMeshletStreamRTImportanceWords + 6u) + 2u;
+            uint64_t(asset_.instanceCount()) * 4u + representationCount * (kMeshletStreamRTImportanceWords + 6u) +
+            kMeshletStreamRTPriorityControlWords;
         if (blasRepresentationsEnabled_ &&
             (representationCount > UINT32_MAX || representationStateWords > UINT32_MAX)) {
             log = "MeshletStreamRuntime RT representation metadata exceeds GPU addressing limits";
@@ -2819,6 +2823,7 @@ void MeshletStreamRuntime::reset()
     rtNodeDemandC1_ = true;
     rtNodeDemandC2_ = true;
     rtHistoryPacked_ = false;
+    rtHistorySparseWrites_ = false;
     pageHandle_ = {};
     activeGroupHandle_ = {};
     activeHeaderHandle_ = {};
@@ -3795,7 +3800,7 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::
 Result<> MeshletStreamRuntime::syncRuntimeScene(
     const scene::Scene& scene,
     std::span<const uint32_t> runtimeRenderNodeIndices,
-    std::string& log)
+    std::string& log, CPUProfileScope* profile)
 {
     log.clear();
     if (!ready() || !scene.valid() || instanceBuffer_ == nullptr) {
@@ -3815,7 +3820,19 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
             runtimeRenderNodeIndices.begin(),
             runtimeRenderNodeIndices.end(),
             runtimeRenderNodeIndices_.begin())) {
+        if (profile) {
+            profile->work("cacheHit", 1);
+            profile->work("mappingElements", runtimeRenderNodeIndices.size());
+            profile->work("transformRecordsWritten", 0);
+            profile->work("uploadBytes", 0);
+        }
         return {};
+    }
+    if (profile) {
+        profile->work("cacheHit", 0);
+        profile->work("mappingElements", runtimeRenderNodeIndices.size());
+        profile->work("transformRecordsWritten", instances.size());
+        profile->work("uploadBytes", instanceBuffer_->desc().size);
     }
 
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
@@ -3902,14 +3919,26 @@ Result<> MeshletStreamRuntime::bindGPUSceneInstances(Buffer& instances)
     });
 }
 
-Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping)
+Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping, CPUProfileScope* profile)
 {
     if (!ready() || instanceBuffer_ == nullptr || mapping.size() != asset_.instances().size()) {
         return makeError(Error::InvalidArgument);
     }
     if (gpuSceneInstanceMapping_.size() == mapping.size() &&
         std::equal(mapping.begin(), mapping.end(), gpuSceneInstanceMapping_.begin())) {
+        if (profile) {
+            profile->work("cacheHit", 1);
+            profile->work("mappingElements", mapping.size());
+            profile->work("mappingRecordsWritten", 0);
+            profile->work("uploadBytes", 0);
+        }
         return {};
+    }
+    if (profile) {
+        profile->work("cacheHit", 0);
+        profile->work("mappingElements", mapping.size());
+        profile->work("mappingRecordsWritten", mapping.size());
+        profile->work("uploadBytes", instanceBuffer_->desc().size);
     }
 
     void* mapped = instanceBuffer_->map();
@@ -4529,14 +4558,14 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
         (rtNodeDemandC1_ && frame.nodeDemandC1 ? 0u : 4u) |
         (rtNodeDemandC2_ && frame.nodeDemandC2 ? 0u : 8u) |
         (rtHistoryPacked_ ? 16u : 0u) | (frame.rtDemandMode >= 1u ? 32u : 0u) |
-        (frame.rtDemandMode >= 2u ? 64u : 0u) : 0u;
+        (frame.rtDemandMode >= 2u ? 64u : 0u) | (rtHistorySparseWrites_ ? 128u : 0u) : 0u;
     if (clusterRtxEnabled_ && previousFrameParamsValid_ &&
         (rtLodDisplayPixelError_ != displayPixelError ||
          previousFrameParams_.rtOffscreenErrorScale != params.rtOffscreenErrorScale ||
          previousFrameParams_.rtLodHysteresis != params.rtLodHysteresis ||
          // Mode toggles preserve leaf semantics, hysteresis and the cached cut.
          // History encoding is fixed for this runtime's allocation lifetime.
-         (previousFrameParams_.rtLodFlags & ~124u) != (params.rtLodFlags & ~124u) ||
+         (previousFrameParams_.rtLodFlags & ~252u) != (params.rtLodFlags & ~252u) ||
          previousFrameParams_.enableGpuLodSelection != params.enableGpuLodSelection ||
          previousFrameParams_.selectedLodLevel != params.selectedLodLevel)) {
         ++rtLodPolicyRevision_;
@@ -5365,6 +5394,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.rtDemandMode = (previousFrameParams_.rtLodFlags & 64u) != 0u ? 2u :
         (previousFrameParams_.rtLodFlags & 32u) != 0u ? 1u : 0u;
     result.rtHistoryPacked = (previousFrameParams_.rtLodFlags & 16u) != 0u;
+    result.rtHistorySparseWrites = (previousFrameParams_.rtLodFlags & 128u) != 0u;
     result.rtLodHistoryBytes = rtLodHistoryBytes_;
     result.deviceImmutableMetadata = deviceImmutableMetadata_;
     result.immutableMetadataReady = immutableMetadataReady();
@@ -5634,6 +5664,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
             {"demandMode", (previousFrameParams_.rtLodFlags & 64u) != 0u ? 2u :
                 (previousFrameParams_.rtLodFlags & 32u) != 0u ? 1u : 0u},
             {"historyPacked", (previousFrameParams_.rtLodFlags & 16u) != 0u},
+            {"historySparseWrites", (previousFrameParams_.rtLodFlags & 128u) != 0u},
             {"frameToken", previousFrameParams_.rtLodFrameToken},
             {"offscreenErrorScale", previousFrameParams_.rtOffscreenErrorScale},
             {"hysteresis", previousFrameParams_.rtLodHysteresis},

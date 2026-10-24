@@ -340,6 +340,9 @@ struct MeshletStreamGPURTRepresentationImportance {
     uint32_t offscreenConsumerCount = 0;
 };
 inline constexpr uint32_t kMeshletStreamRTImportanceWords = 6;
+// changed/reused/current first changed owner*3+word, then retained last mismatch:
+// previous/current key, GPU frame, owner*3+word.
+inline constexpr uint32_t kMeshletStreamRTPriorityControlWords = 7;
 static_assert(sizeof(MeshletStreamGPURTRepresentationImportance) ==
     kMeshletStreamRTImportanceWords * sizeof(uint32_t));
 
@@ -413,7 +416,8 @@ struct MeshletStreamGPUParams {
     float rtOffscreenErrorScale = 2.0f;
     float rtLodHysteresis = 0.2f;
     // Bits 0/1: RT policy/visible raster quality; 2/3: disable C1/C2;
-    // 4: packed true-token history; 5/6: late history/ray-first demand.
+    // 4: packed true-token history; 5/6: late history/ray-first demand;
+    // 7: skip false history writes without changing the history layout.
     uint32_t rtLodFlags = 0;
     uint32_t rtLodPolicyRevision = 1;
     uint32_t rtLodFrameToken = 0;
@@ -729,8 +733,8 @@ public:
     Result<> syncRuntimeScene(
         const scene::Scene& scene,
         std::span<const uint32_t> runtimeRenderNodeIndices,
-        std::string& log);
-    Result<> syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping);
+        std::string& log, CPUProfileScope* profile = nullptr);
+    Result<> syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping, CPUProfileScope* profile = nullptr);
     // GPUScene publishes this table for shader reads before stream TLAS generation.
     Result<> bindGPUSceneInstances(Buffer& instances);
     void reset();
@@ -975,6 +979,7 @@ private:
     bool rtNodeDemandC1_ = true;
     bool rtNodeDemandC2_ = true;
     bool rtHistoryPacked_ = false;
+    bool rtHistorySparseWrites_ = false;
     MeshletStreamGPUBLASHeader recentBlasHeader_;
     std::array<uint32_t, kBLASAllocatorStateWords> recentBlasAllocatorState_{};
     ResourceLease pageHandle_;

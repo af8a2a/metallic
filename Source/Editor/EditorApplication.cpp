@@ -3167,7 +3167,7 @@ bool EditorApplication::renderFrame()
     }
 
     {
-        auto profileScope = profiler_.scope("ImGui NewFrame");
+        auto profileScope = profiler_.editorScope("ImGui NewFrame");
         if (!imguiBackend_.newFrame()) { running_ = false; return false; }
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
@@ -3175,11 +3175,11 @@ bool EditorApplication::renderFrame()
     }
 
     {
-        auto profileScope = profiler_.scope("Dockspace");
+        auto profileScope = profiler_.editorScope("Dockspace");
         drawDockspace();
     }
     {
-        auto profileScope = profiler_.scope("Panels");
+        auto profileScope = profiler_.editorScope("Panels");
         drawPanels();
     }
     if (smokeTest_ && !viewportPreviewValid_) {
@@ -3189,7 +3189,7 @@ bool EditorApplication::renderFrame()
     }
 
     {
-        auto profileScope = profiler_.scope("ImGui Render");
+        auto profileScope = profiler_.editorScope("ImGui Render");
         ImGui::Render();
     }
     render::vulkan::setStreamlineLatencyMarker(render::vulkan::StreamlineLatencyMarker::SimulationEnd);
@@ -3466,43 +3466,43 @@ void EditorApplication::drawPanels()
 {
     drawMaterialGraphEditor();
     {
-        auto profileScope = profiler_.scope("Streamline Debug Panel");
+        auto profileScope = profiler_.editorScope("Streamline Debug Panel");
         drawStreamlineDebugPanel();
     }
     {
-        auto profileScope = profiler_.scope("Scene Panel");
+        auto profileScope = profiler_.editorScope("Scene Panel");
         drawScenePanel();
     }
     {
-        auto profileScope = profiler_.scope("Runtime Settings Panel");
+        auto profileScope = profiler_.editorScope("Runtime Settings Panel");
         drawRuntimeSettingsPanel();
     }
     {
-        auto profileScope = profiler_.scope("Inspector Panel");
+        auto profileScope = profiler_.editorScope("Inspector Panel");
         drawInspectorPanel();
     }
     {
-        auto profileScope = profiler_.scope("Statistics Panel");
+        auto profileScope = profiler_.editorScope("Statistics Panel");
         drawStatisticsPanel();
     }
     {
-        auto profileScope = profiler_.scope("Viewport Panel");
+        auto profileScope = profiler_.editorScope("Viewport Panel");
         drawViewportPanel();
     }
     {
-        auto profileScope = profiler_.scope("Render Graph Editor");
+        auto profileScope = profiler_.editorScope("Render Graph Editor");
         drawRenderGraphEditorWindow();
     }
 
     {
-        auto profileScope = profiler_.scope("Assets Panel");
+        auto profileScope = profiler_.editorScope("Assets Panel");
         ImGui::Begin("Assets");
         ImGui::TextUnformatted(PROJECT_SOURCE_DIR);
         ImGui::End();
     }
 
     {
-        auto profileScope = profiler_.scope("Console Panel");
+        auto profileScope = profiler_.editorScope("Console Panel");
         ImGui::Begin("Console");
         ImGui::TextUnformatted("Metallic editor initialized with SDL3.");
         if (!renderGraphStatus_.empty()) {
@@ -3513,7 +3513,7 @@ void EditorApplication::drawPanels()
     }
 
     {
-        auto profileScope = profiler_.scope("Profiler Panel");
+        auto profileScope = profiler_.editorScope("Profiler Panel");
         const auto captureState = nsightGraphicsCapture_.state();
         const bool captureReady =
             captureState == render::profiling::NsightGraphicsCaptureState::Ready ||
@@ -3548,7 +3548,7 @@ void EditorApplication::drawPanels()
         }
     }
     {
-        auto profileScope = profiler_.scope("NVML Monitor");
+        auto profileScope = profiler_.editorScope("NVML Monitor");
         nvmlMonitor_.drawWindow(&nvmlMonitorOpen_);
     }
 }
@@ -7324,7 +7324,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         }
 
         {
-            auto profileScope = profiler_.scope("Record ImGui Draw");
+            auto profileScope = profiler_.editorScope("Record ImGui Draw");
             if (!imguiBackend_.render(*frame.commandBuffer)) { return false; }
         }
 
@@ -7410,7 +7410,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         return false;
     }
     if (viewportsEnabled) {
-        auto profileScope = profiler_.scope("Platform Windows");
+        auto profileScope = profiler_.editorScope("Platform Windows");
         result = imguiBackend_.renderPlatformWindows();
         if (!result) {
             spdlog::error("Platform window rendering failed: {}", render::resultToString(result));

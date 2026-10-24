@@ -37,7 +37,7 @@ constexpr uint32_t kOwnerCount = kPrimitiveCount * 3;
 constexpr uint32_t kPrimitiveBase = kLevelCount * 4;
 constexpr uint32_t kInstanceBase = kPrimitiveBase + kPrimitiveCount * 12;
 constexpr uint32_t kImportanceBase = kInstanceBase + kInstanceCount * 4;
-constexpr uint32_t kStateWords = kImportanceBase + kOwnerCount * 12 + 2;
+constexpr uint32_t kStateWords = kImportanceBase + kOwnerCount * 12 + kMeshletStreamRTPriorityControlWords;
 using ImportanceState = std::array<uint32_t, kStateWords>;
 using Importance = std::array<uint32_t, 6>;
 using ImportanceOwners = std::array<Importance, kOwnerCount>;
@@ -285,6 +285,7 @@ struct ImportanceFixture {
     std::vector<uint32_t> sort(const ImportanceOwners& values, uint32_t count = kOwnerCount,
         bool cache = false, bool initialize = true, bool expectedReuse = false, bool cancelSort = false)
     {
+        params.frameIndex = ++frameNumber;
         params.rtRepresentationCount = count;
         params.enableBlasPriority = 1;
         params.enableBlasPriorityCache = cache;
@@ -297,6 +298,29 @@ struct ImportanceFixture {
         if (count != kOwnerCount) {
             state[kImportanceBase + count * 12] = !cache || initialize ? 1u : 0u;
             state[kImportanceBase + count * 12 + 1] = 0u;
+            state[kImportanceBase + count * 12 + 2] = UINT32_MAX;
+            if (initialize) {
+                state[kImportanceBase + count * 12 + 3] = 0u;
+                state[kImportanceBase + count * 12 + 4] = 0u;
+                state[kImportanceBase + count * 12 + 5] = 0u;
+                state[kImportanceBase + count * 12 + 6] = UINT32_MAX;
+            }
+        }
+        const uint32_t control = kImportanceBase + count * 12;
+        std::array<uint32_t, 4> lastMismatch;
+        std::copy_n(state.begin() + control + 3, lastMismatch.size(), lastMismatch.begin());
+        uint32_t firstChanged = UINT32_MAX;
+        if (cache && !initialize) {
+            for (uint32_t owner = 0; owner < count && firstChanged == UINT32_MAX; ++owner) {
+                for (uint32_t word = 0; word < 3; ++word) {
+                    const uint32_t old = state[kImportanceBase + count * 9 + owner * 3 + word];
+                    if (old != values[owner][word]) {
+                        firstChanged = owner * 3 + word;
+                        lastMismatch = {old, values[owner][word], params.frameIndex, firstChanged};
+                        break;
+                    }
+                }
+            }
         }
         for (uint32_t owner = 0; owner < count; ++owner) {
             std::copy(values[owner].begin(), values[owner].end(), state.begin() + kImportanceBase + owner * 6);
@@ -333,6 +357,9 @@ struct ImportanceFixture {
         const uint32_t orderBase = kImportanceBase + count * 6;
         importanceRequire(state[orderBase + count * 6 + 1] == uint32_t(expectedReuse),
             "Exact sort cache reuse diagnostic disagrees with expected invalidation");
+        importanceRequire(state[control + 2] == firstChanged &&
+            std::equal(lastMismatch.begin(), lastMismatch.end(), state.begin() + control + 3),
+            "Priority invalidation provenance lost the first changed key/frame or failed to persist across hits");
         for (uint32_t rank = 0; rank < count; ++rank) {
             importanceRequire(state[orderBase + rank] == expected[rank] &&
                 state[orderBase + count * 2 + expected[rank]] == rank,

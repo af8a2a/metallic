@@ -116,6 +116,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"nodeDemandC1",s.nodeDemandC1},
         {"nodeDemandC2",s.nodeDemandC2},
         {"rtDemandMode",s.rtDemandMode},{"rtHistoryPacked",s.rtHistoryPacked},{"rtLodHistoryBytes",s.rtLodHistoryBytes},
+        {"rtHistorySparseWrites",s.rtHistorySparseWrites},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"gpuLoadRequests",s.gpuLoadRequests},{"geometryPendingTasks",s.geometryPendingTasks},
         {"geometryPendingPatches",s.geometryPendingPatches},
@@ -662,9 +663,13 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             const uint32_t settleFrames = demandComparison.value("settleFrames", 16u);
             const uint32_t sampleFrames = demandComparison.value("sampleFrames", 64u);
             const bool prepareProfile = demandComparison.value("prepareProfile", false);
+            const bool cpuThreadDiagnostics = demandComparison.value("cpuThreadDiagnostics", false);
+            const bool deferDiagnostics = demandComparison.value("deferDiagnostics", false);
             const auto seeds = demandComparison.value("seeds", std::vector<uint32_t>{0u, 1u});
             if (settleFrames < 4u || settleFrames > 16u || sampleFrames < 16u || sampleFrames > 64u ||
                 (prepareProfile && (!packingOnly || captureQuality)) ||
+                (cpuThreadDiagnostics && !prepareProfile) ||
+                (deferDiagnostics && (!packingOnly || captureQuality)) ||
                 seeds.empty() || seeds.size() > 2u || std::set<uint32_t>(seeds.begin(), seeds.end()).size() != seeds.size() ||
                 viewportView_.temporalJitter() || config.value("stochasticTextureFiltering", false) ||
                 (captureQuality && (dlssMode != "Off" || !config.contains("shadowOverrides") ||
@@ -691,7 +696,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 return streamSample(*found);
             };
             setProperty("VBuffer", "benchmarkPrepareProfile", prepareProfile);
+            setProperty("VBuffer", "benchmarkCPUThreadDiagnostics", cpuThreadDiagnostics);
             report["prepareProfile"] = prepareProfile;
+            report["cpuThreadDiagnostics"] = cpuThreadDiagnostics;
             drain();
             controlledLighting = renderWorld_.lighting();
             auto fixedLighting = *controlledLighting;
@@ -803,6 +810,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     "Converged frozen source; one canonical owner/history reset before live demand/frontier/BLAS measurement" :
                     "One frozen geometry/CLAS/texture source; live demand/frontier/BLAS, no RT reset"},
                 {"candidate",demandCandidate},{"packingOnly",packingOnly},{"prepareProfile",prepareProfile},
+                {"timingDiagnosticsDeferred",deferDiagnostics},{"cpuThreadDiagnostics",cpuThreadDiagnostics},
                 {"statisticalUnit",packingOnly ? "Two fixed late-history A/A arms per process; process packing ABBA block, n=1; no CI" : compareDemandC3 ?
                     "One in-process ABC-CBA block; combine only under the predeclared cross-process packing ABBA protocol; no CI" :
                     "One in-process ABBA block, n=1; descriptive only, no confidence interval or independent-process replication"},
@@ -815,69 +823,52 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             const std::vector<Arm> arms = packingOnly ? std::vector<Arm>{{"A1",true,1}, {"A2",true,1}} : compareDemandC3 ?
                 std::vector<Arm>{{"A1",true,0}, {"B1",true,1}, {"C1",true,2}, {"C2",true,2}, {"B2",true,1}, {"A2",true,0}} :
                 std::vector<Arm>{{"A1",false}, {"B1",true}, {"B2",true}, {"A2",false}};
-            for (const auto& arm : arms) {
-                drain();
+            const auto checkState = [&](const Arm& arm) {
                 const bool c1 = compareDemandC3 || compareDemandC2 || arm.enabled;
                 const bool c2 = compareDemandC3 || (compareDemandC2 && arm.enabled);
-                setProperty("VBuffer", "benchmarkDemandC1", c1);
-                setProperty("VBuffer", "benchmarkDemandC2", c2);
-                setProperty("VBuffer", "benchmarkDemandMode", arm.mode);
-                Json variant{{"name",arm.name},{"nodeDemandC1",c1},{"nodeDemandC2",c2},{"rtDemandMode",arm.mode},
-                    {"settle",Json::array()},{"captures",Json::array()}};
-                const auto checkState = [&]() {
-                    auto state = snapshot();
-                    const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
-                    if (sourceIdentity.empty()) { sourceIdentity = identity; }
-                    if (!historyPacked) { historyPacked = state.at("rtHistoryPacked").get<bool>(); }
-                    if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != c1 ||
-                        state.at("nodeDemandC2") != c2 || state.at("rtDemandMode") != arm.mode ||
-                        state.at("rtHistoryPacked") != *historyPacked) {
-                        throw std::runtime_error("Demand comparison source identity, mode or static history layout changed");
-                    }
-                    return state;
-                };
-                for (uint32_t i = 0; i < settleFrames; ++i) {
-                    if (!draw()) { throw std::runtime_error("Demand comparison settle failed"); }
-                    variant["settle"].push_back(checkState());
+                auto state = snapshot();
+                const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
+                if (sourceIdentity.empty()) { sourceIdentity = identity; }
+                if (!historyPacked) { historyPacked = state.at("rtHistoryPacked").get<bool>(); }
+                if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != c1 ||
+                    state.at("nodeDemandC2") != c2 || state.at("rtDemandMode") != arm.mode ||
+                    state.at("rtHistoryPacked") != *historyPacked) {
+                    throw std::runtime_error("Demand comparison source identity, mode or static history layout changed");
                 }
-                if (!captureQuality) {
-                    drain();
-                    std::vector<uint64_t> frameIds;
-                    profiler_.beginCapture();
-                    for (uint32_t i = 0; i < sampleFrames; ++i) {
-                        frameIds.push_back(profiler_.nextFrameIndex());
-                        if (!draw()) { throw std::runtime_error("Demand comparison timed frame failed"); }
+                return state;
+            };
+            const auto exportTiming = [&](const Arm& arm, const std::vector<uint64_t>& frameIds) {
+                const auto& frames = profiler_.capturedFrames();
+                const auto directory = output / arm.name;
+                std::filesystem::create_directories(directory);
+                std::ofstream file(directory / "Frames.jsonl");
+                file.exceptions(std::ios::badbit | std::ios::failbit);
+                for (size_t i = 0; i < frameIds.size(); ++i) {
+                    const auto found = std::lower_bound(frames.begin(), frames.end(), frameIds[i],
+                        [](const auto& frame, uint64_t id) { return frame.index < id; });
+                    if (found == frames.end()) { throw std::runtime_error("Demand comparison timing frame missing"); }
+                    const auto& frame = *found;
+                    if (frame.index != frameIds[i] || frame.profilingOverflow) { throw std::runtime_error("Demand comparison timing frame identity mismatch"); }
+                    Json row{{"frame",frame.index},{"arm",arm.name},{"diagnostic",prepareProfile},{"scopes",Json::array()},{"streaming",Json::array()}};
+                    std::vector<std::string> paths;
+                    bool completeGpu = false;
+                    for (size_t n = 0; n < frame.nodes.size(); ++n) {
+                        const auto& node = frame.nodes[n];
+                        paths.push_back((n && node.parent < n ? paths[node.parent] + "/" : "") + node.name);
+                        Json work = Json::object();
+                        for (const auto& count : node.cpuWork) { work[count.name] = count.value; }
+                        row["scopes"].push_back({{"path",paths.back()},{"cpuMs",node.cpuMilliseconds},
+                            {"gpuMs",node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)},
+                            {"cpuThread",node.cpuThreadProfile ? Json(*node.cpuThreadProfile) : Json(nullptr)},
+                            {"cpuWork",std::move(work)}});
+                        if (node.name == "RenderGraph GPU envelope") { completeGpu = node.gpuTimingAvailable; }
                     }
-                    profiler_.endCapture();
-                    drain();
-                    const auto& frames = profiler_.capturedFrames();
-                    if (frames.size() != sampleFrames) { throw std::runtime_error("Demand comparison timing frame count mismatch"); }
-                    const auto directory = output / arm.name;
-                    std::filesystem::create_directories(directory);
-                    std::ofstream file(directory / "Frames.jsonl");
-                    file.exceptions(std::ios::badbit | std::ios::failbit);
-                    for (size_t i = 0; i < frames.size(); ++i) {
-                        const auto& frame = frames[i];
-                        if (frame.index != frameIds[i] || frame.profilingOverflow) { throw std::runtime_error("Demand comparison timing frame identity mismatch"); }
-                        Json row{{"frame",frame.index},{"arm",arm.name},{"diagnostic",prepareProfile},{"scopes",Json::array()},{"streaming",Json::array()}};
-                        std::vector<std::string> paths;
-                        bool completeGpu = false;
-                        for (size_t n = 0; n < frame.nodes.size(); ++n) {
-                            const auto& node = frame.nodes[n];
-                            paths.push_back((n && node.parent < n ? paths[node.parent] + "/" : "") + node.name);
-                            row["scopes"].push_back({{"path",paths.back()},{"cpuMs",node.cpuMilliseconds},
-                                {"gpuMs",node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)}});
-                            if (node.name == "RenderGraph GPU envelope") { completeGpu = node.gpuTimingAvailable; }
-                        }
-                        if (!completeGpu) { throw std::runtime_error("Demand comparison incomplete GPU timing coverage"); }
-                        for (const auto& profile : frame.streaming) { row["streaming"].push_back(streamSample(profile)); }
-                        file << row.dump() << '\n';
-                    }
-                    variant["timings"] = std::string(arm.name) + "/Frames.jsonl";
-                    report["frames"] = report.at("frames").get<uint32_t>() + sampleFrames;
+                    if (!completeGpu) { throw std::runtime_error("Demand comparison incomplete GPU timing coverage"); }
+                    for (const auto& profile : frame.streaming) { row["streaming"].push_back(streamSample(profile)); }
+                    file << row.dump() << '\n';
                 }
-                // Snapshot after ordinary timings. The quality process has its
-                // own diagnostic graph and never supplies performance samples.
+            };
+            const auto captureArm = [&](const Arm& arm, Json& variant) {
                 for (uint32_t seed : captureQuality ? seeds : std::vector<uint32_t>{0u}) {
                     drain();
                     if (captureQuality) {
@@ -896,7 +887,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     if (!draw()) { throw std::runtime_error("Demand comparison snapshot frame failed"); }
                     if (compareDemandC3) { setProperty("VBuffer", "benchmarkCaptureSemanticSource", false); }
                     qualityCapture->capture = false;
-                    auto state = checkState();
+                    auto state = checkState(arm);
                     drain();
                     const std::string directory = std::string(arm.name) + "/seed" + std::to_string(seed);
                     Json capture{{"seed",seed},{"directory",directory},{"state",state},
@@ -909,7 +900,65 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     qualityCapture->captureReflections = captureReflections;
                     qualityCapture->captureRasterInputs = true;
                 }
+            };
+            std::vector<std::vector<uint64_t>> timedFrameIds;
+            // Keep the ordinary A/A cadence uninterrupted. A single capture owns
+            // both arms so delayed GPU timestamps remain associated with their frames.
+            if (deferDiagnostics) { profiler_.beginCapture(); }
+            for (const auto& arm : arms) {
+                if (!deferDiagnostics) { drain(); }
+                const bool c1 = compareDemandC3 || compareDemandC2 || arm.enabled;
+                const bool c2 = compareDemandC3 || (compareDemandC2 && arm.enabled);
+                setProperty("VBuffer", "benchmarkDemandC1", c1);
+                setProperty("VBuffer", "benchmarkDemandC2", c2);
+                setProperty("VBuffer", "benchmarkDemandMode", arm.mode);
+                Json variant{{"name",arm.name},{"nodeDemandC1",c1},{"nodeDemandC2",c2},{"rtDemandMode",arm.mode},
+                    {"settle",Json::array()},{"captures",Json::array()}};
+                for (uint32_t i = 0; i < settleFrames; ++i) {
+                    if (!draw()) { throw std::runtime_error("Demand comparison settle failed"); }
+                    variant["settle"].push_back(checkState(arm));
+                }
+                if (!captureQuality) {
+                    if (!deferDiagnostics) { drain(); profiler_.beginCapture(); }
+                    std::vector<uint64_t> frameIds;
+                    frameIds.reserve(sampleFrames);
+                    for (uint32_t i = 0; i < sampleFrames; ++i) {
+                        frameIds.push_back(profiler_.nextFrameIndex());
+                        if (!draw()) { throw std::runtime_error("Demand comparison timed frame failed"); }
+                    }
+                    if (!deferDiagnostics) {
+                        profiler_.endCapture();
+                        drain();
+                        if (profiler_.capturedFrames().size() != sampleFrames) {
+                            throw std::runtime_error("Demand comparison timing frame count mismatch");
+                        }
+                        exportTiming(arm, frameIds);
+                    }
+                    timedFrameIds.push_back(std::move(frameIds));
+                    variant["timings"] = std::string(arm.name) + "/Frames.jsonl";
+                    report["frames"] = report.at("frames").get<uint32_t>() + sampleFrames;
+                }
+                if (!deferDiagnostics) { captureArm(arm, variant); }
                 report["demandComparison"]["variants"].push_back(std::move(variant));
+            }
+            if (deferDiagnostics) {
+                profiler_.endCapture();
+                drain();
+                if (profiler_.capturedFrames().size() != arms.size() * (settleFrames + sampleFrames)) {
+                    throw std::runtime_error("Deferred demand comparison frame count mismatch");
+                }
+                for (size_t i = 0; i < arms.size(); ++i) { exportTiming(arms[i], timedFrameIds[i]); }
+                // These are post-block diagnostics of the same frozen source and
+                // identical policy, never performance samples or per-arm restores.
+                for (size_t i = 0; i < arms.size(); ++i) {
+                    auto& variant = report["demandComparison"]["variants"][i];
+                    variant["diagnosticSettle"] = Json::array();
+                    for (uint32_t frame = 0; frame < settleFrames; ++frame) {
+                        if (!draw()) { throw std::runtime_error("Demand diagnostic recovery failed"); }
+                        variant["diagnosticSettle"].push_back(checkState(arms[i]));
+                    }
+                    captureArm(arms[i], variant);
+                }
             }
             report["demandComparison"]["sourceIdentity"] = sourceIdentity;
             report["demandComparison"]["rtHistoryPacked"] = *historyPacked;
@@ -1224,7 +1273,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 const std::string path=(n && node.parent<n ? paths[node.parent]+"/" : "")+node.name;
                 paths.push_back(path);
                 auto [it,inserted]=scopeIds.emplace(path,uint32_t(scopeIds.size()));
-                if (inserted) { definitions.push_back({{"id",it->second},{"path",path},{"cpuOnly",node.cpuOnly},{"cpuIdle",node.cpuIdle},
+                if (inserted) { definitions.push_back({{"id",it->second},{"path",path},{"cpuOnly",node.cpuOnly},{"cpuIdle",node.cpuIdle},{"cpuEditor",node.cpuEditor},
                     {"queue",(node.cpuOnly || node.renderGraphExecutionId==UINT64_MAX) ? "cpu" : node.queue==render::QueueType::Compute ? "compute" : node.queue==render::QueueType::Copy ? "copy" : "graphics"}}); }
                 row["scopes"].push_back({{"id",it->second},{"cpuMs",node.cpuMilliseconds},
                     {"gpuMs",node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)},

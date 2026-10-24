@@ -38,6 +38,7 @@ public:
         bool gpuTimingAvailable = false;
         bool cpuOnly = false;
         bool cpuIdle = false;
+        bool cpuEditor = false;
         uint64_t renderGraphExecutionId = UINT64_MAX;
         uint32_t renderGraphNodeId = UINT32_MAX;
         uint32_t renderGraphSectionIndex = UINT32_MAX;
@@ -46,6 +47,8 @@ public:
         size_t scopeId = SIZE_MAX;
         std::vector<size_t> children;
         Clock::time_point beginTime;
+        std::shared_ptr<const render::CPUThreadProfile> cpuThreadProfile;
+        std::vector<render::CPUProfileWorkCounter> cpuWork;
     };
 
     struct Frame {
@@ -53,9 +56,10 @@ public:
         uint64_t index = 0;
         bool profilingOverflow = false;
         std::vector<render::SceneStreamingProfile> streaming;
-        // Frame CPU is wall time minus non-overlapping idle scopes. Other nodes remain inclusive.
+        // Frame CPU excludes outermost idle/editor scopes. Other nodes remain inclusive.
         double cpuWallMilliseconds = 0.0;
         double cpuIdleMilliseconds = 0.0;
+        double cpuEditorMilliseconds = 0.0;
     };
 
     struct StreamingHistory {
@@ -129,8 +133,10 @@ public:
     uint64_t nextFrameIndex() const { return frameIndex_; }
     FrameScope beginFrame();
     Scope scope(std::string_view name, uint32_t color = 0);
-    // CPU wall time spent waiting; retained in inclusive frame/parent timings.
+    // CPU wall time spent waiting; retained in inclusive parent timings.
     Scope idleScope(std::string_view name);
+    // Editor UI overhead is visible separately but excluded from Frame CPU cost.
+    Scope editorScope(std::string_view name);
     void addIdleSample(std::string_view name, double milliseconds);
     void addCpuProfile(const std::vector<render::RenderGraphProfileSection>& sections);
     void addRenderGraphStats(const render::RenderGraphExecutionStats& stats);

@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Task/TaskSystem.h"
 
 #include <algorithm>
@@ -619,8 +620,12 @@ Result<> RenderGraphExecutionContext::prepareJoined(std::span<const RenderPrepar
         ? std::max(1u, std::min(system->workerCount(), preparationWorkerLimit_)) : 1u;
     std::vector<Result<>> results(tasks.size(), makeError(Error::Failure));
     std::vector<RenderGraphProfileSection> samples(tasks.size());
+    const bool threadDiagnostics = properties().value("benchmarkCPUThreadDiagnostics", false);
+    CPUProfileRecorder joinRecorder;
+    joinRecorder.threadDiagnostics = threadDiagnostics;
     const auto run = [&](size_t begin, size_t end) {
         for (size_t i = begin; i < end; ++i) {
+            const auto threadBegin = threadDiagnostics ? sampleCPUThread() : CPUThreadSample{};
             const auto start = std::chrono::steady_clock::now();
             try { results[i] = tasks[i].prepare(); }
             catch (...) { results[i] = makeError(Error::Failure); }
@@ -628,6 +633,10 @@ Result<> RenderGraphExecutionContext::prepareJoined(std::span<const RenderPrepar
             samples[i].cpuOnly = true;
             samples[i].cpuMilliseconds = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
+            if (threadDiagnostics) {
+                samples[i].cpuThreadProfile = std::make_shared<CPUThreadProfile>(cpuThreadProfile(threadBegin, sampleCPUThread()));
+                samples[i].cpuWork = {{"preparationWorkers", workers}, {"declaredTaskWorkload", tasks[i].workload}};
+            }
         }
     };
     bool complete = true;
@@ -651,12 +660,15 @@ Result<> RenderGraphExecutionContext::prepareJoined(std::span<const RenderPrepar
             auto submitted = system->submit(std::move(graph));
             if (!submitted) { complete = false; break; }
             preparationTaskCount_ += uint32_t(batches.size());
+            CPUProfileScope joinScope(threadDiagnostics ? &joinRecorder : nullptr, "Preparation join wait");
+            joinScope.work("submittedBatches", batches.size());
             const auto joined = submitted->wait();
             if (!joined || joined->status != task::TaskGraphStatus::Succeeded) { complete = false; break; }
         }
     }
     // Profiling publication has the same owner as the pass; jobs only fill local slots.
     publishCpuProfile(samples);
+    if (!joinRecorder.sections.empty()) { publishCpuProfile(joinRecorder.sections); }
     if (!complete) { return makeError(Error::Failure); }
     for (const auto& result : results) { if (!result) { return result; } }
     return {};

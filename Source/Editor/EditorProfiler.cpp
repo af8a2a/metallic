@@ -69,6 +69,7 @@ using ProfilerTableRow = EditorProfiler::HistoryStatistics;
 const char* tableQueueName(const EditorProfiler::Node& node)
 {
     if (node.cpuIdle) { return "CPU Idle"; }
+    if (node.cpuEditor) { return "CPU Editor"; }
     if (node.cpuOnly || node.renderGraphExecutionId == UINT64_MAX) { return "CPU"; }
     return node.renderGraphNodeId == UINT32_MAX ? "Envelope" : queueName(node.queue);
 }
@@ -888,6 +889,15 @@ EditorProfiler::Scope EditorProfiler::idleScope(std::string_view name)
     return Scope(this, index);
 }
 
+EditorProfiler::Scope EditorProfiler::editorScope(std::string_view name)
+{
+    if (!frameActive_) { return {}; }
+    const size_t index = beginSection(name, colorFromName(name));
+    currentNodes_[index].cpuOnly = true;
+    currentNodes_[index].cpuEditor = true;
+    return Scope(this, index);
+}
+
 void EditorProfiler::addIdleSample(std::string_view name, double milliseconds)
 {
     if (!frameActive_ || !std::isfinite(milliseconds) || milliseconds < 0.0) { return; }
@@ -906,6 +916,8 @@ void EditorProfiler::addCpuProfile(const std::vector<render::RenderGraphProfileS
         const auto index = addFinishedSection(section.parent < nodes.size() ? nodes[section.parent] : parent,
             section.name, colorFromName(section.name), section.cpuMilliseconds);
         currentNodes_[index].cpuOnly = true;
+        currentNodes_[index].cpuThreadProfile = section.cpuThreadProfile;
+        currentNodes_[index].cpuWork = section.cpuWork;
         nodes.push_back(index);
     }
 }
@@ -933,6 +945,8 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
             nested ? section.name : "Graph preparation / " + section.name,
             colorFromName(section.name), section.cpuMilliseconds);
         currentNodes_[index].cpuOnly = true;
+        currentNodes_[index].cpuThreadProfile = section.cpuThreadProfile;
+        currentNodes_[index].cpuWork = section.cpuWork;
         preparationNodes.push_back(index);
     }
     const size_t group = addFinishedSection(
@@ -967,6 +981,8 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
             node.renderGraphSectionIndex = i;
             node.queue = section.queue;
             node.cpuOnly = section.cpuOnly;
+            node.cpuThreadProfile = section.cpuThreadProfile;
+            node.cpuWork = section.cpuWork;
             sectionNodes.push_back(child);
         }
     }
@@ -1030,6 +1046,7 @@ EditorProfiler::Frame EditorProfiler::presentationFrame()
     result.index = displayed.index;
     result.cpuWallMilliseconds = displayed.cpuWallMilliseconds;
     result.cpuIdleMilliseconds = displayed.cpuIdleMilliseconds;
+    result.cpuEditorMilliseconds = displayed.cpuEditorMilliseconds;
     result.profilingOverflow |= displayed.profilingOverflow;
     for (auto& node : result.nodes) {
         node.cpuMilliseconds = std::numeric_limits<double>::quiet_NaN();
@@ -1044,6 +1061,7 @@ EditorProfiler::Frame EditorProfiler::presentationFrame()
         target.gpuTimingAvailable = node.gpuTimingAvailable;
         target.cpuOnly = node.cpuOnly;
         target.cpuIdle = node.cpuIdle;
+        target.cpuEditor = node.cpuEditor;
         target.renderGraphExecutionId = node.renderGraphExecutionId;
         target.renderGraphNodeId = node.renderGraphNodeId;
         target.renderGraphSectionIndex = node.renderGraphSectionIndex;
@@ -1155,7 +1173,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         static_cast<unsigned long long>(frame.index), static_cast<unsigned long long>(latestFrame_.index - frame.index)); }
     else { ImGui::TextDisabled("GPU queries pending / unavailable"); }
     ImGui::TextDisabled("GPU envelope covers RenderGraph; editor UI and presentation are outside this interval.");
-    ImGui::TextDisabled("Frame CPU excludes Idle waits and pacing. Other CPU scopes retain inclusive wall time.");
+    ImGui::TextDisabled("Frame CPU excludes Idle waits, pacing and Editor UI. Other CPU scopes retain inclusive wall time.");
     if (render::profiling::NsightGraphicsCapture::vulkanInjectionActive()) {
         ImGui::TextColored(ImVec4(1, .65f, .2f, 1),
             "Graphics Capture is active; live timings include capture overhead. Measure a separate baseline without injection.");
@@ -1176,7 +1194,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("PieChart")) {
-            ImGui::TextDisabled("CPU wall-time sections, including Idle; GPU intervals can overlap.");
+            ImGui::TextDisabled("CPU wall-time sections, including Idle and Editor UI; GPU intervals can overlap.");
             drawPieChart(displayFrame());
             ImGui::EndTabItem();
         }
@@ -1254,26 +1272,27 @@ void EditorProfiler::endFrame()
         endSection(stack_.back());
     }
 
-    // An idle scope includes its descendants, so count only the outermost idle
-    // interval on each branch. Imported idle samples belong to their active scope.
-    const auto idleTime = [&](auto&& self, size_t index) -> double {
+    // Excluded scopes include their descendants. Count each outermost interval once,
+    // assigning mixed nesting to its outer category instead of subtracting it twice.
+    double idleMilliseconds = 0.0;
+    double editorMilliseconds = 0.0;
+    const auto excludedTime = [&](auto&& self, size_t index) -> void {
         const Node& node = currentNodes_[index];
-        if (node.cpuIdle) { return node.cpuMilliseconds; }
-        double total = 0.0;
-        for (size_t child : node.children) { total += self(self, child); }
-        return total;
+        if (node.cpuIdle) { idleMilliseconds += node.cpuMilliseconds; return; }
+        if (node.cpuEditor) { editorMilliseconds += node.cpuMilliseconds; return; }
+        for (size_t child : node.children) { self(self, child); }
     };
     const double wallMilliseconds = currentNodes_[0].cpuMilliseconds;
-    const double idleMilliseconds = idleTime(idleTime, 0);
+    excludedTime(excludedTime, 0);
     // External duration samples can exceed the local measured interval.
-    currentNodes_[0].cpuMilliseconds = std::max(wallMilliseconds - idleMilliseconds, 0.0);
+    currentNodes_[0].cpuMilliseconds = std::max(wallMilliseconds - idleMilliseconds - editorMilliseconds, 0.0);
 
     if (capturing_) {
         if (capturedFrames_.size() >= 60000) { captureOverflow_ = true; capturing_ = false; }
         else {
             const size_t index = capturedFrames_.size();
             capturedFrames_.push_back({currentNodes_, frameIndex_, currentOverflow_, currentStreaming_,
-                wallMilliseconds, idleMilliseconds});
+                wallMilliseconds, idleMilliseconds, editorMilliseconds});
             for (const auto& node : currentNodes_) {
                 if (node.renderGraphExecutionId != UINT64_MAX) {
                     capturedExecutions_[{graphGeneration_, node.renderGraphExecutionId}] = index;
@@ -1309,6 +1328,7 @@ void EditorProfiler::endFrame()
     }
     latestFrame_.cpuWallMilliseconds = wallMilliseconds;
     latestFrame_.cpuIdleMilliseconds = idleMilliseconds;
+    latestFrame_.cpuEditorMilliseconds = editorMilliseconds;
     latestFrame_.nodes = currentNodes_;
     registerFrameScopes(latestFrame_.nodes);
     addHistoryFrame(latestFrame_);

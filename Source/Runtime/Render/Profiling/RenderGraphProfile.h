@@ -3,12 +3,40 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Streamer/MeshletStreamThroughput.h"
+#include "Runtime/Render/Profiling/CPUThreadProfile.h"
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <json.hpp>
 #include <string>
 #include <vector>
 
 namespace metallic::render {
+
+struct CPUProfileWorkCounter {
+    std::string name;
+    uint64_t value = 0;
+};
+
+inline void to_json(nlohmann::json& value, const CPUThreadProfile& profile)
+{
+    using Json = nlohmann::json;
+    value = {{"supported", profile.supported}, {"sameThread", profile.sameThread},
+        {"cyclesAvailable", profile.cyclesAvailable}, {"timesAvailable", profile.timesAvailable},
+        {"qpcAvailable", profile.qpcAvailable},
+        {"beginThreadId", profile.supported ? Json(profile.beginThreadId) : Json(nullptr)},
+        {"endThreadId", profile.supported ? Json(profile.endThreadId) : Json(nullptr)},
+        {"beginProcessor", profile.supported ? Json(profile.beginProcessor) : Json(nullptr)},
+        {"endProcessor", profile.supported ? Json(profile.endProcessor) : Json(nullptr)},
+        {"beginCyclesError", profile.beginCyclesError}, {"endCyclesError", profile.endCyclesError},
+        {"beginTimesError", profile.beginTimesError}, {"endTimesError", profile.endTimesError},
+        {"cycles", profile.cyclesAvailable ? Json(profile.cycles) : Json(nullptr)},
+        {"user100ns", profile.timesAvailable ? Json(profile.user100ns) : Json(nullptr)},
+        {"kernel100ns", profile.timesAvailable ? Json(profile.kernel100ns) : Json(nullptr)},
+        {"beginQpc", profile.qpcAvailable ? Json(profile.beginQpc) : Json(nullptr)},
+        {"endQpc", profile.qpcAvailable ? Json(profile.endQpc) : Json(nullptr)},
+        {"qpcFrequency", profile.qpcAvailable ? Json(profile.qpcFrequency) : Json(nullptr)}};
+}
 
 struct RenderGraphProfileSection {
     std::string name;
@@ -18,6 +46,8 @@ struct RenderGraphProfileSection {
     double gpuMilliseconds = 0.0;
     bool gpuTimingAvailable = false;
     bool cpuOnly = false;
+    std::shared_ptr<const CPUThreadProfile> cpuThreadProfile;
+    std::vector<CPUProfileWorkCounter> cpuWork;
 };
 
 // Per-frame work counts for aggregate CPU timings; no per-page clock reads.
@@ -74,6 +104,7 @@ struct SceneStreamingProfile {
     bool nodeDemandC2 = false; // Effective offscreen node threshold pruning; requires C1.
     uint32_t rtDemandMode = 0;
     bool rtHistoryPacked = false;
+    bool rtHistorySparseWrites = false;
     uint64_t rtLodHistoryBytes = 0;
     uint64_t generation = 0;
     uint64_t frameIndex = 0;

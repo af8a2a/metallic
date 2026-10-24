@@ -608,7 +608,8 @@ public:
         return RHITestResult::pass("872 linear/BVH/cooperative/view-driven/prefetch/split/distributed/switching GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
     }
     RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256,
-        bool rtDemand = false, bool rtDemandC2 = false, bool rtDemandC3 = false, bool packedHistory = false)
+        bool rtDemand = false, bool rtDemandC2 = false, bool rtDemandC3 = false, bool packedHistory = false,
+        bool sparseHistoryComparison = false)
     {
         StreamLODFixture fixture = rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
@@ -833,9 +834,11 @@ public:
         std::array<uint64_t, 2> rtGroupTests{};
         std::array<std::array<uint64_t, 2>, 2> rtUnitScaleTests{};
         const uint32_t rtSequenceFrames = rtDemandC3 ? 36u : rtDemandC2 ? 28u : 16u;
-        const uint32_t rtModes = rtDemandC3 ? 3u : 2u;
+        const uint32_t rtModes = rtDemandC3 && !sparseHistoryComparison ? 3u : 2u;
         const uint32_t frameCount = rtDemand ? rtSequenceFrames * rtModes * 2u : ordinaryFrames + (large ? 0u : 80u);
         std::vector<uint32_t> eagerGroupTests(rtSequenceFrames * 2u);
+        std::vector<uint32_t> previousHistoryWords(rtHistoryWords);
+        uint64_t baselineFalseWrites = 0, sparseFalsePreserved = 0, sparseExpiredWanted = 0;
         uint32_t previousHistoryToken = 0u, previousHistoryPolicy = 0u;
         for (uint32_t frame = 0; frame < frameCount; ++frame) {
             const uint32_t rtStep = frame % rtSequenceFrames;
@@ -1106,6 +1109,11 @@ public:
                     params.rtLodFlags = 3u | (packedHistory ? 16u : 0u) |
                         (rtMode >= 1u ? 32u : 0u) | (rtMode >= 2u ? 64u : 0u);
                 }
+                if (sparseHistoryComparison) {
+                    // Isolate write suppression: both arms retain the same
+                    // two-word allocation, late reads and visibility-first metric.
+                    params.rtLodFlags = 3u | 32u | (rtMode == 1u ? 128u : 0u);
+                }
                 params.rtOffscreenErrorScale = rtOffscreenScale;
                 params.rtLodHysteresis = rtHysteresis;
                 params.rtLodPolicyRevision = rtPolicyRevision;
@@ -1311,7 +1319,27 @@ public:
                             return RHITestResult::fail("Brute-force leaf / GPU RT demand mismatch at group " +
                                 std::to_string(group) + ", " + caseLabel);
                         }
+                        if (sparseHistoryComparison && !expectedWanted[group]) {
+                            if (rtMode == 0u) {
+                                baselineFalseWrites += state[address] == params.rtLodFrameToken && state[address + 1u] == 0u;
+                            } else {
+                                // A false/pruned leaf must expire by header token,
+                                // without overwriting either legacy-layout word.
+                                const uint32_t oldToken = clearRTState ? 0u : previousHistoryWords[address - history];
+                                const uint32_t oldWanted = clearRTState ? 0u : previousHistoryWords[address + 1u - history];
+                                if (state[address] != oldToken || state[address + 1u] != oldWanted) {
+                                    readback->unmap();
+                                    return RHITestResult::fail("Sparse false demand wrote legacy history words at group " +
+                                        std::to_string(group) + ", " + caseLabel);
+                                }
+                                ++sparseFalsePreserved;
+                                sparseExpiredWanted += oldToken != 0u && oldWanted == 1u;
+                            }
+                        }
                     }
+                }
+                if (sparseHistoryComparison) {
+                    std::copy_n(state.begin() + history, rtHistoryWords, previousHistoryWords.begin());
                 }
                 if (rtDemandC3 && prefetch && (!capturedPrefetchHistory ||
                     std::memcmp(mapped + prefetchHistoryOffset, state.data() + history, rtHistoryWords * sizeof(uint32_t)) != 0)) {
@@ -1326,7 +1354,7 @@ public:
                     if (rtMode == 0) { eagerGroupTests[index] = testedGroups; }
                     else if (eagerGroupTests[index] != testedGroups) {
                         readback->unmap();
-                        return RHITestResult::fail("C3 changed traversal work instead of only leaf demand evaluation: " + caseLabel);
+                        return RHITestResult::fail("RT leaf candidate changed traversal work instead of only leaf demand evaluation: " + caseLabel);
                     }
                 }
                 if (rtDemandC2 && rtStep < 5) { rtUnitScaleTests[distributed ? 1u : 0u][rtBaseline ? 0u : 1u] += testedGroups; }
@@ -1508,6 +1536,16 @@ public:
             }
         }
         if (rtDemand) {
+            if (sparseHistoryComparison) {
+                if (baselineFalseWrites == 0u || sparseFalsePreserved == 0u || sparseExpiredWanted == 0u) {
+                    return RHITestResult::fail("Sparse history fixture did not observe baseline false stores and expired wanted tokens");
+                }
+                return RHITestResult::pass(std::to_string(frameCount) +
+                    " dual-word late-history frames match per-leaf demand, cuts, requests and traversal counts; " +
+                    std::to_string(baselineFalseWrites) + " baseline false stores, " +
+                    std::to_string(sparseFalsePreserved) + " sparse false records untouched, " +
+                    std::to_string(sparseExpiredWanted) + " old wanted tokens expire; exact hysteresis boundaries, token gaps, wrap and readonly prefetch preserved");
+            }
             if (rtDemandC3) {
                 return RHITestResult::pass("216 eager/late/ray-first ordered/distributed frames match brute-force leaf demand, cut and requests with " +
                     std::string(packedHistory ? "packed" : "legacy") + " history; gaps, wrap and read-only prefetch preserved");
@@ -1566,6 +1604,16 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC3Test);
+
+class StreamMeshletLODRTSparseHistoryTest final : public RHITest {
+public:
+    StreamMeshletLODRTSparseHistoryTest() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_sparse_history"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        return StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true, true, true, false, true);
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTSparseHistoryTest);
 
 
 class StreamLODTileHierarchyTest final : public RHITest {

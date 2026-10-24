@@ -280,9 +280,11 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         if (!gpuScene) { return makeError(Error::InvalidArgument); }
         auto& stream = *prepared.geometry;
         const auto* scene = prepared.sourceScene;
+        const bool profilePrepare = context.properties().value("benchmarkPrepareProfile", false);
         CPUProfileRecorder prepareRecorder;
-        CPUProfileScope preparePhase(context.properties().value("benchmarkPrepareProfile", false) ? &prepareRecorder : nullptr,
-            "Stream instance mapping");
+        prepareRecorder.threadDiagnostics = context.properties().value("benchmarkCPUThreadDiagnostics", false);
+        CPUProfileScope preparePhase(profilePrepare ? &prepareRecorder : nullptr, "Stream instance mapping");
+        CPUProfileScope* prepareWork = profilePrepare ? &preparePhase : nullptr;
         std::vector<uint32_t> renderNodes(stream.asset().instanceCount(), UINT32_MAX);
         std::vector<uint32_t> mapping(renderNodes.size(), UINT32_MAX);
         prepared.geometryOwnerMask.assign(std::max<size_t>(gpuScene->instances().size(), 1), 0);
@@ -300,15 +302,20 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
                     ++prepared.mappedInstanceCount;
                 }
             }
+            preparePhase.work("instanceRecordsVisited", renderNodes.size());
+            preparePhase.work("mappedInstances", prepared.mappedInstanceCount);
+            preparePhase.work("ownerMaskBytes", prepared.geometryOwnerMask.size() * sizeof(uint32_t));
+            preparePhase.work("mappingArrayBytes", (renderNodes.size() + mapping.size()) * sizeof(uint32_t));
             preparePhase.next("Stream runtime scene sync");
-            auto result = stream.syncRuntimeScene(*scene, renderNodes, log);
+            auto result = stream.syncRuntimeScene(*scene, renderNodes, log, prepareWork);
             if (!result) { return result; }
 
         }
         preparePhase.next("Stream GPUScene mapping sync");
-        auto result = stream.syncGPUSceneInstanceMapping(mapping);
+        auto result = stream.syncGPUSceneInstanceMapping(mapping, prepareWork);
         if (!result) { return result; }
         preparePhase.next("Stream GPUScene binding");
+        preparePhase.work("descriptorBindings", 1);
         // recordPreGraph publishes GPUScene instance uploads with an AllCommands
         // shader-read barrier, including this stream TLAS input compute pass.
         result = stream.bindGPUSceneInstances(*gpuScene->globalBufferViews().instances.buffer);
