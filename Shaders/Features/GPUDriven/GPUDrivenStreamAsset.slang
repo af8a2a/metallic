@@ -2792,6 +2792,8 @@ public groupshared uint g_CooperativeWaveCounts[64];
 public groupshared uint g_CooperativeRoots;
 public groupshared uint g_CooperativeTelemetryContinuous;
 public groupshared uint g_CooperativeMissingRoots;
+public static const uint kCooperativeActiveWordCount = 128u;
+public groupshared uint g_CooperativeActiveBits[kCooperativeActiveWordCount];
 
 // Stable workgroup scan, with no fixed subgroup size assumption.
 uint streamCooperativePrefix(uint value, uint lane, out uint total)
@@ -3045,8 +3047,15 @@ void streamCooperativeLod(uint3 workgroup, uint lane, GPUDrivenStreamAssetPush p
         if (lane < 4u) { state[header + lane] = 0u; state[sparse + lane] = 0u; }
         if (lane == 0u) { prepareStreamRayLodHistory(state, base, primitive.groupCount, instance.visible != 0u, params); }
     }
+    bool mirrorActive = primitive.groupCount <= kCooperativeActiveWordCount * 32u;
     if (push.activeBuildPhase != kActiveBuildPhaseClear) {
         if (lane == 0u) { g_CooperativeRoots = 0u; g_CooperativeMissingRoots = 0u; }
+        if (mirrorActive) {
+            uint words = (primitive.groupCount + 31u) / 32u;
+            for (uint word = lane; word < words; word += cooperativeWidth) {
+                g_CooperativeActiveBits[word] = 0u;
+            }
+        }
         AllMemoryBarrierWithGroupSync();
     }
     if (params.enableGpuLodSelection != 0u && !streamRayLodEnabled(params) && push.rasterBindingsBuffer != 0xffffffffu) {
@@ -3130,11 +3139,15 @@ void streamCooperativeLod(uint3 workgroup, uint lane, GPUDrivenStreamAssetPush p
         if (tileCount == 0u) { continue; }
         // Ordered leaves contain one LOD level. Sibling tiles are independent;
         // only a finer level can read the active flags written by this level.
-        // Prefix scans still synchronize LDS, but device state only needs to be
-        // published at the level boundary (and before the final mask pass).
+        // Telemetry reads parent blocked stamps from device memory. Otherwise
+        // the mirror only needs LDS publication until the final mask barrier.
         uint level = topology[offset + 5u];
         if (previousLevel != 0xffffffffu && level != previousLevel) {
-            AllMemoryBarrierWithGroupSync();
+            if (mirrorActive && params.enableLodTransitionTelemetry == 0u) {
+                GroupMemoryBarrierWithGroupSync();
+            } else {
+                AllMemoryBarrierWithGroupSync();
+            }
         }
         previousLevel = level;
         // Keep the original lane order when a 64-group leaf spans two batches.
@@ -3149,7 +3162,18 @@ void streamCooperativeLod(uint3 workgroup, uint lane, GPUDrivenStreamAssetPush p
                 bool parentsActive = true;
                 for (uint parent = 0u; parent < group.parentCount; ++parent) {
                     uint id = topology[group.parentOffset + parent];
-                    parentsActive = parentsActive && state[base + (id - primitive.groupOffset) * 2u] != 0u;
+                    uint localParent = id - primitive.groupOffset;
+                    uint parentActive;
+                    if (mirrorActive) {
+                        // Parent and current-level child bits can share a word;
+                        // an atomic read must not race with another lane's OR.
+                        uint bits;
+                        InterlockedOr(g_CooperativeActiveBits[localParent >> 5u], 0u, bits);
+                        parentActive = bits & (1u << (localParent & 31u));
+                    } else {
+                        parentActive = state[base + localParent * 2u];
+                    }
+                    parentsActive = parentsActive && parentActive != 0u;
                 }
                 bool demanded;
                 if (params.demandBuffer != 0xffffffffu) {
@@ -3176,7 +3200,12 @@ void streamCooperativeLod(uint3 workgroup, uint lane, GPUDrivenStreamAssetPush p
                 observeStreamLodGroup(state, topology, primitive, group, instance, base, localGroup,
                     demanded, drawable, active,
                     params.enableLodTransitionTelemetry != 0u && g_CooperativeTelemetryContinuous != 0u, params);
-                if (active) { state[base + localGroup * 2u] = 1u; }
+                if (active) {
+                    state[base + localGroup * 2u] = 1u;
+                    if (mirrorActive) {
+                        InterlockedOr(g_CooperativeActiveBits[localGroup >> 5u], 1u << (localGroup & 31u));
+                    }
+                }
                 if (terminal) {
                     InterlockedAdd(g_CooperativeRoots, 1u);
                     if (!drawable) { InterlockedOr(g_CooperativeMissingRoots, 1u); }

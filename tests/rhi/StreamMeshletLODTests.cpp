@@ -306,6 +306,35 @@ StreamLODFixture terminalMaskFixture(uint32_t leafCount)
     return fixture;
 }
 
+StreamLODFixture frontierLDSFixture(uint32_t groupCount)
+{
+    StreamLODFixture fixture;
+    fixture.groups.clear();
+    fixture.ranges.clear();
+    fixture.refined.clear();
+    const uint32_t width = groupCount / 3u;
+    // Three broad levels exercise concurrent writes to one bitmap word and
+    // parent reads sharing a word with current-level writes. Ring-connected
+    // children have multiple parents, including edges across word boundaries.
+    for (uint32_t group = 0; group < groupCount; ++group) {
+        const uint32_t level = group < width ? 0u : group < width * 2u ? 1u : 2u;
+        fixture.groups.push_back({.sphere = {0, 0, 0, 1}, .error = .5f * float(level + 1u),
+            .level = level, .flags = level == 2u ? kMeshletLODTerminalGroup : 0u});
+        fixture.ranges.push_back({static_cast<uint32_t>(fixture.refined.size()), level == 0u ? 1u : 2u});
+        if (level == 0u) {
+            fixture.refined.push_back(UINT32_MAX);
+        } else {
+            const uint32_t childBase = (level - 1u) * width;
+            const uint32_t local = group - level * width;
+            fixture.refined.push_back(childBase + local % width);
+            fixture.refined.push_back(childBase + (local + 1u) % width);
+        }
+    }
+    fixture.drawable.assign(groupCount, 1);
+    fixture.view.forward[3] = 0.f;
+    return fixture;
+}
+
 // Independent cut oracle: consume the brute-force leaf demand decisions, then
 // apply dependency/residency gating in descending DAG order. This intentionally
 // does not visit BVH nodes or substitute altered LOD errors for boolean demand.
@@ -641,10 +670,11 @@ public:
     RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256,
         bool rtDemand = false, bool demandBoundsCases = false, bool historyCases = false,
         bool frontier32Comparison = false, bool frontierTileBoundaries = false,
-        bool terminalMaskRegression = false)
+        bool terminalMaskRegression = false, uint32_t frontierLDSGroupCount = 0)
     {
         const bool wave32Cases = frontier32Comparison || terminalMaskRegression;
-        StreamLODFixture fixture = terminalMaskRegression ? terminalMaskFixture(leafCount) :
+        StreamLODFixture fixture = frontierLDSGroupCount != 0u ? frontierLDSFixture(frontierLDSGroupCount) :
+            terminalMaskRegression ? terminalMaskFixture(leafCount) :
             rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
         const uint32_t kRequestCapacity = kGroupCount + 2;
@@ -759,7 +789,8 @@ public:
         // Retain the ordinary pair/sparse layout; diagnostic history is an
         // optional two words per instance-group and one visible-frame stamp.
         const uint32_t rtHistoryWords = 3u + kGroupCount * 2u;
-        const uint64_t logicalStateBytes = (rtDemand ? 4u + kGroupCount * 3u + 4u + rtHistoryWords :
+        const uint32_t extraTelemetryWords = frontierLDSGroupCount != 0u ? kGroupCount * 2u + 1u : 0u;
+        const uint64_t logicalStateBytes = (rtDemand ? 4u + kGroupCount * 3u + 4u + rtHistoryWords + extraTelemetryWords :
             4u + kGroupCount * 5u + 5u) * sizeof(uint32_t);
         // Cross the maximum X dispatch dimension and leave a partial last row.
         const uint64_t allocatedStateBytes = large && !rtDemand ? (65535ull * 64 + 67) * sizeof(uint32_t) : logicalStateBytes;
@@ -912,7 +943,7 @@ public:
         const uint32_t ordinaryFrames = caseCount * 8;
         MeshletStreamGPUParams priorParams;
         std::vector<uint8_t> previousWanted(kGroupCount), expectedWanted(kGroupCount);
-        const uint32_t rtSequenceFrames = terminalMaskRegression ? 48u : frontier32Comparison ? 40u : historyCases ? 36u : demandBoundsCases ? 28u : 16u;
+        const uint32_t rtSequenceFrames = frontierLDSGroupCount != 0u ? 24u : terminalMaskRegression ? 48u : frontier32Comparison ? 40u : historyCases ? 36u : demandBoundsCases ? 28u : 16u;
         const uint32_t frameCount = terminalMaskRegression ? rtSequenceFrames :
             rtDemand ? rtSequenceFrames * 2u : ordinaryFrames + (large ? 0u : 80u);
         std::vector<std::vector<uint8_t>> baselineOutputs(rtSequenceFrames);
@@ -980,12 +1011,29 @@ public:
                 available = fixture.drawable;
             }
             if (rtDemand) {
-                fixture = terminalMaskRegression ? terminalMaskFixture(leafCount) : rtDemandFixture(leafCount);
+                fixture = frontierLDSGroupCount != 0u ? frontierLDSFixture(frontierLDSGroupCount) :
+                    terminalMaskRegression ? terminalMaskFixture(leafCount) : rtDemandFixture(leafCount);
                 available.assign(kGroupCount, 1);
                 manual = UINT32_MAX;
                 capacity = kGroupCount;
                 bool resetHistory = rtStep == 0;
-                if (!demandBoundsCases) {
+                if (frontierLDSGroupCount != 0u) {
+                    // Fine/coarse and residency transitions reuse exactly the
+                    // same state allocation, including inactive ancestor masks.
+                    if (rtStep == 2u || rtStep == 14u) { fixture.view.projection[3] = 1e6f; }
+                    if (rtStep == 4u || rtStep == 10u || rtStep == 20u) {
+                        fixture.drawable[leafCount + 1u] = 0;
+                        available[leafCount + 1u] = rtStep == 10u;
+                    }
+                    if (rtStep == 6u) { fixture.drawable.back() = 0; available.back() = 0; }
+                    if (rtStep == 8u) { fixture.instance.identity[3] = 0; }
+                    if (rtStep == 12u) { manual = 1u; }
+                    if (rtStep == 13u) { manual = 0u; }
+                    if (rtStep == 16u) { fixture.drawable[0] = 0; available[0] = 0; }
+                    // Decisions are far outside the hysteresis band; use this
+                    // fixture to isolate current-frame active publication.
+                    rtHysteresis = 0.f;
+                } else if (!demandBoundsCases) {
                     if (rtStep == 2) { fixture.view.forward = {0, 0, 1, 0}; }
                     if (rtStep == 3) { fixture.view.forward = {1, 0, 0, 0}; }
                     if (rtStep == 5) {
@@ -1227,6 +1275,11 @@ public:
                 }
             }
             params.enableLodTransitionTelemetry = telemetrySequence && telemetryStep != 16;
+            if (frontierLDSGroupCount != 0u) {
+                params.enableLodTransitionTelemetry = rtStep >= 12u && rtStep != 18u;
+                params.frameIndex = rtStep + 1u;
+                params.rtLodFrameToken = rtStep + 1u;
+            }
             std::copy_n(priorParams.eye, 4, params.previousEye);
             std::copy_n(priorParams.center, 4, params.previousCenter);
             std::copy_n(priorParams.upProjection, 4, params.previousUpProjection);
@@ -1404,6 +1457,51 @@ public:
             std::memcpy(state.data(), mapped + offsets[4], logicalStateBytes);
             std::array<uint32_t, kMeshletStreamDemandStatsWords> demandStats{};
             std::memcpy(demandStats.data(), mapped + offsets[5], sizeof(demandStats));
+            if (frontierLDSGroupCount != 0u) {
+                bool ready = instance.visible != 0u;
+                for (uint32_t group = 0; group < kGroupCount; ++group) {
+                    if ((fixture.groups[group].flags & kMeshletLODTerminalGroup) != 0u) {
+                        ready = ready && fixture.drawable[group] != 0u;
+                    }
+                }
+                for (uint32_t group = 0; group < kGroupCount; ++group) {
+                    uint32_t mask = 0u;
+                    const auto& range = fixture.ranges[group];
+                    for (uint32_t cluster = 0; ready && expected.activeGroups[group] != 0u && cluster < range.clusterCount; ++cluster) {
+                        const uint32_t child = fixture.refined[range.clusterOffset + cluster];
+                        if (child == UINT32_MAX || expected.activeGroups[child] == 0u) { mask |= 1u << cluster; }
+                    }
+                    if (state[4u + group * 2u + 1u] != mask) {
+                        readback->unmap();
+                        return RHITestResult::fail("Frontier LDS mirror changed published cluster masks: " + caseLabel);
+                    }
+                }
+                // Propagate blocked ancestry independently of the GPU tile
+                // traversal. The parent stamp uses global memory even when
+                // active reachability is mirrored in LDS.
+                std::vector<uint8_t> blocked(kGroupCount);
+                uint32_t ownBlockedCount = 0u, dependencyBlockedCount = 0u;
+                for (uint32_t reverse = kGroupCount; reverse != 0u; --reverse) {
+                    const uint32_t group = reverse - 1u;
+                    bool parentBlocked = false;
+                    const auto& gpuGroup = groups[group];
+                    for (uint32_t parent = 0; parent < gpuGroup.parentCount; ++parent) {
+                        parentBlocked = parentBlocked || blocked[topology[gpuGroup.parentOffset + parent]] != 0u;
+                    }
+                    const bool ownBlocked = expectedWanted[group] != 0u && fixture.drawable[group] == 0u;
+                    const bool dependencyBlocked = expectedWanted[group] != 0u && fixture.drawable[group] != 0u && parentBlocked;
+                    blocked[group] = ownBlocked || dependencyBlocked;
+                    if (params.enableLodTransitionTelemetry != 0u && manual == UINT32_MAX &&
+                            (fixture.groups[group].flags & kMeshletLODTerminalGroup) == 0u) {
+                        ownBlockedCount += ownBlocked;
+                        dependencyBlockedCount += dependencyBlocked;
+                    }
+                }
+                if (demandStats[20] != ownBlockedCount || demandStats[21] != dependencyBlockedCount) {
+                    readback->unmap();
+                    return RHITestResult::fail("Frontier LDS telemetry lost cross-level blocked publication: " + caseLabel);
+                }
+            }
             if (terminalMaskRegression) {
                 bool ready = instance.visible != 0u;
                 bool onlyTerminals = true;
@@ -1680,9 +1778,22 @@ public:
                 if (state[stats] != activeCount) {
                     return RHITestResult::fail("GPU sparse frontier count differs from active bits: " + caseLabel);
                 }
+                if (frontierLDSGroupCount != 0u) {
+                    uint32_t index = 0u;
+                    for (uint32_t reverse = kGroupCount; reverse != 0u; --reverse) {
+                        const uint32_t group = reverse - 1u;
+                        if (expectedState.activeGroups[group] != 0u && state[stats + 4u + index++] != group) {
+                            return RHITestResult::fail("Frontier LDS changed all-active sparse order: " + caseLabel);
+                        }
+                    }
+                }
             }
         }
         if (rtDemand) {
+            if (frontierLDSGroupCount != 0u) {
+                return RHITestResult::pass("48 consecutive WG64/WG32 multi-parent frames match independent leaf demand, every active/mask word, full sparse order, requests, history and telemetry blocked ancestry at " +
+                    std::to_string(kGroupCount) + " groups");
+            }
             if (terminalMaskRegression) {
                 if (terminalOnlyFrames == 0u || mixedFrames == 0u || unreadyFrames == 0u || blockedDetailFrames != 2u) {
                     return RHITestResult::fail("Terminal Mask fixture missed positive, mixed, unready or blocked-detail coverage");
@@ -1736,6 +1847,21 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODFrontier32Test);
+
+class StreamMeshletLODFrontierLDSTest final : public RHITest {
+public:
+    StreamMeshletLODFrontierLDSTest() { type = RHITestType::Rendering; name = "meshlet_lod_stream_frontier_lds"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        for (uint32_t groupCount : {31u, 32u, 33u, 4095u, 4096u, 4097u}) {
+            const auto result = StreamMeshletLODGPUTest{}.runFixture(context, true, groupCount / 3u,
+                true, false, false, true, false, false, groupCount);
+            if (!result.passed || result.skipped) { return result; }
+        }
+        return RHITestResult::pass("288 consecutive WG64/WG32 frames cover 31/32/33/4095/4096/4097 groups; same-word parent/child atomics, sibling collisions, multi-parent gating, residency, stale clears, hidden/reentry, manual/auto, telemetry on/off and recorded cancellation");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODFrontierLDSTest);
 
 class StreamMeshletLODTerminalMaskTest final : public RHITest {
 public:

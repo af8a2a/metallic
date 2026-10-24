@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 #include <limits>
 #include <numeric>
@@ -42,6 +43,45 @@ const EditorProfiler::Node* nodeByPath(const EditorProfiler::Frame& frame, const
     }
     return &frame.nodes[index];
 }
+
+bool containsKeyword(std::string_view text, std::string_view keyword)
+{
+    return std::search(text.begin(), text.end(), keyword.begin(), keyword.end(), [](char a, char b) {
+        return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+    }) != text.end();
+}
+
+struct ScopeFilter {
+    bool active;
+    std::vector<std::string> labels;
+    std::vector<bool> matches;
+    std::vector<bool> visible;
+
+    ScopeFilter(const EditorProfiler::Frame& frame, std::string_view keyword) : active(!keyword.empty())
+    {
+        if (!active) {
+            matches.resize(frame.nodes.size(), true);
+            visible.resize(frame.nodes.size(), true);
+            return;
+        }
+        labels.reserve(frame.nodes.size());
+        matches.reserve(frame.nodes.size());
+        visible.resize(frame.nodes.size());
+        for (size_t i = 0; i < frame.nodes.size(); ++i) {
+            const auto& node = frame.nodes[i];
+            labels.push_back(i ? labels[node.parent] + " / " + node.name : node.name);
+            matches.push_back(containsKeyword(labels.back(), keyword));
+            if (matches.back()) {
+                size_t ancestor = i;
+                while (!visible[ancestor]) {
+                    visible[ancestor] = true;
+                    if (!ancestor) { break; }
+                    ancestor = frame.nodes[ancestor].parent;
+                }
+            }
+        }
+    }
+};
 
 double sampleValue(const EditorProfiler::Node* node, bool gpu)
 {
@@ -92,8 +132,9 @@ double tableSortValue(const EditorProfiler::Node& node, const ProfilerTableRow& 
 
 void drawProfilerTableNode(const EditorProfiler::Frame& frame,
     size_t index, uint32_t depth, bool detailed, const std::vector<ProfilerTableRow>& rows,
-    const ImGuiTableColumnSortSpecs* sort)
+    const ImGuiTableColumnSortSpecs* sort, const ScopeFilter& filter)
 {
+    if (!filter.visible[index]) { return; }
     const auto& node = frame.nodes[index];
     const bool children = !node.children.empty();
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_SpanFullWidth;
@@ -103,6 +144,7 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame,
     ImGui::TableNextColumn();
     const bool present = std::isfinite(node.cpuMilliseconds);
     ImGui::PushStyleColor(ImGuiCol_Text, present ? imguiColor(node.color) : ImGui::GetColorU32(ImGuiCol_TextDisabled));
+    if (filter.active && !filter.matches[index]) { ImGui::SetNextItemOpen(true, ImGuiCond_Always); }
     const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "%s", node.name.c_str());
     ImGui::PopStyleColor();
     const auto& row = rows[index];
@@ -152,15 +194,16 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame,
             });
         }
         for (const size_t child : children) {
-            drawProfilerTableNode(frame, child, depth + 1, detailed, rows, sort);
+            drawProfilerTableNode(frame, child, depth + 1, detailed, rows, sort, filter);
         }
         ImGui::TreePop();
     }
 }
 
-void drawProfilerTable(const EditorProfiler::Frame& frame, const EditorProfiler& profiler, bool detailed)
+void drawProfilerTable(const EditorProfiler::Frame& frame, const EditorProfiler& profiler, bool detailed, const ScopeFilter& filter)
 {
     if (frame.nodes.empty()) { ImGui::TextDisabled("No profiler samples yet."); return; }
+    if (!filter.visible[0]) { ImGui::TextDisabled("No matching scopes."); return; }
     if (!ImGui::BeginTable("ProfilerTable", detailed ? 10 : 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
         ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate, ImVec2(0, 0))) { return; }
@@ -188,7 +231,9 @@ void drawProfilerTable(const EditorProfiler::Frame& frame, const EditorProfiler&
     // Sorting reads them directly, independently of ImGui's SpecsDirty flag.
     std::vector<ProfilerTableRow> rows(frame.nodes.size());
     for (size_t i = 0; i < frame.nodes.size(); ++i) { rows[i] = profiler.historyStatistics(frame.nodes[i].scopeId); }
-    drawProfilerTableNode(frame, 0, 0, detailed, rows, sort);
+    if (filter.active) { ImGui::PushID("FilteredScopes"); }
+    drawProfilerTableNode(frame, 0, 0, detailed, rows, sort, filter);
+    if (filter.active) { ImGui::PopID(); }
     if (specs) { specs->SpecsDirty = false; }
     ImGui::EndTable();
 }
@@ -330,24 +375,40 @@ const EditorProfiler::Node* chooseChartScope(const EditorProfiler::Frame& frame,
 }
 
 void drawTimingCharts(const EditorProfiler::Frame& frame, const EditorProfiler& profiler,
-    int& metric, std::vector<std::string>& path, bool lines)
+    int& metric, std::vector<std::string>& path, bool lines, const ScopeFilter& filter)
 {
     const auto& history = profiler.history();
-    const auto* selected = chooseChartScope(frame, metric, path);
-    if (!selected) { return; }
-    const bool gpu = metric == 1;
-    ImGui::TextDisabled("Elapsed ms; nested and concurrent GPU intervals overlap.");
-    std::vector<std::pair<std::vector<std::string>, const EditorProfiler::Node*>> paths{{path, selected}};
-    for (auto child : selected->children) {
-        auto childPath = path; childPath.push_back(frame.nodes[child].name);
-        paths.push_back({std::move(childPath), &frame.nodes[child]});
+    std::vector<std::pair<std::vector<std::string>, const EditorProfiler::Node*>> paths;
+    if (filter.active) {
+        ImGui::SetNextItemWidth(120);
+        ImGui::Combo("Metric", &metric, "CPU\0GPU\0");
+        ImGui::TextDisabled("Showing all matching scope paths.");
+        for (size_t i = 0; i < frame.nodes.size(); ++i) {
+            if (filter.matches[i] && (metric == 0 || frame.nodes[i].renderGraphExecutionId != UINT64_MAX)) {
+                paths.push_back({nodePath(frame, i), &frame.nodes[i]});
+            }
+        }
+    } else {
+        const auto* selected = chooseChartScope(frame, metric, path);
+        if (!selected) { return; }
+        paths.push_back({path, selected});
+        for (auto child : selected->children) {
+            auto childPath = path; childPath.push_back(frame.nodes[child].name);
+            paths.push_back({std::move(childPath), &frame.nodes[child]});
+        }
     }
+    if (paths.empty()) { ImGui::TextDisabled("No matching scopes for this metric."); return; }
+    const bool gpu = metric == 1;
+    ImGui::TextDisabled("Elapsed ms; nested and concurrent intervals overlap.");
+    const auto label = [&](const EditorProfiler::Node* node) -> const std::string& {
+        return filter.active ? filter.labels[static_cast<size_t>(node - frame.nodes.data())] : node->name;
+    };
     if (lines) {
         std::vector<uint64_t> frames;
         for (const auto& sample : history) { frames.push_back(sample.index); }
         std::vector<PlotSeries> series;
         for (const auto& [p, node] : paths) {
-            PlotSeries line{node->name, imguiColor(node->color), {}};
+            PlotSeries line{label(node), imguiColor(node->color), {}};
             for (const auto& sample : history) { line.values.push_back(sampleValue(nodeByPath(sample, p), gpu)); }
             series.push_back(std::move(line));
         }
@@ -362,7 +423,7 @@ void drawTimingCharts(const EditorProfiler::Frame& frame, const EditorProfiler& 
         for (const auto& [p, node] : paths) {
             const auto stats = profiler.historyStatistics(node->scopeId);
             const auto& avg = gpu ? stats.gpu : stats.cpu;
-            ImGui::TextUnformatted(node->name.c_str());
+            ImGui::TextUnformatted(label(node).c_str());
             char label[64];
             if (avg.count) { std::snprintf(label, sizeof(label), "%.3f ms (%zu samples)", avg.average, avg.count); }
             else { std::snprintf(label, sizeof(label), "pending / unavailable"); }
@@ -373,13 +434,20 @@ void drawTimingCharts(const EditorProfiler::Frame& frame, const EditorProfiler& 
     }
 }
 
-void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources, std::string& selected, bool& showBudget)
+void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources, std::string& selected, bool& showBudget, std::string_view keyword)
 {
     if (sources.empty()) { ImGui::TextDisabled("The current scene has no meshlet streaming runtime."); return; }
-    auto it = std::find_if(sources.begin(), sources.end(), [&](const auto& source) { return source.passName == selected; });
-    if (it == sources.end()) { it = sources.begin(); selected = it->passName; }
+    const auto matches = [&](const auto& source) {
+        return keyword.empty() || containsKeyword(source.passName, keyword) || containsKeyword(source.assetPath, keyword);
+    };
+    auto it = std::find_if(sources.begin(), sources.end(), [&](const auto& source) { return source.passName == selected && matches(source); });
+    if (it == sources.end()) { it = std::find_if(sources.begin(), sources.end(), matches); }
+    if (it == sources.end()) { ImGui::TextDisabled("No matching streaming sources."); return; }
+    selected = it->passName;
     if (ImGui::BeginCombo("Source", selected.c_str())) {
-        for (const auto& source : sources) { if (ImGui::Selectable(source.passName.c_str(), source.passName == selected)) { selected = source.passName; } }
+        for (const auto& source : sources) {
+            if (matches(source) && ImGui::Selectable(source.passName.c_str(), source.passName == selected)) { selected = source.passName; }
+        }
         ImGui::EndCombo();
     }
     it = std::find_if(sources.begin(), sources.end(), [&](const auto& source) { return source.passName == selected; });
@@ -575,12 +643,23 @@ void drawPieSlice(
     drawList->PathFillConvex(color);
 }
 
-void drawPieChart(const EditorProfiler::Frame& frame)
+void drawPieChart(const EditorProfiler::Frame& frame, const ScopeFilter& filter)
 {
     if (frame.nodes.empty() || frame.nodes[0].children.empty()) {
         ImGui::TextDisabled("No profiler samples yet.");
         return;
     }
+
+    std::vector<size_t> slices;
+    if (filter.active) {
+        const auto collect = [&](auto&& self, size_t index) -> void {
+            if (filter.matches[index] && index) { slices.push_back(index); return; }
+            for (size_t child : frame.nodes[index].children) { self(self, child); }
+        };
+        collect(collect, 0);
+        ImGui::TextDisabled("Outermost matching scopes; shares remain relative to full frame wall time.");
+    } else { slices = frame.nodes[0].children; }
+    if (slices.empty()) { ImGui::TextDisabled("No matching scopes."); return; }
 
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const float radius = std::min(availableWidth * 0.25f, 120.0f);
@@ -588,10 +667,9 @@ void drawPieChart(const EditorProfiler::Frame& frame)
     const ImVec2 center(pos.x + radius + 10.0f, pos.y + radius + 10.0f);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
-    const EditorProfiler::Node& root = frame.nodes[0];
     const double total = std::max(frame.cpuWallMilliseconds, 0.001);
     float angle = -0.5f * kPi;
-    for (size_t childIndex : root.children) {
+    for (size_t childIndex : slices) {
         const EditorProfiler::Node& child = frame.nodes[childIndex];
         const float slice = static_cast<float>(child.cpuMilliseconds / total) * 2.0f * kPi;
         drawPieSlice(drawList, center, radius, angle, angle + slice, imguiColor(child.color));
@@ -605,11 +683,11 @@ void drawPieChart(const EditorProfiler::Frame& frame)
         ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed, 90.0f);
         ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_WidthFixed, 72.0f);
         ImGui::TableHeadersRow();
-        for (size_t childIndex : root.children) {
+        for (size_t childIndex : slices) {
             const EditorProfiler::Node& child = frame.nodes[childIndex];
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(imguiColor(child.color)), "%s", child.name.c_str());
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(imguiColor(child.color)), "%s", filter.active ? filter.labels[childIndex].c_str() : child.name.c_str());
             ImGui::TableNextColumn();
             ImGui::Text("%.3f", child.cpuMilliseconds);
             ImGui::TableNextColumn();
@@ -1179,28 +1257,33 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
             "Graphics Capture is active; live timings include capture overhead. Measure a separate baseline without injection.");
     }
     if (frame.profilingOverflow) { ImGui::TextColored(ImVec4(1, .65f, .2f, 1), "Profiler scope/display budget exceeded; some entries may be unavailable."); }
+    ImGui::SetNextItemWidth(std::max(180.0f, ImGui::GetContentRegionAvail().x - 65.0f));
+    ImGui::InputTextWithHint("##ProfilerFilter", "Filter scope / path / streaming asset (case-insensitive)", scopeFilter_, sizeof(scopeFilter_));
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) { scopeFilter_[0] = '\0'; }
+    const ScopeFilter filter(frame, scopeFilter_);
     if (ImGui::BeginTabBar("ProfilerTabs")) {
         if (ImGui::BeginTabItem("Table")) {
             auto profileScope = scope("Profiler Table");
-            drawProfilerTable(frame, *this, detailed_);
+            drawProfilerTable(frame, *this, detailed_, filter);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("BarChart")) {
-            drawTimingCharts(frame, *this, chartMetric_, chartPath_, false);
+            drawTimingCharts(frame, *this, chartMetric_, chartPath_, false, filter);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("LineChart")) {
-            drawTimingCharts(frame, *this, chartMetric_, chartPath_, true);
+            drawTimingCharts(frame, *this, chartMetric_, chartPath_, true, filter);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("PieChart")) {
             ImGui::TextDisabled("CPU wall-time sections, including Idle and Editor UI; GPU intervals can overlap.");
-            drawPieChart(displayFrame());
+            drawPieChart(displayFrame(), ScopeFilter(displayFrame(), scopeFilter_));
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Streaming")) {
             ImGui::BeginChild("StreamingScroll", ImVec2(0, 0));
-            drawStreaming(streamingHistory_, selectedStream_, streamingShowBudget_);
+            drawStreaming(streamingHistory_, selectedStream_, streamingShowBudget_, scopeFilter_);
             ImGui::EndChild();
             ImGui::EndTabItem();
         }

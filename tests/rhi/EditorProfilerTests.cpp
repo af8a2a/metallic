@@ -842,6 +842,128 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerSortingTest);
 
+class EditorProfilerFilterTest final : public RHITest {
+public:
+    EditorProfilerFilterTest() { type = RHITestType::Command; name = "editor_profiler_filter"; }
+    RHITestResult run(RHITestContext& testContext) override
+    {
+        auto* previous = ImGui::GetCurrentContext();
+        auto* context = ImGui::CreateContext();
+        struct Cleanup {
+            ImGuiContext* context;
+            ImGuiContext* previous;
+            ~Cleanup() { ImGui::DestroyContext(context); ImGui::SetCurrentContext(previous); }
+        } cleanup{context, previous};
+        try {
+            auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.LogFilename = nullptr;
+            io.DisplaySize = ImVec2(1300, 900); io.DeltaTime = 1.f / 60;
+            unsigned char* pixels = nullptr; int atlasWidth = 0, atlasHeight = 0;
+            io.Fonts->GetTexDataAsRGBA32(&pixels, &atlasWidth, &atlasHeight); io.Fonts->SetTexID(ImTextureID(1));
+            EditorProfiler profiler;
+            RenderGraphExecutionStats stats{.graphGeneration = 1, .gpuTimingAvailable = true};
+            stats.nodes = {{.id = 1, .name = "Alpha", .type = "Test", .cpuMilliseconds = 4,
+                .gpuMilliseconds = 5, .gpuTimingAvailable = true},
+                {.id = 2, .name = "Bravo", .type = "Test", .cpuMilliseconds = 2,
+                .gpuMilliseconds = 3, .gpuTimingAvailable = true}};
+            stats.nodes[0].sections = {{.name = "Needle stage", .cpuMilliseconds = 1,
+                .gpuMilliseconds = 2, .gpuTimingAvailable = true},
+                {.name = "Other stage", .cpuMilliseconds = 1, .gpuMilliseconds = 1, .gpuTimingAvailable = true}};
+            profiler.beginCapture();
+            { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
+            profiler.endCapture();
+            const auto original = profiler.history().front();
+            const auto draw = [&](const char* activate = nullptr) {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowPos(ImVec2(0, 0)); ImGui::SetNextWindowSize(io.DisplaySize);
+                if (activate) {
+                    auto* window = ImGui::FindWindowByName("Profiler");
+                    context->NavWindow = window;
+                    context->NavActivateId = window->GetID(activate);
+                    context->NavActivateDownId = context->NavActivateId;
+                    context->NavActivateFlags = ImGuiActivateFlags_PreferInput;
+                }
+                ImGui::LogToBuffer(0);
+                bool open = true; profiler.drawWindow(&open, {});
+                std::string text = context->LogBuffer.c_str();
+                ImGui::LogFinish(); ImGui::Render();
+                return text;
+            };
+            const auto clear = [&]() {
+                // Commit the active input before navigating to the button, as Tab/Enter does.
+                io.AddKeyEvent(ImGuiKey_Enter, true); draw();
+                io.AddKeyEvent(ImGuiKey_Enter, false); draw();
+                draw("Clear"); return draw();
+            };
+            const auto filter = [&](const char* value) {
+                clear();
+                draw("##ProfilerFilter");
+                io.AddInputCharactersUTF8(value);
+                draw();
+                return draw();
+            };
+            const auto selectTab = [&](const char* name) {
+                auto* window = ImGui::FindWindowByName("Profiler");
+                auto* bar = context->TabBars.GetByKey(window->GetID("ProfilerTabs"));
+                checkProfile(bar != nullptr, "Missing profiler tabs");
+                for (auto& tab : bar->Tabs) {
+                    if (std::string_view(ImGui::TabBarGetTabName(bar, &tab)) == name) { bar->NextSelectedTabId = tab.ID; }
+                }
+                draw(); return draw();
+            };
+            draw(); draw();
+            const auto baseline = draw();
+            checkProfile(baseline.find("Needle stage") != std::string::npos && baseline.find("Bravo (Test)") != std::string::npos,
+                "Unfiltered fixture is incomplete");
+            const auto frame = profiler.presentationFrame();
+            size_t alpha = 0;
+            for (size_t i = 0; i < frame.nodes.size(); ++i) { if (frame.nodes[i].name == "Alpha (Test)") { alpha = i; } }
+            auto* table = context->Tables.GetByIndex(0);
+            checkProfile(table != nullptr && alpha != 0, "Missing collapse fixture");
+            std::vector<size_t> chain;
+            for (size_t i = alpha;; i = frame.nodes[i].parent) { chain.push_back(i); if (i == 0) { break; } }
+            ImGuiID alphaId = table->ID;
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                const void* pointer = reinterpret_cast<void*>(*it + 1); alphaId = ImHashData(&pointer, sizeof(pointer), alphaId);
+            }
+            table->InnerWindow->StateStorage.SetInt(alphaId, 0);
+            checkProfile(draw().find("Needle stage") == std::string::npos, "Fixture scope did not collapse");
+            auto text = filter("nEeDlE");
+            checkProfile(text.find("Needle stage") != std::string::npos && text.find("Alpha (Test)") != std::string::npos &&
+                text.find("Bravo (Test)") == std::string::npos && text.find("Other stage") == std::string::npos,
+                "Case-insensitive filtering did not retain only the matching ancestor path\n" + text);
+            std::filesystem::create_directories(testContext.outputDirectory);
+            std::string imageMessage;
+            checkProfile(saveImGuiTestDrawDataPng(*ImGui::GetDrawData(), pixels, atlasWidth, atlasHeight, 1300, 900,
+                testContext.outputDirectory / "ProfilerFilteredTable.png", imageMessage), imageMessage);
+            text = clear();
+            checkProfile(text.find("Bravo (Test)") != std::string::npos && text.find("Needle stage") == std::string::npos &&
+                table->InnerWindow->StateStorage.GetInt(alphaId, -1) == 0,
+                "Clearing filter lost the original unfiltered collapse state: " + std::to_string(table->InnerWindow->StateStorage.GetInt(alphaId, -1)) + "\n" + text);
+            for (const char* tab : {"Table", "BarChart", "LineChart", "PieChart"}) {
+                selectTab(tab);
+                text = filter("nEeDlE");
+                checkProfile(text.find("Needle stage") != std::string::npos && text.find("Bravo (Test)") == std::string::npos &&
+                    text.find("Other stage") == std::string::npos, std::string(tab) + " did not filter chart/legend scopes\n" + text);
+                text = filter("no-such-scope-9876");
+                checkProfile(text.find("No matching scopes") != std::string::npos && text.find("Needle stage") == std::string::npos,
+                    std::string(tab) + " did not show an empty result\n" + text);
+            }
+            checkProfile(profiler.history().size() == 1 && profiler.capturedFrames().size() == 1 &&
+                profiler.history().front().nodes.size() == original.nodes.size(), "Filtering modified recorded samples");
+            for (size_t i = 0; i < original.nodes.size(); ++i) {
+                const auto& node = original.nodes[i];
+                checkProfile(profiler.history().front().nodes[i].cpuMilliseconds == node.cpuMilliseconds &&
+                    profiler.capturedFrames().front().nodes[i].cpuMilliseconds == node.cpuMilliseconds &&
+                    profiler.historyStatistics(node.scopeId).cpu.average == node.cpuMilliseconds,
+                    "Filtering modified captured values or history statistics");
+            }
+            std::ofstream(testContext.outputDirectory / "ProfilerFilteredEmpty.txt") << text;
+            return RHITestResult::pass("Real filter text input: case-insensitive paths, collapsed ancestor visibility, clear restoration, all timing charts and unchanged history");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerFilterTest);
+
 class EditorProfilerTooltipViewportTest final : public RHITest {
 public:
     EditorProfilerTooltipViewportTest() { type = RHITestType::Command; name = "editor_profiler_tooltip_viewport"; }

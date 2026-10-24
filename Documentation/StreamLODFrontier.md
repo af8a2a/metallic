@@ -18,6 +18,22 @@ The 32-thread frontier processes wider leaves in ordered batches. Wave prefix
 and sum replace its cross-wave LDS scan; descending sparse order, cross-LOD
 barriers, final publication, history and residency dependencies are retained.
 
+## Frontier active mirror
+
+Cooperative Frontier mirrors active flags in a 4096-bit workgroup bitmap for
+primitives with at most 4096 groups. It clears only the used words and reuses
+the existing initialization barrier. Both 32- and 64-thread frontiers retain
+the same global active writes, sparse order, masks, Clear and final publication;
+larger primitives and the scalar fallback keep global parent queries.
+
+Parent queries and bit insertion use LDS atomics: a parent and a current-level
+child can share a bitmap word even though their bits differ. Between LOD levels,
+the bitmap path uses a group-memory barrier only when transition telemetry is
+disabled. Telemetry still reads parent blocked stamps from global memory and
+keeps the all-memory barrier. The final all-memory barrier is unchanged because
+combined Mask consumes global active flags and sparse IDs. Split Mask is also
+unchanged; the bitmap does not persist between dispatches or frames.
+
 ## Terminal-only split Mask
 
 After split Frontier publishes readiness and the complete terminal count,
@@ -39,6 +55,11 @@ cluster count. It does not select an implementation.
 `meshlet_lod_stream_rt_demand` validates production demand against independent
 per-leaf references. `meshlet_lod_stream_frontier32` directly compares the
 hardware-compatible 64-thread entry with the 32-thread entry.
+`meshlet_lod_stream_frontier_lds` checks 288 consecutive WG64/WG32 frames at
+31/32/33/4095/4096/4097 groups against independent leaf demand, active and mask
+references. It covers shared-word parent/child atomics, multiple parents,
+complete sparse ordering, residency and visibility changes, telemetry blocked
+ancestry, and recorded-but-unsubmitted work.
 `meshlet_lod_stream_terminal_mask` checks 48 consecutive production frames,
 including mixed-depth 1/31/32-cluster terminals, unavailable detail and blocked
 parents, missing terminals, visibility/manual transitions, history boundaries,

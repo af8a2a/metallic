@@ -188,6 +188,7 @@ private:
     uint64_t graphGeneration_ = UINT64_MAX;
     bool currentOverflow_ = false;
     bool detailed_ = false;
+    char scopeFilter_[256]{};
     bool streamingShowBudget_ = false;
     int chartMetric_ = 1;
     std::vector<std::string> chartPath_;
