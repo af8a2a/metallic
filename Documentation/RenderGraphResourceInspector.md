@@ -47,6 +47,22 @@ self-submitted execution use this boundary; the latter joins every graph queue
 first. Existing state-restoring readback and submission tracking apply.
 Normal execution does not enumerate or copy debug resources.
 
+The editor prepares readback-capable allocations during its initial graph compile,
+independently of whether Resources is visible. Opening/closing the panel only
+attaches/detaches the observer: it does not refresh passes, recreate streaming
+sessions or reload shaders. Hidden panels retain normal observer-free recording.
+`RenderGraphCompileOptions::enableDebugReadback` exposes the same opt-in for other
+hosts and caches the graph description for late attachment. Capture observers
+declare `requiresResourceReadback()`; attaching one to an unprepared graph returns
+a recompile request from `setDebugObserver`. Counter-only observers retain their
+existing lightweight attachment behavior.
+
+Explicit texture/buffer aliasing experiments keep their opt-in allocation policy.
+The first resource inspection of such a graph must rebuild it with pinned,
+readback-capable resources; closing and reopening then reuse those allocations
+until another graph rebuild. Resize, graph edits and shader reload still follow
+their normal invalidation paths.
+
 The local Resources panel collects resource descriptors and capture provenance
 without constructing CPU instance/geometry lists or streaming page/telemetry
 tables at every checkpoint. Allocation changes and disappearing resources still
@@ -343,7 +359,7 @@ Remove-Item Env:METALLIC_SMOKE_TEST_HIDDEN, Env:METALLIC_SMOKE_TEST_REFLEX, Env:
 ```
 
 Omit `--debug-control` here to measure the local panel. The benchmark waits for
-streaming readiness and warmup; attachment/recompile and settling are excluded
+streaming readiness and warmup; transition and settling frames are excluded
 from measured frame blocks. Each block contains at least 120 frames; Live also
 runs for at least five seconds to exercise the normal 2 Hz refresh cadence.
 `benchmark.json` records mean/median/p95/max frame latency, capture counts and
@@ -354,6 +370,10 @@ for comparisons, and avoid concurrent builds or GPU workloads. Source edits duri
 shader compilation invalidate the compiler's source epoch and must be avoided.
 The exported `.bin` files contain original RG16F motion vectors and matching `.ppm`
 files contain the actual GPU preview, including automatic-range mapping.
+Each transition asserts a stable graph generation and output allocation. Three
+additional open/capture/close cycles verify reuse and observer detachment;
+`reopenCyclesWithoutRecompile` records completion. Transition markers in the log
+bound the interval in which no graph compile or shader-cache load should occur.
 
 Preview conversion resolves its texture layout once per rebuild. Half conversion
 preserves subnormals (common in stationary-camera motion vectors), signed zero and

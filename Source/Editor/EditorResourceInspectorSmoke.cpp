@@ -282,6 +282,9 @@ bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::pat
         if (Clock::now() - start > std::chrono::seconds(180)) { spdlog::error("Inspector benchmark readiness timeout"); return false; }
     }
     report["warmupSeconds"] = std::chrono::duration<double>(Clock::now() - start).count();
+    const auto generation = graphExecutor_->executionStats().graphGeneration;
+    const auto* previewTexture = graphExecutor_->outputResource("FinalBlit.color")->texture;
+    report["initialGraphGeneration"] = generation;
     auto& inspector = resourceInspector_;
     const auto summarize = [](std::vector<double> values) {
         std::sort(values.begin(), values.end());
@@ -290,6 +293,7 @@ bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::pat
     };
     // Reverse the phase order on the second round to expose warmup/order bias.
     for (const char* mode : {"closed", "frozen", "live", "live", "frozen", "closed"}) {
+        spdlog::info("[Inspector benchmark transition] mode={}", mode);
         const bool open = std::string_view(mode) != "closed";
         renderGraphEditorOpen_ = open; resourceInspectorVisible_ = open;
         resourceInspectorSelectTab_ = open;
@@ -297,8 +301,7 @@ bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::pat
         if (open) { inspector.select("Deferred.motionVectors"); inspector.refresh_ = true; }
         const auto transition = Clock::now();
         for (int i = 0; i < 40; ++i) { if (!frame()) { return false; } }
-        // Observer attachment can recreate streaming allocations. Settle the
-        // actual debug-enabled session before measuring its steady state.
+        // Retain a settling interval for like-for-like performance measurements.
         const auto settled = Clock::now();
         while (Clock::now() - settled < std::chrono::seconds(3) ||
             !subsystemHost_.get<render::StreamerSubsystem>()->sceneReadiness().ready) {
@@ -307,6 +310,10 @@ bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::pat
         }
         if (open && (!inspector.capture_ || !inspector.descriptor_)) {
             spdlog::error("Inspector benchmark capture failed: {}", inspector.status_); return false;
+        }
+        if (graphExecutor_->executionStats().graphGeneration != generation ||
+            graphExecutor_->outputResource("FinalBlit.color")->texture != previewTexture) {
+            spdlog::error("Inspector visibility rebuilt the warmed graph or replaced its output"); return false;
         }
         const double transitionSeconds = std::chrono::duration<double>(Clock::now() - transition).count();
         std::vector<double> frameMs, captureFrameMs;
@@ -321,6 +328,7 @@ bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::pat
             if (capture != inspector.capture_) { ++captureChanges; captureFrameMs.push_back(elapsed); }
         }
         debug::DebugValue result{{"mode", mode}, {"frames", frameMs.size()}, {"frameMs", summarize(frameMs)},
+            {"graphGeneration", graphExecutor_->executionStats().graphGeneration}, {"graphResourcesPreserved", true},
             {"captureChanges", captureChanges}, {"transitionAndSettleSeconds", transitionSeconds},
             {"renderResolution", viewportView_.renderResolutionProperties()}, {"camera", viewportView_.cameraProperties()}};
         if (!captureFrameMs.empty()) { result["captureFrameMs"] = summarize(captureFrameMs); }
@@ -342,6 +350,19 @@ bool EditorApplication::runResourceInspectorBenchmark(const std::filesystem::pat
         report["runs"].push_back(result); save();
         spdlog::info("[Inspector benchmark] {}: {}", mode, result.at("frameMs").dump());
     }
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        for (bool open : {true, false}) {
+            renderGraphEditorOpen_ = open; resourceInspectorVisible_ = open; resourceInspectorSelectTab_ = open;
+            inspector.live_ = false;
+            if (open) { inspector.refresh_ = true; }
+            spdlog::info("[Inspector toggle regression] cycle={} open={}", cycle, open);
+            for (int i = 0; i < 8; ++i) { if (!frame()) { return false; } }
+            if (graphExecutor_->executionStats().graphGeneration != generation ||
+                graphExecutor_->outputResource("FinalBlit.color")->texture != previewTexture ||
+                resourceInspectorAttached_ != open || (open && !inspector.capture_)) { return false; }
+        }
+    }
+    report["reopenCyclesWithoutRecompile"] = 3;
     report["passed"] = true; save();
     return true;
 }

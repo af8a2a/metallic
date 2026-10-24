@@ -609,6 +609,7 @@ public:
 
 class BufferAliasDebugObserver final : public IRenderDebugObserver {
 public:
+    bool requiresResourceReadback() const override { return false; }
     void compiled(debug::DebugValue) override {}
     void beginExecution(Device&, debug::DebugEvidenceStamp, RenderSubsystemHost*) override {}
     void boundary(CommandBuffer&, std::string_view, uint32_t, std::string_view,
@@ -645,6 +646,7 @@ public:
             bool extra = false;
             bool preview = false;
             bool debug = false;
+            bool debugReadback = false;
             bool host = false;
             bool sceneDependent = false;
         };
@@ -657,6 +659,7 @@ public:
             {.name = "Extra output", .extra = true},
             {.name = "Preview output", .preview = true},
             {.name = "Debug observer", .debug = true},
+            {.name = "Readback capability without observer", .debugReadback = true},
             {.name = "Host buffer", .host = true},
             {.name = "Scene-dependent producer", .sceneDependent = true},
         };
@@ -686,6 +689,7 @@ public:
             graph.setNodeProperties(graph.findNode("A")->id, std::move(properties));
             if (test.marked) { graph.markOutput("A.data"); }
             RenderGraphCompileOptions options{.enableBufferAliasing = true};
+            options.enableDebugReadback = test.debugReadback;
             options.enablePreviewOutputAccess = test.preview;
             if (test.extra || test.preview) { options.extraOutputs.push_back("A.data"); }
             BufferAliasDebugObserver observer;
@@ -710,7 +714,28 @@ public:
                 return RHITestResult::fail(std::string(test.name) + " lost the pinned export contract");
             }
         }
-        return RHITestResult::pass("Independent/same-pass lifetimes, persistent/unknown/host/scene outputs and export/debug access do not alias");
+        // Late observation must never expose resources whose transient contents
+        // already share native backing. A rebuild pins them before readback.
+        const auto graph = bufferAliasChain(kBufferAliasBytes, "graphics", "graphics");
+        RenderGraphCompileOptions options{.enableBufferAliasing = true};
+        BufferAliasDebugObserver observer;
+        RenderGraphExecutor executor;
+        std::string log;
+        if (!executor.compile(context.device, graph, 32, 32, options, log) ||
+            !bufferAliasSharesBacking(executor, "Write.data", "Copy2.data")) {
+            return RHITestResult::fail("Cannot prepare late-observer alias fixture: " + log);
+        }
+        if (!executor.setDebugObserver(&observer) || executor.compiled()) {
+            return RHITestResult::fail("Observer attachment accepted aliased intermediates without recompilation");
+        }
+        if (!executor.compile(context.device, graph, 32, 32, options, log) ||
+            bufferAliasSharesBacking(executor, "Write.data", "Copy2.data")) {
+            return RHITestResult::fail("Observer upgrade did not pin formerly aliased buffers: " + log);
+        }
+        if (executor.setDebugObserver(nullptr) || executor.setDebugObserver(&observer) || !executor.compiled()) {
+            return RHITestResult::fail("Upgraded unaliased graph lost readback capability on observer switching");
+        }
+        return RHITestResult::pass("Lifetime/export/debug exclusions and late-observer alias upgrade verified");
     }
 };
 

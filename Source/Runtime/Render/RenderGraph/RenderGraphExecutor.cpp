@@ -488,6 +488,7 @@ struct RenderGraphExecutor::Impl {
     bool isCompiled = false;
     bool sceneBindingsReady = true;
     IRenderDebugObserver* debugObserver = nullptr;
+    bool debugReadback = false;
     uint64_t debugGraphId = nextDebugGraphId++;
     uint64_t debugGeneration = 0;
     uint64_t debugExecutionIndex = 0;
@@ -496,7 +497,7 @@ struct RenderGraphExecutor::Impl {
 
     void publishDebugGraph(const RenderGraph& graph)
     {
-        if (!debugObserver) { return; }
+        if (!debugReadback) { return; }
         ++debugGeneration;
         debugGraph = {{"id", std::to_string(debugGraphId)}, {"generation", debugGeneration}, {"name", graph.name()}, {"state", "Ready"},
             {"passes", debug::DebugValue::array()}, {"edges", debug::DebugValue::array()},
@@ -539,7 +540,7 @@ struct RenderGraphExecutor::Impl {
                 {"active", true}, {"checkpoints", {"AfterGraph"}}});
         }
         debugSceneIdentity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
-        debugObserver->compiled(debugGraph);
+        if (debugObserver) { debugObserver->compiled(debugGraph); }
     }
 
     void beginDebugExecution(uint64_t frameIndex, uint32_t slotIndex)
@@ -830,7 +831,7 @@ struct RenderGraphExecutor::Impl {
             .device = device, .graphicsQueue = device->getQueue(QueueType::Graphics),
             .runtimeScene = runtimeScene,
             .renderWorld = world, .subsystemHost = subsystemHost, .width = renderWidth, .height = renderHeight,
-            .defaultFormat = defaultFormat, .debugReadback = debugObserver != nullptr,
+            .defaultFormat = defaultFormat, .debugReadback = debugReadback,
             .renderView = renderView(),
             .displayOutput = displayOutput,
             .presentationWidth = width, .presentationHeight = height,
@@ -1281,7 +1282,7 @@ struct RenderGraphExecutor::Impl {
                 candidate.name = std::move(name);
                 // Scene-dependent passes can be skipped before the initializing
                 // invocation. Native requirements also exclude host/AS resources.
-                if (enabled && !debugObserver && slot.transientCandidate && !slot.pinned &&
+                if (enabled && !debugReadback && slot.transientCandidate && !slot.pinned &&
                     !node.preparedScene && node.sceneDependency.source == RenderGraphSceneSource::None) {
                     auto requirements = [&]() {
                         if constexpr (texture) { return graphDevice.textureAliasAllocationRequirements(description(slot)); }
@@ -1490,7 +1491,7 @@ struct RenderGraphExecutor::Impl {
                         usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
                         usage = addTextureUsage(usage, TextureUsageBits::Sampled);
                     }
-                    if (debugObserver) { usage = addTextureUsage(usage, TextureUsageBits::TransferSource); }
+                    if (debugReadback) { usage = addTextureUsage(usage, TextureUsageBits::TransferSource); }
                     for (const RenderGraphEdge& edge : graph.edges()) {
                         if (edge.srcPass != node.name ||
                             edge.srcField != field.name ||
@@ -1578,7 +1579,7 @@ struct RenderGraphExecutor::Impl {
                     }
 
                     const bool markedBufferOutput = isOutputMarked(graph, fullName);
-                    if (debugObserver) { usage = addBufferUsage(usage, BufferUsageBits::TransferSource); }
+                    if (debugReadback) { usage = addBufferUsage(usage, BufferUsageBits::TransferSource); }
                     if (markedBufferOutput || options.enablePreviewOutputAccess) {
                         usage = addBufferUsage(usage, BufferUsageBits::TransferSource);
                     }
@@ -2698,6 +2699,7 @@ Result<> RenderGraphExecutor::compile(
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
     }
+    impl_->debugReadback = options.enableDebugReadback || impl_->debugObserver != nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<RenderGraphPass>> schedulingPasses;
     const auto schedulingTraits = [&](const RenderGraphNode& node) {
@@ -2885,14 +2887,14 @@ Result<> RenderGraphExecutor::compile(
         .width = renderWidth,
         .height = renderHeight,
         .defaultFormat = impl_->defaultFormat,
-        .debugReadback = impl_->debugObserver != nullptr,
+        .debugReadback = impl_->debugReadback,
         .renderView = impl_->renderView(),
         .displayOutput = impl_->displayOutput,
         .presentationWidth = width, .presentationHeight = height,
     };
 
     if (auto* gpuScene = impl_->subsystemHost->get<GPUSceneSubsystem>()) {
-        gpuScene->setDebugReadbackEnabled(impl_->debugObserver != nullptr);
+        gpuScene->setDebugReadbackEnabled(impl_->debugReadback);
     }
 
     if (canReuseCompiledPasses) {
@@ -3058,7 +3060,7 @@ Result<> RenderGraphExecutor::reloadShaders(std::string& log)
         .width = impl_->renderWidth,
         .height = impl_->renderHeight,
         .defaultFormat = impl_->defaultFormat,
-        .debugReadback = impl_->debugObserver != nullptr,
+        .debugReadback = impl_->debugReadback,
         .renderView = impl_->renderView(),
         .displayOutput = impl_->displayOutput,
         .presentationWidth = impl_->width, .presentationHeight = impl_->height,
@@ -3173,10 +3175,10 @@ Result<> RenderGraphExecutor::reloadShaders(std::string& log)
     }
 
     impl_->executionList = std::move(replacements);
-    if (impl_->debugObserver) {
+    if (impl_->debugReadback) {
         impl_->debugGraph["generation"] = ++impl_->debugGeneration;
         for (auto& resource : impl_->debugGraph["resources"]) { resource["allocation"] = impl_->debugGeneration; }
-        impl_->debugObserver->compiled(impl_->debugGraph);
+        if (impl_->debugObserver) { impl_->debugObserver->compiled(impl_->debugGraph); }
     }
     log = "Reloaded shaders for " + std::to_string(impl_->executionList.size()) +
         " render pass(es)";
@@ -4227,14 +4229,18 @@ GPUCompletionPoint RenderGraphExecutor::lastSubmittedCompletion() const
     return impl_->lastSubmittedCompletion;
 }
 
-void RenderGraphExecutor::setDebugObserver(IRenderDebugObserver* observer)
+bool RenderGraphExecutor::setDebugObserver(IRenderDebugObserver* observer)
 {
-    if (observer && impl_->hasResourceAliases()) {
-        // Recompile with pinned debug resources before arbitrary checkpoints
-        // can consume intermediates beyond their transient lifetime.
+    const bool needsCompile = observer && (!impl_->isCompiled || impl_->hasResourceAliases() ||
+        (observer->requiresResourceReadback() && !impl_->debugReadback));
+    if (needsCompile) {
+        // Late attachment to a graph without capture capability must first add
+        // transfer usages and pin intermediate lifetimes.
         impl_->isCompiled = false;
     }
     impl_->debugObserver = observer;
+    if (observer && !needsCompile && impl_->debugReadback) { observer->compiled(impl_->debugGraph); }
+    return needsCompile;
 }
 
 Result<> RenderGraphExecutor::waitForSubmittedWork(uint64_t timeoutNanoseconds)
@@ -4269,14 +4275,14 @@ bool RenderGraphExecutor::syncRuntimeProperties(const RenderGraph& graph)
             synced = true;
         }
     }
-    if (synced && impl_->debugObserver) {
+    if (synced && impl_->debugReadback) {
         for (auto& description : impl_->debugGraph["passes"]) {
             const auto node = std::find_if(impl_->executionList.begin(), impl_->executionList.end(),
                 [&](const auto& value) { return description.at("id") == value.id; });
             if (node != impl_->executionList.end()) { description["runtimeProperties"] = node->runtimeProperties; }
         }
         impl_->debugGraph["runtimeRevision"] = impl_->debugGraph.value("runtimeRevision", uint64_t(0)) + 1;
-        impl_->debugObserver->compiled(impl_->debugGraph);
+        if (impl_->debugObserver) { impl_->debugObserver->compiled(impl_->debugGraph); }
     }
     return synced;
 }

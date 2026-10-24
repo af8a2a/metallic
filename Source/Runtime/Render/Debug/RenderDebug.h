@@ -35,6 +35,9 @@ class IRenderDebugObserver {
 public:
     virtual ~IRenderDebugObserver() = default;
     virtual bool detailedSnapshots() const { return true; }
+    // Counter-only observers may attach to existing non-aliased graphs without
+    // changing their allocation policy. Capture observers require transfer usages.
+    virtual bool requiresResourceReadback() const { return true; }
     virtual void compiled(debug::DebugValue graph) = 0;
     virtual void beginExecution(Device& device, debug::DebugEvidenceStamp evidence,
         RenderSubsystemHost* subsystems) = 0;

@@ -3148,10 +3148,9 @@ bool EditorApplication::renderFrame()
     resourceInspector_.runtime().poll();
     if (!debugRuntime_ && graphExecutor_ && resourceInspectorAttached_ != resourceInspectorVisible_) {
         resourceInspectorAttached_ = resourceInspectorVisible_;
-        graphExecutor_->setDebugObserver(resourceInspectorAttached_ ? &resourceInspector_.runtime() : nullptr);
-        // Recompile on both edges to update transfer usages and allocation policy.
-        // Keep transient observer switching in diagnostic benchmarks unchanged.
-        viewportPreviewValid_ = false;
+        if (graphExecutor_->setDebugObserver(resourceInspectorAttached_ ? &resourceInspector_.runtime() : nullptr)) {
+            viewportPreviewValid_ = false;
+        }
     }
 
     if (renderMainViewport && (swapchainOutOfDate_ ||
@@ -7073,6 +7072,10 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     compileOptions.enableTextureAliasing = textureAliasing != nullptr && std::string_view(textureAliasing) == "1";
     const char* bufferAliasing = std::getenv("METALLIC_RENDER_GRAPH_BUFFER_ALIASING");
     compileOptions.enableBufferAliasing = bufferAliasing != nullptr && std::string_view(bufferAliasing) == "1";
+    // Keep capture usages/streaming allocations stable across inspector toggles.
+    // Explicit aliasing experiments retain their opt-in allocation policy; first
+    // attachment then requests the necessary non-aliased resource rebuild.
+    compileOptions.enableDebugReadback = !compileOptions.enableTextureAliasing && !compileOptions.enableBufferAliasing;
     compileOptions.displayOutput = displayOutput_;
     render::Result<> result;
     {

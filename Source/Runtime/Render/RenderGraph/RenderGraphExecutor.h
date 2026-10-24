@@ -38,6 +38,9 @@ struct RenderGraphCompileOptions {
     bool enableTextureAliasing = false;
     // Independent opt-in; host buffers and exported/persistent resources never alias.
     bool enableBufferAliasing = false;
+    // Allocate capture-capable resources without attaching a per-frame observer.
+    // Pins intermediate lifetimes; takes precedence over memory aliasing.
+    bool enableDebugReadback = false;
     DisplayOutputParameters displayOutput;
 };
 
@@ -137,8 +140,9 @@ public:
     void acceptSceneResourcePreparation();
     bool syncProperties(const RenderGraph& graph);
     bool syncRuntimeProperties(const RenderGraph& graph);
-    // Attach before compilation; observer and device outlive submitted work.
-    void setDebugObserver(IRenderDebugObserver* observer);
+    // Switch between frames; observer and device outlive submitted work. Returns
+    // true when attachment requires compile() to prepare capture-capable resources.
+    bool setDebugObserver(IRenderDebugObserver* observer);
     Result<> transitionOutput(
         CommandBuffer& commandBuffer,
         std::string_view fullName,

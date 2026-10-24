@@ -19,8 +19,14 @@ using debug::DebugValue;
 #define DEBUG_REQUIRE(expression) do { const auto result = (expression); \
     if (!result) { return RHITestResult::fail(std::string(#expression) + ": " + resultToString(result)); } } while (false)
 
+struct DebugCompileCounts {
+    uint32_t compiled = 0;
+    bool readback = false;
+};
+
 class DebugCheckpointPass final : public ComputePass {
 public:
+    explicit DebugCheckpointPass(std::shared_ptr<DebugCompileCounts> counts = {}) : counts_(std::move(counts)) {}
     QueueType queueType() const override { return QueueType::Copy; }
     bool supportsAsyncQueue() const override { return true; }
     std::vector<std::string> debugCheckpoints() const override { return {"Early", "Late", "AfterPass"}; }
@@ -32,6 +38,7 @@ public:
     }
     Result<> compile(const RenderGraphCompileContext& context, std::string&) override
     {
+        if (counts_) { ++counts_->compiled; counts_->readback = context.debugReadback; }
         Result<> result = context.device->createBuffer({.size = 32, .usage = BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy}).transform([&](auto rhiValue) { upload_ = std::move(rhiValue); });
@@ -73,6 +80,7 @@ public:
         return context.properties().value("fail", false) ? makeError(Error::Failure) : Result<>{};
     }
 private:
+    std::shared_ptr<DebugCompileCounts> counts_;
     std::unique_ptr<Buffer> upload_;
 };
 
@@ -142,9 +150,9 @@ private:
         RenderGraphExecutor executor;
         FrameCommands frame;
         std::string log;
-        // The editor explicitly recompiles on inspector activation, even without aliases.
+        // Legacy callers without readback capability need one resource upgrade.
         DEBUG_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
-        executor.setDebugObserver(&runtime);
+        if (!executor.setDebugObserver(&runtime)) { return RHITestResult::fail("Initial debug attachment did not request a resource upgrade"); }
         DEBUG_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
         executor.setDebugObserver(&runtime);
         if (!executor.compiled()) { return RHITestResult::fail("Reattaching the same observer invalidated the graph"); }
@@ -246,6 +254,72 @@ private:
         runtime.drain();
         executor.setDebugObserver(nullptr);
         return RHITestResult::pass("Early/late copies, external/self submission, overwrite isolation, resize and cancellation verified");
+    }
+};
+
+class DebugControlObserverLifecycleTest final : public RHITest {
+public:
+    DebugControlObserverLifecycleTest() { name = "DebugControl observer attachment preserves prepared resources"; type = RHITestType::Command; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto counts = std::make_shared<DebugCompileCounts>();
+        registerRenderGraphPassType("DebugObserverLifecyclePass", "Debug observer lifecycle fixture",
+            [counts] { return std::make_unique<DebugCheckpointPass>(counts); });
+        RenderGraph graph;
+        graph.addNode("DebugObserverLifecyclePass", "Probe"); graph.markOutput("Probe.values");
+        RenderDebugRuntime runtime({}, RenderDebugDetail::Resources);
+        RenderGraphExecutor executor;
+        std::string log;
+        RenderGraphCompileOptions options;
+        options.enableDebugReadback = true;
+        DEBUG_REQUIRE(executor.compile(context.device, graph, 4, 4, options, log));
+        if (counts->compiled != 1 || !counts->readback || !executor.compiled()) {
+            return RHITestResult::fail("Readback capability was not prepared without an observer");
+        }
+        auto* buffer = executor.outputResource("Probe.values")->buffer;
+        DEBUG_REQUIRE(executor.execute({.graphicsQueue = &context.graphicsQueue}));
+        DEBUG_REQUIRE(executor.waitForSubmittedWork());
+        if (runtime.core().latestSnapshot()) { return RHITestResult::fail("Detached observer received execution evidence"); }
+        uint64_t generation = 0;
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            if (executor.setDebugObserver(&runtime) || !executor.compiled()) {
+                return RHITestResult::fail("Attaching an observer invalidated a capture-capable graph");
+            }
+            const auto description = call(runtime, "rg.describe");
+            if (description.value("status", "") != "ok" || !description.at("result").contains("generation")) {
+                return RHITestResult::fail("Attachment did not publish the existing graph metadata");
+            }
+            const auto current = description.at("result").at("generation").get<uint64_t>();
+            if (cycle && current != generation) { return RHITestResult::fail("Observer reattachment changed graph generation"); }
+            generation = current;
+            const auto job = capture(runtime, "Late");
+            DEBUG_REQUIRE(executor.execute({.graphicsQueue = &context.graphicsQueue}));
+            DEBUG_REQUIRE(executor.waitForSubmittedWork()); runtime.poll();
+            const auto value = call(runtime, "eval", {{"job", job}, {"expression", "buffers[\"Ids\"][0]"}});
+            if (value.value("status", "") != "ok" || value.at("result").at("value") != 22) {
+                return RHITestResult::fail("Reattached observer could not capture the prepared GPU buffer: " + value.dump());
+            }
+            const auto snapshot = runtime.core().latestSnapshot();
+            runtime.drain();
+            if (executor.setDebugObserver(nullptr) || !executor.compiled()) {
+                return RHITestResult::fail("Detachment invalidated readback-capable resources");
+            }
+            DEBUG_REQUIRE(executor.execute({.graphicsQueue = &context.graphicsQueue}));
+            DEBUG_REQUIRE(executor.waitForSubmittedWork()); runtime.poll();
+            if (counts->compiled != 1 || executor.outputResource("Probe.values")->buffer != buffer ||
+                runtime.core().latestSnapshot() != snapshot) {
+                return RHITestResult::fail("Observer visibility recompiled a pass, replaced its buffer, or kept publishing while detached");
+            }
+        }
+        // A graph compiled without readback capability must still request the
+        // resource upgrade; silently attaching would issue invalid Vulkan copies.
+        RenderGraphExecutor unprepared;
+        DEBUG_REQUIRE(unprepared.compile(context.device, graph, 4, 4, log));
+        if (!unprepared.setDebugObserver(&runtime) || unprepared.compiled()) {
+            return RHITestResult::fail("An unprepared graph did not request a debug resource rebuild");
+        }
+        unprepared.setDebugObserver(nullptr);
+        return RHITestResult::pass("Repeated attach/capture/detach reuses passes, buffers and graph generation; unprepared attachment requests rebuild");
     }
 };
 
@@ -513,6 +587,7 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(DebugControlGPUProbeTest);
 METALLIC_REGISTER_RHI_TEST(DebugControlCaptureTest);
+METALLIC_REGISTER_RHI_TEST(DebugControlObserverLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(DebugControlTextureTest);
 } // namespace
 } // namespace metallic::tests

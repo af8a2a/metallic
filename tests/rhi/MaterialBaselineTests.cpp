@@ -67,6 +67,7 @@ private:
 class PhysicalCloudFinalReceipt final : public render::IRenderDebugObserver
 {
 public:
+    bool requiresResourceReadback() const override { return false; }
     render::GPUAtmosphereParameters parameters{};
     std::array<std::byte, 320> bytes{};
     bool captured = false, valid = true, completed = false;
