@@ -12,6 +12,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <thread>
 
 namespace metallic::tests {
 namespace {
@@ -135,6 +136,88 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerIdleTest);
+
+
+class EditorProfilerIdleAccountingTest final : public RHITest {
+public:
+    EditorProfilerIdleAccountingTest() { type = RHITestType::Command; name = "editor_profiler_idle_accounting"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        try {
+            EditorProfiler profiler;
+            profiler.beginCapture();
+            {
+                auto frame = profiler.beginFrame();
+                const auto pacingStart = EditorProfiler::Clock::now();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                profiler.addIdleSample("Reflex Frame Pacing", std::chrono::duration<double, std::milli>(
+                    EditorProfiler::Clock::now() - pacingStart).count());
+                {
+                    auto render = profiler.scope("Render Frame");
+                    {
+                        auto outerIdle = profiler.idleScope("Wait Slot Completion");
+                        {
+                            auto innerIdle = profiler.idleScope("Nested Fence Wait");
+                            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                        }
+                        // An imported sub-measurement within the outer wait must not be subtracted twice either.
+                        profiler.addIdleSample("Nested Reported Wait", 0.5);
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            profiler.endCapture();
+            const auto& raw = profiler.history().back();
+            const auto find = [&](const char* name) -> const EditorProfiler::Node& {
+                const auto found = std::find_if(raw.nodes.begin(), raw.nodes.end(),
+                    [&](const auto& node) { return node.name == name; });
+                checkProfile(found != raw.nodes.end(), std::string("Missing idle accounting node: ") + name);
+                return *found;
+            };
+            const auto& pacing = find("Idle / Reflex Frame Pacing");
+            const auto& outer = find("Idle / Wait Slot Completion");
+            const auto& inner = find("Idle / Nested Fence Wait");
+            const auto& reported = find("Idle / Nested Reported Wait");
+            const auto& render = find("Render Frame");
+            const auto& root = raw.nodes.front();
+            checkProfile(pacing.cpuMilliseconds > 0 && inner.cpuMilliseconds > 0 && reported.cpuMilliseconds == 0.5,
+                "Idle measurements were removed or changed instead of excluded from Frame cost");
+            checkProfile(std::abs(raw.cpuIdleMilliseconds - pacing.cpuMilliseconds - outer.cpuMilliseconds) < 1e-9,
+                "Nested measured/reported waits were subtracted more than once");
+            checkProfile(render.cpuMilliseconds >= outer.cpuMilliseconds && outer.cpuMilliseconds >= inner.cpuMilliseconds,
+                "Frame idle exclusion changed inclusive parent or idle scope measurements");
+            checkProfile(root.cpuMilliseconds > 0 && root.cpuMilliseconds < raw.cpuWallMilliseconds &&
+                std::abs(root.cpuMilliseconds + raw.cpuIdleMilliseconds - raw.cpuWallMilliseconds) < 1e-9,
+                "Frame CPU cost still includes pacing or lost non-idle work");
+            const auto& capture = profiler.capturedFrames().front();
+            checkProfile(capture.nodes.front().cpuMilliseconds == root.cpuMilliseconds &&
+                capture.cpuWallMilliseconds == raw.cpuWallMilliseconds && capture.cpuIdleMilliseconds == raw.cpuIdleMilliseconds,
+                "Capture and history use different Frame accounting");
+            const auto presented = profiler.presentationFrame();
+            checkProfile(presented.nodes.front().cpuMilliseconds == root.cpuMilliseconds &&
+                presented.cpuWallMilliseconds == raw.cpuWallMilliseconds && presented.cpuIdleMilliseconds == raw.cpuIdleMilliseconds,
+                "Presentation dropped frame wall/idle metadata");
+            const auto aggregate = profiler.historyStatistics(root.scopeId).cpu;
+            checkProfile(aggregate.count == 1 && aggregate.average == root.cpuMilliseconds &&
+                aggregate.minimum == root.cpuMilliseconds && aggregate.maximum == root.cpuMilliseconds,
+                "Frame history statistics use inclusive wall time");
+            {
+                auto frame = profiler.beginFrame();
+                profiler.addIdleSample("Oversized External Sample", 1e9);
+            }
+            const auto& oversized = profiler.history().back();
+            checkProfile(oversized.nodes.front().cpuMilliseconds == 0 &&
+                oversized.nodes[1].cpuMilliseconds == 1e9 && oversized.cpuWallMilliseconds > 0,
+                "External idle duration larger than the frame produced negative work or destroyed the raw sample");
+            { auto frame = profiler.beginFrame(); }
+            const auto& active = profiler.history().back();
+            checkProfile(active.cpuIdleMilliseconds == 0 && active.nodes.front().cpuMilliseconds == active.cpuWallMilliseconds,
+                "Idle accounting leaked into a later frame without waits");
+            return RHITestResult::pass("Frame CPU excludes pacing and nested idle once while preserving parent scopes, raw waits, capture and history");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerIdleAccountingTest);
 
 EditorProfiler::Aggregate bruteProfilerAggregate(const EditorProfiler& profiler, size_t scopeId, bool gpu)
 {
@@ -681,6 +764,117 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerSortingTest);
+
+class EditorProfilerTooltipViewportTest final : public RHITest {
+public:
+    EditorProfilerTooltipViewportTest() { type = RHITestType::Command; name = "editor_profiler_tooltip_viewport"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        auto* previous = ImGui::GetCurrentContext();
+        auto* context = ImGui::CreateContext();
+        struct Cleanup {
+            ImGuiContext* context;
+            ImGuiContext* previous;
+            ~Cleanup()
+            {
+                ImGui::SetCurrentContext(context);
+                ImGui::DestroyPlatformWindows();
+                ImGui::DestroyContext(context);
+                ImGui::SetCurrentContext(previous);
+            }
+        } cleanup{context, previous};
+        try {
+            auto& io = ImGui::GetIO();
+            io.IniFilename = nullptr; io.LogFilename = nullptr;
+            io.DisplaySize = ImVec2(480, 520); io.DeltaTime = 1.f / 60;
+            io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+            io.BackendFlags |= ImGuiBackendFlags_PlatformHasViewports | ImGuiBackendFlags_RendererHasViewports |
+                ImGuiBackendFlags_HasMouseHoveredViewport;
+            unsigned char* pixels = nullptr; int width = 0, height = 0;
+            io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); io.Fonts->SetTexID(ImTextureID(1));
+            // Exercise ImGui's real platform viewport lifecycle without opening OS windows.
+            auto& platform = ImGui::GetPlatformIO();
+            platform.Platform_CreateWindow = [](ImGuiViewport* viewport) { viewport->PlatformHandle = viewport; };
+            platform.Platform_DestroyWindow = [](ImGuiViewport* viewport) { viewport->PlatformHandle = nullptr; };
+            platform.Platform_GetWindowPos = [](ImGuiViewport* viewport) { return viewport->Pos; };
+            platform.Platform_SetWindowPos = [](ImGuiViewport*, ImVec2) {};
+            platform.Platform_GetWindowSize = [](ImGuiViewport* viewport) { return viewport->Size; };
+            platform.Platform_SetWindowSize = [](ImGuiViewport*, ImVec2) {};
+            platform.Platform_ShowWindow = [](ImGuiViewport*) {};
+            platform.Platform_SetWindowTitle = [](ImGuiViewport*, const char*) {};
+            platform.Platform_SetWindowFocus = [](ImGuiViewport*) {};
+            platform.Platform_GetWindowFocus = [](ImGuiViewport*) { return true; };
+            platform.Platform_GetWindowMinimized = [](ImGuiViewport*) { return false; };
+            ImGuiPlatformMonitor monitor;
+            monitor.MainSize = monitor.WorkSize = ImVec2(1920, 1080);
+            platform.Monitors.push_back(monitor);
+            auto* mainViewport = ImGui::GetMainViewport();
+            mainViewport->PlatformHandle = mainViewport;
+            EditorProfiler profiler;
+            for (uint32_t i = 0; i < 4; ++i) {
+                auto frame = profiler.beginFrame();
+                profiler.addIdleSample("A measured scope with a long descriptive label", 2 + i);
+            }
+            const auto selectTab = [&](const char* name) {
+                for (int i = 0; i < context->TabBars.GetMapSize(); ++i) {
+                    auto* bar = context->TabBars.TryGetMapData(i);
+                    if (bar == nullptr) { continue; }
+                    for (auto& tab : bar->Tabs) {
+                        if (std::string_view(ImGui::TabBarGetTabName(bar, &tab)) == name) { bar->NextSelectedTabId = tab.ID; }
+                    }
+                }
+            };
+            for (bool detached : {false, true}) {
+                const ImVec2 origin(detached ? 700.f : 0.f, 0);
+                const auto draw = [&] {
+                    ImGui::NewFrame();
+                    ImGui::SetNextWindowPos(origin);
+                    ImGui::SetNextWindowSize(io.DisplaySize);
+                    if (!detached) { ImGui::SetNextWindowViewport(mainViewport->ID); }
+                    bool open = true; profiler.drawWindow(&open, {});
+                    ImGui::Render();
+                    ImGui::UpdatePlatformWindows();
+                };
+                io.AddMousePosEvent(-100, -100);
+                selectTab("Table");
+                for (int i = 0; i < 4; ++i) { draw(); }
+                auto* host = ImGui::FindWindowByName("Profiler")->Viewport;
+                checkProfile((host != mainViewport) == detached, "Profiler fixture did not use the expected host viewport");
+                const int expectedViewportCount = detached ? 2 : 1;
+                checkProfile(platform.Viewports.Size == expectedViewportCount, "Unexpected fixture platform viewport");
+                for (const char* tab : {"Table", "LineChart"}) {
+                    selectTab(tab); draw(); draw();
+                    ImVec2 point(origin.x + 450, origin.y + 430);
+                    if (std::string_view(tab) == "Table") {
+                        auto* table = context->Tables.GetByIndex(0);
+                        checkProfile(table != nullptr, "Missing profiler tooltip table");
+                        point = ImVec2(table->OuterRect.Min.x + 30,
+                            table->OuterRect.Min.y + ImGui::GetFrameHeight() + ImGui::GetTextLineHeight() * .5f);
+                    }
+                    io.AddMouseViewportEvent(host->ID);
+                    io.AddMousePosEvent(point.x, point.y);
+                    bool tooltipSeen = false;
+                    for (int i = 0; i < 5; ++i) {
+                        draw();
+                        for (auto* window : context->Windows) {
+                            if (window->Active && (window->Flags & ImGuiWindowFlags_Tooltip)) {
+                                tooltipSeen = true;
+                                checkProfile(window->Viewport == host, std::string(tab) + " tooltip escaped its profiler host viewport");
+                            }
+                        }
+                        checkProfile(platform.Viewports.Size == expectedViewportCount,
+                            std::string(tab) + " hover added a transient platform viewport and would suspend Reflex");
+                    }
+                    checkProfile(tooltipSeen, std::string(tab) + " fixture did not trigger a tooltip");
+                    io.AddMousePosEvent(-100, -100);
+                    for (int i = 0; i < 4; ++i) { draw(); }
+                }
+            }
+            return RHITestResult::pass("Table and history tooltips retain main or detached host viewport without transient platform windows");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerTooltipViewportTest);
 
 // Render real ImGui draw data offscreen for UI QA, without creating an OS window
 // or taking over the user's desktop. Only the font atlas is used by this panel.

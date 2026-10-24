@@ -108,6 +108,9 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame,
     const auto& gpu = row.gpu;
     const auto& cpu = row.cpu;
     if (ImGui::IsItemHovered()) {
+        // Keep profiler hover UI in its host viewport: a transient platform
+        // window adds a swapchain and suspends Reflex for the whole editor.
+        ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
         ImGui::SetTooltip("%s\nCPU samples: %zu | GPU samples: %zu\nAbsent scopes and missing GPU queries are excluded from averages.\nNested / concurrent intervals must not be added together.", present ? "Recorded in displayed frame" : "Not recorded in displayed frame; historical row retained", cpu.count, gpu.count);
     }
     ImGui::TableNextColumn(); drawDuration(gpu.average, gpu.count != 0);
@@ -269,14 +272,16 @@ void drawHistoryPlot(const char* title, const std::vector<uint64_t>& frames, con
         size_t i = it == frames.end() ? frames.size() - 1 : size_t(it - frames.begin());
         if (i && target - frames[i - 1] < frames[i] - target) { --i; }
         draw->AddLine(ImVec2(xAt(i), lo.y), ImVec2(xAt(i), hi.y), IM_COL32(255, 255, 255, 160));
-        ImGui::BeginTooltip();
-        ImGui::Text("Frame %llu", static_cast<unsigned long long>(frames[i]));
-        for (const auto& line : series) {
-            if (std::isfinite(line.values[i])) { ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(line.color), "%s: %.3f %s", line.name.c_str(), line.values[i], unit); }
-            else { ImGui::TextDisabled("%s: pending / unavailable", line.name.c_str()); }
+        ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+        if (ImGui::BeginTooltip()) {
+            ImGui::Text("Frame %llu", static_cast<unsigned long long>(frames[i]));
+            for (const auto& line : series) {
+                if (std::isfinite(line.values[i])) { ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(line.color), "%s: %.3f %s", line.name.c_str(), line.values[i], unit); }
+                else { ImGui::TextDisabled("%s: pending / unavailable", line.name.c_str()); }
+            }
+            if (reference > 0) { ImGui::Text("Capacity / budget: %.1f %s", reference, unit); }
+            ImGui::EndTooltip();
         }
-        if (reference > 0) { ImGui::Text("Capacity / budget: %.1f %s", reference, unit); }
-        ImGui::EndTooltip();
     }
     const float legendRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
     for (size_t i = 0; i < series.size(); ++i) {
@@ -583,7 +588,7 @@ void drawPieChart(const EditorProfiler::Frame& frame)
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     const EditorProfiler::Node& root = frame.nodes[0];
-    const double total = std::max(root.cpuMilliseconds, 0.001);
+    const double total = std::max(frame.cpuWallMilliseconds, 0.001);
     float angle = -0.5f * kPi;
     for (size_t childIndex : root.children) {
         const EditorProfiler::Node& child = frame.nodes[childIndex];
@@ -1023,6 +1028,8 @@ EditorProfiler::Frame EditorProfiler::presentationFrame()
     const auto& displayed = displayFrame();
     Frame result = scopeTree_;
     result.index = displayed.index;
+    result.cpuWallMilliseconds = displayed.cpuWallMilliseconds;
+    result.cpuIdleMilliseconds = displayed.cpuIdleMilliseconds;
     result.profilingOverflow |= displayed.profilingOverflow;
     for (auto& node : result.nodes) {
         node.cpuMilliseconds = std::numeric_limits<double>::quiet_NaN();
@@ -1065,6 +1072,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
     ImGui::EndDisabled();
 
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
         if (!graphicsCapture.sdkCompiled) {
             ImGui::SetTooltip("Nsight Graphics SDK was not available when Metallic was built.");
         } else if (!graphicsCapture.runtimeEnabled) {
@@ -1105,6 +1113,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
             }
         }
         if (ImGui::IsItemHovered()) {
+            ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
             ImGui::SetTooltip("Open this file using its registered Nsight Graphics application.");
         }
         ImGui::PopID();
@@ -1146,7 +1155,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         static_cast<unsigned long long>(frame.index), static_cast<unsigned long long>(latestFrame_.index - frame.index)); }
     else { ImGui::TextDisabled("GPU queries pending / unavailable"); }
     ImGui::TextDisabled("GPU envelope covers RenderGraph; editor UI and presentation are outside this interval.");
-    ImGui::TextDisabled("CPU timings are inclusive wall time. Gray Idle scopes mark waits, included in Frame and parent totals.");
+    ImGui::TextDisabled("Frame CPU excludes Idle waits and pacing. Other CPU scopes retain inclusive wall time.");
     if (render::profiling::NsightGraphicsCapture::vulkanInjectionActive()) {
         ImGui::TextColored(ImVec4(1, .65f, .2f, 1),
             "Graphics Capture is active; live timings include capture overhead. Measure a separate baseline without injection.");
@@ -1167,7 +1176,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("PieChart")) {
-            ImGui::TextDisabled("CPU frame sections only; GPU intervals can overlap.");
+            ImGui::TextDisabled("CPU wall-time sections, including Idle; GPU intervals can overlap.");
             drawPieChart(displayFrame());
             ImGui::EndTabItem();
         }
@@ -1245,11 +1254,26 @@ void EditorProfiler::endFrame()
         endSection(stack_.back());
     }
 
+    // An idle scope includes its descendants, so count only the outermost idle
+    // interval on each branch. Imported idle samples belong to their active scope.
+    const auto idleTime = [&](auto&& self, size_t index) -> double {
+        const Node& node = currentNodes_[index];
+        if (node.cpuIdle) { return node.cpuMilliseconds; }
+        double total = 0.0;
+        for (size_t child : node.children) { total += self(self, child); }
+        return total;
+    };
+    const double wallMilliseconds = currentNodes_[0].cpuMilliseconds;
+    const double idleMilliseconds = idleTime(idleTime, 0);
+    // External duration samples can exceed the local measured interval.
+    currentNodes_[0].cpuMilliseconds = std::max(wallMilliseconds - idleMilliseconds, 0.0);
+
     if (capturing_) {
         if (capturedFrames_.size() >= 60000) { captureOverflow_ = true; capturing_ = false; }
         else {
             const size_t index = capturedFrames_.size();
-            capturedFrames_.push_back({currentNodes_, frameIndex_, currentOverflow_, currentStreaming_});
+            capturedFrames_.push_back({currentNodes_, frameIndex_, currentOverflow_, currentStreaming_,
+                wallMilliseconds, idleMilliseconds});
             for (const auto& node : currentNodes_) {
                 if (node.renderGraphExecutionId != UINT64_MAX) {
                     capturedExecutions_[{graphGeneration_, node.renderGraphExecutionId}] = index;
@@ -1283,6 +1307,8 @@ void EditorProfiler::endFrame()
         else { samples.push_back(std::move(sample)); }
         if (samples.size() > kProfilerHistorySize) { samples.erase(samples.begin()); }
     }
+    latestFrame_.cpuWallMilliseconds = wallMilliseconds;
+    latestFrame_.cpuIdleMilliseconds = idleMilliseconds;
     latestFrame_.nodes = currentNodes_;
     registerFrameScopes(latestFrame_.nodes);
     addHistoryFrame(latestFrame_);

@@ -53,6 +53,9 @@ public:
         uint64_t index = 0;
         bool profilingOverflow = false;
         std::vector<render::SceneStreamingProfile> streaming;
+        // Frame CPU is wall time minus non-overlapping idle scopes. Other nodes remain inclusive.
+        double cpuWallMilliseconds = 0.0;
+        double cpuIdleMilliseconds = 0.0;
     };
 
     struct StreamingHistory {
