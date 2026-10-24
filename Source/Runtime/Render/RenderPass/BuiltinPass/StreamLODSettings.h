@@ -11,6 +11,8 @@ inline void applyStreamRayLODSettings(const RenderGraphProperties& properties,
     view.rtOffscreenErrorScale = properties.value("rtOffscreenErrorScale", 2.0f);
     view.rtLodHysteresis = properties.value("rtLodHysteresis", 0.2f);
     view.preserveRasterLod = preserveRasterLod;
+    view.nodeDemandC1 = properties.value("benchmarkDemandC1", true);
+    view.benchmarkDemandTraversal = properties.value("benchmarkDemandTraversal", false);
 }
 
 inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSetting>& settings)

@@ -267,6 +267,124 @@ bool sameStreamCut(const StreamMeshletLODReference& lhs, const StreamMeshletLODR
         lhs.requestedGroups == rhs.requestedGroups && lhs.activeGroups == rhs.activeGroups;
 }
 
+// The metric sphere of a replacement need not cover its refinement descendants.
+// Keep one descendant on screen while its parent metric (and most of the tree)
+// is behind the eye. An ordinary metric-sphere frustum test would drop that
+// parent's raster-preserving demand.
+StreamLODFixture rtDemandFixture(uint32_t leafCount)
+{
+    StreamLODFixture fixture(true, leafCount);
+    for (auto& group : fixture.groups) { group.sphere[2] = 10000.f; }
+    fixture.groups[0].sphere[2] = 0.f;
+    fixture.view.forward[3] = 0.f;
+    fixture.view.projection[3] = 1.5f;
+    return fixture;
+}
+
+// Independent cut oracle: consume the brute-force leaf demand decisions, then
+// apply dependency/residency gating in descending DAG order. This intentionally
+// does not visit BVH nodes or substitute altered LOD errors for boolean demand.
+StreamMeshletLODReference cutFromDemand(const StreamLODFixture& fixture,
+    std::span<const uint8_t> wanted, std::span<const uint8_t> available)
+{
+    StreamMeshletLODReference result;
+    const uint32_t count = static_cast<uint32_t>(fixture.groups.size());
+    result.activeGroups.resize(count);
+    std::vector<std::vector<uint32_t>> parents(count);
+    for (uint32_t parent = 0; parent < count; ++parent) {
+        const auto& range = fixture.ranges[parent];
+        for (uint32_t cluster = 0; cluster < range.clusterCount; ++cluster) {
+            const uint32_t child = fixture.refined[range.clusterOffset + cluster];
+            if (child != UINT32_MAX) { parents[child].push_back(parent); }
+        }
+    }
+    for (uint32_t reverse = count; reverse != 0; --reverse) {
+        const uint32_t group = reverse - 1;
+        if (!wanted[group]) { continue; }
+        if (!fixture.drawable[group]) {
+            if (!available[group]) { result.requestedGroups.push_back(group); }
+            continue;
+        }
+        result.activeGroups[group] = std::all_of(parents[group].begin(), parents[group].end(),
+            [&](uint32_t parent) { return result.activeGroups[parent] != 0; });
+    }
+    for (uint32_t group = 0; group < count; ++group) {
+        if (!result.activeGroups[group]) { continue; }
+        const auto& range = fixture.ranges[group];
+        for (uint32_t cluster = 0; cluster < range.clusterCount; ++cluster) {
+            const uint32_t index = range.clusterOffset + cluster;
+            const uint32_t child = fixture.refined[index];
+            if (child == UINT32_MAX || !result.activeGroups[child]) { result.selectedClusters.push_back(index); }
+        }
+    }
+    std::sort(result.requestedGroups.begin(), result.requestedGroups.end());
+    return result;
+}
+
+class StreamMeshletLODDemandBoundsTest final : public RHITest {
+public:
+    StreamMeshletLODDemandBoundsTest() { type = RHITestType::Validation; name = "meshlet_lod_stream_demand_bounds"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        const auto fixture = rtDemandFixture(256);
+        std::vector<MeshletLODRefinementBounds> bounds;
+        std::string reason;
+        if (!buildMeshletLodRefinementBounds(fixture.groups, fixture.ranges, fixture.refined, bounds, reason)) {
+            return RHITestResult::fail(reason);
+        }
+        uint32_t checked = 0;
+        for (bool tiled : {false, true}) {
+            const auto build = [&](std::span<const MeshletLODRefinementBounds> input, std::vector<MeshletLODBVHNode>& nodes) {
+                return tiled ? buildMeshletLodTiles(fixture.groups, nodes, reason, input) :
+                    buildMeshletLodBvh(fixture.groups, nodes, reason, input);
+            };
+            std::vector<MeshletLODBVHNode> nodes;
+            if (!build(bounds, nodes)) { return RHITestResult::fail(reason); }
+            for (uint32_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {
+                const auto& node = nodes[nodeIndex];
+                for (uint32_t descendant = nodeIndex; descendant < node.escapeIndex; ++descendant) {
+                    const auto& leaf = nodes[descendant];
+                    for (uint32_t index = 0; index < leaf.groupCount; ++index) {
+                        const auto& child = bounds[leaf.groupOffset + index];
+                        for (uint32_t axis = 0; axis < 3; ++axis) {
+                            if (node.demandBounds.min[axis] > child.min[axis] || node.demandBounds.max[axis] < child.max[axis]) {
+                                return RHITestResult::fail("Node demand bounds omit a refinement descendant");
+                            }
+                        }
+                        ++checked;
+                    }
+                }
+            }
+            std::vector<MeshletLODBVHNode> unknown;
+            if (!build({}, unknown)) { return RHITestResult::fail(reason); }
+            for (const auto& node : unknown) {
+                if (!meshletLodBoundsVisible(node.demandBounds, fixture.instance, fixture.view, {0, 1, 0}, 1.f, 1000000.f)) {
+                    return RHITestResult::fail("Omitted demand metadata was treated as known offscreen");
+                }
+            }
+            auto partial = bounds;
+            partial[0] = {};
+            if (!build(partial, unknown)) { return RHITestResult::fail(reason); }
+            for (uint32_t node = 0; node < unknown.size(); ++node) {
+                const bool containsUnknown = std::any_of(unknown.begin() + node, unknown.begin() + unknown[node].escapeIndex,
+                    [](const auto& leaf) { return leaf.groupCount != 0 && leaf.groupOffset == 0; });
+                if (containsUnknown && !meshletLodBoundsVisible(unknown[node].demandBounds,
+                    fixture.instance, fixture.view, {0, 1, 0}, 1.f, 1000000.f)) {
+                    return RHITestResult::fail("Unknown child demand bounds were hidden by a finite sibling union");
+                }
+            }
+            if (build(std::span<const MeshletLODRefinementBounds>(bounds).first(bounds.size() - 1), unknown)) {
+                return RHITestResult::fail("Mismatched node demand metadata count was accepted");
+            }
+        }
+        if (!meshletLodBoundsVisible(bounds[256], fixture.instance, fixture.view, {0, 1, 0}, 1.f, 1000000.f)) {
+            return RHITestResult::fail("Directed fixture lost the visible refinement descendant");
+        }
+        return RHITestResult::pass(std::to_string(checked) + " BVH/tile ancestor bounds contain refinement descendants; omitted and partial metadata remain conservative");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODDemandBoundsTest);
+
 class StreamMeshletLODBVHReferenceTest final : public RHITest {
 public:
     StreamMeshletLODBVHReferenceTest() { type = RHITestType::Validation; name = "meshlet_lod_stream_bvh_reference"; }
@@ -453,10 +571,9 @@ public:
         if (!tiled.passed) { return tiled; }
         return RHITestResult::pass("872 linear/BVH/cooperative/view-driven/prefetch/split/distributed/switching GPU-reference cuts across shared-parent, 511- and 8191-group fixtures");
     }
-private:
-    RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256)
+    RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256, bool rtDemand = false)
     {
-        StreamLODFixture fixture{large, leafCount};
+        StreamLODFixture fixture = rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
         const uint32_t kRequestCapacity = kGroupCount + 2;
         const uint32_t kPriorityOffset = 16 + kRequestCapacity * 2;
@@ -496,7 +613,7 @@ private:
         if (!buildMeshletLodRefinementBounds(fixture.groups, fixture.ranges, fixture.refined, refinementBounds, reason)) {
             return RHITestResult::fail(reason);
         }
-        if (!buildMeshletLodBvh(fixture.groups, nodes, reason)) {
+        if (!buildMeshletLodBvh(fixture.groups, nodes, reason, refinementBounds)) {
             return RHITestResult::fail("stream GPU fixture BVH: " + reason);
         }
         primitive.lodBvhOffset = static_cast<uint32_t>(topology.size());
@@ -504,7 +621,7 @@ private:
         topology.resize(topology.size() + bvhWords);
         std::memcpy(topology.data() + primitive.lodBvhOffset, nodes.data(), bvhWords * sizeof(uint32_t));
         std::vector<MeshletLODBVHNode> tiles;
-        if (!buildMeshletLodTiles(fixture.groups, tiles, reason)) { return RHITestResult::fail(reason); }
+        if (!buildMeshletLodTiles(fixture.groups, tiles, reason, refinementBounds)) { return RHITestResult::fail(reason); }
         primitive.lodTileOffset = static_cast<uint32_t>(topology.size());
         topology.push_back(static_cast<uint32_t>(tiles.size()));
         const size_t tileWords = tiles.size() * sizeof(MeshletLODBVHNode) / sizeof(uint32_t);
@@ -527,9 +644,9 @@ private:
             sizeof(MeshletStreamGPUActiveGroup), sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUDrawIndirect), 4, 4, sizeof(MeshletStreamGPUTraversalWorkItem)};
         // Retain the ordinary pair/sparse layout; diagnostic history is an
         // optional two words per instance-group and one visible-frame stamp.
-        const uint64_t logicalStateBytes = (4 + kGroupCount * 5 + 5) * sizeof(uint32_t);
+        const uint64_t logicalStateBytes = (4 + kGroupCount * 5 + (rtDemand ? 7u : 5u)) * sizeof(uint32_t);
         // Cross the maximum X dispatch dimension and leave a partial last row.
-        const uint64_t allocatedStateBytes = large ? (65535ull * 64 + 67) * sizeof(uint32_t) : logicalStateBytes;
+        const uint64_t allocatedStateBytes = large && !rtDemand ? (65535ull * 64 + 67) * sizeof(uint32_t) : logicalStateBytes;
         const uint64_t sizes[] = {strides[Instance], sizeof(primitive), groups.size() * sizeof(groups[0]), strides[Params],
             topology.size() * 4, allocatedStateBytes, kGroupCount * sizeof(StreamPageTableEntry),
             kRequestWords * 4, kGroupCount * sizeof(MeshletStreamGPUActiveGroup), strides[Header],
@@ -554,7 +671,7 @@ private:
         const auto upload = [&](BufferIndex index, const void* source, size_t size) {
             void* mapped = buffers[index]->map();
             if (mapped == nullptr) { return false; }
-            std::memset(mapped, index == State && large ? 0xa5 : 0, sizes[index]);
+            std::memset(mapped, index == State && large && !rtDemand ? 0xa5 : 0, sizes[index]);
             if (source != nullptr) { std::memcpy(mapped, source, size); }
             buffers[index]->flush();
             buffers[index]->unmap();
@@ -644,7 +761,7 @@ private:
         uint64_t outputBytes = 0;
         for (uint32_t index = 0; index < std::size(outputs); ++index) { offsets[index] = outputBytes; outputBytes += outputSizes[index]; }
         const uint64_t tailOffset = outputBytes;
-        if (large) { outputBytes += 3 * sizeof(uint32_t); }
+        if (large && !rtDemand) { outputBytes += 3 * sizeof(uint32_t); }
         STREAM_LOD_REQUIRE(device->createBuffer({.size = outputBytes, .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         Queue* queue = device->getQueue(QueueType::Graphics);
@@ -657,19 +774,24 @@ private:
         const uint32_t caseCount = large ? 36u : 37u;
         const uint32_t ordinaryFrames = caseCount * 8;
         MeshletStreamGPUParams priorParams;
-        for (uint32_t frame = 0; frame < ordinaryFrames + (large ? 0u : 80u); ++frame) {
+        std::vector<uint8_t> previousWanted(kGroupCount), expectedWanted(kGroupCount);
+        std::array<uint64_t, 2> rtGroupTests{};
+        const uint32_t frameCount = rtDemand ? 64u : ordinaryFrames + (large ? 0u : 80u);
+        for (uint32_t frame = 0; frame < frameCount; ++frame) {
+            const uint32_t rtStep = frame % 16u;
+            const bool rtBaseline = (frame / 16u) % 2u == 0;
             const bool telemetrySequence = frame >= ordinaryFrames;
             const uint32_t telemetryStep = telemetrySequence ? (frame - ordinaryFrames) % 20u : 0u;
             const uint32_t telemetryPath = telemetrySequence ? (frame - ordinaryFrames) / 20u : 0u;
             const uint32_t test = telemetrySequence ? 0u : frame % caseCount;
-            const bool useBvh = telemetrySequence ? telemetryPath != 0 : frame >= caseCount;
-            const bool cooperative = telemetrySequence ? telemetryPath >= 2 : frame >= caseCount * 2;
-            const bool viewDriven = telemetrySequence || frame >= caseCount * 3;
-            const bool prefetch = !telemetrySequence && frame >= caseCount * 4;
-            const bool switching = !telemetrySequence && frame >= caseCount * 7;
-            const bool distributed = telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
-            const bool split = telemetrySequence ? distributed : switching ? distributed : frame >= caseCount * 5;
-            const float viewAspect = viewDriven && test % 7 == 1 ? .25f : 1.f;
+            const bool useBvh = rtDemand || (telemetrySequence ? telemetryPath != 0 : frame >= caseCount);
+            const bool cooperative = rtDemand || (telemetrySequence ? telemetryPath >= 2 : frame >= caseCount * 2);
+            const bool viewDriven = rtDemand || telemetrySequence || frame >= caseCount * 3;
+            const bool prefetch = !rtDemand && !telemetrySequence && frame >= caseCount * 4;
+            const bool switching = !rtDemand && !telemetrySequence && frame >= caseCount * 7;
+            const bool distributed = rtDemand ? frame >= 32u : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
+            const bool split = rtDemand ? distributed : telemetrySequence ? distributed : switching ? distributed : frame >= caseCount * 5;
+            const float viewAspect = !rtDemand && viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
             uint32_t manual, capacity;
             std::vector<uint8_t> available;
@@ -681,7 +803,7 @@ private:
                 fixture.view.projection[3] = .021f;
                 fixture.drawable[128] = 0; available[128] = 0;
             }
-            if (viewDriven && !telemetrySequence) {
+            if (viewDriven && !telemetrySequence && !rtDemand) {
                 if (prefetch && large && test == 7) { fixture.drawable[128] = 0; available[128] = 0; }
                 if (test % 6 == 0) { fixture.instance.worldMatrix[12] = 500.f; }
                 if (test % 6 == 2) { fixture.instance.worldMatrix[14] = 1000.f; }
@@ -713,25 +835,70 @@ private:
                 fixture.drawable[1] = 0;
                 available = fixture.drawable;
             }
+            if (rtDemand) {
+                fixture = rtDemandFixture(leafCount);
+                available.assign(kGroupCount, 1);
+                manual = UINT32_MAX;
+                capacity = kGroupCount;
+                if (rtStep == 0) { std::fill(previousWanted.begin(), previousWanted.end(), uint8_t{0}); }
+                if (rtStep == 2) { fixture.view.forward = {0, 0, 1, 0}; }
+                if (rtStep == 3) { fixture.view.forward = {1, 0, 0, 0}; }
+                if (rtStep == 5) {
+                    fixture.instance.worldMatrix[0] = 2.f;
+                    fixture.instance.worldMatrix[4] = .75f;
+                    fixture.instance.worldMatrix[5] = 3.f;
+                }
+                if (rtStep == 6) { fixture.view.eye[2] = .05f; }
+                if (rtStep == 7) { fixture.view.eye[2] = 0.f; }
+                if (rtStep == 8) { fixture.view.forward[3] = 1.f; }
+                if (rtStep == 9) {
+                    fixture.instance.worldMatrix[12] = 1000000.f;
+                    fixture.instance.worldMatrix[14] = -1000000.f;
+                    fixture.view.eye[0] = 1000000.f;
+                    fixture.view.eye[2] = -999990.f;
+                }
+                if (rtStep == 10 || rtStep == 11) {
+                    fixture.drawable[leafCount] = 0;
+                    available[leafCount] = rtStep == 11; // Pending upload is not a duplicate request.
+                }
+                if (rtStep == 12) { manual = 0; }
+                if (rtStep == 14) { fixture.view.projection[3] = .1f; }
+                for (uint32_t group = 0; group < kGroupCount; ++group) {
+                    const auto& metric = fixture.groups[group];
+                    if ((metric.flags & kMeshletLODTerminalGroup) != 0) { expectedWanted[group] = 1; continue; }
+                    if (manual != UINT32_MAX) { expectedWanted[group] = metric.level >= manual; continue; }
+                    const bool visible = meshletLodBoundsVisible(refinementBounds[group], fixture.instance,
+                        fixture.view, {0, 1, 0}, viewAspect, 1000000.f);
+                    float error = meshletLodRayPixelError(metric, fixture.instance, fixture.view);
+                    if (visible) { error = std::max(error, meshletLodPixelError(metric, fixture.instance, fixture.view)); }
+                    const bool retained = rtStep != 13 && previousWanted[group] != 0;
+                    expectedWanted[group] = meshletLodRayNeedsFine(error,
+                        fixture.view.projection[3] * (visible ? 1.f : 2.f), .2f, retained);
+                }
+                if (rtStep == 0 && !expectedWanted[leafCount]) {
+                    return RHITestResult::fail("RT fixture failed to expose a visible refinement descendant of a behind-eye metric sphere");
+                }
+            }
             auto demandMetrics = fixture.groups;
             for (uint32_t group = 0; group < kGroupCount; ++group) {
                 groups[group].refinementBounds = viewDriven ? refinementBounds[group] : MeshletLODRefinementBounds{};
-                if (viewDriven && manual == UINT32_MAX && (demandMetrics[group].flags & kMeshletLODTerminalGroup) == 0 &&
+                if (!rtDemand && viewDriven && manual == UINT32_MAX && (demandMetrics[group].flags & kMeshletLODTerminalGroup) == 0 &&
                     !meshletLodBoundsVisible(refinementBounds[group], fixture.instance, fixture.view, {0, 1, 0}, viewAspect, 1000000.f)) {
                     demandMetrics[group].error = 0;
                 }
             }
-            const auto expected = selectStreamMeshletLodReference(demandMetrics, fixture.ranges, fixture.refined,
-                fixture.drawable, fixture.instance, fixture.view, manual, capacity, available);
-            if (viewDriven) {
+            const auto expected = rtDemand ? cutFromDemand(fixture, expectedWanted, available) :
+                selectStreamMeshletLodReference(demandMetrics, fixture.ranges, fixture.refined,
+                    fixture.drawable, fixture.instance, fixture.view, manual, capacity, available);
+            if (viewDriven && !rtDemand) {
                 const auto legacy = fixture.select(manual, capacity);
                 viewDemandReductions += expected.selectedClusters.size() < legacy.selectedClusters.size();
             }
-            const auto expectedState = selectStreamMeshletLodReference(demandMetrics, fixture.ranges, fixture.refined,
+            const auto expectedState = rtDemand ? expected : selectStreamMeshletLodReference(demandMetrics, fixture.ranges, fixture.refined,
                 fixture.drawable, fixture.instance, fixture.view, manual, UINT32_MAX, available,
                 useBvh ? std::span<const MeshletLODBVHNode>(nodes) : std::span<const MeshletLODBVHNode>{});
             const std::string caseLabel = (large ? std::to_string(kGroupCount) + " groups, " : "shared parents, ") +
-                (viewDriven ? "view demand, case " : cooperative ? "cooperative, case " : useBvh ? "BVH, case " : "linear, case ") + std::to_string(test);
+                (rtDemand ? "RT demand, frame " : viewDriven ? "view demand, case " : cooperative ? "cooperative, case " : useBvh ? "BVH, case " : "linear, case ") + std::to_string(rtDemand ? frame : test);
             MeshletStreamGPUInstance instance;
             instance.visible = fixture.instance.identity[3] != 0;
             instance.gpuSceneInstanceIndex = 17;
@@ -774,6 +941,12 @@ private:
             if (telemetrySequence && telemetryStep >= 18) { params.frameIndex = 0x04000000u + telemetryStep - 18u; }
             params.selectedLodLevel = manual;
             params.enableGpuLodSelection = manual == UINT32_MAX;
+            if (rtDemand) {
+                params.rtLodFlags = rtBaseline ? 7u : 3u;
+                params.rtOffscreenErrorScale = 2.f;
+                params.rtLodHysteresis = .2f;
+                params.rtLodPolicyRevision = 1;
+            }
             params.enableLodTransitionTelemetry = telemetrySequence && telemetryStep != 16;
             std::copy_n(priorParams.eye, 4, params.previousEye);
             std::copy_n(priorParams.center, 4, params.previousCenter);
@@ -849,7 +1022,7 @@ private:
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-            if (frame == caseCount || (telemetrySequence && (telemetryStep == 0 || telemetryStep == 18))) {
+            if ((rtDemand ? rtStep == 0 : frame == caseCount) || (telemetrySequence && (telemetryStep == 0 || telemetryStep == 18))) {
                 // The compatibility linear path predates sparse state. Run
                 // the production initializer once when changing algorithms.
                 push.activeBuildPhase = 8;
@@ -891,7 +1064,7 @@ private:
                     if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                     if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                 }
-                if (large && outputs[index] == State) {
+                if (large && !rtDemand && outputs[index] == State) {
                     {
                         auto sourceSlice = (buffers[State].get())->slice({sizes[State] - 3 * sizeof(uint32_t), 3 * sizeof(uint32_t)});
                         if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
@@ -923,6 +1096,23 @@ private:
             std::memcpy(state.data(), mapped + offsets[4], logicalStateBytes);
             std::array<uint32_t, kMeshletStreamDemandStatsWords> demandStats{};
             std::memcpy(demandStats.data(), mapped + offsets[5], sizeof(demandStats));
+            if (rtDemand) {
+                const uint32_t history = 4u + kGroupCount * 3u + 4u;
+                if (manual == UINT32_MAX) {
+                    for (uint32_t group = 0; group < kGroupCount; ++group) {
+                        if ((fixture.groups[group].flags & kMeshletLODTerminalGroup) != 0) { continue; }
+                        const uint32_t address = history + 3u + group * 2u;
+                        const bool actualWanted = state[address] == params.frameIndex + 1u && state[address + 1u] != 0u;
+                        if (actualWanted != bool(expectedWanted[group])) {
+                            readback->unmap();
+                            return RHITestResult::fail("Brute-force leaf / GPU RT demand mismatch at group " +
+                                std::to_string(group) + ", " + caseLabel);
+                        }
+                    }
+                }
+                previousWanted = expectedWanted;
+                rtGroupTests[rtBaseline ? 0u : 1u] += distributed ? demandStats[3] : state[4u + kGroupCount * 2u + 2u];
+            }
             if (telemetrySequence) {
                 const uint32_t expectedCatchup = telemetryStep == 4 ? 1u : telemetryStep == 6 ? 2u : 0u;
                 const uint32_t expectedThreshold = telemetryStep == 1 ? 2u : 0u;
@@ -962,9 +1152,9 @@ private:
                 }
             }
             std::array<uint32_t, 3> tail{};
-            if (large) { std::memcpy(tail.data(), mapped + tailOffset, sizeof(tail)); }
+            if (large && !rtDemand) { std::memcpy(tail.data(), mapped + tailOffset, sizeof(tail)); }
             readback->unmap();
-            if (large && !std::all_of(tail.begin(), tail.end(),
+            if (large && !rtDemand && !std::all_of(tail.begin(), tail.end(),
                 [&](uint32_t word) { return word == (useBvh ? 0u : 0xa5a5a5a5u); })) {
                 return RHITestResult::fail("2D LOD state initialization did not clear the partial last row: " + caseLabel);
             }
@@ -1066,7 +1256,7 @@ private:
                     ", visited " + std::to_string(state[stats + 1]) + "/" + std::to_string(expectedState.visitedBvhNodes) +
                     ", tested " + std::to_string(state[stats + 2]) + "/" + std::to_string(expectedState.testedGroups));
             }
-            if (useBvh && large && (test == 1 || test == 11 || test == 18 || test == 24) &&
+            if (useBvh && large && !rtDemand && (test == 1 || test == 11 || test == 18 || test == 24) &&
                 (state[stats + 2] >= kGroupCount / 8 || actual.size() != 2)) {
                 return RHITestResult::fail("GPU BVH failed to prune coarse branches: " + caseLabel);
             }
@@ -1092,6 +1282,14 @@ private:
                 }
             }
         }
+        if (rtDemand) {
+            if (rtGroupTests[1] >= rtGroupTests[0]) {
+                return RHITestResult::fail("C1 did not reduce behind-eye leaf tests versus the baseline: " +
+                    std::to_string(rtGroupTests[1]) + "/" + std::to_string(rtGroupTests[0]));
+            }
+            return RHITestResult::pass("64 consecutive baseline/C1 ordered/distributed frames match brute-force leaf demand, cuts and requests; leaf tests " +
+                std::to_string(rtGroupTests[0]) + " -> " + std::to_string(rtGroupTests[1]));
+        }
         if (positivePriorities == 0) { return RHITestResult::fail("Visible requests never generated screen benefit"); }
         if (speculativeRequests == 0) { return RHITestResult::fail("Lookahead never requested a missing descendant"); }
         if (predictedRequests == 0) { return RHITestResult::fail("Predicted camera never requested a missing descendant"); }
@@ -1100,6 +1298,16 @@ private:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODGPUTest);
+
+class StreamMeshletLODRTDemandC1Test final : public RHITest {
+public:
+    StreamMeshletLODRTDemandC1Test() { type = RHITestType::Rendering; name = "meshlet_lod_stream_rt_demand_c1"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        return StreamMeshletLODGPUTest{}.runFixture(context, true, 256, true);
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTDemandC1Test);
 
 
 class StreamLODTileHierarchyTest final : public RHITest {

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -29,11 +30,85 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
+// The demand comparison snapshots live cut records only outside timed frames.
+// Source residency is frozen, but demand/frontier/BLAS execution remains live.
+class DemandComparisonCapture final : public render::IRenderDebugObserver {
+public:
+    bool capture = false;
+    RayQualityCapture* images = nullptr;
+    void compiled(Json) override {}
+    void beginExecution(render::Device& device, debug::DebugEvidenceStamp stamp, render::RenderSubsystemHost* host) override
+    {
+        device_ = &device;
+        if (images) { images->beginExecution(device, stamp, host); }
+    }
+    void endExecution(bool success) override { if (images) { images->endExecution(success); } }
+    void boundary(render::CommandBuffer& commands, std::string_view checkpoint, uint32_t index,
+        std::string_view pass, std::span<const render::DebugResourceBinding> resources, const Json& values) override
+    {
+        if (!capture) { return; }
+        if (images) { images->boundary(commands, checkpoint, index, pass, resources, values); }
+        if (checkpoint != "AfterPass" || pass != "VBuffer") { return; }
+        using namespace render;
+        for (const auto& resource : resources) {
+            if (!resource.buffer || copies_.contains(resource.id)) { continue; }
+            const auto name = resource.id.substr(resource.id.find_last_of('.') + 1);
+            if (name != "pageTable" && name != "activeHeader" && name != "activeGroups" &&
+                name != "rtRepresentationHeader" && name != "rtRepresentationGroups" && name != "rtRepresentations" &&
+                name != "tlasInstances" && name != "requestHeader" && name != "loadRequests" && name != "demandStats") { continue; }
+            const uint64_t bytes = resource.size ? resource.size : resource.buffer->desc().size - resource.offset;
+            if (bytes > 128ull * 1024 * 1024) { throw std::runtime_error("Demand comparison snapshot exceeds bounded MiniZorah size"); }
+            Copy copy;
+            copy.metadata = {{"resource",resource.id},{"layout",resource.layout},{"bytes",bytes},{"metadata",resource.metadata}};
+            if (!device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
+                    .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { copy.buffer = std::move(value); })) {
+                throw std::runtime_error("Demand comparison readback allocation failed");
+            }
+            BufferBarrierDesc barrier{.buffer = resource.buffer,
+                .before = resourceSyncScope(resource.state, PipelineStageBits::AllCommands),
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .range = {.offset = resource.offset, .size = bytes}};
+            if (!commands.synchronize({.buffers = {&barrier, 1}}) ||
+                !resource.buffer->slice({resource.offset, bytes}).and_then([&](const auto& source) {
+                    return copy.buffer->slice().and_then([&](const auto& destination) { return commands.copyBuffer(source, destination); });
+                })) { throw std::runtime_error("Demand comparison snapshot copy failed"); }
+            std::swap(barrier.before, barrier.after);
+            if (!commands.synchronize({.buffers = {&barrier, 1}})) { throw std::runtime_error("Demand comparison snapshot restore failed"); }
+            copies_.emplace(resource.id, std::move(copy));
+        }
+    }
+    Json exportAfterDrain(const std::filesystem::path& directory)
+    {
+        std::filesystem::create_directories(directory);
+        Json result = Json::array();
+        for (auto& [name, copy] : copies_) {
+            copy.buffer->invalidate();
+            const void* data = copy.buffer->map();
+            if (!data) { throw std::runtime_error("Demand comparison snapshot map failed"); }
+            std::ofstream file(directory / (name + ".bin"), std::ios::binary);
+            file.write(static_cast<const char*>(data), static_cast<std::streamsize>(copy.buffer->desc().size));
+            copy.buffer->unmap();
+            if (!file) { throw std::runtime_error("Demand comparison snapshot export failed"); }
+            copy.metadata["file"] = name + ".bin";
+            result.push_back(copy.metadata);
+        }
+        if (result.size() != 10u) { throw std::runtime_error("Demand comparison missing required stream snapshots"); }
+        std::ofstream manifest(directory / "Buffers.json");
+        manifest << result.dump(2) << '\n';
+        if (!manifest) { throw std::runtime_error("Demand comparison buffer manifest failed"); }
+        return result;
+    }
+private:
+    struct Copy { std::unique_ptr<render::Buffer> buffer; Json metadata; };
+    render::Device* device_ = nullptr;
+    std::map<std::string, Copy> copies_;
+};
+
 Json streamSample(const render::SceneStreamingProfile& s)
 {
     return {{"pass",s.passName},{"asset",s.assetPath},
         {"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
         {"diagnosticSourceIdentity",s.diagnosticSourceIdentity.empty() ? Json(nullptr) : Json(s.diagnosticSourceIdentity)},
+        {"nodeDemandC1",s.nodeDemandC1},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"lodTransitions", {{"enabled",s.lodTransitionTelemetryEnabled},{"historyBytes",s.lodTransitionHistoryBytes},
             {"demandedGroups",s.lodDemandedGroups},{"ownPageBlockedGroups",s.lodOwnPageBlockedGroups},
@@ -221,6 +296,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     bool passed = false;
     RasterWorkloadObserver workloadObserver;
     auto qualityCapture = std::make_unique<RayQualityCapture>();
+    std::unique_ptr<DemandComparisonCapture> demandCapture;
     struct FrozenProperty { uint32_t node; std::string key; bool existed; Json value; };
     std::vector<FrozenProperty> frozenProperties;
     std::optional<scene::LightingSettings> controlledLighting;
@@ -245,6 +321,12 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const Json blasComparison = config.value("blasQualityComparison", Json::object());
         if (!blasComparison.is_object()) { throw std::runtime_error("blasQualityComparison must be an object"); }
         const bool controlledBlas = !blasComparison.empty();
+        const Json demandComparison = config.value("detailDemandComparison", Json::object());
+        if (!demandComparison.is_object()) { throw std::runtime_error("detailDemandComparison must be an object"); }
+        const bool controlledDemand = !demandComparison.empty();
+        if (controlledDemand && (controlledBlas || freezeStreaming)) {
+            throw std::runtime_error("Detail demand comparison requires its own residency-only freeze");
+        }
         constexpr uint32_t kFreezeSettleFrames = 16;
         const Json deferredOverrides = config.value("deferredOverrides", Json::object());
         if (!deferredOverrides.is_object()) { throw std::runtime_error("deferredOverrides must be an object"); }
@@ -279,7 +361,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["captureQuality"] = captureQuality;
         report["captureReflections"] = captureReflections;
         qualityCapture->captureReflections = captureReflections;
-        qualityCapture->captureRasterInputs = controlledBlas;
+        qualityCapture->captureRasterInputs = controlledBlas || controlledDemand;
         qualityCapture->capturePathDiagnostics = capturePathDiagnostics;
         qualityCapture->diagnosticRows = capturePathDiagnostics ? 16u * uint32_t(config.at("diagnosticPixels").size()) : 0u;
         workloadObserver.captureCull = config.value("classifyCounters", false);
@@ -326,7 +408,19 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         }
         if (workloadEvery) { graphExecutor_->setDebugObserver(&workloadObserver); }
         if (captureQuality) { graphExecutor_->setDebugObserver(qualityCapture.get()); }
+        if (controlledDemand) {
+            // Compile transfer-readable, non-aliasing allocations before the
+            // source is frozen. Attaching a late readback observer could rebuild
+            // the graph and invalidate the source identity between ABBA arms.
+            // The inactive observer records no copies during loading/warmup.
+            demandCapture = std::make_unique<DemandComparisonCapture>();
+            graphExecutor_->setDebugObserver(demandCapture.get());
+        }
         const std::string sampleId = config.value("sample", std::string(render::kGPUDrivenZorahFullSampleId));
+        if (controlledDemand && (sampleId != "gpu-driven-sample" || workloadEvery || capturePathDiagnostics ||
+            captureQuality != captureReflections)) {
+            throw std::runtime_error("Detail demand comparison requires MiniZorah and separate timing or shadow/reflection quality modes");
+        }
         if (controlledBlas && (sampleId != "gpu-driven-sample" || !captureQuality || !captureReflections || freezeStreaming)) {
             throw std::runtime_error("blasQualityComparison requires MiniZorah quality/reflection capture without the full raster snapshot freeze");
         }
@@ -382,6 +476,12 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "predictivePrefetch", config.value("predictivePrefetch", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "adaptivePageRetention", config.value("adaptivePageRetention", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "enableLodTransitionTelemetry", config.value("enableLodTransitionTelemetry", false));
+        if (controlledDemand) {
+            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkDemandC1", false);
+            // Keep the selected scheduling path fixed across A/B; this benchmark
+            // measures node pruning without the adaptive ordered-demand fallback.
+            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "distributedDemandMinGroups", 0u);
+        }
         const auto* deferred = renderGraph_.findNode("Deferred");
         const auto* dlss = renderGraph_.findNode("DLSSSR");
         if (!deferred || !dlss) { throw std::runtime_error("Missing Full shading/reconstruction nodes"); }
@@ -536,7 +636,153 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             camera["camera"]["center"][2]=camera["camera"]["eye"][2].get<double>()-std::sin(angle)*dx+std::cos(angle)*dz;
             return camera;
         };
-        if (controlledBlas) {
+        if (controlledDemand) {
+            const uint32_t settleFrames = demandComparison.value("settleFrames", 16u);
+            const uint32_t sampleFrames = demandComparison.value("sampleFrames", 64u);
+            const auto seeds = demandComparison.value("seeds", std::vector<uint32_t>{0u, 1u});
+            if (settleFrames < 4u || settleFrames > 16u || sampleFrames < 16u || sampleFrames > 64u ||
+                seeds.empty() || seeds.size() > 2u || std::set<uint32_t>(seeds.begin(), seeds.end()).size() != seeds.size() ||
+                viewportView_.temporalJitter() || config.value("stochasticTextureFiltering", false) ||
+                (captureQuality && (dlssMode != "Off" || !config.contains("shadowOverrides") ||
+                    config.at("shadowOverrides").value("sigmaDenoise", true)))) {
+                throw std::runtime_error("Invalid bounded deterministic MiniZorah detail demand configuration");
+            }
+            const auto setProperty = [&](const std::string& nodeName, const std::string& key, const Json& value) {
+                const auto* node = renderGraph_.findNode(nodeName);
+                if (!node) { throw std::runtime_error("Missing demand comparison node " + nodeName); }
+                if (std::none_of(frozenProperties.begin(), frozenProperties.end(), [&](const auto& saved) {
+                    return saved.node == node->id && saved.key == key;
+                })) {
+                    const bool existed = node->runtimeProperties.contains(key);
+                    frozenProperties.push_back({node->id, key, existed, existed ? node->runtimeProperties.at(key) : Json(nullptr)});
+                }
+                if (!renderGraph_.setNodeRuntimeProperty(node->id, key, value)) {
+                    throw std::runtime_error("Failed demand comparison property " + key);
+                }
+            };
+            const auto snapshot = [&]() {
+                const auto& profiles = graphExecutor_->executionStats().streaming;
+                const auto found = std::find_if(profiles.begin(), profiles.end(), [](const auto& s) { return s.passName == "VBuffer"; });
+                if (found == profiles.end()) { throw std::runtime_error("Missing demand comparison stream profile"); }
+                return streamSample(*found);
+            };
+            drain();
+            for (const char* node : {"VBuffer", "Deferred"}) { setProperty(node, "benchmarkFreezeResidency", true); }
+            if (captureReflections) { setProperty("ReflectionQuality", "benchmarkFreezeResidency", true); }
+            setProperty("VBuffer", "benchmarkDemandTraversal", true);
+            controlledLighting = renderWorld_.lighting();
+            auto fixedLighting = *controlledLighting;
+            fixedLighting.autoExposure.enabled = false;
+            renderWorld_.setLighting(std::move(fixedLighting));
+            report["protocol"] = "minizorah-detail-demand-c1-v1";
+            report["diagnosticRun"] = captureQuality;
+            report["config"] = config;
+            report["frames"] = 0u;
+            report["loadingFrames"] = loadingFrames;
+            report["loadingSeconds"] = std::chrono::duration<double>(readyAt-loadingStart).count();
+            report["outputExtent"] = {fullRoamWidth_,fullRoamHeight_};
+            auto* depth = graphExecutor_->outputResource("VBuffer.depth");
+            if (!depth) { throw std::runtime_error("Missing demand comparison render extent"); }
+            report["renderExtent"] = {depth->desc.width,depth->desc.height};
+            report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
+            report["demandComparison"] = {{"scope","One frozen geometry/CLAS/texture source; live demand/frontier/BLAS, no RT reset; one in-process ABBA block"},
+                {"statisticalUnit","One in-process ABBA block, n=1; descriptive only, no confidence interval or independent-process replication"},
+                {"distributedDemandMinGroups",0u},{"fixedExposureEV100",controlledLighting->exposureEV100},
+                {"performanceComparable",!captureQuality},{"camera",viewportCameraProperties()},{"variants",Json::array()}};
+            graphExecutor_->setDebugObserver(nullptr);
+            std::string sourceIdentity;
+            struct Arm { const char* name; bool c1; };
+            for (const auto& arm : std::array{Arm{"A1",false}, Arm{"B1",true}, Arm{"B2",true}, Arm{"A2",false}}) {
+                drain();
+                setProperty("VBuffer", "benchmarkDemandC1", arm.c1);
+                Json variant{{"name",arm.name},{"nodeDemandC1",arm.c1},{"settle",Json::array()},{"captures",Json::array()}};
+                const auto checkState = [&]() {
+                    auto state = snapshot();
+                    const auto identity = state.at("diagnosticSourceIdentity").get<std::string>();
+                    if (sourceIdentity.empty()) { sourceIdentity = identity; }
+                    if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != arm.c1) {
+                        throw std::runtime_error("Demand comparison source identity or effective C1 flag changed");
+                    }
+                    return state;
+                };
+                for (uint32_t i = 0; i < settleFrames; ++i) {
+                    if (!draw()) { throw std::runtime_error("Demand comparison settle failed"); }
+                    variant["settle"].push_back(checkState());
+                }
+                if (!captureQuality) {
+                    drain();
+                    std::vector<uint64_t> frameIds;
+                    profiler_.beginCapture();
+                    for (uint32_t i = 0; i < sampleFrames; ++i) {
+                        frameIds.push_back(profiler_.nextFrameIndex());
+                        if (!draw()) { throw std::runtime_error("Demand comparison timed frame failed"); }
+                    }
+                    profiler_.endCapture();
+                    drain();
+                    const auto& frames = profiler_.capturedFrames();
+                    if (frames.size() != sampleFrames) { throw std::runtime_error("Demand comparison timing frame count mismatch"); }
+                    const auto directory = output / arm.name;
+                    std::filesystem::create_directories(directory);
+                    std::ofstream file(directory / "Frames.jsonl");
+                    file.exceptions(std::ios::badbit | std::ios::failbit);
+                    for (size_t i = 0; i < frames.size(); ++i) {
+                        const auto& frame = frames[i];
+                        if (frame.index != frameIds[i] || frame.profilingOverflow) { throw std::runtime_error("Demand comparison timing frame identity mismatch"); }
+                        Json row{{"frame",frame.index},{"arm",arm.name},{"diagnostic",false},{"scopes",Json::array()},{"streaming",Json::array()}};
+                        std::vector<std::string> paths;
+                        bool completeGpu = false;
+                        for (size_t n = 0; n < frame.nodes.size(); ++n) {
+                            const auto& node = frame.nodes[n];
+                            paths.push_back((n && node.parent < n ? paths[node.parent] + "/" : "") + node.name);
+                            row["scopes"].push_back({{"path",paths.back()},{"cpuMs",node.cpuMilliseconds},
+                                {"gpuMs",node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)}});
+                            if (node.name == "RenderGraph GPU envelope") { completeGpu = node.gpuTimingAvailable; }
+                        }
+                        if (!completeGpu) { throw std::runtime_error("Demand comparison incomplete GPU timing coverage"); }
+                        for (const auto& profile : frame.streaming) { row["streaming"].push_back(streamSample(profile)); }
+                        file << row.dump() << '\n';
+                    }
+                    variant["timings"] = std::string(arm.name) + "/Frames.jsonl";
+                    report["frames"] = report.at("frames").get<uint32_t>() + sampleFrames;
+                }
+                // Snapshot after ordinary timings. The quality process has its
+                // own diagnostic graph and never supplies performance samples.
+                for (uint32_t seed : captureQuality ? seeds : std::vector<uint32_t>{0u}) {
+                    drain();
+                    if (captureQuality) {
+                        setProperty("ReflectionQuality", "diagnosticSampleFrame", seed);
+                        setProperty("Shadows", "diagnosticSampleFrame", seed);
+                        qualityCapture->capture = true;
+                    }
+                    demandCapture = std::make_unique<DemandComparisonCapture>();
+                    demandCapture->capture = true;
+                    demandCapture->images = captureQuality ? qualityCapture.get() : nullptr;
+                    graphExecutor_->setDebugObserver(demandCapture.get());
+                    if (!draw()) { throw std::runtime_error("Demand comparison snapshot frame failed"); }
+                    qualityCapture->capture = false;
+                    auto state = checkState();
+                    drain();
+                    const std::string directory = std::string(arm.name) + "/seed" + std::to_string(seed);
+                    Json capture{{"seed",seed},{"directory",directory},{"state",state},
+                        {"buffers",demandCapture->exportAfterDrain(output / directory)}};
+                    if (captureQuality) { capture["images"] = qualityCapture->exportAfterDrain(output / directory); }
+                    variant["captures"].push_back(std::move(capture));
+                    graphExecutor_->setDebugObserver(nullptr);
+                    demandCapture.reset();
+                    qualityCapture = std::make_unique<RayQualityCapture>();
+                    qualityCapture->captureReflections = captureReflections;
+                    qualityCapture->captureRasterInputs = true;
+                }
+                report["demandComparison"]["variants"].push_back(std::move(variant));
+            }
+            report["demandComparison"]["sourceIdentity"] = sourceIdentity;
+            report["graph"] = Json::array();
+            for (const auto& node : renderGraph_.nodes()) {
+                auto properties = node.properties;
+                properties.merge_patch(node.runtimeProperties);
+                report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
+            }
+        } else if (controlledBlas) {
             if (dlssMode != "Off" || viewportView_.temporalJitter() || config.value("stochasticTextureFiltering", false)) {
                 throw std::runtime_error("Controlled BLAS quality requires DLSS Off, temporalJitter false and deterministic texture filtering");
             }

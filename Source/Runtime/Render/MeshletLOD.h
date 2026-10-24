@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include <array>
+#include <cstddef>
 #include <span>
 #include <string>
 #include <vector>
@@ -23,6 +24,13 @@ struct alignas(16) MeshletLODGroupRecord {
     uint32_t reserved = 0;
 };
 
+// Includes every replacement descendant, padded by its authored error. Used
+// only for page demand culling; it does not change the LOD error metric.
+struct MeshletLODRefinementBounds {
+    std::array<float, 3> min{1, 1, 1};
+    std::array<float, 3> max{-1, -1, -1};
+};
+
 // Preorder BVH4 with stackless escape links and descending group-ID leaves.
 // groupCount == 0 identifies an interior; leaf ranges contain at most 4 groups.
 // All offsets and escape indices are primitive-local. Scalar layout matches GPU.
@@ -34,6 +42,9 @@ struct MeshletLODBVHNode {
     uint32_t escapeIndex = 0;
     uint32_t groupOffset = 0;
     uint32_t groupCount = 0;
+    // Union of leaf refinement bounds, independent of the metric sphere.
+    // Invalid bounds conservatively preserve raster demand during traversal.
+    MeshletLODRefinementBounds demandBounds;
 };
 
 struct MeshletLODView {
@@ -53,13 +64,6 @@ float meshletLodRenderPixelThreshold(float displayPixelError, uint32_t renderHei
 
 struct MeshletLODGroupRange;
 struct GPUSceneGPUInstanceRecord;
-
-// Includes every replacement descendant, padded by its authored error. Used
-// only for page demand culling; it does not change the LOD error metric.
-struct MeshletLODRefinementBounds {
-    std::array<float, 3> min{1, 1, 1};
-    std::array<float, 3> max{-1, -1, -1};
-};
 
 bool buildMeshletLodRefinementBounds(std::span<const MeshletLODGroupRecord> groups,
     std::span<const MeshletLODGroupRange> ranges, std::span<const uint32_t> refinedGroups,
@@ -84,12 +88,14 @@ struct GPUSceneGPUMeshletRecord;
 bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
     std::vector<MeshletLODGroupRecord>& groups, std::string& reason);
 bool buildMeshletLodBvh(std::span<const MeshletLODGroupRecord> groups,
-    std::vector<MeshletLODBVHNode>& nodes, std::string& reason);
+    std::vector<MeshletLODBVHNode>& nodes, std::string& reason,
+    std::span<const MeshletLODRefinementBounds> demandBounds = {});
 // Ordered BVH4 of same-level tiles (<=64 groups). Zero groupCount denotes an
 // interior, escapeIndex skips a subtree. Leaves stay in descending group order;
 // bounds use the same conservative aggregation as the BVH. No cook change.
 bool buildMeshletLodTiles(std::span<const MeshletLODGroupRecord> groups,
-    std::vector<MeshletLODBVHNode>& tiles, std::string& reason);
+    std::vector<MeshletLODBVHNode>& tiles, std::string& reason,
+    std::span<const MeshletLODRefinementBounds> demandBounds = {});
 // Disjoint, bounded subtrees of a forest produced by buildMeshletLodTiles.
 // Demand has no parent residency dependencies, so these roots can run in any
 // order across instances.
@@ -148,7 +154,9 @@ std::vector<MeshletLODSelection> selectMeshletLodReference(
     uint32_t recordOffset = 0, uint32_t manualLevel = UINT32_MAX);
 
 static_assert(sizeof(MeshletLODGroupRecord) == 32);
-static_assert(sizeof(MeshletLODBVHNode) == 40);
+static_assert(sizeof(MeshletLODRefinementBounds) == 24);
+static_assert(sizeof(MeshletLODBVHNode) == 64);
+static_assert(offsetof(MeshletLODBVHNode, demandBounds) == 40);
 static_assert(sizeof(MeshletLODSelection) == 16);
 static_assert(sizeof(MeshletLODView) == 48);
 

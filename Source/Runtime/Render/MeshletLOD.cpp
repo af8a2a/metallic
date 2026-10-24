@@ -38,6 +38,8 @@ MeshletLODBVHNode aggregateLodBounds(uint32_t count, const GetRecord& getRecord)
     std::array<double, 3> lower{INFINITY, INFINITY, INFINITY};
     std::array<double, 3> upper{-INFINITY, -INFINITY, -INFINITY};
     bool infiniteRadius = false;
+    bool validDemandBounds = true;
+    MeshletLODRefinementBounds demandBounds{{INFINITY, INFINITY, INFINITY}, {-INFINITY, -INFINITY, -INFINITY}};
     for (uint32_t index = 0; index < count; ++index) {
         const auto record = getRecord(index);
         result.maxError = std::max(result.maxError, record.maxError);
@@ -47,8 +49,16 @@ MeshletLODBVHNode aggregateLodBounds(uint32_t count, const GetRecord& getRecord)
         for (uint32_t axis = 0; axis < 3; ++axis) {
             lower[axis] = std::min(lower[axis], double(record.sphere[axis]) - record.sphere[3]);
             upper[axis] = std::max(upper[axis], double(record.sphere[axis]) + record.sphere[3]);
+            const auto& bounds = record.demandBounds;
+            validDemandBounds = validDemandBounds && std::isfinite(bounds.min[axis]) &&
+                std::isfinite(bounds.max[axis]) && bounds.min[axis] <= bounds.max[axis];
+            demandBounds.min[axis] = std::min(demandBounds.min[axis], bounds.min[axis]);
+            demandBounds.max[axis] = std::max(demandBounds.max[axis], bounds.max[axis]);
         }
     }
+    // Min/max preserves the outward-rounded leaf endpoints exactly. Unknown
+    // child bounds must not become a finite parent bound by unioning siblings.
+    if (validDemandBounds) { result.demandBounds = demandBounds; }
     if (infiniteRadius) {
         result.sphere = getRecord(0).sphere;
         result.sphere[3] = INFINITY;
@@ -133,12 +143,17 @@ bool validateMeshletLodBvh(std::span<const MeshletLODGroupRecord> groups,
 } // namespace
 
 bool buildMeshletLodBvh(std::span<const MeshletLODGroupRecord> groups,
-    std::vector<MeshletLODBVHNode>& nodes, std::string& reason)
+    std::vector<MeshletLODBVHNode>& nodes, std::string& reason,
+    std::span<const MeshletLODRefinementBounds> demandBounds)
 {
     nodes.clear();
     reason.clear();
     if (groups.size() > UINT32_MAX) {
         reason = "too many meshlet LOD groups for BVH indices";
+        return false;
+    }
+    if (!demandBounds.empty() && demandBounds.size() != groups.size()) {
+        reason = "meshlet LOD BVH demand bounds disagree with group count";
         return false;
     }
     for (const auto& group : groups) {
@@ -155,7 +170,8 @@ bool buildMeshletLodBvh(std::span<const MeshletLODGroupRecord> groups,
             node = aggregateLodBounds(count, [&](uint32_t child) {
                 const auto& group = groups[offset + child];
                 return MeshletLODBVHNode{.sphere = group.sphere, .maxError = group.error,
-                    .maxLevel = group.level, .flags = group.flags};
+                    .maxLevel = group.level, .flags = group.flags,
+                    .demandBounds = demandBounds.empty() ? MeshletLODRefinementBounds{} : demandBounds[offset + child]};
             });
             node.groupCount = count;
         } else {
@@ -179,12 +195,17 @@ bool buildMeshletLodBvh(std::span<const MeshletLODGroupRecord> groups,
 }
 
 bool buildMeshletLodTiles(std::span<const MeshletLODGroupRecord> groups,
-    std::vector<MeshletLODBVHNode>& tiles, std::string& reason)
+    std::vector<MeshletLODBVHNode>& tiles, std::string& reason,
+    std::span<const MeshletLODRefinementBounds> demandBounds)
 {
     tiles.clear();
     reason.clear();
     if (groups.size() > UINT32_MAX) {
         reason = "too many meshlet LOD groups for cooperative tile indices";
+        return false;
+    }
+    if (!demandBounds.empty() && demandBounds.size() != groups.size()) {
+        reason = "cooperative LOD demand bounds disagree with group count";
         return false;
     }
     std::vector<MeshletLODBVHNode> nodes;
@@ -195,7 +216,10 @@ bool buildMeshletLodTiles(std::span<const MeshletLODGroupRecord> groups,
             reason = "cooperative LOD groups must be sorted by level";
             return false;
         }
-        if (!buildMeshletLodBvh(groups.subspan(first, end - first), nodes, reason)) { return false; }
+        if (!buildMeshletLodBvh(groups.subspan(first, end - first), nodes, reason,
+            demandBounds.empty() ? std::span<const MeshletLODRefinementBounds>{} : demandBounds.subspan(first, end - first))) {
+            return false;
+        }
         auto tile = nodes.front();
         tile.groupOffset = static_cast<uint32_t>(first);
         tile.groupCount = static_cast<uint32_t>(end - first);

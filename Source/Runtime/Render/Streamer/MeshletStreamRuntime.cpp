@@ -1174,6 +1174,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     }
     const bool enableClas = desc.enableClas && device.capabilities().clusterAccelerationStructure;
     clusterRtxEnabled_ = desc.enableClusterRtx;
+    if (const char* value = std::getenv("METALLIC_STREAM_RT_DEMAND_C1")) {
+        rtNodeDemandC1_ = std::string_view(value) != "0";
+    }
     maxResidentPages_ = desc.maxResidentPages;
     maxPageUploadsPerFrame_ = desc.maxPageUploadsPerFrame;
     maxUploadBytesPerFrame_ = desc.maxUploadBytesPerFrame;
@@ -2807,6 +2810,7 @@ void MeshletStreamRuntime::reset()
     geometryDemandReserveBytes_ = 0;
     maxDevicePageBytes_ = 0;
     clusterRtxEnabled_ = false;
+    rtNodeDemandC1_ = true;
     pageHandle_ = {};
     activeGroupHandle_ = {};
     activeHeaderHandle_ = {};
@@ -3389,7 +3393,14 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
         if (result) { result = updateParamsBuffer(frame); }
         if (result) { result = transitionPageBufferForTraversal(commandBuffer); }
         if (result && sourceResidencyFrozen_) {
-            result = buildBlasInputs(commandBuffer, checkpoint);
+            if (frame.benchmarkDemandTraversal) {
+                if (checkpoint) { checkpoint("AfterStreamUpdates"); }
+                if (screenSpacePagePriority_) { result = dispatchTraversal(commandBuffer, asset_.pageCount(), 2u); }
+                if (result && checkpoint) { checkpoint("AfterStreamPriorityClear"); }
+                if (result) { result = buildActiveTable(commandBuffer, checkpoint); }
+                if (result) { result = transitionPageBufferForTraversal(commandBuffer); }
+            }
+            if (result) { result = buildBlasInputs(commandBuffer, checkpoint); }
             if (result && checkpoint) { checkpoint("BeforeBlasBuild"); }
             if (result) { result = cmdBuildBlas(commandBuffer, checkpoint); }
             if (result) {
@@ -4018,6 +4029,21 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     }
 
     const auto refinedGroups = asset_.refinedGroups();
+    const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
+    std::vector<MeshletLODRefinementBounds> refinementBounds;
+    if (viewDrivenPageDemand_) {
+        std::vector<MeshletLODGroupRecord> metrics(groups.size());
+        std::vector<MeshletLODGroupRange> ranges(groups.size());
+        for (size_t i = 0; i < groups.size(); ++i) {
+            std::copy_n(groups[i].boundsCenterRadius, 4, metrics[i].sphere.begin());
+            metrics[i].error = groups[i].maxQuadricError;
+            metrics[i].flags = groups[i].flags;
+            ranges[i] = {groups[i].clusterRefinedOffset, groups[i].clusterCount};
+        }
+        if (!buildMeshletLodRefinementBounds(metrics, ranges, refinedGroups, refinementBounds, log)) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
     std::vector<uint32_t> topology(refinedGroups.begin(), refinedGroups.end());
     std::vector<std::vector<uint32_t>> parents(asset_.groupCount());
     for (uint32_t owner = 0; owner < asset_.groupCount(); ++owner) {
@@ -4058,7 +4084,9 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             metric.level = group.lodLevel;
             metric.flags = group.flags;
         }
-        if (!buildMeshletLodBvh(lodGroups, bvh, log)) {
+        const auto demandBounds = refinementBounds.empty() ? std::span<const MeshletLODRefinementBounds>{} :
+            std::span<const MeshletLODRefinementBounds>(refinementBounds).subspan(primitive.groupOffset, primitive.groupCount);
+        if (!buildMeshletLodBvh(lodGroups, bvh, log, demandBounds)) {
             log = "MeshletStreamRuntime LOD BVH: " + log;
             return makeError(Error::InvalidArgument);
         }
@@ -4074,7 +4102,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         if (!bvh.empty()) {
             std::memcpy(topology.data() + bvhOffsets[index], bvh.data(), bvh.size() * sizeof(MeshletLODBVHNode));
         }
-        if (!buildMeshletLodTiles(lodGroups, bvh, log)) { return makeError(Error::InvalidArgument); }
+        if (!buildMeshletLodTiles(lodGroups, bvh, log, demandBounds)) { return makeError(Error::InvalidArgument); }
         demandRoots[index] = buildMeshletLodDemandRoots(bvh);
         const uint64_t tileWords = bvh.size() * uint64_t(kNodeWords);
         if (topology.size() + 1u + tileWords + bvh.size() > UINT32_MAX) {
@@ -4199,21 +4227,6 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         return result;
     }
 
-    const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
-    std::vector<MeshletLODRefinementBounds> refinementBounds;
-    if (viewDrivenPageDemand_) {
-        std::vector<MeshletLODGroupRecord> metrics(groups.size());
-        std::vector<MeshletLODGroupRange> ranges(groups.size());
-        for (size_t i = 0; i < groups.size(); ++i) {
-            std::copy_n(groups[i].boundsCenterRadius, 4, metrics[i].sphere.begin());
-            metrics[i].error = groups[i].maxQuadricError;
-            metrics[i].flags = groups[i].flags;
-            ranges[i] = {groups[i].clusterRefinedOffset, groups[i].clusterCount};
-        }
-        if (!buildMeshletLodRefinementBounds(metrics, ranges, refinedGroups, refinementBounds, log)) {
-            return makeError(Error::InvalidArgument);
-        }
-    }
     result = createAndPopulateImmutableStorageBuffer<MeshletStreamGPUGroup>(
         device,
         deviceImmutableMetadata_,
@@ -4500,12 +4513,15 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.lodPixelError = meshletLodRenderPixelThreshold(displayPixelError, height, frame.displayHeight);
     params.rtOffscreenErrorScale = std::clamp(finiteOr(frame.rtOffscreenErrorScale, 2.0f), 1.0f, 16.0f);
     params.rtLodHysteresis = std::clamp(finiteOr(frame.rtLodHysteresis, 0.2f), 0.0f, 0.9f);
-    params.rtLodFlags = clusterRtxEnabled_ ? 1u | (frame.preserveRasterLod ? 2u : 0u) : 0u;
+    params.rtLodFlags = clusterRtxEnabled_ ? 1u | (frame.preserveRasterLod ? 2u : 0u) |
+        (rtNodeDemandC1_ && frame.nodeDemandC1 ? 0u : 4u) : 0u;
     if (clusterRtxEnabled_ && previousFrameParamsValid_ &&
         (rtLodDisplayPixelError_ != displayPixelError ||
          previousFrameParams_.rtOffscreenErrorScale != params.rtOffscreenErrorScale ||
          previousFrameParams_.rtLodHysteresis != params.rtLodHysteresis ||
-         previousFrameParams_.rtLodFlags != params.rtLodFlags ||
+         // C1 changes traversal acceleration only; toggling it must retain leaf
+         // hysteresis and the same cached cut for fixed-residency comparisons.
+         (previousFrameParams_.rtLodFlags & ~4u) != (params.rtLodFlags & ~4u) ||
          previousFrameParams_.enableGpuLodSelection != params.enableGpuLodSelection ||
          previousFrameParams_.selectedLodLevel != params.selectedLodLevel)) {
         ++rtLodPolicyRevision_;
@@ -5318,6 +5334,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.generation = debugGeneration_;
     result.frameIndex = frameIndex_;
     result.feedbackFrame = debugRequestSourceKnown_ ? debugRequestSourceFrame_ : UINT64_MAX;
+    result.nodeDemandC1 = clusterRtxEnabled_ && (previousFrameParams_.rtLodFlags & 4u) == 0u;
     result.deviceImmutableMetadata = deviceImmutableMetadata_;
     result.immutableMetadataReady = immutableMetadataReady();
     result.immutableGroupBytes = groupBuffer_ ? groupBuffer_->desc().size : 0;
@@ -5575,6 +5592,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
         {"rtLod", {{"enabled", clusterRtxEnabled_}, {"historyBytes", rtLodHistoryBytes_},
             {"preserveRasterLod", (previousFrameParams_.rtLodFlags & 2u) != 0u},
+            {"nodeDemandC1", (previousFrameParams_.rtLodFlags & 4u) == 0u},
             {"offscreenErrorScale", previousFrameParams_.rtOffscreenErrorScale},
             {"hysteresis", previousFrameParams_.rtLodHysteresis},
             {"refineDisplayPixels", rtLodDisplayPixelError_},

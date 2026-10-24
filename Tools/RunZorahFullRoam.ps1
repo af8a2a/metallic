@@ -63,7 +63,9 @@ if ($WorkloadCounters) { $config.workloadCounters=$true; $config.workloadEvery=6
 $sampleId=if ($config.sample) { [string]$config.sample } else { 'gpu-driven-zorah-full' }
 if ($sampleId -notin @('gpu-driven-sample','gpu-driven-zorah-full')) { throw 'Roam requires MiniZorah or ZorahFull sample' }
 $controlledBlas=[bool]$config.blasQualityComparison
+$controlledDemand=[bool]$config.detailDemandComparison
 if ($controlledBlas -and ($sampleId -ne 'gpu-driven-sample' -or $Runs -ne 1 -or $RasterComparison)) { throw 'Controlled BLAS quality requires MiniZorah, one process and no raster comparison' }
+if ($controlledDemand -and ($sampleId -ne 'gpu-driven-sample' -or $Runs -ne 1 -or $RasterComparison -or $controlledBlas)) { throw 'Controlled detail demand requires MiniZorah, one process and no other comparison' }
 $analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
 New-Item -ItemType Directory -Path $output | Out-Null
 $config | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $output 'Config.json') -Encoding utf8
@@ -78,7 +80,7 @@ function Get-ShaderDigest {
     try { return [Convert]::ToHexString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($records -join "`n")))) }
     finally { $hash.Dispose() }
 }
-$manifest=@{protocol=$(if ($controlledBlas -and $config.blasQualityComparison.intermediateFallbackComparison) {'minizorah-blas-frozen-quality-v3'} elseif ($controlledBlas -and $config.blasQualityComparison.mergedSharingComparison) {'minizorah-blas-frozen-quality-v2'} elseif ($controlledBlas) {'minizorah-blas-frozen-quality-v1'} elseif ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
+$manifest=@{protocol=$(if ($controlledDemand) {'minizorah-detail-demand-c1-v1'} elseif ($controlledBlas -and $config.blasQualityComparison.intermediateFallbackComparison) {'minizorah-blas-frozen-quality-v3'} elseif ($controlledBlas -and $config.blasQualityComparison.mergedSharingComparison) {'minizorah-blas-frozen-quality-v2'} elseif ($controlledBlas) {'minizorah-blas-frozen-quality-v1'} elseif ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
     executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash; shaderSha256=(Get-ShaderDigest)
     config=$config; validation=[bool]$Validation; nsightCaptureRequested=[bool]$NsightCapture; shaderCaptureSymbols=([bool]$NsightCapture -or [bool]$ShaderCaptureSymbols); hidden=$true; vsync=(!$NoVSync); reflexMode=$env:METALLIC_REFLEX_MODE; blasInstanceReuse=$env:METALLIC_BLAS_INSTANCE_REUSE; streamMaintenanceBeforePacing=$env:METALLIC_STREAM_MAINTENANCE_BEFORE_PACING; runs=$Runs; gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)
     dirty=(& git -C $repo status --short --ignore-submodules)
@@ -96,6 +98,7 @@ $manifest.blasMixedTileFastPath=$env:METALLIC_BLAS_MIXED_TILE_FAST_PATH
 $manifest.blasStorageBytes=$env:METALLIC_BLAS_STORAGE_BYTES
 $manifest.blasRelocateBytes=$env:METALLIC_BLAS_RELOCATE_BYTES
 $manifest.clasAllocator=$env:METALLIC_CLAS_ALLOCATOR
+$manifest.nodeDemandC1=$env:METALLIC_STREAM_RT_DEMAND_C1
 $manifest.asset=@{path=$asset.FullName; bytes=$asset.Length; modifiedUtc=$asset.LastWriteTimeUtc.ToString('o')}
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $output 'Manifest.json') -Encoding utf8
 try {
@@ -135,8 +138,8 @@ try {
             $capture=Get-Content -LiteralPath $capturePath -Raw | ConvertFrom-Json
             if ($capture.status -ne 'capture_complete') { throw "Capture failed: $($capture.error)" }
             if (Select-String -LiteralPath (Join-Path $directory 'stdout.log'),(Join-Path $directory 'stderr.log') -Pattern 'Validation Error|VUID-|DeviceLost' -Quiet) { throw 'Validation/device error in capture' }
-            if ($controlledBlas) {
-                if ($capture.protocol -ne $manifest.protocol) { throw 'Unexpected controlled BLAS capture protocol' }
+            if ($controlledBlas -or $controlledDemand) {
+                if ($capture.protocol -ne $manifest.protocol) { throw 'Unexpected controlled capture protocol' }
             } else {
                 python (Join-Path $PSScriptRoot $analyzer) $directory
                 if ($LASTEXITCODE -ne 0) { throw 'Capture analysis failed' }
@@ -149,7 +152,7 @@ try {
             if (-not $monitor.HasExited) { Stop-Process -Id $monitor.Id -Force }
         }
     }
-    if (-not $controlledBlas) {
+    if (-not $controlledBlas -and -not $controlledDemand) {
         python (Join-Path $PSScriptRoot $analyzer) $output
         if ($LASTEXITCODE -ne 0) { throw 'Cross-run conditions differ' }
     }

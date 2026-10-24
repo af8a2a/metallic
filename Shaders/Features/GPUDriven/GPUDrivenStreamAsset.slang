@@ -748,12 +748,9 @@ bool streamSphereInsideFrustum(
         abs(viewCenter.y) <= viewCenter.z * tanY + radiusY;
 }
 
-bool streamRefinementDemandVisible(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
+bool streamDemandBoundsVisible(float3 low, float3 high, GPUDrivenStreamAssetInstance instance,
     GPUDrivenStreamAssetParams params)
 {
-    if (params.enableGpuLodSelection == 0u || (group.flags & 1u) != 0u) { return true; }
-    float3 low = float3(group.demandMinX, group.demandMinY, group.demandMinZ);
-    float3 high = float3(group.demandMaxX, group.demandMaxY, group.demandMaxZ);
     if (any(low > high) || !all(isfinite(low)) || !all(isfinite(high))) { return true; }
     float3 center = low * 0.5 + high * 0.5, extent = high * 0.5 - low * 0.5;
     float3 a = instance.world0.xyz, b = instance.world1.xyz, c = instance.world2.xyz;
@@ -785,6 +782,14 @@ bool streamRefinementDemandVisible(GPUDrivenStreamAssetGroup group, GPUDrivenStr
         if (dot(delta, normal) + radius + padding * length(normal) < 0.0) { return false; }
     }
     return true;
+}
+
+bool streamRefinementDemandVisible(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
+    GPUDrivenStreamAssetParams params)
+{
+    if (params.enableGpuLodSelection == 0u || (group.flags & 1u) != 0u) { return true; }
+    return streamDemandBoundsVisible(float3(group.demandMinX, group.demandMinY, group.demandMinZ),
+        float3(group.demandMaxX, group.demandMaxY, group.demandMaxZ), instance, params);
 }
 
 bool streamRayLodEnabled(GPUDrivenStreamAssetParams params)
@@ -2069,9 +2074,11 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
     }
 }
 
-// MeshletLODBVHNode is 10 scalar words in the resident topology buffer. Nodes
-// are preorder, leaves cover descending group IDs, and escape skips a subtree.
-// This preserves parent-before-child evaluation without a stack/queue limit.
+// MeshletLODBVHNode: ten metric/topology words, then refinement demand min/max.
+// Preorder leaves cover descending group IDs; escape links preserve parent-first
+// evaluation without a stack/queue limit.
+static const uint kStreamLodBvhNodeWords = 16u;
+
 bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
     GPUDrivenStreamAssetInstance instance, float4 eye, float4 forward,
     float4 projection, uint manualLevel, GPUDrivenStreamAssetParams params)
@@ -2090,16 +2097,36 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
             abs(instance.world2.xyz) * extent.z + abs(instance.world3.xyz) + abs(eye.xyz);
         worldPadding = (32.0 * 1.1920928955078125e-7) * (magnitude.x + magnitude.y + magnitude.z);
     }
-    float upperError = streamLodMetric(sphere, asfloat(topology[offset + 4u]),
-        instance, eye, forward, projection, params, true, worldPadding);
     // A node may contain retained fine groups or on-screen children. Prune
     // only against the lowest hysteresis threshold, without an offscreen scale.
     float threshold = projection.w * (streamRayLodEnabled(params)
         ? 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9) : 1.0);
+    float pruneThreshold = threshold - max(abs(threshold) * 1e-4, 1e-5);
+    float error = asfloat(topology[offset + 4u]);
+    float upperError;
+    if (streamRayLodEnabled(params) && (params.rtLodFlags & 6u) == 2u) {
+        upperError = streamLodMetric(sphere, error,
+            instance, eye, forward, projection, params, false, worldPadding);
+        // Visibility can only help when the ray bound already permits pruning.
+        // Retain near/inside-sphere and non-finite bounds without extra metadata reads.
+        if (!(upperError < pruneThreshold)) { return true; }
+        float3 low = float3(asfloat(topology[offset + 10u]), asfloat(topology[offset + 11u]), asfloat(topology[offset + 12u]));
+        float3 high = float3(asfloat(topology[offset + 13u]), asfloat(topology[offset + 14u]), asfloat(topology[offset + 15u]));
+        // These bounds contain every group's refinement descendants, unlike
+        // the metric sphere. Only a wholly offscreen subtree may omit raster error.
+        if (streamDemandBoundsVisible(low, high, instance, params)) {
+            upperError = max(upperError, meshletLodProjectedError(sphere, error,
+                instance.world0, instance.world1, instance.world2, instance.world3,
+                eye, forward, projection, worldPadding));
+        }
+    } else {
+        upperError = streamLodMetric(sphere, error,
+            instance, eye, forward, projection, params, true, worldPadding);
+    }
     // Outward-rounded node spheres plus a small conservative comparison guard
     // prevent floating point cancellation at an LOD threshold from dropping a
     // desired leaf. Non-finite upper bounds also descend; leaves use exact error.
-    return !(upperError < threshold - max(abs(threshold) * 1e-4, 1e-5));
+    return !(upperError < pruneThreshold);
 }
 
 // Optional telemetry follows sparse IDs and any RT demand history: two words
@@ -2241,7 +2268,7 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
     bool rootsReady = true;
     uint nodeIndex = 0u;
     while (nodeIndex < primitive.lodBvhNodeCount) {
-        uint offset = primitive.lodBvhOffset + nodeIndex * 10u;
+        uint offset = primitive.lodBvhOffset + nodeIndex * kStreamLodBvhNodeWords;
         ++visitedNodes;
         if (!streamLodBvhNeedsFine(topology, offset, instance,
                 lodEye, lodForward, lodProjection, manualLevel, params)) {
@@ -2648,12 +2675,12 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
                     instance = instances[instanceIndex];
                     primitive = primitives[instance.primitiveIndex];
                     tile = work.nodeIndex;
-                    end = topology[primitive.lodTileOffset + 1u + tile * 10u + 7u];
+                    end = topology[primitive.lodTileOffset + 1u + tile * kStreamLodBvhNodeWords + 7u];
                 }
             }
             if (count == 0u && !exhausted) {
                 while (tile < end) {
-                    uint offset = primitive.lodTileOffset + 1u + tile * 10u;
+                    uint offset = primitive.lodTileOffset + 1u + tile * kStreamLodBvhNodeWords;
                     ++visited;
                     if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual, params)) {
                         tile = topology[offset + 7u];
@@ -2694,7 +2721,7 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
                     // stop at an already marked ancestor: its winner will
                     // finish propagating before the dispatch barrier.
                     uint tileBits = topology[params.demandInstanceOffsetsOffset + owner * 4u + 1u];
-                    uint parentTable = ownerPrimitive.lodTileOffset + 1u + topology[ownerPrimitive.lodTileOffset] * 10u;
+                    uint parentTable = ownerPrimitive.lodTileOffset + 1u + topology[ownerPrimitive.lodTileOffset] * kStreamLodBvhNodeWords;
                     for (uint node = ownerLeaf; node != 0xffffffffu; node = topology[parentTable + node]) {
                         uint nodeBit = tileBits + node;
                         uint mask = 1u << (nodeBit & 31u), previous;
@@ -2844,7 +2871,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             // The CPU publishes only spare admission capacity. Stop searching
             // once it is filled instead of repeatedly reporting deferred work.
             if (requests[kStreamRequestPrefetchCounterWord] >= limit) { return; }
-            uint offset = primitive.lodTileOffset + 1u + tile * 10u;
+            uint offset = primitive.lodTileOffset + 1u + tile * kStreamLodBvhNodeWords;
             if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu, forecast)) {
                 tile = topology[offset + 7u];
                 continue;
@@ -2997,7 +3024,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 bool wanted = false;
                 if (index < count) {
                     root = topology[params.demandTaskOffset + first + index];
-                    wanted = streamLodBvhNeedsFine(topology, primitive.lodTileOffset + 1u + root * 10u,
+                    wanted = streamLodBvhNeedsFine(topology, primitive.lodTileOffset + 1u + root * kStreamLodBvhNodeWords,
                         instance, eye, direction, projection, manual, params);
                 }
                 // Task order has no cut/budget semantics. Reserve independently
@@ -3030,7 +3057,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     uint previousLevel = 0xffffffffu;
     uint tiles = topology[primitive.lodTileOffset];
     for (uint tile = 0u; tile < tiles;) {
-        uint offset = primitive.lodTileOffset + 1u + tile * 10u;
+        uint offset = primitive.lodTileOffset + 1u + tile * kStreamLodBvhNodeWords;
         ++visited;
         bool visit;
         if (params.demandBuffer != 0xffffffffu) {

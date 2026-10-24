@@ -412,7 +412,7 @@ struct MeshletStreamGPUParams {
     uint32_t lodTelemetryPadding = 0;
     float rtOffscreenErrorScale = 2.0f;
     float rtLodHysteresis = 0.2f;
-    uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: preserve visible raster quality.
+    uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: visible raster quality; bit 2: disable node demand C1.
     uint32_t rtLodPolicyRevision = 1;
     uint32_t rtRepresentationBuffer = UINT32_MAX;
     uint32_t rtRepresentationGroupBuffer = UINT32_MAX;
@@ -647,6 +647,7 @@ struct MeshletStreamFrameDesc {
     float rtOffscreenErrorScale = 2.0f; // Multiplies the RT pixel budget outside the primary frustum.
     float rtLodHysteresis = 0.2f; // Refine at T; coarsen below T * (1 - hysteresis).
     bool preserveRasterLod = false; // Shared raster/RT cuts preserve visible raster projection quality.
+    bool nodeDemandC1 = true; // Benchmark override; C1 changes pruning only, not leaf demand thresholds.
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
     MeshletStreamCameraDesc renderCamera;
@@ -657,6 +658,8 @@ struct MeshletStreamFrameDesc {
     bool freezeRasterSnapshot = false;
     // Diagnostic source freeze retains geometry/CLAS/raster cut, but rebuilds RT policy and AS.
     bool freezeSourceResidency = false;
+    // Measure demand against frozen source mappings while still evaluating cuts.
+    bool benchmarkDemandTraversal = false;
     uint32_t diagnosticBlasResetEpoch = 0;
     uint32_t diagnosticBlasStorageBytes = 0;
     bool diagnosticBlasPriority = false;
@@ -929,6 +932,7 @@ private:
     uint64_t geometryDemandReserveBytes_ = 0;
     uint64_t maxDevicePageBytes_ = 0;
     bool clusterRtxEnabled_ = false;
+    bool rtNodeDemandC1_ = true;
     MeshletStreamGPUBLASHeader recentBlasHeader_;
     std::array<uint32_t, kBLASAllocatorStateWords> recentBlasAllocatorState_{};
     ResourceLease pageHandle_;

@@ -104,6 +104,10 @@ public:
                     const uint32_t groupCapacity = std::min(2048u, asset.groupCount());
                     constexpr uint64_t kGeometryBudget = 32ull << 20;
                     constexpr uint64_t kCLASBudget = 64ull << 20;
+                    // This test compares the per-instance frontier directly
+                    // with BLAS semantic changes. Shared/discrete owners may
+                    // legally publish a different cut and are covered by the
+                    // representation tests and full-scene A/B validation.
                     MeshletStreamRuntimeDesc desc{.sourcePath = sourcePath, .streamAssetPath = assetPath,
                         .maxResidentBytes = kGeometryBudget, .maxResidentPages = 1024,
                         .maxPageUploadsPerFrame = 256, .maxGpuPageRequests = 1024, .maxGpuPageUnloadRequests = 1024,
@@ -112,6 +116,7 @@ public:
                         .enableClusterRtx = true, .enableClas = true, .compactClas = compact,
                         .maxClasBytes = kCLASBudget, .growClasBytes = 4ull << 20, .maxClasBuildClusters = maxPageClusters,
                         .maxBlasClusterReferences = 8192, .maxBlasBytes = 16ull << 20, .maxBlasBuilds = 4,
+                        .enableBlasRepresentations = false,
                         .maxFallbackBlasBytes = 4ull << 20, .distributedPageDemand = distributed,
                         .distributedDemandMinGroups = 0, .prefetchPages = false, .predictivePrefetch = false,
                         .enableLodTransitionTelemetry = compact && distributed};
@@ -129,7 +134,9 @@ public:
                     const uint64_t lodOffset = pagesOffset + asset.pageCount() * sizeof(StreamPageTableEntry);
                     const uint32_t historyOffset = 4u + asset.groupCount() * 3u + 4u;
                     const uint32_t lodWords = historyOffset + 3u + asset.groupCount() * 2u;
-                    const uint64_t readbackBytes = lodOffset + lodWords * sizeof(uint32_t);
+                    const uint64_t tlasOffset = lodOffset + lodWords * sizeof(uint32_t);
+                    const uint64_t clasOffset = tlasOffset + sizeof(RayTracingGPUInstance);
+                    const uint64_t readbackBytes = clasOffset + asset.pageCount() * sizeof(MeshletStreamCLASPageEntry);
                     StreamerDesc streamerDesc;
                     streamerDesc.constantBufferSize = 4096;
                     streamerDesc.dynamicBufferSizePerFrame = 1024;
@@ -153,6 +160,7 @@ public:
                         .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
                     uint64_t frameIndex = 0;
                     MeshletStreamGPUBLASHeader blas{};
+                    RayTracingGPUInstance tlasInstance{};
                     std::vector<MeshletStreamGPUActiveGroup> active;
                     std::vector<StreamPageTableEntry> pages(asset.pageCount());
                     std::vector<MeshletStreamCLASPageEntry> clas(asset.pageCount());
@@ -193,6 +201,23 @@ public:
                         copy("cut.activeGroups", groupsOffset, groupCapacity * sizeof(MeshletStreamGPUActiveGroup));
                         copy("cut.pageTable", pagesOffset, pages.size() * sizeof(StreamPageTableEntry));
                         copy("cut.lodState", lodOffset, lodWords * sizeof(uint32_t));
+                        copy("cut.tlasInstances", tlasOffset, sizeof(tlasInstance));
+                        // Compact GPU allocation publishes into device memory;
+                        // inspect the completed submission through a readback,
+                        // rather than assuming the publication table is mappable.
+                        if (runtime.clasPool()->usesGPUAllocation()) {
+                            auto* clasTable = runtime.clasPool()->pageTableBuffer();
+                            BufferBarrierDesc clasBarrier{.buffer = clasTable,
+                                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                            require(bool(commands->synchronize({.buffers = {&clasBarrier, 1}})), "CLAS publication readback barrier failed");
+                            auto clasSource = clasTable->slice({0, clas.size() * sizeof(clas[0])});
+                            auto clasDestination = readback->slice({clasOffset, clas.size() * sizeof(clas[0])});
+                            require(bool(clasSource) && bool(clasDestination) &&
+                                bool(commands->copyBuffer(*clasSource, *clasDestination)), "CLAS publication readback copy failed");
+                            std::swap(clasBarrier.before, clasBarrier.after);
+                            require(bool(commands->synchronize({.buffers = {&clasBarrier, 1}})), "CLAS publication readback restore failed");
+                        }
                         require(bool(commands->end()), "Cut frame end failed");
                         if (!cancelledInitialFrame) {
                             cancelledInitialFrame = true;
@@ -229,6 +254,10 @@ public:
                         std::memcpy(pages.data(), data + pagesOffset, pages.size() * sizeof(pages[0]));
                         previousLodState = lodState;
                         std::memcpy(lodState.data(), data + lodOffset, lodState.size() * sizeof(uint32_t));
+                        std::memcpy(&tlasInstance, data + tlasOffset, sizeof(tlasInstance));
+                        if (runtime.clasPool()->usesGPUAllocation()) {
+                            std::memcpy(clas.data(), data + clasOffset, clas.size() * sizeof(clas[0]));
+                        }
                         readback->unmap();
                         previousParams = params;
                         auto* paramsBuffer = runtime.deferredGpuResources().paramsBuffer;
@@ -237,14 +266,14 @@ public:
                         require(paramsData != nullptr, "Stream parameters map failed");
                         std::memcpy(&params, paramsData, sizeof(params));
                         paramsBuffer->unmap();
-                        // Both CLAS implementations expose a host-visible publication table;
-                        // the submitted frame has finished all compact copy publications.
-                        auto* table = runtime.clasPool()->pageTableBuffer();
-                        table->invalidate();
-                        const auto* tableData = table->map();
-                        require(tableData != nullptr, "CLAS publication table map failed");
-                        std::memcpy(clas.data(), tableData, clas.size() * sizeof(clas[0]));
-                        table->unmap();
+                        if (!runtime.clasPool()->usesGPUAllocation()) {
+                            auto* table = runtime.clasPool()->pageTableBuffer();
+                            table->invalidate();
+                            const auto* tableData = table->map();
+                            require(tableData != nullptr, "Host CLAS publication table map failed");
+                            std::memcpy(clas.data(), tableData, clas.size() * sizeof(clas[0]));
+                            table->unmap();
+                        }
                         std::fill(masks.begin(), masks.end(), 0);
                         for (const auto& group : active) {
                             require(group.pageIndex < clas.size() &&
@@ -356,6 +385,7 @@ public:
                         return wanted;
                     };
                     uint32_t verifiedPolicyFrames = 0;
+                    std::string policyStage = "hysteresis roundtrip";
                     const auto verifyPolicy = [&] {
                         const bool continuous = params.enableGpuLodSelection != 0 &&
                             previousParams.rtLodPolicyRevision == params.rtLodPolicyRevision;
@@ -389,8 +419,20 @@ public:
                                     " frame " + std::to_string(params.frameIndex));
                             }
                         }
-                        require(blas.missingClasInstances == 0 && blas.liveClusterReferences != 0,
-                            "RT policy transition lost ready CLAS coverage");
+                        const bool publishedCoverage = runtime.tlasReady() && tlasInstance.accelerationStructureReference != 0 &&
+                            (tlasInstance.customIndexAndMask >> 24u) != 0;
+                        require(blas.missingClasInstances == 0 && blas.liveClusterReferences != 0 && publishedCoverage,
+                            "RT policy transition lost ready CLAS coverage: stage=" + policyStage +
+                            ", frame=" + std::to_string(params.frameIndex) +
+                            ", verified=" + std::to_string(verifiedPolicyFrames) +
+                            ", compact=" + std::to_string(compact) + ", distributed=" + std::to_string(distributed) +
+                            ", missing=" + std::to_string(blas.missingClasInstances) +
+                            ", live=" + std::to_string(blas.liveClusterReferences) +
+                            ", builds=" + std::to_string(blas.blasBuildCount) +
+                            ", reused=" + std::to_string(blas.reusedInstances) +
+                            ", tlasVisible=" + std::to_string(publishedCoverage) +
+                            ", referenceRejected=" + std::to_string(blas.referenceBudgetRejected) +
+                            ", storageRejected=" + std::to_string(blas.storageRejected));
                         ++verifiedPolicyFrames;
                     };
                     const auto policyFrame = [&] {
@@ -434,6 +476,7 @@ public:
                     }
                     // Returning to the same threshold with a quality revision must
                     // discard wanted history; changing internal resolution must not.
+                    policyStage = "quality/manual history revision";
                     placeAtErrorRatio(1.05f);
                     policyFrame();
                     const uint32_t wantedRevision = params.rtLodPolicyRevision;
@@ -456,6 +499,7 @@ public:
                         "Manual-to-auto transition reused stale fine demand");
 
                     view.rtLodHysteresis = 0.f;
+                    policyStage = "rotation with unit offscreen scale";
                     placeAtErrorRatio(1.5f);
                     policyFrame();
                     const auto facingMasks = masks;
@@ -470,6 +514,8 @@ public:
                     require(masks == facingMasks && wantedGroups() == facingDemand,
                         "RT distance cut changed after a 90-degree rotation with unit offscreen scale");
                     uint32_t reducedGroups = 0;
+                    policyStage = "offscreen scale";
+                    float offscreenIntermediateRatio = 0.f;
                     bool offscreenIntermediate = false;
                     bool offscreenSemanticChange = false;
                     for (const float ratio : {1.5f, 2.5f, 4.f, 8.f, 16.f, 32.f}) {
@@ -495,7 +541,7 @@ public:
                         offscreenIntermediate = std::any_of(active.begin(), active.end(), [&](const auto& group) {
                             return group.lodLevel < asset.primitives()[0].lodLevelCount - 1u;
                         });
-                        if (reducedGroups != 0 && offscreenIntermediate) { break; }
+                        if (reducedGroups != 0 && offscreenIntermediate) { offscreenIntermediateRatio = ratio; break; }
                     }
                     require(reducedGroups != 0 && offscreenIntermediate,
                         "Offscreen policy failed to reduce demand while preserving non-root geometry");
@@ -503,6 +549,7 @@ public:
                     policyFrame();
                     require(blas.semanticChangeCount == 0, "Offscreen semantic change invalidated another stable frame");
                     view.camera.center = targetCenter;
+                    policyStage = "internal resolution invariance";
                     view.rtOffscreenErrorScale = 1.f;
                     policyFrame();
                     const auto nativeMasks = masks;
@@ -517,6 +564,7 @@ public:
                     }
                     // A visible shared producer may refine more than pure RT;
                     // outside the primary frustum it follows the same RT policy.
+                    policyStage = "raster preservation";
                     placeAtErrorRatio(.999f);
                     // Keep the target inside the horizontal frustum but away
                     // from its axis, where projection error exceeds distance
@@ -541,7 +589,28 @@ public:
                     policyFrame();
                     require(wantedGroups() == sharedOffscreen, "Offscreen shared raster demand differed from pure RT");
 
+                    // Reuse the proven intermediate offscreen pose so this
+                    // sequence tests dynamic cache hits, not terminal fallback.
+                    placeAtErrorRatio(offscreenIntermediateRatio);
+                    view.camera.center = view.camera.eye + float3(0, 0, 1);
+                    view.rtOffscreenErrorScale = 2.f;
+                    view.preserveRasterLod = true;
+                    policyFrame();
+                    const auto stableOffscreenMasks = masks;
+                    const auto stableOffscreenDemand = wantedGroups();
+                    policyStage = "32 stable offscreen frames";
+                    for (uint32_t frame = 0; frame < 32; ++frame) {
+                        if (frame == 8) { require(!record(true), "Cancelled stable offscreen frame was submitted"); }
+                        policyFrame();
+                        require(masks == stableOffscreenMasks && wantedGroups() == stableOffscreenDemand,
+                            "C1 changed stable offscreen demand/cut across consecutive frames");
+                        require(blas.blasBuildCount == 0 && blas.reusedInstances != 0 &&
+                            blas.cacheDependencyInvalidations == 0 && blas.semanticChangeCount == 0,
+                            "Stable raster-preserving offscreen demand lost cached BLAS reuse or triggered a rebuild");
+                    }
+
                     view.rtOffscreenErrorScale = std::numeric_limits<float>::quiet_NaN();
+                    policyStage = "nonfinite policy normalization";
                     view.rtLodHysteresis = std::numeric_limits<float>::quiet_NaN();
                     policyFrame();
                     require(params.rtOffscreenErrorScale == 2.f && params.rtLodHysteresis == .2f,
