@@ -47,6 +47,7 @@ private:
     bool rangeTrimmed_ = false;
     double rangeMin_ = 0, rangeMax_ = 1;
     float exposure_ = 0, zoom_ = 1;
+    std::array<float, 2> imageCenter_ = {0.5f, 0.5f};
     uint64_t offset_ = 0;
     int count_ = 256;
     std::array<int, 4> roi_ = {0, 0, 0, 0};

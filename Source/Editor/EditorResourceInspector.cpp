@@ -120,6 +120,9 @@ void EditorResourceInspector::select(std::string resource)
     fieldPage_ = 0;
     roi_ = {0, 0, 0, 0};
     slice_ = 0;
+    fit_ = true;
+    zoom_ = 1;
+    imageCenter_ = {0.5f, 0.5f};
     status_.clear();
 }
 
@@ -137,6 +140,7 @@ debug::DebugValue EditorResourceInspector::diagnostics() const
             result["displayRange"] = {{"auto", autoRange_}, {"trimFlatExtremes", trimRange_},
                 {"trimmed", rangeTrimmed_}, {"finiteComponents", rangeFinite_},
                 {"min", rangeMin_}, {"max", rangeMax_}, {"channel", channel_}};
+            result["previewView"] = {{"fit", fit_}, {"zoom", zoom_}, {"center", imageCenter_}};
         }
     }
     return result;
@@ -525,7 +529,12 @@ void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan
         ImGui::SameLine(); ImGui::SetNextItemWidth(150); imageDirty_ |= ImGui::InputDouble("Max", &rangeMax_, 0, 0, "%.9g");
     }
     if (!cube) {
-        ImGui::Checkbox("Fit", &fit_); ImGui::SameLine(); ImGui::SetNextItemWidth(130); ImGui::SliderFloat("Zoom", &zoom_, 0.1f, 16.f);
+        ImGui::Checkbox("Fit", &fit_);
+        ImGui::SameLine();
+        if (ImGui::Button("1:1")) { fit_ = false; zoom_ = 1; }
+        ImGui::SameLine(); ImGui::SetNextItemWidth(160);
+        if (ImGui::SliderFloat("Zoom", &zoom_, 0.01f, 64.f, "%.3fx", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) { fit_ = false; }
+        ImGui::TextDisabled("Wheel: zoom at cursor | drag: pan | double-click: fit");
     }
     ImGui::TextDisabled("Display: range/exposure + clamp; magenta = non-finite. Hover for raw values.");
     if (imageDirty_ && !rebuildImage(device, backend)) { return; }
@@ -538,15 +547,50 @@ void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan
     const auto& artifact = capture_->artifacts[0];
     const auto& roi = artifact.metadata.at("roi");
     const int width = roi.at("width"), height = roi.at("height");
-    ImGui::BeginChild("TexturePixels", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::BeginChild("TexturePixels", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const auto canvas = ImGui::GetCursorScreenPos();
     const auto available = ImGui::GetContentRegionAvail();
-    const float factor = fit_ ? std::max(0.01f, std::min(available.x / width, available.y / height)) : zoom_;
-    const auto origin = ImGui::GetCursorScreenPos();
-    ImGui::Image(static_cast<ImTextureID>(descriptor_), ImVec2(width * factor, height * factor));
-    if (ImGui::IsItemHovered()) {
-        const auto mouse = ImGui::GetMousePos();
-        const int x = std::clamp(int((mouse.x - origin.x) / factor), 0, width - 1);
-        const int y = std::clamp(int((mouse.y - origin.y) / factor), 0, height - 1);
+    const ImVec2 size(std::max(1.f, available.x), std::max(1.f, available.y));
+    const ImVec2 center(canvas.x + size.x * 0.5f, canvas.y + size.y * 0.5f);
+    const float fitZoom = std::min(size.x / width, size.y / height);
+    if (fit_) { zoom_ = fitZoom; imageCenter_ = {0.5f, 0.5f}; }
+    const auto constrainCenter = [&] {
+        const float visible[] = {size.x / (width * zoom_), size.y / (height * zoom_)};
+        for (size_t axis = 0; axis < 2; ++axis) {
+            imageCenter_[axis] = visible[axis] >= 1 ? 0.5f : std::clamp(imageCenter_[axis], visible[axis] * 0.5f, 1.f - visible[axis] * 0.5f);
+        }
+    };
+    constrainCenter();
+    ImGui::InvisibleButton("Texture navigation", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+    const bool hovered = ImGui::IsItemHovered();
+    const auto mouse = ImGui::GetMousePos();
+    const bool ownsWheel = ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+    if (hovered && ownsWheel && ImGui::GetIO().MouseWheel != 0) {
+        const float nextZoom = std::clamp(zoom_ * std::pow(1.2f, ImGui::GetIO().MouseWheel), std::min(0.01f, fitZoom), std::max(64.f, fitZoom));
+        imageCenter_[0] += (mouse.x - center.x) / width * (1.f / zoom_ - 1.f / nextZoom);
+        imageCenter_[1] += (mouse.y - center.y) / height * (1.f / zoom_ - 1.f / nextZoom);
+        zoom_ = nextZoom;
+        fit_ = false;
+    }
+    if (ImGui::IsItemActive() && (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle))) {
+        imageCenter_[0] -= ImGui::GetIO().MouseDelta.x / (width * zoom_);
+        imageCenter_[1] -= ImGui::GetIO().MouseDelta.y / (height * zoom_);
+        fit_ = false;
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        fit_ = true; zoom_ = fitZoom; imageCenter_ = {0.5f, 0.5f};
+    }
+    constrainCenter();
+    const ImVec2 origin(center.x - imageCenter_[0] * width * zoom_, center.y - imageCenter_[1] * height * zoom_);
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(canvas, ImVec2(canvas.x + size.x, canvas.y + size.y), true);
+    draw->AddImage(static_cast<ImTextureID>(descriptor_), origin, ImVec2(origin.x + width * zoom_, origin.y + height * zoom_));
+    draw->PopClipRect();
+    if (hovered && !ImGui::IsItemActive() && mouse.x >= origin.x && mouse.y >= origin.y &&
+        mouse.x < origin.x + width * zoom_ && mouse.y < origin.y + height * zoom_) {
+        const int x = std::clamp(int((mouse.x - origin.x) / zoom_), 0, width - 1);
+        const int y = std::clamp(int((mouse.y - origin.y) / zoom_), 0, height - 1);
         const auto index = size_t(y) * width + x;
         const auto values = debug::decodeBuffer(std::span(artifact.bytes).subspan(index * artifact.layout.stride, artifact.layout.stride), artifact.layout);
         ImGui::BeginTooltip();
@@ -573,7 +617,7 @@ void EditorResourceInspector::drawCube()
     ImGui::SetNextItemWidth(130); ImGui::SliderFloat("Zoom", &cubeZoom_, 0.25f, 2.f);
     ImGui::SameLine();
     if (ImGui::Button("Reset view")) { cubeYaw_ = 0.65f; cubePitch_ = 0.45f; cubeZoom_ = 1.f; }
-    ImGui::TextDisabled("Drag to rotate | boundary slices of the captured ROI | hover for voxel values");
+    ImGui::TextDisabled("Wheel: zoom | drag: rotate | boundary slices of ROI | hover for voxel values");
     ImGui::BeginChild("TextureCube", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     const auto origin = ImGui::GetCursorScreenPos();
     const auto available = ImGui::GetContentRegionAvail();
@@ -584,6 +628,10 @@ void EditorResourceInspector::drawCube()
         cubePitch_ = std::remainder(cubePitch_ + ImGui::GetIO().MouseDelta.y * 0.01f, 6.2831853f);
     }
     const bool hovered = ImGui::IsItemHovered();
+    const bool ownsWheel = ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+    if (hovered && ownsWheel) {
+        cubeZoom_ = std::clamp(cubeZoom_ * std::pow(1.2f, ImGui::GetIO().MouseWheel), 0.25f, 2.f);
+    }
     const float cy = std::cos(cubeYaw_), sy = std::sin(cubeYaw_), cp = std::cos(cubePitch_), sp = std::sin(cubePitch_);
     const auto rotate = [&](std::array<float, 3> p) {
         const float x = cy * p[0] + sy * p[2], z = -sy * p[0] + cy * p[2];

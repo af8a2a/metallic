@@ -543,6 +543,85 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
         !expect(exportCapture("texture") && exportUI("texture-ui"), "Export texture evidence and native UI rendering")) { return false; }
     const auto frozen = inspector.capture_;
     if (!frames(3) || !expect(inspector.capture_ == frozen, "Frozen snapshot remains unchanged across frames")) { return false; }
+    {
+        // Drive ImGui events directly; never move the desktop cursor. The
+        // canvas geometry comes from the real widget, including DPI/layout.
+        auto& io = ImGui::GetIO();
+        const auto oldMouse = io.MousePos;
+        const bool oldTrickle = io.ConfigInputTrickleEventQueue, oldFocus = !io.AppFocusLost;
+        io.ConfigInputTrickleEventQueue = false;
+        struct RestoreInput {
+            ImGuiIO& io; ImVec2 mouse; bool trickle, focused;
+            ~RestoreInput() {
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+                io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false);
+                io.AddMousePosEvent(mouse.x, mouse.y); io.AddFocusEvent(focused);
+                io.ConfigInputTrickleEventQueue = trickle;
+            }
+        } restore{io, oldMouse, oldTrickle, oldFocus};
+        ImRect canvas;
+        ImGuiWindow* testWindow = nullptr;
+        bool tooltip = false;
+        const auto interact = [&](ImVec2 mouse, float wheel = 0, bool down = false) {
+            io.AddFocusEvent(true); io.AddMousePosEvent(mouse.x, mouse.y);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, down);
+            if (wheel) { io.AddMouseWheelEvent(0, wheel); }
+            io.DeltaTime = 1.f / 60;
+            ImGui::NewFrame();
+            ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+            ImGui::SetNextWindowPos(ImVec2(20, 20)); ImGui::SetNextWindowSize(ImVec2(1000, 750));
+            ImGui::Begin("Texture navigation regression", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking);
+            testWindow = ImGui::GetCurrentWindow();
+            inspector.drawTexture(*device_, imguiBackend_);
+            for (auto* window : GImGui->Windows) {
+                if (window->ParentWindow == testWindow && std::strstr(window->Name, "TexturePixels")) {
+                    canvas = ImRect(window->DC.CursorStartPos, window->WorkRect.Max);
+                }
+            }
+            tooltip = GImGui->TooltipPreviousWindow && GImGui->TooltipPreviousWindow->LastFrameActive == ImGui::GetFrameCount();
+            ImGui::End(); ImGui::Render();
+        };
+        interact(ImVec2(-1000, -1000));
+        interact(ImVec2(-1000, -1000));
+        const auto middle = canvas.GetCenter();
+        const ImVec2 anchor(middle.x + canvas.GetWidth() * 0.1f, middle.y);
+        interact(anchor);
+        const float fitZoom = inspector.zoom_;
+        const float anchorU = inspector.imageCenter_[0] + (anchor.x - middle.x) / (texture.metadata.at("roi").at("width").get<float>() * inspector.zoom_);
+        const auto image = inspector.image_.get();
+        const auto descriptor = inspector.descriptor_;
+        interact(anchor, 3);
+        const float afterU = inspector.imageCenter_[0] + (anchor.x - middle.x) / (texture.metadata.at("roi").at("width").get<float>() * inspector.zoom_);
+        if (!expect(!inspector.fit_ && std::abs(inspector.zoom_ - fitZoom * std::pow(1.2f, 3.f)) < 0.001f &&
+            std::abs(anchorU - afterU) < 0.0001f, "Wheel zoom leaves the cursor's source texel anchored")) { return false; }
+        interact(anchor, -3);
+        if (!expect(std::abs(inspector.zoom_ - fitZoom) < 0.001f, "Wheel zoom is reversible")) { return false; }
+        interact(anchor, 4);
+        interact(anchor, 0, true);
+        const float panStart = inspector.imageCenter_[0];
+        interact(ImVec2(anchor.x + 30, anchor.y), 0, true);
+        if (!expect(inspector.imageCenter_[0] < panStart, "Dragging pans the magnified image")) { return false; }
+        interact(ImVec2(anchor.x + 30, anchor.y));
+        interact(ImVec2(anchor.x + 30, anchor.y));
+        if (!expect(tooltip, "Magnified pixels retain the raw-value hover tooltip")) { return false; }
+        const float beforeOutside = inspector.zoom_;
+        interact(ImVec2(10, 10)); interact(ImVec2(10, 10), 2);
+        if (!expect(inspector.zoom_ == beforeOutside, "Wheel outside the preview does not zoom")) { return false; }
+        interact(middle, 1);
+        if (!expect(std::abs(inspector.zoom_ - beforeOutside * 1.2f) < 0.001f,
+            "Mouse entry and wheel in the same frame zoom the preview")) { return false; }
+        interact(middle); interact(middle, 100);
+        if (!expect(inspector.zoom_ == std::max(64.f, fitZoom), "Wheel zoom has a bounded maximum")) { return false; }
+        interact(middle, -200);
+        if (!expect(std::abs(inspector.zoom_ - std::min(0.01f, fitZoom)) < 1e-6f, "Wheel zoom has a positive minimum")) { return false; }
+        // Separate the reset gesture from the preceding drag's click history.
+        for (int i = 0; i < 30; ++i) { interact(middle); }
+        interact(middle, 0, true); interact(middle); interact(middle, 0, true); interact(middle);
+        if (!expect(inspector.fit_ && std::abs(inspector.zoom_ - fitZoom) < 0.001f &&
+            inspector.imageCenter_ == std::array<float, 2>{0.5f, 0.5f}, "Double-click restores centered Fit view") ||
+            !expect(inspector.capture_ == frozen && inspector.image_.get() == image && inspector.descriptor_ == descriptor &&
+                !inspector.upload_ && !inspector.imageDirty_, "Navigation reuses the capture and GPU preview without conversion/upload")) { return false; }
+    }
     inspector.channel_ = 1; inspector.imageDirty_ = true;
     if (!frames(2) || !readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *inspector.image_, preview) ||
         !expect(preview[0] == 64 && preview[1] == 64 && preview[2] == 64, "R channel renders as grayscale on the GPU")) { return false; }
@@ -824,6 +903,11 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
                     writePPM(output / (std::string(name) + "-preview.ppm"), preview, inspector.image_->desc().width,
                         inspector.image_->desc().height, render::Format::RGBA8Unorm, displayOutput_.paperWhiteNits),
                     "Export real depth capture and native automatic-range preview")) { return false; }
+            const auto depthCapture = inspector.capture_;
+            const auto depthImage = inspector.image_.get();
+            inspector.fit_ = false; inspector.zoom_ = 2;
+            if (!frames(2) || !expect(inspector.capture_ == depthCapture && inspector.image_.get() == depthImage &&
+                exportUI((std::string(name) + "-zoom-ui").c_str()), "Magnified real depth reuses captured data and renders in the native UI")) { return false; }
         }
     }
     report.value["inspector"] = debug::encodeLossless(inspector.diagnostics());

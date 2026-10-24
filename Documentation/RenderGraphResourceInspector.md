@@ -65,7 +65,7 @@ Live freezes the last completed snapshot. The displayed execution and generation
 identify the data being shown; graph recompilation discards stale snapshots.
 
 - Textures: RGB or individual channels, exposure, min/max display range, fit/zoom,
-  scroll, ROI, and exact raw pixel fields/bytes on hover. Display values are
+  pan, ROI, and exact raw pixel fields/bytes on hover. Display values are
   mapped as `(value * exp2(exposure) - min) / (max - min)` and clamped; non-finite
   results are magenta. This is a diagnostic display, without scene tonemapping.
   Texture3D resources default to **Cube**: drag to rotate a cube whose visible
@@ -80,6 +80,18 @@ identify the data being shown; graph recompilation discards stale snapshots.
   columns; hover a header for byte offset/size and bitfield information. More
   than 32 component columns use field pages. **Raw 32-bit words** shows the same
   captured bytes without another GPU copy.
+
+For 2D textures and Z slices, hover the preview and **roll the mouse wheel** to
+zoom around the pixel under the cursor. Drag with the left or middle button to
+pan; **double-click** or enable **Fit** to center and fit the image. **1:1** shows
+one texture pixel per UI unit; the Zoom slider also exits Fit mode. Zoom is bounded
+from 0.01x to 64x (extended to include the fitted scale for unusually small/large
+images). Panning stops at image edges; an image smaller than the canvas is centered.
+Hover coordinates and raw values follow the magnified image, including ROI offsets.
+Cube mode supports wheel zoom alongside its existing drag-to-rotate interaction.
+Navigation changes only drawing coordinates: it reuses the frozen GPU preview
+without a new capture, range scan, conversion or upload. Live updates retain the
+view; selecting another resource resets 2D navigation to Fit.
 
 **Auto range** is enabled by default. Each new texture snapshot (including Live
 refreshes) derives Min/Max from the finite values of the selected channels in the
@@ -239,7 +251,13 @@ This optional path loads the sample, enables its guide outputs in memory and
 checks foreground contrast in both uploaded previews without manual bounds.
 `depthRanges` in the report records effective bounds and distinct gray levels.
 `depth/` and `linearDepth/` hold raw captures; each has a `-preview.ppm` GPU
-preview and a `-ui.ppm` native editor rendering alongside it.
+preview and a `-ui.ppm` native editor rendering alongside it. The `-zoom-ui.ppm`
+renderings show 2x magnification while retaining the same capture and GPU image.
+
+The smoke also feeds mouse events directly to ImGui to check cursor-anchored
+wheel zoom, reversibility, panning, hover values, canvas-only wheel handling,
+zoom limits and double-click Fit. Navigation must retain the capture and GPU
+image without triggering conversion or upload; the desktop cursor is untouched.
 
 Evidence includes:
 
