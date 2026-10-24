@@ -2870,10 +2870,9 @@ void streamCooperativeMasks(StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
     if (lane == 0u) { state[header] = totalSelected; }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_GroupIndex,
-    uniform GPUDrivenStreamAssetPush push)
+[ForceInline]
+void streamCooperativeLod(uint3 workgroup, uint lane, GPUDrivenStreamAssetPush push,
+    uint cooperativeWidth)
 {
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
@@ -3142,51 +3141,63 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             AllMemoryBarrierWithGroupSync();
         }
         previousLevel = level;
-        uint localGroup = topology[offset + 8u] + tileCount - 1u - min(lane, tileCount - 1u);
-        bool active = false;
-        if (lane < tileCount) {
-            GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
-            bool terminal = (group.flags & 1u) != 0u;
-            bool parentsActive = true;
-            for (uint parent = 0u; parent < group.parentCount; ++parent) {
-                uint id = topology[group.parentOffset + parent];
-                parentsActive = parentsActive && state[base + (id - primitive.groupOffset) * 2u] != 0u;
-            }
-            bool demanded;
-            if (params.demandBuffer != 0xffffffffu) {
-                StructuredBuffer<uint> demand = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.demandBuffer));
-                uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u] + localGroup;
-                demanded = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
-            } else {
-                demanded = streamLodGroupDemand(group, instance, eye, direction, projection,
-                    manual, params, state, base, primitive.groupCount, localGroup);
-                if (demanded) {
-                    if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
-                    else {
-                        uint table = requests[kStreamRequestPriorityTableOffsetWord];
-                        if (table != 0u) {
-                            float benefit = streamGroupScreenBenefit(group, instance, params, eye, direction, projection);
-                            InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
+        // Keep the original lane order when a 64-group leaf spans two batches.
+        // Groups within this LOD are independent; publish before the finer LOD.
+        for (uint first = 0u; first < tileCount; first += cooperativeWidth) {
+            uint tileLane = first + lane;
+            uint localGroup = topology[offset + 8u] + tileCount - 1u - min(tileLane, tileCount - 1u);
+            bool active = false;
+            if (tileLane < tileCount) {
+                GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + localGroup];
+                bool terminal = (group.flags & 1u) != 0u;
+                bool parentsActive = true;
+                for (uint parent = 0u; parent < group.parentCount; ++parent) {
+                    uint id = topology[group.parentOffset + parent];
+                    parentsActive = parentsActive && state[base + (id - primitive.groupOffset) * 2u] != 0u;
+                }
+                bool demanded;
+                if (params.demandBuffer != 0xffffffffu) {
+                    StructuredBuffer<uint> demand = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.demandBuffer));
+                    uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u] + localGroup;
+                    demanded = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
+                } else {
+                    demanded = streamLodGroupDemand(group, instance, eye, direction, projection,
+                        manual, params, state, base, primitive.groupCount, localGroup);
+                    if (demanded) {
+                        if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
+                        else {
+                            uint table = requests[kStreamRequestPriorityTableOffsetWord];
+                            if (table != 0u) {
+                                float benefit = streamGroupScreenBenefit(group, instance, params, eye, direction, projection);
+                                InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
+                            }
+                            requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
                         }
-                        requestStreamPageLoad(pageTable, requests, params, group.pageIndex);
                     }
                 }
+                bool drawable = groupPageDrawable(pageTable, params, group);
+                active = parentsActive && demanded && drawable;
+                observeStreamLodGroup(state, topology, primitive, group, instance, base, localGroup,
+                    demanded, drawable, active,
+                    params.enableLodTransitionTelemetry != 0u && g_CooperativeTelemetryContinuous != 0u, params);
+                if (active) { state[base + localGroup * 2u] = 1u; }
+                if (terminal) {
+                    InterlockedAdd(g_CooperativeRoots, 1u);
+                    if (!drawable) { InterlockedOr(g_CooperativeMissingRoots, 1u); }
+                }
             }
-            bool drawable = groupPageDrawable(pageTable, params, group);
-            active = parentsActive && demanded && drawable;
-            observeStreamLodGroup(state, topology, primitive, group, instance, base, localGroup,
-                demanded, drawable, active,
-                params.enableLodTransitionTelemetry != 0u && g_CooperativeTelemetryContinuous != 0u, params);
-            if (active) { state[base + localGroup * 2u] = 1u; }
-            if (terminal) {
-                InterlockedAdd(g_CooperativeRoots, 1u);
-                if (!drawable) { InterlockedOr(g_CooperativeMissingRoots, 1u); }
+            uint added;
+            uint rank;
+            if (cooperativeWidth == 32u) {
+                // This entry is selected only for a full Wave32 workgroup.
+                rank = WavePrefixSum(active ? 1u : 0u);
+                added = WaveActiveSum(active ? 1u : 0u);
+            } else {
+                rank = streamCooperativePrefix(active ? 1u : 0u, lane, added);
             }
+            if (active) { state[sparse + 4u + count + rank] = localGroup; }
+            count += added;
         }
-        uint added;
-        uint rank = streamCooperativePrefix(active ? 1u : 0u, lane, added);
-        if (active) { state[sparse + 4u + count + rank] = localGroup; }
-        count += added;
         tested += tileCount;
     }
     AllMemoryBarrierWithGroupSync();
@@ -3203,6 +3214,24 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             InterlockedAdd(stats[18], tested);
         }
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_GroupIndex,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    streamCooperativeLod(workgroup, lane, push, 64u);
+}
+
+// The runtime selects this entry only for split/distributed Frontier on fixed
+// Wave32 devices. Clear, Mask, Emit and Prefetch retain the 64-thread entry.
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void streamCooperativeLod32Main(uint3 workgroup : SV_GroupID, uint lane : SV_GroupIndex,
+    uniform GPUDrivenStreamAssetPush push)
+{
+    streamCooperativeLod(workgroup, lane, push, 32u);
 }
 
 [shader("compute")]

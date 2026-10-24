@@ -117,6 +117,11 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"nodeDemandC2",s.nodeDemandC2},
         {"rtDemandMode",s.rtDemandMode},{"rtHistoryPacked",s.rtHistoryPacked},{"rtLodHistoryBytes",s.rtLodHistoryBytes},
         {"rtHistorySparseWrites",s.rtHistorySparseWrites},
+        {"frontierWave32",s.frontierWave32},
+        {"frontierShaderIdentity",{{"module",render::kMeshletStreamShaderModuleName},
+            {"entryPoint",s.frontierWave32 ? render::kMeshletStreamCooperativeBuild32EntryPoint : render::kMeshletStreamCooperativeBuildEntryPoint},
+            {"spirvHash",s.frontierShaderHash},{"workgroupSize",s.frontierWave32 ? 32u : 64u},
+            {"subgroupSize",s.frontierSubgroupSize}}},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"gpuLoadRequests",s.gpuLoadRequests},{"geometryPendingTasks",s.geometryPendingTasks},
         {"geometryPendingPatches",s.geometryPendingPatches},
@@ -339,6 +344,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const bool controlledDemand = !demandComparison.empty();
         const std::string demandCandidate = demandComparison.value("candidate", std::string("C1"));
         const bool packingOnly = demandComparison.value("packingOnly", false);
+        const bool compareFrontier32 = demandComparison.value("frontier32", false);
+        if (compareFrontier32 && !packingOnly) { throw std::runtime_error("Frontier32 comparison requires frozen packing protocol"); }
         if (packingOnly && demandCandidate != "C3") { throw std::runtime_error("Packing comparison requires C3"); }
         if (demandCandidate != "C1" && demandCandidate != "C2" && demandCandidate != "C3") {
             throw std::runtime_error("Detail demand candidate must be C1, C2 or C3");
@@ -794,7 +801,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 if (!report["canonicalOwnerReset"].at("completed").get<bool>()) { throw std::runtime_error("Canonical owner reset did not settle within 64 frames"); }
                 drain();
             }
-            report["protocol"] = packingOnly ? "minizorah-detail-demand-packed-v1" : compareDemandC3 ? "minizorah-detail-demand-c3-v1" :
+            report["protocol"] = compareFrontier32 ? "minizorah-frontier32-v1" : packingOnly ? "minizorah-detail-demand-packed-v1" : compareDemandC3 ? "minizorah-detail-demand-c3-v1" :
                 compareDemandC2 ? "minizorah-detail-demand-c2-v1" : "minizorah-detail-demand-c1-v1";
             report["diagnosticRun"] = captureQuality || prepareProfile;
             report["config"] = config;
@@ -810,8 +817,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     "Converged frozen source; one canonical owner/history reset before live demand/frontier/BLAS measurement" :
                     "One frozen geometry/CLAS/texture source; live demand/frontier/BLAS, no RT reset"},
                 {"candidate",demandCandidate},{"packingOnly",packingOnly},{"prepareProfile",prepareProfile},
+                {"frontier32",compareFrontier32},
                 {"timingDiagnosticsDeferred",deferDiagnostics},{"cpuThreadDiagnostics",cpuThreadDiagnostics},
-                {"statisticalUnit",packingOnly ? "Two fixed late-history A/A arms per process; process packing ABBA block, n=1; no CI" : compareDemandC3 ?
+                {"statisticalUnit",compareFrontier32 ? "One in-process frontier64/frontier32 ABBA block; fixed late history; aggregate by independent process" : packingOnly ? "Two fixed late-history A/A arms per process; process packing ABBA block, n=1; no CI" : compareDemandC3 ?
                     "One in-process ABC-CBA block; combine only under the predeclared cross-process packing ABBA protocol; no CI" :
                     "One in-process ABBA block, n=1; descriptive only, no confidence interval or independent-process replication"},
                 {"distributedDemandMinGroups",0u},{"fixedExposureEV100",controlledLighting->exposureEV100},
@@ -819,8 +827,10 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             graphExecutor_->setDebugObserver(nullptr);
             std::string sourceIdentity;
             std::optional<bool> historyPacked;
-            struct Arm { const char* name; bool enabled; uint32_t mode = 0; };
-            const std::vector<Arm> arms = packingOnly ? std::vector<Arm>{{"A1",true,1}, {"A2",true,1}} : compareDemandC3 ?
+            struct Arm { const char* name; bool enabled; uint32_t mode = 0; bool frontier32 = false; };
+            const std::vector<Arm> arms = compareFrontier32 ?
+                std::vector<Arm>{{"A1",true,1,false},{"B1",true,1,true},{"B2",true,1,true},{"A2",true,1,false}} :
+                packingOnly ? std::vector<Arm>{{"A1",true,1}, {"A2",true,1}} : compareDemandC3 ?
                 std::vector<Arm>{{"A1",true,0}, {"B1",true,1}, {"C1",true,2}, {"C2",true,2}, {"B2",true,1}, {"A2",true,0}} :
                 std::vector<Arm>{{"A1",false}, {"B1",true}, {"B2",true}, {"A2",false}};
             const auto checkState = [&](const Arm& arm) {
@@ -832,7 +842,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 if (!historyPacked) { historyPacked = state.at("rtHistoryPacked").get<bool>(); }
                 if (identity.empty() || identity != sourceIdentity || state.at("nodeDemandC1") != c1 ||
                     state.at("nodeDemandC2") != c2 || state.at("rtDemandMode") != arm.mode ||
-                    state.at("rtHistoryPacked") != *historyPacked) {
+                    state.at("rtHistoryPacked") != *historyPacked ||
+                    (compareFrontier32 && (state.at("frontierWave32") != arm.frontier32 ||
+                        state.at("rtHistoryPacked") != false || state.at("rtHistorySparseWrites") != false))) {
                     throw std::runtime_error("Demand comparison source identity, mode or static history layout changed");
                 }
                 return state;
@@ -902,8 +914,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 }
             };
             std::vector<std::vector<uint64_t>> timedFrameIds;
-            // Keep the ordinary A/A cadence uninterrupted. A single capture owns
-            // both arms so delayed GPU timestamps remain associated with their frames.
+            // Keep ordinary timing uninterrupted; delayed GPU timestamps retain
+            // their recorded frame identity across every arm.
             if (deferDiagnostics) { profiler_.beginCapture(); }
             for (const auto& arm : arms) {
                 if (!deferDiagnostics) { drain(); }
@@ -912,12 +924,15 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 setProperty("VBuffer", "benchmarkDemandC1", c1);
                 setProperty("VBuffer", "benchmarkDemandC2", c2);
                 setProperty("VBuffer", "benchmarkDemandMode", arm.mode);
+                if (compareFrontier32) { setProperty("VBuffer", "streamFrontierWave32", arm.frontier32); }
                 Json variant{{"name",arm.name},{"nodeDemandC1",c1},{"nodeDemandC2",c2},{"rtDemandMode",arm.mode},
+                    {"frontierWave32",arm.frontier32},
                     {"settle",Json::array()},{"captures",Json::array()}};
                 for (uint32_t i = 0; i < settleFrames; ++i) {
                     if (!draw()) { throw std::runtime_error("Demand comparison settle failed"); }
                     variant["settle"].push_back(checkState(arm));
                 }
+                if (compareFrontier32) { variant["frontierShaderIdentity"] = checkState(arm).at("frontierShaderIdentity"); }
                 if (!captureQuality) {
                     if (!deferDiagnostics) { drain(); profiler_.beginCapture(); }
                     std::vector<uint64_t> frameIds;
@@ -948,9 +963,10 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     throw std::runtime_error("Deferred demand comparison frame count mismatch");
                 }
                 for (size_t i = 0; i < arms.size(); ++i) { exportTiming(arms[i], timedFrameIds[i]); }
-                // These are post-block diagnostics of the same frozen source and
-                // identical policy, never performance samples or per-arm restores.
+                // Restore each execution variant for post-block diagnostics of
+                // the same frozen source, without resetting owner/history state.
                 for (size_t i = 0; i < arms.size(); ++i) {
+                    if (compareFrontier32) { setProperty("VBuffer", "streamFrontierWave32", arms[i].frontier32); }
                     auto& variant = report["demandComparison"]["variants"][i];
                     variant["diagnosticSettle"] = Json::array();
                     for (uint32_t frame = 0; frame < settleFrames; ++frame) {

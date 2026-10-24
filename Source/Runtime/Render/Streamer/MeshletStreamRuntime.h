@@ -66,6 +66,7 @@ inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAs
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
 inline constexpr const char* kMeshletStreamActiveBuildEntryPoint = "gpuDrivenStreamAssetBuildActiveMain";
 inline constexpr const char* kMeshletStreamCooperativeBuildEntryPoint = "streamCooperativeLodMain";
+inline constexpr const char* kMeshletStreamCooperativeBuild32EntryPoint = "streamCooperativeLod32Main";
 inline constexpr const char* kMeshletStreamDemandEntryPoint = "streamDistributedDemandMain";
 inline constexpr const char* kMeshletStreamBLASInputEntryPoint = "gpuDrivenStreamAssetBuildBlasInputMain";
 inline constexpr const char* kMeshletStreamTLASInputEntryPoint = "gpuDrivenStreamAssetBuildTlasInputMain";
@@ -657,6 +658,7 @@ struct MeshletStreamFrameDesc {
     bool nodeDemandC1 = true; // Benchmark override; C1 changes pruning only, not leaf demand thresholds.
     bool nodeDemandC2 = true; // Benchmark override; C2 uses the existing offscreen leaf threshold lower bound.
     uint32_t rtDemandMode = 1; // 0: baseline; 1: late history reads (default); 2: ray-first experiment.
+    bool frontierWave32 = true; // Complete single-wave distributed frontier on supported devices.
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
     MeshletStreamCameraDesc renderCamera;
@@ -1064,6 +1066,7 @@ private:
     bool viewDrivenPageDemand_ = false;
     bool distributedPageDemand_ = false;
     bool currentFrameDistributedDemand_ = true;
+    bool currentFrameFrontierWave32_ = false;
     uint32_t distributedDemandMinGroups_ = 65536;
     uint32_t recentDemandGroupTests_ = UINT32_MAX;
     std::array<uint32_t, kMeshletStreamDemandStatsWords> recentDemandStats_{};

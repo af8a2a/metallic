@@ -609,7 +609,7 @@ public:
     }
     RHITestResult runFixture(RHITestContext& context, bool large, uint32_t leafCount = 256,
         bool rtDemand = false, bool rtDemandC2 = false, bool rtDemandC3 = false, bool packedHistory = false,
-        bool sparseHistoryComparison = false)
+        bool sparseHistoryComparison = false, bool frontier32Comparison = false, bool frontierTileBoundaries = false)
     {
         StreamLODFixture fixture = rtDemand ? rtDemandFixture(leafCount) : StreamLODFixture{large, leafCount};
         const uint32_t kGroupCount = static_cast<uint32_t>(fixture.groups.size());
@@ -660,6 +660,34 @@ public:
         std::memcpy(topology.data() + primitive.lodBvhOffset, nodes.data(), bvhWords * sizeof(uint32_t));
         std::vector<MeshletLODBVHNode> tiles;
         if (!buildMeshletLodTiles(fixture.groups, tiles, reason, refinementBounds)) { return RHITestResult::fail(reason); }
+        if (frontierTileBoundaries) {
+            // Legal ordered leaves around the wave boundary. Bounds come from
+            // the production BVH builder; the per-leaf cut oracle is unchanged.
+            tiles.clear();
+            constexpr uint32_t widths[]{1, 8, 31, 32, 33, 63, 64};
+            uint32_t partition = 0;
+            for (uint32_t end = kGroupCount; end != 0;) {
+                uint32_t levelFirst = end - 1;
+                while (levelFirst != 0 && fixture.groups[levelFirst - 1].level == fixture.groups[end - 1].level) { --levelFirst; }
+                const uint32_t count = std::min(end - levelFirst,
+                    fixture.groups[end - 1].level == 0 ? widths[partition++ % std::size(widths)] : 64u);
+                const uint32_t first = end - count;
+                std::vector<MeshletLODBVHNode> aggregate;
+                if (!buildMeshletLodBvh(std::span{fixture.groups}.subspan(first, count), aggregate, reason,
+                        std::span{refinementBounds}.subspan(first, count))) { return RHITestResult::fail(reason); }
+                auto leaf = aggregate.front();
+                leaf.groupOffset = first;
+                leaf.groupCount = count;
+                leaf.escapeIndex = static_cast<uint32_t>(tiles.size()) + 1;
+                tiles.push_back(leaf);
+                end = first;
+            }
+            for (uint32_t width : widths) {
+                if (std::none_of(tiles.begin(), tiles.end(), [&](const auto& leaf) { return leaf.groupCount == width; })) {
+                    return RHITestResult::fail("Frontier32 fixture missed a declared leaf-width boundary");
+                }
+            }
+        }
         primitive.lodTileOffset = static_cast<uint32_t>(topology.size());
         topology.push_back(static_cast<uint32_t>(tiles.size()));
         const size_t tileWords = tiles.size() * sizeof(MeshletLODBVHNode) / sizeof(uint32_t);
@@ -711,6 +739,13 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
         STREAM_LOD_REQUIRE(created);
+        if (frontier32Comparison) {
+            const auto& caps = device->capabilities();
+            if (!caps.computeSubgroupBallotArithmetic || caps.subgroupSize != 32 ||
+                    caps.minSubgroupSize != 32 || caps.maxSubgroupSize != 32) {
+                return RHITestResult::skip("Frontier32 requires fixed Wave32 compute arithmetic");
+            }
+        }
         std::unique_ptr<BindlessHeap> heap;
         STREAM_LOD_REQUIRE(device->createBindlessHeap({.maxBuffers = BufferCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, BufferCount> buffers;
@@ -762,6 +797,18 @@ public:
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
         }).transform([&](auto rhiValue) { cooperativePipeline = std::move(rhiValue); }));
+        std::unique_ptr<ShaderModule> cooperative32Shader;
+        std::unique_ptr<ComputePipeline> cooperative32Pipeline;
+        if (frontier32Comparison) {
+            ShaderCompileResult candidate;
+            STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+                .entryPointName = kMeshletStreamCooperativeBuild32EntryPoint,
+                .searchPath = kMeshletStreamShaderSearchPath}, candidate.diagnostics).transform([&](auto value) { candidate = std::move(value); }));
+            STREAM_LOD_REQUIRE(device->createShaderModule({.spirv = candidate.spirv}).transform([&](auto value) { cooperative32Shader = std::move(value); }));
+            STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = {cooperative32Shader.get(), "main"},
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)
+            }).transform([&](auto value) { cooperative32Pipeline = std::move(value); }));
+        }
         ShaderCompileResult traversalCompiled;
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamTraversalEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, traversalCompiled.diagnostics).transform([&](auto value) { traversalCompiled = std::move(value); }));
@@ -833,9 +880,11 @@ public:
         std::vector<uint8_t> previousWanted(kGroupCount), expectedWanted(kGroupCount);
         std::array<uint64_t, 2> rtGroupTests{};
         std::array<std::array<uint64_t, 2>, 2> rtUnitScaleTests{};
-        const uint32_t rtSequenceFrames = rtDemandC3 ? 36u : rtDemandC2 ? 28u : 16u;
-        const uint32_t rtModes = rtDemandC3 && !sparseHistoryComparison ? 3u : 2u;
-        const uint32_t frameCount = rtDemand ? rtSequenceFrames * rtModes * 2u : ordinaryFrames + (large ? 0u : 80u);
+        const uint32_t rtSequenceFrames = frontier32Comparison ? 40u : rtDemandC3 ? 36u : rtDemandC2 ? 28u : 16u;
+        const uint32_t rtModes = rtDemandC3 && !sparseHistoryComparison && !frontier32Comparison ? 3u : 2u;
+        const uint32_t frameCount = frontier32Comparison ? rtSequenceFrames * 2u :
+            rtDemand ? rtSequenceFrames * rtModes * 2u : ordinaryFrames + (large ? 0u : 80u);
+        std::vector<std::vector<uint8_t>> frontier64Outputs(rtSequenceFrames);
         std::vector<uint32_t> eagerGroupTests(rtSequenceFrames * 2u);
         std::vector<uint32_t> previousHistoryWords(rtHistoryWords);
         uint64_t baselineFalseWrites = 0, sparseFalsePreserved = 0, sparseExpiredWanted = 0;
@@ -850,13 +899,13 @@ public:
             const bool telemetrySequence = frame >= ordinaryFrames;
             const uint32_t telemetryStep = telemetrySequence ? (frame - ordinaryFrames) % 20u : 0u;
             const uint32_t telemetryPath = telemetrySequence ? (frame - ordinaryFrames) / 20u : 0u;
-            const uint32_t test = telemetrySequence ? 0u : frame % caseCount;
+            const uint32_t test = frontier32Comparison ? rtStep : telemetrySequence ? 0u : frame % caseCount;
             const bool useBvh = rtDemand || (telemetrySequence ? telemetryPath != 0 : frame >= caseCount);
             const bool cooperative = rtDemand || (telemetrySequence ? telemetryPath >= 2 : frame >= caseCount * 2);
             const bool viewDriven = rtDemand || telemetrySequence || frame >= caseCount * 3;
             const bool prefetch = rtDemandC3 ? rtStep == 28u : !rtDemand && !telemetrySequence && frame >= caseCount * 4;
             const bool switching = !rtDemand && !telemetrySequence && frame >= caseCount * 7;
-            const bool distributed = rtDemand ? frame >= rtSequenceFrames * rtModes : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
+            const bool distributed = frontier32Comparison || (rtDemand ? frame >= rtSequenceFrames * rtModes : telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0));
             const bool split = rtDemand ? distributed : telemetrySequence ? distributed : switching ? distributed : frame >= caseCount * 5;
             const float viewAspect = !rtDemand && viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
@@ -991,7 +1040,7 @@ public:
                             available[0] = 0;
                         }
                     }
-                    if (rtDemandC3 && rtStep >= 32) {
+                    if (rtDemandC3 && rtStep >= 32 && rtStep < 36) {
                         // Identity scale and equal power-of-two projection
                         // factors preserve the authored error bits exactly on
                         // both CPU and GPU. No approximate boundary allowance:
@@ -1012,9 +1061,17 @@ public:
                         }
                     }
                 }
+                if (frontier32Comparison && rtStep >= 36) {
+                    // Missing terminal, invisible, then identical refined frames.
+                    if (rtStep == 36) { fixture.drawable.back() = 0; available.back() = 0; }
+                    if (rtStep == 37) { fixture.instance.identity[3] = 0; }
+                    if (rtStep >= 38) { manual = 0; }
+                    resetHistory = true;
+                }
                 if (resetHistory) { std::fill(previousWanted.begin(), previousWanted.end(), uint8_t{0}); }
                 for (uint32_t group = 0; group < kGroupCount; ++group) {
                     const auto& metric = fixture.groups[group];
+                    if (frontier32Comparison && fixture.instance.identity[3] == 0) { expectedWanted[group] = 0; continue; }
                     if ((metric.flags & kMeshletLODTerminalGroup) != 0) { expectedWanted[group] = 1; continue; }
                     if (manual != UINT32_MAX) { expectedWanted[group] = metric.level >= manual; continue; }
                     const bool visible = meshletLodBoundsVisible(refinementBounds[group], fixture.instance,
@@ -1032,7 +1089,7 @@ public:
                 if (rtDemandC2 && rtStep >= 24 && rtStep < 28 && bool(expectedWanted[leafCount - 1u]) != (rtStep == 25 || rtStep == 26)) {
                     return RHITestResult::fail("C2 fixture failed to straddle the zero/maximum hysteresis boundaries");
                 }
-                if (rtDemandC3 && rtStep >= 32 && bool(expectedWanted[leafCount - 1u]) != (rtStep < 34)) {
+                if (rtDemandC3 && rtStep >= 32 && rtStep < 36 && bool(expectedWanted[leafCount - 1u]) != (rtStep < 34)) {
                     return RHITestResult::fail("C3 exact upper/lower equality fixture changed the strict leaf predicate");
                 }
                 if (rtStep == 0 && !expectedWanted[leafCount]) {
@@ -1114,6 +1171,7 @@ public:
                     // two-word allocation, late reads and visibility-first metric.
                     params.rtLodFlags = 3u | 32u | (rtMode == 1u ? 128u : 0u);
                 }
+                if (frontier32Comparison) { params.rtLodFlags = 3u | 32u; }
                 params.rtOffscreenErrorScale = rtOffscreenScale;
                 params.rtLodHysteresis = rtHysteresis;
                 params.rtLodPolicyRevision = rtPolicyRevision;
@@ -1121,8 +1179,9 @@ public:
                 if (rtDemandC3) {
                     // Tokens and editor frame indices are deliberately not
                     // adjacent; only the last submitted token owns history.
-                    params.rtLodFrameToken = frame * 7u + 1u;
-                    params.frameIndex = frame * 11u + 1u;
+                    const uint32_t sequenceFrame = frontier32Comparison ? rtStep : frame;
+                    params.rtLodFrameToken = sequenceFrame * 7u + 1u;
+                    params.frameIndex = sequenceFrame * 11u + 1u;
                     if (rtStep == 29) { params.rtLodFrameToken = UINT32_MAX; params.frameIndex = UINT32_MAX; }
                     if (rtStep == 30) { params.rtLodFrameToken = 1u; params.frameIndex = 0u; }
                     if (rtStep == 31) { params.rtLodFrameToken = 5u; params.frameIndex = 7u; }
@@ -1189,96 +1248,104 @@ public:
                 return RHITestResult::fail("stream frame input map");
             }
             if (frame != 0) { STREAM_LOD_REQUIRE(fence->reset()); STREAM_LOD_REQUIRE(pool->reset()); }
-            STREAM_LOD_REQUIRE(commands->begin());
-            std::array<BufferBarrierDesc, BufferCount> barriers{};
-            for (uint32_t index = 0; index < BufferCount; ++index) {
-                barriers[index] = {
-                    .buffer = buffers[index].get(),
-                    .before = metallic::render::resourceSyncScope(frame == 0 ? ResourceState::Undefined : ResourceState::General, metallic::render::PipelineStageBits::AllCommands),
-                    .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                };
-            }
-            if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
-            if (cooperative) {
-                if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                push.traversalPhase = 2u;
-                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->dispatch((kGroupCount + 63u) / 64u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            }
-            if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-            const bool clearRTState = rtDemand && (rtStep == 0 || (rtDemandC3 && rtStep == 30));
-            if ((rtDemand ? clearRTState : frame == caseCount) || (telemetrySequence && (telemetryStep == 0 || telemetryStep == 18))) {
-                // The compatibility linear path predates sparse state. Run
-                // the production initializer once when changing algorithms.
-                push.activeBuildPhase = 8;
-                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
-                const uint32_t initGroups = static_cast<uint32_t>((sizes[State] / 4 + 63) / 64);
-                if (auto commandResult = commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            }
+            // Drop a fully recorded, never submitted frame, then retry it.
+            // Recording must not publish history or clear the previous GPU cut.
+            const uint32_t attempts = frontier32Comparison && rtStep == 23 ? 2u : 1u;
             bool capturedPrefetchHistory = false;
-            for (uint32_t phase : {0u, 12u, 10u, 13u, 5u, 11u, 6u, 7u, 2u, 9u, 9u}) {
-                if (phase == 9u && !prefetch) { continue; }
-                if ((phase == 10u || phase == 11u) && !split) { continue; }
-                if ((phase == 12u || phase == 13u) && !distributed) { continue; }
-                if (rtDemandC3 && phase == 9u && !capturedPrefetchHistory) {
-                    BufferBarrierDesc historyBarrier{.buffer = buffers[State].get(),
+            const bool clearRTState = rtDemand && (rtStep == 0 || (rtDemandC3 && rtStep == 30));
+            for (uint32_t attempt = 0; attempt < attempts; ++attempt) {
+                STREAM_LOD_REQUIRE(commands->begin());
+                std::array<BufferBarrierDesc, BufferCount> barriers{};
+                for (uint32_t index = 0; index < BufferCount; ++index) {
+                    barriers[index] = {
+                        .buffer = buffers[index].get(),
+                        .before = metallic::render::resourceSyncScope(frame == 0 ? ResourceState::Undefined : ResourceState::General, metallic::render::PipelineStageBits::AllCommands),
+                        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    };
+                }
+                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
+                if (cooperative) {
+                    if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    push.traversalPhase = 2u;
+                    if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->dispatch((kGroupCount + 63u) / 64u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                }
+                if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                if ((rtDemand ? clearRTState : frame == caseCount) || (telemetrySequence && (telemetryStep == 0 || telemetryStep == 18))) {
+                    // The compatibility linear path predates sparse state. Run
+                    // the production initializer once when changing algorithms.
+                    push.activeBuildPhase = 8;
+                    if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                    const uint32_t initGroups = static_cast<uint32_t>((sizes[State] / 4 + 63) / 64);
+                    if (auto commandResult = commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                }
+                capturedPrefetchHistory = false;
+                for (uint32_t phase : {0u, 12u, 10u, 13u, 5u, 11u, 6u, 7u, 2u, 9u, 9u}) {
+                    if (phase == 9u && !prefetch) { continue; }
+                    if ((phase == 10u || phase == 11u) && !split) { continue; }
+                    if ((phase == 12u || phase == 13u) && !distributed) { continue; }
+                    if (rtDemandC3 && phase == 9u && !capturedPrefetchHistory) {
+                        BufferBarrierDesc historyBarrier{.buffer = buffers[State].get(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                        STREAM_LOD_REQUIRE(commands->synchronize({.buffers = {&historyBarrier, 1}}));
+                        const uint64_t historyByteOffset = (4ull + kGroupCount * 3ull + 4ull) * sizeof(uint32_t);
+                        auto source = buffers[State]->slice({historyByteOffset, rtHistoryWords * sizeof(uint32_t)});
+                        auto destination = readback->slice({prefetchHistoryOffset, rtHistoryWords * sizeof(uint32_t)});
+                        if (!source || !destination) { return RHITestResult::fail("C3 prefetch history snapshot slice failed"); }
+                        STREAM_LOD_REQUIRE(commands->copyBuffer(*source, *destination));
+                        std::swap(historyBarrier.before, historyBarrier.after);
+                        STREAM_LOD_REQUIRE(commands->synchronize({.buffers = {&historyBarrier, 1}}));
+                        capturedPrefetchHistory = true;
+                    }
+                    if (auto commandResult = commands->bindExecution((frontier32Comparison && rtMode == 1 && phase == 5u ? *cooperative32Pipeline :
+                        phase == 12u || phase == 13u ? *demandPipeline :
+                        cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    push.activeBuildPhase = phase;
+                    if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
+                    for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
+                    if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                }
+                if (cooperative) {
+                    if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    push.traversalPhase = 3u;
+                    if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->dispatch((kRequestCapacity + 63u) / 64u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                }
+                for (uint32_t index = 0; index < std::size(outputs); ++index) {
+                    BufferBarrierDesc barrier{
+                        .buffer = buffers[outputs[index]].get(),
                         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
-                    STREAM_LOD_REQUIRE(commands->synchronize({.buffers = {&historyBarrier, 1}}));
-                    const uint64_t historyByteOffset = (4ull + kGroupCount * 3ull + 4ull) * sizeof(uint32_t);
-                    auto source = buffers[State]->slice({historyByteOffset, rtHistoryWords * sizeof(uint32_t)});
-                    auto destination = readback->slice({prefetchHistoryOffset, rtHistoryWords * sizeof(uint32_t)});
-                    if (!source || !destination) { return RHITestResult::fail("C3 prefetch history snapshot slice failed"); }
-                    STREAM_LOD_REQUIRE(commands->copyBuffer(*source, *destination));
-                    std::swap(historyBarrier.before, historyBarrier.after);
-                    STREAM_LOD_REQUIRE(commands->synchronize({.buffers = {&historyBarrier, 1}}));
-                    capturedPrefetchHistory = true;
-                }
-                if (auto commandResult = commands->bindExecution((phase == 12u || phase == 13u ? *demandPipeline :
-                    cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                push.activeBuildPhase = phase;
-                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
-                for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
-                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            }
-            if (cooperative) {
-                if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                push.traversalPhase = 3u;
-                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->dispatch((kRequestCapacity + 63u) / 64u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            }
-            for (uint32_t index = 0; index < std::size(outputs); ++index) {
-                BufferBarrierDesc barrier{
-                    .buffer = buffers[outputs[index]].get(),
-                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                };
-                if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                {
-                    auto sourceSlice = (buffers[outputs[index]].get())->slice({0, outputSizes[index]});
-                    if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                    auto destinationSlice = readback.get()->slice({offsets[index], outputSizes[index]});
-                    if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                    if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
-                }
-                if (large && !rtDemand && outputs[index] == State) {
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    };
+                    if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     {
-                        auto sourceSlice = (buffers[State].get())->slice({sizes[State] - 3 * sizeof(uint32_t), 3 * sizeof(uint32_t)});
+                        auto sourceSlice = (buffers[outputs[index]].get())->slice({0, outputSizes[index]});
                         if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                        auto destinationSlice = readback.get()->slice({tailOffset, 3 * sizeof(uint32_t)});
+                        auto destinationSlice = readback.get()->slice({offsets[index], outputSizes[index]});
                         if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                         if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                     }
+                    if (large && !rtDemand && outputs[index] == State) {
+                        {
+                            auto sourceSlice = (buffers[State].get())->slice({sizes[State] - 3 * sizeof(uint32_t), 3 * sizeof(uint32_t)});
+                            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = readback.get()->slice({tailOffset, 3 * sizeof(uint32_t)});
+                            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
+                    }
+                    std::swap(barrier.before, barrier.after);
+                    if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
-                std::swap(barrier.before, barrier.after);
-                if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                STREAM_LOD_REQUIRE(commands->end());
+                if (attempt + 1 < attempts) { STREAM_LOD_REQUIRE(pool->reset()); }
             }
-            STREAM_LOD_REQUIRE(commands->end());
             CommandBuffer* submitted[] = {commands.get()};
             STREAM_LOD_REQUIRE(queue->submit({.commandBuffers = {submitted, 1}, .signalFence = fence.get()}));
             STREAM_LOD_REQUIRE(fence->wait());
@@ -1298,9 +1365,35 @@ public:
             std::memcpy(state.data(), mapped + offsets[4], logicalStateBytes);
             std::array<uint32_t, kMeshletStreamDemandStatsWords> demandStats{};
             std::memcpy(demandStats.data(), mapped + offsets[5], sizeof(demandStats));
+            if (frontier32Comparison) {
+                if (header.activeGroupCount > kGroupCount || requests[2] > kRequestCapacity) {
+                    readback->unmap();
+                    return RHITestResult::fail("Frontier32 produced out-of-range output counts");
+                }
+                // Compare published records only. Unused output tails and the
+                // distributed workers' scheduling counters have no cut identity.
+                std::vector<uint8_t> signature;
+                const auto append = [&](const void* data, size_t bytes) {
+                    if (bytes == 0) { return; }
+                    const auto* begin = static_cast<const uint8_t*>(data);
+                    signature.insert(signature.end(), begin, begin + bytes);
+                };
+                append(&header, sizeof(header));
+                append(active.data(), header.activeGroupCount * sizeof(active[0]));
+                append(mapped + offsets[3], sizes[Arguments]);
+                append(state.data(), logicalStateBytes);
+                std::vector<uint32_t> requestSet(requests.begin() + 16, requests.begin() + 16 + requests[2]);
+                std::sort(requestSet.begin(), requestSet.end());
+                append(requestSet.data(), requestSet.size() * sizeof(uint32_t));
+                if (rtMode == 0) { frontier64Outputs[rtStep] = std::move(signature); }
+                else if (signature != frontier64Outputs[rtStep]) {
+                    readback->unmap();
+                    return RHITestResult::fail("WG32/64 frontier state, sparse order, masks, output or requests differ: " + caseLabel);
+                }
+            }
             if (rtDemand) {
                 const uint32_t history = 4u + kGroupCount * 3u + 4u;
-                const uint32_t expectedPreviousToken = !clearRTState && manual == UINT32_MAX &&
+                const uint32_t expectedPreviousToken = !clearRTState && instance.visible != 0 && manual == UINT32_MAX &&
                     previousHistoryPolicy == params.rtLodPolicyRevision ? previousHistoryToken : 0u;
                 if (state[history] != expectedPreviousToken || state[history + 1u] != params.rtLodFrameToken ||
                     state[history + 2u] != params.rtLodPolicyRevision) {
@@ -1536,6 +1629,9 @@ public:
             }
         }
         if (rtDemand) {
+            if (frontier32Comparison) {
+                return RHITestResult::pass("80 WG64/WG32 late-history distributed frames match exact frontier state/sparse order/masks/outputs and independent per-leaf oracle; missing terminal, hidden/reentry, recorded cancellation, history gaps/wrap and static repeat covered");
+            }
             if (sparseHistoryComparison) {
                 if (baselineFalseWrites == 0u || sparseFalsePreserved == 0u || sparseExpiredWanted == 0u) {
                     return RHITestResult::fail("Sparse history fixture did not observe baseline false stores and expired wanted tokens");
@@ -1615,6 +1711,21 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamMeshletLODRTSparseHistoryTest);
 
+
+class StreamMeshletLODFrontier32Test final : public RHITest {
+public:
+    StreamMeshletLODFrontier32Test() { type = RHITestType::Rendering; name = "meshlet_lod_stream_frontier32"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        for (bool boundaries : {false, true}) {
+            const auto result = StreamMeshletLODGPUTest{}.runFixture(context, true, 256,
+                true, true, true, false, false, true, boundaries);
+            if (!result.passed || result.skipped) { return result; }
+        }
+        return RHITestResult::pass("160 consecutive 64/32 frontier frames match CPU leaf demand and exact GPU state/output; production BVH and 1/8/31/32/33/63/64-group leaves");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamMeshletLODFrontier32Test);
 
 class StreamLODTileHierarchyTest final : public RHITest {
 public:
