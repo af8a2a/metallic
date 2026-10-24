@@ -767,6 +767,28 @@ public:
                 "GPUScene composite visibility did not refresh the visible DrawSet");
         }
 
+        nodes[1].visible = false;
+        if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 3, 1)) !=
+                render::GPUSceneSyncResult::Updated ||
+            !gpuScene.prepareView(view, 0) ||
+            !gpuScene.visibleDrawSet(view, 0)->instances.empty() ||
+            gpuScene.instances().size() != 2 ||
+            gpuScene.instanceForRenderNode(0) != instanceA ||
+            gpuScene.instanceForRenderNode(1) != instanceB) {
+            return RHITestResult::fail(
+                "All-disabled GPUScene must have no candidates and preserve global instance IDs");
+        }
+        nodes[0].visible = true;
+        nodes[1].visible = true;
+        if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 4, 1)) !=
+                render::GPUSceneSyncResult::Updated ||
+            !gpuScene.prepareView(view, 0) ||
+            gpuScene.visibleDrawSet(view, 0)->instances !=
+                std::vector<render::GPUSceneInstanceId>{instanceA, instanceB}) {
+            return RHITestResult::fail(
+                "Re-enabled GPUScene candidates must retain their original global instance IDs");
+        }
+
         primitives.push_back(makeTrianglePrimitive(-0.25f));
         primitives.back().name = "source C triangle";
         primitives.back().meshIndex = 0;
@@ -784,7 +806,7 @@ public:
         nodeC.transformRevision = 2;
         nodes.push_back(nodeC);
         render::GPUSceneSourceView expandedSource =
-            makeSourceView(primitives, nodes, materials, 2, 2, 2);
+            makeSourceView(primitives, nodes, materials, 2, 4, 2);
         expandedSource.structuralRevision = 2;
         if (gpuScene.sync(expandedSource) !=
             render::GPUSceneSyncResult::RebuildRequired) {

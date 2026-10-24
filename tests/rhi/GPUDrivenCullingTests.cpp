@@ -6,14 +6,352 @@
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <fstream>
 
 namespace metallic::tests {
 namespace {
+
+class GPUDrivenInstanceCandidateTest final : public RHITest {
+public:
+    GPUDrivenInstanceCandidateTest()
+    {
+        type = RHITestType::Rendering;
+        name = "gpu_driven_cpu_instance_candidates";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        using namespace render::builtin_pass;
+        std::string log;
+#define INSTANCE_REQUIRE(expr) do { const auto result = (expr); if (!result) { \
+    return RHITestResult::fail(std::string(#expr) + ": " + resultToString(result) + " " + log); } } while (false)
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "CPU instance candidate regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); });
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
+        INSTANCE_REQUIRE(created);
+        constexpr uint32_t globalCount = 137;
+        constexpr uint32_t streamCount = 9;
+        enum Input { Params, Instances, Candidates, Owners, Visibility, VisibleIds, Counter,
+            StreamParams, StreamInstances, StreamCandidates, StreamBindings, InputCount };
+        const uint32_t strides[InputCount] = {sizeof(GPUDrivenPreviewGPUParams), sizeof(GPUSceneGPUInstanceRecord),
+            4, 4, 4, 4, 4, sizeof(MeshletStreamGPUParams), sizeof(MeshletStreamGPUInstance),
+            4, sizeof(MeshletStreamGPURasterBindings)};
+        const uint32_t counts[InputCount] = {1, globalCount, globalCount, globalCount, globalCount,
+            globalCount, 1, 1, streamCount, streamCount, 1};
+        std::unique_ptr<BindlessHeap> heap;
+        INSTANCE_REQUIRE(device->createBindlessHeap({.maxBuffers = InputCount})
+            .transform([&](auto value) { heap = std::move(value); }));
+        std::array<std::unique_ptr<Buffer>, InputCount> buffers;
+        std::array<BindlessHandle, InputCount> handles;
+        for (uint32_t i = 0; i < InputCount; ++i) {
+            INSTANCE_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i],
+                .structureStride = strides[i], .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload})
+                .transform([&](auto value) { buffers[i] = std::move(value); }));
+            INSTANCE_REQUIRE(heap->allocate(BindlessHandleKind::Buffer)
+                .transform([&](auto value) { handles[i] = std::move(value); }));
+            INSTANCE_REQUIRE(buffers[i]->slice().and_then([&](const auto& slice) {
+                return heap->writeStorageBuffer(handles[i], slice);
+            }));
+        }
+        const auto upload = [&](Input index, const void* data, size_t size) {
+            void* mapped = buffers[index]->map();
+            if (mapped == nullptr) { return false; }
+            if (size != 0) { std::memcpy(mapped, data, size); }
+            buffers[index]->flush();
+            buffers[index]->unmap();
+            return true;
+        };
+        GPUDrivenPreviewGPUParams params;
+        params.instanceCount = globalCount;
+        params.cullingFlags = 0;
+        MeshletStreamGPUParams streamParams;
+        streamParams.sceneInstanceCount = streamCount;
+        std::array<GPUSceneGPUInstanceRecord, globalCount> instances{};
+        std::array<MeshletStreamGPUInstance, streamCount> streamInstances{};
+        std::array<uint32_t, globalCount> owners{}, poison{};
+        for (auto& instance : instances) {
+            instance.worldMatrix = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+            instance.localBoundingSphere = {0, 0, 0, 1};
+            instance.identity[3] = GPUSceneGPUInstanceVisible;
+        }
+        streamInstances[2].gpuSceneInstanceIndex = 9;
+        streamInstances[7].gpuSceneInstanceIndex = 127;
+        for (auto& instance : streamInstances) {
+            instance.visible = 1;
+            instance.boundsCenterRadius[3] = 1.0f;
+        }
+        owners[9] = owners[127] = 1;
+        poison.fill(3u);
+        if (!upload(Params, &params, sizeof(params)) || !upload(Instances, instances.data(), sizeof(instances)) ||
+            !upload(StreamParams, &streamParams, sizeof(streamParams)) ||
+            !upload(StreamInstances, streamInstances.data(), sizeof(streamInstances)) ||
+            !upload(Owners, owners.data(), sizeof(owners)) || !upload(Visibility, poison.data(), sizeof(poison))) {
+            return RHITestResult::fail("Cannot upload instance candidate inputs");
+        }
+        std::array<std::unique_ptr<ShaderModule>, 4> shaders;
+        std::array<std::unique_ptr<ComputePipeline>, 4> pipelines;
+        const char* entries[] = {"gpuDrivenPreviewResetMain", "gpuDrivenPreviewInstanceCullMain",
+            "gpuDrivenStreamAssetInstanceCullMain", "gpuDrivenStreamAssetCullResetMain"};
+        for (uint32_t i = 0; i < pipelines.size(); ++i) {
+            ShaderCompileResult compiled;
+            const auto compiledResult = compileSlangShaderToSpirv({
+                .moduleName = i >= 2 ? "Features/GPUDriven/GPUDrivenStreamAsset" : "Features/GPUDriven/GPUDrivenCulling",
+                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log)
+                .transform([&](auto value) { compiled = std::move(value); });
+            INSTANCE_REQUIRE(compiledResult);
+            INSTANCE_REQUIRE(device->createShaderModule({.spirv = compiled.spirv})
+                .transform([&](auto value) { shaders[i] = std::move(value); }));
+            INSTANCE_REQUIRE(device->createComputePipeline({.computeShader = {shaders[i].get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = i >= 2 ? uint32_t(sizeof(MeshletStreamUserPush)) : uint32_t(sizeof(GPUDrivenPreviewUserPush))})
+                .transform([&](auto value) { pipelines[i] = std::move(value); }));
+        }
+        constexpr uint64_t readbackBytes = (globalCount * 2u + 1u) * sizeof(uint32_t);
+        std::unique_ptr<Buffer> readback;
+        INSTANCE_REQUIRE(device->createBuffer({.size = readbackBytes, .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { readback = std::move(value); }));
+        auto* queue = device->getQueue(QueueType::Graphics);
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        std::unique_ptr<Fence> fence;
+        INSTANCE_REQUIRE(device->createCommandPool(*queue).transform([&](auto value) { pool = std::move(value); }));
+        INSTANCE_REQUIRE(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }));
+        INSTANCE_REQUIRE(device->createFence(false).transform([&](auto value) { fence = std::move(value); }));
+        struct Case { std::vector<uint32_t> candidates, streamCandidates; bool late = false; bool standaloneStream = false; };
+        // Non-identity candidate ordering catches accidental use of the compact index as a global ID.
+        const Case cases[] = {{{136, 9, 0, 127, 64}, {7, 2}}, {{136, 0, 127}, {7}},
+            {{136, 9, 0, 127, 64}, {2, 7}}, {{136, 9, 0, 127, 64}, {7, 2}, true},
+            {{}, {}}, {{}, {}, true}, {{64, 9}, {2}},
+            {{9, 127}, {7, 2}, false, true}, {{127}, {7}, false, true},
+            {{9, 127}, {2, 7}, false, true}, {{}, {}, false, true}, {{9}, {2}, false, true}};
+        for (uint32_t caseIndex = 0; caseIndex < std::size(cases); ++caseIndex) {
+            const Case& test = cases[caseIndex];
+            GPUDrivenPreviewUserPush push;
+            push.paramsBuffer = handles[Params].shaderIndex;
+            push.instanceBuffer = handles[Instances].shaderIndex;
+            push.instanceVisibilityBuffer = handles[Visibility].shaderIndex;
+            push.visibleInstanceIdsBuffer = handles[VisibleIds].shaderIndex;
+            push.visibleInstanceCounterBuffer = handles[Counter].shaderIndex;
+            push.streamOwnerMaskBuffer = handles[Owners].shaderIndex;
+            push.candidateInstanceIdsBuffer = handles[Candidates].shaderIndex;
+            push.candidateInstanceCount = static_cast<uint32_t>(test.candidates.size());
+            push.passIndex = test.late ? 1u : 0u;
+            MeshletStreamGPURasterBindings bindings;
+            bindings.instanceVisibilityBuffer = handles[Visibility].shaderIndex;
+            bindings.visibleInstanceIdsBuffer = handles[VisibleIds].shaderIndex;
+            bindings.visibleInstanceCounterBuffer = handles[Counter].shaderIndex;
+            bindings.candidateInstanceIdsBuffer = handles[StreamCandidates].shaderIndex;
+            bindings.candidateInstanceCount = static_cast<uint32_t>(test.streamCandidates.size());
+            bindings.instanceVisibilityResetCount = test.standaloneStream ? globalCount : 0u;
+            MeshletStreamUserPush streamPush;
+            streamPush.paramsBuffer = handles[StreamParams].shaderIndex;
+            streamPush.instanceBuffer = handles[StreamInstances].shaderIndex;
+            streamPush.rasterBindingsBuffer = handles[StreamBindings].shaderIndex;
+            streamPush.traversalPhase = push.passIndex;
+            if (!upload(Candidates, test.candidates.data(), test.candidates.size() * sizeof(uint32_t)) ||
+                !upload(StreamCandidates, test.streamCandidates.data(), test.streamCandidates.size() * sizeof(uint32_t)) ||
+                !upload(StreamBindings, &bindings, sizeof(bindings))) {
+                return RHITestResult::fail("Cannot upload compact candidate lists");
+            }
+            if (test.late && !test.candidates.empty()) {
+                std::array<uint32_t, globalCount> earlyStates{};
+                for (uint32_t id : test.candidates) { earlyStates[id] = 1; }
+                earlyStates[9] = earlyStates[64] = 2;
+                const uint32_t earlyIds[] = {136, 0, 127}, earlyCount = 3;
+                if (!upload(Visibility, earlyStates.data(), sizeof(earlyStates)) ||
+                    !upload(VisibleIds, earlyIds, sizeof(earlyIds)) || !upload(Counter, &earlyCount, sizeof(earlyCount))) {
+                    return RHITestResult::fail("Cannot seed early HZB states");
+                }
+            }
+            if (caseIndex != 0) { INSTANCE_REQUIRE(fence->reset()); INSTANCE_REQUIRE(pool->reset()); }
+            INSTANCE_REQUIRE(commands->begin());
+            INSTANCE_REQUIRE(commands->bindBindlessHeap(*heap));
+            if (test.standaloneStream) {
+                INSTANCE_REQUIRE(commands->pushBindlessData(&streamPush, sizeof(streamPush)));
+                INSTANCE_REQUIRE(commands->bindExecution(pipelines[3]->execution()));
+            } else {
+                INSTANCE_REQUIRE(commands->pushBindlessData(&push, sizeof(push)));
+                INSTANCE_REQUIRE(commands->bindExecution(pipelines[0]->execution()));
+            }
+            INSTANCE_REQUIRE(commands->dispatch((globalCount + 63u) / 64u));
+            std::array<BufferBarrierDesc, 3> barriers;
+            const Input outputs[] = {Visibility, VisibleIds, Counter};
+            for (uint32_t i = 0; i < barriers.size(); ++i) {
+                barriers[i] = {.buffer = buffers[outputs[i]].get(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+            }
+            INSTANCE_REQUIRE(commands->synchronize({.buffers = barriers}));
+            if (!test.standaloneStream && !test.candidates.empty()) {
+                INSTANCE_REQUIRE(commands->bindExecution(pipelines[1]->execution()));
+                INSTANCE_REQUIRE(commands->dispatch((push.candidateInstanceCount + 63u) / 64u));
+                INSTANCE_REQUIRE(commands->synchronize({.buffers = barriers}));
+            }
+            if (!test.standaloneStream) {
+                INSTANCE_REQUIRE(commands->pushBindlessData(&streamPush, sizeof(streamPush)));
+                INSTANCE_REQUIRE(commands->bindExecution(pipelines[3]->execution()));
+                INSTANCE_REQUIRE(commands->dispatch(1));
+                INSTANCE_REQUIRE(commands->synchronize({.buffers = barriers}));
+            }
+            if (!test.streamCandidates.empty()) {
+                INSTANCE_REQUIRE(commands->pushBindlessData(&streamPush, sizeof(streamPush)));
+                INSTANCE_REQUIRE(commands->bindExecution(pipelines[2]->execution()));
+                INSTANCE_REQUIRE(commands->dispatch((bindings.candidateInstanceCount + 63u) / 64u));
+            }
+            for (auto& barrier : barriers) { barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead}; }
+            INSTANCE_REQUIRE(commands->synchronize({.buffers = barriers}));
+            uint64_t offset = 0;
+            for (Input output : outputs) {
+                const uint64_t bytes = buffers[output]->desc().size;
+                auto source = buffers[output]->slice();
+                auto destination = readback->slice({offset, bytes});
+                INSTANCE_REQUIRE(source);
+                INSTANCE_REQUIRE(destination);
+                INSTANCE_REQUIRE(commands->copyBuffer(*source, *destination));
+                offset += bytes;
+            }
+            for (auto& barrier : barriers) { std::swap(barrier.before, barrier.after); }
+            INSTANCE_REQUIRE(commands->synchronize({.buffers = barriers}));
+            INSTANCE_REQUIRE(commands->end());
+            CommandBuffer* submitted[] = {commands.get()};
+            INSTANCE_REQUIRE(queue->submit({.commandBuffers = submitted, .signalFence = fence.get()}));
+            INSTANCE_REQUIRE(fence->wait());
+            readback->invalidate();
+            const auto* data = static_cast<const uint32_t*>(readback->map());
+            if (data == nullptr) { return RHITestResult::fail("Cannot read candidate culling results"); }
+            std::array<uint32_t, globalCount> expected{};
+            for (uint32_t id : test.candidates) { expected[id] = 1; }
+            if (test.late && !test.candidates.empty()) { expected[9] = expected[64] = 3; }
+            bool valid = std::equal(expected.begin(), expected.end(), data);
+            const uint32_t outputCount = data[globalCount * 2u];
+            valid = valid && outputCount == test.candidates.size();
+            if (outputCount <= globalCount) {
+                std::vector<uint32_t> actualIds(data + globalCount, data + globalCount + outputCount);
+                auto expectedIds = test.candidates;
+                std::sort(actualIds.begin(), actualIds.end());
+                std::sort(expectedIds.begin(), expectedIds.end());
+                valid = valid && actualIds == expectedIds;
+            }
+            readback->unmap();
+            if (!valid) {
+                return RHITestResult::fail("Candidate culling lost stable IDs or retained stale visibility in case " + std::to_string(caseIndex));
+            }
+        }
+#undef INSTANCE_REQUIRE
+        return RHITestResult::pass("Ordinary and Stream sparse candidates preserve global IDs across hide, re-enable, empty frames and late HZB recovery");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUDrivenInstanceCandidateTest);
+
+class GPUDrivenSceneVisibilityCandidateTest final : public RHITest {
+public:
+    GPUDrivenSceneVisibilityCandidateTest()
+    {
+        type = RHITestType::Rendering;
+        name = "gpu_driven_scene_visibility_candidates";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = context.outputDirectory / "instance-candidate-scene";
+        std::filesystem::create_directories(directory);
+        const auto path = directory / "triangles.gltf";
+        {
+            constexpr float vertices[] = {-0.4f, -0.5f, 0, 0.4f, -0.5f, 0, 0, 0.5f, 0};
+            std::ofstream binary(directory / "triangle.bin", std::ios::binary);
+            binary.write(reinterpret_cast<const char*>(vertices), sizeof(vertices));
+            std::ofstream gltf(path);
+            gltf << R"json({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
+                "nodes":[{"mesh":0,"translation":[-0.65,0,0]},{"mesh":0,"translation":[0.65,0,0]}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],
+                "materials":[{"doubleSided":true}],"buffers":[{"uri":"triangle.bin","byteLength":36}],
+                "bufferViews":[{"buffer":0,"byteLength":36}],
+                "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",
+                    "min":[-0.4,-0.5,0],"max":[0.4,0.5,0]}]})json";
+            if (!binary || !gltf) { return RHITestResult::fail("Cannot write scene visibility fixture"); }
+        }
+        scene::SceneDocument document;
+        if (!document.load(path)) { return RHITestResult::fail(document.lastLoadResult().error); }
+        render::RenderGraphPreviewRenderer preview;
+        const auto initialized = preview.initialize(context.enableValidation, true);
+        if (render::hasError(initialized, render::Error::Unsupported)) {
+            return RHITestResult::skip("Scene candidate test requires preview mesh/ray capabilities");
+        }
+        if (!initialized) { return RHITestResult::fail("Scene candidate preview initialization failed"); }
+        preview.bindRuntimeScene(&document);
+        render::RenderGraph graph;
+        graph.addNode("VisibilityBufferPass", "VBuffer", {{"path", path.string()},
+            {"visualization", "meshlet"}, {"meshletNormalConeCull", false}, {"autoLod", false}});
+        graph.markOutput("VBuffer.color");
+        graph.setViewProperties({{"camera", {{"eye", {0, 0, 3}}, {"center", {0, 0, 0}},
+            {"up", {0, 1, 0}}, {"fovDegrees", 60.0}, {"znear", 0.1}, {"zfar", 10.0}}},
+            {"temporalJitter", false}});
+        const std::array<scene::SceneEntity, 2> objects = {
+            document.objectForNode(0).entity(), document.objectForNode(1).entity()};
+        const std::array<std::array<bool, 2>, 6> cases = {{{true, true}, {false, true},
+            {true, true}, {false, false}, {false, false}, {true, true}}};
+        std::vector<uint32_t> reference;
+        size_t referenceCoverage = 0;
+        uint32_t background = 0;
+        std::array<bool, 2> currentVisibility{true, true};
+        for (uint32_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
+            const auto& enabled = cases[caseIndex];
+            for (uint32_t i = 0; i < objects.size(); ++i) {
+                if (currentVisibility[i] == enabled[i]) { continue; }
+                if (!document.setObjectVisible(objects[i], enabled[i])) {
+                    return RHITestResult::fail("Cannot update scene object visibility");
+                }
+                currentVisibility[i] = enabled[i];
+            }
+            // Reuse all frame slots so stale candidate lists and visibility cannot hide behind fresh allocations.
+            for (uint32_t frame = 0; frame < 4; ++frame) {
+                const auto rendered = preview.render(graph, 193, 129);
+                if (render::hasError(rendered, render::Error::Unsupported)) { return RHITestResult::skip(preview.lastLog()); }
+                if (!rendered) { return RHITestResult::fail(preview.lastLog()); }
+                const auto& pixels = preview.pixels();
+                if (caseIndex == 0 && frame == 0) {
+                    reference = pixels;
+                    background = pixels.front();
+                    referenceCoverage = std::count_if(pixels.begin(), pixels.end(),
+                        [&](uint32_t pixel) { return pixel != background; });
+                    if (referenceCoverage < 200) { return RHITestResult::fail("Scene candidate reference has insufficient coverage"); }
+                }
+                const size_t coverage = std::count_if(pixels.begin(), pixels.end(),
+                    [&](uint32_t pixel) { return pixel != background; });
+                const bool correct = enabled[0] && enabled[1] ? pixels == reference :
+                    !enabled[0] && !enabled[1] ? coverage == 0 : coverage > 0 && coverage < referenceCoverage;
+                spdlog::info("[Scene candidates] case={} frame={} coverage={}", caseIndex, frame, coverage);
+                if (!correct || frame == 3) {
+                    std::string log;
+                    if (!saveRgba8Png(directory / ("case-" + std::to_string(caseIndex) + ".png"),
+                            reinterpret_cast<const uint8_t*>(pixels.data()), preview.width(), preview.height(), log)) {
+                        return RHITestResult::fail(log);
+                    }
+                }
+                if (!correct) {
+                    return RHITestResult::fail("Scene candidate visibility changed incorrectly at case " +
+                        std::to_string(caseIndex) + " frame " + std::to_string(frame));
+                }
+            }
+        }
+        return RHITestResult::pass("Bound scene visibility excludes disabled objects and restores identical raster output across empty candidate frames");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUDrivenSceneVisibilityCandidateTest);
 
 class GPUDrivenConeProbe final : public render::ComputePass {
 public:

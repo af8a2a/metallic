@@ -161,6 +161,9 @@ public struct GPUDrivenStreamAssetRasterBindings
     public uint materialTextureRemapBuffer;
     public uint materialTextureCount;
     public uint coverageInputs;
+    public uint candidateInstanceIdsBuffer;
+    public uint candidateInstanceCount;
+    public uint instanceVisibilityResetCount;
 };
 
 public struct GPUDrivenStreamAssetActiveHeader
@@ -970,7 +973,7 @@ bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint inst
 }
 
 [shader("compute")]
-[numthreads(1, 1, 1)]
+[numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetCullResetMain(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uniform GPUDrivenStreamAssetPush push)
@@ -984,10 +987,19 @@ void gpuDrivenStreamAssetCullResetMain(
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
     GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
+    // The common producer owns both resets in the combined pass. Preserve its
+    // already-appended instances when Stream culling follows it.
+    if (bindings.instanceVisibilityResetCount == 0u) { return; }
     RWStructuredBuffer<uint> counterHandle =
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(bindings.visibleInstanceCounterBuffer));
     RWStructuredBuffer<uint> counter = counterHandle;
-    counter[0] = 0u;
+    if (dispatchThreadID.x == 0u) { counter[0] = 0u; }
+    // The standalone Stream pass owns the full shared visibility range.
+    if (dispatchThreadID.x < bindings.instanceVisibilityResetCount) {
+        RWStructuredBuffer<uint> visibility =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(bindings.instanceVisibilityBuffer));
+        visibility[dispatchThreadID.x] = 0u;
+    }
 }
 
 [shader("compute")]
@@ -1008,10 +1020,14 @@ void gpuDrivenStreamAssetInstanceCullMain(
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
     GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
     uint rasterPhase = min(push.traversalPhase, 1u);
-    uint instanceIndex = dispatchThreadID.x;
-    if (instanceIndex >= params.sceneInstanceCount) {
+    uint candidateIndex = dispatchThreadID.x;
+    if (candidateIndex >= bindings.candidateInstanceCount) {
         return;
     }
+    StructuredBuffer<uint> candidateInstanceIds =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(bindings.candidateInstanceIdsBuffer));
+    // CPU candidates exclude scene-disabled instances without renumbering owners.
+    uint instanceIndex = candidateInstanceIds[candidateIndex];
 
     RWStructuredBuffer<uint> visibilityHandle =
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(bindings.instanceVisibilityBuffer));
@@ -1022,10 +1038,6 @@ void gpuDrivenStreamAssetInstanceCullMain(
         return;
     }
     if (rasterPhase != 0u && visibility[gpuSceneInstanceIndex] != 2u) {
-        return;
-    }
-    if (instance.visible == 0u) {
-        visibility[gpuSceneInstanceIndex] = 0u;
         return;
     }
 

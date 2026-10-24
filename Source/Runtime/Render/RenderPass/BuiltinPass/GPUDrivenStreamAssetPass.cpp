@@ -693,6 +693,7 @@ public:
             .width = frameWidth_,
             .height = frameHeight_,
             .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
+            .instanceVisibilityResetCount = static_cast<uint32_t>(gpuSceneSubsystem_->instances().size()),
         });
         if (!result) {
             log = "GPUDrivenStreamAssetPass failed to publish raster bindings";
@@ -1176,6 +1177,7 @@ private:
             .width = frameWidth_,
             .height = frameHeight_,
             .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
+            .instanceVisibilityResetCount = static_cast<uint32_t>(gpuSceneSubsystem_->instances().size()),
         });
     }
 
@@ -1195,11 +1197,9 @@ private:
             .instanceCullPipeline = instanceCullPipeline_.get(),
             .pushData = &push,
             .pushDataSize = sizeof(push),
-            .instanceGroupCountX = std::max(
-                divideRoundUp(
-                    static_cast<uint32_t>(streamRuntime_->asset().instances().size()),
-                    64u),
-                1u),
+            .instanceGroupCountX = divideRoundUp(streamRuntime_->rasterInstanceCandidateCount(), 64u),
+            .resetGroupCountX = std::max(divideRoundUp(
+                static_cast<uint32_t>(gpuSceneSubsystem_->instances().size()), 64u), 1u),
         };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordInstanceCull(

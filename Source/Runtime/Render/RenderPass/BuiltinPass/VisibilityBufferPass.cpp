@@ -104,6 +104,9 @@ struct GPUDrivenPreviewCullingTargets {
 };
 
 struct GPUDrivenPreviewFrameSlotResources {
+    std::shared_ptr<Buffer> candidateInstanceIdsBuffer;
+    ResourceLease candidateInstanceIdsHandle;
+    uint32_t candidateInstanceCount = 0;
     std::unique_ptr<Buffer> paramsBuffer;
     Buffer* instanceVisibilityBuffer = nullptr;
     Buffer* visibleInstanceIdsBuffer = nullptr;
@@ -119,6 +122,8 @@ struct GPUDrivenPreviewFrameSlotResources {
 };
 
 struct GPUDrivenPreviewFrameSlotBindings {
+    std::shared_ptr<Buffer> candidateInstanceIdsBuffer;
+    ResourceLease candidateInstanceIdsHandle;
     ResourceLease paramsHandle;
     ResourceLease instanceVisibilityHandle;
     ResourceLease visibleInstanceIdsHandle;
@@ -701,6 +706,19 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
+        // prepareView filters scene visibility while retaining stable GPUScene IDs.
+        // Each frame slot owns its upload, just like the camera parameters.
+        const auto& candidates = gpuSceneSubsystem->visibleDrawSet(gpuSceneView_, activeFrameSlot_)->instances;
+        std::vector<uint32_t> candidateIds;
+        candidateIds.reserve(candidates.size());
+        for (GPUSceneInstanceId id : candidates) { candidateIds.push_back(id.index); }
+        auto& candidateSlot = activeFrameResources();
+        candidateSlot.candidateInstanceCount = static_cast<uint32_t>(candidateIds.size());
+        if (!candidateIds.empty()) {
+            result = updateHostStorageBuffer(*candidateSlot.candidateInstanceIdsBuffer,
+                candidateIds.data(), candidateIds.size() * sizeof(uint32_t));
+            if (!result) { return result; }
+        }
         // Streaming can render geometry before its material snapshot is ready.
         coverageBinding_ = sharedTextureResources_ ? sharedTextureResources_->materialBinding() : nullptr;
         coverageHandle_ = {};
@@ -808,7 +826,8 @@ public:
             retain(lease);
         }
         const auto& slot = frameSlotResources_[activeFrameSlot_];
-        for (const auto& lease : {slot.paramsHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
+        packet.owners.push_back(slot.candidateInstanceIdsBuffer);
+        for (const auto& lease : {slot.candidateInstanceIdsHandle, slot.paramsHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
              slot.visibleInstanceCounterHandle, slot.visibleMeshletHandles[0], slot.visibleMeshletHandles[1],
              slot.indirectHandles[0], slot.indirectHandles[1]}) {
             retain(lease);
@@ -1833,6 +1852,8 @@ private:
             .tessellationMaxFactor = tessellationMaxFactor(),
             .tessellationMaxSplitDepth = tessellationMaxSplitDepth(),
             .coverageInputs = coverageHandle_.valid() ? coverageHandle_.shaderIndex() : UINT32_MAX,
+            .candidateInstanceIdsBuffer = slot.candidateInstanceIdsHandle.shaderIndex(),
+            .candidateInstanceCount = slot.candidateInstanceCount,
         };
     }
 
@@ -1883,7 +1904,8 @@ private:
             .instanceCullPipeline = instanceCullPipeline_.get(),
             .pushData = &push,
             .pushDataSize = sizeof(push),
-            .instanceGroupCountX = divideRoundUp(instanceCount_, 64u),
+            .instanceGroupCountX = divideRoundUp(activeFrameResources().candidateInstanceCount, 64u),
+            .resetGroupCountX = std::max(divideRoundUp(instanceCount_, 64u), 1u),
         };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordInstanceCull(
@@ -2421,12 +2443,7 @@ private:
             .instanceCullPipeline = streamInstanceCullPipeline_.get(),
             .pushData = &push,
             .pushDataSize = sizeof(push),
-            .instanceGroupCountX = std::max(
-                divideRoundUp(
-                    static_cast<uint32_t>(
-                        streamRuntime_->asset().instances().size()),
-                    64u),
-                1u),
+            .instanceGroupCountX = divideRoundUp(streamRuntime_->rasterInstanceCandidateCount(), 64u),
         };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordInstanceCull(
@@ -2845,6 +2862,16 @@ private:
                 log = "VisibilityBufferPass frame-slot binding resource is null";
                 return makeError(Error::InvalidArgument);
             }
+            std::vector<uint32_t> candidateStorage(std::max(instanceCount_, 1u));
+            std::unique_ptr<Buffer> candidateBuffer;
+            result = uploadStorageBuffer(*device_, candidateStorage.data(),
+                candidateStorage.size() * sizeof(uint32_t), candidateBuffer, log,
+                "frame-slot instance candidates");
+            if (!result) { return result; }
+            bindings.candidateInstanceIdsBuffer = std::move(candidateBuffer);
+            result = bindBuffer(*bindings.candidateInstanceIdsBuffer,
+                bindings.candidateInstanceIdsHandle, "frame-slot instance candidates");
+            if (!result) { return result; }
             result =
                 bindBuffer(*resources.paramsBuffer, bindings.paramsHandle, "frame-slot params");
             if (!result) {
@@ -3115,6 +3142,8 @@ private:
         for (size_t frameSlot = 0; frameSlot < bundle.frameSlots.size(); ++frameSlot) {
             GPUDrivenPreviewFrameSlotResources& resources = frameSlotResources_[frameSlot];
             const GPUDrivenPreviewFrameSlotBindings& bindings = bundle.frameSlots[frameSlot];
+            resources.candidateInstanceIdsBuffer = bindings.candidateInstanceIdsBuffer;
+            resources.candidateInstanceIdsHandle = bindings.candidateInstanceIdsHandle;
             resources.paramsHandle = bindings.paramsHandle;
             resources.instanceVisibilityHandle = bindings.instanceVisibilityHandle;
             resources.visibleInstanceIdsHandle = bindings.visibleInstanceIdsHandle;

@@ -458,6 +458,9 @@ struct MeshletStreamGPURasterBindings {
     uint32_t materialTextureRemapBuffer = UINT32_MAX;
     uint32_t materialTextureCount = 0;
     uint32_t coverageInputs = UINT32_MAX;
+    uint32_t candidateInstanceIdsBuffer = UINT32_MAX;
+    uint32_t candidateInstanceCount = 0;
+    uint32_t instanceVisibilityResetCount = 0;
 };
 
 // Non-owning resources required by a unified deferred consumer. The stream
@@ -548,7 +551,7 @@ static_assert(sizeof(MeshletStreamGPURTRepresentationLODMetadata) == 32);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
 static_assert(offsetof(MeshletStreamGPUParams, gpuSceneInstanceBufferIndexPlusOne) == 428);
-static_assert(sizeof(MeshletStreamGPURasterBindings) == 96);
+static_assert(sizeof(MeshletStreamGPURasterBindings) == 108);
 static_assert(sizeof(MeshletStreamUserPush) == 140);
 
 struct MeshletStreamRuntimeDesc {
@@ -742,6 +745,7 @@ public:
     uint32_t frameIndex() const { return frameIndex_; }
     uint32_t visibleClusterCapacity() const;
     uint32_t rasterCandidateCapacity() const { return rasterCandidateCapacity_; }
+    uint32_t rasterInstanceCandidateCount() const { return static_cast<uint32_t>(rasterInstanceCandidates_.size()); }
     uint32_t drawTaskCount() const;
     [[nodiscard]] Result<> cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation = false) const;
     const scene::Bounds& bounds() const { return drawBounds_; }
@@ -774,8 +778,8 @@ private:
     uint32_t diagnosticBlasResetEpoch_ = 0;
     std::shared_ptr<bool> blasCacheInitialized_ = std::make_shared<bool>(false);
     struct FrameUploads {
-        std::unique_ptr<Buffer> params, raster, clear;
-        ResourceLease paramsHandle, rasterHandle;
+        std::unique_ptr<Buffer> params, raster, clear, instanceCandidates;
+        ResourceLease paramsHandle, rasterHandle, instanceCandidatesHandle;
         GPUCompletionPoint completion;
     };
     std::vector<FrameUploads> frameUploads_;
@@ -836,6 +840,7 @@ private:
     uint64_t sceneResourceIdentity_ = 0;
     std::vector<uint32_t> runtimeRenderNodeIndices_;
     std::vector<uint32_t> gpuSceneInstanceMapping_;
+    std::vector<uint32_t> rasterInstanceCandidates_;
     std::unique_ptr<Buffer> pageBuffer_;
     std::unique_ptr<Buffer> activeGroupBuffer_;
     std::unique_ptr<Buffer> activeHeaderBuffer_;
@@ -856,6 +861,7 @@ private:
     std::unique_ptr<Buffer> rasterBindingsBuffer_;
     std::vector<ResidentPageFrame> residentPageFrames_;
     std::unique_ptr<Buffer> instanceBuffer_;
+    std::unique_ptr<Buffer> rasterInstanceCandidatesBuffer_;
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> lodLevelBuffer_;
     std::unique_ptr<Buffer> groupBuffer_;
@@ -934,6 +940,7 @@ private:
     ResourceLease rasterBindingsHandle_;
     ResourceLease requestHandle_;
     ResourceLease instanceHandle_;
+    ResourceLease rasterInstanceCandidatesHandle_;
     ResourceLease gpuSceneInstanceHandle_;
     ResourceLease primitiveHandle_;
     ResourceLease lodLevelHandle_;

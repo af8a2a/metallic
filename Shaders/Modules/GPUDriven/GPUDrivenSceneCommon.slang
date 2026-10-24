@@ -36,6 +36,8 @@ public struct GPUDrivenPreviewPush
     public uint tessellationMaxFactor;
     public uint tessellationMaxSplitDepth;
     public uint coverageInputs;
+    public uint candidateInstanceIdsBuffer;
+    public uint candidateInstanceCount;
 };
 
 public struct GPUDrivenPreviewVertex

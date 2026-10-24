@@ -50,6 +50,7 @@ struct GPUSceneInstanceCullRecordDesc {
     const void* pushData = nullptr;
     uint32_t pushDataSize = 0;
     uint32_t instanceGroupCountX = 0;
+    uint32_t resetGroupCountX = 1;
 };
 
 struct GPUSceneComputeDispatchDesc {

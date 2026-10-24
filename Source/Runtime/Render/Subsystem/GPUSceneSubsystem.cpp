@@ -1722,7 +1722,7 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         desc.instanceCullPipeline == nullptr ||
         desc.pushData == nullptr ||
         desc.pushDataSize == 0 ||
-        desc.instanceGroupCountX == 0 ||
+        desc.resetGroupCountX == 0 ||
         visible->gpu.instanceVisibilityStates.buffer == nullptr ||
         visible->gpu.visibleInstanceCounter.buffer == nullptr) {
         log = "GPUScene recordInstanceCull received an incomplete culling description";
@@ -1732,20 +1732,28 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
     if (auto commandResult = commandBuffer.bindBindlessHeap(*desc.bindlessHeap); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.bindExecution((desc.resetPipeline)->execution()); !commandResult) { return commandResult; }
-    if (auto commandResult = commandBuffer.dispatch(1u, 1u, 1u); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.dispatch(desc.resetGroupCountX, 1u, 1u); !commandResult) { return commandResult; }
 
-    BufferBarrierDesc resetBarrier{
-        .buffer = visible->gpu.visibleInstanceCounter.buffer,
-        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+    const BufferBarrierDesc resetBarriers[]{
+        {
+            .buffer = visible->gpu.visibleInstanceCounter.buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        }, {
+            .buffer = visible->gpu.instanceVisibilityStates.buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        },
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = {&resetBarrier, 1},
+        .buffers = resetBarriers,
     }); !commandResult) { return commandResult; }
 
     if (auto commandResult = commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.bindExecution((desc.instanceCullPipeline)->execution()); !commandResult) { return commandResult; }
-    if (auto commandResult = commandBuffer.dispatch(desc.instanceGroupCountX, 1u, 1u); !commandResult) { return commandResult; }
+    if (desc.instanceGroupCountX != 0) {
+        if (auto commandResult = commandBuffer.dispatch(desc.instanceGroupCountX, 1u, 1u); !commandResult) { return commandResult; }
+    }
 
     std::array<BufferBarrierDesc, 3> barriers{};
     uint32_t barrierCount = 0;

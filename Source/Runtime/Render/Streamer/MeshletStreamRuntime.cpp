@@ -2465,6 +2465,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (!result) {
         return result;
     }
+    result = allocateAndWriteBuffer(*registry_, *rasterInstanceCandidatesBuffer_,
+        rasterInstanceCandidatesHandle_, log, "meshlet stream instance candidates");
+    if (!result) { return result; }
     result = updateRasterBindings(MeshletStreamGPURasterBindings{});
     if (!result) {
         return result;
@@ -2681,7 +2684,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         if (!(result = device.createBuffer(paramsBuffer_->desc()).transform([&](auto rhiValue) { slot.params = std::move(rhiValue); })) ||
             !(result = device.createBuffer(rasterBindingsBuffer_->desc()).transform([&](auto rhiValue) { slot.raster = std::move(rhiValue); })) ||
             !(result = device.createBuffer(requestClearBuffer_->desc()).transform([&](auto rhiValue) { slot.clear = std::move(rhiValue); })) ||
+            !(result = device.createBuffer(rasterInstanceCandidatesBuffer_->desc()).transform([&](auto rhiValue) { slot.instanceCandidates = std::move(rhiValue); })) ||
             !(result = allocateAndWriteBuffer(*registry_, *slot.params, slot.paramsHandle, log, "stream frame params")) ||
+            !(result = allocateAndWriteBuffer(*registry_, *slot.instanceCandidates, slot.instanceCandidatesHandle, log, "stream frame instance candidates")) ||
             !(result = allocateAndWriteBuffer(*registry_, *slot.raster, slot.rasterHandle, log, "stream frame raster"))) {
             return result;
         }
@@ -2708,6 +2713,7 @@ void MeshletStreamRuntime::reset()
     sceneResourceIdentity_ = 0;
     runtimeRenderNodeIndices_.clear();
     gpuSceneInstanceMapping_.clear();
+    rasterInstanceCandidates_.clear();
     pageBuffer_.reset();
     activeGroupBuffer_.reset();
     activeHeaderBuffer_.reset();
@@ -2725,6 +2731,7 @@ void MeshletStreamRuntime::reset()
     rasterBindingsBuffer_.reset();
     residentPageFrames_.clear();
     instanceBuffer_.reset();
+    rasterInstanceCandidatesBuffer_.reset();
     primitiveBuffer_.reset();
     lodLevelBuffer_.reset();
     groupBuffer_.reset();
@@ -2809,6 +2816,7 @@ void MeshletStreamRuntime::reset()
     rasterBindingsHandle_ = {};
     requestHandle_ = {};
     instanceHandle_ = {};
+    rasterInstanceCandidatesHandle_ = {};
     gpuSceneInstanceHandle_ = {};
     primitiveHandle_ = {};
     lodLevelHandle_ = {};
@@ -3211,7 +3219,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
     for (const auto& lease : {
         pageHandle_, activeGroupHandle_, activeHeaderHandle_, pageTableHandle_,
         paramsHandle_, visibleClusterHandle_, rasterBindingsHandle_, requestHandle_,
-        instanceHandle_, gpuSceneInstanceHandle_, primitiveHandle_, lodLevelHandle_, groupHandle_,
+        instanceHandle_, rasterInstanceCandidatesHandle_, gpuSceneInstanceHandle_, primitiveHandle_, lodLevelHandle_, groupHandle_,
         lodTopologyHandle_, lodStateHandle_, demandHandle_, nodeHandle_,
         drawIndirectHandle_, traversalHeaderHandle_, traversalWorkHandle_, clasAddressHandle_,
         clasPageTableHandle_, blasHeaderHandle_, instanceBlasHandle_, blasBuildInfoHandle_,
@@ -3224,7 +3232,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         }
     }
     for (const auto& slot : frameUploads_) {
-        for (const auto& lease : {slot.paramsHandle, slot.rasterHandle}) {
+        for (const auto& lease : {slot.paramsHandle, slot.rasterHandle, slot.instanceCandidatesHandle}) {
             if (!lease.valid()) { continue; }
             auto retained = registry_->retain(commandBuffer, lease);
             if (!retained) { return retained; }
@@ -3269,8 +3277,10 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         slot.params.swap(paramsBuffer_);
         slot.raster.swap(rasterBindingsBuffer_);
         slot.clear.swap(requestClearBuffer_);
+        slot.instanceCandidates.swap(rasterInstanceCandidatesBuffer_);
         std::swap(slot.paramsHandle, paramsHandle_);
         std::swap(slot.rasterHandle, rasterBindingsHandle_);
+        std::swap(slot.instanceCandidatesHandle, rasterInstanceCandidatesHandle_);
     };
     if (uploadSlot != currentUploadSlot_) {
         swapUpload(frameUploads_[currentUploadSlot_]);
@@ -3659,6 +3669,15 @@ Result<> MeshletStreamRuntime::updateRasterBindings(
     }
     MeshletStreamGPURasterBindings resolved = bindings;
     resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex();
+    // Candidate IDs share the completion-tracked upload slot with these bindings.
+    // Global and Stream instance indices stay stable when scene visibility changes.
+    resolved.candidateInstanceIdsBuffer = rasterInstanceCandidatesHandle_.shaderIndex();
+    resolved.candidateInstanceCount = rasterInstanceCandidateCount();
+    if (!rasterInstanceCandidates_.empty()) {
+        auto result = updateHostBuffer(*rasterInstanceCandidatesBuffer_,
+            rasterInstanceCandidates_.data(), rasterInstanceCandidates_.size() * sizeof(uint32_t));
+        if (!result) { return result; }
+    }
     return updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
 }
 
@@ -3834,6 +3853,12 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
     std::memcpy(mapped, gpuInstances.data(), static_cast<size_t>(instanceBuffer_->desc().size));
     instanceBuffer_->flush({0, instanceBuffer_->desc().size});
     instanceBuffer_->unmap();
+    rasterInstanceCandidates_.clear();
+    for (uint32_t index = 0; index < gpuInstances.size(); ++index) {
+        if (gpuInstances[index].visible != 0u) {
+            rasterInstanceCandidates_.push_back(index);
+        }
+    }
     if (updatedBounds.valid) {
         drawBounds_ = updatedBounds;
     }
@@ -3920,6 +3945,17 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
     const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
     gpuSceneInstanceMapping_.assign(instances.size(), kMeshletStreamInvalidClusterIndex);
+    rasterInstanceCandidates_.clear();
+    rasterInstanceCandidates_.reserve(instances.size());
+    for (uint32_t index = 0; index < instances.size(); ++index) {
+        if (instances[index].visible != 0u) {
+            rasterInstanceCandidates_.push_back(index);
+        }
+    }
+    auto candidateResult = createHostStorageBuffer(device,
+        std::max<uint64_t>(instances.size(), 1u) * sizeof(uint32_t),
+        rasterInstanceCandidatesBuffer_, log, "MeshletStreamRuntime instance candidates");
+    if (!candidateResult) { return candidateResult; }
     Result<> result = createAndPopulateHostStorageBuffer<MeshletStreamGPUInstance>(
         device,
         instances.size(),
@@ -5230,6 +5266,7 @@ void MeshletStreamRuntime::appendReplayBindings(std::vector<profiling::WorkContr
         {"pageTable", pageTableBuffer_.get(), pageTableHandle_.shaderIndex()},
         {"params", paramsBuffer_.get(), paramsHandle_.shaderIndex()},
         {"rasterBindings", rasterBindingsBuffer_.get(), rasterBindingsHandle_.shaderIndex()},
+        {"instanceCandidates", rasterInstanceCandidatesBuffer_.get(), rasterInstanceCandidatesHandle_.shaderIndex()},
         {"requests", requestBuffer_.get(), UINT32_MAX},
         {"visibleRecords", visibleClusterBuffer_.get(), UINT32_MAX},
         {"lodState", lodStateBuffer_.get(), UINT32_MAX},

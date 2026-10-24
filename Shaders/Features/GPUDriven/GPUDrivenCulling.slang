@@ -9,7 +9,7 @@ import Material;
 using Metallic.Material;
 
 [shader("compute")]
-[numthreads(1, 1, 1)]
+[numthreads(64, 1, 1)]
 void gpuDrivenPreviewResetMain(
     uint3 dispatchThreadId : SV_DispatchThreadID,
     uniform GPUDrivenPreviewPush push)
@@ -17,7 +17,17 @@ void gpuDrivenPreviewResetMain(
     if (push.passIndex == 0u) {
         RWStructuredBuffer<uint> visibleInstanceCounterHandle =
             resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceCounterBuffer));
-        visibleInstanceCounterHandle[0] = 0u;
+        if (dispatchThreadId.x == 0u) {
+            visibleInstanceCounterHandle[0] = 0u;
+        }
+        StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+        RWStructuredBuffer<uint> visibility =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.instanceVisibilityBuffer));
+        // Clear every stable slot, including instances omitted from both candidate lists.
+        if (dispatchThreadId.x < paramsHandle[0].instanceCount) {
+            visibility[dispatchThreadId.x] = 0u;
+        }
     }
 }
 
@@ -39,23 +49,21 @@ void gpuDrivenPreviewInstanceCullMain(
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceCounterBuffer));
 
     GPUDrivenPreviewParams params = paramsHandle[0];
-    uint instanceIndex = dispatchThreadId.x;
-    if (instanceIndex >= params.instanceCount) {
+    uint candidateIndex = dispatchThreadId.x;
+    if (candidateIndex >= push.candidateInstanceCount) {
         return;
     }
 
+    StructuredBuffer<uint> candidates =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.candidateInstanceIdsBuffer));
+    uint instanceIndex = candidates[candidateIndex];
     RWStructuredBuffer<uint> visibility = visibilityHandle;
     if (push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
         StructuredBuffer<uint> streamOwnerMaskHandle =
             resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.streamOwnerMaskBuffer));
         StructuredBuffer<uint> streamOwnerMask = streamOwnerMaskHandle;
         if (streamOwnerMask[instanceIndex] != 0u) {
-            // Early culling clears stale shared state before the Stream
-            // producer runs. Late culling must preserve Stream's early state
-            // (2 == deferred/occluded) so its late HZB pass can recover it.
-            if (push.passIndex == 0u) {
-                visibility[instanceIndex] = 0u;
-            }
+            // Stream owns these slots; late culling preserves its deferred state.
             return;
         }
     }
@@ -65,10 +73,6 @@ void gpuDrivenPreviewInstanceCullMain(
 
     StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
     GPUDrivenPreviewInstance instance = instances[instanceIndex];
-    if ((instance.identity.w & kInstanceVisible) == 0u) {
-        visibility[instanceIndex] = 0u;
-        return;
-    }
     SceneTransform transform = instanceTransform(instance);
     float3 center = transformPoint(transform, instance.localBoundingSphere.xyz);
     float radius = max(
