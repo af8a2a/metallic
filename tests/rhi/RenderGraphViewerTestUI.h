@@ -4,6 +4,8 @@
 #include "Editor/EditorRenderGraphViewer.h"
 #include "imgui_internal.h"
 
+#include <cfloat>
+
 namespace metallic::tests {
 
 class ViewerUIContext {
@@ -31,10 +33,13 @@ public:
         for (uint32_t frame = 0; frame < 4; ++frame) { draw(viewer); }
         if (exerciseMatrixSelection_ && tab == editor::RenderGraphExecutionViewer::Tab::Resources && viewer.snapshot()) {
             const auto& snapshot = *viewer.snapshot();
-            auto* table = context_->Tables.GetAliveCount() ? context_->Tables.GetByIndex(0) : nullptr;
-            if (!table || table->ColumnsCount != int(snapshot.passes.size() + 1) || snapshot.resources.empty()) {
-                return "resource matrix did not expose the captured pass columns";
+            ImGuiWindow* matrix = nullptr;
+            for (auto* window : context_->Windows) {
+                if (window->Active && std::string_view(window->Name).find("ResourcePassMatrix") != std::string_view::npos) {
+                    matrix = window; break;
+                }
             }
+            if (!matrix || snapshot.resources.empty()) { return "resource matrix canvas is missing"; }
             const uint64_t resource = snapshot.resources.back().id;
             size_t passIndex = 0;
             for (; passIndex < snapshot.passes.size(); ++passIndex) {
@@ -42,9 +47,17 @@ public:
                 if (std::any_of(uses.begin(), uses.end(), [&](const auto& use) { return use.resourceId == resource; })) { break; }
             }
             if (passIndex == snapshot.passes.size()) { return "captured fixture resource had no matrix use"; }
-            // Select the final visible resource row through actual ImGui mouse
-            // events, using the table's rendered geometry rather than OS input.
-            const ImVec2 point(table->Columns[int(passIndex + 1)].MinX + 12, table->RowPosY1 + 10);
+            // Queue-colored pass strips locate the transformed matrix, independently
+            // of its fit scale and translation. Select the final captured resource.
+            ImRect strips(ImVec2(FLT_MAX, FLT_MAX), ImVec2(-FLT_MAX, -FLT_MAX));
+            for (const auto& vertex : matrix->DrawList->VtxBuffer) {
+                if (vertex.col == IM_COL32(110, 170, 235, 255) || vertex.col == IM_COL32(177, 137, 233, 255) ||
+                    vertex.col == IM_COL32(90, 192, 160, 255)) { strips.Add(vertex.pos); }
+            }
+            if (strips.Min.x >= strips.Max.x || strips.Min.y >= strips.Max.y) { return "matrix pass header geometry is missing"; }
+            const float zoom = strips.GetHeight() / 5.0f;
+            const ImVec2 point(strips.Min.x + (float(passIndex) * 64 + 32) * zoom,
+                strips.Min.y + (12 + float(snapshot.resources.size() - 1) * 25 + 10) * zoom);
             auto& io = ImGui::GetIO();
             io.AddMousePosEvent(point.x, point.y); draw(viewer);
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); draw(viewer);

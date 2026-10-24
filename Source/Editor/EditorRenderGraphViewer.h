@@ -32,11 +32,18 @@ private:
     bool selectTab_ = false;
     bool showBarriers_ = true;
     bool onlyUsed_ = false;
-    bool fitQueues_ = true;
     int resourceType_ = 0;
     Tab tab_ = Tab::Resources;
     float columnWidth_ = 64.0f;
-    float queueZoom_ = 1.0f;
+    struct CanvasState {
+        bool fit = true;
+        float zoom = 1.0f;
+        float panX = 0.0f;
+        float panY = 0.0f;
+    };
+    CanvasState resourceCanvas_;
+    CanvasState queueCanvas_;
+    CanvasState memoryCanvas_;
     uint32_t selectedPassId_ = UINT32_MAX;
     uint64_t selectedResourceId_ = 0;
     char resourceFilter_[160]{};

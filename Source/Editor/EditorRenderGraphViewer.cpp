@@ -2,6 +2,7 @@
 #include "Editor/EditorRenderGraphViewer.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cctype>
@@ -279,14 +280,100 @@ void swatch(ImU32 color, const char* label)
     ImGui::Dummy(ImVec2(size, size)); ImGui::SameLine(0, 5); ImGui::TextUnformatted(label);
 }
 
+struct CanvasView {
+    ImVec2 origin;
+    float zoom;
+    float diagramScale;
+    bool canHover;
+
+    ImVec2 point(float x, float y) const
+    {
+        return ImVec2(origin.x + x * diagramScale, origin.y + y * diagramScale);
+    }
+
+    bool visible(ImVec2 min, ImVec2 max) const
+    {
+        return ImGui::IsRectVisible(min, max);
+    }
+
+    bool hovered(ImVec2 min, ImVec2 max) const
+    {
+        return canHover && ImGui::IsMouseHoveringRect(min, max);
+    }
+
+    void text(ImDrawList& draw, ImVec2 pos, ImU32 color, const char* value) const
+    {
+        draw.AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom, pos, color, value);
+    }
+};
+
+// All diagram views use one input transform for drawing and hit testing. The
+// returned child remains open until the caller has drawn its diagram.
+CanvasView beginCanvas(const char* child, const char* item, const char* fitLabel,
+    auto& state, float scale, ImVec2 contentSize, float heightFraction = 1.0f)
+{
+    constexpr float minimumZoom = 0.05f, maximumZoom = 8.0f;
+    if (ImGui::Button(fitLabel)) { state.fit = true; }
+    ImGui::SameLine();
+    const float previousZoom = state.zoom;
+    bool zoomEdited = false;
+    if (ImGui::Button("1:1")) { state.zoom = 1.0f; zoomEdited = true; }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130 * scale);
+    zoomEdited |= ImGui::DragFloat("Zoom", &state.zoom, 0.01f, minimumZoom, maximumZoom,
+        "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::TextDisabled("Wheel: zoom at cursor | Middle-drag: pan | %s: frame all", fitLabel);
+    const float height = std::max(1.0f, ImGui::GetContentRegionAvail().y * heightFraction);
+    ImGui::BeginChild(child, ImVec2(0, height), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const auto topLeft = ImGui::GetCursorScreenPos();
+    const ImVec2 size(std::max(ImGui::GetContentRegionAvail().x, 1.0f),
+        std::max(ImGui::GetContentRegionAvail().y, 1.0f));
+    ImGui::InvisibleButton(item, size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+    auto& io = ImGui::GetIO();
+    const auto zoomAt = [&](float oldZoom, ImVec2 anchor) {
+        const float ratio = state.zoom / oldZoom;
+        state.panX = anchor.x - (anchor.x - state.panX) * ratio;
+        state.panY = anchor.y - (anchor.y - state.panY) * ratio;
+        state.fit = false;
+    };
+    const ImVec2 extent(std::max(contentSize.x * scale, 1.0f), std::max(contentSize.y * scale, 1.0f));
+    if (zoomEdited) { zoomAt(previousZoom, ImVec2(size.x * 0.5f, size.y * 0.5f)); }
+    if (state.fit) {
+        state.zoom = std::clamp(std::min(std::max(size.x - 24 * scale, 1.0f) / extent.x,
+            std::max(size.y - 24 * scale, 1.0f) / extent.y), minimumZoom, 1.0f);
+        state.panX = (size.x - extent.x * state.zoom) * 0.5f;
+        state.panY = (size.y - extent.y * state.zoom) * 0.5f;
+        state.fit = false;
+    }
+    if (hovered && io.MouseWheel != 0.0f) {
+        const float oldZoom = state.zoom;
+        state.zoom = std::clamp(state.zoom * std::pow(1.15f, io.MouseWheel), minimumZoom, maximumZoom);
+        zoomAt(oldZoom, ImVec2(io.MousePos.x - topLeft.x, io.MousePos.y - topLeft.y));
+    }
+    const bool panning = active && ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+    if (panning) {
+        if (!ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
+            state.panX += io.MouseDelta.x;
+            state.panY += io.MouseDelta.y;
+        }
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+    return {ImVec2(topLeft.x + state.panX, topLeft.y + state.panY), state.zoom, scale * state.zoom, hovered && !panning};
+}
+
 // Build text inside the current visible area before rotating its vertices. The
 // final draw command retains the header clip, including the frozen name column.
-void angledText(ImDrawList& draw, ImVec2 origin, const char* text, ImVec2 clipMin, ImVec2 clipMax)
+void angledText(ImDrawList& draw, ImVec2 origin, const char* text, ImVec2 clipMin, ImVec2 clipMax, float zoom)
 {
-    draw.PushClipRect(clipMin, clipMax, false);
-    const ImVec2 base(clipMin.x + 1, clipMin.y + 1);
+    draw.PushClipRect(clipMin, clipMax, true);
+    const auto clip = draw.GetClipRectMin();
+    const ImVec2 base(clip.x + 1, clip.y + 1);
     const int first = draw.VtxBuffer.Size;
-    draw.AddText(base, ImGui::GetColorU32(ImGuiCol_Text), text);
+    draw.AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom, base, ImGui::GetColorU32(ImGuiCol_Text), text);
     constexpr float c = 0.5f, s = -0.8660254f;
     for (int i = first; i < draw.VtxBuffer.Size; ++i) {
         const auto p = draw.VtxBuffer[i].pos;
@@ -424,6 +511,7 @@ void RenderGraphExecutionViewer::update(std::shared_ptr<const Snapshot> snapshot
     const auto selectedName = previousResource ? previousResource->name : std::string();
     snapshot_ = std::move(snapshot);
     captureNext_ = false;
+    if (changed) { resourceCanvas_.fit = queueCanvas_.fit = memoryCanvas_.fit = true; }
     if (changed || !findPass(*snapshot_, selectedPassId_)) { selectedPassId_ = UINT32_MAX; }
     if (changed || !findResource(*snapshot_, selectedResourceId_)) {
         selectedResourceId_ = 0;
@@ -496,44 +584,13 @@ void RenderGraphExecutionViewer::drawResources(float scale)
     ImGui::SameLine(); ImGui::SetNextItemWidth(100 * scale); ImGui::SliderFloat("Columns", &columnWidth_, 32, 120, "%.0f");
     ImGui::TextDisabled("Pass order, not GPU time. Gray span = declared use interval, not allocation lifetime.");
     if (passes.empty()) { ImGui::TextDisabled("No passes match the filter."); return; }
-    // ImGui tables support up to 512 columns; make truncation explicit.
     if (passes.size() > 500) { passes.resize(500); ImGui::TextDisabled("Showing first 500 matching passes. Narrow the search."); }
-    const float nameWidth = 238 * scale, cellWidth = columnWidth_ * scale;
-    const auto min = ImGui::GetCursorScreenPos();
-    const auto available = ImGui::GetContentRegionAvail();
-    if (!ImGui::BeginTable("ResourcePassMatrix", int(passes.size() + 1), ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit, available)) { return; }
-    ImGui::TableSetupColumn("Resource", ImGuiTableColumnFlags_WidthFixed, nameWidth);
-    for (const auto* pass : passes) { ImGui::TableSetupColumn(pass->name.c_str(), ImGuiTableColumnFlags_WidthFixed, cellWidth); }
-    ImGui::TableSetupScrollFreeze(1, 1);
-    ImGui::TableNextRow(ImGuiTableRowFlags_Headers, 140 * scale);
-    ImGui::TableSetColumnIndex(0);
-    ImGui::Text("%zu resources", snapshot_->resources.size());
-    ImGui::Text("%zu passes", passes.size());
-    ImGui::TextDisabled("Click a cell to inspect");
-    for (size_t i = 0; i < passes.size(); ++i) {
-        if (!ImGui::TableSetColumnIndex(int(i + 1))) { continue; }
-        const auto& pass = *passes[i];
-        ImGui::PushID(int(pass.id));
-        const auto p = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("Pass", ImVec2(cellWidth, 132 * scale));
-        auto* draw = ImGui::GetWindowDrawList();
-        if (selectedPassId_ == pass.id) {
-            draw->AddRectFilled(p, ImVec2(p.x + cellWidth, p.y + 132 * scale), IM_COL32(90, 105, 120, 90));
-        }
-        std::string label = pass.name.size() > 25 ? pass.name.substr(0, 23) + ".." : pass.name;
-        angledText(*draw, ImVec2(p.x + 4 * scale, p.y + 119 * scale), label.c_str(),
-            ImVec2(min.x + nameWidth + 8 * scale, min.y), ImVec2(min.x + available.x, min.y + 140 * scale));
-        draw->AddRectFilled(ImVec2(p.x, p.y + 128 * scale), ImVec2(p.x + cellWidth, p.y + 133 * scale), queueColor(pass.logicalQueue));
-        if (ImGui::IsItemClicked()) { selectedPassId_ = pass.id; }
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip(); ImGui::TextUnformatted(pass.name.c_str()); ImGui::TextUnformatted(pass.type.c_str());
-            ImGui::Text("%s; %s", queueName(pass.logicalQueue), pass.recorded ? "recorded" : "planned");
-            if (pass.actualQueueId != UINT32_MAX) { ImGui::Text("Actual queue Q%u", pass.actualQueueId); }
-            ImGui::EndTooltip();
-        }
-        ImGui::PopID();
-    }
+    struct Row {
+        const Resource* resource;
+        std::vector<Cell> cells;
+        size_t first, last;
+    };
+    std::vector<Row> rows;
     for (const auto& resource : snapshot_->resources) {
         bool match = matches(resource.name, resourceFilter_);
         for (const auto& alias : resource.aliases) { match |= matches(alias, resourceFilter_); }
@@ -541,64 +598,108 @@ void RenderGraphExecutionViewer::drawResources(float scale)
             (resourceType_ == 2 && resource.type != RenderGraphResourceType::Buffer) ||
             (resourceType_ == 3 && !resource.privateResource) ||
             (resourceType_ == 4 && resource.type != RenderGraphResourceType::AccelerationStructure)) { continue; }
-        std::vector<Cell> cells;
-        size_t first = passes.size(), last = 0;
+        Row row{&resource, {}, passes.size(), 0};
+        row.cells.reserve(passes.size());
         for (size_t i = 0; i < passes.size(); ++i) {
-            const auto cell = cellFor(*passes[i], resource.id); cells.push_back(cell);
-            if (cell.read || cell.write || cell.barriers) { first = std::min(first, i); last = i; }
+            const auto cell = cellFor(*passes[i], resource.id); row.cells.push_back(cell);
+            if (cell.read || cell.write || cell.barriers) { row.first = std::min(row.first, i); row.last = i; }
         }
-        if (onlyUsed_ && first == passes.size()) { continue; }
-        ImGui::PushID(resource.name.c_str());
-        ImGui::TableNextRow(ImGuiTableRowFlags_None, 25 * scale);
-        ImGui::TableSetColumnIndex(0);
-        const auto label = std::string(resource.type == RenderGraphResourceType::Buffer ? "B  " :
-            resource.type == RenderGraphResourceType::AccelerationStructure ? "AS  " : "T  ") + resource.name;
-        if (ImGui::Selectable(label.c_str(), selectedResourceId_ == resource.id, ImGuiSelectableFlags_None,
-            ImVec2(nameWidth - 10 * scale, 21 * scale))) { selectedResourceId_ = resource.id; }
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip(); ImGui::TextUnformatted(resource.name.c_str());
-            ImGui::Text("%s | %s", resource.privateResource ? "Private import" : "Graph resource",
-                resource.memory.known ? bytesText(resource.memory.sizeBytes).c_str() : "Memory unknown");
-            for (const auto& alias : resource.aliases) { ImGui::TextUnformatted(alias.c_str()); }
-            ImGui::EndTooltip();
+        if (!onlyUsed_ || row.first != passes.size()) { rows.push_back(std::move(row)); }
+    }
+    constexpr float nameWidth = 238, headerHeight = 140, rowHeight = 25;
+    const float cellWidth = columnWidth_;
+    const float totalWidth = nameWidth + float(passes.size()) * cellWidth;
+    const auto canvas = beginCanvas("ResourcePassMatrix", "ResourceCanvas", "Fit matrix", resourceCanvas_, scale,
+        ImVec2(totalWidth, headerHeight + float(rows.size()) * rowHeight));
+    const float unit = canvas.diagramScale;
+    auto* draw = ImGui::GetWindowDrawList();
+    char counts[128];
+    std::snprintf(counts, sizeof(counts), "%zu resources / %zu passes", rows.size(), passes.size());
+    canvas.text(*draw, canvas.point(4, 8), ImGui::GetColorU32(ImGuiCol_Text), counts);
+    canvas.text(*draw, canvas.point(4, 28), ImGui::GetColorU32(ImGuiCol_TextDisabled), "Click a cell to inspect");
+    for (size_t i = 0; i < passes.size(); ++i) {
+        const auto& pass = *passes[i];
+        const float x = nameWidth + float(i) * cellWidth;
+        const auto p = canvas.point(x, 0), end = canvas.point(x + cellWidth, headerHeight);
+        if (!canvas.visible(p, end)) { continue; }
+        if (selectedPassId_ == pass.id) { draw->AddRectFilled(p, end, IM_COL32(90, 105, 120, 90)); }
+        const std::string label = pass.name.size() > 25 ? pass.name.substr(0, 23) + ".." : pass.name;
+        angledText(*draw, canvas.point(x + 4, 119), label.c_str(),
+            canvas.point(nameWidth, 0), canvas.point(totalWidth, headerHeight), canvas.zoom);
+        draw->AddRectFilled(canvas.point(x, 128), canvas.point(x + cellWidth, 133), queueColor(pass.logicalQueue));
+        if (canvas.hovered(p, end)) {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { selectedPassId_ = pass.id; }
+            ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+            if (ImGui::BeginTooltip()) {
+                ImGui::TextUnformatted(pass.name.c_str()); ImGui::TextUnformatted(pass.type.c_str());
+                ImGui::Text("%s; %s", queueName(pass.logicalQueue), pass.recorded ? "recorded" : "planned");
+                if (pass.actualQueueId != UINT32_MAX) { ImGui::Text("Actual queue Q%u", pass.actualQueueId); }
+                ImGui::EndTooltip();
+            }
+        }
+    }
+    for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+        const auto& row = rows[rowIndex];
+        const auto& resource = *row.resource;
+        const float y = headerHeight + float(rowIndex) * rowHeight;
+        if (!canvas.visible(canvas.point(0, y), canvas.point(totalWidth, y + rowHeight))) { continue; }
+        draw->AddRectFilled(canvas.point(0, y), canvas.point(totalWidth, y + rowHeight),
+            rowIndex % 2 == 0 ? IM_COL32(50, 52, 57, 100) : IM_COL32(42, 45, 50, 100));
+        const auto nameMin = canvas.point(0, y), nameMax = canvas.point(nameWidth, y + 21);
+        if (canvas.visible(nameMin, nameMax)) {
+            if (selectedResourceId_ == resource.id) { draw->AddRectFilled(nameMin, nameMax, IM_COL32(90, 105, 120, 120)); }
+            const auto label = std::string(resource.type == RenderGraphResourceType::Buffer ? "B  " :
+                resource.type == RenderGraphResourceType::AccelerationStructure ? "AS  " : "T  ") + resource.name;
+            draw->PushClipRect(nameMin, nameMax, true);
+            canvas.text(*draw, canvas.point(4, y + 2), ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+            draw->PopClipRect();
+            if (canvas.hovered(nameMin, nameMax)) {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { selectedResourceId_ = resource.id; }
+                ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+                if (ImGui::BeginTooltip()) {
+                    ImGui::TextUnformatted(resource.name.c_str());
+                    ImGui::Text("%s | %s", resource.privateResource ? "Private import" : "Graph resource",
+                        resource.memory.known ? bytesText(resource.memory.sizeBytes).c_str() : "Memory unknown");
+                    for (const auto& alias : resource.aliases) { ImGui::TextUnformatted(alias.c_str()); }
+                    ImGui::EndTooltip();
+                }
+            }
         }
         for (size_t i = 0; i < passes.size(); ++i) {
-            if (!ImGui::TableSetColumnIndex(int(i + 1))) { continue; }
-            ImGui::PushID(int(i));
-            const auto p = ImGui::GetCursorScreenPos();
-            const ImVec2 end(p.x + cellWidth, p.y + 21 * scale);
-            ImGui::InvisibleButton("Use", ImVec2(cellWidth, 21 * scale));
-            auto* draw = ImGui::GetWindowDrawList();
-            const auto cell = cells[i];
-            if (i >= first && i <= last) { draw->AddRectFilled(p, end, IM_COL32(86, 89, 94, 160)); }
+            const float x = nameWidth + float(i) * cellWidth;
+            const auto p = canvas.point(x, y), end = canvas.point(x + cellWidth, y + 21);
+            if (!canvas.visible(p, end)) { continue; }
+            const auto cell = row.cells[i];
+            if (i >= row.first && i <= row.last) { draw->AddRectFilled(p, end, IM_COL32(86, 89, 94, 160)); }
             if (cell.read || cell.write) {
                 if (cell.read && cell.write) {
                     draw->AddTriangleFilled(p, ImVec2(end.x, p.y), ImVec2(p.x, end.y), kRead);
                     draw->AddTriangleFilled(ImVec2(end.x, p.y), end, ImVec2(p.x, end.y), kWrite);
                 } else { draw->AddRectFilled(p, end, cell.write ? kWrite : kRead); }
-                draw->AddText(ImVec2(p.x + cellWidth * 0.5f - (cell.read && cell.write ? 9 : 4), p.y + 2 * scale),
+                canvas.text(*draw, canvas.point(x + cellWidth * 0.5f - (cell.read && cell.write ? 9 : 4), y + 2),
                     IM_COL32(20, 25, 30, 255), cell.read && cell.write ? "RW" : cell.write ? "W" : "R");
             }
             if (showBarriers_ && cell.barriers) {
-                const float x = p.x + 4 * scale, y = p.y + 10 * scale, r = 4 * scale;
-                draw->AddQuadFilled(ImVec2(x, y-r), ImVec2(x+r, y), ImVec2(x, y+r), ImVec2(x-r, y), cell.layout ? kLayout : kBarrier);
+                const float bx = p.x + 4 * unit, by = p.y + 10 * unit, r = 4 * unit;
+                draw->AddQuadFilled(ImVec2(bx, by-r), ImVec2(bx+r, by), ImVec2(bx, by+r), ImVec2(bx-r, by), cell.layout ? kLayout : kBarrier);
             }
             if (selectedPassId_ == passes[i]->id && selectedResourceId_ == resource.id) {
                 draw->AddRect(p, end, IM_COL32(255, 255, 255, 255), 0.0f, 2.0f, ImDrawFlags_None);
             }
-            if (ImGui::IsItemClicked()) { selectedResourceId_ = resource.id; selectedPassId_ = passes[i]->id; }
-            if (ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip(); ImGui::Text("%s / %s", resource.name.c_str(), passes[i]->name.c_str());
-                ImGui::Text("%s | %u planned barrier boundaries", cell.read && cell.write ? "Read + write" :
-                    cell.write ? "Write" : cell.read ? "Read" : "No declared data access", cell.barriers);
-                ImGui::TextDisabled("Includes boundary declarations and captured internal stages.");
-                ImGui::EndTooltip();
+            if (canvas.hovered(p, end)) {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { selectedResourceId_ = resource.id; selectedPassId_ = passes[i]->id; }
+                ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+                if (ImGui::BeginTooltip()) {
+                    ImGui::Text("%s / %s", resource.name.c_str(), passes[i]->name.c_str());
+                    ImGui::Text("%s | %u planned barrier boundaries", cell.read && cell.write ? "Read + write" :
+                        cell.write ? "Write" : cell.read ? "Read" : "No declared data access", cell.barriers);
+                    ImGui::TextDisabled("Includes boundary declarations and captured internal stages.");
+                    ImGui::EndTooltip();
+                }
             }
-            ImGui::PopID();
         }
-        ImGui::PopID();
     }
-    ImGui::EndTable();
+    ImGui::EndChild();
 }
 
 void RenderGraphExecutionViewer::drawQueues(float scale)
@@ -622,17 +723,12 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
         if (lastInQueue.contains(segment.queueId)) { value = std::max(value, lastInQueue[segment.queueId] + 1); }
         depth[segment.id] = value; lastInQueue[segment.queueId] = value; maximum = std::max(maximum, value);
     }
-    ImGui::Checkbox("Fit topology", &fitQueues_); ImGui::SameLine();
-    ImGui::BeginDisabled(fitQueues_);
-    ImGui::SetNextItemWidth(130 * scale); ImGui::SliderFloat("Zoom", &queueZoom_, 0.35f, 1.5f, "%.2fx");
-    ImGui::EndDisabled();
-    const float zoom = fitQueues_ ? std::clamp((ImGui::GetContentRegionAvail().x - 20 * scale) /
-        ((115 + float(maximum + 1) * 152) * scale), 0.35f, 1.0f) : queueZoom_;
-    const float diagramScale = scale * zoom;
+    const auto canvas = beginCanvas("QueueTopology", "QueueCanvas", "Fit topology", queueCanvas_, scale,
+        ImVec2(115 + float(maximum + 1) * 152, std::max(float(lanes.size()) * 108, 1.0f)), 0.60f);
+    const float zoom = canvas.zoom;
+    const float diagramScale = canvas.diagramScale;
     const float step = 152 * diagramScale, laneHeight = 108 * diagramScale, left = 115 * diagramScale;
-    ImGui::BeginChild("QueueTopology", ImVec2(0, std::min(ImGui::GetContentRegionAvail().y * 0.60f,
-        std::max(180 * diagramScale, float(lanes.size()) * laneHeight + 30 * diagramScale))), true, ImGuiWindowFlags_HorizontalScrollbar);
-    const auto origin = ImGui::GetCursorScreenPos();
+    const ImVec2 origin = canvas.origin;
     auto* draw = ImGui::GetWindowDrawList();
     const float width = left + float(maximum + 1) * step;
     for (const auto& queue : snapshot_->queues) {
@@ -687,19 +783,19 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
         draw->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom, ImVec2(p.x + 6 * diagramScale, p.y + 26 * diagramScale), ImGui::GetColorU32(ImGuiCol_Text), name.c_str());
         draw->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom, ImVec2(p.x + 6 * diagramScale, p.y + 47 * diagramScale), ImGui::GetColorU32(ImGuiCol_TextDisabled),
             segment.completed ? "GPU complete" : segment.accepted ? "Accepted" : segment.recorded ? "Recorded" : "Planned");
-        ImGui::SetCursorScreenPos(p); ImGui::PushID(int(segment.id));
-        ImGui::InvisibleButton("Segment", ImVec2(132 * diagramScale, 70 * diagramScale));
-        if (ImGui::IsItemClicked() && pass) { selectedPassId_ = pass->id; }
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip(); ImGui::Text("S%u  %s", segment.id, roleName(segment.role));
-            if (pass) { ImGui::TextUnformatted(pass->name.c_str()); }
-            ImGui::Text("Q%u | %zu predecessors", segment.queueId, segment.predecessors.size());
-            if (!segment.completionKnown) { ImGui::TextDisabled("GPU completion unavailable in this capture."); }
-            ImGui::EndTooltip();
+        const bool hovered = canvas.hovered(p, ImVec2(p.x + 132 * diagramScale, p.y + 70 * diagramScale));
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && pass) { selectedPassId_ = pass->id; }
+        if (hovered) {
+            ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+            if (ImGui::BeginTooltip()) {
+                ImGui::Text("S%u  %s", segment.id, roleName(segment.role));
+                if (pass) { ImGui::TextUnformatted(pass->name.c_str()); }
+                ImGui::Text("Q%u | %zu predecessors", segment.queueId, segment.predecessors.size());
+                if (!segment.completionKnown) { ImGui::TextDisabled("GPU completion unavailable in this capture."); }
+                ImGui::EndTooltip();
+            }
         }
-        ImGui::PopID();
     }
-    ImGui::SetCursorScreenPos(origin); ImGui::Dummy(ImVec2(width, float(lanes.size()) * laneHeight));
     ImGui::EndChild();
     if (ImGui::BeginTable("SubmissionBatches", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_ScrollY, ImVec2(0, 0))) {
@@ -720,6 +816,9 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
 
 void RenderGraphExecutionViewer::drawMemory(float scale)
 {
+    // Keep allocation statistics scrollable without crowding out the diagram.
+    ImGui::BeginChild("MemorySummary", ImVec2(0, std::max(1.0f,
+        std::min(300 * scale, ImGui::GetContentRegionAvail().y * 0.40f))), false);
     const auto& textureMemory = snapshot_->textureMemory;
     drawAliasMemoryStats(textureMemory, "texture", "textures", textureMemory.textureCount,
         textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount,
@@ -755,8 +854,15 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
     ImGui::TextWrapped("Actual memory block + byte ranges. Shared block does not imply aliasing; only overlapping ranges do.");
     ImGui::TextDisabled("Capture allocations only; excludes opaque subsystem memory and other in-flight slots. Unknown: %zu", unknown);
     if (aliasPairs == 0) { ImGui::TextDisabled("No physical memory aliasing observed. Graph field aliases share one resource."); }
-    ImGui::BeginChild("MemoryBlocks", ImVec2(0, 0), true);
+    ImGui::EndChild();
+    struct Block {
+        size_t index;
+        std::vector<const Resource*> resources;
+        uint64_t extent;
+    };
+    std::vector<Block> visibleBlocks;
     size_t blockIndex = 0;
+    float height = 0;
     for (auto& [block, resources] : blocks) {
         ++blockIndex;
         std::sort(resources.begin(), resources.end(), [](auto* a, auto* b) { return a->memory.offsetBytes < b->memory.offsetBytes; });
@@ -770,41 +876,63 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
                 (resourceType_ != 2 || r->type == RenderGraphResourceType::Buffer) && (resourceType_ != 3 || r->privateResource) &&
                 (resourceType_ != 4 || r->type == RenderGraphResourceType::AccelerationStructure);
         }
-        if (!visible) { continue; }
-        ImGui::PushID(int(blockIndex));
-        ImGui::Text("Block %zu | heap %u / type %u | %zu native resources", blockIndex, resources.front()->memory.heapIndex,
-            resources.front()->memory.memoryTypeIndex, resources.size());
-        ImGui::TextDisabled("0 .. %s observed span (not total block capacity)", bytesText(extent).c_str());
-        const float width = std::max(50.0f, ImGui::GetContentRegionAvail().x - 6 * scale);
-        for (const auto* resource : resources) {
-            const auto p = ImGui::GetCursorScreenPos();
-            const float x0 = float(double(resource->memory.offsetBytes) / double(extent)) * width;
-            const float x1 = float(double(resource->memory.offsetBytes + resource->memory.sizeBytes) / double(extent)) * width;
+        if (visible) {
+            height += 64 + float(resources.size()) * 32;
+            visibleBlocks.push_back({blockIndex, resources, extent});
+        }
+    }
+    constexpr float width = 900;
+    const auto canvas = beginCanvas("MemoryBlocks", "MemoryCanvas", "Fit memory", memoryCanvas_, scale,
+        ImVec2(width, std::max(height, 48.0f)));
+    auto* draw = ImGui::GetWindowDrawList();
+    float y = 0;
+    if (visibleBlocks.empty()) {
+        canvas.text(*draw, canvas.point(0, 0), ImGui::GetColorU32(ImGuiCol_TextDisabled), "No memory blocks match the filter.");
+    }
+    for (const auto& block : visibleBlocks) {
+        char label[160];
+        std::snprintf(label, sizeof(label), "Block %zu | heap %u / type %u | %zu native resources", block.index,
+            block.resources.front()->memory.heapIndex, block.resources.front()->memory.memoryTypeIndex, block.resources.size());
+        canvas.text(*draw, canvas.point(0, y), ImGui::GetColorU32(ImGuiCol_Text), label);
+        const auto span = "0 .. " + bytesText(block.extent) + " observed span (not total block capacity)";
+        canvas.text(*draw, canvas.point(0, y + 20), ImGui::GetColorU32(ImGuiCol_TextDisabled), span.c_str());
+        y += 48;
+        for (const auto* resource : block.resources) {
+            const auto p = canvas.point(0, y), end = canvas.point(width, y + 26);
+            y += 32;
+            if (!canvas.visible(p, end)) { continue; }
+            const float x0 = float(double(resource->memory.offsetBytes) / double(block.extent)) * width;
+            const float x1 = float(double(resource->memory.offsetBytes + resource->memory.sizeBytes) / double(block.extent)) * width;
             bool alias = false;
-            for (const auto* other : resources) { alias |= overlaps(*resource, *other); }
-            auto* draw = ImGui::GetWindowDrawList();
-            draw->AddRectFilled(p, ImVec2(p.x + width, p.y + 26 * scale), IM_COL32(42, 45, 50, 255), 2);
-            draw->AddRectFilled(ImVec2(p.x + x0, p.y), ImVec2(p.x + std::max(x1, x0 + 2), p.y + 26 * scale),
+            for (const auto* other : block.resources) { alias |= overlaps(*resource, *other); }
+            draw->AddRectFilled(p, end, IM_COL32(42, 45, 50, 255), 2 * canvas.diagramScale);
+            draw->AddRectFilled(ImVec2(p.x + x0 * canvas.diagramScale, p.y),
+                ImVec2(p.x + std::max(x1, x0 + 2) * canvas.diagramScale, end.y),
                 alias ? IM_COL32(180, 71, 60, 255) :
                 resource->type == RenderGraphResourceType::AccelerationStructure ? IM_COL32(129, 91, 162, 255) :
-                resource->type == RenderGraphResourceType::Buffer ? IM_COL32(73, 111, 151, 255) : IM_COL32(66, 126, 119, 255), 2);
-            draw->AddText(ImVec2(p.x + 5 * scale, p.y + 5 * scale), IM_COL32(243, 244, 246, 255), resource->name.c_str());
-            if (selectedResourceId_ == resource->id) { draw->AddRect(p, ImVec2(p.x + width, p.y + 26 * scale), kBarrier, 2.0f, 2.0f, ImDrawFlags_None); }
-            ImGui::PushID(resource->name.c_str());
-            ImGui::InvisibleButton("Allocation", ImVec2(width, 28 * scale));
-            if (ImGui::IsItemClicked()) { selectedResourceId_ = resource->id; }
-            if (ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip(); ImGui::TextUnformatted(resource->name.c_str());
-                ImGui::Text("Allocation #%llu | offset %llu | size %s", static_cast<unsigned long long>(resource->memory.allocationId),
-                    static_cast<unsigned long long>(resource->memory.offsetBytes), bytesText(resource->memory.sizeBytes).c_str());
-                ImGui::Text("Backing #%llu | capacity %s", static_cast<unsigned long long>(resource->memory.backingAllocationId),
-                    bytesText(resource->memory.backingSizeBytes).c_str());
-                ImGui::TextUnformatted(alias ? "Physical range overlaps another resource." : "No overlapping resource range.");
-                ImGui::EndTooltip();
+                resource->type == RenderGraphResourceType::Buffer ? IM_COL32(73, 111, 151, 255) : IM_COL32(66, 126, 119, 255),
+                2 * canvas.diagramScale);
+            draw->PushClipRect(p, end, true);
+            canvas.text(*draw, ImVec2(p.x + 5 * canvas.diagramScale, p.y + 5 * canvas.diagramScale),
+                IM_COL32(243, 244, 246, 255), resource->name.c_str());
+            draw->PopClipRect();
+            if (selectedResourceId_ == resource->id) { draw->AddRect(p, end, kBarrier, 2.0f, 2.0f, ImDrawFlags_None); }
+            if (canvas.hovered(p, end)) {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { selectedResourceId_ = resource->id; }
+                ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+                if (ImGui::BeginTooltip()) {
+                    ImGui::TextUnformatted(resource->name.c_str());
+                    ImGui::Text("Allocation #%llu | offset %llu | size %s", static_cast<unsigned long long>(resource->memory.allocationId),
+                        static_cast<unsigned long long>(resource->memory.offsetBytes), bytesText(resource->memory.sizeBytes).c_str());
+                    ImGui::Text("Backing #%llu | capacity %s", static_cast<unsigned long long>(resource->memory.backingAllocationId),
+                        bytesText(resource->memory.backingSizeBytes).c_str());
+                    ImGui::TextUnformatted(alias ? "Physical range overlaps another resource." : "No overlapping resource range.");
+                    ImGui::EndTooltip();
+                }
             }
-            ImGui::PopID();
         }
-        ImGui::Spacing(); ImGui::Separator(); ImGui::PopID();
+        draw->AddLine(canvas.point(0, y + 8), canvas.point(width, y + 8), ImGui::GetColorU32(ImGuiCol_Separator));
+        y += 16;
     }
     ImGui::EndChild();
 }

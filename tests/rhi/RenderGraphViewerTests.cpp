@@ -16,9 +16,275 @@
 #include <cstring>
 #include <fstream>
 #include <set>
+#include <stdexcept>
+#include <cfloat>
 
 namespace metallic::tests {
 namespace {
+
+class RenderGraphViewerCanvasTest final : public RHITest {
+public:
+    RenderGraphViewerCanvasTest() { type = RHITestType::Command; name = "render_graph_viewer_canvas_navigation"; }
+    RHITestResult run(RHITestContext& test) override
+    {
+        auto* previous = ImGui::GetCurrentContext();
+        auto* context = ImGui::CreateContext();
+        struct Cleanup {
+            ImGuiContext* context;
+            ImGuiContext* previous;
+            ~Cleanup() { ImGui::DestroyContext(context); ImGui::SetCurrentContext(previous); }
+        } cleanup{context, previous};
+        try {
+            const auto require = [](bool condition, const char* message) {
+                if (!condition) { throw std::runtime_error(message); }
+            };
+            auto& io = ImGui::GetIO();
+            io.IniFilename = nullptr; io.LogFilename = nullptr;
+            io.DisplaySize = ImVec2(1400, 900); io.DeltaTime = 1.f / 60;
+            unsigned char* atlas = nullptr; int atlasWidth = 0, atlasHeight = 0;
+            io.Fonts->GetTexDataAsRGBA32(&atlas, &atlasWidth, &atlasHeight);
+            io.Fonts->SetTexID(ImTextureID(1));
+            auto snapshot = std::make_shared<render::RenderGraphExecutionSnapshot>();
+            snapshot->graphName = "Canvas navigation";
+            snapshot->graphGeneration = 1; snapshot->executionId = 1;
+            snapshot->queues.push_back({.id = 0, .type = render::QueueType::Graphics});
+            snapshot->passes.push_back({.id = 42, .name = "Canvas pass", .type = "Fixture", .actualQueueId = 0});
+            snapshot->segments.push_back({.id = 7, .passId = 42, .queueId = 0, .recorded = true, .accepted = true});
+            editor::RenderGraphExecutionViewer viewer;
+            viewer.update(snapshot);
+            viewer.setTab(editor::RenderGraphExecutionViewer::Tab::Queues);
+            const auto draw = [&] {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowPos(ImVec2(0, 0));
+                ImGui::SetNextWindowSize(io.DisplaySize);
+                ImGui::Begin("Canvas test", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
+                viewer.draw();
+                ImGui::End();
+                ImGui::Render();
+            };
+            const auto canvas = [&]() -> ImGuiWindow* {
+                for (auto* window : context->Windows) {
+                    if (window->Active && std::string_view(window->Name).find("QueueTopology") != std::string_view::npos) {
+                        return window;
+                    }
+                }
+                throw std::runtime_error("Missing queue canvas");
+            };
+            const auto nodeBounds = [&] {
+                ImRect result(ImVec2(FLT_MAX, FLT_MAX), ImVec2(-FLT_MAX, -FLT_MAX));
+                for (const auto& vertex : canvas()->DrawList->VtxBuffer) {
+                    if (vertex.col == IM_COL32(44, 48, 57, 255)) { result.Add(vertex.pos); }
+                }
+                require(result.Min.x < result.Max.x && result.Min.y < result.Max.y, "Missing canvas node geometry");
+                return result;
+            };
+            const auto close = [](float a, float b) { return std::abs(a - b) < 1.0f; };
+            const auto same = [&](const ImRect& a, const ImRect& b) {
+                return close(a.Min.x, b.Min.x) && close(a.Min.y, b.Min.y) &&
+                    close(a.Max.x, b.Max.x) && close(a.Max.y, b.Max.y);
+            };
+            const auto move = [&](ImVec2 point) { io.AddMousePosEvent(point.x, point.y); draw(); };
+            const auto click = [&](ImVec2 point) {
+                move(point);
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); draw();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); draw();
+            };
+            const auto toolbarButton = [&](const char* label) {
+                auto* host = canvas()->ParentWindow;
+                const auto& style = ImGui::GetStyle();
+                const float fitWidth = ImGui::CalcTextSize("Fit topology").x + 2 * style.FramePadding.x;
+                const bool fit = std::string_view(label) == "Fit topology";
+                const float width = ImGui::CalcTextSize(label).x + 2 * style.FramePadding.x;
+                // The toolbar sits directly above the one-line canvas navigation hint.
+                const ImVec2 point(host->WorkRect.Min.x + (fit ? 0 : fitWidth + style.ItemSpacing.x) + width * .5f,
+                    canvas()->Pos.y - style.ItemSpacing.y * 2 - ImGui::GetTextLineHeight() - ImGui::GetFrameHeight() * .5f);
+                click(point);
+            };
+            for (int i = 0; i < 4; ++i) { draw(); }
+            const ImRect fitted = nodeBounds();
+            require(!canvas()->ScrollbarX && !canvas()->ScrollbarY, "Canvas still relies on scrollbars");
+            const ImVec2 anchor(fitted.Min.x + fitted.GetWidth() * .3f, fitted.Min.y + fitted.GetHeight() * .4f);
+            move(anchor);
+            io.AddMouseWheelEvent(0, 2); draw();
+            const ImRect zoomed = nodeBounds();
+            const float ratio = zoomed.GetWidth() / fitted.GetWidth();
+            require(ratio > 1.05f, "Wheel did not zoom the canvas");
+            require(close(zoomed.Min.x, anchor.x + (fitted.Min.x - anchor.x) * ratio) &&
+                close(zoomed.Min.y, anchor.y + (fitted.Min.y - anchor.y) * ratio), "Zoom drifted away from the mouse anchor");
+            const auto stable = nodeBounds();
+            auto next = std::make_shared<render::RenderGraphExecutionSnapshot>(*snapshot);
+            ++next->executionId; viewer.update(next); draw();
+            require(same(stable, nodeBounds()), "Live capture update reset the canvas view");
+            // Entering the canvas and pressing in one input batch must not apply
+            // motion accumulated before the drag was captured.
+            move(ImVec2(anchor.x - 20, anchor.y - 10));
+            io.AddMousePosEvent(anchor.x, anchor.y);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true); draw();
+            require(same(stable, nodeBounds()), "Middle press applied motion from before drag capture");
+            move(ImVec2(anchor.x + 55, anchor.y + 25));
+            const auto panned = nodeBounds();
+            require(close(panned.Min.x - zoomed.Min.x, 55) && close(panned.Min.y - zoomed.Min.y, 25),
+                "Middle drag did not translate node geometry");
+            const ImVec2 outside(canvas()->InnerRect.Max.x + 20, canvas()->InnerRect.Max.y + 20);
+            move(outside);
+            const auto outsideDrag = nodeBounds();
+            require(!same(outsideDrag, panned), "Canvas drag stopped at its boundary");
+            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false); draw();
+            move(anchor);
+            require(same(outsideDrag, nodeBounds()), "Released middle drag remained active outside the canvas");
+            toolbarButton("Fit topology");
+            require(same(fitted, nodeBounds()), "Fit topology did not restore the complete view");
+            move(anchor); io.AddMouseWheelEvent(0, 1); draw();
+            const auto selectable = nodeBounds();
+            click(selectable.GetCenter());
+            require(viewer.selectedPassId() == 42, "Zoomed node hit test selected the wrong pass");
+            toolbarButton("1:1");
+            require(std::abs(nodeBounds().GetWidth() - 132) < 2, "1:1 did not restore native node scale");
+            // Wheel events outside the canvas must not change the graph camera.
+            const auto native = nodeBounds();
+            move(ImVec2(io.DisplaySize.x - 30, 50)); io.AddMouseWheelEvent(0, 2); draw();
+            require(same(native, nodeBounds()), "Wheel outside the canvas changed graph zoom");
+            std::filesystem::create_directories(test.outputDirectory);
+            std::string message;
+            if (!saveImGuiTestDrawDataPng(*ImGui::GetDrawData(), atlas, atlasWidth, atlasHeight, 1400, 900,
+                    test.outputDirectory / "render_graph_canvas_navigation.png", message)) {
+                return RHITestResult::fail(message);
+            }
+            return RHITestResult::pass("Cursor-anchored wheel zoom, captured middle pan, transformed hit testing, live updates and fit/native reset");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RenderGraphViewerCanvasTest);
+
+class RenderGraphResourceMemoryCanvasTest final : public RHITest {
+public:
+    RenderGraphResourceMemoryCanvasTest() { type = RHITestType::Command; name = "render_graph_resource_memory_canvas_navigation"; }
+    RHITestResult run(RHITestContext& test) override
+    {
+        auto* previous = ImGui::GetCurrentContext();
+        auto* context = ImGui::CreateContext();
+        struct Cleanup {
+            ImGuiContext* context;
+            ImGuiContext* previous;
+            ~Cleanup() { ImGui::DestroyContext(context); ImGui::SetCurrentContext(previous); }
+        } cleanup{context, previous};
+        try {
+            const auto require = [](bool condition, const char* message) {
+                if (!condition) { throw std::runtime_error(message); }
+            };
+            auto& io = ImGui::GetIO();
+            io.IniFilename = nullptr; io.LogFilename = nullptr;
+            io.DisplaySize = ImVec2(1400, 900); io.DeltaTime = 1.f / 60;
+            unsigned char* atlas = nullptr; int atlasWidth = 0, atlasHeight = 0;
+            io.Fonts->GetTexDataAsRGBA32(&atlas, &atlasWidth, &atlasHeight);
+            io.Fonts->SetTexID(ImTextureID(1));
+            auto snapshot = std::make_shared<render::RenderGraphExecutionSnapshot>();
+            snapshot->graphName = "Resources and memory canvas";
+            snapshot->graphGeneration = 1; snapshot->executionId = 1;
+            snapshot->passes.push_back({.id = 42, .name = "Write target", .type = "Fixture"});
+            snapshot->passes.back().uses.push_back({.resourceId = 22, .writes = true});
+            snapshot->passes.push_back({.id = 57, .name = "Read source", .type = "Fixture"});
+            snapshot->passes.back().uses.push_back({.resourceId = 11, .reads = true});
+            for (uint32_t i = 0; i < 2; ++i) {
+                render::RenderGraphExecutionResourceSnapshot resource;
+                resource.id = i == 0 ? 11 : 22;
+                resource.name = i == 0 ? "Source buffer" : "Target texture";
+                resource.type = i == 0 ? render::RenderGraphResourceType::Buffer : render::RenderGraphResourceType::Texture2D;
+                resource.memory.known = true;
+                resource.memory.memoryBlockId = 100;
+                resource.memory.allocationId = resource.id;
+                resource.memory.backingAllocationId = resource.id;
+                resource.memory.offsetBytes = i * 512;
+                resource.memory.sizeBytes = resource.memory.backingSizeBytes = 256;
+                snapshot->resources.push_back(resource);
+            }
+            editor::RenderGraphExecutionViewer viewer;
+            viewer.update(snapshot);
+            using Tab = editor::RenderGraphExecutionViewer::Tab;
+            const auto draw = [&] {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowPos(ImVec2(0, 0)); ImGui::SetNextWindowSize(io.DisplaySize);
+                ImGui::Begin("Resource canvas test", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
+                viewer.draw(); ImGui::End(); ImGui::Render();
+            };
+            const auto canvas = [&](const char* name) -> ImGuiWindow* {
+                for (auto* window : context->Windows) {
+                    if (window->Active && std::string_view(window->Name).find(name) != std::string_view::npos) { return window; }
+                }
+                throw std::runtime_error(std::string("Missing canvas: ") + name);
+            };
+            const auto bounds = [&](const char* name, ImU32 color) {
+                ImRect result(ImVec2(FLT_MAX, FLT_MAX), ImVec2(-FLT_MAX, -FLT_MAX));
+                for (const auto& vertex : canvas(name)->DrawList->VtxBuffer) { if (vertex.col == color) { result.Add(vertex.pos); } }
+                require(result.GetWidth() > 0 && result.GetHeight() > 0, "Target resource geometry is missing");
+                return result;
+            };
+            const auto close = [](float a, float b) { return std::abs(a - b) < 1.1f; };
+            const auto same = [&](const ImRect& a, const ImRect& b) {
+                return close(a.Min.x, b.Min.x) && close(a.Min.y, b.Min.y) && close(a.Max.x, b.Max.x) && close(a.Max.y, b.Max.y);
+            };
+            const auto move = [&](ImVec2 point) { io.AddMousePosEvent(point.x, point.y); draw(); };
+            const auto click = [&](ImVec2 point) {
+                move(point); io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); draw();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); draw();
+            };
+            const std::array tabs{Tab::Resources, Tab::Memory};
+            const char* names[]{"ResourcePassMatrix", "MemoryBlocks"};
+            const char* fitLabels[]{"Fit matrix", "Fit memory"};
+            const ImU32 colors[]{IM_COL32(244, 104, 83, 255), IM_COL32(66, 126, 119, 255)};
+            std::array<ImRect, 2> retained;
+            for (size_t index = 0; index < tabs.size(); ++index) {
+                viewer.setTab(tabs[index]);
+                io.AddMousePosEvent(-100, -100);
+                for (int i = 0; i < 4; ++i) { draw(); }
+                const auto fitted = bounds(names[index], colors[index]);
+                require(!canvas(names[index])->ScrollbarX && !canvas(names[index])->ScrollbarY, "Resource canvas retained scrollbars");
+                const auto anchor = fitted.GetCenter();
+                move(anchor); io.AddMouseWheelEvent(0, 2); draw();
+                const auto zoomed = bounds(names[index], colors[index]);
+                const float ratio = zoomed.GetWidth() / fitted.GetWidth();
+                require(ratio > 1.1f, "Resource canvas wheel did not zoom");
+                require(close(zoomed.Min.x, anchor.x + (fitted.Min.x - anchor.x) * ratio) &&
+                    close(zoomed.Min.y, anchor.y + (fitted.Min.y - anchor.y) * ratio), "Resource zoom lost the mouse anchor");
+                io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true); draw();
+                move(ImVec2(anchor.x + 27, anchor.y + 19));
+                io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false); draw();
+                auto panned = bounds(names[index], colors[index]);
+                require(close(panned.Min.x - zoomed.Min.x, 27) && close(panned.Min.y - zoomed.Min.y, 19),
+                    "Resource middle drag did not translate geometry");
+                // Reset selection by selecting the other resource, then click the transformed target.
+                if (index == 1) { click(bounds(names[index], IM_COL32(73, 111, 151, 255)).GetCenter()); }
+                else { click(bounds(names[index], IM_COL32(157, 203, 73, 255)).GetCenter()); }
+                require(viewer.selectedResourceId() == 11, "Source resource selection failed");
+                click(panned.GetCenter());
+                require(viewer.selectedResourceId() == 22, "Transformed target hit selected the wrong resource");
+                if (index == 0) { require(viewer.selectedPassId() == 42, "Transformed matrix cell selected the wrong pass"); }
+                auto next = std::make_shared<render::RenderGraphExecutionSnapshot>(*snapshot);
+                next->executionId += index + 1; viewer.update(next); draw();
+                require(same(panned, bounds(names[index], colors[index])), "Live snapshot reset resource canvas");
+                retained[index] = bounds(names[index], colors[index]);
+                std::filesystem::create_directories(test.outputDirectory);
+                std::string message;
+                if (!saveImGuiTestDrawDataPng(*ImGui::GetDrawData(), atlas, atlasWidth, atlasHeight, 1400, 900,
+                        test.outputDirectory / (index == 0 ? "render_graph_resource_canvas.png" : "render_graph_memory_canvas.png"), message)) {
+                    return RHITestResult::fail(message);
+                }
+            }
+            for (size_t index = 0; index < tabs.size(); ++index) {
+                viewer.setTab(tabs[index]); io.AddMousePosEvent(-100, -100); draw(); draw();
+                require(same(retained[index], bounds(names[index], colors[index])), "Switching tabs changed resource canvas view");
+                auto* child = canvas(names[index]);
+                const auto& style = ImGui::GetStyle();
+                const ImVec2 fitPoint(child->ParentWindow->WorkRect.Min.x + ImGui::CalcTextSize(fitLabels[index]).x * .5f + style.FramePadding.x,
+                    child->Pos.y - style.ItemSpacing.y * 2 - ImGui::GetTextLineHeight() - ImGui::GetFrameHeight() * .5f);
+                click(fitPoint);
+                require(!same(retained[index], bounds(names[index], colors[index])), "Fit did not reset resource canvas");
+            }
+            return RHITestResult::pass("Resources and Memory preserve cursor anchors, middle pan, transformed identities, independent tab views and live captures");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RenderGraphResourceMemoryCanvasTest);
 
 class ViewerComputeFixture final : public render::ComputePass {
 public:
