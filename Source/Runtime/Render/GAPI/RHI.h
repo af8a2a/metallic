@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GAPI/ShaderSpecialization.h"
 #include "Runtime/Render/GAPI/ShaderTarget.h"
+#include "../../../../Shaders/Interop/ClusterAccelerationStructure.h"
 
 #include "RHIHandle.h"
 
@@ -811,6 +812,30 @@ struct ClusterAccelerationStructureTriangleBuildDesc {
     BufferSlice destinationSizeBuffer;
 };
 
+enum class ClusterAccelerationStructureDestinationMode : uint8_t {
+    Implicit,
+    Explicit,
+};
+
+// GPU producers guarantee count <= limits.maxAccelerationStructureCount,
+// per-record/aggregate counts within limits, and valid aligned geometry
+// addresses inside geometryBuffers. All referenced inputs remain alive until
+// command completion. A zero GPU count is valid empty work.
+struct ClusterAccelerationStructureTriangleIndirectBuildDesc {
+    ClusterAccelerationStructureTriangleBuildSizesDesc limits;
+    BufferSlice buildInfoBuffer;
+    uint64_t buildInfoStride = sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo);
+    // Optional uint32 count; an absent slice builds the configured maximum.
+    BufferSlice buildInfoCountBuffer;
+    BufferSlice destinationStorageBuffer;
+    BufferSlice destinationAddressBuffer;
+    uint64_t destinationAddressStride = sizeof(uint64_t);
+    BufferSlice destinationSizeBuffer;
+    uint64_t destinationSizeStride = sizeof(uint32_t);
+    BufferSlice scratchBuffer;
+    std::span<const BufferSlice> geometryBuffers;
+};
+
 enum class ClusterAccelerationStructureObjectType : uint8_t {
     TriangleCluster,
     BottomLevel,
@@ -1002,11 +1027,6 @@ struct ClusterAccelerationStructureBottomLevelBuildInfo {
 };
 
 static_assert(sizeof(ClusterAccelerationStructureBottomLevelBuildInfo) == 16);
-
-enum class ClusterAccelerationStructureDestinationMode : uint8_t {
-    Implicit,
-    Explicit,
-};
 
 struct ClusterAccelerationStructureBottomLevelBuildDesc {
     RayTracingAccelerationStructureBuildFlags flags =
@@ -1899,6 +1919,8 @@ class CommandBuffer {
     Result<> dispatchIndirect(const BufferSlice& arguments);
     Result<> buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
+    Result<> buildClusterAccelerationStructureTrianglesIndirect(
+        const ClusterAccelerationStructureTriangleIndirectBuildDesc& desc);
     Result<> moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc);
     Result<> moveClusterAccelerationStructuresIndirect(const ClusterAccelerationStructureIndirectMoveDesc& desc);
     // Append physical backing and attach its GPU timeline dependency. Accepted
@@ -2034,7 +2056,9 @@ class Device {
     [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> createGraphicsShaderObjectProgram(const GraphicsShaderObjectProgramDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<BindlessHeap>> createBindlessHeap(const BindlessHeapDesc& desc);
     [[nodiscard]] Result<ClusterAccelerationStructureProperties> queryClusterAccelerationStructureProperties() const;
-    [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureTriangleBuildSizes(const ClusterAccelerationStructureTriangleBuildSizesDesc& desc) const;
+    [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureTriangleBuildSizes(
+        const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
+        ClusterAccelerationStructureDestinationMode destinationMode = ClusterAccelerationStructureDestinationMode::Explicit) const;
     // MOVE_OBJECTS reports its required scratch bytes in updateScratchSize.
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureMoveSizes(
         uint32_t maxCount, uint64_t maxBytes,

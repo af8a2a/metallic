@@ -137,7 +137,7 @@ public:
     std::string_view category() const override { return "GPU Driven"; }
     std::string_view description() const override
     {
-        return "GPU adaptive triangle patches with an authored height texture, deferred lighting and DLSS-SR. "
+        return "GPU adaptive triangle patches with an authored height texture, displaced CLAS ray-traced shadows, deferred lighting and DLSS-SR. "
             "Geometry streams automatically; see Documentation/GPUDrivenTessellation.md for cooking details.";
     }
     std::string scenePath() const override { return "Asset/Tessellation/DisplacedPlane.gltf"; }

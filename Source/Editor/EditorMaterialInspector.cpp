@@ -137,7 +137,7 @@ void EditorApplication::drawMaterialInspector(int32_t materialIndex)
         if (edited.displacementTexture.textureIndex >= 0) {
             scalar("Displacement magnitude", edited.displacementMagnitude, -1000000.0f, 1000000.0f);
             scalar("Displacement center", edited.displacementCenter, 0.0f, 1.0f);
-            ImGui::TextWrapped("Enable Material Displacement Tessellation in VBuffer. Magnitude uses world units; ray-traced shadows use the base mesh.");
+            ImGui::TextWrapped("Enable Material Displacement Tessellation in VBuffer and CLAS Displacement Tessellation on the geometry producer for matching ray-traced surfaces. Magnitude uses world units.");
         }
         scalar("Normal scale", edited.normalTextureScale, -10.0f, 10.0f);
         scalar("Occlusion", edited.occlusionTextureStrength, 0.0f, 1.0f);

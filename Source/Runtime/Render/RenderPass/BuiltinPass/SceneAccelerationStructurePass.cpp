@@ -15,7 +15,11 @@ class SceneAccelerationStructurePass final : public ComputePass {
 public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
-        return {.features = SceneResourceFeatureBits::AccelerationStructure, .geometry = true};
+        const auto features = properties().value("rtTessellation", false)
+            ? SceneResourceFeatureBits::AccelerationStructure | SceneResourceFeatureBits::Materials |
+                SceneResourceFeatureBits::MaterialTextures
+            : SceneResourceFeatureBits::AccelerationStructure;
+        return {.features = features, .geometry = true};
     }
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override

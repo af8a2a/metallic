@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Shaders/Interop/StreamCLASTessellation.h"
 
 namespace metallic::render {
 using debug::DebugFieldDesc;
@@ -94,6 +95,18 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
         DEBUG_FIELD(MeshletStreamGPUActiveGroup, clusterSelectionMask), DEBUG_FIELD(MeshletStreamGPUActiveGroup, flags),
         DEBUG_FIELD(MeshletStreamGPUActiveGroup, instanceIndex), DEBUG_FIELD(MeshletStreamGPUActiveGroup, gpuSceneInstanceIndex),
         {"world", "f32", offsetof(MeshletStreamGPUActiveGroup, world0), 16}}});
+    add({"StreamCLASTessellationLeaf", sizeof(StreamCLASTessellationLeaf), {
+        DEBUG_FIELD(StreamCLASTessellationLeaf, instanceIndex), DEBUG_FIELD(StreamCLASTessellationLeaf, pageIndex),
+        DEBUG_FIELD(StreamCLASTessellationLeaf, clusterIndex), DEBUG_FIELD(StreamCLASTessellationLeaf, sourceTriangle),
+        DEBUG_FIELD(StreamCLASTessellationLeaf, patch0), DEBUG_FIELD(StreamCLASTessellationLeaf, patch1),
+        DEBUG_FIELD(StreamCLASTessellationLeaf, patch2), DEBUG_FIELD(StreamCLASTessellationLeaf, rates),
+        DEBUG_FIELD(StreamCLASTessellationLeaf, vertexCount), DEBUG_FIELD(StreamCLASTessellationLeaf, triangleCount)}});
+    add({"StreamCLASTessellationVertex", sizeof(StreamCLASTessellationVertex), {
+        {"x", "f32", offsetof(StreamCLASTessellationVertex, x)},
+        {"y", "f32", offsetof(StreamCLASTessellationVertex, y)},
+        {"z", "f32", offsetof(StreamCLASTessellationVertex, z)},
+        {"sourceU", "f32", offsetof(StreamCLASTessellationVertex, sourceU)},
+        {"sourceV", "f32", offsetof(StreamCLASTessellationVertex, sourceV)}}});
     static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96 && offsetof(GPUSceneGPUGeometryRecord, payload) == 32);
     add({"GPUSceneGPUGeometryRecord", sizeof(GPUSceneGPUGeometryRecord), {
         {"source", "u32", offsetof(GPUSceneGPUGeometryRecord, source), 4},

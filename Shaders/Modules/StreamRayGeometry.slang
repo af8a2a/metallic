@@ -5,6 +5,7 @@ import Core;
 import GPUDriven;
 import ScenePathTypes;
 import ScenePathMath;
+#include "../Interop/StreamCLASTessellation.h"
 
 namespace Metallic.StreamGeometry
 {
@@ -36,6 +37,35 @@ struct StreamRayInstance
 #define gRayStreamInstances resolveBuffer<StructuredBuffer<StreamRayInstance>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamInstancesOffset))
 #define gRayStreamHeader resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamHeaderOffset))
 #define gRayStreamPageCount resolveBuffer<ByteAddressBuffer>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))
+
+// The optional sidecar is published in the same command sequence as the TLAS.
+// Short legacy fixture headers have no sidecar and keep the base decoder.
+bool streamRayTessellationTriangle(uint clusterId, uint triangle,
+    out StreamCLASTessellationLeaf leaf, out float3 positions[3], out float3 domains[3])
+{
+    leaf = (StreamCLASTessellationLeaf)0;
+    positions[0] = positions[1] = positions[2] = float3(0);
+    domains[0] = domains[1] = domains[2] = float3(0);
+    let changes = resolveBuffer<StructuredBuffer<uint>>(
+        getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamChangesOffset));
+    uint count, stride;
+    changes.GetDimensions(count, stride);
+    if (count < METALLIC_STREAM_BLAS_HEADER_WORDS) { return false; }
+    uint64_t address = uint64_t(changes[METALLIC_STREAM_BLAS_TESS_ADDRESS_WORD]) |
+        (uint64_t(changes[METALLIC_STREAM_BLAS_TESS_ADDRESS_WORD + 1u]) << 32u);
+    if (address == 0u) { return false; }
+    let geometry = *((StreamCLASTessellationGeometry*)address);
+    if (clusterId < geometry.baseClusterId || clusterId - geometry.baseClusterId >= geometry.maxPatches) { return false; }
+    uint index = clusterId - geometry.baseClusterId;
+    leaf = ((StreamCLASTessellationLeaf*)geometry.leaves)[index];
+    uint3 indices = ((uint3*)geometry.triangles)[index * METALLIC_TESS_TRIANGLES_PER_PATCH + triangle];
+    for (uint i = 0u; i < 3u; ++i) {
+        let vertex = ((StreamCLASTessellationVertex*)geometry.vertices)[index * METALLIC_TESS_VERTICES_PER_PATCH + indices[i]];
+        positions[i] = float3(vertex.x, vertex.y, vertex.z);
+        domains[i] = float3(1.0 - vertex.sourceU - vertex.sourceV, vertex.sourceU, vertex.sourceV);
+    }
+    return true;
+}
 
 // Keep resource resolution lazy and preserve the original bounds-check/load order.
 public bool streamRayMaterialIndex(uint instanceIndex, out uint materialIndex)
@@ -74,6 +104,14 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
 public float2 streamRayTexcoord(uint clusterId, uint triangle, float2 bary,
     uint clusterStride = METALLIC_STREAM_CLAS_CLUSTER_STRIDE)
 {
+    StreamCLASTessellationLeaf leaf;
+    float3 positions[3], domains[3];
+    if (streamRayTessellationTriangle(clusterId, triangle, leaf, positions, domains)) {
+        float3 weights = float3(1.0 - bary.x - bary.y, bary);
+        bary = (domains[0] * weights.x + domains[1] * weights.y + domains[2] * weights.z).yz;
+        clusterId = leaf.pageIndex * clusterStride + leaf.clusterIndex;
+        triangle = leaf.sourceTriangle;
+    }
     uint2 address = streamRayClusterAddress(clusterId, clusterStride);
     float2 uv[3];
     decodeStreamTexcoordsAtPage(address.x, address.y, triangle, gRayStreamPages, gRayStreamPageTable, uv);
@@ -92,6 +130,15 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     if (instanceIndex >= count) { return false; }
     StreamRayInstance instance = instances[instanceIndex];
     if (clusterStride == 0u) { return false; }
+    StreamCLASTessellationLeaf leaf;
+    float3 microPositions[3], microDomains[3];
+    bool tessellated = streamRayTessellationTriangle(clusterId, triangle, leaf, microPositions, microDomains);
+    if (tessellated) {
+        float3 weights = float3(1.0 - bary.x - bary.y, bary);
+        bary = (microDomains[0] * weights.x + microDomains[1] * weights.y + microDomains[2] * weights.z).yz;
+        clusterId = leaf.pageIndex * clusterStride + leaf.clusterIndex;
+        triangle = leaf.sourceTriangle;
+    }
     uint2 address = streamRayClusterAddress(clusterId, clusterStride);
     float3 a, b, c;
     StreamTriangleDecodeContext triangleContext;
@@ -106,9 +153,16 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     float3 n[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributes(pages, triangleContext, n, uv, tangents, !shadowOnly);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
+    hit.texcoord = uv[0] * weights.x + uv[1] * weights.y + uv[2] * weights.z;
+    if (tessellated) {
+        a = microPositions[0]; b = microPositions[1]; c = microPositions[2];
+        float2 sourceUv[3] = {uv[0], uv[1], uv[2]};
+        for (uint i = 0u; i < 3u; ++i) {
+            uv[i] = sourceUv[0] * microDomains[i].x + sourceUv[1] * microDomains[i].y + sourceUv[2] * microDomains[i].z;
+        }
+    }
     float3 localGeometry = streamRayTriangleNormal(b - a, c - a, float3(0, 1, 0));
     hit.geometryNormal = streamRayNormal(instance, localGeometry);
-    hit.texcoord = uv[0] * weights.x + uv[1] * weights.y + uv[2] * weights.z;
     hit.position = ray.origin + ray.direction * t;
     hit.t = t;
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
@@ -125,7 +179,7 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     if (shadowOnly) { return true; }
 
     float3 localNormal = Metallic.ScenePath.safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
-    hit.normal = streamRayNormal(instance, localNormal);
+    hit.normal = tessellated ? hit.geometryNormal : streamRayNormal(instance, localNormal);
     float3 wt = streamRayVector(instance, b - a), wb = streamRayVector(instance, c - a);
     float uvArea = abs((uv[1].x - uv[0].x) * (uv[2].y - uv[0].y) - (uv[1].y - uv[0].y) * (uv[2].x - uv[0].x));
     hit.rayConeLodConstant = uvArea > 1e-7 ? 0.5 * log2(uvArea / max(length(cross(wt, wb)), 1e-20)) : 0.0;

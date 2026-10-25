@@ -1,10 +1,10 @@
 # GPUDriven material displacement tessellation
 
-This implements recursive GPU tessellation in the existing visibility pipeline. It does not add a path-tracing pass or change GPUDrivenSample's streamed MiniZorah default. The feature is opt-in (`VBuffer.tessellation`, default false).
+This implements recursive GPU tessellation in the existing visibility pipeline. The feature is opt-in (`VBuffer.tessellation`, default false). The matching opt-in [CLAS tessellation workflow](CLASTessellation.md) supplies displaced ray-tracing geometry. GPUDrivenSample's streamed MiniZorah default is unchanged.
 
 ## Try it
 
-Select **GPU Driven / Material Displacement** in the editor's sample menu. The repository contains an original procedural plane and height image in `Asset/Tessellation/DisplacedPlane.gltf`. The example uses the real-time deferred graph, DLSS-SR, automatic exposure and optional DLSS-NR. Geometry uses streaming throughout; missing caches for importable assets are cooked from the imported scene.
+Select **GPU Driven / Material Displacement** in the editor's sample menu. The repository contains an original procedural plane in `Asset/Tessellation/DisplacedPlane.gltf` and its height image in `DisplacedPlaneHeight.png`. The external image also permits metadata-only loading from an existing StreamAsset; its PNG bytes and the plane's geometry are unchanged from the original embedded asset. The example uses the real-time deferred graph, DLSS-SR, automatic exposure and optional DLSS-NR. Geometry uses streaming throughout; missing caches for importable assets are cooked from the imported scene.
 
 To prebuild its streaming cache, run from the repository root:
 
@@ -103,7 +103,7 @@ The design takes the concepts of symmetric edge factors, recursive large-patch s
 
 This is not the complete Nanite tessellator: there is no persistent global patch queue, patch-level HZB culling, scene-wide microtriangle budget, software dicing raster path, displacement-aware LOD error baking, displacement mips or animated displacement history. Unlike Nanite's multi-dispatch global split queue, this implementation keeps bounded recursive work inside each task. Very large source triangles can still reach the depth/leaf-rate budget before the requested pixel size (up to 64 segments per source edge at depth 3 and factor 8).
 
-BLAS/CLAS/TLAS still represent the **base mesh**. Ray-traced shadows, reflections and reference path tracing do not intersect the displaced surface. The displacement demo omits the ray-shadow pass and disables Deferred's fallback ray-shadow queries (`debugDisableShadows=true`) for this reason. Resident alpha-masked rasterization retains its coverage test; streamed masked displacement is rejected explicitly at binding creation. Stream pages without the required attributes retain ordinary geometry in the low-level shader fallback. Height decoding/UV0/texture-budget failures are reported at binding creation.
+BLAS/CLAS/TLAS represent the **base mesh** unless `rtTessellation` is enabled on the geometry producer. The displacement demo now enables the [CLAS tessellation workflow](CLASTessellation.md) with matching quality and connects its TLAS to the ray-shadow pass. Streamed masked raster displacement is still rejected explicitly at binding creation. Stream pages without the required attributes retain ordinary geometry in the low-level raster fallback. Height decoding/UV0/texture-budget failures are reported at binding creation.
 
 ## Verification
 
@@ -151,7 +151,7 @@ Material scene tests cover scalar validation and document round trips. The **ini
 - Release builds: Metallic, MetallicGPUDrivenSample, MetallicRHITests and MetallicSceneTests.
 - 13 focused RHI tests passed with Vulkan validation: topology, displaced render oracle, wave distribution, stream cut/budget, hybrid raster equivalence, mixed producer, graph sample loading and PSO cache invalidation. After extending the oracle to adaptive factors, both tessellation tests passed again (64 comparisons plus live edit/restore).
 - Both material editing/document round-trip scene tests passed.
-- The editor sample ran the complete deferred / DLSS-SR / exposure pipeline; FinalBlit was captured via metallicctl at 1198x438 (799x292 internal render). The original procedural height image is embedded as a glTF bufferView. Raw capture and PNG are in `.cache/tessellation/demo-verified/`.
+- The editor sample ran the complete deferred / DLSS-SR / exposure pipeline; FinalBlit was captured via metallicctl at 1198x438 (799x292 internal render). At that validation date the original procedural height image was embedded as a glTF bufferView; it has since been externalized without changing its PNG bytes. Raw capture and PNG are in `.cache/tessellation/demo-verified/`.
 - The live-edit oracle caught a residency bug: VBuffer's compile reuse key included material revision. It now leaves material refresh to GPUScene/binding updates and retains the stream cut; restoring magnitude reproduces the original image in the first frame.
 
 The original 3000-frame MiniZorah replay completed with tessellation disabled. The final cut matches the prior wave-distribution run: 19,394 active groups, 162,989 selected clusters, early HW/SW 26,806/19,172 and late HW/SW 200/361; zero fallback instances, invalid requests or load failures, zero visible over-target refinements, maximum visible error 1.499928 px.

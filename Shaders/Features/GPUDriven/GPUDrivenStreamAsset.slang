@@ -356,6 +356,8 @@ public struct GPUDrivenStreamAssetBLASHeader
     public uint representationGroupOverflow;
     public uint cacheDependencyInvalidations;
     public uint representationPadding;
+    public uint tessGeometryAddressLow, tessGeometryAddressHigh;
+    public uint tessPatchCount, tessRejectedInstances;
 };
 
 public struct GPUDrivenStreamAssetInstanceBLAS
@@ -3556,7 +3558,7 @@ public static const uint kBLASInstancePublishedFallback = 1u << 5u;
 public static const uint kBLASInstancePublishedDynamic = 2u << 5u;
 public static const uint kBLASInstancePublishedMask = 3u << 5u;
 
-bool streamBlasDynamicReady(GPUDrivenStreamAssetInstanceBLAS blas)
+public bool streamBlasDynamicReady(GPUDrivenStreamAssetInstanceBLAS blas)
 {
     return (blas.flags & kBLASInstanceDynamic) != 0u &&
         (blas.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
@@ -3595,7 +3597,7 @@ uint streamRTPrimitiveBase(GPUDrivenStreamAssetParams p, uint primitive)
     return streamRTHistogramBase(p) + p.sceneLodLevelCount * 4u + primitive * 12u;
 }
 
-uint streamRTInstanceBase(GPUDrivenStreamAssetParams p, uint instance)
+public uint streamRTInstanceBase(GPUDrivenStreamAssetParams p, uint instance)
 {
     return streamRTPrimitiveBase(p, p.scenePrimitiveCount) + instance * 4u;
 }
@@ -4246,7 +4248,7 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
     if (push.activeBuildPhase >= 38u && push.activeBuildPhase <= 40u) {
         RWStructuredBuffer<uint4> scan = resolveUniform(
             ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
-        uint scratch = 8u + params.rtRepresentationGroupCapacity;
+        uint scratch = METALLIC_STREAM_BLAS_HEADER_WORDS / 4u + params.rtRepresentationGroupCapacity;
         if (push.activeBuildPhase == 39u) {
             if (item != 0u) { return; }
             uint prefix = 0u;
@@ -4320,7 +4322,7 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
         if (push.activeBuildPhase == 32u && item < params.scenePrimitiveCount) {
             state[streamRTPrimitiveBase(params, item) + 7u] = before.x;
         }
-        if (lane == 63u) { scan[8u + params.rtRepresentationGroupCapacity + item / 64u] = g_StreamBlasStoragePrefix[63]; }
+        if (lane == 63u) { scan[METALLIC_STREAM_BLAS_HEADER_WORDS / 4u + params.rtRepresentationGroupCapacity + item / 64u] = g_StreamBlasStoragePrefix[63]; }
         return;
     }
     if (push.activeBuildPhase == 26u || push.activeBuildPhase == 33u) {
@@ -4329,7 +4331,7 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
         uint4 prefix = 0u;
         for (uint block = 0u; block < (params.scenePrimitiveCount + 63u) / 64u; ++block) {
-            uint index = 8u + params.rtRepresentationGroupCapacity + block;
+            uint index = METALLIC_STREAM_BLAS_HEADER_WORDS / 4u + params.rtRepresentationGroupCapacity + block;
             uint4 count = scan[index];
             if (push.activeBuildPhase == 33u) { scan[index] = prefix; }
             prefix += min(count, 0xffffffffu - prefix);
@@ -4350,7 +4352,7 @@ void buildStreamRTRepresentations(uint item, uint groupRow, GPUDrivenStreamAsset
             ResourceHandle<StructuredBuffer<uint4>>(push.blasHeaderBuffer));
         uint base = streamRTPrimitiveBase(params, item);
         uint count = state[base + 6u];
-        uint offset = scan[8u + params.rtRepresentationGroupCapacity + item / 64u].x;
+        uint offset = scan[METALLIC_STREAM_BLAS_HEADER_WORDS / 4u + params.rtRepresentationGroupCapacity + item / 64u].x;
         offset += min(state[base + 7u], 0xffffffffu - offset);
         state[base + 7u] = offset;
         if (count == 0u) { return; }
@@ -4535,7 +4537,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             uint4 key = uint4(group.pageIndex, group.clusterSelectionMask, group.clusterCount,
                 clasPageTable[group.pageIndex].publicationGeneration);
             if (push.activeBuildPhase == 11u) {
-                cache[8u + itemIndex] = key;
+                cache[METALLIC_STREAM_BLAS_HEADER_WORDS / 4u + itemIndex] = key;
             } else {
                 GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[group.instanceIndex];
                 // Compare by rank within the instance, independent of the
@@ -4545,7 +4547,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
                 bool dirty = info.cachedValid == 0u || rank >= info.previousGroupCount;
                 bool semanticDirty = dirty;
                 if (!dirty) {
-                    uint4 previous = cache[8u + info.previousFirstGroup + rank];
+                    uint4 previous = cache[METALLIC_STREAM_BLAS_HEADER_WORDS / 4u + info.previousFirstGroup + rank];
                     dirty = any(previous != key);
                     semanticDirty = any(previous.xyz != key.xyz);
                     if (previous.w != key.w) {
@@ -4622,7 +4624,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     RWStructuredBuffer<uint4> scanHandle =
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
     RWStructuredBuffer<uint4> scan = scanHandle;
-    uint scratchBase = 8u + params.rtRepresentationGroupCapacity;
+    uint scratchBase = METALLIC_STREAM_BLAS_HEADER_WORDS / 4u + params.rtRepresentationGroupCapacity;
     if (push.activeBuildPhase == 6u) {
         uint lane = itemIndex & 63u;
         uint2 demand = 0u;

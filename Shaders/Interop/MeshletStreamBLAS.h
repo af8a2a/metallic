@@ -3,6 +3,8 @@
 
 // Shared by the C++ header layout and GPU history consumers.
 #define METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD 7u
+#define METALLIC_STREAM_BLAS_HEADER_WORDS 36u
+#define METALLIC_STREAM_BLAS_TESS_ADDRESS_WORD 32u
 
 // Asset cooking/loading validates this group size; published CLAS IDs use it
 // as the page stride. Keep the CPU asset contract and ray decoder in sync.

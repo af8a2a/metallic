@@ -12,6 +12,7 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/MeshletLOD.h"
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
+#include "Runtime/Render/Streamer/StreamCLASTessellation.h"
 #include "Runtime/Render/Streamer/MeshletStreamBLASAllocator.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/Streamer/MeshletStreamPrefetch.h"
@@ -37,6 +38,7 @@
 namespace metallic::render {
 
 class MeshletStreamCLASPool;
+class ScenePathTraceResources;
 struct StreamSceneReadiness {
     uint32_t requiredPages = 0;
     uint32_t completedPages = 0;
@@ -284,6 +286,10 @@ struct MeshletStreamGPUBLASHeader {
     uint32_t representationGroupOverflow = 0;
     uint32_t cacheDependencyInvalidations = 0;
     uint32_t representationPadding = 0;
+    uint32_t tessGeometryAddressLow = 0;
+    uint32_t tessGeometryAddressHigh = 0;
+    uint32_t tessPatchCount = 0;
+    uint32_t tessRejectedInstances = 0;
 };
 
 struct MeshletStreamGPUInstanceBLAS {
@@ -545,7 +551,7 @@ static_assert(sizeof(MeshletStreamGPUNode) == 48);
 static_assert(sizeof(MeshletStreamGPUDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGPUTraversalHeader) == 32);
 static_assert(sizeof(MeshletStreamGPUTraversalWorkItem) == 16);
-static_assert(sizeof(MeshletStreamGPUBLASHeader) == 128);
+static_assert(sizeof(MeshletStreamGPUBLASHeader) == 144);
 static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
     METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD * sizeof(uint32_t));
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
@@ -662,6 +668,7 @@ struct MeshletStreamFrameDesc {
     bool benchmarkDemandTraversal = false;
     uint32_t diagnosticBlasResetEpoch = 0;
     uint32_t diagnosticBlasStorageBytes = 0;
+    StreamCLASTessellationSettings rtTessellation;
 };
 
 // RT tokens identify recorded traversals independently of the request-frame
@@ -724,6 +731,9 @@ public:
     Result<> syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping, CPUProfileScope* profile = nullptr);
     // GPUScene publishes this table for shader reads before stream TLAS generation.
     Result<> bindGPUSceneInstances(Buffer& instances);
+    Result<> configureTessellation(Device& device, const scene::Scene& scene,
+        const ScenePathTraceResources& resources, const StreamCLASTessellationSettings& settings,
+        std::string& log);
     void reset();
 
     bool ready() const;
@@ -860,6 +870,7 @@ private:
     Result<> cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
     Result<> buildTlasInstances(CommandBuffer& commandBuffer);
     Result<> cmdBuildTlas(CommandBuffer& commandBuffer);
+    Result<> cmdBuildTessellation(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame);
     Result<> copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result<> updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result<> transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
@@ -952,6 +963,7 @@ private:
     std::unique_ptr<GPUBLASAllocator> gpuBlasAllocator_;
     std::unique_ptr<TLASInputPass> tlasInputPass_;
     std::unique_ptr<MeshletStreamCLASPool> clasPool_;
+    std::shared_ptr<StreamCLASTessellation> tessellation_;
     std::unordered_map<uint32_t, MeshletStreamCLASPagePlan> pendingClasPlans_;
     std::deque<uint32_t> pendingClasPages_;
     std::unordered_set<uint32_t> queuedClasPages_;

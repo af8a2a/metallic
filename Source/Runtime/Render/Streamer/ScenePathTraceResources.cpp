@@ -983,13 +983,14 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
         mark(material.diffuseTransmissionColorTexture);
         mark(material.specularTexture);
         mark(material.specularColorTexture);
+        mark(material.displacementTexture);
     }
     return referenced;
 }
 
-std::vector<std::array<int32_t, 22>> materialResourceLayout(const scene::Scene& loadedScene)
+std::vector<std::array<int32_t, 23>> materialResourceLayout(const scene::Scene& loadedScene)
 {
-    std::vector<std::array<int32_t, 22>> layout;
+    std::vector<std::array<int32_t, 23>> layout;
     layout.reserve(loadedScene.materials().size());
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
         // Resource binding changes require a fresh texture/material snapshot.
@@ -1017,6 +1018,7 @@ std::vector<std::array<int32_t, 22>> materialResourceLayout(const scene::Scene& 
             std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[4]),
             std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[5]),
             material.alphaMode == "MASK" && !material.valueProgram.empty() ? 1 : 0,
+            material.displacementTexture.textureIndex,
         });
     }
     return layout;
@@ -2047,7 +2049,9 @@ struct ScenePathTraceResources::Impl {
                 if (image >= 0 && size_t(image) < pinnedImages.size()) { pinnedImages[image] = true; }
             };
             if (material.alphaMode != "OPAQUE") { pin(material.baseColorTexture.textureIndex); }
-            if (material.displacementMagnitude != 0) { pin(material.displacementTexture.textureIndex); }
+            // A factor-only edit may enable displacement without replacing the
+            // texture generation. Keep authored height data stable in that case.
+            pin(material.displacementTexture.textureIndex);
         }
         textureStats.maskImageCount = uint32_t(std::count(protectedImages.begin(), protectedImages.end(), true));
         textureStats.maskMaxDimension = textureMaskMaxDimension;
@@ -2544,7 +2548,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceGeometryTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
     uint64_t sourceMaterialRevision = 0;
-    std::vector<std::array<int32_t, 22>> sourceMaterialResourceLayout;
+    std::vector<std::array<int32_t, 23>> sourceMaterialResourceLayout;
     std::unique_ptr<Buffer> materialBuffer;
     std::shared_ptr<MaterialBindingGeneration> materialBinding;
     std::shared_ptr<const MaterialGeneration> pendingMaterialGeneration;

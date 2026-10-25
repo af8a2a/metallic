@@ -132,16 +132,21 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
             prepared->imageView = prepared->image->imageView_.get();
         }
     }
-    if (requirements.features != SceneResourceFeatureBits::None) {
+    const bool tessellation = properties.value("rtTessellation", false);
+    const auto features = tessellation
+        ? requirements.features | SceneResourceFeatureBits::AccelerationStructure |
+            SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures
+        : requirements.features;
+    if (features != SceneResourceFeatureBits::None) {
         auto resourceProperties = properties;
-        const auto result = resources_.acquire(*device_, *device_->getQueue(QueueType::Graphics), resourceProperties, scene, requirements.features, log).transform([&](auto value) { prepared->snapshot = std::move(value); });
+        const auto result = resources_.acquire(*device_, *device_->getQueue(QueueType::Graphics), resourceProperties, scene, features, log).transform([&](auto value) { prepared->snapshot = std::move(value); });
         if (!result) { return result; }
     }
     using namespace streaming_detail;
     constexpr auto geometryFeatures = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Meshlets |
         SceneResourceFeatureBits::AccelerationStructure;
     const bool wantsGeometry = requirements.geometry ||
-        (uint32_t(requirements.features) & uint32_t(geometryFeatures)) != 0;
+        (uint32_t(features) & uint32_t(geometryFeatures)) != 0;
     if (!wantsGeometry) { prepared->geometry.reset(); prepared->state.reset(); return {}; }
     if (!scene) {
         const auto resolved = resources_.resolveScene(properties, scene, log);
@@ -151,7 +156,7 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     prepared->sourceScene = scene;
     auto sourcePath = scene->filename().empty() ? std::filesystem::path{} : normalizedScenePath(scene->filename());
     auto desc = sceneStreamRuntimeDesc(properties, sourcePath, uint32_t(scene->textures().size()) + 1);
-    const bool rayTracing = (uint32_t(requirements.features) &
+    const bool rayTracing = (uint32_t(features) &
         uint32_t(SceneResourceFeatureBits::AccelerationStructure)) != 0 ||
         properties.value("enableClusterRtx", false);
     desc.enableClusterRtx = rayTracing;
@@ -356,6 +361,15 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         }
         const auto result = resources->uploadMaterialTextures(context.commandBuffer());
         if (!result) { return result; }
+        // Scene begin precedes describeSceneView; allocation settings come from
+        // the pass properties here, while traversal receives its resolved view.
+        if (prepared.geometry && context.properties().value("rtTessellation", false)) {
+            const StreamCLASTessellationSettings settings{
+                .enabled = true, .maxPatches = context.properties().value("rtTessellationMaxPatches", 16384u)};
+            const auto configured = prepared.geometry->configureTessellation(*device_, *prepared.sourceScene,
+                *resources, settings, log);
+            if (!configured) { return configured; }
+        }
     }
     return {};
 }

@@ -15,6 +15,7 @@
 
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
 #include "Runtime/Render/Streamer/MeshletStreamBLASAllocator.h"
+#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -203,11 +204,12 @@ template<typename ValueType, typename Populate>
 Result<> createAndPopulateImmutableStorageBuffer(
     Device& device, bool deviceStorage, size_t valueCount,
     std::unique_ptr<Buffer>& outBuffer, std::vector<std::byte>* uploadData,
-    std::string& log, std::string_view label, Populate&& populate)
+    std::string& log, std::string_view label, Populate&& populate,
+    BufferUsageBits additionalUsage = BufferUsageBits::None)
 {
     if (!deviceStorage) {
         return createAndPopulateHostStorageBuffer<ValueType>(
-            device, valueCount, outBuffer, log, label, std::forward<Populate>(populate));
+            device, valueCount, outBuffer, log, label, std::forward<Populate>(populate), additionalUsage);
     }
     const uint64_t allocationCount = std::max<uint64_t>(valueCount, 1u);
     if (!uploadData || allocationCount > std::numeric_limits<size_t>::max() / sizeof(ValueType)) {
@@ -218,7 +220,7 @@ Result<> createAndPopulateImmutableStorageBuffer(
     auto result = createNamedBuffer(device, BufferDesc{
         .size = byteSize,
         .structureStride = 0,
-        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination | additionalUsage,
         .memoryLocation = MemoryLocation::Device,
         .memoryDomain = MemoryBudgetDomain::Geometry,
     }, outBuffer, log, label);
@@ -2257,6 +2259,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             .size = pageTableByteSize,
             .structureStride = sizeof(StreamPageTableEntry),
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination |
+                (clusterRtxEnabled_ ? BufferUsageBits::ShaderDeviceAddress : BufferUsageBits::None) |
                 (debugReadbackEnabled_ ? BufferUsageBits::TransferSource : BufferUsageBits::None),
             .memoryLocation = MemoryLocation::Device,
         },
@@ -2328,7 +2331,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         sizeof(MeshletStreamGPUParams),
         paramsBuffer_,
         log,
-        "MeshletStreamRuntime params");
+        "MeshletStreamRuntime params", clusterRtxEnabled_ ? BufferUsageBits::ShaderDeviceAddress : BufferUsageBits::None);
     if (!result) {
         return result;
     }
@@ -2650,6 +2653,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
 void MeshletStreamRuntime::reset()
 {
+    tessellation_.reset();
     ++shadingStateRevision_;
     sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     rasterSnapshotFrozen_ = false;
@@ -3346,6 +3350,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
             if (result) { result = buildBlasInputs(commandBuffer, checkpoint); }
             if (result && checkpoint) { checkpoint("BeforeBlasBuild"); }
             if (result) { result = cmdBuildBlas(commandBuffer, checkpoint); }
+            if (result) { result = cmdBuildTessellation(commandBuffer, frame); }
             if (result) {
                 topLevelBuildPending_ = true;
                 return deferTopLevelBuild ? Result<>{} : cmdBuildTopLevelAccelerationStructure(commandBuffer, checkpoint);
@@ -3410,8 +3415,53 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
     if (!result) {
         return result;
     }
+    result = cmdBuildTessellation(commandBuffer, frame);
+    if (!result) { return result; }
     topLevelBuildPending_ = true;
     return deferTopLevelBuild ? Result<>{} : cmdBuildTopLevelAccelerationStructure(commandBuffer, checkpoint);
+}
+
+Result<> MeshletStreamRuntime::configureTessellation(Device& device, const scene::Scene& scene,
+    const ScenePathTraceResources& resources, const StreamCLASTessellationSettings& settings, std::string& log)
+{
+    if (!settings.enabled) { return {}; }
+    if (!clusterRtxEnabled_) {
+        log = "CLAS tessellation requires the streamed ray-tracing runtime.";
+        return makeError(Error::Unsupported);
+    }
+    if (!tessellation_ || tessellation_->patchCapacity() != settings.maxPatches) {
+        auto replacement = std::make_shared<StreamCLASTessellation>();
+        auto result = replacement->initialize(device, registry_, asset_, settings.maxPatches, log);
+        if (!result) { return result; }
+        if (tessellation_) { replacement->reusePersistentState(*tessellation_); }
+        result = replacement->updateMaterials(scene, resources, log);
+        if (!result) { return result; }
+        tessellation_ = std::move(replacement);
+        return {};
+    }
+    return tessellation_->updateMaterials(scene, resources, log);
+}
+
+Result<> MeshletStreamRuntime::cmdBuildTessellation(CommandBuffer& commands, const MeshletStreamFrameDesc& frame)
+{
+    if (!tessellation_) {
+        return frame.rtTessellation.enabled ? makeError(Error::InvalidArgument) : Result<>{};
+    }
+    // The ray consumers can execute after the producer command buffer retires.
+    // Keep this allocation generation alive through the entire joined frame,
+    // including when a subsequent graph changes the tessellation capacity.
+    if (auto* recording = RenderFrameContext::from(commands)) { recording->retain(tessellation_); }
+    std::string log;
+    auto result = tessellation_->record(commands, {
+        .pages = pageBuffer_.get(), .pageTable = pageTableBuffer_.get(),
+        .instances = instanceBuffer_.get(), .primitives = primitiveBuffer_.get(),
+        .groups = groupBuffer_.get(), .params = paramsBuffer_.get(),
+        .representations = rtRepresentationBuffer_.get(), .representationGroups = rtRepresentationGroupBuffer_.get(),
+        .representationState = rtRepresentationStateBuffer_.get(), .blasHeader = blasHeaderBuffer_.get(),
+        .tlasInstances = tlasInstanceBuffer_.get(), .pageDescriptor = pageHandle_.shaderIndex(),
+        .pageTableDescriptor = pageTableHandle_.shaderIndex()}, frame, log);
+    if (!result) { spdlog::error("[MeshletStreamRuntime] CLAS tessellation: {}", log); }
+    return result;
 }
 
 Result<> MeshletStreamRuntime::cmdBuildTopLevelAccelerationStructure(CommandBuffer& commands,
@@ -3465,6 +3515,7 @@ Result<> MeshletStreamRuntime::cmdBuildTopLevelAccelerationStructure(CommandBuff
     if (checkpoint) { checkpoint("BeforeTlasInput"); }
     auto result = recordGraphAccessBarriers(commands, plan->passes[0], bindings);
     if (result) { result = buildTlasInstances(commands); }
+    if (result && tessellation_) { result = tessellation_->publish(commands); }
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeTlasBuild"); }
     result = recordGraphAccessBarriers(commands, plan->passes[1], bindings);
@@ -3968,7 +4019,8 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             gpuInstance.boundsCenterRadius[1] = center.y;
             gpuInstance.boundsCenterRadius[2] = center.z;
             gpuInstance.boundsCenterRadius[3] = radius;
-        }, BufferUsageBits::TransferSource);
+        }, BufferUsageBits::TransferSource |
+            (clusterRtxEnabled_ ? BufferUsageBits::ShaderDeviceAddress : BufferUsageBits::None));
     if (!result) {
         return result;
     }
@@ -4107,7 +4159,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
                 .lodTileOffset = tileOffsets[index],
             };
             primitiveMetadataHash_ = detail::hashBytes(primitiveMetadataHash_, &gpuPrimitive, sizeof(gpuPrimitive));
-        });
+        }, clusterRtxEnabled_ ? BufferUsageBits::ShaderDeviceAddress : BufferUsageBits::None);
     if (!result) { return result; }
 
     lodInstanceOffsetsOffset_ = static_cast<uint32_t>(topology.size());
@@ -4223,7 +4275,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
                 std::begin(group.boundsCenterRadius),
                 std::end(group.boundsCenterRadius),
                 std::begin(gpuGroup.boundsCenterRadius));
-        });
+        }, clusterRtxEnabled_ ? BufferUsageBits::ShaderDeviceAddress : BufferUsageBits::None);
     if (!result) {
         return result;
     }
@@ -5258,6 +5310,11 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("activeHeader", activeHeaderBuffer_.get(), activeHeaderBufferState_, "MeshletStreamGPUActiveHeader");
     add("blasHeader", blasHeaderBuffer_.get(), blasHeaderBufferState_, "MeshletStreamGPUBLASHeader", 0,
         sizeof(MeshletStreamGPUBLASHeader));
+    if (tessellation_) {
+        add("tessellationCounts", tessellation_->statisticsBuffer(), ResourceState::General, "u32");
+        add("tessellationLeaves", tessellation_->metadataBuffer(), ResourceState::General, "StreamCLASTessellationLeaf");
+        add("tessellationVertices", tessellation_->vertexBuffer(), ResourceState::General, "StreamCLASTessellationVertex");
+    }
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGPUActiveGroup");
     add("instanceBlas", instanceBlasBuffer_.get(), instanceBlasBufferState_, "MeshletStreamGPUInstanceBLAS");
     add("tlasInstances", tlasInstanceBuffer_.get(), tlasInstanceBufferState_, "RayTracingGPUInstance");
@@ -5626,6 +5683,10 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
             {"groups", recentBlasHeader_.representationGroupCount},
             {"groupOverflow", recentBlasHeader_.representationGroupOverflow},
             {"cacheDependencyInvalidations", recentBlasHeader_.cacheDependencyInvalidations}}},
+        {"tessellation", {{"allocated", tessellation_ != nullptr},
+            {"patchCapacity", tessellation_ ? tessellation_->patchCapacity() : 0u},
+            {"generatedPatches", recentBlasHeader_.tessPatchCount},
+            {"rejectedInstances", recentBlasHeader_.tessRejectedInstances}}},
         {"immutableMetadataDeviceRequested", deviceImmutableMetadata_},
         {"immutableMetadataReady", immutableMetadataReady()},
         {"immutableMetadataBytes", (groupBuffer_ ? groupBuffer_->desc().size : 0) +

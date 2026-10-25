@@ -13,6 +13,11 @@ inline void applyStreamRayLODSettings(const RenderGraphProperties& properties,
     view.preserveRasterLod = preserveRasterLod;
     view.terminalMaskDiagnostics = properties.value("benchmarkTerminalMaskStats", false);
     view.benchmarkDemandTraversal = properties.value("benchmarkDemandTraversal", false);
+    view.rtTessellation.enabled = properties.value("rtTessellation", false);
+    view.rtTessellation.edgePixels = properties.value("rtTessellationEdgePixels", 8.0f);
+    view.rtTessellation.maxFactor = properties.value("rtTessellationMaxFactor", 4u);
+    view.rtTessellation.maxSplitDepth = properties.value("rtTessellationMaxSplitDepth", 2u);
+    view.rtTessellation.maxPatches = properties.value("rtTessellationMaxPatches", 16384u);
 }
 
 inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSetting>& settings)
@@ -21,6 +26,17 @@ inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSett
         .type = RenderGraphRuntimeSettingType::Float, .defaultValue = 2.0f, .minValue = 1.0f, .maxValue = 16.0f});
     settings.push_back({.key = "rtLodHysteresis", .label = "RT LOD Hysteresis",
         .type = RenderGraphRuntimeSettingType::Float, .defaultValue = 0.2f, .minValue = 0.0f, .maxValue = 0.9f});
+    settings.push_back({.key = "rtTessellation", .label = "CLAS Displacement Tessellation",
+        .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = false, .rebuildGraph = true});
+    settings.push_back({.key = "rtTessellationEdgePixels", .label = "RT Tessellation Edge (render px)",
+        .type = RenderGraphRuntimeSettingType::Float, .defaultValue = 8.0f, .minValue = 1.0f, .maxValue = 256.0f});
+    settings.push_back({.key = "rtTessellationMaxFactor", .label = "RT Tessellation Leaf Edge Factor",
+        .type = RenderGraphRuntimeSettingType::Int, .defaultValue = 4, .minValue = 1, .maxValue = 8});
+    settings.push_back({.key = "rtTessellationMaxSplitDepth", .label = "RT Tessellation Split Depth",
+        .type = RenderGraphRuntimeSettingType::Int, .defaultValue = 2, .minValue = 0, .maxValue = 3});
+    settings.push_back({.key = "rtTessellationMaxPatches", .label = "RT Tessellation Patch Capacity",
+        .type = RenderGraphRuntimeSettingType::Int, .defaultValue = 16384, .minValue = 1, .maxValue = 1048576,
+        .rebuildGraph = true});
 }
 
 } // namespace metallic::render::builtin_pass

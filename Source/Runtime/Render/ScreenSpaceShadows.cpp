@@ -195,7 +195,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials)});
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata)});
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
-            for (const auto member : {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount)}) { layout.push_back({.binding = member}); }
+            for (const auto member : {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamChanges), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount)}) { layout.push_back({.binding = member}); }
         }
         result = initializeResourceKernel(device, {
             .spirv = shader.spirv,
@@ -337,6 +337,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), .buffer = streamGeometry->pageTableBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), .buffer = streamGeometry->instanceBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), .buffer = streamGeometry->activeHeaderBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamChanges), .buffer = streamGeometry->shadingChangeBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = streamGeometry->paramsBuffer});
         geometryPush = textureCount;
     }

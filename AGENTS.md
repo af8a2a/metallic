@@ -50,6 +50,7 @@ Keep official mixed-case spellings such as `glTF`, `sRGB`, and `scRGB`, includin
 ## Code Trust Boundaries & Defensive Programming
 
 Write internal C++ and Slang code against established contracts. Validate at the boundary that owns a failure; avoid repeating validation downstream. Prefer direct control flow over speculative guards, fallback defaults, and redundant state flags.
+Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
 
 - **Establish the contract:** When adding or removing a check, inspect the relevant callers, producers, and lifecycle transitions far enough to identify who guarantees the precondition and how long it remains valid. Do not infer validity solely from an `Init()` / `Setup()` name, a private function, or a raw pointer type. Once established, trust the contract until a mutation, lifetime transition, or asynchronous operation can invalidate it.
 - **Validate at actual boundaries:** Handle malformed external assets, serialized data, user/plugin/script inputs, and fallible OS/Vulkan/resource operations where they enter the system or return results. Report or propagate failures using existing error handling. An internal function can own such a boundary; function visibility and hot-path placement do not determine trust.
