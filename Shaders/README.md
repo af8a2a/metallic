@@ -50,7 +50,7 @@ LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 | `Modules/StreamRayGeometry.slang` | 流式 ray 命中重建、authored TBN；封装惰性资源读取，保留 SHARC Update/Query 分支 |
 | `Features/VisibilityBuffer/VisibilityMaterialBinning.slang` | 8×4 Wave32 稀疏 Program 分箱、prefix allocation 和 indirect dispatch；见 [Phase 6](../Documentation/MaterialSystemPhase6.md) |
 | `Features/VirtualShadowMaps/VirtualShadowMapPrototype.slang` | 固定虚拟页的 GPU 工作生成、D32 页裁剪光栅与接收点查询；见 [VSM P0](../Documentation/VirtualShadowMapPrototype.md) |
-| `Features/VirtualShadowMaps/VirtualShadowMaps.slang`、`Modules/VirtualShadowMapGeometry.slang` | 单太阳接收点按需页、clipmap、完整场景粗级及 resident/StreamAsset caster 解码；可选 sample 与验证范围见 [VSM P1](../Documentation/VirtualShadowMapsP1.md) |
+| `Features/VirtualShadowMaps/VirtualShadowMaps.slang`、`Modules/VirtualShadowMapGeometry.slang` | 接收点按需页、clipmap、完整场景粗级及 resident/StreamAsset caster 解码；[VSM P1](../Documentation/VirtualShadowMapsP1.md) 保留逐帧重画，[VSM P2](../Documentation/VirtualShadowMapsP2.md) 增加持久页复用、GPU tile clear、Sun/Moon 独立缓存和 32 项统计 |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |
 | `Modules/ColorGrading.slang`、`Modules/ColorGrading/` | ACES 2.0 / UE Film、全局调色、custom LUT 与三维 LUT 编解码 |

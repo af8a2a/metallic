@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdlib>
@@ -1195,6 +1196,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
     phase.next("streamInit.boundsAndBudget");
     asset_ = std::move(openedAsset);
+    static std::atomic<uint64_t> nextShadowGeometryRevision{1};
+    shadowGeometryRevision_ = nextShadowGeometryRevision.fetch_add(1, std::memory_order_relaxed);
     if (desc.compactShadingAttributes && !asset_.compactShadingForDevice(reason)) {
         log = "MeshletStreamRuntime compact shading: " + reason;
         return makeError(Error::InvalidArgument);
@@ -2666,6 +2669,7 @@ void MeshletStreamRuntime::reset()
     residency_.reset();
     asset_.close();
     drawBounds_.reset();
+    shadowGeometryRevision_ = 0;
     sceneTransformRevision_ = 0;
     sceneVisibilityRevision_ = 0;
     sceneResourceIdentity_ = 0;
@@ -3752,7 +3756,8 @@ MeshletStreamShadowGeometryView MeshletStreamRuntime::shadowGeometryResources() 
 {
     return {.instanceBuffer = instanceBuffer_.get(), .pageBuffer = pageBuffer_.get(),
         .pageTableBuffer = pageTableBuffer_.get(), .asset = &asset_,
-        .pageBufferBytes = static_cast<uint32_t>(residency_.pageBufferSize())};
+        .pageBufferBytes = static_cast<uint32_t>(residency_.pageBufferSize()),
+        .runtimeRenderNodeIndices = runtimeRenderNodeIndices_, .geometryRevision = shadowGeometryRevision_};
 }
 
 Result<> MeshletStreamRuntime::cmdPrepareShadowGeometry(CommandBuffer& commandBuffer)

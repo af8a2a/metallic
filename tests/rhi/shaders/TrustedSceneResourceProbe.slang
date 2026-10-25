@@ -14,7 +14,7 @@ struct ProbeConstants
 
 struct OversizedSceneField
 {
-    uint words[100];
+    uint words[sizeof(SceneResourceParameters) / sizeof(uint) + 1];
 };
 
 [shader("compute")]

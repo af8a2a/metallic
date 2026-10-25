@@ -19,6 +19,8 @@ struct ShadowPush
     uint physicalPagesX, physicalPagesY, physicalPageCount, pageSize;
     uint workCapacity, batchCount, workBase, rasterCoarse;
     uint sampler, enabled, totalPages, reserved;
+    uint previousPages, reuse, owners, cacheMode;
+    uint coarseBatchCount, cancelledCount, cacheEpoch, dirtyBoundsCount;
 };
 
 struct ShadowProjection
@@ -144,18 +146,41 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
+    RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
     if (id.x < push.totalPages) {
         bool coarse = id.x == push.totalPages - 1u;
-        pages[id.x] = uint4(coarse ? 0u : 0xffffffffu, coarse ? 1u : 0u,
-            coarse ? push.clipmapCount : id.x / (push.virtualPagesPerAxis * push.virtualPagesPerAxis), 0u);
+        uint4 entry = uint4(coarse ? 0u : 0xffffffffu, coarse && push.enabled != 0u ? 3u : 0u,
+            coarse ? push.clipmapCount : id.x / (push.virtualPagesPerAxis * push.virtualPagesPerAxis), 2u);
+        if ((push.cacheMode & 1u) != 0u) {
+            StructuredBuffer<uint2> reuse = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.reuse));
+            uint2 mapping = reuse[id.x];
+            if (mapping.x != 0xffffffffu) {
+                StructuredBuffer<uint4> previous = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.previousPages));
+                uint4 old = previous[mapping.x];
+                if (old.x != 0xffffffffu) {
+                    entry.x = old.x;
+                    bool dirty = mapping.y != 0u || (old.w & 1u) == 0u || (push.cacheMode & 4u) != 0u;
+                    entry.w = dirty ? 2u : 1u;
+                }
+            }
+        }
+        pages[id.x] = entry;
     }
     // Each counter has exactly one writer, including the diagnostic constants.
-    if (id.x < 16u) {
+    if (id.x < 32u) {
         uint value = id.x == 10u ? push.triangleCount : id.x == 11u ? push.clipmapCount :
-            id.x == 12u ? push.physicalPageCount : id.x == 14u ? 1u - push.enabled : 0u;
+            id.x == 12u ? push.physicalPageCount : id.x == 14u ? 1u - push.enabled :
+            id.x == 22u ? ((push.cacheMode & 8u) != 0u ? 1u : 0u) :
+            id.x == 23u ? push.cacheEpoch : id.x == 25u ? push.dirtyBoundsCount :
+            id.x == 26u ? ((push.cacheMode & 4u) != 0u ? 1u : 0u) :
+            id.x == 27u ? ((push.cacheMode & 2u) != 0u ? 1u : 0u) :
+            id.x == 28u ? push.cancelledCount : 0u;
         statistics[id.x] = value;
     }
-    if (id.x < push.batchCount * 3u) { arguments[id.x] = id.x % 3u == 0u ? 0u : 1u; }
+    if (id.x < push.physicalPageCount) { owners[id.x] = 0u; }
+    if (id.x < (push.batchCount + push.coarseBatchCount) * 3u) {
+        arguments[id.x] = id.x % 3u == 0u ? 0u : 1u;
+    }
 }
 
 [shader("compute")]
@@ -188,21 +213,76 @@ void vsmAllocateMain(uniform ShadowPush push)
 {
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    StructuredBuffer<uint2> reuse = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.reuse));
     uint requested = 0u, allocated = 0u;
+    uint invalidated = 0u, remapped = 0u;
     // Virtual pages are laid out fine-to-coarse. Physical zero always belongs
-    // to the complete scene projection and never competes for this budget.
+    // to the complete scene projection. Admission is independent of residency,
+    // so an unrequested cached page cannot displace a requested fine page.
+    for (uint page = 0u; page < push.totalPages; ++page) {
+        uint4 entry = pages[page];
+        if ((push.cacheMode & 1u) != 0u && entry.x != 0xffffffffu) {
+            uint2 mapping = reuse[page];
+            if (mapping.x != 0xffffffffu) {
+                invalidated += mapping.y != 0u ? 1u : 0u;
+                remapped += mapping.x != page ? 1u : 0u;
+            }
+        }
+        if (page + 1u < push.totalPages && (entry.y & 1u) != 0u) {
+            ++requested;
+            if (allocated + 1u < push.physicalPageCount) {
+                ++allocated;
+                entry.y |= 2u;
+            } else {
+                entry.x = 0xffffffffu;
+                entry.w = 2u;
+            }
+        }
+        pages[page] = entry;
+        if (entry.x != 0xffffffffu) { owners[entry.x] = page + 1u; }
+    }
+    uint freeCursor = 1u, evictionCursor = 1u, newlyAllocated = 0u;
+    uint dirty = 0u, clean = 0u;
     for (uint page = 0u; page + 1u < push.totalPages; ++page) {
         uint4 entry = pages[page];
-        if (entry.y == 0u) { continue; }
-        ++requested;
-        if (allocated + 1u < push.physicalPageCount) {
-            entry.x = ++allocated;
+        if ((entry.y & 2u) == 0u) { continue; }
+        if (entry.x == 0xffffffffu) {
+            while (freeCursor < push.physicalPageCount && owners[freeCursor] != 0u) { ++freeCursor; }
+            uint physical = freeCursor;
+            if (physical == push.physicalPageCount) {
+                // Admission reserves at most poolSize-1 slots. Once all free
+                // slots are used, a remaining admitted page has an unrequested
+                // owner available for eviction; admitted owners stay protected.
+                while (evictionCursor < push.physicalPageCount &&
+                    (pages[owners[evictionCursor] - 1u].y & 2u) != 0u) { ++evictionCursor; }
+                physical = evictionCursor++;
+                uint evicted = owners[physical] - 1u;
+                uint4 old = pages[evicted];
+                old.x = 0xffffffffu;
+                old.w = 2u;
+                pages[evicted] = old;
+            } else {
+                ++freeCursor;
+            }
+            entry.x = physical;
+            entry.w = 2u;
+            owners[physical] = page + 1u;
             pages[page] = entry;
+            ++newlyAllocated;
         }
+        dirty += (entry.w & 2u) != 0u ? 1u : 0u;
+        clean += (entry.w & 1u) != 0u && (entry.w & 2u) == 0u ? 1u : 0u;
     }
     statistics[0] = requested;
     statistics[1] = allocated;
     statistics[2] = requested - allocated;
+    statistics[16] = dirty;
+    statistics[17] = clean;
+    statistics[18] = invalidated;
+    statistics[19] = remapped;
+    statistics[20] = newlyAllocated;
+    statistics[21] = push.enabled != 0u && (pages[push.totalPages - 1u].w & 2u) != 0u ? 1u : 0u;
 }
 
 [shader("compute")]
@@ -211,12 +291,13 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 {
     uint triangleIndex = push.workBase + id.x;
     if (triangleIndex >= push.triangleCount || push.enabled == 0u) { return; }
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    if (statistics[16] == 0u) { return; }
     VirtualShadowMapTriangle triangle;
     if (!loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) { return; }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
-    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     for (uint level = 0u; level < push.clipmapCount; ++level) {
         ShadowProjection projection = projections[level];
         float3 a = vsmProjectPosition(triangle.vertices[0].position.xyz, projection);
@@ -232,7 +313,8 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         for (int y = first.y; y <= last.y; ++y) {
             for (int x = first.x; x <= last.x; ++x) {
                 uint page = projection.page.x + uint(y * axis + x);
-                if (pages[page].x == 0xffffffffu) { continue; }
+                uint4 entry = pages[page];
+                if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 2u) == 0u) { continue; }
                 uint index;
                 InterlockedAdd(statistics[3], 1u, index);
                 if (index < push.workCapacity) { work[index] = uint2(triangleIndex, page); }
@@ -248,13 +330,63 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 {
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
+    RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     uint count = min(statistics[3], push.workCapacity);
     if (id.x == 0u) { statistics[4] = count; }
-    if (id.x >= push.batchCount) { return; }
-    uint first = id.x * 65535u;
-    arguments[id.x * 3u] = first < count ? min(count - first, 65535u) : 0u;
-    arguments[id.x * 3u + 1u] = 1u;
-    arguments[id.x * 3u + 2u] = 1u;
+    uint coarsePage = push.totalPages - 1u;
+    bool redrawCoarse = statistics[21] != 0u;
+    if (id.x < push.totalPages) {
+        uint4 entry = pages[id.x];
+        if (push.enabled != 0u && (entry.y & 2u) != 0u && (entry.w & 2u) != 0u) {
+            if (id.x == coarsePage || statistics[5] == 0u) { entry.w |= 1u; }
+            else { entry.w &= ~1u; }
+            pages[id.x] = entry;
+        }
+        if (id.x != coarsePage && entry.x != 0xffffffffu && (entry.w & 1u) != 0u) {
+            InterlockedAdd(statistics[24], 1u);
+        }
+    }
+    if (id.x < push.batchCount + push.coarseBatchCount) {
+        bool coarse = id.x >= push.batchCount;
+        uint first = (coarse ? id.x - push.batchCount : id.x) * 65535u;
+        uint drawCount = coarse ? (redrawCoarse ? push.triangleCount : 0u) : count;
+        arguments[id.x * 3u] = first < drawCount ? min(drawCount - first, 65535u) : 0u;
+        arguments[id.x * 3u + 1u] = 1u;
+        arguments[id.x * 3u + 2u] = 1u;
+    }
+}
+
+struct ShadowClearVertex
+{
+    float4 position : SV_Position;
+};
+
+[shader("fragment")]
+void vsmClearFragmentMain()
+{
+}
+
+[shader("mesh")]
+[numthreads(32, 1, 1)]
+[outputtopology("triangle")]
+void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+    out vertices ShadowClearVertex vertices[4], out indices uint3 triangles[2], uniform ShadowPush push)
+{
+    StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    uint owner = owners[group.x];
+    bool clear = false;
+    if (owner != 0u && push.enabled != 0u) {
+        uint4 entry = pages[owner - 1u];
+        clear = (entry.y & 2u) != 0u && (entry.w & 2u) != 0u;
+    }
+    SetMeshOutputCounts(clear ? 4u : 0u, clear ? 2u : 0u);
+    if (!clear) { return; }
+    if (lane < 4u) {
+        float2 corner = float2(lane & 1u, lane >> 1u);
+        vertices[lane].position = float4(vsmAtlasPosition(corner, group.x, push), 0.0, 1.0);
+    }
+    if (lane < 2u) { triangles[lane] = lane == 0u ? uint3(0u, 2u, 1u) : uint3(1u, 2u, 3u); }
 }
 
 // Four XY half-planes turn a triangle into at most seven vertices. Clipping
@@ -408,8 +540,9 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             if (firstLevel == 0xffffffffu) { firstLevel = level; }
             uint2 texel = vsmVirtualTexel(p, projection, push.pageSize);
             uint page = vsmVirtualPage(texel, projection, push.pageSize);
-            if (pages[page].x == 0xffffffffu) { continue; }
-            physicalPage = pages[page].x;
+            uint4 entry = pages[page];
+            if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 1u) == 0u) { continue; }
+            physicalPage = entry.x;
             selectedLevel = level;
             projected = p;
             virtualTexel = texel;

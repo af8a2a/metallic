@@ -2,6 +2,8 @@
 
 对应 [实施方案](VirtualShadowMapsResearch.md) 的 P1，建立在 [P0 页内裁剪验证](VirtualShadowMapPrototype.md) 上。
 
+后续 [P2](VirtualShadowMapsP2.md) 已扩展持久缓存、Sun/Moon 与统计 ABI：当前 `statistics` 为 32×uint32（128 B），索引 0–15 保留下文 P1 含义。P1 sample 保持 `cacheEnabled=false` 的逐帧重画行为；本文验证结果记录的是 P1 阶段，不作为 P2 缓存验收结果。
+
 ## 当前实现
 
 新增可选 `virtual-shadow-map-p1` sample 与 `VirtualShadowMapPass`。图从 VBuffer 的真实深度和匹配的 `rasterInfo` 重建接收点，生成按需页，光栅完整场景 caster，再把硬阴影交给 `VisibilityBufferDeferredPass`。固定使用 Sun 槽位 0，不申请 TLAS 或 RayQuery。默认图切换仍属于 P5。
@@ -23,7 +25,7 @@ P1 每帧重新标页、分配和绘制。固定 shader/pipeline 按 Device 和 
 
 ## 图接口与配置
 
-输入：`depth`（D32）及 `rasterInfo`（144 B，同 scene/view/frame）。输出：`shadow`（R8 硬可见度）、`parameters`（320 B 单灯过渡接口）、`debug`（RGBA8）、`statistics`（16×uint32）。同一太阳通过旧接口的 tagged identity 匹配；硬阴影 0/1 与既有 sqrt 编码兼容，不改变 Deferred 的解码约定。
+输入：`depth`（D32）及 `rasterInfo`（144 B，同 scene/view/frame）。输出：`shadow`（R8 硬可见度）、`parameters`（320 B 单灯过渡接口）、`debug`（RGBA8）、`statistics`（当前 32×uint32，P1 定义前 16 项）。同一太阳通过旧接口的 tagged identity 匹配；硬阴影 0/1 与既有 sqrt 编码兼容，不改变 Deferred 的解码约定。
 
 | 属性 | 默认值 | 含义 |
 | --- | ---: | --- |

@@ -59,11 +59,11 @@ public:
 
     RHITestResult run(RHITestContext& context) override
     {
-        static_assert(sizeof(SceneResourceParameters) == 392);
+        static_assert(sizeof(SceneResourceParameters) == 400);
         const auto fail = [](const std::string& text) { return RHITestResult::fail(text); };
         std::string log;
         const SlangMacroDefine validDefines[] = {
-            {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "392"}};
+            {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "400"}};
         SlangShaderDesc source{.moduleName = "TrustedSceneResourceProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = validDefines};
         ResourceComputeKernelDesc layout{.requiresRayQuery = false,
@@ -144,7 +144,7 @@ public:
             for (bool trusted : {false, true}) {
                 const SlangMacroDefine defines[] = {
                     {"METALLIC_INLINE_COMPUTE_ROOT", "1"},
-                    {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", trusted ? "392" : "0"}};
+                    {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", trusted ? "400" : "0"}};
                 source.macroDefines = defines;
                 source.descriptorHeapMode = mode;
                 auto shader = compileSlangShaderToSpirv(source, log);

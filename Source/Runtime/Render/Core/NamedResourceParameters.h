@@ -141,9 +141,11 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC EnvironmentResourceParameters environment;
     DR_PUBLIC DR_BUFFER textureDemandMip;
     DR_PUBLIC DR_BUFFER textureDemandHits;
+    DR_PUBLIC DR_BUFFER moonShadowParameters;
+    DR_PUBLIC DR_SAMPLED(2D<float>) moonShadowVisibility;
 };
 #ifdef __cplusplus
-static_assert(sizeof(SceneResourceParameters) == 392);
+static_assert(sizeof(SceneResourceParameters) == 400);
 static_assert(offsetof(SceneResourceParameters, environment) == 356);
 static_assert(offsetof(SceneResourceParameters, environment) + sizeof(EnvironmentResourceParameters) ==
     offsetof(SceneResourceParameters, textureDemandMip));
@@ -276,6 +278,8 @@ DR_SCENE_OFFSET(kSceneRayStreamPagesOffset, rayStreamPages, 256);
 DR_SCENE_OFFSET(kSceneReGIRGridOffset, regirGrid, 260);
 DR_SCENE_OFFSET(kSceneShadowParametersOffset, shadowParameters, 288);
 DR_SCENE_OFFSET(kSceneShadowVisibilityOffset, shadowVisibility, 296);
+DR_SCENE_OFFSET(kSceneMoonShadowParametersOffset, moonShadowParameters, 392);
+DR_SCENE_OFFSET(kSceneMoonShadowVisibilityOffset, moonShadowVisibility, 396);
 DR_SCENE_OFFSET(kSceneSharcOffset, sharcAccumulation, 300);
 DR_SCENE_OFFSET(kSceneStreamGroupsOffset, streamGroups, 312);
 DR_SCENE_OFFSET(kSceneStreamPageCountOffset, streamPageCount, 316);
@@ -308,14 +312,14 @@ DR_PUBLIC struct ScenePrimarySplitResourceParameters
 };
 #ifdef __cplusplus
 inline constexpr uint32_t kOpenPBRPrimaryHitStride = 100;
-inline constexpr uint32_t kScenePrimaryHitsOffset = 392;
+inline constexpr uint32_t kScenePrimaryHitsOffset = 400;
 static_assert(offsetof(ScenePrimarySplitResourceParameters, scene) == 0);
 static_assert(offsetof(ScenePrimarySplitResourceParameters, primaryHits) == kScenePrimaryHitsOffset);
-static_assert(offsetof(ScenePrimarySplitResourceParameters, reserved) == 396);
-static_assert(sizeof(ScenePrimarySplitResourceParameters) == 400);
+static_assert(offsetof(ScenePrimarySplitResourceParameters, reserved) == 404);
+static_assert(sizeof(ScenePrimarySplitResourceParameters) == 408);
 #else
 public static const uint kOpenPBRPrimaryHitStride = 100;
-public static const uint kScenePrimaryHitsOffset = 392;
+public static const uint kScenePrimaryHitsOffset = 400;
 #endif
 
 // Opt-in path diagnostics extend only their own packet; production offsets stay fixed.
@@ -325,8 +329,8 @@ DR_PUBLIC struct ScenePathDiagnosticResourceParameters
     DR_PUBLIC DR_STORAGE(2D<float4>) pathDiagnostics;
 };
 #ifdef __cplusplus
-static_assert(offsetof(ScenePathDiagnosticResourceParameters, pathDiagnostics) == 392);
-static_assert(sizeof(ScenePathDiagnosticResourceParameters) == 400);
+static_assert(offsetof(ScenePathDiagnosticResourceParameters, pathDiagnostics) == 400);
+static_assert(sizeof(ScenePathDiagnosticResourceParameters) == 408);
 #endif
 
 DR_PUBLIC struct OutputImageResourceParameters

@@ -76,6 +76,8 @@ float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
 
 #define gRealtimeShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
 #define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
+#define gRealtimeMoonShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneMoonShadowVisibilityOffset))
+#define gRealtimeMoonShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMoonShadowParametersOffset))
 #define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kScenePreviousEnvironmentIrradianceSHOffset))
 
 public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
@@ -134,11 +136,18 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
     }
     public float3 visibility(SurfaceLightSample light)
     {
+        if (openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)) { return float3(1); }
         ShadowParameters shadow = gRealtimeShadowParameters[0];
-        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
-            shadow.control.x != 0u && light.source == shadow.control.z) {
+        if (shadow.control.x != 0u && light.source == shadow.control.z) {
             float encoded = gRealtimeShadow.Load(int3(uint2(pixel), 0));
             return float3(encoded * encoded);
+        }
+        if (light.source == celestialSourceIdentity(1u)) {
+            ShadowParameters moon = gRealtimeMoonShadowParameters[0];
+            if (moon.control.x != 0u && moon.control.z == celestialSourceIdentity(1u)) {
+                float encoded = gRealtimeMoonShadow.Load(int3(uint2(pixel), 0));
+                return float3(encoded * encoded);
+            }
         }
         return float3(1);
     }

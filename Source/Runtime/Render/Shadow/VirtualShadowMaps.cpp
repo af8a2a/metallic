@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Scene/scene.h"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cfloat>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -28,8 +30,10 @@ struct ShadowPush
     uint32_t physicalPagesX, physicalPagesY, physicalPageCount, pageSize;
     uint32_t workCapacity, batchCount, workBase, rasterCoarse;
     uint32_t sampler, enabled, totalPages, reserved;
+    uint32_t previousPages, reuse, owners, cacheMode;
+    uint32_t coarseBatchCount, cancelledCount, cacheEpoch, dirtyBoundsCount;
 };
-static_assert(sizeof(ShadowPush) == 112);
+static_assert(sizeof(ShadowPush) == 144);
 
 struct ShadowProjection
 {
@@ -78,7 +82,8 @@ std::vector<ShadowProjection> makeProjections(const scene::Bounds& bounds, const
             low[axis] = std::min(low[axis], light[axis]); high[axis] = std::max(high[axis], light[axis]);
         }
     }
-    const float margin = std::max(0.01f, settings.shadowBias * 2);
+    const float margin = std::max(0.01f, settings.shadowBias * 2) +
+        (settings.cacheEnabled ? std::max(high[2] - low[2], 1.f) * .25f : 0.f);
     low[2] -= margin; high[2] += margin;
     const float depthRange = std::max(high[2] - low[2], 0.01f);
     const Vector eye{view.current.eye[0], view.current.eye[1], view.current.eye[2]};
@@ -88,7 +93,7 @@ std::vector<ShadowProjection> makeProjections(const scene::Bounds& bounds, const
         const bool coarse = level == settings.clipmapCount;
         const uint32_t axis = coarse ? 1 : settings.virtualPagesPerAxis;
         const float extent = coarse ? std::max({(high[0] - low[0]) * .5f, (high[1] - low[1]) * .5f, 0.01f}) *
-            (1.0f + 4.0f / settings.pageSize) + margin : std::ldexp(settings.firstClipmapExtent, int(level));
+            (1.0f + 4.0f / settings.pageSize + (settings.cacheEnabled ? .25f : 0.f)) + margin : std::ldexp(settings.firstClipmapExtent, int(level));
         const float pageWorldSize = 2 * extent / axis;
         const float centerX = coarse ? (low[0] + high[0]) * .5f : std::floor(eyeLight[0] / pageWorldSize) * pageWorldSize;
         const float centerY = coarse ? (low[1] + high[1]) * .5f : std::floor(eyeLight[1] / pageWorldSize) * pageWorldSize;
@@ -101,15 +106,77 @@ std::vector<ShadowProjection> makeProjections(const scene::Bounds& bounds, const
     return result;
 }
 
+std::pair<Vector, Vector> projectedBounds(const scene::Bounds& bounds, const ShadowProjection& projection)
+{
+    Vector low{FLT_MAX, FLT_MAX, FLT_MAX}, high{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    const std::array rows{projection.rowX, projection.rowY, projection.rowZ};
+    for (uint32_t corner = 0; corner < 8; ++corner) {
+        const Vector p{corner & 1 ? bounds.max.x : bounds.min.x, corner & 2 ? bounds.max.y : bounds.min.y,
+            corner & 4 ? bounds.max.z : bounds.min.z};
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const auto& row = rows[axis];
+            const float value = row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + row[3];
+            low[axis] = std::min(low[axis], value); high[axis] = std::max(high[axis], value);
+        }
+    }
+    return {low, high};
+}
+
+bool compatibleSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSettings& b)
+{
+    return a.pageSize == b.pageSize && a.virtualPagesPerAxis == b.virtualPagesPerAxis &&
+        a.clipmapCount == b.clipmapCount && a.physicalPageCount == b.physicalPageCount &&
+        a.firstClipmapExtent == b.firstClipmapExtent && a.shadowBias == b.shadowBias && a.enabled == b.enabled;
+}
+
+std::vector<std::array<int64_t, 2>> pageOrigins(const ViewConstants& view, Vector direction,
+    const VirtualShadowMapSettings& settings)
+{
+    const auto z = normalized(direction);
+    const auto x = normalized(cross(std::abs(z[1]) < .95f ? Vector{0, 1, 0} : Vector{1, 0, 0}, z));
+    const auto y = cross(z, x);
+    const Vector eye{view.current.eye[0], view.current.eye[1], view.current.eye[2]};
+    std::vector<std::array<int64_t, 2>> origins;
+    for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
+        const float pageWorldSize = 2 * std::ldexp(settings.firstClipmapExtent, int(level)) / settings.virtualPagesPerAxis;
+        origins.push_back({int64_t(std::floor(dot(x, eye) / pageWorldSize)), int64_t(std::floor(dot(y, eye) / pageWorldSize))});
+    }
+    return origins;
+}
+
+struct ShadowAtlas
+{
+    std::shared_ptr<Texture> texture;
+    std::shared_ptr<TextureView> view;
+};
+
 } // namespace
 
 struct VirtualShadowMaps::Programs
 {
     Device* device = nullptr;
     uint64_t coverageKey = 0;
-    std::array<std::unique_ptr<ShaderModule>, 8> shaders;
+    std::array<std::unique_ptr<ShaderModule>, 10> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 6> compute;
     std::unique_ptr<GraphicsPipeline> raster;
+    std::unique_ptr<GraphicsPipeline> clear;
+};
+
+struct VirtualShadowMaps::Cache
+{
+    Device* device = nullptr;
+    std::shared_ptr<ShadowAtlas> atlas;
+    std::shared_ptr<Buffer> pages;
+    std::vector<ShadowProjection> projections;
+    std::vector<std::array<int64_t, 2>> origins;
+    std::vector<VirtualShadowMapCasterState> casters;
+    VirtualShadowMapSettings settings;
+    Vector direction;
+    uint64_t sceneIdentity = 0, structuralRevision = 0, dependencyKey = 0;
+    uint32_t epoch = 0;
+    bool enabled = false;
+    GPUCompletionPoint completion;
+    std::shared_ptr<SubmissionTransaction> submission;
 };
 
 struct VirtualShadowMaps::State
@@ -118,10 +185,12 @@ struct VirtualShadowMaps::State
     std::shared_ptr<ResourceRegistry> registry;
     std::shared_ptr<Programs> programs;
     std::vector<ResourceLease> leases;
-    // materials, page table, coverage, work, statistics, projections, view, indirect.
-    std::array<std::unique_ptr<Buffer>, 8> buffers;
-    std::array<std::unique_ptr<Texture>, 3> textures; // atlas, shadow, debug
-    std::array<std::unique_ptr<TextureView>, 3> views;
+    // materials, page table, coverage, work, statistics, projections, view, indirect, reuse, owners.
+    std::array<std::shared_ptr<Buffer>, 10> buffers;
+    std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
+    std::array<std::shared_ptr<TextureView>, 3> views;
+    std::shared_ptr<Cache> previous;
+    std::shared_ptr<Cache> next;
 };
 
 VirtualShadowMaps::VirtualShadowMaps() = default;
@@ -165,6 +234,24 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     }
     const auto coverage = MaterialValueProgramSet::create(materials, log);
     if (!coverage) { return makeError(Error::InvalidArgument); }
+    auto* frame = RenderFrameContext::from(commands);
+    if (settings.cacheEnabled && (!frame || !frame->recording())) {
+        log += "Persistent VSM requires a recording RenderFrameContext.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    uint32_t cancelledCount = 0;
+    if (pending_) {
+        if (pending_->submission->cancelled() || pending_->completion.isCancelled()) {
+            pending_.reset();
+            cancelledCount = 1;
+        } else if (pending_->submission->resolved() && pending_->completion.isSubmitted()) {
+            cache_ = std::move(pending_);
+        } else {
+            log += "Previous VSM recording must be submitted or cancelled before recording again.\n";
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    if (!settings.cacheEnabled) { cache_.reset(); }
     auto state = std::make_shared<State>();
     auto registry = ResourceRegistry::forDevice(device);
     if (!registry) { return std::unexpected(registry.error()); }
@@ -179,13 +266,87 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.pageSize = settings.pageSize;
     push.workCapacity = settings.maxWorkItems;
     push.batchCount = (settings.maxWorkItems + kDrawBatchSize - 1) / kDrawBatchSize;
+    push.coarseBatchCount = (casters.triangleCapacity + kDrawBatchSize - 1) / kDrawBatchSize;
+    push.cancelledCount = cancelledCount;
     push.enabled = enabled;
     push.totalPages = settings.clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1;
     state->leases = casters.leases;
     auto geometry = state->registry->storageBuffer(*casters.parameters);
     if (!geometry) { return std::unexpected(geometry.error()); }
     push.geometry = geometry->shaderIndex(); state->leases.push_back(*geometry);
-    const auto projections = makeProjections(casters.bounds, view, direction, settings);
+    auto projections = makeProjections(casters.bounds, view, direction, settings);
+    const auto origins = pageOrigins(view, direction, settings);
+    bool reuse = cache_ && cache_->device == &device && cache_->direction == direction && cache_->enabled == enabled &&
+        compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
+        cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey;
+    if (reuse && casters.bounds.valid) {
+        const auto [low, high] = projectedBounds(casters.bounds, cache_->projections.back());
+        const float xyMargin = 2.f / settings.pageSize;
+        const float zMargin = cache_->projections.back().metric[2];
+        reuse = low[0] > -1 + xyMargin && high[0] < 1 - xyMargin &&
+            low[1] > -1 + xyMargin && high[1] < 1 - xyMargin && low[2] > zMargin && high[2] < 1 - zMargin;
+    }
+    std::vector<scene::Bounds> dirtyBounds;
+    if (reuse) {
+        for (size_t index = 0; index < projections.size(); ++index) {
+            projections[index].rowZ = cache_->projections[index].rowZ;
+            projections[index].metric[2] = cache_->projections[index].metric[2];
+        }
+        projections.back() = cache_->projections.back();
+        size_t oldIndex = 0, newIndex = 0;
+        while (oldIndex < cache_->casters.size() || newIndex < casters.states.size()) {
+            const auto* old = oldIndex < cache_->casters.size() ? &cache_->casters[oldIndex] : nullptr;
+            const auto* next = newIndex < casters.states.size() ? &casters.states[newIndex] : nullptr;
+            if (old && (!next || old->id < next->id)) {
+                dirtyBounds.push_back(old->bounds); ++oldIndex;
+            } else if (next && (!old || next->id < old->id)) {
+                dirtyBounds.push_back(next->bounds); ++newIndex;
+            } else {
+                if (old->contentKey != next->contentKey) {
+                    dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
+                }
+                ++oldIndex; ++newIndex;
+            }
+        }
+        state->previous = cache_;
+        if (auto r = addCommandDependency(commands, cache_->completion); !r) { return std::unexpected(r.error()); }
+        auto lease = state->registry->storageBuffer(*cache_->pages);
+        if (!lease) { return std::unexpected(lease.error()); }
+        push.previousPages = lease->shaderIndex(); state->leases.push_back(*lease);
+    }
+    push.cacheMode = (reuse ? 1u : 8u) | (settings.cacheEnabled ? 2u : 0u) | (settings.forceRedraw ? 4u : 0u);
+    push.cacheEpoch = reuse ? cache_->epoch : (cache_ ? cache_->epoch + 1 : 1);
+    push.dirtyBoundsCount = static_cast<uint32_t>(dirtyBounds.size());
+    std::vector<std::array<uint32_t, 2>> remapping(push.totalPages, {UINT32_MAX, 1u});
+    if (reuse) {
+        const int64_t axis = settings.virtualPagesPerAxis;
+        for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
+            const auto dx = origins[level][0] - cache_->origins[level][0];
+            const auto dy = origins[level][1] - cache_->origins[level][1];
+            for (int64_t y = 0; y < axis; ++y) {
+                for (int64_t x = 0; x < axis; ++x) {
+                    const int64_t oldX = x + dx, oldY = y + dy;
+                    auto& entry = remapping[level * axis * axis + y * axis + x];
+                    entry = {oldX >= 0 && oldX < axis && oldY >= 0 && oldY < axis ?
+                        uint32_t(level * axis * axis + oldY * axis + oldX) : UINT32_MAX, settings.forceRedraw ? 1u : 0u};
+                }
+            }
+            for (const auto& bounds : dirtyBounds) {
+                if (!bounds.valid) { continue; }
+                const auto [low, high] = projectedBounds(bounds, projections[level]);
+                if (high[0] < -1 || low[0] > 1 || high[1] < -1 || low[1] > 1) { continue; }
+                const auto page = [axis](float v, float epsilon) {
+                    return std::clamp(int(std::floor((std::clamp(v, -1.f, 1.f) * .5f + .5f) * axis + epsilon)), 0, int(axis - 1));
+                };
+                for (int y = page(low[1], -.0001f); y <= page(high[1], .0001f); ++y) {
+                    for (int x = page(low[0], -.0001f); x <= page(high[0], .0001f); ++x) {
+                        remapping[level * axis * axis + y * axis + x][1] = 1;
+                    }
+                }
+            }
+        }
+        remapping.back() = {push.totalPages - 1, !dirtyBounds.empty() || settings.forceRedraw ? 1u : 0u};
+    }
     std::vector<ShadowMaterial> gpuMaterials;
     for (size_t index = 0; index < materials.size(); ++index) {
         const auto& material = materials[index];
@@ -201,12 +362,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             {transform[0], transform[1], transform[2], 0}, {transform[3], transform[4], transform[5], 0}});
     }
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
-        coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 64,
-        projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount) * 12};
-    const uint32_t strides[]{64, 16, 4, 8, 4, 80, 208, 4};
-    const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr};
+        coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128,
+        projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
+        remapping.size() * sizeof(remapping[0]), uint64_t(push.physicalPageCount) * 4};
+    const uint32_t strides[]{64, 16, 4, 8, 4, 80, 208, 4, 8, 4};
+    const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
+        remapping.data(), nullptr};
     uint32_t* indices[]{&push.materials, &push.pages, &push.coverageInputs, &push.workItems,
-        &push.statistics, &push.projections, &push.view, &push.arguments};
+        &push.statistics, &push.projections, &push.view, &push.arguments, &push.reuse, &push.owners};
     for (size_t index = 0; index < state->buffers.size(); ++index) {
         auto buffer = device.createBuffer({.size = sizes[index], .structureStride = strides[index],
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
@@ -228,15 +391,20 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const Format formats[]{Format::D32Sfloat, Format::R8Unorm, Format::RGBA8Unorm};
     uint32_t* textureIndices[]{&push.atlas, &push.shadow, &push.debug};
     for (size_t index = 0; index < 3; ++index) {
-        auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferSource |
-            (index == 0 ? TextureUsageBits::DepthStencilAttachment : TextureUsageBits::Storage),
-            .format = formats[index], .width = index == 0 ? push.physicalPagesX * push.pageSize : width,
-            .height = index == 0 ? push.physicalPagesY * push.pageSize : height});
-        if (!texture) { return std::unexpected(texture.error()); }
-        state->textures[index] = std::move(*texture);
-        auto textureView = device.createTextureView(*state->textures[index], {.format = formats[index]});
-        if (!textureView) { return std::unexpected(textureView.error()); }
-        state->views[index] = std::move(*textureView);
+        if (index == 0 && reuse) {
+            state->textures[index] = cache_->atlas->texture;
+            state->views[index] = cache_->atlas->view;
+        } else {
+            auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferSource |
+                (index == 0 ? TextureUsageBits::DepthStencilAttachment : TextureUsageBits::Storage),
+                .format = formats[index], .width = index == 0 ? push.physicalPagesX * push.pageSize : width,
+                .height = index == 0 ? push.physicalPagesY * push.pageSize : height});
+            if (!texture) { return std::unexpected(texture.error()); }
+            state->textures[index] = std::move(*texture);
+            auto textureView = device.createTextureView(*state->textures[index], {.format = formats[index]});
+            if (!textureView) { return std::unexpected(textureView.error()); }
+            state->views[index] = std::move(*textureView);
+        }
         auto lease = index == 0 ? state->registry->sampledImage(*state->views[index]) : state->registry->storageImage(*state->views[index]);
         if (!lease) { return std::unexpected(lease.error()); }
         *textureIndices[index] = lease->shaderIndex(); state->leases.push_back(*lease);
@@ -256,7 +424,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->device = &device;
         programs->coverageKey = coverage->coverageKey();
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
-            "vsmRasterMeshMain", "vsmDepthFragmentMain"};
+            "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -282,10 +450,17 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = CompareOp::GreaterEqual}, .usesBindlessHeap = true});
         if (!raster) { return std::unexpected(raster.error()); }
         programs->raster = std::move(*raster);
+        auto clear = ShaderRegistry::instance().getGraphicsPipeline(device, {.meshShader = {programs->shaders[8].get()},
+            .fragmentShader = {programs->shaders[9].get()},
+            .depthStencilFormat = Format::D32Sfloat, .rasterization = {.cullMode = CullMode::None},
+            .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = CompareOp::Always}, .usesBindlessHeap = true});
+        if (!clear) { return std::unexpected(clear.error()); }
+        programs->clear = std::move(*clear);
         programs_ = std::move(programs);
     }
     // Every submitted frame keeps its exact pipelines alive across a Coverage
-    // edit. Only immutable programs are reused; shadow resources remain fresh.
+    // edit. Cache snapshots own only the atlas and page table, never prior frame
+    // State objects, so retaining a previous snapshot cannot form a frame chain.
     state->programs = programs_;
     if (auto result = commands.retainResource(state); !result) { return std::unexpected(result.error()); }
     if (auto result = state->registry->bind(commands, state->leases); !result) { return std::unexpected(result.error()); }
@@ -302,13 +477,18 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         }
         return commands.synchronize({.buffers = barriers});
     };
-    commands.beginDebugLabel({.name = "VSM P1: demand and allocation"});
-    if (auto r = dispatch(0, (std::max({push.totalPages, 16u, push.batchCount * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({1, 4, 7}); !r) { return std::unexpected(r.error()); }
+    if (reuse) {
+        const BufferBarrierDesc previousReady{.buffer = cache_->pages.get(),
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite}, .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+        if (auto r = commands.synchronize({.buffers = {&previousReady, 1}}); !r) { return std::unexpected(r.error()); }
+    }
+    commands.beginDebugLabel({.name = "VSM: demand and cache allocation"});
+    if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, 32u, (push.batchCount + push.coarseBatchCount) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier({1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
     if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1}); !r) { return std::unexpected(r.error()); }
     if (auto r = dispatch(2, 1); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({1, 4}); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
     if (push.triangleCount && enabled) {
         // Compute dispatch limit is 65535 workgroups; split immutable triangle ranges.
         for (uint32_t base = 0; base < push.triangleCount;) {
@@ -322,28 +502,35 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         }
     }
     if (auto r = barrier({4}); !r) { return std::unexpected(r.error()); }
-    if (auto r = dispatch(4, (push.batchCount + 63) / 64); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({3, 1}, PipelineStageBits::PreRasterization, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
+    if (auto r = dispatch(4, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63) / 64); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier({3, 1, 9}, PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({7}, PipelineStageBits::DrawIndirect, AccessBits::IndirectRead); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4}); !r) { return std::unexpected(r.error()); }
     commands.endDebugLabel();
-    const TextureBarrierDesc depthBegin{.texture = state->textures[0].get(), .oldLayout = TextureLayout::Undefined,
+    const TextureBarrierDesc depthBegin{.texture = state->textures[0].get(), .oldLayout = reuse ? TextureLayout::ShaderRead : TextureLayout::Undefined,
         .newLayout = TextureLayout::DepthStencilAttachment,
+        .before = {PipelineStageBits::AllCommands, reuse ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
         .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite}};
     if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
     const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
     const RenderingAttachmentDesc attachment{.view = state->views[0].get(), .layout = TextureLayout::DepthStencilAttachment,
-        .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
-    commands.beginDebugLabel({.name = "VSM P1: coarse and fine depth"});
+        .loadOp = reuse ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
+    commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"});
     if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment}); !r) { return std::unexpected(r.error()); }
     if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
     commands.setScissor(area);
     if (enabled) {
+        if (reuse) {
+            if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+            if (auto r = commands.drawMeshTasks(push.physicalPageCount); !r) { return std::unexpected(r.error()); }
+        }
         push.rasterCoarse = 1;
-        for (uint32_t base = 0; base < push.triangleCount; base += std::min(push.triangleCount - base, kDrawBatchSize)) {
-            push.workBase = base;
+        for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
+            push.workBase = batch * kDrawBatchSize;
             if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-            if (auto r = commands.drawMeshTasks(std::min(push.triangleCount - base, kDrawBatchSize)); !r) { return std::unexpected(r.error()); }
+            auto args = state->buffers[7]->slice({uint64_t(push.batchCount + batch) * 12, 12});
+            if (!args) { return std::unexpected(args.error()); }
+            if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
         }
         push.rasterCoarse = 0;
         for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
@@ -363,7 +550,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         {.texture = state->textures[2].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}}};
     if (auto r = commands.synchronize({.textures = outputBegin}); !r) { return std::unexpected(r.error()); }
-    commands.beginDebugLabel({.name = "VSM P1: receiver projection"});
+    commands.beginDebugLabel({.name = "VSM: receiver projection"});
     if (auto r = dispatch(5, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
     commands.endDebugLabel();
     const TextureBarrierDesc outputEnd[]{
@@ -374,6 +561,20 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const BufferBarrierDesc statisticsReady{.buffer = state->buffers[4].get(),
         .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}};
     if (auto r = commands.synchronize({.textures = outputEnd, .buffers = {&statisticsReady, 1}}); !r) { return std::unexpected(r.error()); }
+    if (settings.cacheEnabled) {
+        auto next = std::make_shared<Cache>();
+        next->device = &device;
+        next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->textures[0], state->views[0]});
+        next->pages = state->buffers[1]; next->projections = std::move(projections); next->origins = origins;
+        next->casters = casters.states; next->settings = settings; next->direction = direction;
+        next->sceneIdentity = casters.sceneIdentity; next->structuralRevision = casters.structuralRevision;
+        next->dependencyKey = casters.dependencyKey; next->epoch = push.cacheEpoch; next->enabled = enabled;
+        next->completion = frame->completion();
+        next->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+        if (auto r = commands.addSubmissionTransaction(next->submission); !r) { return std::unexpected(r.error()); }
+        state->next = next;
+        pending_ = std::move(next);
+    }
     state_ = state;
     return VirtualShadowMapResult{state->textures[1].get(), state->views[1].get(), state->textures[2].get(), state->views[2].get(),
         state->buffers[4].get(), state->textures[0].get(), state->views[0].get(), state->buffers[1].get(), state->buffers[5].get()};

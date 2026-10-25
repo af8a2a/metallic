@@ -7,6 +7,14 @@ namespace metallic::render {
 
 struct MeshletStreamShadowGeometryView;
 
+struct VirtualShadowMapCasterState
+{
+    // Render-node identity is stable within the published structural revision.
+    uint64_t id = 0;
+    scene::Bounds bounds;
+    uint64_t contentKey = 0;
+};
+
 struct VirtualShadowMapCasterResources
 {
     Buffer* parameters = nullptr;
@@ -15,6 +23,14 @@ struct VirtualShadowMapCasterResources
     std::vector<ResourceLease> leases;
     std::shared_ptr<void> owner;
     bool streamed = false;
+    uint64_t sceneIdentity = 0;
+    uint64_t structuralRevision = 0;
+    // Immutable terminal geometry publication; the pass combines the current
+    // material texture publication when Coverage samples an alpha texture.
+    uint64_t dependencyKey = 0;
+    // Sorted by id. Hidden/deleted casters are absent so the cache can invalidate
+    // their previous bounds when comparing committed snapshots.
+    std::vector<VirtualShadowMapCasterState> states;
 };
 
 // Captures the complete scene, independent of primary-view visibility. Resident

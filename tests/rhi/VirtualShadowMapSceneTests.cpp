@@ -2,9 +2,12 @@
 #include "harness/ValidationRecorder.h"
 #include "harness/VulkanDiagnostics.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
+#include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -17,6 +20,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 namespace metallic::tests {
@@ -150,6 +154,7 @@ private:
 // is copied after PreviewRenderer has waited for its GPU submission.
 struct EvidenceState {
     Buffer* readback = nullptr;
+    std::map<std::string, Buffer*> namedReadbacks;
     VisibilityBufferFrameInfo camera;
 };
 
@@ -161,7 +166,7 @@ struct ReadbackLayout {
     uint64_t rasterDepth = debug + kPixels * 4;
     uint64_t receiverDepth = rasterDepth + kPixels * 4;
     uint64_t statistics = receiverDepth + kPixels * 4;
-    uint64_t parameters = statistics + 16 * sizeof(uint32_t);
+    uint64_t parameters = statistics + 32 * sizeof(uint32_t);
     uint64_t size = parameters + sizeof(ScreenSpaceShadowParameters);
 };
 
@@ -178,7 +183,7 @@ public:
         reflection.addTextureInput("debug").transferRead().format = Format::RGBA8Unorm;
         reflection.addTextureInput("rasterDepth").transferRead().format = Format::D32Sfloat;
         reflection.addTextureInput("receiverDepth").transferRead().format = Format::D32Sfloat;
-        reflection.addBufferInput("statistics").buffer(16 * sizeof(uint32_t), sizeof(uint32_t)).transferRead();
+        reflection.addBufferInput("statistics").buffer(32 * sizeof(uint32_t), sizeof(uint32_t)).transferRead();
         reflection.addBufferInput("parameters").buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).transferRead();
         reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
             .shaderRead().memoryLocation = MemoryLocation::HostUpload;
@@ -192,6 +197,9 @@ public:
         auto& commands = context.commandBuffer();
         auto* buffer = context.outputBuffer("data").buffer();
         state_->readback = buffer;
+        if (context.properties().contains("evidenceName")) {
+            state_->namedReadbacks[context.properties().at("evidenceName").get<std::string>()] = buffer;
+        }
         const char* fields[]{"shadow", "debug", "rasterDepth", "receiverDepth"};
         const uint64_t offsets[]{kReadback.shadow, kReadback.debug, kReadback.rasterDepth, kReadback.receiverDepth};
         const uint64_t sizes[]{kPixels, kPixels * 4, kPixels * 4, kPixels * 4};
@@ -203,7 +211,7 @@ public:
         }
         const char* bufferFields[]{"statistics", "parameters"};
         const uint64_t bufferOffsets[]{kReadback.statistics, kReadback.parameters};
-        const uint64_t bufferSizes[]{16 * sizeof(uint32_t), sizeof(ScreenSpaceShadowParameters)};
+        const uint64_t bufferSizes[]{32 * sizeof(uint32_t), sizeof(ScreenSpaceShadowParameters)};
         for (size_t index = 0; index < std::size(bufferFields); ++index) {
             auto source = context.inputBuffer(bufferFields[index]).buffer()->slice({0, bufferSizes[index]});
             if (!source) { return std::unexpected(source.error()); }
@@ -384,22 +392,23 @@ struct Snapshot {
     std::vector<uint8_t> shadow;
     std::vector<uint32_t> debug;
     std::vector<float> rasterDepth, receiverDepth;
-    std::array<uint32_t, 16> statistics{};
+    std::array<uint32_t, 32> statistics{};
     VisibilityBufferFrameInfo camera;
     ScreenSpaceShadowParameters parameters;
 };
 
-Snapshot snapshot(const EvidenceState& evidence)
+Snapshot snapshot(const EvidenceState& evidence, const std::string& name = {})
 {
-    require(evidence.readback != nullptr, "VSM evidence pass did not execute");
+    auto* readback = name.empty() ? evidence.readback : evidence.namedReadbacks.at(name);
+    require(readback != nullptr, "VSM evidence pass did not execute");
     require(evidence.camera.width == kWidth && evidence.camera.height == kHeight &&
         evidence.camera.viewport[1] == float(kWidth) && evidence.camera.viewport[2] == float(kHeight),
         "VSM fixture raster extent differs from the requested receiver extent");
     Snapshot result;
     result.shadow.resize(kPixels); result.debug.resize(kPixels);
     result.rasterDepth.resize(kPixels); result.receiverDepth.resize(kPixels);
-    evidence.readback->invalidate();
-    const auto* mapped = static_cast<const std::byte*>(evidence.readback->map());
+    readback->invalidate();
+    const auto* mapped = static_cast<const std::byte*>(readback->map());
     require(mapped != nullptr, "Map VSM scene evidence");
     std::memcpy(result.shadow.data(), mapped + kReadback.shadow, kPixels);
     std::memcpy(result.debug.data(), mapped + kReadback.debug, kPixels * 4);
@@ -407,7 +416,7 @@ Snapshot snapshot(const EvidenceState& evidence)
     std::memcpy(result.receiverDepth.data(), mapped + kReadback.receiverDepth, kPixels * 4);
     std::memcpy(result.statistics.data(), mapped + kReadback.statistics, sizeof(result.statistics));
     std::memcpy(&result.parameters, mapped + kReadback.parameters, sizeof(result.parameters));
-    evidence.readback->unmap();
+    readback->unmap();
     require(result.parameters.view.current.viewport[1] == float(kWidth) &&
         result.parameters.view.current.viewport[2] == float(kHeight),
         "VSM shadow view extent differs from its raster metadata");
@@ -807,7 +816,8 @@ public:
                             renderAndRequire(preview, graph);
                             const auto repeated = snapshot(*activeEvidence);
                             require(repeated.shadow == image.shadow && repeated.debug == image.debug &&
-                                repeated.statistics == image.statistics, name + ": uncached fixed scene is not deterministic across frames");
+                                std::equal(image.statistics.begin(), image.statistics.begin() + 16, repeated.statistics.begin()),
+                                name + ": uncached fixed scene is not deterministic across frames");
                         }
                     }
                     if (!metadataOnly && caster) {
@@ -837,6 +847,568 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSceneTest);
+
+std::filesystem::path writeCacheFixture(const std::filesystem::path& directory)
+{
+    const auto path = writeMaskFixture(directory);
+    Json gltf;
+    { std::ifstream input(path); input >> gltf; }
+    gltf["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"][3] = 1;
+    std::ofstream output(path);
+    output << gltf.dump(2) << '\n';
+    require(bool(output), "Write VSM cache fixture");
+    return path;
+}
+
+void addCacheEvidence(RenderGraph& graph, const std::string& shadow, const std::string& evidence)
+{
+    graph.addNode("VSMEvidencePass", evidence, {{"evidenceName", shadow}});
+    graph.addEdge("Raster.depth", evidence + ".rasterDepth");
+    graph.addEdge("Receiver.depth", evidence + ".receiverDepth");
+    graph.addEdge("Receiver.rasterInfo", evidence + ".rasterInfo");
+    graph.addEdge(shadow + ".shadow", evidence + ".shadow");
+    graph.addEdge(shadow + ".debug", evidence + ".debug");
+    graph.addEdge(shadow + ".statistics", evidence + ".statistics");
+    graph.addEdge(shadow + ".parameters", evidence + ".parameters");
+    graph.markOutput(evidence + ".color");
+}
+
+RenderGraph makeCacheGraph(const std::filesystem::path& source, const std::filesystem::path& cache)
+{
+    auto graph = makeGraph(source, cache, Case{.pool = 512});
+    auto settings = graph.findNode("Shadows")->properties;
+    settings["cacheEnabled"] = true;
+    settings["forceRedraw"] = false;
+    settings["lightIndex"] = 0;
+    require(graph.setNodeProperties(graph.findNode("Shadows")->id, settings), "Set cached Sun");
+    require(graph.setNodeProperties(graph.findNode("Evidence")->id, {{"evidenceName", "Shadows"}}), "Name cached Sun evidence");
+    for (const auto& name : {"SunReference", "Moon", "MoonReference"}) {
+        auto lightSettings = settings;
+        lightSettings["lightIndex"] = std::string_view(name).starts_with("Moon") ? 1 : 0;
+        lightSettings["forceRedraw"] = std::string_view(name).ends_with("Reference");
+        graph.addNode("VirtualShadowMapPass", name, lightSettings);
+        graph.addEdge("Receiver.depth", std::string(name) + ".depth");
+        graph.addEdge("Receiver.rasterInfo", std::string(name) + ".rasterInfo");
+        addCacheEvidence(graph, name, std::string(name) + "Evidence");
+    }
+    return graph;
+}
+
+void saveVisibility(const std::filesystem::path& path, const std::vector<uint8_t>& visibility)
+{
+    std::vector<uint32_t> image(kPixels);
+    for (size_t index = 0; index < kPixels; ++index) {
+        image[index] = rgba(visibility[index], visibility[index], visibility[index]);
+    }
+    saveImage(path, image);
+}
+
+struct CacheFrame {
+    Snapshot sun, moon, sunReference, moonReference;
+};
+
+CacheFrame compareCacheFrame(RenderGraphPreviewRenderer& preview, RenderGraph& graph,
+    const std::filesystem::path& directory, const std::string& name, Json& report, bool allowWorkOverflow = false)
+{
+    renderAndRequire(preview, graph);
+    CacheFrame frame{snapshot(*activeEvidence, "Shadows"), snapshot(*activeEvidence, "Moon"),
+        snapshot(*activeEvidence, "SunReference"), snapshot(*activeEvidence, "MoonReference")};
+    Json step{{"name", name}, {"sun", frame.sun.statistics}, {"moon", frame.moon.statistics},
+        {"sunReference", frame.sunReference.statistics}, {"moonReference", frame.moonReference.statistics}};
+    for (const auto& [label, cached, reference] : {
+        std::tuple{"Sun", &frame.sun, &frame.sunReference}, std::tuple{"Moon", &frame.moon, &frame.moonReference}}) {
+        size_t mismatches = 0;
+        for (size_t index = 0; index < kPixels; ++index) { mismatches += cached->shadow[index] != reference->shadow[index]; }
+        step[std::string(label) + "Mismatches"] = mismatches;
+        saveVisibility(directory / (name + "-" + label + "-Cache.png"), cached->shadow);
+        saveVisibility(directory / (name + "-" + label + "-Redraw.png"), reference->shadow);
+        saveImage(directory / (name + "-" + label + "-Levels.png"), cached->debug);
+        require(cached->rasterDepth == reference->rasterDepth, name + ": cache/reference receiver depth differs");
+        require(cached->statistics[27] == 1 && reference->statistics[26] == 1,
+            name + ": cache/reference settings did not reach the GPU");
+        require(cached->statistics[9] == 0 && (allowWorkOverflow || cached->statistics[5] == 0),
+            name + ": invalid cache receiver or unexpected work overflow");
+    }
+    report["frames"].push_back(step);
+    std::ofstream(directory / "VirtualShadowMapCache.json") << report.dump(2) << '\n';
+    require(frame.sun.shadow == frame.sunReference.shadow && frame.moon.shadow == frame.moonReference.shadow,
+        name + ": cached visibility differs from a forced redraw");
+    require(frame.sun.parameters.control[2] == kCelestialLightSourceTag &&
+        frame.moon.parameters.control[2] == (kCelestialLightSourceTag | 1u), name + ": Sun/Moon shadow identity mismatch");
+    return frame;
+}
+
+void requireCacheReused(const Snapshot& image, const std::string& name)
+{
+    require(image.statistics[16] == 0 && image.statistics[17] > 0 && image.statistics[21] == 0,
+        name + ": a stable complete cache redrew depth");
+}
+
+size_t visibilityDifference(const Snapshot& first, const Snapshot& second)
+{
+    size_t differences = 0;
+    for (size_t index = 0; index < kPixels; ++index) { differences += first.shadow[index] != second.shadow[index]; }
+    return differences;
+}
+
+void configureCachePreview(RenderGraphPreviewRenderer& preview, scene::SceneDocument& scene,
+    RenderView& view, RHITestContext& context, bench::ValidationRecorder& validation,
+    const environment::WorldEnvironment& world)
+{
+    preview.bindRuntimeScene(&scene);
+    require(view.setRenderResolution(kWidth, kHeight), "Set cache render extent");
+    require(view.setCamera({.eye = {0,4,6}, .center = {0,0,0}, .fovDegrees = 50,
+        .nearPlane = .1f, .farPlane = 100, .orthoHeight = 7}), "Set cache camera");
+    preview.bindRenderView(&view);
+    require(preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink()),
+        "Initialize cache preview");
+    preview.setEnvironment({.enabled = false});
+    auto lighting = scene.lighting();
+    lighting.autoExposure.enabled = false; lighting.exposureEV100 = 0;
+    require(preview.setLighting(lighting), "Set cache lighting");
+    require(preview.setWorldEnvironment(world), "Set cache Sun/Moon");
+}
+
+Json verifyCacheConsumers(RenderGraphPreviewRenderer& preview, const std::filesystem::path& source,
+    const std::filesystem::path& cache, const std::filesystem::path& directory)
+{
+    Json report;
+    for (bool binned : {false, true}) {
+        // A graph has one presentation output. Compile each consumer in its
+        // own graph so both use the ordinary FinalBlit presentation contract.
+        activeEvidence = std::make_shared<EvidenceState>();
+        auto graph = makeCacheGraph(source, cache);
+        const std::string consumer = binned ? "Binned" : "Flat";
+        graph.addNode("VisibilityBufferDeferredPass", consumer, {{"lightingMode", "realtime"}, {"debugView", "final"},
+            {"materialBinning", binned}, {"shadow.enabled", false}, {"accumulate", false}});
+        graph.addEdge("Raster.visibility", consumer + ".visibility");
+        graph.addEdge("Raster.depth", consumer + ".depth");
+        graph.addEdge("Raster.rasterInfo", consumer + ".rasterInfo");
+        graph.addEdge("Shadows.shadow", consumer + ".shadow");
+        graph.addEdge("Shadows.parameters", consumer + ".shadowParameters");
+        graph.addEdge("Moon.shadow", consumer + ".moonShadow");
+        graph.addEdge("Moon.parameters", consumer + ".moonShadowParameters");
+        graph.addNode("FinalBlitPass", consumer + "Output");
+        graph.addEdge(consumer + ".color", consumer + "Output.source");
+        graph.markOutput(consumer + "Output.color");
+        std::array<std::vector<uint32_t>, 3> images;
+        for (uint32_t mode = 0; mode < 3; ++mode) {
+            require(graph.setNodeRuntimeProperty(graph.findNode("Shadows")->id, "enabled", mode != 1), "Set Sun consumer control");
+            require(graph.setNodeRuntimeProperty(graph.findNode("Moon")->id, "enabled", mode != 2), "Set Moon consumer control");
+            for (uint32_t frame = 0; frame < 3; ++frame) { renderAndRequire(preview, graph, consumer + "Output.color"); }
+            images[mode] = preview.pixels();
+            saveImage(directory / ("Consumer-" + consumer + "-" + std::to_string(mode) + ".png"), images[mode]);
+        }
+        std::array<size_t, 2> changed{};
+        for (uint32_t mode = 1; mode < 3; ++mode) {
+            for (size_t pixel = 0; pixel < kPixels; ++pixel) { changed[mode - 1] += images[mode][pixel] != images[0][pixel]; }
+            require(changed[mode - 1] > 100, consumer + ": independently disabling a celestial shadow did not affect lighting");
+        }
+        report[consumer] = {{"sunChangedPixels", changed[0]}, {"moonChangedPixels", changed[1]}};
+    }
+    return report;
+}
+
+// Bind every recording to a real frame. In particular, accepting an unrelated
+// prefix must not make a cancelled VSM tail eligible for cache publication.
+struct CacheCommands {
+    RenderFrameContext frame;
+    QueueSubmissionTracker tracker;
+    std::unique_ptr<CommandPool> pool;
+    std::unique_ptr<CommandBuffer> commands;
+    std::unique_ptr<CommandBuffer> prefix;
+    uint64_t index = 0;
+
+    explicit CacheCommands(Device& device)
+    {
+        auto& queue = *device.getQueue(QueueType::Graphics);
+        require(tracker.initialize(device, queue), "Cache submission tracker");
+        require(device.createCommandPool(queue).transform([&](auto value) { pool = std::move(value); }), "Cache command pool");
+        require(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }), "Cache commands");
+        require(pool->createCommandBuffer().transform([&](auto value) { prefix = std::move(value); }), "Cache prefix commands");
+    }
+    ~CacheCommands()
+    {
+        frame.cancel();
+        if (frame.completion().isSubmitted()) { (void)frame.wait(); }
+        if (pool) { (void)pool->reset(); }
+        (void)frame.reset();
+    }
+    void begin()
+    {
+        require(frame.begin(index++), "Begin cache frame");
+        require(pool->reset(), "Reset cache pool");
+        require(commands->begin(frame.submissionContext()), "Begin cache recording");
+    }
+    void finish(uint32_t cancelMode = 0)
+    {
+        require(commands->end(), "End cache recording");
+        if (cancelMode == 2) {
+            require(prefix->begin(frame.submissionContext()), "Begin unrelated prefix");
+            require(prefix->end(), "End unrelated prefix");
+            CommandBuffer* accepted[]{prefix.get()};
+            require(tracker.submitSegment({.commandBuffers = accepted}, frame), "Submit unrelated prefix");
+        }
+        if (cancelMode != 0) {
+            frame.cancel();
+            if (cancelMode == 2) {
+                require(frame.completion().isSubmitted(), "Partial cancellation lacks accepted prefix");
+                require(frame.wait(), "Wait accepted prefix");
+            }
+            return;
+        }
+        CommandBuffer* buffers[]{commands.get()};
+        require(tracker.submit({.commandBuffers = buffers}, frame), "Submit cache recording");
+        require(frame.wait(), "Wait cache recording");
+    }
+};
+
+Json verifyCacheCancellation(Device& device, scene::SceneDocument& scene, const Snapshot& receiver,
+    const std::filesystem::path& directory, const std::filesystem::path& receiverOnlySource)
+{
+    std::unique_ptr<Texture> depth;
+    std::unique_ptr<TextureView> depthView;
+    require(device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+        .format = Format::D32Sfloat, .width = kWidth, .height = kHeight})
+        .transform([&](auto value) { depth = std::move(value); }), "Actual raster depth upload texture");
+    require(device.createTextureView(*depth, {.format = Format::D32Sfloat})
+        .transform([&](auto value) { depthView = std::move(value); }), "Actual raster depth upload view");
+    auto upload = device.createBuffer({.size = kPixels * sizeof(float), .usage = BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::HostUpload});
+    require(upload, "Actual raster depth upload buffer");
+    auto* mapped = (*upload)->map();
+    require(mapped != nullptr, "Map actual raster depth upload");
+    std::memcpy(mapped, receiver.rasterDepth.data(), kPixels * sizeof(float));
+    (*upload)->flush(); (*upload)->unmap();
+    constexpr uint64_t statisticsOffset = (kPixels + 3) & ~uint64_t(3);
+    auto readback = device.createBuffer({.size = statisticsOffset + 32 * sizeof(uint32_t),
+        .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback});
+    require(readback, "Cancellation result readback");
+    VirtualShadowMaps cached, reference;
+    CacheCommands gpu(device);
+    gpu.begin();
+    const TextureBarrierDesc uploadBegin{.texture = depth.get(), .oldLayout = TextureLayout::Undefined,
+        .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+    require(gpu.commands->synchronize({.textures = {&uploadBegin, 1}}), "Actual depth upload barrier");
+    require((*upload)->slice().and_then([&](const auto& slice) {
+        return gpu.commands->copyBufferToTexture({.texture = depth.get(), .buffer = slice, .width = kWidth, .height = kHeight});
+    }), "Upload actual raster receiver depth");
+    const TextureBarrierDesc uploadEnd{.texture = depth.get(), .oldLayout = TextureLayout::TransferDestination,
+        .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+    require(gpu.commands->synchronize({.textures = {&uploadEnd, 1}}), "Uploaded receiver depth ready");
+    gpu.finish();
+
+    GPUCelestialLight light;
+    light.direction[0] = std::sqrt(.5f); light.direction[1] = -std::sqrt(.5f);
+    light.flags = kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow;
+    light.irradiance[0] = light.irradiance[1] = light.irradiance[2] = 3;
+    VirtualShadowMapSettings settings;
+    settings.physicalPageCount = 512;
+    settings.cacheEnabled = true;
+    std::string log;
+    auto record = [&](VirtualShadowMaps& renderer, bool force, uint32_t cancelMode) {
+        gpu.begin();
+        auto view = receiver.parameters.view;
+        view.frame[0] = uint32_t(gpu.index);
+        auto casters = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, nullptr, log);
+        require(casters, "Cancellation caster preparation: " + log);
+        settings.forceRedraw = force;
+        auto result = renderer.record(device, *gpu.commands, *depthView, view, light, *casters,
+            scene.materials(), {}, settings, log);
+        require(result, "Cancellation shadow record: " + log);
+        const TextureBarrierDesc shadowRead{.texture = result->texture, .oldLayout = TextureLayout::ShaderRead,
+            .newLayout = TextureLayout::TransferSource, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+        const BufferBarrierDesc statsRead{.buffer = result->statistics,
+            .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+        require(gpu.commands->synchronize({.textures = {&shadowRead, 1}, .buffers = {&statsRead, 1}}), "Cancellation readback barrier");
+        require((*readback)->slice({0, kPixels}).and_then([&](const auto& slice) {
+            return gpu.commands->copyTextureToBuffer({.texture = result->texture, .buffer = slice, .width = kWidth, .height = kHeight});
+        }), "Cancellation shadow readback");
+        auto source = result->statistics->slice({0, 32 * sizeof(uint32_t)});
+        auto destination = (*readback)->slice({statisticsOffset, 32 * sizeof(uint32_t)});
+        require(source, "Cancellation statistics source"); require(destination, "Cancellation statistics destination");
+        require(gpu.commands->copyBuffer(*source, *destination), "Cancellation statistics readback");
+        const TextureBarrierDesc shadowRestore{.texture = result->texture, .oldLayout = TextureLayout::TransferSource,
+            .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}};
+        const BufferBarrierDesc statsRestore{.buffer = result->statistics,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+        require(gpu.commands->synchronize({.textures = {&shadowRestore, 1}, .buffers = {&statsRestore, 1}}), "Restore cache result states");
+        gpu.finish(cancelMode);
+        Snapshot image;
+        if (cancelMode == 0) {
+            (*readback)->invalidate();
+            const auto* bytes = static_cast<const uint8_t*>((*readback)->map());
+            require(bytes != nullptr, "Map cancellation readback");
+            image.shadow.assign(bytes, bytes + kPixels);
+            std::memcpy(image.statistics.data(), bytes + statisticsOffset, sizeof(image.statistics));
+            (*readback)->unmap();
+        }
+        return image;
+    };
+    const auto original = scene.nodes()[1].localMatrix;
+    Json report;
+    (void)record(cached, false, 0);
+    auto stable = record(cached, false, 0);
+    requireCacheReused(stable, "Low-level stable cache");
+    (void)record(reference, true, 0);
+    for (uint32_t cancelMode : {1u, 2u}) {
+        float4x4 translation;
+        translation.SetupByTranslation(float3(float(cancelMode) * 1.25f, 0, 0));
+        require(scene.setNodeLocalMatrix(1, translation * original), "Move cancellation caster");
+        (void)record(cached, false, cancelMode);
+        const auto retry = record(cached, false, 0);
+        const auto redraw = record(reference, true, 0);
+        const std::string name = cancelMode == 1 ? "CancelledRecording" : "AcceptedPrefixCancelledTail";
+        saveVisibility(directory / (name + "-Retry.png"), retry.shadow);
+        saveVisibility(directory / (name + "-Redraw.png"), redraw.shadow);
+        report[name] = {{"retryStatistics", retry.statistics}, {"redrawStatistics", redraw.statistics},
+            {"equal", retry.shadow == redraw.shadow}, {"acceptedPrefix", cancelMode == 2}};
+        std::ofstream(directory / "Cancellation.json") << report.dump(2) << '\n';
+        require(retry.shadow == redraw.shadow, name + ": retry reused unsubmitted depth");
+        require(retry.statistics[16] > 0 && retry.statistics[28] > 0, name + ": cancelled dirty pages were not discarded and redrawn");
+        requireCacheReused(record(cached, false, 0), name + " stable retry");
+    }
+    require(scene.setNodeLocalMatrix(1, original), "Restore cancellation caster");
+    const auto originalSource = scene.sourcePath();
+    require(scene.load(receiverOnlySource), "Replace scene after cancellation");
+    const auto replaced = record(cached, false, 0);
+    const auto replacedReference = record(reference, true, 0);
+    saveVisibility(directory / "SceneReplacement.png", replaced.shadow);
+    report["SceneReplacement"] = {{"statistics", replaced.statistics}, {"equal", replaced.shadow == replacedReference.shadow}};
+    require(replaced.shadow == replacedReference.shadow &&
+        std::all_of(replaced.shadow.begin(), replaced.shadow.end(), [](auto value) { return value == 255; }),
+        "Scene replacement retained removed caster depth");
+    require(replaced.statistics[22] > 0, "Scene replacement did not reset cache identity");
+    require(scene.load(originalSource), "Restore original scene after cancellation");
+    std::ofstream(directory / "Cancellation.json") << report.dump(2) << '\n';
+    return report;
+}
+
+class VirtualShadowMapCacheTest final : public RHITest {
+public:
+    VirtualShadowMapCacheTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_cache"; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        bench::ValidationRecorder validation;
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapCache";
+        Json report{{"scope", "P2 real raster receivers; independent cached and force-redraw Sun/Moon; exact hard-shadow equality"},
+            {"width", kWidth}, {"height", kHeight}, {"frames", Json::array()}, {"validationEnabled", context.enableValidation},
+            {"jitter", false}, {"passed", false}};
+        try {
+            registerFixturePasses();
+            std::filesystem::create_directories(directory);
+            const auto source = writeCacheFixture(directory / "Caster");
+            const auto receiverSource = writeFixture(directory / "ReceiverOnly", false);
+            const auto cache = source.parent_path() / "Scene.meshstream.bin";
+            std::string log;
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = cache,
+                .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook cache fixture: " + log);
+            for (bool metadataOnly : {false, true}) {
+                const std::string mode = metadataOnly ? "Stream" : "Resident";
+                const auto modeDirectory = directory / mode;
+                std::filesystem::create_directories(modeDirectory);
+                scene::SceneDocument scene;
+                require(metadataOnly ? scene.loadStreamMetadata(source) : scene.load(source), "Load cache fixture");
+                require(scene.hasStreamGeometry() == metadataOnly, "Cache fixture selected the wrong caster source");
+                environment::WorldEnvironment world;
+                world.sun.enabled = true; world.sun.direction = float3(1, -1, 0);
+                world.sun.illuminance = 3; world.sun.angularRadius = 0; world.sun.color = float3(1, .3f, .15f);
+                world.moon.enabled = true; world.moon.direction = float3(1, -1, -.3f);
+                world.moon.illuminance = 3; world.moon.angularRadius = 0; world.moon.color = float3(.15f, .3f, 1);
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configureCachePreview(preview, scene, view, context, validation, world);
+                activeEvidence = std::make_shared<EvidenceState>();
+                auto graph = makeCacheGraph(source, cache);
+                auto compare = [&](const std::string& name, bool allowWorkOverflow = false) {
+                    validation.phase(mode + "-" + name);
+                    return compareCacheFrame(preview, graph, modeDirectory, mode + "-" + name, report, allowWorkOverflow);
+                };
+                auto initial = compare("Initial");
+                auto* device = preview.subsystemHost()->device();
+                require(!device->capabilities().rayTracingPipeline && !device->capabilities().rayQuery,
+                    "VSM cache fixture unexpectedly enabled ray tracing");
+                report[mode + "Validation"] = bench::name(bench::activeValidation(*device));
+                require(metadataOnly ? initial.sun.statistics[10] >= 128 : initial.sun.statistics[10] == 4,
+                    "P2 caster source capacity is incorrect");
+                require(initial.sun.statistics[16] > 0 && initial.moon.statistics[16] > 0, "Initial cache did not render fine pages");
+                for (uint32_t frame = 0; frame < 3; ++frame) {
+                    auto stable = compare("Stable" + std::to_string(frame));
+                    requireCacheReused(stable.sun, "Stable Sun"); requireCacheReused(stable.moon, "Stable Moon");
+                }
+                world.sun.illuminance = 4; world.sun.color = float3(.5f, 1, .2f);
+                world.moon.illuminance = 5; world.moon.color = float3(.2f, .5f, 1);
+                require(preview.setWorldEnvironment(world), "Change light radiometry");
+                auto radiometry = compare("LightColorIntensity");
+                requireCacheReused(radiometry.sun, "Sun radiometry"); requireCacheReused(radiometry.moon, "Moon radiometry");
+                require(radiometry.sun.shadow == initial.sun.shadow && radiometry.moon.shadow == initial.moon.shadow,
+                    "Light color/intensity changed geometric visibility");
+
+                auto material = scene.materials()[1];
+                material.baseColorFactor.x = .25f;
+                require(scene.setMaterialProperties(1, material), "Change caster RGB only");
+                auto rgb = compare("MaterialRGB");
+                requireCacheReused(rgb.sun, "Caster RGB Sun"); requireCacheReused(rgb.moon, "Caster RGB Moon");
+
+                const auto originalCamera = view.camera();
+                auto camera = originalCamera;
+                camera.eye[0] += .55f; camera.center[0] += .55f;
+                camera.eye[2] += .55f; camera.center[2] += .55f;
+                require(view.setCamera(camera), "Shift cache camera across page boundaries");
+                auto shifted = compare("CameraPageShift");
+                require(shifted.sun.statistics[19] > 0 && shifted.sun.statistics[17] > 0,
+                    "Camera shift did not retain and remap Sun pages");
+                require(shifted.moon.statistics[19] > 0 && shifted.moon.statistics[17] > 0,
+                    "Camera shift did not retain and remap Moon pages");
+                // A horizontal translation over the same plane can preserve
+                // every depth value, so verify the actual raster camera ABI.
+                require(std::abs(shifted.sun.camera.eye[0] - camera.eye[0]) < 1e-6f &&
+                    std::abs(shifted.sun.camera.eye[2] - camera.eye[2]) < 1e-6f,
+                    "External camera edit did not reach actual raster metadata");
+                require(view.setCamera(originalCamera), "Return camera to cached page region");
+                auto returned = compare("CameraPageReturn");
+                require(returned.sun.statistics[19] > 0 && returned.sun.statistics[17] > 0 &&
+                    returned.moon.statistics[19] > 0 && returned.moon.statistics[17] > 0,
+                    "Returning camera did not reuse remapped page contents");
+                require(returned.sun.shadow == initial.sun.shadow && returned.moon.shadow == initial.moon.shadow,
+                    "Camera return did not reproduce its original visibility");
+                require(view.setCamera(camera), "Shift camera again for invalidation controls");
+                shifted = compare("CameraPageShiftAgain");
+                const auto originalMatrix = scene.nodes()[1].localMatrix;
+                float4x4 translation;
+                translation.SetupByTranslation(float3(2.0f, 0, 0));
+                require(scene.setNodeLocalMatrix(1, translation * originalMatrix), "Move cached offscreen caster");
+                auto moved = compare("CasterMoved");
+                require(visibilityDifference(moved.sun, shifted.sun) > 100, "Moved caster did not change visible shadows");
+                require(moved.sun.statistics[18] > 0 && moved.moon.statistics[18] > 0,
+                    "Moved caster did not invalidate old and new bounds");
+                require(moved.sun.statistics[17] > 0 && moved.moon.statistics[17] > 0,
+                    "Local caster movement unnecessarily discarded all cached fine pages");
+
+                require(scene.setObjectVisible(scene.objectForNode(1).entity(), false), "Hide cached caster");
+                auto hidden = compare("CasterHidden");
+                require(std::all_of(hidden.sun.shadow.begin(), hidden.sun.shadow.end(), [](auto value) { return value == 255; }) &&
+                    std::all_of(hidden.moon.shadow.begin(), hidden.moon.shadow.end(), [](auto value) { return value == 255; }),
+                    "Hidden caster retained stale Sun/Moon shadows");
+                require(hidden.sun.statistics[18] > 0 && hidden.moon.statistics[18] > 0, "Hidden caster old bounds were not invalidated");
+                require(scene.setObjectVisible(scene.objectForNode(1).entity(), true), "Show cached caster");
+                (void)compare("CasterShown");
+                material.baseColorFactor.w = 0;
+                require(scene.setMaterialProperties(1, material), "Reject cached MASK caster");
+                auto rejected = compare("CoverageRejected");
+                require(rejected.sun.shadow == hidden.sun.shadow && rejected.moon.shadow == hidden.moon.shadow,
+                    "Coverage change retained opaque cached depth");
+                require(rejected.sun.statistics[18] > 0 && rejected.moon.statistics[18] > 0, "Coverage change did not invalidate caster bounds");
+                material.baseColorFactor.w = 1;
+                require(scene.setMaterialProperties(1, material), "Restore cached MASK caster");
+                (void)compare("CoverageRestored");
+                world.sun.direction = float3(.9f, -1, 0);
+                require(preview.setWorldEnvironment(world), "Change Sun direction only");
+                auto sunDirection = compare("SunDirection");
+                require(sunDirection.sun.statistics[16] > 0 && sunDirection.sun.statistics[21] == 1, "Sun direction did not redraw depth");
+                requireCacheReused(sunDirection.moon, "Sun direction must preserve Moon cache");
+                world.moon.direction = float3(.9f, -1, -.25f);
+                require(preview.setWorldEnvironment(world), "Change Moon direction only");
+                auto moonDirection = compare("MoonDirection");
+                require(moonDirection.moon.statistics[16] > 0 && moonDirection.moon.statistics[21] == 1, "Moon direction did not redraw depth");
+                requireCacheReused(moonDirection.sun, "Moon direction must preserve Sun cache");
+
+                for (const auto& name : {"Shadows", "SunReference"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "maxWorkItems", 1), "Constrain dirty-page work");
+                }
+                translation.SetupByTranslation(float3(2.75f, 0, 0));
+                require(scene.setNodeLocalMatrix(1, translation * originalMatrix), "Dirty pages for work overflow");
+                auto workOverflow = compare("DirtyWorkOverflow", true);
+                require(workOverflow.sun.statistics[5] > 0 && workOverflow.sun.statistics[7] == workOverflow.sun.statistics[6],
+                    "Dirty work overflow did not use complete coarse coverage");
+                auto overflowRetry = compare("DirtyWorkOverflowNextFrame", true);
+                require(overflowRetry.sun.statistics[5] > 0 && overflowRetry.sun.statistics[16] > 0 &&
+                    overflowRetry.sun.statistics[21] == 0 && overflowRetry.sun.statistics[7] == overflowRetry.sun.statistics[6],
+                    "Incomplete fine pages became valid or stable coarse depth was redrawn after work overflow");
+                for (const auto& name : {"Shadows", "SunReference"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "maxWorkItems", 65535), "Restore dirty-page work budget");
+                }
+                auto workRecovered = compare("DirtyWorkRecovered");
+                require(workRecovered.sun.statistics[16] > 0 && workRecovered.sun.statistics[7] < workRecovered.sun.statistics[6],
+                    "Fine-page cache did not recover after restoring work budget");
+                auto workStable = compare("DirtyWorkRecoveredStable");
+                requireCacheReused(workStable.sun, "Recovered Sun cache");
+                requireCacheReused(workStable.moon, "Recovered Moon cache");
+
+                for (const auto& name : {"Moon", "MoonReference"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "physicalPageCount", 1), "Constrain Moon pool");
+                }
+                auto overflow = compare("IndependentMoonPoolOverflow");
+                require(overflow.moon.statistics[2] > 0 && overflow.moon.statistics[7] > 0 && overflow.moon.statistics[12] == 1,
+                    "Moon pool overflow did not use complete coarse fallback");
+                requireCacheReused(overflow.sun, "Moon pool change must preserve Sun cache");
+                auto overflowStable = compare("IndependentMoonPoolStable");
+                require(overflowStable.moon.statistics[21] == 0, "Stable coarse-only Moon cache redrew depth");
+                requireCacheReused(overflowStable.sun, "Moon pool overflow must preserve Sun cache");
+
+                for (const auto& name : {"Shadows", "SunReference"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "physicalPageCount", 64), "Constrain Sun eviction pool");
+                }
+                auto fullPool = compare("SunEvictionPoolFilled");
+                require(fullPool.sun.statistics[2] > 0 && fullPool.sun.statistics[24] == 63,
+                    "Eviction fixture did not fill all fine physical slots");
+                // Rotate around a fixed eye: all clipmap origins stay fixed,
+                // so new allocations in this full pool must evict retained
+                // unrequested owners, rather than use pages lost by scrolling.
+                auto rotatedCamera = camera;
+                rotatedCamera.center[0] += 2;
+                require(view.setCamera(rotatedCamera), "Rotate receivers into unrequested cached pages");
+                auto evicted = compare("SunEvictionDemandChanged");
+                require(evicted.sun.statistics[19] == 0 && evicted.sun.statistics[20] > 0 && evicted.sun.statistics[17] > 0,
+                    "Changing demand in a full fixed-origin pool did not exercise eviction and reuse");
+                require(view.setCamera(camera), "Return receivers after page eviction");
+                auto evictionReturn = compare("SunEvictionReturn");
+                require(evictionReturn.sun.statistics[17] > 0 && evictionReturn.sun.statistics[20] > 0,
+                    "Returning demand did not reuse retained pages and recover evicted pages");
+                require(evictionReturn.sun.shadow == fullPool.sun.shadow, "Returning after eviction changed the original visibility");
+
+                // Restore the authored view and caster before exercising the
+                // actual direct-light consumers and low-level cancellation.
+                require(view.setCamera(originalCamera), "Restore consumer camera");
+                require(scene.setNodeLocalMatrix(1, originalMatrix), "Restore consumer caster");
+                world.sun.direction = float3(1, -1, 0); world.moon.direction = float3(1, -1, -.3f);
+                require(preview.setWorldEnvironment(world), "Restore consumer directions");
+                auto restored = compare("Restored");
+                if (!metadataOnly) {
+                    report["cancellation"] = verifyCacheCancellation(*device, scene, restored.sun, modeDirectory, receiverSource);
+                    // The low-level replacement test reloads this document;
+                    // republish its lifetime before restoring authored lights.
+                    preview.bindRuntimeScene(&scene);
+                    require(preview.setWorldEnvironment(world), "Restore Sun/Moon after scene replacement");
+                    report["consumers"] = verifyCacheConsumers(preview, source, cache, modeDirectory);
+                }
+                requireValidPreview(validation.snapshot());
+            }
+            activeEvidence.reset();
+            report["previewValidation"] = validation.snapshot();
+            requireValidPreview(report["previewValidation"]);
+            report["passed"] = true;
+            std::ofstream(directory / "VirtualShadowMapCache.json") << report.dump(2) << '\n';
+            std::ofstream(directory / "PreviewValidation.json") << report["previewValidation"].dump(2) << '\n';
+            return RHITestResult::pass("VSM cache/redraw image equality, resident/StreamAsset invalidation, Sun/Moon isolation, cancellation and flat/binned consumers; PNG/JSON exported");
+        } catch (const std::exception& error) {
+            activeEvidence.reset();
+            report["error"] = error.what();
+            report["previewValidation"] = validation.snapshot();
+            std::ofstream(directory / "VirtualShadowMapCache.json") << report.dump(2) << '\n';
+            std::ofstream(directory / "PreviewValidation.json") << report["previewValidation"].dump(2) << '\n';
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCacheTest);
 
 } // namespace
 } // namespace metallic::tests

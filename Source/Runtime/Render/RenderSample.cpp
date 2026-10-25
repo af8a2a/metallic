@@ -149,6 +149,25 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class VirtualShadowMapCacheSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "virtual-shadow-map-p2"; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Sun and Moon Cache"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Experimental Sun and Moon hard shadows with independent page caches and budgets. "
+            "The fixed LOD 0 receiver matches full resident casters; no ray tracing or default pipeline changes.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/OpenPbrDefault/OpenPbrVSMCache.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_p2.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "SunShadows", "MoonShadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class GPUDrivenTessellationSample final : public RealtimeLightingSample {
 public:
     std::string_view id() const override { return "gpu-driven-tessellation"; }
@@ -863,6 +882,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
     static const VirtualShadowMapSample virtualShadowMap;
+    static const VirtualShadowMapCacheSample virtualShadowMapCache;
     static const NativeStrandSample nativeStrands;
     static const GPUDrivenTessellationSample gpuDrivenTessellation;
     static const LightGridDebugSample lightGridDebug;
@@ -881,6 +901,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     std::vector<const RenderSample*> samples{
         &realtimeLighting,
         &virtualShadowMap,
+        &virtualShadowMapCache,
         &nativeStrands,
         &gpuDrivenTessellation,
         &lightGridDebug,

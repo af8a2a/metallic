@@ -484,6 +484,12 @@ struct MeshletStreamShadowGeometryView {
     Buffer* pageTableBuffer = nullptr;
     const scene::MeshletStreamAsset* asset = nullptr;
     uint32_t pageBufferBytes = 0;
+    // Full instance mapping published by syncRuntimeScene, including composed
+    // scene rebasing. Valid for this same-frame borrowed view.
+    std::span<const uint32_t> runtimeRenderNodeIndices;
+    // Locked terminal pages and their decoded content are immutable for this
+    // generation; ordinary refined-page streaming does not change this token.
+    uint64_t geometryRevision = 0;
     std::shared_ptr<MeshletStreamRuntime> owner;
 
     bool valid() const
@@ -901,6 +907,7 @@ private:
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
+    uint64_t shadowGeometryRevision_ = 0;
     uint64_t sceneTransformRevision_ = 0;
     uint64_t sceneVisibilityRevision_ = 0;
     uint64_t sceneResourceIdentity_ = 0;

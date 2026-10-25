@@ -11,7 +11,7 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint32_t kVirtualShadowMapStatisticsSize = 16 * sizeof(uint32_t);
+constexpr uint32_t kVirtualShadowMapStatisticsSize = 32 * sizeof(uint32_t);
 
 VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
 {
@@ -23,6 +23,8 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.maxWorkItems = properties.value("maxWorkItems", settings.maxWorkItems);
     settings.firstClipmapExtent = properties.value("firstClipmapExtent", settings.firstClipmapExtent);
     settings.shadowBias = properties.value("shadowBias", settings.shadowBias);
+    settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", false);
+    settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
     settings.enabled = boolProperty(&properties, "enabled", true) &&
         !boolProperty(&properties, "debugDisableShadows", false);
     return settings;
@@ -59,7 +61,7 @@ public:
         auto& info = reflection.addBufferInput("rasterInfo", "Matching raster camera and scene identity")
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         info.memoryLocation = MemoryLocation::HostUpload;
-        reflection.addTextureOutput("shadow", "Single-Sun hard visibility for deferred direct lighting")
+        reflection.addTextureOutput("shadow", "Selected celestial light's hard visibility for deferred direct lighting")
             .transferWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::R8Unorm;
         reflection.addBufferOutput("parameters", "Legacy single-light shadow identity and camera")
             .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).transferWrite();
@@ -73,7 +75,10 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
-            runtimeBoolSetting("enabled", "Sun Shadows", true),
+            runtimeBoolSetting("enabled", "Celestial Shadows", true),
+            runtimeIntSetting("lightIndex", "Celestial Light (0 Sun, 1 Moon)", 0, 0, 1),
+            runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", false),
+            runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("pageSize", "Page Size (px, power of two)", 128, 16, 128),
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap Levels", 4, 1, 12),
@@ -175,10 +180,22 @@ public:
                 if (slot < textures->views.size()) { alphaTextures[materialIndex] = textures->views[slot].get(); }
             }
         }
-        const auto sun = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[0];
+        if (std::any_of(alphaTextures.begin(), alphaTextures.end(), [](const auto* texture) { return texture != nullptr; })) {
+            // MASK coverage samples the immutable image generation directly.
+            // Descriptor reuse and sampling-metadata changes do not identify its pixels.
+            const uint64_t revision = materialResources.materialTexturePublicationRevision();
+            casters->dependencyKey ^= revision + 0x9e3779b97f4a7c15ull +
+                (casters->dependencyKey << 6) + (casters->dependencyKey >> 2);
+        }
+        const auto lightIndex = context.properties().value("lightIndex", 0u);
+        if (lightIndex >= environment::kCelestialLightCount) {
+            spdlog::error("VirtualShadowMapPass lightIndex must be 0 (Sun) or 1 (Moon)");
+            return makeError(Error::InvalidArgument);
+        }
+        const auto light = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[lightIndex];
         const auto settings = shadowSettings(context.properties());
         profile.next("VSM demand, raster and resolve");
-        auto shadow = shadows_.record(*device_, commands, *depth.view(), view, sun, *casters,
+        auto shadow = shadows_.record(*device_, commands, *depth.view(), view, light, *casters,
             scene->materials(), alphaTextures, settings, log);
         if (!shadow) {
             spdlog::error("VirtualShadowMapPass: {}", log);
@@ -188,15 +205,15 @@ public:
         ScreenSpaceShadowParameters parameters{};
         parameters.view = view;
         for (size_t i = 0; i < 3; ++i) {
-            parameters.light.directionType[i] = sun.direction[i];
-            parameters.light.colorIntensity[i] = sun.irradiance[i];
+            parameters.light.directionType[i] = light.direction[i];
+            parameters.light.colorIntensity[i] = light.irradiance[i];
         }
         parameters.light.colorIntensity[3] = 1.0f;
         parameters.trace[2] = settings.shadowBias;
-        parameters.control[0] = settings.enabled && (sun.flags & kGPUCelestialLightEnabled) != 0 &&
-            (sun.flags & kGPUCelestialLightCastsShadow) != 0;
+        parameters.control[0] = settings.enabled && (light.flags & kGPUCelestialLightEnabled) != 0 &&
+            (light.flags & kGPUCelestialLightCastsShadow) != 0;
         parameters.control[1] = 1;
-        parameters.control[2] = kCelestialLightSourceTag;
+        parameters.control[2] = kCelestialLightSourceTag | lightIndex;
 
         profile.next("Publish VSM outputs");
         auto copyBatch = context.streamer()->beginCopyBatch();
@@ -252,8 +269,9 @@ public:
             DebugResourceBinding{.id = "projections", .buffer = shadow->projections, .state = ResourceState::ShaderRead}};
         context.debugCheckpoint("VirtualShadowMapPages", resources, {{"frame", info.frameIndex},
             {"sceneIdentity", info.sceneIdentity}, {"streamed", casters->streamed},
-            {"triangleCapacity", casters->triangleCapacity}, {"clipmapCount", settings.clipmapCount},
-            {"pageSize", settings.pageSize}, {"physicalPageCount", settings.physicalPageCount}});
+            {"triangleCapacity", casters->triangleCapacity}, {"clipmapCount", settings.clipmapCount}, {"lightIndex", lightIndex},
+            {"pageSize", settings.pageSize}, {"physicalPageCount", settings.physicalPageCount},
+            {"cacheEnabled", settings.cacheEnabled}, {"forceRedraw", settings.forceRedraw}});
         return {};
     }
 

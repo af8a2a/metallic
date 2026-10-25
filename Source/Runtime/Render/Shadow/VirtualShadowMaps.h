@@ -14,7 +14,7 @@ namespace metallic::render {
 
 struct VirtualShadowMapCasterResources;
 
-// P1 single-Sun settings. Every frame rebuilds demand, allocation and depth.
+// One directional-light view. P1 keeps caching off; P2 enables it per celestial.
 struct VirtualShadowMapSettings
 {
     uint32_t pageSize = 128;
@@ -25,6 +25,8 @@ struct VirtualShadowMapSettings
     float firstClipmapExtent = 4.0f; // Half-width in world meters, doubles per level.
     float shadowBias = 0.002f; // World meters toward the light.
     bool enabled = true;
+    bool cacheEnabled = false;
+    bool forceRedraw = false;
 };
 
 struct VirtualShadowMapResult
@@ -57,8 +59,11 @@ public:
 private:
     struct Programs;
     struct State;
+    struct Cache;
     std::shared_ptr<Programs> programs_;
     std::shared_ptr<State> state_;
+    std::shared_ptr<Cache> cache_;
+    std::shared_ptr<Cache> pending_;
 };
 
 } // namespace metallic::render

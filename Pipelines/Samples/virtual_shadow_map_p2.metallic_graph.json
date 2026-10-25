@@ -1,0 +1,214 @@
+{
+    "name": "Virtual Shadow Maps P2 - Sun and Moon Cache",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
+            "position": {
+                "x": 80,
+                "y": 240
+            },
+            "properties": {
+                "path": "Asset/LookDev/OpenPbrDefault/OpenPbrVSMCache.metallic_scene.json",
+                "visualization": "none",
+                "enableClusterRtx": false,
+                "initialLoad": true,
+                "autoLod": false,
+                "lodLevel": 0,
+                "instanceFrustumCull": true
+            }
+        },
+        {
+            "id": 2,
+            "name": "SunShadows",
+            "type": "VirtualShadowMapPass",
+            "position": {
+                "x": 420,
+                "y": 0
+            },
+            "properties": {
+                "enabled": true,
+                "pageSize": 128,
+                "virtualPagesPerAxis": 16,
+                "clipmapCount": 4,
+                "physicalPageCount": 256,
+                "maxWorkItems": 1048576,
+                "firstClipmapExtent": 4.0,
+                "shadowBias": 0.002,
+                "lightIndex": 0,
+                "cacheEnabled": true
+            }
+        },
+        {
+            "id": 3,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {
+                "x": 760,
+                "y": 240
+            },
+            "properties": {
+                "path": "Asset/LookDev/OpenPbrDefault/OpenPbrVSMCache.metallic_scene.json",
+                "materialBinning": true,
+                "outputLinear": true
+            }
+        },
+        {
+            "id": 4,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 1100,
+                "y": 240
+            },
+            "properties": {}
+        },
+        {
+            "id": 5,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {
+                "x": 1440,
+                "y": 240
+            },
+            "properties": {}
+        },
+        {
+            "id": 6,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1100,
+                "y": 490
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
+        },
+        {
+            "id": 7,
+            "name": "MoonShadows",
+            "type": "VirtualShadowMapPass",
+            "position": {
+                "x": 420,
+                "y": 490
+            },
+            "properties": {
+                "enabled": true,
+                "pageSize": 128,
+                "virtualPagesPerAxis": 16,
+                "clipmapCount": 4,
+                "physicalPageCount": 256,
+                "maxWorkItems": 1048576,
+                "firstClipmapExtent": 4.0,
+                "shadowBias": 0.002,
+                "lightIndex": 1,
+                "cacheEnabled": true
+            }
+        }
+    ],
+    "edges": [
+        {
+            "id": 1,
+            "src": "VBuffer.visibility",
+            "dst": "Deferred.visibility"
+        },
+        {
+            "id": 2,
+            "src": "VBuffer.depth",
+            "dst": "Deferred.depth"
+        },
+        {
+            "id": 3,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Deferred.rasterInfo"
+        },
+        {
+            "id": 4,
+            "src": "VBuffer.domain",
+            "dst": "Deferred.domain"
+        },
+        {
+            "id": 5,
+            "src": "VBuffer.depth",
+            "dst": "SunShadows.depth"
+        },
+        {
+            "id": 6,
+            "src": "VBuffer.rasterInfo",
+            "dst": "SunShadows.rasterInfo"
+        },
+        {
+            "id": 7,
+            "src": "SunShadows.shadow",
+            "dst": "Deferred.shadow"
+        },
+        {
+            "id": 8,
+            "src": "SunShadows.parameters",
+            "dst": "Deferred.shadowParameters"
+        },
+        {
+            "id": 9,
+            "src": "Deferred.color",
+            "dst": "AutoExposure.source"
+        },
+        {
+            "id": 10,
+            "src": "AutoExposure.color",
+            "dst": "FinalBlit.source"
+        },
+        {
+            "id": 11,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
+        },
+        {
+            "id": 12,
+            "src": "VBuffer.depth",
+            "dst": "MoonShadows.depth"
+        },
+        {
+            "id": 13,
+            "src": "VBuffer.rasterInfo",
+            "dst": "MoonShadows.rasterInfo"
+        },
+        {
+            "id": 14,
+            "src": "MoonShadows.shadow",
+            "dst": "Deferred.moonShadow"
+        },
+        {
+            "id": 15,
+            "src": "MoonShadows.parameters",
+            "dst": "Deferred.moonShadowParameters"
+        }
+    ],
+    "outputs": [],
+    "view": {
+        "camera": {
+            "eye": [
+                0.0,
+                1.0478609688580036,
+                3.6447348222404337
+            ],
+            "center": [
+                -0.05485051870346069,
+                1.0478609688580036,
+                -0.06448951363563538
+            ],
+            "up": [
+                0.0,
+                1.0,
+                0.0
+            ],
+            "fovDegrees": 60.0,
+            "projection": "perspective",
+            "znear": 0.05,
+            "zfar": 100.0
+        },
+        "temporalJitter": false
+    }
+}

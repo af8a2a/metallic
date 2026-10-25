@@ -426,6 +426,10 @@ public:
                 .sampledRead().setOptional().format = Format::R8Unorm;
             reflection.addBufferInput("shadowParameters", "Matching shadow light and visibility metadata")
                 .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead().setOptional();
+            reflection.addTextureInput("moonShadow", "Optional Moon visibility")
+                .sampledRead().setOptional().format = Format::R8Unorm;
+            reflection.addBufferInput("moonShadowParameters", "Matching Moon identity and visibility metadata")
+                .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead().setOptional();
         }
         auto& color = reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
@@ -930,6 +934,8 @@ public:
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
             // One shader/encoder layout serves both output policies.
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
@@ -1827,7 +1833,7 @@ public:
             push.deferredSettings |= kScenePathTraceStrictOpaqueShadows;
         }
         MaterialBinningResult materialBins;
-        ScreenSpaceShadowResult shadow;
+        std::array<ScreenSpaceShadowResult, 2> shadows;
         if (visibilityDeferred_) {
             if (compiledGlobalView_) {
                 if (context.viewConstants() == nullptr || context.viewConstantsBuffer() == nullptr ||
@@ -1844,39 +1850,47 @@ public:
             }
             {
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .buffer = environment.prefilteredSpecularBuffer});
-                const auto externalShadow = context.inputTexture("shadow");
-                const auto externalParameters = context.inputBuffer("shadowParameters");
-                if (externalShadow.valid() != externalParameters.valid()) {
-                    spdlog::error("Deferred shadows require both shadow and shadowParameters inputs");
-                    return makeError(Error::InvalidArgument);
-                }
-                if (externalShadow.valid()) {
-                    if (externalShadow.desc().width != context.width() || externalShadow.desc().height != context.height() ||
-                        externalParameters.desc().size != sizeof(ScreenSpaceShadowParameters)) {
+                constexpr std::array shadowInputs{"shadow", "moonShadow"};
+                constexpr std::array parameterInputs{"shadowParameters", "moonShadowParameters"};
+                constexpr std::array shadowMembers{METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility),
+                    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowVisibility)};
+                constexpr std::array parameterMembers{METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters),
+                    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowParameters)};
+                for (size_t index = 0; index < shadows.size(); ++index) {
+                    auto& shadow = shadows[index];
+                    const auto externalShadow = context.inputTexture(shadowInputs[index]);
+                    const auto externalParameters = context.inputBuffer(parameterInputs[index]);
+                    if (externalShadow.valid() != externalParameters.valid()) {
+                        spdlog::error("Deferred shadows require both {} and {} inputs", shadowInputs[index], parameterInputs[index]);
                         return makeError(Error::InvalidArgument);
                     }
-                    shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
-                        .parameters = externalParameters.buffer()};
-                } else {
-                    // No hidden tracing fallback. A zero control buffer disables sampling
-                    // and lets graphs without a shadow producer render unoccluded lighting.
-                    if (!unshadowedParameters_) {
-                        std::unique_ptr<Buffer> parameters;
-                        result = device_->createBuffer({.size = sizeof(ScreenSpaceShadowParameters),
-                            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload})
-                            .transform([&](auto value) { parameters = std::move(value); });
-                        if (!result) { return result; }
-                        void* mapped = parameters->map();
-                        if (!mapped) { return makeError(Error::Failure); }
-                        std::memset(mapped, 0, sizeof(ScreenSpaceShadowParameters));
-                        parameters->flush({0, sizeof(ScreenSpaceShadowParameters)});
-                        parameters->unmap();
-                        unshadowedParameters_ = std::move(parameters);
+                    if (externalShadow.valid()) {
+                        if (externalShadow.desc().width != context.width() || externalShadow.desc().height != context.height() ||
+                            externalParameters.desc().size != sizeof(ScreenSpaceShadowParameters)) {
+                            return makeError(Error::InvalidArgument);
+                        }
+                        shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
+                            .parameters = externalParameters.buffer()};
+                    } else {
+                        // A zero control buffer disables sampling for each absent light.
+                        if (!unshadowedParameters_) {
+                            std::unique_ptr<Buffer> parameters;
+                            result = device_->createBuffer({.size = sizeof(ScreenSpaceShadowParameters),
+                                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload})
+                                .transform([&](auto value) { parameters = std::move(value); });
+                            if (!result) { return result; }
+                            void* mapped = parameters->map();
+                            if (!mapped) { return makeError(Error::Failure); }
+                            std::memset(mapped, 0, sizeof(ScreenSpaceShadowParameters));
+                            parameters->flush({0, sizeof(ScreenSpaceShadowParameters)});
+                            parameters->unmap();
+                            unshadowedParameters_ = std::move(parameters);
+                        }
+                        shadow = {.shadow = visibilityDepthView, .parameters = unshadowedParameters_.get()};
                     }
-                    shadow = {.shadow = visibilityDepthView, .parameters = unshadowedParameters_.get()};
+                    bindings.push_back({.binding = shadowMembers[index], .textureView = shadow.shadow});
+                    bindings.push_back({.binding = parameterMembers[index], .buffer = shadow.parameters});
                 }
-                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .textureViews = {&shadow.shadow, 1}});
-                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .buffer = shadow.parameters});
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
                 const auto motion = context.outputTexture("motionVectors");
@@ -2205,11 +2219,11 @@ private:
         StageResources resources;
         resources.uses.push_back({"output.color", Access::TextureStorageReadWrite});
         if (visibilityDeferred_) {
-            for (const char* name : {"visibility", "depth", "domain", "shadow"}) {
+            for (const char* name : {"visibility", "depth", "domain", "shadow", "moonShadow"}) {
                 if (context.inputTexture(name).valid()) { resources.uses.push_back({name, Access::TextureSampleRead}); }
             }
-            if (context.inputBuffer("shadowParameters").valid()) {
-                resources.uses.push_back({"shadowParameters", Access::BufferShaderRead});
+            for (const char* name : {"shadowParameters", "moonShadowParameters"}) {
+                if (context.inputBuffer(name).valid()) { resources.uses.push_back({name, Access::BufferShaderRead}); }
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
                 resources.uses.push_back({"output.motionVectors", Access::TextureStorageWrite});

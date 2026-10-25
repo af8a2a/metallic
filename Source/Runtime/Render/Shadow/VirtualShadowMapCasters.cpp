@@ -1,6 +1,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 
 #include "Runtime/Render/Shadow/VirtualShadowMapPrototype.h"
+#include "Runtime/Render/Material/MaterialCoverageProgram.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 
 #include <algorithm>
@@ -31,6 +32,75 @@ struct CasterUploads
     std::shared_ptr<MeshletStreamRuntime> stream;
 };
 
+struct ContentHash
+{
+    uint64_t value = 14695981039346656037ull;
+
+    void append(const void* data, size_t bytes)
+    {
+        const auto* source = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < bytes; ++i) { value = (value ^ source[i]) * 1099511628211ull; }
+    }
+
+    template<class T> void append(const T& data)
+    {
+        append(&data, sizeof(data));
+    }
+};
+
+Result<std::vector<uint64_t>> gatherMaterialKeys(const scene::Scene& scene, std::string& log)
+{
+    std::vector<uint64_t> keys;
+    const scene::RenderMaterial defaultMaterial;
+    try {
+        for (size_t i = 0; i < std::max<size_t>(scene.materials().size(), 1); ++i) {
+            const auto& material = scene.materials().empty() ? defaultMaterial : scene.materials()[i];
+            ContentHash hash;
+            hash.append(material.doubleSided);
+            const bool masked = material.alphaMode == "MASK";
+            hash.append(masked);
+            if (masked) {
+                hash.append(material.alphaCutoff);
+                bool usesBaseAlpha = true;
+                if (!material.valueProgram.empty()) {
+                    const auto coverage = MaterialValueIR::parse(material.valueProgram).slice(true);
+                    if (!coverage.outputs().empty()) {
+                        const auto slice = compileMaterialCoverageSlice(coverage);
+                        hash.append(coverage.canonical().data(), coverage.canonical().size());
+                        usesBaseAlpha = slice.usesBaseAlpha;
+                        for (uint32_t parameter = 0; parameter < 4; ++parameter) {
+                            if ((slice.parameterMask & (1u << parameter)) != 0) {
+                                hash.append(material.valueParameters.data() + parameter * 4, sizeof(float) * 4);
+                            }
+                        }
+                    }
+                }
+                if (usesBaseAlpha) {
+                    hash.append(material.baseColorFactor.w);
+                    hash.append(material.baseColorTexture.textureIndex);
+                    hash.append(material.baseColorTexture.uvTransform);
+                }
+            }
+            keys.push_back(hash.value);
+        }
+    } catch (const std::exception& error) {
+        log = std::string("VSM caster Coverage: ") + error.what();
+        return makeError(Error::InvalidArgument);
+    }
+    return keys;
+}
+
+scene::Bounds transformedBounds(const scene::MeshletStreamBounds& local, const float4x4& world)
+{
+    scene::Bounds result;
+    if (local.valid == 0) { return result; }
+    for (uint32_t corner = 0; corner < 8; ++corner) {
+        result.include(world * float3((corner & 1u) ? local.max[0] : local.min[0],
+            (corner & 2u) ? local.max[1] : local.min[1], (corner & 4u) ? local.max[2] : local.min[2]));
+    }
+    return result;
+}
+
 Result<uint32_t> upload(Device& device, ResourceRegistry& registry, CasterUploads& owner,
     std::vector<ResourceLease>& leases, const void* data, uint64_t bytes, uint32_t stride)
 {
@@ -53,9 +123,11 @@ Result<uint32_t> upload(Device& device, ResourceRegistry& registry, CasterUpload
 }
 
 Result<> gatherResidentTriangles(const scene::Scene& scene,
-    std::vector<VirtualShadowMapPrototypeTriangle>& triangles, scene::Bounds& bounds, std::string& log)
+    std::span<const uint64_t> materialKeys, std::vector<VirtualShadowMapPrototypeTriangle>& triangles,
+    VirtualShadowMapCasterResources& resources, std::string& log)
 {
-    for (const auto& node : scene.renderNodes()) {
+    for (size_t nodeIndex = 0; nodeIndex < scene.renderNodes().size(); ++nodeIndex) {
+        const auto& node = scene.renderNodes()[nodeIndex];
         if (!node.visible || node.renderPrimitiveIndex == scene::kInvalidSceneIndex) { continue; }
         if (node.renderPrimitiveIndex < 0 || size_t(node.renderPrimitiveIndex) >= scene.renderPrimitives().size()) {
             log = "VSM resident caster references an invalid scene primitive";
@@ -73,6 +145,12 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
             log = "VSM resident triangle list has an invalid or unsupported size";
             return makeError(Error::InvalidArgument);
         }
+        if (count == 0) { continue; }
+        VirtualShadowMapCasterState state{.id = nodeIndex};
+        ContentHash hash;
+        hash.append(node.worldMatrix.a, sizeof(node.worldMatrix.a));
+        hash.append(materialKeys[static_cast<size_t>(std::max(node.materialIndex, 0))]);
+        hash.append(count);
         for (size_t triangleIndex = 0; triangleIndex < count; triangleIndex += 3) {
             VirtualShadowMapPrototypeTriangle triangle;
             triangle.materialIndex = static_cast<uint32_t>(std::max(node.materialIndex, 0));
@@ -88,10 +166,15 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
                     const float2 uv = primitive.texcoords0[index];
                     triangle.vertices[vertex].uv = {uv.x, uv.y, 0, 0};
                 }
-                bounds.include(position);
+                state.bounds.include(position);
+                hash.append(triangle.vertices[vertex].position);
+                hash.append(triangle.vertices[vertex].uv);
             }
             triangles.push_back(triangle);
         }
+        state.contentKey = hash.value;
+        resources.bounds.include(state.bounds);
+        resources.states.push_back(state);
     }
     return {};
 }
@@ -117,6 +200,10 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
     auto owner = std::make_shared<CasterUploads>();
     VirtualShadowMapCasterResources resources;
     resources.owner = owner;
+    resources.sceneIdentity = scene.resourceIdentity();
+    resources.structuralRevision = scene.sceneGraph().structuralRevision();
+    auto materialKeys = gatherMaterialKeys(scene, log);
+    if (!materialKeys) { return std::unexpected(materialKeys.error()); }
     GeometryParameters parameters;
     if (stream) {
         if (!stream->valid()) { return makeError(Error::InvalidArgument); }
@@ -127,6 +214,10 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
             return makeError(Error::InvalidArgument);
         }
         const auto& asset = *stream->asset;
+        if (stream->runtimeRenderNodeIndices.size() != asset.instances().size()) {
+            log = "VSM requires the published runtime scene instance mapping";
+            return makeError(Error::InvalidArgument);
+        }
         if (asset.maxClusterTriangles() > kStreamTrianglesPerCluster) {
             log = "VSM StreamAsset exceeds the supported 128 triangles per cluster";
             return makeError(Error::Unsupported);
@@ -138,6 +229,17 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
         std::vector<std::array<uint32_t, 4>> candidates;
         for (uint32_t instanceIndex = 0; instanceIndex < asset.instances().size(); ++instanceIndex) {
             const auto& instance = asset.instances()[instanceIndex];
+            const uint32_t nodeIndex = stream->runtimeRenderNodeIndices[instanceIndex];
+            const auto& node = scene.renderNodes()[nodeIndex];
+            if (node.visible) {
+                ContentHash hash;
+                hash.append(instance.primitiveIndex);
+                hash.append(node.worldMatrix.a, sizeof(node.worldMatrix.a));
+                hash.append((*materialKeys)[static_cast<size_t>(std::max(node.materialIndex, 0))]);
+                resources.states.push_back({.id = nodeIndex,
+                    .bounds = transformedBounds(asset.primitives()[instance.primitiveIndex].bounds, node.worldMatrix),
+                    .contentKey = hash.value});
+            }
             // All terminal branches are mandatory. The coarsest LOD's fallback
             // range alone omits branches that terminate at a finer LOD.
             for (uint32_t groupIndex : asset.primitiveTerminalGroups(instance.primitiveIndex)) {
@@ -170,9 +272,11 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
         // edits, independently of the producer's camera-visible geometry cut.
         resources.bounds = scene.bounds();
         resources.streamed = true;
+        resources.dependencyKey = stream->geometryRevision;
+        std::ranges::sort(resources.states, {}, &VirtualShadowMapCasterState::id);
     } else {
         std::vector<VirtualShadowMapPrototypeTriangle> triangles;
-        if (auto result = gatherResidentTriangles(scene, triangles, resources.bounds, log); !result) {
+        if (auto result = gatherResidentTriangles(scene, *materialKeys, triangles, resources, log); !result) {
             return std::unexpected(result.error());
         }
         auto triangleIndex = upload(device, **registry, *owner, resources.leases,
