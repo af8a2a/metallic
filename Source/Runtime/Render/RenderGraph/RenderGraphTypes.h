@@ -165,6 +165,9 @@ struct RenderGraphField {
     // dimension is explicit so volume resources receive real Texture3D views.
     TextureType textureType = TextureType::Texture2D;
     uint32_t depth = 1;
+    // Texture2D arrays use explicit layers; zero is input-only and accepts the
+    // producer's layer count. Ordinary Texture2D inputs remain single-layer.
+    uint32_t layerCount = 1;
     uint64_t size = 0;
     uint32_t structureStride = 0;
     // Output element schema registered by renderDebugLayouts(). Empty means raw;

@@ -8,6 +8,7 @@
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -1409,6 +1410,786 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCacheTest);
+
+constexpr uint32_t kLocalCapacity = 8, kLocalLayers = kLocalCapacity * 6;
+constexpr uint64_t kLocalShadowStride = (kPixels + 3) & ~uint64_t(3);
+constexpr uint64_t kLocalDebugOffset = kLocalShadowStride * kLocalLayers;
+constexpr uint64_t kLocalDepthOffset = kLocalDebugOffset + kPixels * 4 * kLocalLayers;
+constexpr uint64_t kLocalStatsOffset = kLocalDepthOffset + kPixels * 4;
+constexpr uint64_t kLocalLightsOffset = kLocalStatsOffset + kLocalLayers * kVirtualShadowMapFaceStatisticsSize;
+constexpr uint64_t kLocalTableSize = sizeof(VirtualShadowMapLightsHeader) + kLocalCapacity * sizeof(VirtualShadowMapLightEntry);
+constexpr uint64_t kLocalReadbackSize = kLocalLightsOffset + kLocalTableSize;
+
+class VSMLocalEvidencePass final : public UnsafePass {
+public:
+    explicit VSMLocalEvidencePass(std::shared_ptr<EvidenceState> state) : state_(std::move(state)) {}
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        auto& shadow = reflection.addTextureInput("shadows").transferRead();
+        shadow.format = Format::R8Unorm; shadow.layerCount = kLocalLayers;
+        auto& debug = reflection.addTextureInput("debug").transferRead();
+        debug.format = Format::RGBA8Unorm; debug.layerCount = kLocalLayers;
+        reflection.addTextureInput("depth").transferRead().format = Format::D32Sfloat;
+        reflection.addBufferInput("statistics").buffer(kLocalLayers * kVirtualShadowMapFaceStatisticsSize).transferRead();
+        reflection.addBufferInput("lights").buffer(kLocalTableSize).transferRead();
+        reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
+            .shaderRead().memoryLocation = MemoryLocation::HostUpload;
+        reflection.addBufferOutput("data").buffer(kLocalReadbackSize).transferWrite().hostReadback();
+        reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
+        return reflection;
+    }
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        auto& commands = context.commandBuffer();
+        auto* buffer = context.outputBuffer("data").buffer();
+        state_->namedReadbacks[context.properties().at("evidenceName").get<std::string>()] = buffer;
+        for (uint32_t layer = 0; layer < kLocalLayers; ++layer) {
+            for (bool debug : {false, true}) {
+                const uint64_t offset = debug ? kLocalDebugOffset + layer * kPixels * 4 : layer * kLocalShadowStride;
+                auto slice = buffer->slice({offset, kPixels * (debug ? 4 : 1)});
+                if (!slice) { return std::unexpected(slice.error()); }
+                if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture(debug ? "debug" : "shadows").texture(),
+                    .buffer = *slice, .width = kWidth, .height = kHeight, .baseLayer = layer}); !result) { return result; }
+            }
+        }
+        auto depth = buffer->slice({kLocalDepthOffset, kPixels * 4});
+        if (!depth) { return std::unexpected(depth.error()); }
+        if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("depth").texture(),
+            .buffer = *depth, .width = kWidth, .height = kHeight}); !result) { return result; }
+        for (const auto& [name, offset, size] : {std::tuple{"statistics", kLocalStatsOffset, uint64_t(kLocalLayers * kVirtualShadowMapFaceStatisticsSize)},
+            std::tuple{"lights", kLocalLightsOffset, kLocalTableSize}}) {
+            auto source = context.inputBuffer(name).buffer()->slice({0, size});
+            auto destination = buffer->slice({offset, size});
+            if (!source) { return std::unexpected(source.error()); }
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        }
+        auto* info = context.inputBuffer("rasterInfo").buffer();
+        const void* mapped = info->map();
+        if (!mapped) { return makeError(Error::Failure); }
+        std::memcpy(&state_->camera, mapped, sizeof(state_->camera));
+        info->unmap();
+        return commands.copyTexture({.source = context.inputTexture("debug").texture(),
+            .destination = context.outputTexture("color").texture(), .width = kWidth, .height = kHeight,
+            .sourceBaseLayer = 12});
+    }
+private:
+    std::shared_ptr<EvidenceState> state_;
+};
+
+struct LocalSnapshot {
+    VirtualShadowMapLightsHeader header{};
+    std::array<VirtualShadowMapLightEntry, kLocalCapacity> entries{};
+    std::array<std::array<uint32_t, 32>, kLocalLayers> statistics{};
+    std::array<std::vector<uint8_t>, kLocalLayers> shadows;
+    std::array<std::vector<uint32_t>, kLocalLayers> debug;
+    std::vector<float> depth;
+    VisibilityBufferFrameInfo camera;
+};
+
+LocalSnapshot localSnapshot(const std::string& name)
+{
+    LocalSnapshot result;
+    auto* buffer = activeEvidence->namedReadbacks.at(name);
+    buffer->invalidate();
+    const auto* mapped = static_cast<const std::byte*>(buffer->map());
+    require(mapped != nullptr, "Map local-light array evidence");
+    for (uint32_t layer = 0; layer < kLocalLayers; ++layer) {
+        result.shadows[layer].resize(kPixels); result.debug[layer].resize(kPixels);
+        std::memcpy(result.shadows[layer].data(), mapped + layer * kLocalShadowStride, kPixels);
+        std::memcpy(result.debug[layer].data(), mapped + kLocalDebugOffset + layer * kPixels * 4, kPixels * 4);
+    }
+    result.depth.resize(kPixels);
+    std::memcpy(result.depth.data(), mapped + kLocalDepthOffset, kPixels * 4);
+    std::memcpy(result.statistics.data(), mapped + kLocalStatsOffset, sizeof(result.statistics));
+    std::memcpy(&result.header, mapped + kLocalLightsOffset, sizeof(result.header));
+    std::memcpy(result.entries.data(), mapped + kLocalLightsOffset + sizeof(result.header), sizeof(result.entries));
+    buffer->unmap();
+    result.camera = activeEvidence->camera;
+    require(result.header.version == kVirtualShadowMapLightsVersion && result.header.capacity == kLocalCapacity &&
+        result.header.count <= kLocalCapacity, "Local light publication ABI mismatch");
+    require(result.camera.width == kWidth && result.camera.height == kHeight, "Local light raster resolution mismatch");
+    return result;
+}
+
+struct AuthoredTriangle { Point a, b, c; };
+struct LocalFixture {
+    std::vector<AuthoredTriangle> triangles;
+    std::filesystem::path source, cache;
+};
+
+void addFixtureQuad(LocalFixture& fixture, Point center, Point u, Point v)
+{
+    const Point a = add(add(center, scale(u, -1)), scale(v, -1));
+    const Point b = add(add(center, u), scale(v, -1));
+    const Point c = add(add(center, u), v), d = add(add(center, scale(u, -1)), v);
+    fixture.triangles.push_back({a,b,c}); fixture.triangles.push_back({a,c,d});
+}
+
+LocalFixture writeLocalFixture(const std::filesystem::path& directory, bool room, bool nearCrossing = false)
+{
+    std::filesystem::create_directories(directory);
+    LocalFixture fixture;
+    if (!room) {
+        addFixtureQuad(fixture, {0,0,0}, {8,0,0}, {0,0,-8});
+        if (nearCrossing) {
+            fixture.triangles.push_back({{-2,3.2,-1},{2,2,-1},{0,2,2}});
+            addFixtureQuad(fixture, {0,2.9,0}, {.08,0,0}, {0,0,.08});
+        }
+        else { addFixtureQuad(fixture, {0,1.5,0}, {.8,0,0}, {0,0,.8}); }
+    } else {
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            for (double sign : {-1., 1.}) {
+                Point center{}, u{}, v{}; center[axis] = sign * 6;
+                u[(axis + 1) % 3] = 6; v[(axis + 2) % 3] = 6;
+                addFixtureQuad(fixture, center, u, v);
+                center[axis] = sign * 2;
+                addFixtureQuad(fixture, center, scale(u, .1), scale(v, .1));
+            }
+        }
+        // Each cube seam has a blocker whose shadow crosses the face boundary.
+        // Its normal points away from the light, so both faces see the same quad.
+        for (uint32_t first = 0; first < 3; ++first) {
+            for (uint32_t second = first + 1; second < 3; ++second) {
+                for (double a : {-1., 1.}) { for (double b : {-1., 1.}) {
+                    Point center{}, u{}, v{}; center[first] = a * 2; center[second] = b * 2;
+                    u[first] = .45 * a; u[second] = -.45 * b; v[3 - first - second] = .65;
+                    addFixtureQuad(fixture, center, u, v);
+                }}
+            }
+        }
+    }
+    std::vector<float> positions, normals, uv;
+    std::vector<uint32_t> indices;
+    Point minimum{1e30,1e30,1e30}, maximum{-1e30,-1e30,-1e30};
+    for (const auto& triangle : fixture.triangles) {
+        const Point normal = normalized(cross(add(triangle.b, scale(triangle.a, -1)), add(triangle.c, scale(triangle.a, -1))));
+        for (Point vertex : {triangle.a, triangle.b, triangle.c}) {
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                positions.push_back(float(vertex[axis])); normals.push_back(float(normal[axis]));
+                minimum[axis] = std::min(minimum[axis], vertex[axis]); maximum[axis] = std::max(maximum[axis], vertex[axis]);
+            }
+            uv.insert(uv.end(), {0,0}); indices.push_back(uint32_t(indices.size()));
+        }
+    }
+    const uint64_t positionBytes = positions.size() * 4, normalBytes = normals.size() * 4, uvBytes = uv.size() * 4;
+    {
+        std::ofstream binary(directory / "Scene.bin", std::ios::binary);
+        for (const auto& values : {positions, normals, uv}) { binary.write(reinterpret_cast<const char*>(values.data()), values.size() * 4); }
+        binary.write(reinterpret_cast<const char*>(indices.data()), indices.size() * 4);
+        require(bool(binary), "Write local-light authored triangles");
+    }
+    Json gltf;
+    gltf["asset"] = {{"version", "2.0"}}; gltf["scene"] = 0;
+    gltf["scenes"] = Json::array({Json{{"nodes", {0}}}});
+    gltf["nodes"] = Json::array({Json{{"name", "AuthoredGeometry"}, {"mesh", 0}}});
+    gltf["buffers"] = Json::array({Json{{"uri", "Scene.bin"}, {"byteLength", positionBytes + normalBytes + uvBytes + indices.size() * 4}}});
+    gltf["bufferViews"] = Json::array();
+    uint64_t offset = 0;
+    for (uint64_t bytes : {positionBytes, normalBytes, uvBytes, uint64_t(indices.size() * 4)}) {
+        gltf["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", offset}, {"byteLength", bytes}}); offset += bytes;
+    }
+    gltf["accessors"] = Json::array({
+        Json{{"bufferView",0},{"componentType",5126},{"count",indices.size()},{"type","VEC3"},{"min",minimum},{"max",maximum}},
+        Json{{"bufferView",1},{"componentType",5126},{"count",indices.size()},{"type","VEC3"}},
+        Json{{"bufferView",2},{"componentType",5126},{"count",indices.size()},{"type","VEC2"}},
+        Json{{"bufferView",3},{"componentType",5125},{"count",indices.size()},{"type","SCALAR"}}});
+    Json primitive{{"attributes",{{"POSITION",0},{"NORMAL",1},{"TEXCOORD_0",2}}},{"indices",3},{"material",0}};
+    gltf["meshes"] = Json::array({Json{{"primitives", Json::array({primitive})}}});
+    Json material{{"name","LocalShadowOpaque"},{"doubleSided",true}};
+    material["pbrMetallicRoughness"] = {{"baseColorFactor",{.7,.7,.7,1}},{"metallicFactor",0},{"roughnessFactor",1}};
+    gltf["materials"] = Json::array({material});
+    fixture.source = directory / "Scene.gltf"; fixture.cache = directory / "Scene.meshstream.bin";
+    std::ofstream(fixture.source) << gltf.dump(2) << '\n';
+    std::string log;
+    const auto cooked = scene::buildMeshletStreamAssetOffline({.sourcePath = fixture.source, .outputPath = fixture.cache,
+        .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log);
+    require(cooked, "Cook local-light fixture: " + log);
+    return fixture;
+}
+
+RenderGraph makeLocalGraph(const LocalFixture& fixture, float nearPlane = .001f)
+{
+    RenderGraph graph;
+    graph.setName("VirtualShadowMapLocalLights");
+    graph.setViewProperties({{"temporalJitter",false},
+        {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
+    graph.addNode("VisibilityBufferPass", "Raster", {{"path",fixture.source.generic_string()}, {"streamAssetPath",fixture.cache.generic_string()},
+        {"autoBuildStreamAsset",false},{"maxResidentPages",64},{"maxLockedFallbackPages",64},
+        {"maxActiveGroups",256},{"maxGpuPageRequests",256},{"maxTraversalWorkers",64},{"maxTraversalWorkItems",512},
+        {"autoLod",false},{"lodLevel",0},{"instanceHzbCull",false},{"meshletHzbCull",false},
+        {"meshletNormalConeCull",false},{"hybridRaster",false},{"enableClas",false},{"enableClusterRtx",false}});
+    for (const char* name : {"Cached", "Redraw"}) {
+        graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kLocalCapacity},{"physicalPageBudget",512},
+            {"pageSize",kPageSize},{"virtualPagesPerAxis",kPagesPerAxis},{"clipmapCount",kClipmapCount},
+            {"maxWorkItems",65535},{"shadowBias",.002},{"nearPlane",nearPlane},{"cacheEnabled",true},
+            {"forceRedraw",std::string_view(name) == "Redraw"}});
+        graph.addEdge("Raster.depth",std::string(name) + ".depth");
+        graph.addEdge("Raster.rasterInfo",std::string(name) + ".rasterInfo");
+        const std::string evidence = std::string(name) + "Evidence";
+        graph.addNode("VSMLocalEvidencePass", evidence, {{"evidenceName",name}});
+        for (const char* field : {"shadows","debug","lights","statistics"}) {
+            graph.addEdge(std::string(name) + "." + field, evidence + "." + field);
+        }
+        graph.addEdge("Raster.depth",evidence + ".depth"); graph.addEdge("Raster.rasterInfo",evidence + ".rasterInfo");
+        graph.markOutput(evidence + ".color");
+    }
+    return graph;
+}
+
+double triangleDistance(Point origin, Point direction, const AuthoredTriangle& triangle)
+{
+    const Point e1 = add(triangle.b, scale(triangle.a, -1)), e2 = add(triangle.c, scale(triangle.a, -1));
+    const Point p = cross(direction, e2);
+    const double determinant = dot(e1, p);
+    if (std::abs(determinant) < 1e-12) { return 1e30; }
+    const Point t = add(origin, scale(triangle.a, -1));
+    const double u = dot(t, p) / determinant;
+    const Point q = cross(t, e1);
+    const double v = dot(direction, q) / determinant, distance = dot(e2, q) / determinant;
+    // A ray exactly on the room's shared edge can round u+v to
+    // 1.0000000000000002 for both adjacent walls. Keep that closed boundary;
+    // this tolerance is in double barycentrics, not a screen-pixel exclusion.
+    constexpr double kBarycentricRoundoff = 1e-12;
+    return u >= -kBarycentricRoundoff && v >= -kBarycentricRoundoff &&
+        u + v <= 1 + kBarycentricRoundoff && distance > 1e-7 ? distance : 1e30;
+}
+
+struct LocalHit { Point position{}, normal{}; double depth = 0; bool valid = false; };
+
+LocalHit localCameraHit(const VisibilityBufferFrameInfo& camera, uint32_t x, uint32_t y, const LocalFixture& fixture)
+{
+    const Point eye = point(camera.eye), forward = normalized(add(point(camera.center),scale(eye,-1)));
+    const Point right = normalized(cross(forward,point(camera.upProjection))), up = cross(right,forward);
+    const bool orthographic = camera.upProjection[3] > .5f;
+    const double halfHeight = orthographic ? camera.clipOrtho[2] * .5 : std::tan(camera.viewport[3] * .5);
+    const Point lateral = add(scale(right,(2 * (x + .5 + camera.jitter[0]) / kWidth - 1) * camera.viewport[0] * halfHeight),
+        scale(up,(1 - 2 * (y + .5 + camera.jitter[1]) / kHeight) * halfHeight));
+    const Point origin = orthographic ? add(eye,lateral) : eye, direction = orthographic ? forward : add(forward,lateral);
+    LocalHit result; double nearest = 1e30;
+    for (const auto& triangle : fixture.triangles) {
+        const double distance = triangleDistance(origin,direction,triangle);
+        const Point position = add(origin,scale(direction,distance));
+        const double viewZ = dot(add(position,scale(eye,-1)),forward);
+        if (distance >= nearest || viewZ < camera.clipOrtho[0] || viewZ > camera.clipOrtho[1]) { continue; }
+        nearest = distance; result.valid = true; result.position = position;
+        result.normal = normalized(cross(add(triangle.b,scale(triangle.a,-1)),add(triangle.c,scale(triangle.a,-1))));
+        const double n = camera.clipOrtho[0], f = camera.clipOrtho[1];
+        result.depth = orthographic ? (f-viewZ)/(f-n) : n*(f-viewZ)/(viewZ*(f-n));
+    }
+    return result;
+}
+
+uint32_t pointFace(Point direction)
+{
+    uint32_t axis = 0;
+    if (std::abs(direction[1]) > std::abs(direction[axis])) { axis = 1; }
+    if (std::abs(direction[2]) > std::abs(direction[axis])) { axis = 2; }
+    return axis * 2 + (direction[axis] < 0 ? 1 : 0);
+}
+
+bool localOccluded(Point receiver, const scene::PunctualLight& light, const LocalFixture& fixture, double nearPlane)
+{
+    const Point origin{light.position.x,light.position.y,light.position.z};
+    const Point ray = add(receiver,scale(origin,-1));
+    const Point lightDirection{light.direction.x,light.direction.y,light.direction.z};
+    for (const auto& triangle : fixture.triangles) {
+        const double t = triangleDistance(origin,ray,triangle);
+        if (t >= 1 - .004 / std::sqrt(dot(ray,ray))) { continue; }
+        const Point fromLight = scale(ray,t);
+        const double projected = light.properties.type == "point" ?
+            std::max({std::abs(fromLight[0]),std::abs(fromLight[1]),std::abs(fromLight[2])}) : dot(fromLight,normalized(lightDirection));
+        if (projected >= nearPlane) { return true; }
+    }
+    return false;
+}
+
+uint64_t localEntryId(const VirtualShadowMapLightEntry& entry)
+{
+    return uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+}
+
+const VirtualShadowMapLightEntry& localEntry(const LocalSnapshot& image, uint64_t id)
+{
+    for (uint32_t index = 0; index < image.header.count; ++index) {
+        if (localEntryId(image.entries[index]) == id) { return image.entries[index]; }
+    }
+    throw std::runtime_error("Published light table lost stable identity " + std::to_string(id));
+}
+
+Json verifyLocalOracle(const LocalSnapshot& image, const LocalFixture& fixture, const scene::LightingSettings& lighting,
+    const std::filesystem::path& directory, const std::string& name, double nearPlane)
+{
+    Json report = Json::array();
+    std::vector<LocalHit> hits(kPixels);
+    size_t depthMismatches = 0, visible = 0;
+    Json depthErrors=Json::array();
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y)*kWidth+x;
+        hits[pixel] = localCameraHit(image.camera,x,y,fixture);
+        visible += hits[pixel].valid;
+        if (std::abs(image.depth[pixel] - hits[pixel].depth) > 2e-5) {
+            ++depthMismatches;
+            depthErrors.push_back({{"pixel",{x,y}},{"actual",image.depth[pixel]},{"expected",hits[pixel].depth},
+                {"position",hits[pixel].position}});
+        }
+    }}
+    if (depthMismatches) {
+        std::ofstream(directory/(name+"-DepthErrors.json")) << Json{{"errors",depthErrors},
+            {"eye",{image.camera.eye[0],image.camera.eye[1],image.camera.eye[2]}},
+            {"center",{image.camera.center[0],image.camera.center[1],image.camera.center[2]}},
+            {"up",{image.camera.upProjection[0],image.camera.upProjection[1],image.camera.upProjection[2]}},
+            {"viewport",{image.camera.viewport[0],image.camera.viewport[1],image.camera.viewport[2],image.camera.viewport[3]}}}.dump(2) << '\n';
+    }
+    require(visible > 1000 && depthMismatches == 0, name + ": actual raster depth differs from authored triangle rays: " + std::to_string(depthMismatches));
+    for (const auto& light : lighting.lights) {
+        const auto& entry = localEntry(image,light.stableId);
+        require(entry.kind == (light.properties.type == "point" ? 2u : 1u), name + ": wrong published light kind");
+        require(entry.faceCount == (entry.kind == 2 ? 6u : 1u), name + ": incomplete point-face publication");
+        if (entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+        size_t checked=0,mismatches=0,shadowed=0,edgeExcluded=0,seamChecked=0,seamShadowed=0;
+        size_t coarseChecked=0,coarseEdgeExcluded=0;
+        std::set<uint32_t> faces;
+        std::vector<uint8_t> actual(kPixels,255), reference(kPixels,255);
+        std::vector<uint32_t> error(kPixels,rgba(0,0,0));
+        const Point origin{light.position.x,light.position.y,light.position.z};
+        const Point direction = normalized(Point{light.direction.x,light.direction.y,light.direction.z});
+        for (size_t pixel=0; pixel<kPixels; ++pixel) {
+            const auto& hit = hits[pixel]; if (!hit.valid) { continue; }
+            const Point fromLight = add(hit.position,scale(origin,-1));
+            const double distance = std::sqrt(dot(fromLight,fromLight));
+            if (light.properties.range > 0 && distance >= light.properties.range) { continue; }
+            if (entry.kind == 1 && dot(normalized(fromLight),direction) <= std::cos(light.properties.outerConeAngle) + .002) { continue; }
+            const uint32_t face = entry.kind == 2 ? pointFace(fromLight) : 0;
+            const double projected = entry.kind == 2 ? std::abs(fromLight[face/2]) : dot(fromLight,direction);
+            if (projected <= nearPlane + .01) { continue; }
+            actual[pixel] = image.shadows[entry.baseLayer+face][pixel];
+            const bool blocked = localOccluded(hit.position,light,fixture,nearPlane);
+            reference[pixel] = blocked ? 0 : 255;
+            // Raster sample coverage differs within one texel of a geometric
+            // shadow edge. Exclude only those edges using world-space rays;
+            // cube-face seams themselves are never excluded.
+            const Point tangent = normalized(cross(hit.normal,std::abs(hit.normal[1]) < .9 ? Point{0,1,0} : Point{1,0,0}));
+            const Point bitangent = cross(hit.normal,tangent);
+            const uint32_t debug=image.debug[entry.baseLayer+face][pixel];
+            const bool coarse=(debug&255)<30 && ((debug>>8)&255)<30 && ((debug>>16)&255)>200;
+            const double margin = coarse ? .24 : .035;
+            bool edge = false;
+            for (Point offset : {scale(tangent,margin),scale(tangent,-margin),scale(bitangent,margin),scale(bitangent,-margin)}) {
+                edge |= localOccluded(add(hit.position,offset),light,fixture,nearPlane) != blocked;
+            }
+            if (edge) { ++edgeExcluded; coarseEdgeExcluded+=coarse; error[pixel]=rgba(50,50,50); continue; }
+            ++checked; shadowed += blocked; faces.insert(face);
+            coarseChecked+=coarse;
+            std::array<double,3> magnitudes{std::abs(fromLight[0]),std::abs(fromLight[1]),std::abs(fromLight[2])};
+            std::sort(magnitudes.begin(),magnitudes.end());
+            const bool seam = entry.kind == 2 && magnitudes[2] - magnitudes[1] < .06;
+            seamChecked += seam; seamShadowed += seam && blocked;
+            const bool mismatch = actual[pixel] != reference[pixel]; mismatches += mismatch;
+            error[pixel] = mismatch ? rgba(255,0,255) : seam ? rgba(0,160,255) : rgba(0,60,0);
+        }
+        const std::string label = name + "-" + light.name;
+        saveVisibility(directory/(label+"-GPU.png"),actual); saveVisibility(directory/(label+"-CPU.png"),reference);
+        saveImage(directory/(label+"-Error.png"),error);
+        if (mismatches != 0) {
+            for (uint32_t face=0; face<entry.faceCount; ++face) {
+                saveImage(directory/(label+"-Face"+std::to_string(face)+"-Debug.png"),image.debug[entry.baseLayer+face]);
+            }
+        }
+        report.push_back({{"light",light.name},{"stableId",light.stableId},{"checked",checked},{"shadowed",shadowed},
+            {"mismatches",mismatches},{"shadowEdgeExcluded",edgeExcluded},{"coarseChecked",coarseChecked},
+            {"coarseShadowEdgeExcluded",coarseEdgeExcluded},{"fineEdgeMarginMetres",.035},{"coarseEdgeMarginMetres",.24},
+            {"seamChecked",seamChecked},{"seamShadowed",seamShadowed},{"faces",faces}});
+        std::ofstream(directory/(name+"-Oracle.json")) << report.dump(2) << '\n';
+        require(checked > 100 && mismatches == 0, label + ": light-ray oracle mismatch count " + std::to_string(mismatches));
+    }
+    return report;
+}
+
+LocalSnapshot compareLocalFrame(RenderGraphPreviewRenderer& preview, RenderGraph& graph, const LocalFixture& fixture,
+    const scene::LightingSettings& lighting, const std::filesystem::path& directory, const std::string& name, Json& report,
+    double nearPlane = .001)
+{
+    renderAndRequire(preview,graph,"CachedEvidence.color");
+    auto cached = localSnapshot("Cached"), redraw = localSnapshot("Redraw");
+    size_t mismatches = 0;
+    for (uint32_t layer=0; layer<kLocalLayers; ++layer) {
+        for (size_t pixel=0; pixel<kPixels; ++pixel) { mismatches += cached.shadows[layer][pixel] != redraw.shadows[layer][pixel]; }
+    }
+    Json frame{{"name",name},{"cacheRedrawMismatches",mismatches},{"admitted",cached.header.admittedCount},
+        {"dropped",cached.header.budgetDroppedCount},{"statistics",cached.statistics}};
+    report["frames"].push_back(frame);
+    std::ofstream(directory/"VirtualShadowMapLocalLights.json") << report.dump(2) << '\n';
+    require(mismatches == 0 && cached.depth == redraw.depth, name + ": cached local-light arrays differ from forced redraw");
+    for (uint32_t index=0; index<cached.header.count; ++index) {
+        const auto& entry = cached.entries[index];
+        require(entry.baseLayer == index*6, name+": table layer does not match its source entry");
+        if (entry.status == kVirtualShadowMapLightAdmitted) {
+            for (uint32_t face=0; face<entry.faceCount; ++face) {
+                require(cached.statistics[entry.baseLayer+face][27] == 1 && redraw.statistics[entry.baseLayer+face][26] == 1,
+                    name+": cache/force-redraw control did not reach every admitted face");
+            }
+        }
+    }
+    report["frames"].back()["oracle"] = verifyLocalOracle(cached,fixture,lighting,directory,name,nearPlane);
+    return cached;
+}
+
+void requireLocalReused(const LocalSnapshot& image, uint64_t identity, const std::string& name)
+{
+    const auto& entry = localEntry(image,identity);
+    for (uint32_t face=0; face<entry.faceCount; ++face) {
+        const auto& statistics = image.statistics[entry.baseLayer+face];
+        require(statistics[16] == 0 && statistics[21] == 0, name+": stable light face redrew depth");
+    }
+}
+
+scene::PunctualLight localLight(std::string name, bool spot, Point position)
+{
+    scene::PunctualLight light; light.name = std::move(name);
+    light.position = float3(float(position[0]),float(position[1]),float(position[2]));
+    light.direction = float3(0,-1,0); light.properties.type = spot ? "spot" : "point";
+    light.properties.range = 20; light.properties.intensity = 80;
+    light.properties.outerConeAngle = 1.0; light.properties.innerConeAngle = .5;
+    return light;
+}
+
+std::vector<float> localHDR(const RenderGraphPreviewRenderer& preview)
+{
+    const auto& bytes=preview.readbackBytes();
+    std::vector<float> values;
+    if (preview.readbackFormat()==Format::RGBA32Sfloat) {
+        values.resize(bytes.size()/4); std::memcpy(values.data(),bytes.data(),bytes.size());
+    } else if (preview.readbackFormat()==Format::RGBA16Sfloat) {
+        for (size_t offset=0; offset<bytes.size(); offset+=2) {
+            uint16_t bits; std::memcpy(&bits,bytes.data()+offset,2);
+            const uint32_t exponent=(bits>>10)&31, mantissa=bits&1023;
+            require(exponent!=31,"Local consumer produced nonfinite HDR");
+            const float value=exponent==0 ? std::ldexp(float(mantissa),-24) : std::ldexp(float(1024+mantissa),int(exponent)-25);
+            values.push_back(bits&0x8000 ? -value : value);
+        }
+    }
+    require(values.size()==kPixels*4,"Local consumer requires full linear floating-point readback");
+    require(std::all_of(values.begin(),values.end(),[](float v) { return std::isfinite(v); }),"Local consumer nonfinite HDR");
+    return values;
+}
+
+Json verifyLocalConsumers(RenderGraphPreviewRenderer& preview, scene::SceneDocument& scene,
+    const LocalFixture& fixture, const std::filesystem::path& directory)
+{
+    const auto authored=scene.lighting();
+    require(authored.lights.size()==2,"Local consumer needs exactly one point and one spot");
+    Json report;
+    for (bool binned : {false,true}) {
+        const std::string label=binned ? "Binned" : "Flat";
+        activeEvidence=std::make_shared<EvidenceState>();
+        auto graph=makeLocalGraph(fixture);
+        graph.addNode("VisibilityBufferDeferredPass","Deferred",{{"lightingMode","realtime"},{"debugView","final"},
+            {"materialBinning",binned},{"shadow.enabled",false},{"accumulate",false},{"outputLinear",true}});
+        for (const char* field : {"visibility","depth","rasterInfo"}) { graph.addEdge(std::string("Raster.")+field,std::string("Deferred.")+field); }
+        graph.addEdge("Cached.shadows","Deferred.virtualShadows");
+        graph.addEdge("Cached.lights","Deferred.virtualShadowLights");
+        graph.markOutput("Deferred.color");
+        preview.setRawReadbackEnabled(true);
+        std::array<std::vector<float>,7> images;
+        LocalSnapshot masks;
+        const char* modes[]{"AllCached","AllRedraw","AllUnshadowed","FirstOnly","SecondOnly","FirstUnshadowed","SecondUnshadowed"};
+        for (uint32_t mode=0; mode<std::size(modes); ++mode) {
+            auto lighting=authored;
+            // Keep both lights enabled and geometrically identical, so the
+            // page allocation stays fixed while isolating direct contributions.
+            if (mode==3 || mode==5) { lighting.lights[1].properties.intensity=1e-10; }
+            if (mode==4 || mode==6) { lighting.lights[0].properties.intensity=1e-10; }
+            (void)scene.setLighting(lighting); (void)preview.setLighting(scene.lighting());
+            const bool unshadowed=mode==2 || mode>=5;
+            (void)graph.setNodeRuntimeProperty(graph.findNode("Cached")->id,"physicalPageBudget",unshadowed ? 0 : 512);
+            (void)graph.setNodeRuntimeProperty(graph.findNode("Cached")->id,"forceRedraw",mode==1);
+            renderAndRequire(preview,graph,"Deferred.color");
+            images[mode]=localHDR(preview);
+            if (mode==0) { masks=localSnapshot("Cached"); }
+            saveImage(directory/("Consumer-"+label+"-"+modes[mode]+".png"),preview.pixels());
+        }
+        require(images[0]==images[1],label+": actual Deferred cache/force HDR differs");
+        size_t sumErrors=0,allChanged=0;
+        double maximumSumError=0;
+        const double tolerance=preview.readbackFormat()==Format::RGBA16Sfloat ? .002 : 2e-5;
+        for (size_t pixel=0; pixel<kPixels; ++pixel) {
+            bool changed=false;
+            for (uint32_t channel=0; channel<3; ++channel) {
+                const size_t index=pixel*4+channel;
+                const double difference=std::abs(double(images[0][index])-images[3][index]-images[4][index]);
+                maximumSumError=std::max(maximumSumError,difference);
+                sumErrors+=difference>tolerance*std::max(1.,std::abs(double(images[0][index])));
+                changed|=std::abs(images[0][index]-images[2][index])>tolerance;
+            }
+            allChanged+=changed;
+        }
+        Json controls=Json::array();
+        for (uint32_t lightIndex=0; lightIndex<2; ++lightIndex) {
+            const auto& light=authored.lights[lightIndex]; const auto& entry=localEntry(masks,light.stableId);
+            size_t changed=0,lit=0,leaks=0;
+            for (uint32_t y=0; y<kHeight; ++y) { for (uint32_t x=0; x<kWidth; ++x) {
+                const size_t pixel=size_t(y)*kWidth+x; const auto hit=localCameraHit(masks.camera,x,y,fixture);
+                if (!hit.valid) { continue; }
+                const Point delta=add(hit.position,Point{-light.position.x,-light.position.y,-light.position.z});
+                const uint32_t face=entry.kind==2 ? pointFace(delta) : 0;
+                bool different=false;
+                for (uint32_t channel=0; channel<3; ++channel) {
+                    const size_t index=pixel*4+channel;
+                    different|=std::abs(images[3+lightIndex][index]-images[5+lightIndex][index])>
+                        tolerance*std::max(1.,std::abs(double(images[5+lightIndex][index])));
+                }
+                if (masks.shadows[entry.baseLayer+face][pixel]==255) { ++lit; leaks+=different; }
+                else { changed+=different; }
+            }}
+            controls.push_back({{"light",light.name},{"changedShadowedPixels",changed},{"litPixels",lit},{"changedLitPixels",leaks}});
+            require(changed>50 && lit>1000 && leaks==0,label+": per-light direct visibility was absent or applied to a different light");
+        }
+        report[label]={{"sumErrors",sumErrors},{"maximumSumError",maximumSumError},{"allShadowChangedPixels",allChanged},{"controls",controls}};
+        std::ofstream(directory/"Consumers.json") << report.dump(2) << '\n';
+        require(sumErrors==0 && allChanged>100,label+": overlapping local-light contributions are not additive or shadows were not consumed");
+    }
+    (void)scene.setLighting(authored); (void)preview.setLighting(scene.lighting());
+    preview.setRawReadbackEnabled(false);
+    return report;
+}
+
+class VirtualShadowMapLocalLightsTest final : public RHITest {
+public:
+    VirtualShadowMapLocalLightsTest() { type=RHITestType::Rendering; name="virtual_shadow_map_local_lights"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        bench::ValidationRecorder validation;
+        const auto directory = std::filesystem::absolute(context.outputDirectory)/"VirtualShadowMapLocalLights";
+        Json report{{"scope","P3 real raster receivers and independent authored triangle light rays"},{"passed",false},{"frames",Json::array()}};
+        try {
+            static const bool registered = registerRenderGraphPassType("VSMLocalEvidencePass","Test-only local VSM array readback",
+                [] { return std::make_unique<VSMLocalEvidencePass>(activeEvidence); });
+            require(registered,"Register local VSM evidence pass");
+            std::filesystem::create_directories(directory);
+            const auto floor = writeLocalFixture(directory/"Floor",false);
+            const auto room = writeLocalFixture(directory/"Room",true);
+            const auto nearFixture = writeLocalFixture(directory/"NearCrossing",false,true);
+            for (bool metadataOnly : {false,true}) {
+                const std::string mode = metadataOnly ? "Stream" : "Resident";
+                for (const LocalFixture* fixture : {&floor,&room,&nearFixture}) {
+                    const bool isRoom = fixture == &room, isNear = fixture == &nearFixture;
+                    const std::string prefix = mode + (isRoom ? "-Room" : isNear ? "-Near" : "-Floor");
+                    const auto output = directory/prefix; std::filesystem::create_directories(output);
+                    scene::SceneDocument scene;
+                    require(metadataOnly ? scene.loadStreamMetadata(fixture->source) : scene.load(fixture->source),"Load local VSM fixture");
+                    environment::WorldEnvironment world; world.sun.enabled=false; world.moon.enabled=false;
+                    RenderView view; RenderGraphPreviewRenderer preview;
+                    configureCachePreview(preview,scene,view,context,validation,world);
+                    scene::LightingSettings lighting; lighting.autoExposure.enabled=false;
+                    if (isRoom) { lighting.lights.push_back(localLight("Point",false,{0,0,0})); }
+                    else if (isNear) { lighting.lights.push_back(localLight("NearSpot",true,{0,3,0})); }
+                    else {
+                        lighting.lights.push_back(localLight("Point",false,{-1,4,0}));
+                        lighting.lights.push_back(localLight("Spot",true,{1,4,0}));
+                    }
+                    auto publishLighting = [&] {
+                        require(scene.setLighting(lighting),"Publish local light edits");
+                        lighting=scene.lighting();
+                        (void)preview.setLighting(lighting);
+                    };
+                    publishLighting();
+                    activeEvidence=std::make_shared<EvidenceState>();
+                    const float nearPlane=isNear ? .25f : .001f;
+                    auto graph=makeLocalGraph(*fixture,nearPlane);
+                    LocalFixture oracleFixture=*fixture;
+                    auto compare=[&](const std::string& step) {
+                        validation.phase(prefix+"-"+step);
+                        return compareLocalFrame(preview,graph,oracleFixture,scene.lighting(),output,prefix+"-"+step,report,nearPlane);
+                    };
+                    if (isRoom) {
+                        uint32_t viewIndex=0; size_t seamChecked=0,seamShadowed=0;
+                        auto renderView=[&](Point eye,Point target,Point up) {
+                            ViewCamera camera;
+                            for (uint32_t axis=0; axis<3; ++axis) { camera.eye[axis]=float(eye[axis]); camera.center[axis]=float(target[axis]); camera.up[axis]=float(up[axis]); }
+                            camera.fovDegrees=65; camera.nearPlane=.05f; camera.farPlane=30;
+                            (void)view.setCamera(camera);
+                            const auto image=compare("View"+std::to_string(viewIndex++));
+                            for (const auto& oracle : report["frames"].back()["oracle"]) {
+                                seamChecked+=oracle["seamChecked"].get<size_t>(); seamShadowed+=oracle["seamShadowed"].get<size_t>();
+                            }
+                            if (viewIndex==1) {
+                                const auto stable=compare("Stable");
+                                requireLocalReused(stable,lighting.lights[0].stableId,"Room stable point");
+                            }
+                        };
+                        for (uint32_t axis=0; axis<3; ++axis) { for (double sign : {-1.,1.}) {
+                            Point eye{},target{},up{}; eye[(axis+1)%3]=3; target[axis]=6*sign; up[(axis+2)%3]=1;
+                            renderView(eye,target,up);
+                        }}
+                        for (uint32_t first=0; first<3; ++first) { for (uint32_t second=first+1; second<3; ++second) {
+                            for (double a : {-1.,1.}) { for (double b : {-1.,1.}) {
+                                Point eye{},target{},up{}; const uint32_t third=3-first-second;
+                                eye[third]=3; target[first]=6*a; target[second]=6*b; up[third]=1;
+                                renderView(eye,target,up);
+                            }}
+                        }}
+                        require(seamChecked>100 && seamShadowed>100,"Room fixture did not check shadowed cube seams");
+                        report[prefix+"Seams"]={{"checked",seamChecked},{"shadowed",seamShadowed}};
+                    } else {
+                        auto initial=compare("Initial");
+                        auto stable=compare("Stable");
+                        for (const auto& light : lighting.lights) { requireLocalReused(stable,light.stableId,"Stable local light"); }
+                        if (isNear) {
+                            require(initial.statistics[localEntry(initial,lighting.lights[0].stableId).baseLayer][29]>0,
+                                "Explicit local near-plane receiver limit was not counted");
+                            report[prefix+"NearPlaneContract"]="Receivers inside the configured near plane are counted; casters inside it are explicitly truncated";
+                            for (double angle : {1e-8,1.5707963267948966}) {
+                                lighting.lights[0].properties.innerConeAngle=0;
+                                lighting.lights[0].properties.outerConeAngle=angle;
+                                publishLighting();
+                                const auto rejected=preview.render(graph,kWidth,kHeight,"CachedEvidence.color");
+                                report[prefix+"UnsupportedCones"].push_back({{"outerHalfAngle",angle},{"result",resultToString(rejected)},
+                                    {"log",preview.lastLog()}});
+                                require(!rejected && rejected.error()==Error::Unsupported,
+                                    "Unrepresentable or 180-degree spot projection was silently clamped");
+                            }
+                        }
+                        if (!isNear) {
+                            const uint64_t pointId=lighting.lights[0].stableId,spotId=lighting.lights[1].stableId;
+                            const auto originalLighting=lighting;
+                            auto requireRedrawn=[&](const LocalSnapshot& image,uint64_t id,const std::string& label) {
+                                const auto& entry=localEntry(image,id);
+                                for (uint32_t face=0; face<entry.faceCount; ++face) {
+                                    require(image.statistics[entry.baseLayer+face][21]==1,label+": changed projection retained old coarse depth");
+                                }
+                            };
+                            lighting.lights[0].position.x+=.6f; publishLighting();
+                            auto movedPoint=compare("PointMoved");
+                            requireRedrawn(movedPoint,pointId,"Moved point"); requireLocalReused(movedPoint,spotId,"Point move preserves spot");
+                            lighting=originalLighting; publishLighting();
+                            auto restoredPoint=compare("PointRestored");
+                            requireRedrawn(restoredPoint,pointId,"Restored point"); requireLocalReused(restoredPoint,spotId,"Point restore preserves spot");
+                            lighting.lights[1].direction=float3(.18f,-1,.12f); publishLighting();
+                            auto turnedSpot=compare("SpotDirection");
+                            requireRedrawn(turnedSpot,spotId,"Turned spot"); requireLocalReused(turnedSpot,pointId,"Spot direction preserves point");
+                            lighting.lights[1].properties.outerConeAngle=.85;
+                            lighting.lights[1].properties.innerConeAngle=.4; publishLighting();
+                            auto coneSpot=compare("SpotCone");
+                            requireRedrawn(coneSpot,spotId,"Changed spot cone"); requireLocalReused(coneSpot,pointId,"Spot cone preserves point");
+                            lighting.lights[1].properties.range=12; publishLighting();
+                            auto rangedSpot=compare("SpotRange");
+                            requireRedrawn(rangedSpot,spotId,"Changed spot range"); requireLocalReused(rangedSpot,pointId,"Spot range preserves point");
+                            lighting=originalLighting; publishLighting();
+                            auto restoredSpot=compare("SpotRestored");
+                            requireRedrawn(restoredSpot,spotId,"Restored spot"); requireLocalReused(restoredSpot,pointId,"Spot restore preserves point");
+
+                            // This fixture uses one authored mesh. Move both the
+                            // receiver and blocker, and independently transform
+                            // the CPU triangles; no GPU-derived geometry enters
+                            // the old/new perspective dirty-bounds oracle.
+                            const auto originalMatrix=scene.nodes()[0].localMatrix;
+                            const Point translation{.35,0,.2};
+                            float4x4 transform; transform.SetupByTranslation(float3(.35f,0,.2f));
+                            require(scene.setNodeLocalMatrix(0,transform*originalMatrix),"Translate local fixture geometry");
+                            for (auto& triangle : oracleFixture.triangles) {
+                                triangle.a=add(triangle.a,translation); triangle.b=add(triangle.b,translation); triangle.c=add(triangle.c,translation);
+                            }
+                            const auto movedGeometry=compare("GeometryTranslated");
+                            for (uint64_t id : {pointId,spotId}) {
+                                const auto& entry=localEntry(movedGeometry,id); uint32_t invalidated=0;
+                                for (uint32_t face=0; face<entry.faceCount; ++face) { invalidated+=movedGeometry.statistics[entry.baseLayer+face][18]; }
+                                require(invalidated>0,"Translated local caster old/new bounds did not invalidate cached perspective pages");
+                            }
+                            for (const char* node : {"Cached","Redraw"}) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"maxWorkItems",1),"Constrain local fine-page work");
+                            }
+                            require(scene.setNodeLocalMatrix(0,originalMatrix),"Restore geometry while fine-page work is constrained");
+                            oracleFixture=*fixture;
+                            auto requireOverflow=[&](const LocalSnapshot& image,bool retry) {
+                                for (uint64_t id : {pointId,spotId}) {
+                                    const auto& entry=localEntry(image,id); uint32_t overflow=0;
+                                    for (uint32_t face=0; face<entry.faceCount; ++face) {
+                                        const auto& statistics=image.statistics[entry.baseLayer+face]; overflow+=statistics[5];
+                                        if (statistics[5]>0) {
+                                            const auto& pixels=image.debug[entry.baseLayer+face];
+                                            const auto coarse=std::count(pixels.begin(),pixels.end(),rgba(0,0,255));
+                                            const auto fine=std::count_if(pixels.begin(),pixels.end(),[](uint32_t p) { return (p & 0x0000ff00u)!=0; });
+                                            // stats6 counts all screen receivers before range/face
+                                            // selection. Only this face's queried pixels must be coarse.
+                                            require(coarse>0 && coarse==statistics[7] && fine==0,
+                                                "Local fine work overflow did not query complete coarse coverage");
+                                            require(!retry || statistics[21]==0,"Local overflow retry unnecessarily redrew valid coarse depth");
+                                        }
+                                    }
+                                    require(overflow>0,"Local-light work budget fixture did not overflow");
+                                }
+                            };
+                            requireOverflow(compare("DirtyWorkOverflow"),false);
+                            requireOverflow(compare("DirtyWorkOverflowRetry"),true);
+                            for (const char* node : {"Cached","Redraw"}) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"maxWorkItems",65535),"Restore local fine-page work budget");
+                            }
+                            auto recovered=compare("DirtyWorkRecovered");
+                            for (uint64_t id : {pointId,spotId}) {
+                                const auto& entry=localEntry(recovered,id); uint32_t fineReceivers=0;
+                                for (uint32_t face=0; face<entry.faceCount; ++face) {
+                                    const auto& statistics=recovered.statistics[entry.baseLayer+face];
+                                    require(statistics[5]==0,"Local fine work did not recover");
+                                    const auto& pixels=recovered.debug[entry.baseLayer+face];
+                                    fineReceivers+=uint32_t(std::count_if(pixels.begin(),pixels.end(),[](uint32_t p) { return (p & 0x0000ff00u)!=0; }));
+                                }
+                                require(fineReceivers>0,"Recovered local light remained entirely at coarse resolution");
+                            }
+                            const auto recoveredStable=compare("DirtyWorkRecoveredStable");
+                            requireLocalReused(recoveredStable,pointId,"Recovered point"); requireLocalReused(recoveredStable,spotId,"Recovered spot");
+                            std::swap(lighting.lights[0],lighting.lights[1]);
+                            publishLighting();
+                            auto reordered=compare("Reordered");
+                            requireLocalReused(reordered,pointId,"Reordered point"); requireLocalReused(reordered,spotId,"Reordered spot");
+                            auto clone=lighting.lights[0]; clone.name="CopiedSpot"; clone.position.x=-2;
+                            lighting.lights.push_back(clone); publishLighting();
+                            const uint64_t cloneId=lighting.lights.back().stableId;
+                            require(cloneId!=spotId && cloneId!=pointId,"Copied light did not acquire a new runtime identity");
+                            auto added=compare("CopiedLightAdded");
+                            require(added.statistics[localEntry(added,cloneId).baseLayer][21]==1,"New identity inherited stale coarse cache");
+                            auto addedStable=compare("CopiedLightStable");
+                            requireLocalReused(addedStable,pointId,"Stable after add point"); requireLocalReused(addedStable,spotId,"Stable after add spot");
+                            lighting.lights.pop_back(); publishLighting();
+                            (void)compare("CopiedLightRemoved");
+                            auto removedStable=compare("RemovedStable");
+                            requireLocalReused(removedStable,pointId,"Stable after remove point"); requireLocalReused(removedStable,spotId,"Stable after remove spot");
+                            lighting.lights[0].properties.color=float3(.2f,.6f,1); lighting.lights[0].properties.intensity*=2;
+                            publishLighting();
+                            auto radiometry=compare("Radiometry");
+                            requireLocalReused(radiometry,pointId,"Radiometry point"); requireLocalReused(radiometry,spotId,"Radiometry spot");
+                            for (uint32_t budget : {7u,6u,0u,512u}) {
+                                for (const char* node : {"Cached","Redraw"}) {
+                                    require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"physicalPageBudget",budget),"Change global local-light budget");
+                                }
+                                const auto constrained=compare("Budget"+std::to_string(budget));
+                                require(constrained.header.admittedCount==(budget>=7 ? 2u : budget==6 ? 1u : 0u),"Whole-light coarse admission count mismatch");
+                                require(constrained.header.budgetDroppedCount==(budget>=7 ? 0u : budget==6 ? 1u : 2u),"Budget rejection was not explicitly published");
+                                if (budget==7) {
+                                    require(localEntry(constrained,pointId).pageBudget==6 && localEntry(constrained,spotId).pageBudget==1,
+                                        "Point coarse budget was split or an incomplete face set was admitted");
+                                }
+                            }
+                            report[prefix+"Consumers"]=verifyLocalConsumers(preview,scene,*fixture,output);
+                        }
+                    }
+                    requireValidPreview(validation.snapshot());
+                }
+            }
+            activeEvidence.reset(); report["validation"]=validation.snapshot(); requireValidPreview(report["validation"]);
+            report["passed"]=true;
+            std::ofstream(directory/"VirtualShadowMapLocalLights.json") << report.dump(2) << '\n';
+            return RHITestResult::pass("Local spot/point real-depth ray oracle, six faces/seams, stable identities, cache/redraw and whole-light budgets; PNG/JSON exported");
+        } catch (const std::exception& error) {
+            activeEvidence.reset(); report["error"]=error.what(); report["validation"]=validation.snapshot();
+            std::ofstream(directory/"VirtualShadowMapLocalLights.json") << report.dump(2) << '\n';
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapLocalLightsTest);
 
 } // namespace
 } // namespace metallic::tests

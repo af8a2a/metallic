@@ -20,6 +20,7 @@
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -430,6 +431,12 @@ public:
                 .sampledRead().setOptional().format = Format::R8Unorm;
             reflection.addBufferInput("moonShadowParameters", "Matching Moon identity and visibility metadata")
                 .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead().setOptional();
+            auto& virtualShadows = reflection.addTextureInput("virtualShadows", "Optional per-light linear VSM visibility array")
+                .sampledRead().setOptional();
+            virtualShadows.format = Format::R8Unorm;
+            virtualShadows.layerCount = 0;
+            reflection.addBufferInput("virtualShadowLights", "Matching VSM source identities, layers and admission")
+                .buffer(0, 0).shaderRead().setOptional();
         }
         auto& color = reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
@@ -936,6 +943,8 @@ public:
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, virtualShadows), .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, virtualShadowLights), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
             // One shader/encoder layout serves both output policies.
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
@@ -1835,6 +1844,25 @@ public:
         MaterialBinningResult materialBins;
         std::array<ScreenSpaceShadowResult, 2> shadows;
         if (visibilityDeferred_) {
+            const auto virtualShadows = context.inputTexture("virtualShadows");
+            const auto virtualLights = context.inputBuffer("virtualShadowLights");
+            if (virtualShadows.valid() != virtualLights.valid()) {
+                spdlog::error("Deferred VSM requires both virtualShadows and virtualShadowLights");
+                return makeError(Error::InvalidArgument);
+            }
+            if (virtualShadows.valid()) {
+                const auto layerCount = virtualShadows.desc().layerCount;
+                if (virtualShadows.desc().width != context.width() || virtualShadows.desc().height != context.height() ||
+                    layerCount == 0 || layerCount % kVirtualShadowMapLightFaceCapacity != 0 ||
+                    virtualLights.desc().size != sizeof(VirtualShadowMapLightsHeader) +
+                        uint64_t(layerCount / kVirtualShadowMapLightFaceCapacity) * sizeof(VirtualShadowMapLightEntry)) {
+                    return makeError(Error::InvalidArgument);
+                }
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, virtualShadows),
+                    .textureView = virtualShadows.view()});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, virtualShadowLights),
+                    .buffer = virtualLights.buffer()});
+            }
             if (compiledGlobalView_) {
                 if (context.viewConstants() == nullptr || context.viewConstantsBuffer() == nullptr ||
                     context.viewConstantsBuffer()->desc().size < sizeof(ViewConstants)) {
@@ -2219,10 +2247,10 @@ private:
         StageResources resources;
         resources.uses.push_back({"output.color", Access::TextureStorageReadWrite});
         if (visibilityDeferred_) {
-            for (const char* name : {"visibility", "depth", "domain", "shadow", "moonShadow"}) {
+            for (const char* name : {"visibility", "depth", "domain", "shadow", "moonShadow", "virtualShadows"}) {
                 if (context.inputTexture(name).valid()) { resources.uses.push_back({name, Access::TextureSampleRead}); }
             }
-            for (const char* name : {"shadowParameters", "moonShadowParameters"}) {
+            for (const char* name : {"shadowParameters", "moonShadowParameters", "virtualShadowLights"}) {
                 if (context.inputBuffer(name).valid()) { resources.uses.push_back({name, Access::BufferShaderRead}); }
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {

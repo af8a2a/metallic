@@ -59,11 +59,11 @@ public:
 
     RHITestResult run(RHITestContext& context) override
     {
-        static_assert(sizeof(SceneResourceParameters) == 400);
+        static_assert(sizeof(SceneResourceParameters) == 408);
         const auto fail = [](const std::string& text) { return RHITestResult::fail(text); };
         std::string log;
         const SlangMacroDefine validDefines[] = {
-            {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "400"}};
+            {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "408"}};
         SlangShaderDesc source{.moduleName = "TrustedSceneResourceProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = validDefines};
         ResourceComputeKernelDesc layout{.requiresRayQuery = false,
@@ -75,7 +75,7 @@ public:
         wrongLayout = layout;
         wrongLayout.rootTransport = ParameterTransport::DescriptorBuffer;
         if (validateTrustedSceneResourceContract(source, wrongLayout, log)) { return fail("Buffered trusted root accepted"); }
-        for (const char* value : {"388", "396", "-1", "392junk", ""}) {
+        for (const char* value : {"388", "396", "400", "-1", "392junk", ""}) {
             const SlangMacroDefine badDefines[] = {
                 {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", value}};
             source.macroDefines = badDefines;
@@ -144,7 +144,7 @@ public:
             for (bool trusted : {false, true}) {
                 const SlangMacroDefine defines[] = {
                     {"METALLIC_INLINE_COMPUTE_ROOT", "1"},
-                    {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", trusted ? "400" : "0"}};
+                    {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", trusted ? "408" : "0"}};
                 source.macroDefines = defines;
                 source.descriptorHeapMode = mode;
                 auto shader = compileSlangShaderToSpirv(source, log);

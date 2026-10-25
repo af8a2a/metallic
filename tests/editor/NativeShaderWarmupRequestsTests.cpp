@@ -191,7 +191,7 @@ TEST(NativeShaderWarmupRequests, MalformedPathTraceRootContractsAreNotGuessed)
 {
     const auto request = makePathTraceShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, {});
     for (const auto& macro : {std::pair<std::string, std::string>{"METALLIC_INLINE_COMPUTE_ROOT", "1"},
-            {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "400"}}) {
+            {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "408"}}) {
         auto duplicated = request;
         duplicated.defines.push_back(macro);
         EXPECT_TRUE(nativeComputeWarmupVariants(duplicated).empty());

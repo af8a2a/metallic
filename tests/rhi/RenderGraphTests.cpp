@@ -569,6 +569,8 @@ struct TestTextureExtentExecutionState {
     uint32_t producerDisplayHeight = 0;
     uint32_t producerOutputWidth = 0;
     uint32_t producerOutputHeight = 0;
+    uint32_t producerOutputLayers = 0;
+    uint32_t producerViewLayers = 0;
     uint32_t relayContextWidth = 0;
     uint32_t relayContextHeight = 0;
     uint32_t relayDisplayWidth = 0;
@@ -583,6 +585,8 @@ struct TestTextureExtentExecutionState {
     uint32_t consumerDisplayHeight = 0;
     uint32_t consumerInputWidth = 0;
     uint32_t consumerInputHeight = 0;
+    uint32_t consumerInputLayers = 0;
+    uint32_t consumerInputViewLayers = 0;
     uint32_t consumerOutputWidth = 0;
     uint32_t consumerOutputHeight = 0;
 };
@@ -607,14 +611,24 @@ public:
         const bool outputRgba16 = passProperties.is_object()
             ? passProperties.value("outputRgba16", false)
             : false;
+        const uint32_t outputLayers = passProperties.is_object()
+            ? passProperties.value("outputLayers", 1u)
+            : 1u;
+        const bool output3D = passProperties.is_object()
+            ? passProperties.value("output3D", false)
+            : false;
+        const bool presentationOutput = passProperties.is_object()
+            ? passProperties.value("presentationOutput", false)
+            : false;
 
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color", "Texture extent producer")
+        render::RenderGraphField& output = reflection.addTextureOutput("color", "Texture extent producer")
             .texture2D(outputWidth, outputHeight)
-            .storageReadWrite()
-            .format = outputRgba16
-                ? render::Format::RGBA16Sfloat
-                : render::Format::RGBA8Unorm;
+            .storageReadWrite();
+        if (output3D) { output.texture3D(outputWidth, outputHeight, 4u); }
+        output.layerCount = outputLayers;
+        output.presentationOutput = presentationOutput;
+        output.format = outputRgba16 ? render::Format::RGBA16Sfloat : render::Format::RGBA8Unorm;
         return reflection;
     }
 
@@ -632,6 +646,8 @@ public:
         state.producerDisplayHeight = context.displayHeight();
         state.producerOutputWidth = color.desc().width;
         state.producerOutputHeight = color.desc().height;
+        state.producerOutputLayers = color.desc().layerCount;
+        state.producerViewLayers = color.view() != nullptr ? color.view()->desc().range.layerCount : 0u;
         return {};
     }
 };
@@ -691,12 +707,16 @@ public:
         const uint32_t inputHeight = passProperties.is_object()
             ? passProperties.value("inputHeight", 0u)
             : 0u;
+        const uint32_t inputLayers = passProperties.is_object()
+            ? passProperties.value("inputLayers", 1u)
+            : 1u;
 
         render::RenderPassReflection reflection;
-        reflection.addTextureInput("input", "Explicit-sized texture extent consumer input")
+        render::RenderGraphField& input = reflection.addTextureInput("input", "Explicit-sized texture extent consumer input")
             .texture2D(inputWidth, inputHeight)
-            .storageReadWrite()
-            .format = render::Format::RGBA8Unorm;
+            .storageReadWrite();
+        input.format = render::Format::RGBA8Unorm;
+        input.layerCount = inputLayers;
         reflection.addTextureOutput("color", "Default-sized texture extent consumer output")
             .storageReadWrite()
             .format = render::Format::RGBA8Unorm;
@@ -718,6 +738,8 @@ public:
         state.consumerDisplayHeight = context.displayHeight();
         state.consumerInputWidth = input.desc().width;
         state.consumerInputHeight = input.desc().height;
+        state.consumerInputLayers = input.desc().layerCount;
+        state.consumerInputViewLayers = input.view() != nullptr ? input.view()->desc().range.layerCount : 0u;
         state.consumerOutputWidth = color.desc().width;
         state.consumerOutputHeight = color.desc().height;
         return {};
@@ -6691,6 +6713,113 @@ public:
     }
 };
 
+class RenderGraphTextureArrayLayerPropagationTest : public RHITest {
+public:
+    RenderGraphTextureArrayLayerPropagationTest()
+    {
+        type = RHITestType::Resource;
+        name = "render_graph_texture_array_layer_propagation";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        registerTestPass();
+
+        for (const uint32_t inputLayers : {0u, 6u}) {
+            render::RenderGraph graph;
+            graph.setName("TextureArrayLayerPropagation");
+            if (graph.addNode("TestTextureExtentProducerPass", "Producer", {{"outputLayers", 6u}}) == nullptr ||
+                graph.addNode("TestTextureExtentConsumerPass", "Consumer", {{"inputLayers", inputLayers}}) == nullptr ||
+                !graph.addEdge("Producer.color", "Consumer.input") || !graph.markOutput("Consumer.color")) {
+                return RHITestResult::fail("failed to construct texture array propagation graph");
+            }
+
+            render::RenderGraphExecutor executor;
+            std::string log;
+            render::Result<> result = executor.compile(context.device, graph, 32, 24, log);
+            if (!result) {
+                return RHITestResult::fail("compile rejected a six-layer producer with inputLayers=" +
+                    std::to_string(inputLayers) + ": " + toString(result) + ": " + log);
+            }
+            const render::RenderGraphResource* output = executor.outputResource("Producer.color");
+            if (output == nullptr || output->texture == nullptr || output->view == nullptr ||
+                output->desc.type != render::TextureType::Texture2D || output->desc.layerCount != 6u ||
+                output->texture->desc().layerCount != 6u || output->view->desc().range.baseLayer != 0u ||
+                output->view->desc().range.layerCount != 6u) {
+                return RHITestResult::fail("six-layer output did not produce a six-layer native texture and view");
+            }
+            const render::RenderGraphResource* consumerOutput = executor.outputResource("Consumer.color");
+            if (consumerOutput == nullptr || consumerOutput->desc.layerCount != 1u) {
+                return RHITestResult::fail("array input changed the consumer's default single-layer output");
+            }
+
+            testTextureExtentExecutionState() = {};
+            result = executor.execute(render::RenderGraphSubmitDesc{.graphicsQueue = &context.graphicsQueue});
+            if (!result) {
+                return RHITestResult::fail("texture array execute returned " + std::string(toString(result)));
+            }
+            result = executor.waitForSubmittedWork(5'000'000'000ull);
+            if (!result) {
+                return RHITestResult::fail("texture array waitForSubmittedWork returned " + std::string(toString(result)));
+            }
+            const TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
+            if (state.producerOutputLayers != 6u || state.producerViewLayers != 6u ||
+                state.consumerInputLayers != 6u || state.consumerInputViewLayers != 6u) {
+                return RHITestResult::fail("execution did not preserve all six layers in producer and consumer handles");
+            }
+        }
+        return RHITestResult::pass("six layers reach native resources and consumer execution for wildcard and exact inputs");
+    }
+};
+
+class RenderGraphTextureArrayLayerConstraintTest : public RHITest {
+public:
+    RenderGraphTextureArrayLayerConstraintTest()
+    {
+        type = RHITestType::Resource;
+        name = "render_graph_texture_array_layer_constraints";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        registerTestPass();
+        struct InvalidCase {
+            const char* name;
+            render::RenderGraphProperties producerProperties;
+            bool connectSingleLayerConsumer;
+        };
+        const std::array cases{
+            InvalidCase{"single-layer input", {{"outputLayers", 6u}}, true},
+            InvalidCase{"zero-layer output", {{"outputLayers", 0u}}, false},
+            InvalidCase{"3D array output", {{"outputLayers", 6u}, {"output3D", true}}, false},
+            InvalidCase{"array presentation output", {{"outputLayers", 6u}, {"presentationOutput", true}}, false},
+        };
+        for (const InvalidCase& invalid : cases) {
+            render::RenderGraph graph;
+            graph.setName("TextureArrayLayerConstraints");
+            if (graph.addNode("TestTextureExtentProducerPass", "Producer", invalid.producerProperties) == nullptr) {
+                return RHITestResult::fail("failed to create array constraint producer");
+            }
+            if (invalid.connectSingleLayerConsumer) {
+                if (graph.addNode("TestTextureExtentConsumerPass", "Consumer", {{"inputLayers", 1u}}) == nullptr ||
+                    !graph.addEdge("Producer.color", "Consumer.input") || !graph.markOutput("Consumer.color")) {
+                    return RHITestResult::fail("failed to connect single-layer array constraint consumer");
+                }
+            } else if (!graph.markOutput("Producer.color")) {
+                return RHITestResult::fail("failed to mark array constraint output");
+            }
+
+            render::RenderGraphExecutor executor;
+            std::string log;
+            const render::Result<> result = executor.compile(context.device, graph, 32, 24, log);
+            if (result || !render::hasError(result, render::Error::InvalidArgument) || executor.compiled()) {
+                return RHITestResult::fail(std::string("compile accepted invalid ") + invalid.name + ": " + log);
+            }
+        }
+        return RHITestResult::pass("rejected incompatible input, zero output, 3D arrays and array presentation");
+    }
+};
+
 class RenderGraphTextureExtentConstraintPropagationTest : public RHITest {
 public:
     RenderGraphTextureExtentConstraintPropagationTest()
@@ -10582,6 +10711,8 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSceneSwitchRetirementTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphResizeReusesCompiledPassesTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPreviewActualOutputExtentTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintPropagationTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphTextureArrayLayerPropagationTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphTextureArrayLayerConstraintTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintConflictTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintMultihopPropagationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureExtentConstraintRelayConflictTest);

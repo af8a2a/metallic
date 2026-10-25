@@ -5,6 +5,7 @@ import ShaderCore;
 import Material;
 import MaterialProgram;
 import VirtualShadowMapGeometry;
+import VirtualShadowMapCommon;
 
 using Metallic;
 using Metallic.Material;
@@ -21,12 +22,15 @@ struct ShadowPush
     uint sampler, enabled, totalPages, reserved;
     uint previousPages, reuse, owners, cacheMode;
     uint coarseBatchCount, cancelledCount, cacheEpoch, dirtyBoundsCount;
+    float lightRange;
+    uint projectionFace, padding0, padding1;
 };
 
 struct ShadowProjection
 {
-    float4 rowX, rowY, rowZ, metric;
+    float4 rowX, rowY, rowZ, rowW, metric;
     uint4 page; // Virtual-page offset, pages per axis, level, coarse flag.
+    float4 originNear;
 };
 
 struct ShadowMaterial
@@ -38,7 +42,7 @@ struct ShadowMaterial
 
 struct ShadowClipVertex
 {
-    float3 position;
+    float4 position;
     float2 uv;
 };
 
@@ -49,14 +53,46 @@ struct ShadowRasterVertex
     [vk::location(1)] nointerpolation uint materialIndex : TEXCOORD1;
 };
 
-float3 vsmProjectPosition(float3 position, ShadowProjection projection)
+float4 vsmProjectClip(float3 position, ShadowProjection projection)
 {
     float4 p = float4(position, 1.0);
-    return float3(dot(projection.rowX, p), dot(projection.rowY, p), dot(projection.rowZ, p));
+    return float4(dot(projection.rowX, p), dot(projection.rowY, p), dot(projection.rowZ, p), dot(projection.rowW, p));
+}
+
+float3 vsmProjectPosition(float3 position, ShadowProjection projection)
+{
+    float4 clip = vsmProjectClip(position, projection);
+    return projection.metric.w > 0.5 ? clip.xyz / clip.w : clip.xyz;
+}
+
+// The selected face owns both demand and query. Receivers outside a punctual
+// light's range/cone contribute no direct light; near-plane truncation is counted
+// separately by the query pass and deliberately returns neutral visibility.
+bool vsmReceiverDomain(float3 position, ShadowProjection projection, ShadowPush push, out bool nearPlane)
+{
+    nearPlane = false;
+    if (projection.metric.w < 0.5) { return true; }
+    float3 delta = position - projection.originNear.xyz;
+    float distance = length(delta);
+    if (push.lightRange > 0.0 && distance >= push.lightRange) { return false; }
+    float axial = dot(projection.rowW, float4(position, 1.0));
+    if (projection.metric.w > 1.5) {
+        if (virtualShadowMapPointFace(delta) != push.projectionFace) { return false; }
+    } else {
+        float outerCosine = rsqrt(1.0 + projection.metric.x * projection.metric.x);
+        if (axial < distance * outerCosine) { return false; }
+    }
+    nearPlane = axial <= projection.originNear.w;
+    return !nearPlane;
 }
 
 bool vsmContains(float3 position, ShadowProjection projection, uint pageSize, bool inset)
 {
+    if (projection.metric.w > 0.5) {
+        // A canonical point face includes its boundary. Insetting it would
+        // reject receivers exactly on a cube edge without selecting a neighbor.
+        return all(position.xy >= -1.0) && all(position.xy <= 1.0) && position.z >= 0.0 && position.z <= 1.0;
+    }
     float margin = inset ? 1.0 / float(projection.page.y * pageSize) : 0.0;
     return all(position.xy >= -1.0 + margin) && all(position.xy < 1.0 - margin) &&
         position.z >= 0.0 && position.z <= 1.0;
@@ -64,7 +100,9 @@ bool vsmContains(float3 position, ShadowProjection projection, uint pageSize, bo
 
 uint2 vsmVirtualTexel(float3 position, ShadowProjection projection, uint pageSize)
 {
-    return uint2(floor((position.xy * 0.5 + 0.5) * float(projection.page.y * pageSize)));
+    uint resolution = projection.page.y * pageSize;
+    uint2 texel = uint2(floor((position.xy * 0.5 + 0.5) * float(resolution)));
+    return projection.metric.w > 0.5 ? min(texel, uint2(resolution - 1u)) : texel;
 }
 
 uint vsmVirtualPage(uint2 texel, ShadowProjection projection, uint pageSize)
@@ -85,6 +123,57 @@ float2 vsmAtlasPosition(float2 pagePosition, uint physicalPage, ShadowPush push)
 {
     uint2 page = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
     return (float2(page) + pagePosition) * (2.0 / float2(push.physicalPagesX, push.physicalPagesY)) - 1.0;
+}
+
+// Six homogeneous half-planes turn a triangle into at most nine vertices.
+// Attributes interpolate along the original edge; preserving clip.w at raster
+// output then supplies perspective-correct interpolation across the clipped fan.
+uint vsmClipPlane(inout ShadowClipVertex polygon[9], uint count, uint axis, float edge, float side)
+{
+    if (count == 0u) { return 0u; }
+    ShadowClipVertex clipped[9];
+    uint clippedCount = 0u;
+    ShadowClipVertex previous = polygon[count - 1u];
+    float previousDistance = side * (previous.position[axis] - edge * previous.position.w);
+    for (uint index = 0u; index < count; ++index) {
+        ShadowClipVertex current = polygon[index];
+        float currentDistance = side * (current.position[axis] - edge * current.position.w);
+        if ((previousDistance < 0.0 && currentDistance > 0.0) ||
+            (previousDistance > 0.0 && currentDistance < 0.0)) {
+            float t = previousDistance / (previousDistance - currentDistance);
+            ShadowClipVertex intersection;
+            intersection.position = lerp(previous.position, current.position, t);
+            if (axis == 2u && edge == 1.0) {
+                // At reversed-Z near, z=w. For a triangle crossing the light,
+                // interpolated w subtracts large values and loses precision;
+                // z stays near the small near distance. Preserve z so later
+                // page clipping does not amplify that error into self-shadow.
+                intersection.position.w = intersection.position.z;
+            } else {
+                intersection.position[axis] = edge * intersection.position.w;
+            }
+            intersection.uv = lerp(previous.uv, current.uv, t);
+            clipped[clippedCount++] = intersection;
+        }
+        if (currentDistance >= 0.0) { clipped[clippedCount++] = current; }
+        previous = current;
+        previousDistance = currentDistance;
+    }
+    for (uint index = 0u; index < clippedCount; ++index) { polygon[index] = clipped[index]; }
+    return clippedCount;
+}
+
+uint vsmClipProjection(inout ShadowClipVertex polygon[9], float4 bounds, bool perspective)
+{
+    uint count = 3u;
+    if (perspective) {
+        count = vsmClipPlane(polygon, count, 2u, 1.0, -1.0); // Reversed-Z near: w-z >= 0.
+        count = vsmClipPlane(polygon, count, 2u, 0.0, 1.0);  // Far: z >= 0.
+    }
+    count = vsmClipPlane(polygon, count, 0u, bounds.x, 1.0);
+    count = vsmClipPlane(polygon, count, 0u, bounds.z, -1.0);
+    count = vsmClipPlane(polygon, count, 1u, bounds.y, 1.0);
+    return vsmClipPlane(polygon, count, 1u, bounds.w, -1.0);
 }
 
 // Uses the actual receiver projection, including temporal jitter in pixel units.
@@ -137,6 +226,33 @@ float3 vsmReceiverNormal(int2 pixel, ViewConstants view, Texture2D<float> depth,
     float3 normal = cross(dy, dx);
     float lengthSquared = dot(normal, normal);
     return lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
+}
+
+float vsmPerspectiveReceiverDepth(float3 position, float3 normal, uint2 virtualTexel,
+    ShadowProjection projection, uint pageSize)
+{
+    float2 sampleNDC = (float2(virtualTexel) + 0.5) *
+        (2.0 / float(projection.page.y * pageSize)) - 1.0;
+    float3 forward = normalize(projection.rowW.xyz);
+    float3 ray = forward + projection.metric.x *
+        (normalize(projection.rowX.xyz) * sampleNDC.x + normalize(projection.rowY.xyz) * sampleNDC.y);
+    float3 samplePosition = position;
+    float denominator = dot(normal, ray);
+    if (abs(denominator) > 1e-5 * length(ray)) {
+        float distanceAlongRay = dot(normal, position - projection.originNear.xyz) / denominator;
+        float3 intersection = projection.originNear.xyz + ray * distanceAlongRay;
+        if (distanceAlongRay > 0.0 && all(isfinite(intersection))) { samplePosition = intersection; }
+    }
+    float axial = dot(projection.rowW, float4(samplePosition, 1.0));
+    // A plane extrapolated to/before near cannot be meaningfully compared to
+    // clipped caster depth. It is nearer than every stored sample.
+    if (axial <= projection.originNear.w) { return 1.0; }
+    float3 delta = samplePosition - projection.originNear.xyz;
+    float distance = length(delta);
+    float biasScale = max(1.0 - projection.metric.z / distance, projection.originNear.w / axial);
+    float3 biasedPosition = projection.originNear.xyz + delta * biasScale;
+    float4 clip = vsmProjectClip(biasedPosition, projection);
+    return clip.z / clip.w;
 }
 
 [shader("compute")]
@@ -195,6 +311,8 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     float linearDepth;
     if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) { return; }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+    bool nearPlane;
+    if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     // All covering ancestors are requested, so an unallocated fine page can
     // use a coarser projection with its own origin and depth mapping.
@@ -300,10 +418,28 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
     for (uint level = 0u; level < push.clipmapCount; ++level) {
         ShadowProjection projection = projections[level];
-        float3 a = vsmProjectPosition(triangle.vertices[0].position.xyz, projection);
-        float3 b = vsmProjectPosition(triangle.vertices[1].position.xyz, projection);
-        float3 c = vsmProjectPosition(triangle.vertices[2].position.xyz, projection);
-        float3 lo = min(a, min(b, c)), hi = max(a, max(b, c));
+        float3 lo, hi;
+        if (projection.metric.w > 0.5) {
+            ShadowClipVertex polygon[9];
+            for (uint vertex = 0u; vertex < 3u; ++vertex) {
+                polygon[vertex].position = vsmProjectClip(triangle.vertices[vertex].position.xyz, projection);
+                polygon[vertex].uv = float2(0.0);
+            }
+            // Projecting only the original vertices misses triangles crossing
+            // near/w=0. Clip the complete face before any perspective division.
+            uint count = vsmClipProjection(polygon, float4(-1.0, -1.0, 1.0, 1.0), true);
+            if (count < 3u) { continue; }
+            lo = hi = polygon[0].position.xyz / polygon[0].position.w;
+            for (uint vertex = 1u; vertex < count; ++vertex) {
+                float3 projected = polygon[vertex].position.xyz / polygon[vertex].position.w;
+                lo = min(lo, projected); hi = max(hi, projected);
+            }
+        } else {
+            float3 a = vsmProjectPosition(triangle.vertices[0].position.xyz, projection);
+            float3 b = vsmProjectPosition(triangle.vertices[1].position.xyz, projection);
+            float3 c = vsmProjectPosition(triangle.vertices[2].position.xyz, projection);
+            lo = min(a, min(b, c)); hi = max(a, max(b, c));
+        }
         if (hi.z < 0.0 || lo.z > 1.0 || any(hi.xy < -1.0) || any(lo.xy > 1.0)) { continue; }
         int axis = int(projection.page.y);
         // Clip the projected bounds before integer conversion; off-clipmap
@@ -389,36 +525,7 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     if (lane < 2u) { triangles[lane] = lane == 0u ? uint3(0u, 2u, 1u) : uint3(1u, 2u, 3u); }
 }
 
-// Four XY half-planes turn a triangle into at most seven vertices. Clipping
-// occurs before atlas remapping, so neighboring physical tiles stay isolated.
-uint vsmClipPlane(inout ShadowClipVertex polygon[7], uint count, uint axis, float edge, float side)
-{
-    if (count == 0u) { return 0u; }
-    ShadowClipVertex clipped[7];
-    uint clippedCount = 0u;
-    ShadowClipVertex previous = polygon[count - 1u];
-    float previousDistance = side * (previous.position[axis] - edge);
-    for (uint index = 0u; index < count; ++index) {
-        ShadowClipVertex current = polygon[index];
-        float currentDistance = side * (current.position[axis] - edge);
-        if ((previousDistance < 0.0 && currentDistance > 0.0) ||
-            (previousDistance > 0.0 && currentDistance < 0.0)) {
-            float t = previousDistance / (previousDistance - currentDistance);
-            ShadowClipVertex intersection;
-            intersection.position = lerp(previous.position, current.position, t);
-            intersection.position[axis] = edge;
-            intersection.uv = lerp(previous.uv, current.uv, t);
-            clipped[clippedCount++] = intersection;
-        }
-        if (currentDistance >= 0.0) { clipped[clippedCount++] = current; }
-        previous = current;
-        previousDistance = currentDistance;
-    }
-    for (uint index = 0u; index < clippedCount; ++index) { polygon[index] = clipped[index]; }
-    return clippedCount;
-}
-
-groupshared ShadowClipVertex g_vsmPolygon[7];
+groupshared ShadowClipVertex g_vsmPolygon[9];
 groupshared uint g_vsmVertexCount;
 groupshared uint g_vsmMaterial;
 groupshared uint g_vsmPhysicalPage;
@@ -428,7 +535,7 @@ groupshared float4 g_vsmBounds;
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    out vertices ShadowRasterVertex vertices[7], out indices uint3 triangles[5], uniform ShadowPush push)
+    out vertices ShadowRasterVertex vertices[9], out indices uint3 triangles[7], uniform ShadowPush push)
 {
     if (lane == 0u) {
         g_vsmVertexCount = 0u;
@@ -447,15 +554,12 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
             uint4 page = pages[virtualPage];
             ShadowProjection projection = projections[page.z];
             float4 bounds = vsmPageBounds(virtualPage, projection);
-            ShadowClipVertex polygon[7];
+            ShadowClipVertex polygon[9];
             for (uint i = 0u; i < 3u; ++i) {
-                polygon[i].position = vsmProjectPosition(triangle.vertices[i].position.xyz, projection);
+                polygon[i].position = vsmProjectClip(triangle.vertices[i].position.xyz, projection);
                 polygon[i].uv = triangle.vertices[i].uv.xy;
             }
-            uint count = vsmClipPlane(polygon, 3u, 0u, bounds.x, 1.0);
-            count = vsmClipPlane(polygon, count, 0u, bounds.z, -1.0);
-            count = vsmClipPlane(polygon, count, 1u, bounds.y, 1.0);
-            count = vsmClipPlane(polygon, count, 1u, bounds.w, -1.0);
+            uint count = vsmClipProjection(polygon, bounds, projection.metric.w > 0.5);
             g_vsmVertexCount = count >= 3u ? count : 0u;
             g_vsmMaterial = triangle.materialIndex;
             g_vsmPhysicalPage = page.x;
@@ -469,8 +573,10 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     SetMeshOutputCounts(vertexCount, triangleCount);
     if (lane < vertexCount) {
         ShadowClipVertex vertex = g_vsmPolygon[lane];
-        float2 pagePosition = saturate((vertex.position.xy - g_vsmBounds.xy) / (g_vsmBounds.zw - g_vsmBounds.xy));
-        vertices[lane].position = float4(vsmAtlasPosition(pagePosition, g_vsmPhysicalPage, push), vertex.position.z, 1.0);
+        float2 pagePosition = saturate((vertex.position.xy / vertex.position.w - g_vsmBounds.xy) /
+            (g_vsmBounds.zw - g_vsmBounds.xy));
+        vertices[lane].position = float4(vsmAtlasPosition(pagePosition, g_vsmPhysicalPage, push) * vertex.position.w,
+            vertex.position.z, vertex.position.w);
         vertices[lane].uv = vertex.uv;
         vertices[lane].materialIndex = g_vsmMaterial;
     }
@@ -524,6 +630,11 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     InterlockedAdd(statistics[6], 1u);
     if (push.enabled == 0u) { return; }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+    bool nearPlane;
+    if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) {
+        if (nearPlane) { InterlockedAdd(statistics[29], 1u); }
+        return;
+    }
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     uint selectedLevel = push.clipmapCount;
     uint firstLevel = 0xffffffffu;
@@ -568,21 +679,27 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     }
     ShadowProjection projection = projections[selectedLevel];
     float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
-    float3 axisDepth = normalize(projection.rowZ.xyz);
-    float denominator = dot(normal, axisDepth);
-    float correction = 0.0;
-    if (abs(denominator) > 1e-5) {
-        float2 sampleNDC = (float2(virtualTexel) + 0.5) *
-            (2.0 / float(projection.page.y * push.pageSize)) - 1.0;
-        float2 offset = (sampleNDC - projected.xy) * projection.metric.x;
-        float3 deltaXYWorld = normalize(projection.rowX.xyz) * offset.x + normalize(projection.rowY.xyz) * offset.y;
-        correction = -dot(normal, deltaXYWorld) * length(projection.rowZ.xyz) / denominator;
+    float compareDepth;
+    if (projection.metric.w > 0.5) {
+        compareDepth = vsmPerspectiveReceiverDepth(position, normal, virtualTexel, projection, push.pageSize);
+    } else {
+        float3 axisDepth = normalize(projection.rowZ.xyz);
+        float denominator = dot(normal, axisDepth);
+        float correction = 0.0;
+        if (abs(denominator) > 1e-5) {
+            float2 sampleNDC = (float2(virtualTexel) + 0.5) *
+                (2.0 / float(projection.page.y * push.pageSize)) - 1.0;
+            float2 offset = (sampleNDC - projected.xy) * projection.metric.x;
+            float3 deltaXYWorld = normalize(projection.rowX.xyz) * offset.x + normalize(projection.rowY.xyz) * offset.y;
+            correction = -dot(normal, deltaXYWorld) * length(projection.rowZ.xyz) / denominator;
+        }
+        compareDepth = projected.z + correction + projection.metric.z;
     }
     uint2 physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
     uint2 texel = physical * push.pageSize + virtualTexel % push.pageSize;
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     float storedDepth = atlas.Load(int3(texel, 0));
-    // The producer's scene-Z margin keeps real casters above zero. A receiver
+    // The producer's scene-Z/far margin keeps real casters above zero. A receiver
     // plane extrapolated past the scene must not turn empty depth into a blocker.
-    shadow[id.xy] = storedDepth == 0.0 || projected.z + correction + projection.metric.z >= storedDepth ? 1.0 : 0.0;
+    shadow[id.xy] = storedDepth == 0.0 || compareDepth >= storedDepth ? 1.0 : 0.0;
 }

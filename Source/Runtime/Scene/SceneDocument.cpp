@@ -1233,6 +1233,7 @@ bool SceneDocument::setLighting(LightingSettings lighting)
     if (!validLightingSettings(lighting)) {
         return false;
     }
+    normalizePunctualLightIdentities(lighting);
     // Validate and resolve every binding before publishing any edits. The UI
     // edits world poses; only changed poses need an inverse source transform.
     const auto& current = this->lighting();
@@ -1548,6 +1549,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         }
                     }
                 }
+                normalizePunctualLightIdentities(lighting_);
                 if (!validLightingSettings(lighting_)) {
                     documentWarning_ = "Invalid world.lighting physical values or light direction.";
                     return false;

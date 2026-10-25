@@ -5,6 +5,7 @@
 #include "Runtime/Render/GAPI/RHI.h"
 
 #include <memory>
+#include <array>
 #include <span>
 #include <string>
 
@@ -14,7 +15,23 @@ namespace metallic::render {
 
 struct VirtualShadowMapCasterResources;
 
-// One directional-light view. P1 keeps caching off; P2 enables it per celestial.
+enum class VirtualShadowMapLightType : uint32_t { Directional, Spot, PointFace };
+
+// Point faces use +X, -X, +Y, -Y, +Z, -Z. Position and the complete light
+// projection identify depth content; source identities belong to the manager.
+struct VirtualShadowMapLight
+{
+    VirtualShadowMapLightType type = VirtualShadowMapLightType::Directional;
+    std::array<float, 3> position{};
+    std::array<float, 3> direction{0, -1, 0};
+    float outerConeAngle = 0.7853981634f;
+    float range = 0; // Zero means unbounded influence; scene bounds determine far.
+    float nearPlane = 0.001f;
+    uint32_t face = 0;
+    bool enabled = true;
+};
+
+// One projection view: directional clipmaps, a spot frustum or one point face.
 struct VirtualShadowMapSettings
 {
     uint32_t pageSize = 128;
@@ -42,7 +59,7 @@ struct VirtualShadowMapResult
     Buffer* projections = nullptr;
 };
 
-// P1 full-scene coarse projection plus nested camera-centered clipmaps.
+// A complete coarse projection plus directional clipmaps or local mip levels.
 // Physical page zero is reserved for complete coarse coverage. Fine allocation
 // failure or work overflow queries that rendered coarse page, never uninitialized depth.
 class VirtualShadowMaps
@@ -52,6 +69,11 @@ public:
     ~VirtualShadowMaps();
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
+        const VirtualShadowMapCasterResources& casters,
+        std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
+        const VirtualShadowMapSettings& settings, std::string& log);
+    Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
+        TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, std::string& log);

@@ -98,6 +98,10 @@ void registerBuiltInRenderGraphPasses()
         "Experimental single-Sun virtual shadow pages with receiver demand, clipmaps and coarse fallback",
         []() { return builtin_pass::createVirtualShadowMapPass(); });
     registerRenderGraphPassType(
+        "VirtualShadowMapLightsPass",
+        "Experimental cached Sun, Moon, spot and point shadows with explicit global page admission",
+        []() { return builtin_pass::createVirtualShadowMapLightsPass(); });
+    registerRenderGraphPassType(
         "VisibilityBufferDeferredPass",
         "Resolve resident VBuffer surfaces with OpenPBR, physical lights, environment reflection and pipeline shadow visibility",
         []() { return builtin_pass::createVisibilityBufferDeferredPass(); });

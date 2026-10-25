@@ -168,6 +168,25 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class VirtualShadowMapLightsSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "virtual-shadow-map-p3"; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Local Lights"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Experimental cached Sun, Moon, spot and six-face point shadows with a shared page budget. "
+            "Uses fixed LOD 0 receivers and full scene casters; existing default pipelines are unchanged.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/OpenPbrDefault/OpenPbrVSMLights.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_p3.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Shadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class GPUDrivenTessellationSample final : public RealtimeLightingSample {
 public:
     std::string_view id() const override { return "gpu-driven-tessellation"; }
@@ -883,6 +902,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const RealtimeLightingSample realtimeLighting;
     static const VirtualShadowMapSample virtualShadowMap;
     static const VirtualShadowMapCacheSample virtualShadowMapCache;
+    static const VirtualShadowMapLightsSample virtualShadowMapLights;
     static const NativeStrandSample nativeStrands;
     static const GPUDrivenTessellationSample gpuDrivenTessellation;
     static const LightGridDebugSample lightGridDebug;
@@ -902,6 +922,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &realtimeLighting,
         &virtualShadowMap,
         &virtualShadowMapCache,
+        &virtualShadowMapLights,
         &nativeStrands,
         &gpuDrivenTessellation,
         &lightGridDebug,

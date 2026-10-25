@@ -531,6 +531,7 @@ struct RenderGraphExecutor::Impl {
                 {"kind", resource.type == RenderGraphResourceType::AccelerationStructure ? "accelerationStructure" :
                     resource.buffer ? "buffer" : "texture"}, {"size", resource.bufferDesc.size}, {"stride", resource.bufferDesc.structureStride},
                 {"width", resource.desc.width}, {"height", resource.desc.height}, {"depth", resource.desc.depth},
+                {"layerCount", resource.desc.layerCount},
                 {"textureType", static_cast<uint32_t>(resource.desc.type)}, {"format", static_cast<uint32_t>(resource.desc.format)}});
             if (resource.buffer) { debugGraph["resources"].back()["layout"] = resource.debugLayout.empty() ? "raw" : resource.debugLayout; }
         }
@@ -1516,7 +1517,7 @@ struct RenderGraphExecutor::Impl {
                         .height = resolvedExtent->second.height,
                         .depth = field.depth,
                         .mipCount = 1,
-                        .layerCount = 1,
+                        .layerCount = field.layerCount,
                         .memoryLocation = MemoryLocation::Device,
                         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
                     };
@@ -4675,7 +4676,7 @@ Result<> RenderGraphPreviewRenderer::render(
         return makeError(Error::InvalidArgument);
     }
     if (output->type != RenderGraphResourceType::Texture2D || output->texture == nullptr ||
-        output->desc.type != TextureType::Texture2D) {
+        output->desc.type != TextureType::Texture2D || output->desc.layerCount != 1) {
         impl_->lastLog = std::string("RenderGraph preview output is not a Texture2D '") + resolvedOutputName + "'";
         return makeError(Error::InvalidArgument);
     }

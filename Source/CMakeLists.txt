@@ -122,6 +122,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VirtualShadowMapPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/VirtualShadowMapLightsPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ImageSamplePass.cpp

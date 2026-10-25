@@ -17,6 +17,8 @@ import OpenPBR;
 import OpenPBRClosure;
 import OpenPBRMaterialParameters;
 import SurfaceLighting;
+import VirtualShadowMapCommon;
+#include "../../Source/Runtime/Render/Shadow/VirtualShadowMapLights.h"
 using Metallic.SceneOpenPBR;
 using Metallic.SceneSurface;
 using Metallic.ScenePath;
@@ -137,6 +139,24 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
     public float3 visibility(SurfaceLightSample light)
     {
         if (openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)) { return float3(1); }
+        let tableHandle = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
+        if (tableHandle.index != 0xffffffffu) {
+            let table = resolveUniform(tableHandle);
+            VirtualShadowMapLightsHeader header = table.Load<VirtualShadowMapLightsHeader>(0);
+            for (uint index = 0u; index < header.count; ++index) {
+                VirtualShadowMapLightEntry entry = table.Load<VirtualShadowMapLightEntry>(64u + index * 64u);
+                if (entry.source != light.source) { continue; }
+                if (entry.status != 1u) { return float3(1); }
+                uint face = entry.kind == 2u ? Metallic.Shadow::virtualShadowMapPointFace(
+                    position - float3(entry.positionRange[0], entry.positionRange[1], entry.positionRange[2])) : 0u;
+                let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
+                    ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
+                return float3(shadows.Load(int4(uint2(pixel), entry.baseLayer + face, 0)));
+            }
+            // A connected multi-light publication owns this domain, including
+            // explicit disabled/budget-rejected entries; legacy pins are ignored.
+            return float3(1);
+        }
         ShadowParameters shadow = gRealtimeShadowParameters[0];
         if (shadow.control.x != 0u && light.source == shadow.control.z) {
             float encoded = gRealtimeShadow.Load(int3(uint2(pixel), 0));

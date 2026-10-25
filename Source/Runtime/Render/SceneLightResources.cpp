@@ -235,6 +235,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         SceneLightRecord& record = records.emplace_back();
         record.sourceRenderLightIndex = static_cast<int32_t>(index);
         record.sourceObject = light.object;
+        record.stableId = (uint64_t(2) << 62) | uint64_t(entt::to_integral(light.object));
         if (light.virtualLightSceneIdentity != 0) {
             importedSources.emplace(light.object, &light);
         } else if (light.visible) {
@@ -252,6 +253,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         if (light.properties.type != "point" && light.properties.type != "spot") { continue; }
         SceneLightRecord& record = records.emplace_back();
         record.sourceVirtualLightIndex = static_cast<int32_t>(index);
+        record.stableId = light.stableId;
         if (light.imported) {
             const scene::ImportedLightBinding& binding = *light.imported;
             if (binding.sceneIdentity == 0 || binding.object == scene::kNullSceneEntity) { continue; }

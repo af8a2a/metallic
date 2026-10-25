@@ -32,15 +32,18 @@ struct ShadowPush
     uint32_t sampler, enabled, totalPages, reserved;
     uint32_t previousPages, reuse, owners, cacheMode;
     uint32_t coarseBatchCount, cancelledCount, cacheEpoch, dirtyBoundsCount;
+    float lightRange;
+    uint32_t projectionFace, padding0, padding1;
 };
-static_assert(sizeof(ShadowPush) == 144);
+static_assert(sizeof(ShadowPush) == 160);
 
 struct ShadowProjection
 {
-    std::array<float, 4> rowX, rowY, rowZ, metric;
+    std::array<float, 4> rowX, rowY, rowZ, rowW, metric;
     std::array<uint32_t, 4> page;
+    std::array<float, 4> originNear;
 };
-static_assert(sizeof(ShadowProjection) == 80);
+static_assert(sizeof(ShadowProjection) == 112);
 
 struct ShadowMaterial
 {
@@ -100,8 +103,9 @@ std::vector<ShadowProjection> makeProjections(const scene::Bounds& bounds, const
         result.push_back({{x[0] / extent, x[1] / extent, x[2] / extent, -centerX / extent},
             {y[0] / extent, y[1] / extent, y[2] / extent, -centerY / extent},
             {-z[0] / depthRange, -z[1] / depthRange, -z[2] / depthRange, high[2] / depthRange},
+            {0, 0, 0, 1},
             {extent, pageWorldSize / settings.pageSize, settings.shadowBias / depthRange, 0},
-            {level * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis, axis, level, coarse ? 1u : 0u}});
+            {level * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis, axis, level, coarse ? 1u : 0u}, {0, 0, 0, 0}});
     }
     return result;
 }
@@ -110,16 +114,82 @@ std::pair<Vector, Vector> projectedBounds(const scene::Bounds& bounds, const Sha
 {
     Vector low{FLT_MAX, FLT_MAX, FLT_MAX}, high{-FLT_MAX, -FLT_MAX, -FLT_MAX};
     const std::array rows{projection.rowX, projection.rowY, projection.rowZ};
+    float lowW = FLT_MAX, highW = -FLT_MAX;
     for (uint32_t corner = 0; corner < 8; ++corner) {
         const Vector p{corner & 1 ? bounds.max.x : bounds.min.x, corner & 2 ? bounds.max.y : bounds.min.y,
             corner & 4 ? bounds.max.z : bounds.min.z};
+        const auto& w = projection.rowW;
+        const float clipW = w[0] * p[0] + w[1] * p[1] + w[2] * p[2] + w[3];
+        lowW = std::min(lowW, clipW); highW = std::max(highW, clipW);
         for (size_t axis = 0; axis < 3; ++axis) {
             const auto& row = rows[axis];
-            const float value = row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + row[3];
+            const float value = (row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + row[3]) /
+                (projection.metric[3] == 0 ? 1.f : std::max(clipW, projection.originNear[3]));
             low[axis] = std::min(low[axis], value); high[axis] = std::max(high[axis], value);
         }
     }
+    if (projection.metric[3] != 0 && lowW <= projection.originNear[3]) {
+        // A near-plane crossing can cover any part of this face after clipping.
+        // A box entirely behind it contributes nothing to this face.
+        return highW < projection.originNear[3] ? std::pair{Vector{2, 2, 2}, Vector{2, 2, 2}} :
+            std::pair{Vector{-1, -1, 0}, Vector{1, 1, 1}};
+    }
     return {low, high};
+}
+
+float localFarExtent(const scene::Bounds& bounds, const VirtualShadowMapLight& light)
+{
+    if (light.range > 0) { return light.range; }
+    float distance = light.nearPlane;
+    if (bounds.valid) {
+        for (uint32_t corner = 0; corner < 8; ++corner) {
+            const Vector delta{(corner & 1 ? bounds.max.x : bounds.min.x) - light.position[0],
+                (corner & 2 ? bounds.max.y : bounds.min.y) - light.position[1],
+                (corner & 4 ? bounds.max.z : bounds.min.z) - light.position[2]};
+            distance = std::max(distance, std::sqrt(dot(delta, delta)));
+        }
+    }
+    return distance;
+}
+
+std::vector<ShadowProjection> makeLocalProjections(const VirtualShadowMapLight& light,
+    float farPlane, const VirtualShadowMapSettings& settings)
+{
+    Vector x, y, z;
+    if (light.type == VirtualShadowMapLightType::PointFace) {
+        constexpr std::array<Vector, 6> forward{{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
+        constexpr std::array<Vector, 6> right{{{0, 0, -1}, {0, 0, 1}, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {-1, 0, 0}}};
+        z = forward[light.face]; x = right[light.face]; y = cross(z, x);
+    } else {
+        z = normalized(light.direction);
+        x = normalized(cross(std::abs(z[1]) < .95f ? Vector{0, 1, 0} : Vector{1, 0, 0}, z));
+        y = cross(z, x);
+    }
+    const float tangent = light.type == VirtualShadowMapLightType::PointFace ? 1.f : std::tan(light.outerConeAngle);
+    const float depthScale = -light.nearPlane / (farPlane - light.nearPlane);
+    const float depthOffset = light.nearPlane * farPlane / (farPlane - light.nearPlane);
+    std::vector<ShadowProjection> result;
+    for (uint32_t level = 0; level <= settings.clipmapCount; ++level) {
+        const bool coarse = level == settings.clipmapCount;
+        const uint32_t axis = coarse ? 1u : std::max(1u, settings.virtualPagesPerAxis >> level);
+        result.push_back({{x[0] / tangent, x[1] / tangent, x[2] / tangent, -dot(x, light.position) / tangent},
+            {y[0] / tangent, y[1] / tangent, y[2] / tangent, -dot(y, light.position) / tangent},
+            {z[0] * depthScale, z[1] * depthScale, z[2] * depthScale, depthOffset - depthScale * dot(z, light.position)},
+            {z[0], z[1], z[2], -dot(z, light.position)},
+            {tangent, 0, settings.shadowBias, float(light.type)},
+            {level * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis, axis, level, coarse ? 1u : 0u},
+            {light.position[0], light.position[1], light.position[2], light.nearPlane}});
+    }
+    return result;
+}
+
+bool compatibleLight(const VirtualShadowMapLight& a, const VirtualShadowMapLight& b)
+{
+    if (a.type != b.type || a.enabled != b.enabled) { return false; }
+    if (a.type == VirtualShadowMapLightType::Directional) { return a.direction == b.direction; }
+    return a.position == b.position && a.range == b.range && a.nearPlane == b.nearPlane &&
+        (a.type == VirtualShadowMapLightType::PointFace ? a.face == b.face :
+            a.direction == b.direction && a.outerConeAngle == b.outerConeAngle);
 }
 
 bool compatibleSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSettings& b)
@@ -171,7 +241,8 @@ struct VirtualShadowMaps::Cache
     std::vector<std::array<int64_t, 2>> origins;
     std::vector<VirtualShadowMapCasterState> casters;
     VirtualShadowMapSettings settings;
-    Vector direction;
+    VirtualShadowMapLight light;
+    float farPlane = 0;
     uint64_t sceneIdentity = 0, structuralRevision = 0, dependencyKey = 0;
     uint32_t epoch = 0;
     bool enabled = false;
@@ -201,6 +272,18 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log)
 {
+    VirtualShadowMapLight light;
+    light.enabled = (sun.flags & (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) ==
+        (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow);
+    if (light.enabled) { light.direction = {sun.direction[0], sun.direction[1], sun.direction[2]}; }
+    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log);
+}
+
+Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
+    TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& inputLight,
+    const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
+    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log)
+{
     if (!device.capabilities().meshShader) { return makeError(Error::Unsupported); }
     // Scene geometry uses material slot zero when no material was authored,
     // matching the renderer's ordinary default-material publication.
@@ -215,15 +298,29 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         (!alphaTextures.empty() && alphaTextures.size() != materials.size()) ||
         view.current.viewport[1] < 1 || view.current.viewport[2] < 1 ||
         (view.current.clipOrtho[3] != 0 && view.current.clipOrtho[3] != 1)) {
-        log += "Invalid VSM P1 settings, material bindings or receiver depth convention.\n";
+        log += "Invalid VSM settings, material bindings or receiver depth convention.\n";
         return makeError(Error::InvalidArgument);
     }
-    const bool enabled = settings.enabled && (sun.flags & (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) ==
-        (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow);
-    Vector direction = enabled ? Vector{sun.direction[0], sun.direction[1], sun.direction[2]} : Vector{0, -1, 0};
-    if (!std::all_of(direction.begin(), direction.end(), [](float v) { return std::isfinite(v); }) || dot(direction, direction) < 1e-12f) {
+    auto light = inputLight;
+    const bool directional = light.type == VirtualShadowMapLightType::Directional;
+    const bool enabled = settings.enabled && light.enabled;
+    const auto finite = [](const Vector& value) {
+        return std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); });
+    };
+    if (uint32_t(light.type) > uint32_t(VirtualShadowMapLightType::PointFace) ||
+        (light.type != VirtualShadowMapLightType::PointFace && (!finite(light.direction) || dot(light.direction, light.direction) < 1e-12f)) ||
+        (!directional && (!finite(light.position) || !std::isfinite(light.range) || light.range < 0 ||
+            !std::isfinite(light.nearPlane) || light.nearPlane <= 0)) ||
+        (light.type == VirtualShadowMapLightType::PointFace && light.face >= 6)) {
+        log += "Invalid VSM light projection.\n";
         return makeError(Error::InvalidArgument);
     }
+    if (light.type == VirtualShadowMapLightType::Spot && (!std::isfinite(light.outerConeAngle) ||
+        light.outerConeAngle <= 0 || light.outerConeAngle >= 1.5707963267948966f)) {
+        log += "VSM spot projection requires an outer half-angle strictly between zero and pi/2.\n";
+        return makeError(Error::Unsupported);
+    }
+    const auto direction = light.direction;
     for (size_t index = 0; index < materials.size(); ++index) {
         const auto& material = materials[index];
         if ((material.alphaMode != "OPAQUE" && material.alphaMode != "MASK") || material.displacementMagnitude != 0 ||
@@ -268,26 +365,43 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.batchCount = (settings.maxWorkItems + kDrawBatchSize - 1) / kDrawBatchSize;
     push.coarseBatchCount = (casters.triangleCapacity + kDrawBatchSize - 1) / kDrawBatchSize;
     push.cancelledCount = cancelledCount;
+    push.lightRange = light.range;
+    push.projectionFace = light.face;
     push.enabled = enabled;
     push.totalPages = settings.clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1;
     state->leases = casters.leases;
     auto geometry = state->registry->storageBuffer(*casters.parameters);
     if (!geometry) { return std::unexpected(geometry.error()); }
     push.geometry = geometry->shaderIndex(); state->leases.push_back(*geometry);
-    auto projections = makeProjections(casters.bounds, view, direction, settings);
-    const auto origins = pageOrigins(view, direction, settings);
-    bool reuse = cache_ && cache_->device == &device && cache_->direction == direction && cache_->enabled == enabled &&
+    const float farExtent = directional ? 0.f : localFarExtent(casters.bounds, light);
+    const float farMargin = std::max({.01f, light.nearPlane, settings.shadowBias * 2});
+    float farPlane = std::max(light.nearPlane * 2, farExtent * (settings.cacheEnabled ? 1.25f : 1.05f) + farMargin);
+    if (!directional && !std::isfinite(farPlane)) {
+        log += "VSM local projection exceeds the finite depth range.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    auto projections = directional ? makeProjections(casters.bounds, view, direction, settings) :
+        makeLocalProjections(light, farPlane, settings);
+    const auto origins = directional ? pageOrigins(view, direction, settings) :
+        std::vector<std::array<int64_t, 2>>(settings.clipmapCount, {0, 0});
+    bool reuse = cache_ && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
         cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey;
-    if (reuse && casters.bounds.valid) {
+    if (reuse && directional && casters.bounds.valid) {
         const auto [low, high] = projectedBounds(casters.bounds, cache_->projections.back());
         const float xyMargin = 2.f / settings.pageSize;
         const float zMargin = cache_->projections.back().metric[2];
         reuse = low[0] > -1 + xyMargin && high[0] < 1 - xyMargin &&
             low[1] > -1 + xyMargin && high[1] < 1 - xyMargin && low[2] > zMargin && high[2] < 1 - zMargin;
+    } else if (reuse && !directional) {
+        reuse = farExtent + farMargin <= cache_->farPlane;
     }
     std::vector<scene::Bounds> dirtyBounds;
     if (reuse) {
+        if (!directional) {
+            projections = cache_->projections;
+            farPlane = cache_->farPlane;
+        }
         for (size_t index = 0; index < projections.size(); ++index) {
             projections[index].rowZ = cache_->projections[index].rowZ;
             projections[index].metric[2] = cache_->projections[index].metric[2];
@@ -319,16 +433,17 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.dirtyBoundsCount = static_cast<uint32_t>(dirtyBounds.size());
     std::vector<std::array<uint32_t, 2>> remapping(push.totalPages, {UINT32_MAX, 1u});
     if (reuse) {
-        const int64_t axis = settings.virtualPagesPerAxis;
+        const int64_t stride = settings.virtualPagesPerAxis * settings.virtualPagesPerAxis;
         for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
+            const int64_t axis = projections[level].page[1];
             const auto dx = origins[level][0] - cache_->origins[level][0];
             const auto dy = origins[level][1] - cache_->origins[level][1];
             for (int64_t y = 0; y < axis; ++y) {
                 for (int64_t x = 0; x < axis; ++x) {
                     const int64_t oldX = x + dx, oldY = y + dy;
-                    auto& entry = remapping[level * axis * axis + y * axis + x];
+                    auto& entry = remapping[level * stride + y * axis + x];
                     entry = {oldX >= 0 && oldX < axis && oldY >= 0 && oldY < axis ?
-                        uint32_t(level * axis * axis + oldY * axis + oldX) : UINT32_MAX, settings.forceRedraw ? 1u : 0u};
+                        uint32_t(level * stride + oldY * axis + oldX) : UINT32_MAX, settings.forceRedraw ? 1u : 0u};
                 }
             }
             for (const auto& bounds : dirtyBounds) {
@@ -340,7 +455,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 };
                 for (int y = page(low[1], -.0001f); y <= page(high[1], .0001f); ++y) {
                     for (int x = page(low[0], -.0001f); x <= page(high[0], .0001f); ++x) {
-                        remapping[level * axis * axis + y * axis + x][1] = 1;
+                        remapping[level * stride + y * axis + x][1] = 1;
                     }
                 }
             }
@@ -365,7 +480,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128,
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
         remapping.size() * sizeof(remapping[0]), uint64_t(push.physicalPageCount) * 4};
-    const uint32_t strides[]{64, 16, 4, 8, 4, 80, 208, 4, 8, 4};
+    const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 8, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
         remapping.data(), nullptr};
     uint32_t* indices[]{&push.materials, &push.pages, &push.coverageInputs, &push.workItems,
@@ -566,7 +681,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         next->device = &device;
         next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->textures[0], state->views[0]});
         next->pages = state->buffers[1]; next->projections = std::move(projections); next->origins = origins;
-        next->casters = casters.states; next->settings = settings; next->direction = direction;
+        next->casters = casters.states; next->settings = settings; next->light = light; next->farPlane = farPlane;
         next->sceneIdentity = casters.sceneIdentity; next->structuralRevision = casters.structuralRevision;
         next->dependencyKey = casters.dependencyKey; next->epoch = push.cacheEpoch; next->enabled = enabled;
         next->completion = frame->completion();

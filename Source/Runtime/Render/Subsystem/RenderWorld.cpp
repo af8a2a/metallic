@@ -80,6 +80,7 @@ bool RenderWorld::setLighting(scene::LightingSettings lighting)
     if (!scene::validLightingSettings(lighting)) {
         return false;
     }
+    scene::normalizePunctualLightIdentities(lighting);
     lighting_ = std::move(lighting);
     ++lightingRevision_;
     pendingChanges_ |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;

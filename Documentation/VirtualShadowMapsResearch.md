@@ -228,4 +228,4 @@ GPUScene / MeshletStreamRuntime 增加共享驻留与独立 shadow-view traversa
 
 待 P0/P1 回答：D32 图集 tile 隔离的最佳实现、真正跨视图的 stream cut 复用程度、物理池大小、热点是否在光栅还是查询、默认 SMRT 质量与目标 frame budget。默认范围和架构可以现在确定，这些参数应由原型实测确定。
 
-**调研交付状态（2026-10-22）：完成源码与资料调研及阶段方案，当次仅新增本文档。后续进展（2026-10-25）：P0 D32 atlas + 页内几何裁剪通过离屏 GPU 验收，详见 [P0 原型](VirtualShadowMapPrototype.md)；单太阳 Pass 和可选 sample 见 [P1](VirtualShadowMapsP1.md)；[P2](VirtualShadowMapsP2.md) 的 52 帧双天体缓存/重画对照及 OpenPBR sample 对照已通过，文档同时保留未定位的 Deferred 法线回归失败和 CPU shader suite 陈旧计数断言。运行时默认项保持原有配置，没有性能或长期场景验收结论。**
+**调研交付状态（2026-10-22）：完成源码与资料调研及阶段方案，当次仅新增本文档。后续进展（2026-10-25）：P0 D32 atlas + 页内几何裁剪通过离屏 GPU 验收，详见 [P0 原型](VirtualShadowMapPrototype.md)；单太阳 Pass 和可选 sample 见 [P1](VirtualShadowMapsP1.md)；[P2](VirtualShadowMapsP2.md) 的 52 帧双天体缓存/重画对照已通过，文档保留未解决的 Deferred 法线对照和 CPU shader suite 陈旧断言。[P3](VirtualShadowMapsP3.md) 已实现 spot、point 六面及稳定身份的多灯查询，88 帧缓存对照、CPU 遮挡参考与四灯 OpenPBR 示例对照通过。P3 仍使用有明确内存/复制成本的屏幕纹理数组原型；默认阴影切换、软阴影质量与长期大场景验收留在 P4/P5。**
