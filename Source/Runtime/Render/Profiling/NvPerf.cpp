@@ -17,6 +17,10 @@ bool NvPerfSession::beginIsolated(Device& device, Queue& queue, const std::files
     return impl_->backend.beginIsolated(device, queue, output, std::move(phase), error);
 }
 bool NvPerfSession::complete() const { return impl_->backend.complete(); }
+bool NvPerfSession::beginStreaming(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error)
+{
+    return impl_->backend.beginStreaming(device, queue, output, error);
+}
 bool NvPerfSession::finish(std::string& error) { return impl_->backend.finish(error); }
 void NvPerfSession::cancel() { impl_->backend.cancel(); }
 NvPerfRange::NvPerfRange(CommandBuffer& commands, const char* name)
@@ -26,5 +30,9 @@ NvPerfRange::NvPerfRange(CommandBuffer& commands, const char* name)
 NvPerfRange::~NvPerfRange()
 {
     if (commands_) { vulkan::popNvPerfRange(*commands_); }
+}
+NvPerfRange::NvPerfRange(CommandBuffer& commands, const char* name, const nlohmann::json& dispatchIdentity)
+{
+    if (vulkan::pushNvPerfRange(commands, name, &dispatchIdentity)) { commands_ = &commands; }
 }
 } // namespace metallic::render::profiling

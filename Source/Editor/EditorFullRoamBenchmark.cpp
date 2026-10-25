@@ -2,6 +2,7 @@
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Profiling/PacingTrace.h"
+#include "Runtime/Render/Profiling/NvPerf.h"
 #include "Editor/EditorRasterWorkload.h"
 #include "Editor/EditorRayQualityCapture.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -24,6 +25,9 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 namespace metallic {
 namespace {
@@ -118,6 +122,9 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"rtDemandMode",s.rtDemandMode},{"rtHistoryPacked",s.rtHistoryPacked},{"rtLodHistoryBytes",s.rtLodHistoryBytes},
         {"rtHistorySparseWrites",s.rtHistorySparseWrites},
         {"frontierWave32",s.frontierWave32},
+        {"demandTaskCount",s.demandTaskCount},
+        {"originalTopologyHash",std::to_string(s.originalTopologyHash)},
+        {"primitiveMetadataHash",std::to_string(s.primitiveMetadataHash)},
         {"terminalOnlyMask",s.terminalOnlyMask},{"terminalMaskDiagnostics",s.terminalMaskDiagnostics},
         {"maskShaderIdentity",{{"module",render::kMeshletStreamShaderModuleName},
             {"entryPoint",render::kMeshletStreamCooperativeBuildEntryPoint},
@@ -319,6 +326,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     RasterWorkloadObserver workloadObserver;
     auto qualityCapture = std::make_unique<RayQualityCapture>();
     std::unique_ptr<StreamingRegressionCapture> demandCapture;
+    render::profiling::NvPerfSession streamingCounters;
     struct FrozenProperty { uint32_t node; std::string key; bool existed; Json value; };
     std::vector<FrozenProperty> frozenProperties;
     std::optional<scene::LightingSettings> controlledLighting;
@@ -658,6 +666,31 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             const uint32_t sampleFrames = streamingRegression.value("sampleFrames", 64u);
             const bool prepareProfile = streamingRegression.value("prepareProfile", false);
             const bool cpuThreadDiagnostics = streamingRegression.value("cpuThreadDiagnostics", false);
+            const bool captureNvPerf = streamingRegression.value("nvPerf", false);
+            if (captureNvPerf) {
+                bool renderDocInjected = false;
+                bool gpuTraceInjected = false;
+#ifdef _WIN32
+                renderDocInjected = GetModuleHandleW(L"renderdoc.dll") != nullptr;
+                gpuTraceInjected = GetModuleHandleW(L"WarpVizTarget.dll") != nullptr;
+#endif
+                const char* statistics = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
+                const bool pipelineStatistics = statistics && std::strcmp(statistics, "1") == 0;
+                if (!render::profiling::nvPerfRequested() || captureQuality || prepareProfile || cpuThreadDiagnostics ||
+                    workloadEvery || capturePathDiagnostics || shaderTrace_ || renderDocInjected || gpuTraceInjected || pipelineStatistics ||
+                    freezeStreaming || !deferredOverrides.empty() || config.value("nsightTraceFrames", 0u) != 0u ||
+                    std::getenv("METALLIC_DEBUG_VALIDATION") || report["graphicsCaptureInjected"].get<bool>() ||
+                    shaderDebugMode != render::SlangShaderDebugMode::Disabled || config.value("enableLodTransitionTelemetry", false)) {
+                    throw std::runtime_error("Streaming NvPerf requires a separate uninstrumented counter process with METALLIC_NVPERF=1");
+                }
+                report["nvPerfRequested"] = true;
+                report["measurementKind"] = "diagnostic";
+                report["pipelineStatisticsRequested"] = false;
+                report["gpuTraceInjected"] = false;
+                report["renderDocInjected"] = false;
+            } else if (render::profiling::nvPerfRequested()) {
+                throw std::runtime_error("NvPerf startup requires streamingRegression.nvPerf=true");
+            }
             const bool deferDiagnostics = !captureQuality;
             const auto seeds = streamingRegression.value("seeds", std::vector<uint32_t>{0u, 1u});
             if (settleFrames < 4u || settleFrames > 16u || sampleFrames < 16u || sampleFrames > 64u ||
@@ -784,7 +817,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 drain();
             }
             report["protocol"] = "minizorah-streaming-regression-v1";
-            report["diagnosticRun"] = captureQuality || prepareProfile;
+            report["diagnosticRun"] = captureQuality || prepareProfile || captureNvPerf;
             report["config"] = config;
             report["frames"] = 0u;
             report["loadingFrames"] = loadingFrames;
@@ -799,7 +832,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 {"prepareProfile",prepareProfile},{"timingDiagnosticsDeferred",deferDiagnostics},
                 {"cpuThreadDiagnostics",cpuThreadDiagnostics},{"statisticalUnit","One bounded production run; no A/B or speedup inference"},
                 {"distributedDemandMinGroups",0u},{"fixedExposureEV100",controlledLighting->exposureEV100},
-                {"performanceComparable",!captureQuality && !prepareProfile},{"camera",viewportCameraProperties()}};
+                {"performanceComparable",!captureQuality && !prepareProfile && !captureNvPerf},{"camera",viewportCameraProperties()}};
             graphExecutor_->setDebugObserver(nullptr);
             std::string sourceIdentity;
             const auto checkState = [&](bool maskDiagnostics = false) {
@@ -845,6 +878,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     file << row.dump() << '\n';
                 }
             };
+            bool counterSnapshotAfter = false;
             const auto captureSnapshot = [&](Json& sample) {
                 for (uint32_t seed : captureQuality ? seeds : std::vector<uint32_t>{0u}) {
                     drain();
@@ -852,12 +886,12 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                         qualityCapture->capturePostprocessInputs = streamingRegression.value("capturePostprocessInputs", false);
                         setProperty("ReflectionQuality", "diagnosticSampleFrame", seed);
                         setProperty("Shadows", "diagnosticSampleFrame", seed);
-                        qualityCapture->capture = true;
                     }
+                    qualityCapture->capture = captureQuality || captureNvPerf;
                     demandCapture = std::make_unique<StreamingRegressionCapture>();
                     demandCapture->capture = true;
                     demandCapture->semanticSource = true;
-                    demandCapture->images = captureQuality ? qualityCapture.get() : nullptr;
+                    demandCapture->images = captureQuality || captureNvPerf ? qualityCapture.get() : nullptr;
                     setProperty("VBuffer", "benchmarkCaptureSemanticSource", true);
                     setProperty("VBuffer", "benchmarkTerminalMaskStats", true);
                     graphExecutor_->setDebugObserver(demandCapture.get());
@@ -867,10 +901,11 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                     qualityCapture->capture = false;
                     auto state = checkState(true);
                     drain();
-                    const std::string directory = std::string("steady/seed") + std::to_string(seed);
+                    const std::string directory = std::string(captureNvPerf
+                        ? (counterSnapshotAfter ? "steady/after/seed" : "steady/before/seed") : "steady/seed") + std::to_string(seed);
                     Json capture{{"seed",seed},{"directory",directory},{"state",state},
                         {"buffers",demandCapture->exportAfterDrain(output / directory)}};
-                    if (captureQuality) { capture["images"] = qualityCapture->exportAfterDrain(output / directory); }
+                    if (captureQuality || captureNvPerf) { capture["images"] = qualityCapture->exportAfterDrain(output / directory); }
                     sample["captures"].push_back(std::move(capture));
                     graphExecutor_->setDebugObserver(nullptr);
                     demandCapture.reset();
@@ -890,7 +925,30 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             const auto implementation = checkState();
             sample["frontierShaderIdentity"] = implementation.at("frontierShaderIdentity");
             sample["maskShaderIdentity"] = implementation.at("maskShaderIdentity");
-            if (!captureQuality) {
+            if (captureNvPerf) {
+                captureSnapshot(sample);
+                sample["captures"].back()["role"] = "before-counter-stability-snapshot-not-target-frame";
+                sample["counterWarmup"] = Json::array();
+                for (uint32_t frame = 0; frame < 16u; ++frame) {
+                    if (!draw()) { throw std::runtime_error("Streaming counter recovery failed"); }
+                    sample["counterWarmup"].push_back(checkState());
+                }
+                drain();
+                std::string error;
+                if (!streamingCounters.beginStreaming(*device_, *graphicsQueue_, output / "nvperf", error)) {
+                    throw std::runtime_error(error);
+                }
+                report["nvPerf"] = {{"protocol", "metallic-nvperf-streaming-v1"}, {"directory", "nvperf"},
+                    {"startFrame", profiler_.nextFrameIndex()}, {"frames", 1}, {"complete", false},
+                    {"snapshotScope", "Separate before/after stability frames, not counter target-frame outputs"}};
+                if (!draw()) { throw std::runtime_error("Streaming counter frame failed"); }
+                drain();
+                if (!streamingCounters.finish(error)) { throw std::runtime_error(error); }
+                report["nvPerf"]["complete"] = true;
+                sample["nvPerf"] = report["nvPerf"];
+                counterSnapshotAfter = true;
+            }
+            if (!captureQuality && !captureNvPerf) {
                 std::vector<uint64_t> frameIds;
                 frameIds.reserve(sampleFrames);
                 profiler_.beginCapture();
@@ -913,6 +971,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 }
             }
             captureSnapshot(sample);
+            if (captureNvPerf) { sample["captures"].back()["role"] = "after-counter-stability-snapshot-not-target-frame"; }
             report["streamingRegression"]["sample"] = std::move(sample);
             report["streamingRegression"]["sourceIdentity"] = sourceIdentity;
             report["graph"] = Json::array();
@@ -1124,6 +1183,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     profiler_.endCapture();
     // Keep readback allocations alive until all submitted copies complete, also on failure.
     if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { passed = false; report["status"] = "failed"; }
+    streamingCounters.cancel();
     for (const auto& property : frozenProperties) {
         if (const auto* node = renderGraph_.findNode(property.node)) {
             auto properties = node->runtimeProperties;

@@ -866,9 +866,10 @@ public:
         std::unique_ptr<ComputePipeline> cooperative32Pipeline;
         if (wave32Cases) {
             ShaderCompileResult candidate;
-            STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+            const auto candidateCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
                 .entryPointName = kMeshletStreamCooperativeBuild32EntryPoint,
-                .searchPath = kMeshletStreamShaderSearchPath}, candidate.diagnostics).transform([&](auto value) { candidate = std::move(value); }));
+                .searchPath = kMeshletStreamShaderSearchPath}, candidate.diagnostics).transform([&](auto value) { candidate = std::move(value); });
+            if (!candidateCompile) { return RHITestResult::fail(candidate.diagnostics); }
             STREAM_LOD_REQUIRE(device->createShaderModule({.spirv = candidate.spirv}).transform([&](auto value) { cooperative32Shader = std::move(value); }));
             STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = {cooperative32Shader.get(), "main"},
                 .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)

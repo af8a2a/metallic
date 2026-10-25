@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <json.hpp>
 
 namespace metallic::render {
 class Device;
@@ -25,6 +26,7 @@ public:
     NvPerfSession();
     ~NvPerfSession();
     bool begin(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error);
+    bool beginStreaming(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error);
     bool finish(std::string& error);
     void cancel();
     // Backend entry points used by the neutral frontend.
@@ -36,6 +38,6 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-bool pushNvPerfRange(CommandBuffer& commands, const char* name);
+bool pushNvPerfRange(CommandBuffer& commands, const char* name, const nlohmann::json* dispatchIdentity = nullptr);
 void popNvPerfRange(CommandBuffer& commands);
 } // namespace metallic::render::vulkan

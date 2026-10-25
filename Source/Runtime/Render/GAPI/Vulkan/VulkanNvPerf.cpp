@@ -34,6 +34,10 @@ std::atomic_bool rangeFailed = false;
 std::atomic_uint rangeCount = 0;
 VkDevice activeDevice = VK_NULL_HANDLE;
 std::mutex sessionMutex;
+std::vector<std::string> activeRangeNames;
+std::mutex identityMutex;
+Json dispatchIdentities = Json::array();
+bool streamingRanges = false;
 
 void require(bool ok, const char* message)
 {
@@ -115,6 +119,8 @@ bool nvPerfDeviceExtensions(VkInstance instance, VkPhysicalDevice physicalDevice
 
 struct NvPerfSession::Impl {
     std::string isolatedPhase;
+    bool streaming = false;
+    std::vector<std::string> rangeNames;
     uint32_t passes = 0;
     bool complete = false;
     std::unique_lock<std::mutex> lock;
@@ -186,6 +192,14 @@ bool NvPerfSession::beginIsolated(Device& device, Queue& queue, const std::files
 
 bool NvPerfSession::complete() const { return impl_->complete; }
 
+bool NvPerfSession::beginStreaming(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error)
+{
+    impl_->streaming = true;
+    impl_->report["protocol"] = "metallic-nvperf-streaming-v1";
+    impl_->report["scope"] = "three-production-streaming-dispatches-on-graphics-queue";
+    return begin(device, queue, output, error);
+}
+
 bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error)
 {
     auto& s = *impl_;
@@ -194,6 +208,11 @@ bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::p
         require(!s.lock.owns_lock(), "NvPerf session already owns a collection");
         s.lock = std::unique_lock(sessionMutex, std::try_to_lock);
         require(s.lock.owns_lock(), "NvPerf session already active in process");
+        require(!s.streaming || (s.isolatedPhase.empty() && queue.type() == QueueType::Graphics), "Streaming NvPerf requires the graphics queue");
+        s.rangeNames = s.streaming ? std::vector<std::string>{"Streaming/Seed", "Streaming/Demand", "Streaming/Frontier"}
+            : s.isolatedPhase.empty() ? std::vector<std::string>{"WorkControl/early", "WorkControl/late"}
+            : std::vector<std::string>{"WorkControl/isolated/" + s.isolatedPhase};
+        s.report["expectedRanges"] = s.rangeNames;
         require(!std::filesystem::exists(output), "NvPerf output must be fresh");
         std::filesystem::create_directories(output);
         s.output = output; s.report["status"] = "preparing";
@@ -317,7 +336,9 @@ bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::p
         begin.queue = s.queue;
         check(NVPW_VK_Profiler_Queue_BeginPass(&begin), "BeginPass");
         s.inPass = true;
-        activeDevice = native.device; rangeCount = 0; rangeFailed = false; passActive = true;
+        activeDevice = native.device; rangeCount = 0; rangeFailed = false;
+        activeRangeNames = s.rangeNames; streamingRanges = s.streaming; dispatchIdentities = Json::array();
+        passActive = true;
         s.report["status"] = "collecting"; s.save();
         return true;
 #else
@@ -333,8 +354,12 @@ bool NvPerfSession::finish(std::string& error)
     auto& s = *impl_;
     try {
 #if METALLIC_HAS_NVPERF
-        const uint32_t expectedRanges = s.isolatedPhase.empty() ? 2u : 1u;
+        const uint32_t expectedRanges = static_cast<uint32_t>(s.rangeNames.size());
+        if (s.streaming) { s.report["dispatches"] = dispatchIdentities; }
         require(s.inPass && rangeCount == expectedRanges && !rangeFailed, "Missing/failed production range commands");
+        if (s.streaming) {
+            require(dispatchIdentities.size() == expectedRanges, "Missing streaming dispatch identities");
+        }
         passActive = false;
         NVPW_VK_Profiler_Queue_EndPass_Params end{NVPW_VK_Profiler_Queue_EndPass_Params_STRUCT_SIZE};
         end.queue = s.queue;
@@ -370,8 +395,8 @@ bool NvPerfSession::finish(std::string& error)
         Json ranges = Json::array(); std::set<std::string> names;
         for (size_t i = 0; i < expectedRanges; ++i) {
             const auto name = nv::perf::profiler::CounterDataGetRangeName(s.image.data(), i, '/');
-            require((s.isolatedPhase.empty() ? (name == "WorkControl/early" || name == "WorkControl/late") :
-                name == "WorkControl/isolated/" + s.isolatedPhase) && names.insert(name).second, "Wrong/duplicate NvPerf range");
+            require(std::find(s.rangeNames.begin(), s.rangeNames.end(), name) != s.rangeNames.end() &&
+                names.insert(name).second, "Wrong/duplicate NvPerf range");
             std::vector<double> values(s.metrics.size());
             require(s.evaluator.EvaluateToGpuValues(s.image.data(), s.image.size(), i, s.requests.size(), s.requests.data(), values.data()), "Metric evaluation failed");
             Json metrics = Json::array();
@@ -417,19 +442,27 @@ void NvPerfSession::cancel()
     s.lock.unlock();
 }
 
-bool pushNvPerfRange(CommandBuffer& commands, const char* name)
+bool pushNvPerfRange(CommandBuffer& commands, const char* name, const nlohmann::json* dispatchIdentity)
 {
 #if METALLIC_HAS_NVPERF
     if (!nvPerfPassActive()) { return false; }
+    if (std::find(activeRangeNames.begin(), activeRangeNames.end(), name) == activeRangeNames.end()) { return false; }
     if (nativeCommandBufferDevice(commands) != activeDevice) { rangeFailed = true; return false; }
+    if (streamingRanges && (!hasFlag(commands.queueCapabilities(), QueueAccessBits::Graphics) || !dispatchIdentity)) {
+        rangeFailed = true; return false;
+    }
     ExternalCommandScope scope(commands);
     if (!scope || !nv::perf::profiler::VulkanPushRange(scope.commandBuffer(), name)) {
         rangeFailed = true; return false;
     }
     ++rangeCount;
+    if (streamingRanges) {
+        std::lock_guard lock(identityMutex);
+        dispatchIdentities.push_back({{"range", name}, {"identity", *dispatchIdentity}});
+    }
     return true;
 #else
-    (void)commands; (void)name;
+    (void)commands; (void)name; (void)dispatchIdentity;
     return false;
 #endif
 }

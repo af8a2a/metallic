@@ -1,11 +1,13 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
+#include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
+#include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/MeshletLOD.h"
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -24,6 +26,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <tuple>
@@ -606,6 +609,7 @@ public:
 
     bool supportsFrontier32() const { return frontier32Pipeline_ != nullptr; }
     uint32_t subgroupSize() const { return subgroupSize_; }
+    uint64_t demandShaderHash() const { return demandShader_->contentHash(); }
     uint64_t frontierShaderHash(bool wave32) const
     {
         return (wave32 ? frontier32Shader_ : cooperativeShader_)->contentHash();
@@ -658,7 +662,28 @@ public:
             ? frontier32Pipeline_ : demand ? demandPipeline_ : cooperative ? cooperativePipeline_ : activeBuildPipeline_;
         if (auto commandResult = commandBuffer.bindExecution(pipeline->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
         const uint32_t groups = cooperative ? threadCount : threadCount / 64u + (threadCount % 64u != 0u ? 1u : 0u);
-        if (auto commandResult = commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1); !commandResult) { return commandResult; }
+        {
+            std::optional<profiling::NvPerfRange> counterRange;
+            if (profiling::nvPerfPassActive()) {
+                const char* rangeName = push.activeBuildPhase == kMeshletStreamActiveBuildClearPhase ? "Streaming/Seed"
+                    : push.activeBuildPhase == kMeshletStreamActiveBuildDemandPhase ? "Streaming/Demand"
+                    : push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase ? "Streaming/Frontier" : nullptr;
+                if (rangeName) {
+                    const bool wave32 = frontierWave32 && push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase;
+                    const auto* shader = demand ? demandShader_.get() : wave32 ? frontier32Shader_.get() : cooperativeShader_.get();
+                    const nlohmann::json identity{
+                        {"phase", push.activeBuildPhase}, {"threadCount", threadCount},
+                        {"dispatchXYZ", {std::min(groups, 65535u), (groups + 65534u) / 65535u, 1u}},
+                        {"module", kMeshletStreamShaderModuleName},
+                        {"entryPoint", demand ? kMeshletStreamDemandEntryPoint : wave32 ? kMeshletStreamCooperativeBuild32EntryPoint : kMeshletStreamCooperativeBuildEntryPoint},
+                        {"spirvHash", std::to_string(shader->contentHash())}, {"workgroupSize", wave32 ? 32u : 64u},
+                        {"subgroupSize", subgroupSize_},
+                        {"queue", "graphics"}, {"scope", "production-dispatch-only-excludes-barriers"}};
+                    counterRange.emplace(commandBuffer, rangeName, identity);
+                }
+            }
+            if (auto commandResult = commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1); !commandResult) { return commandResult; }
+        }
         if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
@@ -2673,6 +2698,8 @@ void MeshletStreamRuntime::reset()
     demandBufferState_ = ResourceState::Undefined;
     demandTaskOffset_ = 0;
     demandTaskCount_ = 0;
+    originalTopologyHash_ = 0;
+    primitiveMetadataHash_ = 0;
     demandInstanceOffsetsOffset_ = 0;
     distributedPageDemand_ = false;
     currentFrameDistributedDemand_ = true;
@@ -4056,9 +4083,10 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         const auto tileParents = buildMeshletLodTileParents(bvh);
         topology.insert(topology.end(), tileParents.begin(), tileParents.end());
     }
+    primitiveMetadataHash_ = detail::kFnvOffset;
     result = createAndPopulateHostStorageBuffer<MeshletStreamGPUPrimitive>(
         device, primitives.size(), primitiveBuffer_, log, "MeshletStreamRuntime primitives",
-        [primitives, &bvhOffsets, &bvhCounts, &tileOffsets](MeshletStreamGPUPrimitive& gpuPrimitive, size_t index) {
+        [this, primitives, &bvhOffsets, &bvhCounts, &tileOffsets](MeshletStreamGPUPrimitive& gpuPrimitive, size_t index) {
             const auto& primitive = primitives[index];
             gpuPrimitive = MeshletStreamGPUPrimitive{
                 .lodLevelOffset = primitive.lodLevelOffset,
@@ -4078,6 +4106,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
                 .lodBvhNodeCount = bvhCounts[index],
                 .lodTileOffset = tileOffsets[index],
             };
+            primitiveMetadataHash_ = detail::hashBytes(primitiveMetadataHash_, &gpuPrimitive, sizeof(gpuPrimitive));
         });
     if (!result) { return result; }
 
@@ -4143,6 +4172,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         }
         demandTaskCount_ = static_cast<uint32_t>(demandTasks);
     }
+    originalTopologyHash_ = detail::hashBytes(detail::kFnvOffset, topology.data(), topology.size() * sizeof(uint32_t));
     result = createNamedBuffer(device, BufferDesc{
         .size = (kMeshletStreamDemandStatsWords + (distributedPageDemand_ ? (demandBits + 31u) / 32u : 0u)) * sizeof(uint32_t),
         .structureStride = sizeof(uint32_t),
@@ -5238,7 +5268,14 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("rtRepresentationCache", rtRepresentationCacheBuffer_.get(), rtRepresentationCacheBufferState_, "u32");
     add("rtRepresentationMetadata", rtRepresentationMetadataBuffer_.get(), ResourceState::ShaderRead, "MeshletStreamGPURTRepresentationLODMetadata");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
-    if (distributedPageDemand_ || lodTransitionTelemetry_) { add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)); }
+    if (distributedPageDemand_ || lodTransitionTelemetry_) {
+        add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t));
+        bindings.back().metadata["distributedDemandActive"] = currentFrameDistributedDemand_;
+        bindings.back().metadata["demandShaderIdentity"] = {
+            {"module", kMeshletStreamShaderModuleName}, {"entryPoint", kMeshletStreamDemandEntryPoint},
+            {"spirvHash", activeBuildPass_->demandShaderHash()}, {"workgroupSize", 64u},
+            {"subgroupSize", activeBuildPass_->subgroupSize()}};
+    }
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "CompactStreamVisibleRecord");
 }
 
@@ -5255,6 +5292,9 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.nodeDemandC2 = (previousFrameParams_.rtLodFlags & 3u) == 3u;
     result.rtDemandMode = clusterRtxEnabled_ ? 1u : 0u;
     result.frontierWave32 = currentFrameFrontierWave32_;
+    result.originalTopologyHash = originalTopologyHash_;
+    result.primitiveMetadataHash = primitiveMetadataHash_;
+    result.demandTaskCount = demandTaskCount_;
     result.terminalOnlyMask = previousFrameParams_.splitFrontier != 0u;
     result.terminalMaskDiagnostics = previousFrameParams_.enableTerminalMaskDiagnostics != 0u;
     if (activeBuildPass_ && activeBuildPass_->ready()) {
@@ -5537,6 +5577,8 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
             {"coarsenDisplayPixels", rtLodDisplayPixelError_ * (1.f - previousFrameParams_.rtLodHysteresis)},
             {"policyRevision", rtLodPolicyRevision_}}},
         {"distributedPageDemand", distributedPageDemand_}, {"demandTaskCount", demandTaskCount_},
+        {"originalTopologyHash", std::to_string(originalTopologyHash_)},
+        {"primitiveMetadataHash", std::to_string(primitiveMetadataHash_)},
         {"distributedDemandActive", currentFrameDistributedDemand_},
         {"distributedDemandMinGroups", distributedDemandMinGroups_}, {"recentDemandGroupTests", recentDemandGroupTests_},
         {"demandTaskCapacity", traversalWorkCapacity_}, {"demandWorkers", traversalWorkerCount_},

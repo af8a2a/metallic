@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <json.hpp>
 
 namespace metallic::render {
 class Device;
@@ -23,6 +24,7 @@ public:
     NvPerfSession();
     ~NvPerfSession();
     bool begin(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error);
+    bool beginStreaming(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error);
     bool finish(std::string& error);
     void cancel();
 private:
@@ -38,6 +40,7 @@ private:
 class NvPerfRange final {
 public:
     NvPerfRange(CommandBuffer& commands, const char* name);
+    NvPerfRange(CommandBuffer& commands, const char* name, const nlohmann::json& dispatchIdentity);
     ~NvPerfRange();
     NvPerfRange(const NvPerfRange&) = delete;
     NvPerfRange& operator=(const NvPerfRange&) = delete;

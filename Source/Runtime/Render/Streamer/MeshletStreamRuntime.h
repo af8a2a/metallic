@@ -983,6 +983,8 @@ private:
     ResourceLease demandHandle_;
     uint32_t demandTaskOffset_ = 0;
     uint32_t demandTaskCount_ = 0;
+    uint64_t originalTopologyHash_ = 0;
+    uint64_t primitiveMetadataHash_ = 0;
     uint32_t demandInstanceOffsetsOffset_ = 0;
     ResourceState demandBufferState_ = ResourceState::Undefined;
     uint32_t lodInstanceOffsetsOffset_ = 0;
