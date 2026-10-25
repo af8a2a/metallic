@@ -25,6 +25,8 @@ inline void applyStreamRayLODSettings(const RenderGraphProperties& properties,
         properties.value("rtTessellationTemplateShape", std::string("right")));
     view.rtTessellation.instantiationFlags = parseStreamCLASTessellationInstantiationFlags(
         properties.value("rtTessellationInstantiationFlags", std::string("fastTrace")));
+    view.rtTessellation.templateBoundsMode = parseStreamCLASTessellationTemplateBoundsMode(
+        properties.value("rtTessellationTemplateBounds", std::string("none")));
 }
 
 inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSetting>& settings)
@@ -44,6 +46,9 @@ inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSett
     settings.push_back({.key = "rtTessellationInstantiationFlags", .label = "CLAS Instantiation Policy (advanced)",
         .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "fastTrace",
         .options = {{"Prefer tracing speed", "fastTrace"}, {"Driver build/trace policy", "none"}}});
+    settings.push_back({.key = "rtTessellationTemplateBounds", .label = "CLAS Template Bounds",
+        .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "none",
+        .options = {{"Unbounded", "none"}, {"Geometry and displacement", "geometry"}}});
     settings.push_back({.key = "rtTessellationEdgePixels", .label = "RT Tessellation Edge (render px)",
         .type = RenderGraphRuntimeSettingType::Float, .defaultValue = 8.0f, .minValue = 1.0f, .maxValue = 256.0f});
     settings.push_back({.key = "rtTessellationMaxFactor", .label = "RT Tessellation Leaf Edge Factor",

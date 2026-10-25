@@ -10,7 +10,9 @@
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/TessellationPatterns.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Scene/Scene.h"
+#include "../../Shaders/Interop/StreamCLASTessellation.h"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +20,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 
 namespace metallic::tests {
@@ -47,6 +50,80 @@ float2 rayUV(uint32_t ray, bool comparisonRays)
 // test bridge publishes the exact production builder's runtime; a separate
 // geometry request by the probe would create an unrelated streaming session.
 std::weak_ptr<MeshletStreamRuntime> tessellationProducer;
+
+struct TessellationGeometryReadback {
+    std::array<uint32_t, 6> counts{};
+    std::vector<StreamCLASTessellationLeaf> leaves;
+    std::vector<StreamCLASTessellationVertex> vertices;
+};
+
+TessellationGeometryReadback readTessellationGeometry(Device& device, MeshletStreamRuntime& runtime)
+{
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) { throw std::runtime_error(message); }
+    };
+    // The test has drained its production frame. Request the exact producer's
+    // existing allocations; this does not create another geometry runtime.
+    std::vector<DebugResourceBinding> bindings;
+    runtime.setDebugReadbackEnabled(true);
+    runtime.appendDebugBindings(bindings, "test.");
+    runtime.setDebugReadbackEnabled(false);
+    std::array<Buffer*, 3> sources{};
+    for (const auto& binding : bindings) {
+        if (binding.id == "test.tessellationCounts") { sources[0] = binding.buffer; }
+        if (binding.id == "test.tessellationLeaves") { sources[1] = binding.buffer; }
+        if (binding.id == "test.tessellationVertices") { sources[2] = binding.buffer; }
+    }
+    std::array<std::unique_ptr<Buffer>, 3> readbacks;
+    for (size_t i = 0; i < sources.size(); ++i) {
+        require(sources[i] != nullptr, "C3 producer diagnostic binding is missing");
+        auto allocation = device.createBuffer({.size = sources[i]->desc().size,
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback,
+            .queueAccess = QueueAccessBits::Graphics});
+        require(bool(allocation), "C3 diagnostic readback allocation failed");
+        readbacks[i] = std::move(*allocation);
+    }
+    require(readbacks[0]->desc().size >= 6 * sizeof(uint32_t), "C3 requires six production diagnostic counters");
+    auto* queue = device.getQueue(QueueType::Graphics);
+    auto pool = device.createCommandPool(*queue);
+    require(bool(pool), "C3 diagnostic command pool failed");
+    auto commands = (*pool)->createCommandBuffer();
+    auto fence = device.createFence(false);
+    require(bool(commands) && bool(fence), "C3 diagnostic command buffer/fence failed");
+    require(bool((*commands)->begin()), "C3 diagnostic command begin failed");
+    const MemoryBarrierDesc before{
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite}};
+    require(bool((*commands)->synchronize({.memory = {&before, 1}})), "C3 diagnostic source barrier failed");
+    for (size_t i = 0; i < sources.size(); ++i) {
+        require(bool((*commands)->copyBuffer(*sources[i]->slice(), *readbacks[i]->slice())),
+            "C3 diagnostic copy failed");
+    }
+    const MemoryBarrierDesc after{
+        .before = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite},
+        .after = {PipelineStageBits::AllCommands | PipelineStageBits::Host,
+            AccessBits::MemoryRead | AccessBits::MemoryWrite | AccessBits::HostRead}};
+    require(bool((*commands)->synchronize({.memory = {&after, 1}})) && bool((*commands)->end()),
+        "C3 diagnostic host barrier/end failed");
+    const std::array submitted{commands->get()};
+    require(bool(queue->submit({.commandBuffers = submitted, .signalFence = fence->get()})) &&
+        bool((*fence)->wait(10'000'000'000ull)), "C3 diagnostic submission failed");
+    TessellationGeometryReadback result;
+    result.leaves.resize(readbacks[1]->desc().size / sizeof(StreamCLASTessellationLeaf));
+    result.vertices.resize(readbacks[2]->desc().size / sizeof(StreamCLASTessellationVertex));
+    const std::array destinations{static_cast<void*>(result.counts.data()), static_cast<void*>(result.leaves.data()),
+        static_cast<void*>(result.vertices.data())};
+    const std::array<size_t, 3> sizes{sizeof(result.counts), result.leaves.size() * sizeof(result.leaves[0]),
+        result.vertices.size() * sizeof(result.vertices[0])};
+    for (size_t i = 0; i < readbacks.size(); ++i) {
+        const void* mapped = readbacks[i]->map();
+        require(mapped != nullptr, "C3 diagnostic map failed");
+        readbacks[i]->invalidate();
+        std::memcpy(destinations[i], mapped, sizes[i]);
+        readbacks[i]->unmap();
+    }
+    return result;
+}
 
 class CLASTessellationBuildPass final : public ComputePass {
 public:
@@ -95,10 +172,12 @@ uint8_t heightTexel(uint32_t x)
 struct ReferenceHit {
     float height;
     float3 normal;
+    float3 edge0, edge1;
 };
 
 std::array<std::vector<ReferenceHit>, kRayCount> referenceTessellationHits(
-    uint32_t factor = 4, uint32_t splitDepth = 0, bool comparisonRays = false)
+    uint32_t factor = 4, uint32_t splitDepth = 0, bool comparisonRays = false,
+    float magnitude = .4f, float center = 0.f)
 {
     // Independently interpolate the LUT domain, sample the UNORM texture and
     // intersect each emitted triangle on the CPU. Ring triangles can cross the
@@ -135,7 +214,7 @@ std::array<std::vector<ReferenceHit>, kRayCount> referenceTessellationHits(
             const float coordinate = uv.x * kHeightWidth - .5f;
             const int base = int(std::floor(coordinate));
             const auto texel = [](int index) { return heightTexel(uint32_t(std::clamp(index, 0, int(kHeightWidth) - 1))) / 255.f; };
-            const float height = std::lerp(texel(base), texel(base + 1), coordinate - std::floor(coordinate)) * .4f;
+            const float height = (std::lerp(texel(base), texel(base + 1), coordinate - std::floor(coordinate)) - center) * magnitude;
             vertices.emplace_back(uv.x * 2.f - 1.f, uv.y * 2.f - 1.f, height);
         }
         for (const auto& indices : pattern.triangles) {
@@ -149,7 +228,7 @@ std::array<std::vector<ReferenceHit>, kRayCount> referenceTessellationHits(
                 const float wb = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / denominator;
                 const float wc = 1.f - wa - wb;
                 if (wa >= -.0001f && wb >= -.0001f && wc >= -.0001f) {
-                    result[ray].push_back({wa * a.z + wb * b.z + wc * c.z, normal});
+                    result[ray].push_back({wa * a.z + wb * b.z + wc * c.z, normal, b - a, c - a});
                 }
             }
         }
@@ -202,7 +281,7 @@ public:
                 material.materialTextureCount()},
             {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput)}};
         builtin_pass::appendStreamRayLayout(layout);
-        return program_.initialize(*context.device, {.spirv = shader->spirv, .pushConstantSize = 8 * sizeof(float),
+        return program_.initialize(*context.device, {.spirv = shader->spirv, .pushConstantSize = 20 * sizeof(float),
             .bindings = layout, .requiresRayQuery = true, .resourceParameterSize = sizeof(SceneResourceParameters)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -229,8 +308,12 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = context.outputBuffer("hits").buffer()}};
         builtin_pass::appendStreamRayBindings(bindings, stream, geometry->shadingChangeBuffer());
         const auto& transform = context.runtimeScene()->nodes()[0].localMatrix;
-        const std::array<float, 8> push{transform.a00, transform.a11, transform.a22, transform.a03,
-            transform.a13, transform.a23, properties().value("comparisonRays", false) ? 1.f : 0.f, 0};
+        const std::array<float, 20> push{transform.a00, transform.a11, transform.a22, transform.a03,
+            transform.a13, transform.a23, properties().value("comparisonRays", false) ? 1.f : 0.f,
+            properties().value("affineRays", false) ? 1.f : 0.f,
+            transform.a00, transform.a01, transform.a02, transform.a03,
+            transform.a10, transform.a11, transform.a12, transform.a13,
+            transform.a20, transform.a21, transform.a22, transform.a23};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
             .pushData = push.data(), .pushDataSize = sizeof(push), .groupCountX = (kRayCount + kImageSize * kImageSize) / 8});
     }
@@ -284,7 +367,7 @@ bool writeCLASTessellationFixture(const std::filesystem::path& directory, std::s
     return bool(binary) && bool(gltf);
 }
 
-enum class TemplateCandidate { Default, InstantiationNone, Equilateral };
+enum class TemplateCandidate { Default, InstantiationNone, Equilateral, GeometryBounds };
 
 class CLASTessellationTest : public RHITest {
 public:
@@ -295,6 +378,7 @@ public:
         name = templates ? "scene_clas_tessellation_templates" : "scene_clas_tessellation";
         if (candidate == TemplateCandidate::InstantiationNone) { name = "scene_clas_tessellation_templates_c1_right_none"; }
         if (candidate == TemplateCandidate::Equilateral) { name = "scene_clas_tessellation_templates_c2_equilateral_fast_trace"; }
+        if (candidate == TemplateCandidate::GeometryBounds) { name = "scene_clas_tessellation_templates_c3_geometry_bounds"; }
     }
     std::optional<bench::Metadata> metadata() const override
     {
@@ -305,10 +389,13 @@ public:
             result.artifacts.push_back("template-comparison.json");
         }
         if (candidate_ != TemplateCandidate::Default) {
-            result.coverage.push_back(candidate_ == TemplateCandidate::InstantiationNone
+            result.coverage.push_back(candidate_ == TemplateCandidate::GeometryBounds
+                ? "clas.tessellation.templates.geometry.bounds.containment.lifecycle"
+                : candidate_ == TemplateCandidate::InstantiationNone
                 ? "clas.tessellation.templates.instantiation.none.lifecycle"
                 : "clas.tessellation.templates.canonical.equilateral.lifecycle");
         }
+        if (candidate_ == TemplateCandidate::GeometryBounds) { result.artifacts.push_back("template-bounds.json"); }
         result.timeout = std::chrono::seconds(180);
         return result;
     }
@@ -340,12 +427,13 @@ public:
         (void)registeredBuilder;
         tessellationProducer.reset();
         registerBuiltInRenderGraphPasses();
+        const bool geometryBounds = candidate_ == TemplateCandidate::GeometryBounds;
         const char* templateShape = candidate_ == TemplateCandidate::Equilateral ? "equilateral" : "right";
         const char* instantiationFlags = candidate_ == TemplateCandidate::InstantiationNone ? "none" : "fastTrace";
-        const char* candidateKey = candidate_ == TemplateCandidate::InstantiationNone
+        const char* candidateKey = geometryBounds ? "rtTessellationTemplateBounds" : candidate_ == TemplateCandidate::InstantiationNone
             ? "rtTessellationInstantiationFlags" : "rtTessellationTemplateShape";
-        const char* defaultPolicy = candidate_ == TemplateCandidate::InstantiationNone ? "fastTrace" : "right";
-        const char* candidatePolicy = candidate_ == TemplateCandidate::InstantiationNone ? instantiationFlags : templateShape;
+        const char* defaultPolicy = geometryBounds ? "none" : candidate_ == TemplateCandidate::InstantiationNone ? "fastTrace" : "right";
+        const char* candidatePolicy = geometryBounds ? "geometry" : candidate_ == TemplateCandidate::InstantiationNone ? instantiationFlags : templateShape;
         RenderGraph graph;
         const uint32_t build = graph.addNode("CLASTessellationBuild", "Build", {
             {"path", (directory / "scene.gltf").string()}, {"AsyncComputePreferred", false},
@@ -353,9 +441,10 @@ public:
             {"rtTessellationMaxSplitDepth", 0}, {"rtTessellationMaxPatches", 64},
             {"rtTessellationBuildMode", templates_ ? "templates" : "triangles"},
             {"rtTessellationTemplateShape", templateShape}, {"rtTessellationInstantiationFlags", instantiationFlags},
+            {"rtTessellationTemplateBounds", geometryBounds ? "geometry" : "none"},
             {"camera", {{"eye", {0, 0, 4}}, {"center", {0, 0, 0}}, {"projection", "orthographic"},
                 {"orthoHeight", 4.f}, {"znear", .001f}, {"zfar", 100.f}}}})->id;
-        graph.addNode("CLASTessellationProbe", "Probe", {{"comparisonRays", templates_}});
+        const auto probe = graph.addNode("CLASTessellationProbe", "Probe", {{"comparisonRays", templates_}})->id;
         check(graph.addEdge("Build.accelerationStructure", "Probe.accelerationStructure"), "AS graph edge failed");
         check(graph.markOutput("Probe.hits"), "Probe output failed");
         RenderGraphExecutor executor;
@@ -371,6 +460,11 @@ public:
             else { check(executor.syncRuntimeProperties(graph), std::string("Setting did not reach executor: ") + key); }
         };
         nlohmann::json policyReceipts = nlohmann::json::array();
+        nlohmann::json boundsReceipts = nlohmann::json::array();
+        nlohmann::json lastBoundsReceipt;
+        bool allowBoundsFallback = false;
+        bool expectLocalNormalFallback = false;
+        std::string boundsPhase = "lifecycle";
         const auto renderRaw = [&](uint32_t frames, const char* imageName, std::vector<float>* complete) {
             for (uint32_t frame = 0; frame < frames; ++frame) {
                 checked(executor.execute({.graphicsQueue = device.getQueue(QueueType::Graphics),
@@ -395,6 +489,66 @@ public:
                 if (candidate_ != TemplateCandidate::Default) {
                     policyReceipts.push_back({{"mode", mode}, {"templateShape", shape}, {"instantiationFlags", flags},
                         {"maxPatches", receipt.at("maxPatches")}, {"templatesReady", receipt.at("templatesReady")}});
+                }
+                if (geometryBounds && mode == "templates") {
+                    const auto boundsMode = properties.value("rtTessellationTemplateBounds", std::string("none"));
+                    check(receipt.at("templateBoundsMode") == boundsMode, "C3 bounds policy receipt mismatch: " + receipt.dump());
+                    const auto snapshot = readTessellationGeometry(device, *geometry);
+                    const auto& counts = snapshot.counts;
+                    check(counts[0] <= snapshot.leaves.size() &&
+                        uint64_t(counts[0]) * METALLIC_TESS_VERTICES_PER_PATCH <= snapshot.vertices.size(),
+                        "C3 diagnostic patch count exceeds captured allocations");
+                    check(counts[4] <= counts[0] && (counts[4] == 0 || counts[5] != 0),
+                        "C3 patch fallback count/sticky diagnostic is inconsistent");
+                    const bool bounded = boundsMode == "geometry" && receipt.at("boundedTemplatesReady").get<bool>();
+                    if (boundsMode == "geometry" && !allowBoundsFallback && counts[0] != 0) {
+                        check(bounded && receipt.at("nativeTemplateCount") == 1024 && counts[4] == 0 && counts[5] == 0,
+                            "Ordinary C3 case did not use bounded templates without fallback: " + receipt.dump());
+                    }
+                    std::array<float, 6> bounds{};
+                    if (bounded) {
+                        check(receipt.at("templateBounds").is_array() && receipt.at("templateBounds").size() == 6,
+                            "C3 bounded pool lacks its six object-space limits");
+                        bounds = receipt.at("templateBounds").get<std::array<float, 6>>();
+                        for (size_t axis = 0; axis < 3; ++axis) {
+                            check(std::isfinite(bounds[axis]) && std::isfinite(bounds[axis + 3]) && bounds[axis] <= bounds[axis + 3],
+                                "C3 template bounds are invalid");
+                        }
+                    }
+                    uint32_t checkedVertices = 0, outsidePatches = 0;
+                    constexpr float infinity = std::numeric_limits<float>::infinity();
+                    std::array<float, 3> minimum{infinity, infinity, infinity}, maximum{-infinity, -infinity, -infinity};
+                    for (uint32_t patch = 0; patch < counts[0]; ++patch) {
+                        const auto& leaf = snapshot.leaves[patch];
+                        check(leaf.vertexCount != 0 && leaf.vertexCount <= METALLIC_TESS_VERTICES_PER_PATCH,
+                            "C3 diagnostic leaf has invalid vertex count");
+                        bool outside = false;
+                        for (uint32_t vertex = 0; vertex < leaf.vertexCount; ++vertex) {
+                            const auto& generated = snapshot.vertices[patch * METALLIC_TESS_VERTICES_PER_PATCH + vertex];
+                            const std::array point{generated.x, generated.y, generated.z};
+                            for (size_t axis = 0; axis < 3; ++axis) {
+                                check(std::isfinite(point[axis]), "C3 generated vertex is not finite");
+                                minimum[axis] = std::min(minimum[axis], point[axis]);
+                                maximum[axis] = std::max(maximum[axis], point[axis]);
+                                // The native limit must contain the actual float,
+                                // not an independently expanded test tolerance.
+                                outside |= bounded && (point[axis] < bounds[axis] || point[axis] > bounds[axis + 3]);
+                            }
+                            ++checkedVertices;
+                        }
+                        outsidePatches += outside ? 1u : 0u;
+                    }
+                    if (boundsMode == "geometry") {
+                        check(!bounded || outsidePatches == counts[4],
+                            "C3 actual out-of-bounds patches differ from native unbounded fallback count");
+                        check(bounded || counts[0] == counts[4], "C3 missing bounded pool did not fall back every active patch");
+                    }
+                    lastBoundsReceipt = {{"phase", boundsPhase}, {"identity", receipt}, {"counts", counts},
+                        {"checkedVertices", checkedVertices}, {"outsidePatches", outsidePatches},
+                        {"generatedMinimum", checkedVertices ? nlohmann::json(minimum) : nlohmann::json(nullptr)},
+                        {"generatedMaximum", checkedVertices ? nlohmann::json(maximum) : nlohmann::json(nullptr)},
+                        {"allowFallback", allowBoundsFallback}, {"normalSafeguardExpected", expectLocalNormalFallback}};
+                    boundsReceipts.push_back(lastBoundsReceipt);
                 }
             }
             auto* buffer = executor.outputResource("Probe.hits")->buffer;
@@ -628,6 +782,211 @@ public:
             check(replaced[24] == 0.f && replaced[25] == 2.f && replaced[26] == 0.f,
                 "Address-only capacity replacement invalidated an unchanged surface");
         }
+        if (geometryBounds) {
+            const auto originalTransform = scene.nodes()[0].localMatrix;
+            const auto identity = float4x4::Identity();
+            check(scene.setNodeLocalMatrix(0, identity), "C3 identity transform edit failed");
+            check(graph.setNodeRuntimeProperty(probe, "affineRays", true) && executor.syncRuntimeProperties(graph),
+                "C3 affine probe setting failed");
+            const auto generation = [&]() {
+                return lastBoundsReceipt.at("identity").at("templatePoolGeneration").get<uint64_t>();
+            };
+            const auto verifyAffine = [&](const TessellationObservations& observations, bool strictOracle) {
+                check(observations[25] == 2.f && observations[26] == 0.f,
+                    boundsPhase + " lost same-quality tessellation admission");
+                const auto& matrix = scene.nodes()[0].localMatrix;
+                const auto& material = scene.materials()[0];
+                const auto expectedHits = referenceTessellationHits(4, 0, true,
+                    material.displacementMagnitude, material.displacementCenter);
+                const float3 x(matrix.a00, matrix.a10, matrix.a20), y(matrix.a01, matrix.a11, matrix.a21);
+                const float3 z(matrix.a02, matrix.a12, matrix.a22), translation(matrix.a03, matrix.a13, matrix.a23);
+                const float orientation = dot(x, cross(y, z)) < 0.f ? -1.f : 1.f;
+                const float3 normal = normalize(cross(x, y)) * orientation;
+                for (uint32_t ray = 0; ray < kRayCount; ++ray) {
+                    const auto* value = observations.data() + ray * kRayWords;
+                    const auto label = boundsPhase + " ray " + std::to_string(ray);
+                    check(value[11] == (ray + 1 == kRayCount ? 0.f : 1.f), label + " lost C3 affine coverage");
+                    for (uint32_t word = 0; word < kRayWords; ++word) {
+                        check(std::isfinite(value[word]), label + " contains a nonfinite result");
+                    }
+                    if (ray + 1 == kRayCount) { continue; }
+                    const auto uv = rayUV(ray, true);
+                    check(std::abs(value[20] - uv.x) < (strictOracle ? .001f : .02f) &&
+                        std::abs(value[21] - uv.y) < (strictOracle ? .001f : .02f), label + " lost C3 source UV");
+                    check(value[7] == (expectLocalNormalFallback || ray != 6 ? 1.f : 0.f),
+                        label + " lost C3 authored facing");
+                    check(value[28] >= -.0001f && value[29] >= -.0001f && value[28] + value[29] <= 1.0001f,
+                        label + " has an invalid source triangle domain");
+                    const float3 actualNormal(value[8], value[9], value[10]);
+                    check(std::abs(length(actualNormal) - 1.f) < .002f, label + " has a nonunit C3 normal");
+                    if (!strictOracle) { continue; }
+                    check(!expectedHits[ray].empty(), label + " CPU reference lacks a triangle");
+                    const float height = expectedHits[ray][0].height;
+                    const float3 expected = x * (uv.x * 2.f - 1.f) + y * (uv.y * 2.f - 1.f) +
+                        translation + normal * height;
+                    check(length(float3(value[0], value[1], value[2]) - expected) < .006f &&
+                        std::abs(value[3] - (8.f + (ray == 6 ? height : -height))) < .006f,
+                        label + " differs from the independent world-unit displacement oracle");
+                    if (expectLocalNormalFallback) {
+                        // At this declared 1e-6 Z scale the independently built
+                        // microtriangle is almost collinear in local space.
+                        // StreamRayGeometry's relative-area guard returns +Y;
+                        // safeNormalize then retains it because its transformed
+                        // squared length is 1e-12 <= 1e-8. Both normal rays have
+                        // a zero facing dot product, which is classified front.
+                        const bool degenerate = std::all_of(expectedHits[ray].begin(), expectedHits[ray].end(),
+                            [&](const ReferenceHit& hit) {
+                                const float3 a(hit.edge0.x, hit.edge0.y, hit.edge0.z / matrix.a22);
+                                const float3 b(hit.edge1.x, hit.edge1.y, hit.edge1.z / matrix.a22);
+                                const auto crossEdges = cross(a, b);
+                                return dot(crossEdges, crossEdges) <= dot(a, a) * dot(b, b) * 1e-12f;
+                            });
+                        check(matrix.a00 == 1.f && matrix.a11 == 1.f && matrix.a22 == 1e-6f && degenerate &&
+                            dot(cross(z, x), cross(z, x)) <= 1e-8f,
+                            label + " no longer meets the declared production normal safeguard");
+                        check(length(actualNormal - float3(0, 1, 0)) < .000001f &&
+                            length(float3(value[4], value[5], value[6]) - float3(0, 1, 0)) < .000001f,
+                            label + " did not preserve the production numerical normal fallback");
+                        continue;
+                    }
+                    const bool normalMatches = std::any_of(expectedHits[ray].begin(), expectedHits[ray].end(),
+                        [&](const ReferenceHit& hit) {
+                            const auto dx = x - normal * (hit.normal.x / hit.normal.z);
+                            const auto dy = y - normal * (hit.normal.y / hit.normal.z);
+                            return dot(actualNormal, normalize(cross(dx, dy)) * orientation) > .995f;
+                        });
+                    check(normalMatches, label + " microtriangle normal differs from the affine CPU oracle");
+                }
+            };
+            const auto renderAffineRaw = [&](const char* phase, bool strictOracle, std::vector<float>* complete = nullptr,
+                                             const char* imageName = nullptr) {
+                boundsPhase = phase;
+                const auto hits = renderRaw(1, imageName, complete);
+                verifyAffine(hits, strictOracle);
+                return hits;
+            };
+            const auto compareAffine = [&](const char* phase, bool strictOracle = true, const char* imageName = nullptr) {
+                std::vector<float> boundedOutput, unboundedOutput, triangleOutput, restoredOutput;
+                const auto boundedHits = renderAffineRaw(phase, strictOracle, &boundedOutput, imageName);
+                uint32_t imageHits = 0;
+                for (size_t pixel = kRayCount * kRayWords; pixel < boundedOutput.size(); pixel += 4) {
+                    imageHits += boundedOutput[pixel + 3] > 0.f ? 1u : 0u;
+                }
+                check(imageHits > 5000, std::string(phase) + " C3 image is empty or lost substantial surface coverage");
+                setting("rtTessellationTemplateBounds", "none");
+                const auto unboundedHits = renderAffineRaw(phase, strictOracle, &unboundedOutput);
+                check(unboundedHits[24] == 0.f, "C3-to-unbounded switch invalidated unchanged history");
+                compare(boundedOutput, unboundedOutput, "C3 unbounded reference");
+                setting("rtTessellationBuildMode", "triangles");
+                const auto triangleHits = renderAffineRaw(phase, strictOracle, &triangleOutput);
+                check(triangleHits[24] == 0.f, "C3-to-triangle switch invalidated unchanged history");
+                compare(boundedOutput, triangleOutput, "C3 triangle reference");
+                setting("rtTessellationBuildMode", "templates");
+                setting("rtTessellationTemplateBounds", "geometry");
+                const auto restoredHits = renderAffineRaw(phase, strictOracle, &restoredOutput);
+                check(restoredHits[24] == 0.f, "C3 restore invalidated unchanged history");
+                compare(boundedOutput, restoredOutput, "C3 restored");
+                ++pairedStates;
+                return boundedHits;
+            };
+
+            renderAffineRaw("bounds baseline", true);
+            const auto baselineGeneration = generation();
+            const auto stable = renderAffineRaw("bounds stable", true);
+            check(stable[24] == 0.f && generation() == baselineGeneration,
+                "Stationary C3 rebuilt its bounded pool or invalidated history");
+            auto boundedMaterial = originalMaterial;
+            boundedMaterial.displacementMagnitude = 2.f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C3 expanding material edit failed");
+            const auto expanded = renderAffineRaw("bounds expanded", true);
+            const auto expandedGeneration = generation();
+            check(expandedGeneration > baselineGeneration && expanded[24] > 0.f,
+                "C3 bound expansion failed to replace the pool or report changed geometry");
+            boundedMaterial.displacementMagnitude = .2f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C3 contained material edit failed");
+            const auto contained = renderAffineRaw("bounds contained", true);
+            check(generation() == expandedGeneration && contained[24] > 0.f,
+                "Contained displacement rebuilt the C3 pool or hid its surface change");
+            check(renderAffineRaw("contained stable", true)[24] == 0.f && generation() == expandedGeneration,
+                "Stable contained displacement repeatedly rebuilt or invalidated C3");
+            compareAffine("positive displacement", true, "C3GeometryBounds.png");
+            boundedMaterial.displacementMagnitude = .8f;
+            boundedMaterial.displacementCenter = .5f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C3 centered material edit failed");
+            compareAffine("positive and negative displacement");
+            boundedMaterial.displacementMagnitude = -.9f;
+            boundedMaterial.displacementCenter = .25f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C3 negative magnitude edit failed");
+            check(scene.materials()[0].displacementMagnitude == -.9f, "C3 negative displacement was normalized away");
+            compareAffine("negative displacement magnitude");
+
+            const auto preCancelGeneration = generation();
+            boundedMaterial.displacementMagnitude = 3.5f;
+            boundedMaterial.displacementCenter = 0.f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C3 cancelled bound expansion edit failed");
+            auto cancelPool = device.createCommandPool(*device.getQueue(QueueType::Graphics));
+            check(bool(cancelPool), "C3 cancellation command pool failed");
+            auto cancelCommands = (*cancelPool)->createCommandBuffer();
+            check(bool(cancelCommands), "C3 cancellation command buffer failed");
+            checked((*cancelCommands)->begin(), "C3 cancellation begin");
+            checked(executor.execute(**cancelCommands), "C3 cancelled expansion recording");
+            checked((*cancelCommands)->end(), "C3 cancellation end");
+            cancelCommands->reset();
+            cancelPool->reset();
+            // Pool generation is an allocation identity: cancellation may keep
+            // an uninitialized allocation for retry, so rollback is not required.
+            const auto retry = renderAffineRaw("cancelled expansion retry", true);
+            check(generation() > preCancelGeneration && retry[24] > 0.f &&
+                lastBoundsReceipt.at("identity").at("boundedTemplatesReady").get<bool>(),
+                "C3 cancelled expansion retry lost ready publication or pending surface history");
+            const auto retryGeneration = generation();
+            check(renderAffineRaw("cancelled expansion stable", true)[24] == 0.f && generation() == retryGeneration,
+                "C3 cancelled expansion retry repeatedly rebuilt or invalidated history");
+            compareAffine("expanded after cancellation");
+
+            auto affine = identity;
+            affine.a00 = std::cos(.6f); affine.a02 = std::sin(.6f);
+            affine.a20 = -std::sin(.6f); affine.a22 = std::cos(.6f);
+            affine.a03 = 3.f; affine.a13 = -2.f; affine.a23 = 1.f;
+            check(scene.setNodeLocalMatrix(0, affine), "C3 rotated transform edit failed");
+            compareAffine("rotated instance");
+            affine.a00 = 1.6f; affine.a01 = .4f; affine.a02 = -.5f;
+            affine.a10 = .3f; affine.a11 = 1.5f; affine.a12 = .2f;
+            affine.a20 = .7f; affine.a21 = .2f; affine.a22 = 1.2f;
+            check(scene.setNodeLocalMatrix(0, affine), "C3 shear transform edit failed");
+            compareAffine("nonuniform shear");
+            affine.a00 = -affine.a00; affine.a10 = -affine.a10; affine.a20 = -affine.a20;
+            check(scene.setNodeLocalMatrix(0, affine), "C3 mirrored shear edit failed");
+            compareAffine("mirrored shear", true, "C3MirroredShear.png");
+            setting("camera.eye", nlohmann::json::array({2000, 0, 4}));
+            setting("camera.center", nlohmann::json::array({2000, 0, 0}));
+            compareAffine("affine offscreen secondary rays");
+
+            // Extreme transforms may intentionally choose the matching
+            // unbounded topology. They still need complete, finite geometry,
+            // accurate fallback counters and the same full image/attributes.
+            allowBoundsFallback = true;
+            affine = identity;
+            affine.a22 = 1e-6f;
+            check(scene.setNodeLocalMatrix(0, affine), "C3 near-singular transform edit failed");
+            expectLocalNormalFallback = true;
+            compareAffine("near-singular normal scale");
+            expectLocalNormalFallback = false;
+            affine = identity;
+            affine.a03 = 100000.f; affine.a13 = -200000.f; affine.a23 = 300000.f;
+            check(scene.setNodeLocalMatrix(0, affine), "C3 large translation edit failed");
+            // Float world-position cancellation is visible at this scale. The
+            // exact mode comparison and GPU bounds containment remain strict;
+            // this state does not claim the small-coordinate CPU error bound.
+            compareAffine("large translation", false);
+
+            check(scene.setNodeLocalMatrix(0, originalTransform) && scene.setMaterialProperties(0, originalMaterial),
+                "C3 final fixture restore failed");
+            check(graph.setNodeRuntimeProperty(probe, "affineRays", false) && executor.syncRuntimeProperties(graph),
+                "C3 legacy probe restore failed");
+            std::ofstream(directory / "TemplateBounds.json") << boundsReceipts.dump(2);
+            if (context.evidence) { context.evidence->json("template-bounds.json", boundsReceipts); }
+        }
         setting("rtTessellation", false);
         verify(render(), false, "runtime disabled");
         if (templates_) {
@@ -635,6 +994,7 @@ public:
                 {"imagePixelsPerState", kImageSize * kImageSize}, {"maximumAttributeDifference", maximumAttributeDifference},
                 {"maximumImageDifference", maximumImageDifference}, {"tolerance", .0002f},
                 {"modeSwitchSemanticChanges", 0}, {"templateShape", templateShape}, {"instantiationFlags", instantiationFlags},
+                {"templateBounds", geometryBounds ? "geometry" : "none"},
                 {"policySwitches", policySwitches}, {"policyReceipts", policyReceipts}};
             std::ofstream(directory / "TemplateComparison.json") << comparison.dump(2);
             if (context.evidence) { context.evidence->json("template-comparison.json", comparison); }
@@ -663,6 +1023,11 @@ public:
     CLASTessellationTemplatesEquilateralTest() : CLASTessellationTest(true, TemplateCandidate::Equilateral) {}
 };
 METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesEquilateralTest);
+class CLASTessellationTemplatesGeometryBoundsTest final : public CLASTessellationTest {
+public:
+    CLASTessellationTemplatesGeometryBoundsTest() : CLASTessellationTest(true, TemplateCandidate::GeometryBounds) {}
+};
+METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesGeometryBoundsTest);
 
 } // namespace
 } // namespace metallic::tests

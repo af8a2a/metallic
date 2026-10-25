@@ -41,7 +41,8 @@ class CLASTemplateShadowTests(unittest.TestCase):
                 runner.save(directory / "Graph.json", graph)
                 runner.save(directory / "Cases.json", config)
             runner.save(args.output / "Fixture.json", {"protocol": runner.base.PROTOCOL, "scope": "test"})
-        args = SimpleNamespace(output=root, template_shape="right", instantiation_flags="none", native_sizes=native)
+        args = SimpleNamespace(output=root, template_shape="right", instantiation_flags="fastTrace",
+                               template_bounds="geometry", native_sizes=native)
         with patch.object(runner.base, "prepare", baseline_prepare):
             runner.prepare(args)
 
@@ -64,10 +65,93 @@ class CLASTemplateShadowTests(unittest.TestCase):
     def test_combined_unregistered_strategy_fails_before_creating_fixture(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "fixture"
-            args = SimpleNamespace(output=root, template_shape="equilateral", instantiation_flags="none", native_sizes=True)
-            with self.assertRaisesRegex(ValueError, "Only C1"):
+            args = SimpleNamespace(output=root, template_shape="equilateral", instantiation_flags="none",
+                                   template_bounds="geometry", native_sizes=True)
+            with self.assertRaisesRegex(ValueError, "Only C3"):
                 runner.prepare(args)
             self.assertFalse(root.exists())
+
+    def test_legacy_v2_fixture_remains_valid_without_bounds_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "fixture"
+            self.make_fixture(root)
+            fixture = runner.read(root / "Fixture.json")
+            fixture.update(protocol=runner.LEGACY_PROTOCOL, candidateId="C1", candidate=runner.CANDIDATES["C1"],
+                           baselineStrategy=runner.DEFAULT_STRATEGY)
+            runner.save(root / "Fixture.json", fixture)
+            for arm, name in runner.ARMS.items():
+                for filename in ("Graph.json", "DiagnosticGraph.json"):
+                    path = root / name / filename
+                    graph = runner.read(path)
+                    p = runner.properties(graph)
+                    del p[runner.BOUNDS_KEY]
+                    p.update(runner.CANDIDATES["C1"] if arm == "C" else runner.DEFAULT_STRATEGY)
+                    runner.save(path, graph)
+            runner.fixture_configs(root)
+
+    def bounded_case(self):
+        identity = {"templateBoundsMode": "geometry", "templateBounds": [-1, -1, -.1, 1, 1, .1],
+                    "templatePoolGeneration": 7, "nativeTemplateCount": 1024, "boundedTemplatesReady": True}
+        profile = {"streaming": [{"passName": "VBuffer", "tessellationIdentity": copy.deepcopy(identity)}]}
+        case = {"templateBoundFallbacks": 0, "templateBoundFallbackObserved": False, "templatePoolGeneration": 7,
+                "warmup": [copy.deepcopy(profile)], "frames": [copy.deepcopy(profile)]}
+        graph = {"nodes": [{"name": "VBuffer", "properties": {runner.BOUNDS_KEY: "geometry"}}]}
+        return case, identity, graph
+
+    def test_sticky_fallback_rejects_even_when_last_frame_has_none(self):
+        case, identity, graph = self.bounded_case()
+        runner.bounded_path_evidence(Path("."), case, identity, graph, "C", False)
+        case["templateBoundFallbackObserved"] = True
+        with self.assertRaisesRegex(ValueError, "exclusively"):
+            runner.bounded_path_evidence(Path("."), case, identity, graph, "C", False)
+
+    def test_replacement_cannot_clear_sticky_window_proof(self):
+        case, identity, graph = self.bounded_case()
+        case["warmup"][0]["streaming"][0]["tessellationIdentity"]["templatePoolGeneration"] = 6
+        with self.assertRaisesRegex(ValueError, "replaced"):
+            runner.bounded_path_evidence(Path("."), case, identity, graph, "C", False)
+        case, identity, graph = self.bounded_case()
+        case["templatePoolGeneration"] = 8
+        with self.assertRaisesRegex(ValueError, "different template allocation"):
+            runner.bounded_path_evidence(Path("."), case, identity, graph, "C", False)
+
+    def test_native_bounds_are_actual_f32_bytes_and_must_match_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            case, identity, graph = self.bounded_case()
+            data = struct.pack("<6f", *identity["templateBounds"])
+            (root / "bounds.bin").write_bytes(data)
+            case["nativeCLASBoundsReceipt"] = {"file": "bounds.bin", "bytes": 24,
+                                               "values": list(struct.unpack("<6f", data))}
+            value = runner.bounded_path_evidence(root, case, identity, graph, "C", True)
+            self.assertEqual(value["nativeBounds"]["bytes"], 24)
+            identity["templateBounds"][0] = -2
+            with self.assertRaisesRegex(ValueError, "disagrees"):
+                runner.bounded_path_evidence(root, case, identity, graph, "C", True)
+
+    def test_bounds_readback_cannot_enter_ordinary_timing(self):
+        case, identity, graph = self.bounded_case()
+        case["nativeCLASBoundsReceipt"] = {"file": "unexpected.bin"}
+        with self.assertRaisesRegex(ValueError, "leaked"):
+            runner.bounded_path_evidence(Path("."), case, identity, graph, "C", False)
+
+    def test_missing_bounded_template_half_is_invalid(self):
+        case, identity, graph = self.bounded_case()
+        identity["nativeTemplateCount"] = 512
+        with self.assertRaisesRegex(ValueError, "population"):
+            runner.bounded_path_evidence(Path("."), case, identity, graph, "C", False)
+
+    def test_bound_size_reduction_is_diagnostic_and_does_not_change_policy(self):
+        samples = [{"arm": arm, "result": {"nativeCLASSizes": {"count": 2, "totalBytes": total,
+                    "minimum": total // 2, "maximum": total // 2, "median": total / 2}}}
+                   for arm, total in zip("ABC", (3200, 5120, 4096))]
+        value = runner.bound_size_diagnostic(samples)
+        self.assertEqual(value["classification"], "reduced")
+        self.assertAlmostEqual(value["reductionFraction"], .2)
+        self.assertFalse(value["requiredForPerformanceAcceptance"])
+        self.assertEqual(len(runner.POLICY["gates"]), 5)
+        samples[2]["result"]["nativeCLASSizes"]["totalBytes"] = 5120
+        self.assertEqual(runner.bound_size_diagnostic(samples)["classification"], "unchanged")
 
     def test_each_contrast_uses_one_observation_per_six_process_block(self):
         result = runner.assess(rows(5), "confirmation")

@@ -44,7 +44,8 @@ TESS_PUBLIC struct StreamCLASTessellationInstance
 // 2 emit leaves (one group/instance), 3 dice/build records (one group/patch),
 // CLAS build, 4 BLAS records (64 threads/instance), BLAS build,
 // base TLAS input generation, 5 publish (64 threads/instance), TLAS build.
-// counts: patchCount, blasCount, rejectedInstances, invalidInstances.
+// counts: patchCount, blasCount, rejectedInstances, invalidInstances,
+// unboundedFallbackPatchesThisFrame, anyUnboundedFallbackSinceAllocation.
 TESS_PUBLIC struct StreamCLASTessellationParameters
 {
     TESS_PUBLIC StreamCLASTessellationGeometry geometry;
@@ -57,7 +58,9 @@ TESS_PUBLIC struct StreamCLASTessellationParameters
     TESS_PUBLIC uint32_t maxFactor, maxSplitDepth, revision;
     TESS_PUBLIC uint32_t pageDescriptor, pageTableDescriptor;
     TESS_PUBLIC uint64_t templateAddresses;
-    TESS_PUBLIC uint32_t buildMode, reserved;
+    TESS_PUBLIC uint32_t buildMode, initializeBoundStatistics;
+    TESS_PUBLIC uint64_t templateBoundsAddress;
+    TESS_PUBLIC uint32_t templateBoundsRequested, templatePatternCount;
 };
 
 TESS_PUBLIC struct StreamCLASTessellationPush
@@ -71,7 +74,7 @@ static_assert(sizeof(StreamCLASTessellationLeaf) == 48);
 static_assert(sizeof(StreamCLASTessellationVertex) == 32);
 static_assert(sizeof(StreamCLASTessellationGeometry) == 32);
 static_assert(sizeof(StreamCLASTessellationInstance) == 32);
-static_assert(sizeof(StreamCLASTessellationParameters) == 232);
+static_assert(sizeof(StreamCLASTessellationParameters) == 248);
 static_assert(sizeof(StreamCLASTessellationPush) == 16);
 } // namespace metallic::render
 #endif

@@ -119,16 +119,19 @@ public:
     bool requiresResourceReadback() const override { return false; }
     bool captured = false, completed = false;
     bool afterPassSeen = false, bindingSeen = false;
-    bool sizesCaptured = false;
-    std::unique_ptr<render::Buffer> buffer, sizesBuffer;
+    bool sizesCaptured = false, boundsCaptured = false, boundsSeen = false;
+    uint64_t templatePoolGeneration = 0;
+    std::unique_ptr<render::Buffer> buffer, sizesBuffer, boundsBuffer;
     void compiled(debug::DebugValue) override {}
     void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
     {
         captured = completed = afterPassSeen = bindingSeen = false;
         sizesCaptured = false;
+        boundsCaptured = boundsSeen = false;
         sizesBuffer.reset();
+        boundsBuffer.reset();
         device_ = &device;
-        auto result = device.createBuffer({.size = 16, .usage = render::BufferUsageBits::TransferDestination,
+        auto result = device.createBuffer({.size = 24, .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback,
             .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute});
         buffer = result ? std::move(*result) : nullptr;
@@ -145,17 +148,22 @@ public:
             if (!binding.buffer) { continue; }
             const bool counts = binding.id.ends_with(".tessellationCounts");
             const bool sizes = captureSizes_ && binding.id.ends_with(".tessellationSizes");
-            if (!counts && !sizes) { continue; }
-            const uint64_t bytes = counts ? 16 : binding.buffer->desc().size - binding.offset;
-            if (counts) { bindingSeen = true; }
+            const bool bounds = captureSizes_ && binding.id.ends_with(".tessellationBounds");
+            if (!counts && !sizes && !bounds) { continue; }
+            const uint64_t bytes = counts || bounds ? 24 : binding.buffer->desc().size - binding.offset;
+            if (counts) {
+                bindingSeen = true;
+                templatePoolGeneration = binding.metadata.at("templatePoolGeneration").get<uint64_t>();
+            }
             else {
+                boundsSeen |= bounds;
                 auto allocation = device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
                     .memoryLocation = MemoryLocation::HostReadback,
                     .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
                 if (!allocation) { continue; }
-                sizesBuffer = std::move(*allocation);
+                (bounds ? boundsBuffer : sizesBuffer) = std::move(*allocation);
             }
-            auto& destination = counts ? buffer : sizesBuffer;
+            auto& destination = counts ? buffer : (bounds ? boundsBuffer : sizesBuffer);
             const MemoryBarrierDesc before{
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite}};
@@ -166,7 +174,7 @@ public:
             auto result = commands.synchronize({.memory = {&before, 1}});
             if (result) { result = commands.copyBuffer(*binding.buffer->slice({binding.offset, bytes}), *destination->slice()); }
             if (result) { result = commands.synchronize({.memory = {&after, 1}}); }
-            (counts ? captured : sizesCaptured) = bool(result);
+            (counts ? captured : (bounds ? boundsCaptured : sizesCaptured)) = bool(result);
         }
     }
 private:
@@ -636,10 +644,14 @@ public:
                     const void* mapped = buffer.map();
                     if (!mapped) { return fail("Cannot map CLAS tessellation receipt"); }
                     buffer.invalidate();
-                    std::array<uint32_t, 4> counts;
-                    std::memcpy(counts.data(), mapped, sizeof(counts));
+                    std::array<uint32_t, 6> statistics;
+                    std::memcpy(statistics.data(), mapped, sizeof(statistics));
                     buffer.unmap();
+                    const std::array<uint32_t, 4> counts{statistics[0], statistics[1], statistics[2], statistics[3]};
                     result["tessellationCounts"] = counts;
+                    result["templateBoundFallbacks"] = statistics[4];
+                    result["templateBoundFallbackObserved"] = statistics[5] != 0;
+                    result["templatePoolGeneration"] = tessellationReceipt->templatePoolGeneration;
                     if (counts[0] == 0 || counts[1] == 0 || counts[2] != 0 || counts[3] != 0) {
                         return fail("CLAS tessellation benchmark produced empty or rejected work");
                     }
@@ -670,6 +682,21 @@ public:
                         result["nativeCLASSizeReceipt"] = {{"file", file}, {"count", sizes.size()}, {"bytes", bytes},
                             {"totalBytes", total}, {"minBytes", *std::min_element(sizes.begin(), sizes.end())},
                             {"maxBytes", *std::max_element(sizes.begin(), sizes.end())}};
+                        if (tessellationReceipt->boundsSeen) {
+                            if (!tessellationReceipt->boundsCaptured) { return fail("Missing native template bound receipt"); }
+                            auto& bounds = *tessellationReceipt->boundsBuffer;
+                            const void* mappedBounds = bounds.map();
+                            if (!mappedBounds) { return fail("Cannot map native template bound receipt"); }
+                            bounds.invalidate();
+                            std::array<float, 6> values;
+                            std::memcpy(values.data(), mappedBounds, sizeof(values));
+                            bounds.unmap();
+                            const auto boundsFile = id + "-CLASBounds.bin";
+                            std::ofstream output(context.outputDirectory / boundsFile, std::ios::binary);
+                            output.write(reinterpret_cast<const char*>(values.data()), sizeof(values));
+                            if (!output) { return fail("Cannot write native template bound receipt"); }
+                            result["nativeCLASBoundsReceipt"] = {{"file", boundsFile}, {"bytes", sizeof(values)}, {"values", values}};
+                        }
                     }
                 }
                 if (cloudReceipt) {

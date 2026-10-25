@@ -17,6 +17,7 @@ struct MeshletStreamFrameDesc;
 enum class StreamCLASTessellationBuildMode : uint32_t { Triangles, Templates, Invalid };
 enum class StreamCLASTessellationTemplateShape : uint32_t { Right, Equilateral, Invalid };
 enum class StreamCLASTessellationInstantiationFlags : uint32_t { FastTrace, None, Invalid };
+enum class StreamCLASTessellationTemplateBoundsMode : uint32_t { None, Geometry, Invalid };
 
 inline StreamCLASTessellationBuildMode parseStreamCLASTessellationBuildMode(std::string_view value)
 {
@@ -39,6 +40,13 @@ inline StreamCLASTessellationInstantiationFlags parseStreamCLASTessellationInsta
     return StreamCLASTessellationInstantiationFlags::Invalid;
 }
 
+inline StreamCLASTessellationTemplateBoundsMode parseStreamCLASTessellationTemplateBoundsMode(std::string_view value)
+{
+    if (value == "none") { return StreamCLASTessellationTemplateBoundsMode::None; }
+    if (value == "geometry") { return StreamCLASTessellationTemplateBoundsMode::Geometry; }
+    return StreamCLASTessellationTemplateBoundsMode::Invalid;
+}
+
 struct StreamCLASTessellationSettings {
     bool enabled = false;
     float edgePixels = 8.0f;
@@ -49,6 +57,7 @@ struct StreamCLASTessellationSettings {
     bool diagnosticBuildSizes = false;
     StreamCLASTessellationTemplateShape templateShape = StreamCLASTessellationTemplateShape::Right;
     StreamCLASTessellationInstantiationFlags instantiationFlags = StreamCLASTessellationInstantiationFlags::FastTrace;
+    StreamCLASTessellationTemplateBoundsMode templateBoundsMode = StreamCLASTessellationTemplateBoundsMode::None;
 };
 
 struct StreamCLASTessellationInputs {
@@ -80,6 +89,8 @@ public:
     void reusePersistentState(const StreamCLASTessellation& previous);
     Result<> updateMaterials(const scene::Scene& scene, const ScenePathTraceResources& resources,
         std::string& log);
+    void updateTemplateBounds(const scene::MeshletStreamAsset& asset, const scene::Scene& scene,
+        std::span<const uint32_t> runtimeRenderNodes);
     Result<> record(CommandBuffer& commands, const StreamCLASTessellationInputs& inputs,
         const MeshletStreamFrameDesc& frame, std::string& log,
         const std::function<void(std::string_view)>& checkpoint = {});
@@ -88,10 +99,14 @@ public:
     StreamCLASTessellationBuildMode buildMode() const;
     StreamCLASTessellationTemplateShape templateShape() const;
     StreamCLASTessellationInstantiationFlags instantiationFlags() const;
+    StreamCLASTessellationTemplateBoundsMode templateBoundsMode() const;
+    uint64_t templatePoolGeneration() const;
     std::string diagnosticIdentity() const;
     Buffer* statisticsBuffer() const;
     // Diagnostic-only u32 byte sizes; statisticsBuffer()[0] defines the live prefix.
     Buffer* buildSizesBuffer() const;
+    Buffer* templateBoundsBuffer() const;
+    uint64_t templateBoundsOffset() const;
     Buffer* metadataBuffer() const;
     Buffer* vertexBuffer() const;
 

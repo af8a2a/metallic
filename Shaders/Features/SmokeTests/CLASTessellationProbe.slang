@@ -24,9 +24,26 @@ struct ProbePush
 {
     float4 scaleTranslationX;
     float4 translationYZ;
+    float4 affine0;
+    float4 affine1;
+    float4 affine2;
 };
 #define gProbePush getConstants<ProbePush>()
 #define gProbeOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().probeOutput)
+
+float3 probeAffinePoint(float3 position)
+{
+    return float3(dot(gProbePush.affine0, float4(position, 1.0)),
+        dot(gProbePush.affine1, float4(position, 1.0)), dot(gProbePush.affine2, float4(position, 1.0)));
+}
+
+float3 probeAffineNormal()
+{
+    float3 x = float3(gProbePush.affine0.x, gProbePush.affine1.x, gProbePush.affine2.x);
+    float3 y = float3(gProbePush.affine0.y, gProbePush.affine1.y, gProbePush.affine2.y);
+    float3 z = float3(gProbePush.affine0.z, gProbePush.affine1.z, gProbePush.affine2.z);
+    return normalize(cross(x, y)) * (dot(cross(x, y), z) < 0.0 ? -1.0 : 1.0);
+}
 
 [shader("compute")]
 [numthreads(8, 1, 1)]
@@ -59,6 +76,13 @@ void clasTessellationProbeMain(uint3 id : SV_DispatchThreadID)
         Ray imageRay;
         imageRay.origin = float3(screen.x, screen.y - 3.0, 4.0) * scale + translation;
         imageRay.direction = normalize(float3(0.0, 3.0, -4.0) * scale);
+        if (gProbePush.translationYZ.w != 0.0) {
+            // C3 uses the complete affine transform and world-unit offsets.
+            // A normal-facing grid retains coverage for thin/sheared instances.
+            float3 normal = probeAffineNormal();
+            imageRay.origin = probeAffinePoint(float3(screen, 0.0)) + normal * 8.0;
+            imageRay.direction = -normal;
+        }
         HitInfo imageHit;
         const bool imageFound = traceClosest(imageRay, push, imageHit);
         float3 color = float3(0.035, 0.045, 0.065);
@@ -74,6 +98,11 @@ void clasTessellationProbeMain(uint3 id : SV_DispatchThreadID)
     const float2 coordinate = coordinates[id.x] + (gProbePush.translationYZ.z != 0.0 ? comparisonOffsets[id.x] : float2(0.0));
     ray.origin = float3(coordinate * 2.0 - 1.0, back ? -2.0 : 2.0) * scale + translation;
     ray.direction = float3(0.0, 0.0, back ? 1.0 : -1.0);
+    if (gProbePush.translationYZ.w != 0.0) {
+        float3 normal = probeAffineNormal();
+        ray.origin = probeAffinePoint(float3(coordinate * 2.0 - 1.0, 0.0)) + normal * (back ? -8.0 : 8.0);
+        ray.direction = normal * (back ? 1.0 : -1.0);
+    }
     HitInfo hit = {};
     const bool found = traceClosest(ray, push, hit);
     if (!found) { hit = (HitInfo)0; }

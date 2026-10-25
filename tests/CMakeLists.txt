@@ -314,6 +314,8 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 )
 
 add_executable(MetallicSceneTests
+    scene/StreamCLASTemplateBoundsTests.cpp
+    ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Streamer/StreamCLASTemplateBounds.cpp
     scene/MaterialAssetTests.cpp
     scene/StrandAssetTests.cpp
     scene/MaterialGraphTests.cpp

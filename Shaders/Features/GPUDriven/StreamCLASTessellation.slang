@@ -12,6 +12,7 @@ using Metallic.GPUDriven;
 #include "../../Interop/ClusterAccelerationStructure.h"
 
 [[vk::push_constant]] ConstantBuffer<StreamCLASTessellationPush> gPush;
+groupshared uint gOutsideTemplateBounds;
 
 float3 worldPoint(GPUDrivenStreamAssetInstance instance, float3 point)
 {
@@ -173,11 +174,17 @@ void prefixInstances(StreamCLASTessellationParameters p)
     }
     let counts = (uint*)p.counts;
     counts[0] = count; counts[1] = builds; counts[2] = rejected; counts[3] = invalid;
+    counts[4] = 0u;
+    if (p.initializeBoundStatistics != 0u) { counts[5] = 0u; }
 }
 
 void dicePatch(StreamCLASTessellationParameters p, uint patchIndex, uint lane)
 {
     if (patchIndex >= ((uint*)p.counts)[0]) { return; }
+    if (p.templateBoundsRequested != 0u) {
+        if (lane == 0u) { gOutsideTemplateBounds = p.templateBoundsAddress == 0u ? 1u : 0u; }
+        GroupMemoryBarrierWithGroupSync();
+    }
     let leaf = ((StreamCLASTessellationLeaf*)p.geometry.leaves)[patchIndex];
     let instance = ((GPUDrivenStreamAssetInstance*)p.instances)[leaf.instanceIndex];
     let data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(p.materialData));
@@ -205,13 +212,31 @@ void dicePatch(StreamCLASTessellationParameters p, uint patchIndex, uint lane)
         vertex.x = position.x; vertex.y = position.y; vertex.z = position.z;
         vertex.sourceU = bary.y; vertex.sourceV = bary.z;
         ((StreamCLASTessellationVertex*)p.geometry.vertices)[patchIndex * METALLIC_TESS_VERTICES_PER_PATCH + lane] = vertex;
+        if (p.templateBoundsAddress != 0u) {
+            let bounds = (float*)p.templateBoundsAddress;
+            // Validate the actual final FP32 positions at the native API boundary.
+            // A failed limit uses identical unbounded topology/positions, never
+            // a lower-detail surface or a partially admitted instance.
+            if (!all(isfinite(position)) || any(position < float3(bounds[0], bounds[1], bounds[2])) ||
+                any(position > float3(bounds[3], bounds[4], bounds[5]))) {
+                InterlockedOr(gOutsideTemplateBounds, 1u);
+            }
+        }
     }
     for (uint triangle = lane; triangle < leaf.triangleCount; triangle += 64u) {
         ((uint3*)p.geometry.triangles)[patchIndex * METALLIC_TESS_TRIANGLES_PER_PATCH + triangle] = tessTriangle(data, pattern, triangle);
     }
+    if (p.templateBoundsRequested != 0u) { GroupMemoryBarrierWithGroupSync(); }
     if (lane == 0u) {
         if (p.buildMode == 1u) {
             uint patternIndex = (rates.x - 1u) + 8u * (rates.y - 1u) + 64u * (rates.z - 1u);
+            if (p.templateBoundsRequested != 0u) {
+                if (gOutsideTemplateBounds == 0u) { patternIndex += p.templatePatternCount; }
+                else {
+                    InterlockedAdd(((uint*)p.counts)[4], 1u);
+                    InterlockedOr(((uint*)p.counts)[5], 1u);
+                }
+            }
             ClusterAccelerationStructureTriangleTemplateInstantiationInfo info =
                 (ClusterAccelerationStructureTriangleTemplateInstantiationInfo)0;
             info.clusterIdOffset = p.geometry.baseClusterId + patchIndex;

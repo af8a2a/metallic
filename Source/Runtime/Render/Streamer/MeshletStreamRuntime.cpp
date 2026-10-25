@@ -3427,8 +3427,9 @@ Result<> MeshletStreamRuntime::configureTessellation(Device& device, const scene
     if (!settings.enabled) { return {}; }
     if (settings.buildMode == StreamCLASTessellationBuildMode::Invalid ||
         settings.templateShape == StreamCLASTessellationTemplateShape::Invalid ||
-        settings.instantiationFlags == StreamCLASTessellationInstantiationFlags::Invalid) {
-        log = "Invalid CLAS tessellation build mode, template shape, or instantiation flags.";
+        settings.instantiationFlags == StreamCLASTessellationInstantiationFlags::Invalid ||
+        settings.templateBoundsMode == StreamCLASTessellationTemplateBoundsMode::Invalid) {
+        log = "Invalid CLAS tessellation build mode, template shape, instantiation flags, or bounds policy.";
         return makeError(Error::InvalidArgument);
     }
     if (!clusterRtxEnabled_) {
@@ -3439,9 +3440,11 @@ Result<> MeshletStreamRuntime::configureTessellation(Device& device, const scene
         ? settings.templateShape : StreamCLASTessellationTemplateShape::Right;
     const auto instantiationFlags = settings.buildMode == StreamCLASTessellationBuildMode::Templates
         ? settings.instantiationFlags : StreamCLASTessellationInstantiationFlags::FastTrace;
+    const auto boundsMode = settings.buildMode == StreamCLASTessellationBuildMode::Templates
+        ? settings.templateBoundsMode : StreamCLASTessellationTemplateBoundsMode::None;
     if (!tessellation_ || tessellation_->patchCapacity() != settings.maxPatches ||
         tessellation_->buildMode() != settings.buildMode || tessellation_->templateShape() != templateShape ||
-        tessellation_->instantiationFlags() != instantiationFlags) {
+        tessellation_->instantiationFlags() != instantiationFlags || tessellation_->templateBoundsMode() != boundsMode) {
         auto replacement = std::make_shared<StreamCLASTessellation>();
         auto result = replacement->initialize(device, registry_, asset_, settings, log);
         if (!result) { return result; }
@@ -3449,9 +3452,14 @@ Result<> MeshletStreamRuntime::configureTessellation(Device& device, const scene
         result = replacement->updateMaterials(scene, resources, log);
         if (!result) { return result; }
         tessellation_ = std::move(replacement);
-        return {};
+    } else {
+        auto result = tessellation_->updateMaterials(scene, resources, log);
+        if (!result) { return result; }
     }
-    return tessellation_->updateMaterials(scene, resources, log);
+    // syncRuntimeScene has validated and published this exact node mapping and
+    // current transforms before scene-begin configures tessellation.
+    tessellation_->updateTemplateBounds(asset_, scene, runtimeRenderNodeIndices_);
+    return {};
 }
 
 Result<> MeshletStreamRuntime::cmdBuildTessellation(CommandBuffer& commands, const MeshletStreamFrameDesc& frame,
@@ -5318,7 +5326,10 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     // rebuilding the current producer for general debug capture.
     if (tessellation_) {
         add("tessellationCounts", tessellation_->statisticsBuffer(), ResourceState::General, "u32");
+        bindings.back().metadata["templatePoolGeneration"] = tessellation_->templatePoolGeneration();
         add("tessellationSizes", tessellation_->buildSizesBuffer(), ResourceState::General, "u32");
+        add("tessellationBounds", tessellation_->templateBoundsBuffer(), ResourceState::General, "f32",
+            tessellation_->templateBoundsOffset(), 24);
     }
     if (!debugReadbackEnabled_) { return; }
     add("requestHeader", requestBuffer_.get(), requestBufferState_, "StreamRequestBufferHeader", 0, sizeof(StreamRequestBufferHeader));

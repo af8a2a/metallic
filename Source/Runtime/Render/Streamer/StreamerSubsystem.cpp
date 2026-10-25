@@ -372,7 +372,9 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
                 .templateShape = parseStreamCLASTessellationTemplateShape(
                     context.properties().value("rtTessellationTemplateShape", std::string("right"))),
                 .instantiationFlags = parseStreamCLASTessellationInstantiationFlags(
-                    context.properties().value("rtTessellationInstantiationFlags", std::string("fastTrace")))};
+                    context.properties().value("rtTessellationInstantiationFlags", std::string("fastTrace"))),
+                .templateBoundsMode = parseStreamCLASTessellationTemplateBoundsMode(
+                    context.properties().value("rtTessellationTemplateBounds", std::string("none")))};
             const auto configured = prepared.geometry->configureTessellation(*device_, *prepared.sourceScene,
                 *resources, settings, log);
             if (!configured) { return configured; }

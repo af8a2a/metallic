@@ -1,38 +1,38 @@
 # Three-arm CLAS template Shadow qualification
 
-This runner uses the independent `metallic-clas-tessellation-ab-v2` protocol.
+New collections use the independent `metallic-clas-tessellation-ab-v3` protocol.
 It reuses the production MaterialBaseline collector and v2 log-ratio statistics;
 it does not use WorkRaster source swapping. `MeasureCLASTessellation.py` retains
-the original two-arm v1 behavior. The new `verify` also delegates v1 bundles to
-that existing verifier without changing their decisions or evidence.
+the original two-arm v1 behavior. `verify` delegates v1 bundles to that verifier
+and retains the original v2 fixture/analysis policy for sealed C1/C2 experiments.
+Neither old protocol requires the new bounded-path receipts, and their decisions
+and evidence remain unchanged. New v2 or source-swap experiments cannot be started
+through this runner.
 
 The scene, camera, native resolution, light, material, displacement quality,
 residency freeze, workload size and exact image checks remain fixed. The arms are:
 
-| Arm | Backend | Template shape | Instantiation flags |
-|---|---|---|---|
-| A | triangles | right | fastTrace |
-| B | original templates | right | fastTrace |
-| C1 | candidate templates | right | none |
-| C2 | candidate templates | equilateral | fastTrace |
+| Arm | Backend | Template shape | Instantiation flags | Template bounds |
+|---|---|---|---|---|
+| A | triangles | right | fastTrace | none |
+| B | original templates | right | fastTrace | none |
+| C3 | candidate templates | right | fastTrace | geometry |
 
-Each experiment selects exactly one of C1 or C2 as arm C. The combined
-`equilateral/none` strategy is not registered, and arbitrary graph/property sweeps
-are rejected. Predeclare whether to run C1, C2 or both; do not add candidates or
-increase budgets after looking at timings. Each selected candidate gets its own
-fresh fixture and fixed discovery/confirmation budget. Discovery observations
-are never pooled into confirmation or between candidates.
+Only C3 is registered for new collections. Historical v2 C1 (`right/none`) and C2
+(`equilateral/fastTrace`) remain verifiable but are not rerun. Arbitrary strategy
+combinations and graph/property sweeps are rejected. Do not add candidates or
+increase budgets after looking at timings. C3 gets a fresh fixture and fixed
+discovery/confirmation budget; observations from C1/C2 are never pooled into it.
 
 ```powershell
-python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py prepare --output build/clas-shadow-c1-fixture-new --template-shape right --instantiation-flags none --native-sizes
-python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py run --exe build-pass-stages-nrd/tests/MetallicRHITests.exe --fixtures build/clas-shadow-c1-fixture-new --output build/clas-shadow-c1-diagnostic-new --diagnostics-only
-python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py run --exe build-pass-stages-nrd/tests/MetallicRHITests.exe --fixtures build/clas-shadow-c1-fixture-new --output build/clas-shadow-c1-new --blocks 3 --confirmation-blocks 5
-python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py verify --input build/clas-shadow-c1-new
-python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py report --input build/clas-shadow-c1-new --output build/clas-shadow-c1-report-new
+python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py prepare --output build/clas-shadow-c3-fixture-new --template-bounds geometry
+python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py run --exe build-pass-stages-nrd/tests/MetallicRHITests.exe --fixtures build/clas-shadow-c3-fixture-new --output build/clas-shadow-c3-new --blocks 3 --confirmation-blocks 5
+python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py verify --input build/clas-shadow-c3-new
+python -X utf8 -B Tools/Perf/MeasureCLASTemplateShadow.py report --input build/clas-shadow-c3-new --output build/clas-shadow-c3-report-new
 ```
 
-C2 preparation substitutes `--template-shape equilateral --instantiation-flags
-fastTrace`. Defaults remain 1444 x 694, 32 warmup and 64 timed frames. Build the
+The run includes its three diagnostic processes before discovery; a separate
+qualification run is unnecessary. Defaults remain 1444 x 694, 32 warmup and 64 timed frames. Build the
 same Release executable separately; the runner never changes SDK options, source
 files, clocks or user processes. Cooperative GPU locks and whole-device telemetry
 are retained, but do not prove exclusive use of the GPU. Ordinary processes have
@@ -81,16 +81,37 @@ validated v9 runtime marker schema. Source, assets, fixtures, executable, DLLs,
 CMake configuration and scripts are hashed before collection and checked again
 between processes.
 
-With `--native-sizes`, only DiagnosticGraph.json sets `benchmarkCLASBuildSizes`
+In v3, native size and actual-bound diagnostics are mandatory. Only DiagnosticGraph.json sets `benchmarkCLASBuildSizes`
 true and only DiagnosticCases.json sets `captureTessellationNativeSizes` true.
 The actual GPU u32 size array must cover exactly the live patch count; the
 verifier recomputes its byte count, positive sizes, total, minimum and maximum.
 Ordinary graphs explicitly disable the native-size operation, must not contain
-its receipt, and must not export pipeline recipes. Between diagnostic and ordinary
-runtime identities, only the `diagnosticBuildSizes` flag is exempted; all other
-strategy and shader identity fields must remain equal. Native size diagnostics
-are not timing samples. Persistent template, auxiliary, CLAS and scratch
+its receipt, and must not export pipeline recipes. C3's diagnostic also copies
+the actual 24-byte template bounding-limit buffer. Its six finite f32 values must
+match the production identity byte-for-byte and have max >= min on every axis.
+A/B must have no bounded-template receipt. C3 must report 1024 native templates
+and ready bounded templates; B has 512 and A has none. The two template sets share
+one pool: the first 512 entries are unbounded fallback templates, the second 512
+are bounded templates. Total retained storage and auxiliary bytes include both
+sets; the report does not hide them as excluded initialization cost.
+
+No per-frame GPU readback is added to ordinary timing. The final untimed receipt
+reads the last-frame fallback count and a GPU sticky bit which records any fallback
+since allocation. C3 requires zero and false respectively. Pool generation must
+remain unchanged throughout every warmup and measured frame and match the final
+receipt, preventing a replacement allocation from silently clearing the proof.
+Generation numbers are process-local provenance, not cross-process identities.
+Between diagnostic and ordinary backend identities, only `diagnosticBuildSizes`
+and that separately verified generation are exempted; all other strategy, bound,
+allocation and shader identity fields must remain equal. Native size and bound
+diagnostics are not timing samples. Template, auxiliary, CLAS and scratch
 allocations remain reported even though initialization time is excluded.
+
+The diagnostic explicitly classifies C3's actual live CLAS bytes versus B as
+reduced, unchanged or larger, and reports the exact total, range and reduction
+fraction. This size observation does not add a sixth performance gate, imply a
+causal traversal explanation, or impose a bounds-volume threshold. Reports also
+show retained pool capacity separately from those live native output bytes.
 
 Use new report directories outside the sealed evidence bundle. The Python charts
 record their source data and dependency versions. Inspect their axes, stage

@@ -1,4 +1,5 @@
 #include "Runtime/Render/Streamer/StreamCLASTessellation.h"
+#include "Runtime/Render/Streamer/StreamCLASTemplateBounds.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/ComputeResourceEncoder.h"
@@ -54,8 +55,10 @@ struct StreamCLASTessellation::Impl {
         uint64_t sceneIdentity = 0, materialRevision = 0;
     };
     struct Templates {
-        std::unique_ptr<Buffer> vertices, indices, infos, storage, addresses, scratch;
-        BufferSlice storageRange;
+        std::unique_ptr<Buffer> vertices, indices, infos, storage, addresses, scratch, boundsBuffer;
+        BufferSlice storageRange, boundsRange;
+        std::optional<StreamCLASTemplateBounds> bounds;
+        uint32_t nativeCount = kTemplateCount;
         ClusterAccelerationStructureTriangleBuildSizesDesc limits;
         bool initialized = false;
     };
@@ -75,6 +78,13 @@ struct StreamCLASTessellation::Impl {
     StreamCLASTessellationBuildMode buildMode = StreamCLASTessellationBuildMode::Triangles;
     StreamCLASTessellationTemplateShape templateShape = StreamCLASTessellationTemplateShape::Right;
     StreamCLASTessellationInstantiationFlags instantiationFlags = StreamCLASTessellationInstantiationFlags::FastTrace;
+    StreamCLASTessellationTemplateBoundsMode boundsMode = StreamCLASTessellationTemplateBoundsMode::None;
+    std::optional<StreamCLASTemplateBounds> requestedBounds;
+    uint64_t poolGeneration = 0, boundsScene = 0, boundsMaterialRevision = 0, boundsTransformRevision = 0;
+    uint64_t boundsContentRevision = 0;
+    std::vector<uint32_t> boundsRenderNodes;
+    bool boundsCurrent = false;
+    std::shared_ptr<bool> statisticsInitialized = std::make_shared<bool>(false);
     uint32_t clasInfoStride = sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo);
     uint32_t capacity = 0, instanceCount = 0, baseClusterId = 0, materialRevision = 0;
     std::string shaderHash;
@@ -106,11 +116,15 @@ struct StreamCLASTessellation::Impl {
     {
         if (!templates) {
             auto pool = std::make_shared<Templates>();
+            pool->bounds = requestedBounds;
+            // Both representations share one retained storage allocation. The
+            // shader can choose the unbounded copy without changing geometry.
+            pool->nativeCount = pool->bounds ? 2u * kTemplateCount : kTemplateCount;
             pool->limits = {.maxClusterTriangleCount = METALLIC_TESS_TRIANGLES_PER_PATCH,
                 .maxClusterVertexCount = METALLIC_TESS_VERTICES_PER_PATCH,
-                .maxTotalTriangleCount = kTemplateCount * METALLIC_TESS_TRIANGLES_PER_PATCH,
-                .maxTotalVertexCount = kTemplateCount * METALLIC_TESS_VERTICES_PER_PATCH,
-                .maxAccelerationStructureCount = kTemplateCount,
+                .maxTotalTriangleCount = pool->nativeCount * METALLIC_TESS_TRIANGLES_PER_PATCH,
+                .maxTotalVertexCount = pool->nativeCount * METALLIC_TESS_VERTICES_PER_PATCH,
+                .maxAccelerationStructureCount = pool->nativeCount,
                 .operation = ClusterAccelerationStructureTriangleOperation::BuildTemplate};
             const auto sizes = device->queryClusterAccelerationStructureTriangleBuildSizes(pool->limits,
                 ClusterAccelerationStructureDestinationMode::Implicit);
@@ -121,19 +135,29 @@ struct StreamCLASTessellation::Impl {
                     MemoryLocation::HostUpload, pool->vertices)) ||
                 !(result = buffer(uint64_t(kTemplateCount) * METALLIC_TESS_TRIANGLES_PER_PATCH * 12u,
                     MemoryLocation::HostUpload, pool->indices)) ||
-                !(result = buffer(uint64_t(kTemplateCount) * sizeof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo),
+                !(result = buffer(uint64_t(pool->nativeCount) * sizeof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo),
                     MemoryLocation::HostUpload, pool->infos)) ||
                 !(result = buffer(sizes->accelerationStructureSize + properties->templateStorageAlignment - 1u,
                     MemoryLocation::Device, pool->storage, kASUsage)) ||
-                !(result = buffer(uint64_t(kTemplateCount) * 8u, MemoryLocation::Device, pool->addresses, kASUsage)) ||
+                !(result = buffer(uint64_t(pool->nativeCount) * 8u, MemoryLocation::Device, pool->addresses, kASUsage)) ||
                 !(result = buffer(sizes->buildScratchSize + properties->scratchAlignment,
                     MemoryLocation::Device, pool->scratch, kASUsage))) { return result; }
             const auto alignment = properties->templateStorageAlignment;
             const auto offset = (alignment - pool->storage->deviceAddress() % alignment) % alignment;
             pool->storageRange = *pool->storage->slice({offset, sizes->accelerationStructureSize});
+            if (pool->bounds) {
+                const uint64_t boundsAlignment = properties->templateBoundsAlignment;
+                if (!(result = buffer(sizeof(StreamCLASTemplateBounds) + boundsAlignment - 1u,
+                        MemoryLocation::HostUpload, pool->boundsBuffer))) { return result; }
+                const auto boundsOffset = (boundsAlignment - pool->boundsBuffer->deviceAddress() % boundsAlignment) % boundsAlignment;
+                pool->boundsRange = *pool->boundsBuffer->slice({boundsOffset, sizeof(StreamCLASTemplateBounds)});
+                std::vector<std::byte> bytes(pool->boundsBuffer->desc().size);
+                std::memcpy(bytes.data() + boundsOffset, pool->bounds->data(), sizeof(StreamCLASTemplateBounds));
+                if (!(result = upload(*pool->boundsBuffer, bytes.data(), bytes.size()))) { return result; }
+            }
             std::vector<std::array<float, 3>> positions(kTemplateCount * METALLIC_TESS_VERTICES_PER_PATCH);
             std::vector<std::array<uint32_t, 3>> indices(kTemplateCount * METALLIC_TESS_TRIANGLES_PER_PATCH);
-            std::vector<ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo> infos(kTemplateCount);
+            std::vector<ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo> infos(pool->nativeCount);
             for (uint32_t index = 0; index < kTemplateCount; ++index) {
                 const auto pattern = makeTessellationPattern({(index & 7u) + 1u,
                     ((index >> 3u) & 7u) + 1u, (index >> 6u) + 1u});
@@ -154,18 +178,22 @@ struct StreamCLASTessellation::Impl {
                 info.indexBufferAddress = pool->indices->deviceAddress() + uint64_t(index) * METALLIC_TESS_TRIANGLES_PER_PATCH * 12u;
                 info.vertexBufferAddress = pool->vertices->deviceAddress() + uint64_t(index) * METALLIC_TESS_VERTICES_PER_PATCH * 12u;
                 // ID/geometry base zero; instantiation supplies the generated ID.
-                // An absent bounding limit permits arbitrary source transforms
-                // and world-space displacement without a guessed height envelope.
+                if (pool->bounds) {
+                    infos[kTemplateCount + index] = infos[index];
+                    infos[kTemplateCount + index].instantiationBoundingBoxLimitAddress = pool->boundsRange.deviceAddress();
+                }
             }
             if (!(result = upload(*pool->vertices, positions.data(), positions.size() * sizeof(positions[0]))) ||
                 !(result = upload(*pool->indices, indices.data(), indices.size() * sizeof(indices[0]))) ||
                 !(result = upload(*pool->infos, infos.data(), infos.size() * sizeof(infos[0])))) { return result; }
             templates = std::move(pool);
+            ++poolGeneration;
         }
         auto result = commands.retainResource(templates);
         if (!result || templates->initialized) { return result; }
         commands.hostWriteBarrier();
-        const std::array geometry{*templates->vertices->slice(), *templates->indices->slice()};
+        std::vector<BufferSlice> geometry{*templates->vertices->slice(), *templates->indices->slice()};
+        if (templates->bounds) { geometry.push_back(templates->boundsRange); }
         result = commands.buildClusterAccelerationStructureTrianglesIndirect({.limits = templates->limits,
             .buildInfoBuffer = *templates->infos->slice(),
             .buildInfoStride = sizeof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo),
@@ -205,6 +233,8 @@ Result<> StreamCLASTessellation::initialize(Device& device, std::shared_ptr<Reso
         ? settings.templateShape : StreamCLASTessellationTemplateShape::Right;
     p.instantiationFlags = buildMode == StreamCLASTessellationBuildMode::Templates
         ? settings.instantiationFlags : StreamCLASTessellationInstantiationFlags::FastTrace;
+    p.boundsMode = buildMode == StreamCLASTessellationBuildMode::Templates
+        ? settings.templateBoundsMode : StreamCLASTessellationTemplateBoundsMode::None;
     p.clasInfoStride = buildMode == StreamCLASTessellationBuildMode::Templates
         ? sizeof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo)
         : sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo);
@@ -240,7 +270,7 @@ Result<> StreamCLASTessellation::initialize(Device& device, std::shared_ptr<Reso
         !(result = p.buffer(uint64_t(maxPatches) * METALLIC_TESS_VERTICES_PER_PATCH * sizeof(StreamCLASTessellationVertex), MemoryLocation::Device, p.vertices)) ||
         !(result = p.buffer(uint64_t(maxPatches) * METALLIC_TESS_TRIANGLES_PER_PATCH * 3u * sizeof(uint32_t), MemoryLocation::Device, p.triangles)) ||
         !(result = p.buffer(uint64_t(p.instanceCount) * sizeof(StreamCLASTessellationInstance), MemoryLocation::Device, p.instanceStates)) ||
-        !(result = p.buffer(16, MemoryLocation::Device, p.counts)) ||
+        !(result = p.buffer(24, MemoryLocation::Device, p.counts)) ||
         !(result = p.buffer(uint64_t(p.instanceCount) * 16u, MemoryLocation::Device, history)) ||
         !(result = p.buffer(uint64_t(maxPatches) * p.clasInfoStride, MemoryLocation::Device, p.clasInfos)) ||
         !(result = p.buffer(uint64_t(maxPatches) * sizeof(uint64_t), MemoryLocation::Device, p.clasAddresses, kASUsage)) ||
@@ -282,7 +312,65 @@ void StreamCLASTessellation::reusePersistentState(const StreamCLASTessellation& 
     p.historyInitialized = prior.historyInitialized;
     p.materials = prior.materials;
     p.materialRevision = prior.materialRevision;
-    if (p.templateShape == prior.templateShape) { p.templates = prior.templates; }
+    p.poolGeneration = prior.poolGeneration;
+    if (p.templateShape == prior.templateShape && p.boundsMode == prior.boundsMode) { p.templates = prior.templates; }
+}
+
+void StreamCLASTessellation::updateTemplateBounds(const scene::MeshletStreamAsset& asset, const scene::Scene& scene,
+    std::span<const uint32_t> runtimeRenderNodes)
+{
+    auto& p = *impl_;
+    if (p.boundsMode == StreamCLASTessellationTemplateBoundsMode::None) { return; }
+    assert(runtimeRenderNodes.size() == asset.instanceCount());
+    if (p.boundsCurrent && p.boundsScene == scene.resourceIdentity() && p.boundsMaterialRevision == scene.materialRevision() &&
+        p.boundsTransformRevision == scene.transformRevision() && p.boundsContentRevision == scene.contentRevision() &&
+        std::ranges::equal(p.boundsRenderNodes, runtimeRenderNodes)) { return; }
+    // Asset bounds cover every LOD, independent of the currently resident cut
+    // and primary-view visibility. Runtime mappings own material/transform data.
+    std::vector<scene::Bounds> primitiveBounds(asset.primitiveCount());
+    bool finite = true;
+    for (const auto& page : asset.pages()) {
+        if (!page.bounds.valid) { finite = false; break; }
+        primitiveBounds[page.primitiveIndex].include(float3(page.bounds.min[0], page.bounds.min[1], page.bounds.min[2]));
+        primitiveBounds[page.primitiveIndex].include(float3(page.bounds.max[0], page.bounds.max[1], page.bounds.max[2]));
+    }
+    std::optional<StreamCLASTemplateBounds> next;
+    for (size_t index = 0; finite && index < asset.instanceCount(); ++index) {
+        const auto& node = scene.renderNodes()[runtimeRenderNodes[index]];
+        const auto materialIndex = static_cast<uint32_t>(std::max(node.materialIndex, 0));
+        // tessMaterial disables instances without a published material record.
+        if (materialIndex >= scene.materials().size()) { continue; }
+        const auto& material = scene.materials()[materialIndex];
+        if (material.displacementMagnitude == 0.0f || material.displacementTexture.textureIndex < 0) { continue; }
+        const auto& bounds = primitiveBounds[asset.instances()[index].primitiveIndex];
+        if (!bounds.valid) { finite = false; break; }
+        const std::array local{bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z};
+        const auto computed = computeStreamCLASTemplateBounds(local, std::span<const float, 16>(node.worldMatrix.a, 16),
+            material.displacementMagnitude, material.displacementCenter);
+        if (!computed) { finite = false; break; }
+        if (!next) { next = computed; }
+        else {
+            for (size_t axis = 0; axis < 3; ++axis) {
+                (*next)[axis] = std::min((*next)[axis], (*computed)[axis]);
+                (*next)[axis + 3] = std::max((*next)[axis + 3], (*computed)[axis + 3]);
+            }
+        }
+    }
+    if (!finite) { next.reset(); }
+    if (p.templates && p.templates->bounds && next) {
+        bool contained = true;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            contained &= (*p.templates->bounds)[axis] <= (*next)[axis] &&
+                (*p.templates->bounds)[axis + 3] >= (*next)[axis + 3];
+        }
+        if (contained) { next = p.templates->bounds; }
+    }
+    if (p.templates && p.templates->bounds != next) { p.templates.reset(); }
+    p.requestedBounds = next;
+    p.boundsScene = scene.resourceIdentity(); p.boundsMaterialRevision = scene.materialRevision();
+    p.boundsTransformRevision = scene.transformRevision(); p.boundsContentRevision = scene.contentRevision();
+    p.boundsRenderNodes.assign(runtimeRenderNodes.begin(), runtimeRenderNodes.end());
+    p.boundsCurrent = true;
 }
 
 Result<> StreamCLASTessellation::updateMaterials(const scene::Scene& scene,
@@ -337,7 +425,8 @@ Result<> StreamCLASTessellation::record(CommandBuffer& commands, const StreamCLA
     p.diagnosticBuildSizes = settings.diagnosticBuildSizes;
     assert(p.buildMode == settings.buildMode || !settings.enabled);
     assert(!settings.enabled || p.buildMode != StreamCLASTessellationBuildMode::Templates ||
-        (p.templateShape == settings.templateShape && p.instantiationFlags == settings.instantiationFlags));
+        (p.templateShape == settings.templateShape && p.instantiationFlags == settings.instantiationFlags &&
+            p.boundsMode == settings.templateBoundsMode));
     if (!p.materials || !std::isfinite(settings.edgePixels) || settings.edgePixels < 1.0f ||
         settings.edgePixels > 256.0f || settings.maxFactor < 1u || settings.maxFactor > 8u || settings.maxSplitDepth > 3u) {
         log = "Invalid CLAS tessellation quality settings or unpublished height data.";
@@ -369,7 +458,10 @@ Result<> StreamCLASTessellation::record(CommandBuffer& commands, const StreamCLA
         .maxFactor = settings.maxFactor, .maxSplitDepth = settings.maxSplitDepth, .revision = p.materialRevision,
         .pageDescriptor = inputs.pageDescriptor, .pageTableDescriptor = inputs.pageTableDescriptor,
         .templateAddresses = p.templates ? p.templates->addresses->deviceAddress() : 0,
-        .buildMode = uint32_t(p.buildMode)};
+        .buildMode = uint32_t(p.buildMode), .initializeBoundStatistics = *p.statisticsInitialized ? 0u : 1u,
+        .templateBoundsAddress = p.templates && p.templates->bounds ? p.templates->boundsRange.deviceAddress() : 0u,
+        .templateBoundsRequested = p.boundsMode == StreamCLASTessellationTemplateBoundsMode::Geometry ? 1u : 0u,
+        .templatePatternCount = kTemplateCount};
     std::unique_ptr<Buffer> uploadBuffer;
     log = "Upload CLAS tessellation parameters";
     auto result = p.buffer(sizeof(parameters), MemoryLocation::HostUpload, uploadBuffer);
@@ -419,6 +511,10 @@ Result<> StreamCLASTessellation::record(CommandBuffer& commands, const StreamCLA
             .destinationAddressBuffer = *p.blasAddresses->slice(), .scratchBuffer = *p.blasScratch->slice()});
     }
     if (result) { result = synchronizeTessellation(commands); }
+    if (result) {
+        result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+            [initialized = p.statisticsInitialized] { *initialized = true; }, nullptr));
+    }
     if (result) { log.clear(); }
     return result;
 }
@@ -458,12 +554,27 @@ StreamCLASTessellationInstantiationFlags StreamCLASTessellation::instantiationFl
     return impl_->instantiationFlags;
 }
 
+StreamCLASTessellationTemplateBoundsMode StreamCLASTessellation::templateBoundsMode() const
+{
+    return impl_->boundsMode;
+}
+
+uint64_t StreamCLASTessellation::templatePoolGeneration() const
+{
+    return impl_->poolGeneration;
+}
+
 std::string StreamCLASTessellation::diagnosticIdentity() const
 {
     const auto& p = *impl_;
     return nlohmann::json{{"mode", p.buildMode == StreamCLASTessellationBuildMode::Templates ? "templates" : "triangles"},
         {"templateShape", p.templateShape == StreamCLASTessellationTemplateShape::Equilateral ? "equilateral" : "right"},
         {"instantiationFlags", p.instantiationFlags == StreamCLASTessellationInstantiationFlags::None ? "none" : "fastTrace"},
+        {"templateBoundsMode", p.boundsMode == StreamCLASTessellationTemplateBoundsMode::Geometry ? "geometry" : "none"},
+        {"templateBounds", p.templates && p.templates->bounds ? nlohmann::json(*p.templates->bounds) : nlohmann::json(nullptr)},
+        {"boundedTemplatesReady", p.templates && p.templates->bounds && p.templates->initialized},
+        {"nativeTemplateCount", p.templates ? p.templates->nativeCount : 0u},
+        {"templatePoolGeneration", p.poolGeneration},
         {"enabled", p.enabled}, {"diagnosticBuildSizes", p.diagnosticBuildSizes},
         {"module", "Features/GPUDriven/StreamCLASTessellation"},
         {"entry", "tessellationMain"}, {"spirvSha256", p.shaderHash}, {"maxPatches", p.capacity},
@@ -472,7 +583,8 @@ std::string StreamCLASTessellation::diagnosticIdentity() const
         {"templateBytes", p.templates ? p.templates->storage->slice()->size() : 0u},
         {"templateAuxiliaryBytes", p.templates ? p.templates->vertices->desc().size +
             p.templates->indices->desc().size + p.templates->infos->desc().size +
-            p.templates->addresses->desc().size + p.templates->scratch->desc().size : 0u},
+            p.templates->addresses->desc().size + p.templates->scratch->desc().size +
+            (p.templates->boundsBuffer ? p.templates->boundsBuffer->desc().size : 0u) : 0u},
         {"clasBytes", p.clasStorage->slice()->size()},
         {"scratchBytes", p.clasScratch->slice()->size()}, {"buildInfoStride", p.clasInfoStride}}.dump();
 }
@@ -485,6 +597,16 @@ Buffer* StreamCLASTessellation::statisticsBuffer() const
 Buffer* StreamCLASTessellation::buildSizesBuffer() const
 {
     return impl_->diagnosticBuildSizes ? impl_->clasSizes.get() : nullptr;
+}
+
+Buffer* StreamCLASTessellation::templateBoundsBuffer() const
+{
+    return impl_->templates ? impl_->templates->boundsBuffer.get() : nullptr;
+}
+
+uint64_t StreamCLASTessellation::templateBoundsOffset() const
+{
+    return impl_->templates && impl_->templates->bounds ? impl_->templates->boundsRange.offset() : 0u;
 }
 
 Buffer* StreamCLASTessellation::metadataBuffer() const

@@ -14,6 +14,7 @@ The device must support `VK_NV_cluster_acceleration_structure`.
 | `rtTessellationBuildMode` | `triangles` | `triangles` builds generated clusters directly; `templates` instantiates fixed topology templates |
 | `rtTessellationTemplateShape` | `right` | Template canonical positions: `right` or experimental `equilateral`; actual displaced vertices are unchanged |
 | `rtTessellationInstantiationFlags` | `fastTrace` | Instantiation build hint: `fastTrace` or experimental `none`; template construction still prefers fast tracing |
+| `rtTessellationTemplateBounds` | `none` | `geometry` derives conservative bounds from all LOD geometry, current instance transforms and displacement; `none` keeps unrestricted templates |
 | `rtTessellationEdgePixels` | 8 | Unjittered render-pixel edge target, 1–256 |
 | `rtTessellationMaxFactor` | 4 | Leaf edge factor, 1–8 |
 | `rtTessellationMaxSplitDepth` | 2 | Recursive split depth, 0–3 |
@@ -74,11 +75,33 @@ template fixes vertex/triangle counts and triangle indices. Instantiation
 supplies the current displaced vertices and the generated cluster-ID offset;
 the template's cluster and geometry ID bases are zero.
 
-Production template records use a **zero bounding-limit address**, meaning no
-bounding-box constraint. This is not a zero-sized bounding box. Source
-transforms and world-unit displacement may place generated vertices outside
-the canonical barycentric triangle used to initialize the template, so a
-guessed canonical bound would be incorrect.
+The default template records use a **zero bounding-limit address**, meaning no
+bounding-box constraint. This is not a zero-sized bounding box. The optional
+`geometry` policy computes a box in the generated vertices' local/object space;
+it does not use the canonical barycentric triangle as a geometric limit.
+
+The box unions every LOD page of every applicable instance, including offscreen
+instances, and uses the current runtime render-node material and matrix. The
+FP32 interval helper encloses world transformation, source-domain interpolation,
+world-unit height displacement and the shader's cofactor-based inverse transform.
+It accounts for outward rounding, denormal flushing and fused/unfused arithmetic.
+Unprovable or nonfinite inverse bounds keep unrestricted templates. Material,
+transform, content or node-mapping changes recheck the bound. An existing box
+containing the new range is reused; expansion creates a new retained generation.
+
+Bounded generations contain 1024 native templates in one allocation: the
+original 512 unrestricted templates followed by 512 matching bounded copies.
+Bounds storage uses the queried native alignment. Before emitting an instantiation
+record, all lanes check the actual final generated FP32 positions. Any position
+outside the limit selects that patch's unrestricted copy, with identical
+vertices, topology, source domains and precision. No geometry is clipped, no
+position bits are truncated, and no tessellation setting is reduced. The GPU
+guard owns the final native-API validity boundary, including extreme transforms
+and numerical behavior outside the helper's modeled envelope.
+
+This extra template storage and initialization are reported separately from
+steady-state work. A finite box does not itself prove smaller native CLAS or
+faster traversal; the controlled experiment reads the actual driver size output.
 
 The first template use allocates the pool and records its native build before
 instantiation. Initialization becomes accepted only with submission; cancelled
@@ -114,10 +137,15 @@ geometrically different from the displaced raster surface; increase capacity or
 reduce quality when the diagnostics report rejected instances.
 
 The resource inspector exposes `tessellationCounts` (patches, built instances,
-capacity rejections, invalid-input rejections), `tessellationLeaves`, and
+capacity rejections, invalid-input rejections, current-frame unrestricted patch
+fallback count, and a sticky any-fallback bit since allocation), `tessellationLeaves`, and
 `tessellationVertices`. The BLAS header exposes generated patch count and rejected
 instance count. Allocation or unsupported native build failures propagate through
 the existing renderer error path.
+`tessellationBounds` exposes the actual six-float native box when present. The
+performance protocol copies it only during separate diagnostics, and reads
+fallback counters only after timing. A bounded-path performance result requires
+zero fallback throughout the unchanged allocation's warmup/timing/proof window.
 
 Generated storage reuses the runtime's dependency on all previous ray readers.
 Its parameter packet is uploaded through a GPU copy into persistent device memory.
@@ -175,6 +203,11 @@ and steady state reported separately.
   policies run the same matrix and also check policy switches, cancelled
   replacement retries, runtime policy receipts and unchanged history. The
   image alpha carries nearest-hit distance in addition to color comparisons.
+- `scene_clas_tessellation_templates_c3_geometry_bounds` adds actual generated
+  vertex containment, bound expansion/reuse, negative displacement, rotated/sheared
+  transforms and large-coordinate cases, with precise rays and full image/distance
+  comparisons against unrestricted templates and triangle builds. CPU
+  `StreamCLASTemplateBounds.*` tests exercise interval enclosure independently.
 - Existing `tessellation_*`, `scene_clas_attributes*`, `stream_blas_cut_cache`,
   `stream_rt_representation_lifecycle` and `stream_clas_cut_readiness` protect
   shared geometry, decoding and publication contracts.
@@ -323,6 +356,91 @@ Local untracked evidence is under `.tmp/clas-shadow-optimization/`: sealed
 `c1-01` / `c2-01`, reviewed `c1-report` / `c2-report`, `analysis-c1.md`,
 `Correctness.png`, `NativeCLASSizes.png`, `VisualVerification.json`, and
 `report.md`. `plot_diagnostics.py` reproduces the image/size plots from raw data.
+
+## Geometry bounding-limit follow-up (2026-10-25)
+
+`rtTessellationTemplateBounds: "geometry"` is implemented and validated, but
+**did not shrink native CLAS or eliminate the shadow regression** in the fixed
+sample. The default remains `none` and the default build mode remains `triangles`.
+No tessellation quality, position truncation, shadow semantics or admission
+threshold was changed. The new C3 uses the original right/fastTrace policy.
+
+The reference project's `src/raytracing_cluster_data.cpp` supplies a geometry
+bounding limit to native template creation. Metallic derives its own bound from
+all LOD pages, current displacement and runtime affine transforms as described
+above, instead of copying the reference's configurable percentage expansion.
+The actual uploaded sample limit was
+`[-1.22507906, -1.22507906, -0.225003719, 1.22507906, 1.22507906, 0.225003719]`.
+The diagnostic readback matched all 24 bytes of the runtime identity.
+
+All three arms used the same Release binary, RTX 5070 Ti / NVIDIA 621.01,
+1444x694 graph, scene/camera/material/light settings, retained caches,
+32 warmup / 64 timed frames and frame-16 residency freeze. The declared budget
+was three ABCCBA discovery blocks, with five independent confirmation blocks
+reserved only for a qualifying candidate. All 18 ordinary processes and three
+separate diagnostics completed. C3 failed discovery, so confirmation did not run.
+No samples were discarded or pooled with earlier experiments.
+
+Positive gain means lower time; intervals use complete-block log ratios:
+
+| GPU scope | C3 vs triangles gain [95% CI] | C3 vs unbounded templates gain [95% CI] |
+| --- | ---: | ---: |
+| CLAS build / instantiate | +81.94% [81.55, 82.32] | +1.02% [-5.17, 6.85] |
+| Complete tessellation | +4.56% [-1.97, 10.68] | -0.29% [-4.98, 4.19] |
+| Whole measured graph | +2.74% [-3.17, 8.31] | -0.93% [-3.88, 1.95] |
+| Complete Shadows pass | -7.16% [-8.79, -5.55] | -0.50% [-2.31, 1.29] |
+| Shadow trace | -6.51% [-7.06, -5.97] | +0.06% [-0.85, 0.96] |
+| Publish shadow copy | -20.60% [-26.22, -15.23] | -4.08% [-12.13, 3.38] |
+
+The original template arm reproduced a 6.63% [6.26, 7.00] complete-Shadow
+slowdown against triangles. C3 retains the large CLAS-operation benefit but
+shows no reliable improvement over that arm. Whole-graph intervals cross zero;
+they are not evidence of an end-to-end speedup. Within-arm ranges above 10%
+occurred for triangle tessellation and the original-template copy interval;
+all observations remain included and the report flags this dispersion.
+
+Native size arrays were identical for bounded and unbounded templates:
+**5,242,880 bytes**, 2048 clusters of 2560 bytes each. Triangle CLAS remained
+3,616,896 bytes (1536-2176 per cluster). Every C3 process used 1024 ready native
+templates with one stable pool generation; final fallback count and the GPU
+sticky any-fallback bit were zero. Thus the unchanged size is an actual bounded
+instantiation result, not silent use of unbounded templates. Retained template
+storage plus auxiliary allocations increased by 1,011,831 bytes (about 0.965 MiB)
+to preserve both same-quality paths. Initialization is excluded from timing;
+this persistent capacity is included in the allocation report.
+
+This rules out the tested scene-wide finite bound as a sufficient fix on this
+driver. It does not establish that larger CLAS causes the traversal regression,
+or that every tighter/per-geometry bound would behave identically. No native
+BVH-layout or RT/cache hardware counters were collected.
+
+Validation completed:
+
+- Release renderer, RHI and scene-test targets built; five focused CPU bounds
+  tests and 57 focused Python checks passed. Shader ownership passed for 378
+  files; both unique bound tessellation/shadow SPIR-V modules passed Vulkan 1.4
+  `spirv-val` validation.
+- Six existing strict GPU cases passed in `strict-01`; C3 passed in `strict-03`
+  with synchronization validation and zero captured messages. Its 33 paired
+  states each retain eight rays and a 128x128 color/distance image. Maximum
+  attribute and image differences were zero. 82 bound receipts checked 5576
+  actual generated vertices, with zero bound-fallback patches.
+- All 21 experiment processes plus three additional full-scene synchronization
+  runs had byte-identical HDR/depth/shadow output, 2048 patches, one generated
+  BLAS and zero rejected/invalid work. No Vulkan warning/error was logged in
+  the three full-scene validation runs. All four generated report plots were
+  opened and visually inspected.
+- Initial failed runs are retained: `strict-01` exposed a redundant material
+  setter in the test; `strict-02` exposed its ideal-normal oracle missing the
+  existing near-singular relative-area safeguard. Only test expectations were
+  corrected. The near-singular test now independently proves the safeguard's
+  numeric preconditions and verifies its exact normal/facing behavior; hit,
+  distance, UV, bounds and cross-mode image thresholds remain unchanged.
+
+Local untracked evidence: `.tmp/clas-bounds-optimization/experiment-01` (sealed),
+`report-01/report.md`, `report-01/VisualVerification.json`, `report.md`, and
+`plot_diagnostics.py`. The v3 verifier still supports the sealed v1/v2 evidence
+under their original acceptance rules.
 
 ## Previous executed baseline (2026-10-25, triangle builds only)
 
