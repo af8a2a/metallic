@@ -284,12 +284,17 @@ bool writeCLASTessellationFixture(const std::filesystem::path& directory, std::s
     return bool(binary) && bool(gltf);
 }
 
+enum class TemplateCandidate { Default, InstantiationNone, Equilateral };
+
 class CLASTessellationTest : public RHITest {
 public:
-    explicit CLASTessellationTest(bool templates = false) : templates_(templates)
+    explicit CLASTessellationTest(bool templates = false, TemplateCandidate candidate = TemplateCandidate::Default)
+        : templates_(templates), candidate_(candidate)
     {
         type = RHITestType::Rendering;
         name = templates ? "scene_clas_tessellation_templates" : "scene_clas_tessellation";
+        if (candidate == TemplateCandidate::InstantiationNone) { name = "scene_clas_tessellation_templates_c1_right_none"; }
+        if (candidate == TemplateCandidate::Equilateral) { name = "scene_clas_tessellation_templates_c2_equilateral_fast_trace"; }
     }
     std::optional<bench::Metadata> metadata() const override
     {
@@ -298,6 +303,11 @@ public:
         if (templates_) {
             result.coverage.push_back("clas.tessellation.templates.triangles.surface.equivalence");
             result.artifacts.push_back("template-comparison.json");
+        }
+        if (candidate_ != TemplateCandidate::Default) {
+            result.coverage.push_back(candidate_ == TemplateCandidate::InstantiationNone
+                ? "clas.tessellation.templates.instantiation.none.lifecycle"
+                : "clas.tessellation.templates.canonical.equilateral.lifecycle");
         }
         result.timeout = std::chrono::seconds(180);
         return result;
@@ -330,12 +340,19 @@ public:
         (void)registeredBuilder;
         tessellationProducer.reset();
         registerBuiltInRenderGraphPasses();
+        const char* templateShape = candidate_ == TemplateCandidate::Equilateral ? "equilateral" : "right";
+        const char* instantiationFlags = candidate_ == TemplateCandidate::InstantiationNone ? "none" : "fastTrace";
+        const char* candidateKey = candidate_ == TemplateCandidate::InstantiationNone
+            ? "rtTessellationInstantiationFlags" : "rtTessellationTemplateShape";
+        const char* defaultPolicy = candidate_ == TemplateCandidate::InstantiationNone ? "fastTrace" : "right";
+        const char* candidatePolicy = candidate_ == TemplateCandidate::InstantiationNone ? instantiationFlags : templateShape;
         RenderGraph graph;
         const uint32_t build = graph.addNode("CLASTessellationBuild", "Build", {
             {"path", (directory / "scene.gltf").string()}, {"AsyncComputePreferred", false},
             {"rtTessellation", false}, {"rtTessellationEdgePixels", 1.f}, {"rtTessellationMaxFactor", 4},
             {"rtTessellationMaxSplitDepth", 0}, {"rtTessellationMaxPatches", 64},
             {"rtTessellationBuildMode", templates_ ? "templates" : "triangles"},
+            {"rtTessellationTemplateShape", templateShape}, {"rtTessellationInstantiationFlags", instantiationFlags},
             {"camera", {{"eye", {0, 0, 4}}, {"center", {0, 0, 0}}, {"projection", "orthographic"},
                 {"orthoHeight", 4.f}, {"znear", .001f}, {"zfar", 100.f}}}})->id;
         graph.addNode("CLASTessellationProbe", "Probe", {{"comparisonRays", templates_}});
@@ -353,11 +370,32 @@ public:
             }
             else { check(executor.syncRuntimeProperties(graph), std::string("Setting did not reach executor: ") + key); }
         };
+        nlohmann::json policyReceipts = nlohmann::json::array();
         const auto renderRaw = [&](uint32_t frames, const char* imageName, std::vector<float>* complete) {
             for (uint32_t frame = 0; frame < frames; ++frame) {
                 checked(executor.execute({.graphicsQueue = device.getQueue(QueueType::Graphics),
                     .computeQueue = device.getQueue(QueueType::Compute)}), "Graph execution");
                 checked(executor.waitForSubmittedWork(10'000'000'000ull), "Graph completion");
+            }
+            auto properties = graph.findNode(build)->properties;
+            properties.update(graph.findNode(build)->runtimeProperties);
+            if (properties.value("rtTessellation", false)) {
+                const auto geometry = tessellationProducer.lock();
+                check(bool(geometry), "Production tessellation runtime was not published");
+                const auto receipt = nlohmann::json::parse(geometry->profilingStats().tessellationIdentity);
+                const auto mode = properties.value("rtTessellationBuildMode", std::string("triangles"));
+                const auto shape = mode == "templates"
+                    ? properties.value("rtTessellationTemplateShape", std::string("right")) : "right";
+                const auto flags = mode == "templates"
+                    ? properties.value("rtTessellationInstantiationFlags", std::string("fastTrace")) : "fastTrace";
+                check(receipt.at("mode") == mode && receipt.at("templateShape") == shape &&
+                    receipt.at("instantiationFlags") == flags && !receipt.at("diagnosticBuildSizes").get<bool>(),
+                    "Production CLAS policy receipt differs from the requested candidate: " + receipt.dump());
+                check(mode != "templates" || receipt.at("templatesReady").get<bool>(), "Template pool was not submitted");
+                if (candidate_ != TemplateCandidate::Default) {
+                    policyReceipts.push_back({{"mode", mode}, {"templateShape", shape}, {"instantiationFlags", flags},
+                        {"maxPatches", receipt.at("maxPatches")}, {"templatesReady", receipt.at("templatesReady")}});
+                }
             }
             auto* buffer = executor.outputResource("Probe.hits")->buffer;
             const auto* mapped = buffer->map();
@@ -482,6 +520,26 @@ public:
         check(stationary == displaced && stationary[24] == 0.f,
             "Stationary tessellated geometry changed hits or invalidated shading history");
 
+        uint32_t policySwitches = 0;
+        if (candidate_ != TemplateCandidate::Default) {
+            // Change only the candidate policy while retaining the same native
+            // operation, geometry, capacity and CPU oracle. The image alpha is
+            // the nearest hit distance, so comparison covers traversal too.
+            std::vector<float> candidateOutput, defaultOutput, restoredOutput;
+            renderRaw(1, nullptr, &candidateOutput);
+            setting(candidateKey, defaultPolicy);
+            const auto defaultHits = renderRaw(1, nullptr, &defaultOutput);
+            verify(defaultHits, true, "default template policy switch");
+            check(defaultHits[24] == 0.f, "Candidate-to-default policy switch invalidated unchanged shading history");
+            compare(candidateOutput, defaultOutput, "default template policy");
+            setting(candidateKey, candidatePolicy);
+            const auto candidateHits = renderRaw(1, nullptr, &restoredOutput);
+            verify(candidateHits, true, "candidate template policy restored");
+            check(candidateHits[24] == 0.f, "Default-to-candidate policy switch invalidated unchanged shading history");
+            compare(candidateOutput, restoredOutput, "candidate template policy restored");
+            policySwitches = 2;
+        }
+
         setting("rtTessellationMaxFactor", 2);
         reference = referenceTessellationHits(2, 0, templates_);
         verify(render(), true, "factor two");
@@ -524,6 +582,9 @@ public:
         // A recorded replacement must not publish CPU history before submission.
         transform.a03 = 3.5f;
         check(scene.setNodeLocalMatrix(0, transform), "Cancellation transform edit failed");
+        if (candidate_ != TemplateCandidate::Default) {
+            setting(candidateKey, defaultPolicy);
+        }
         auto pool = device.createCommandPool(*device.getQueue(QueueType::Graphics));
         check(bool(pool), "Cancellation command pool failed");
         auto commands = (*pool)->createCommandBuffer();
@@ -533,7 +594,13 @@ public:
         checked((*commands)->end(), "Cancellation end");
         commands->reset();
         pool->reset();
-        verify(render(), true, "cancelled recording retry");
+        if (candidate_ != TemplateCandidate::Default) {
+            setting(candidateKey, candidatePolicy);
+            const auto retry = render(1);
+            verify(retry, true, "cancelled policy replacement retry");
+            check(retry[24] > 0.f, "Cancelled policy replacement consumed the pending transform history change");
+            check(render(1)[24] == 0.f, "Submitted policy replacement repeatedly invalidated history");
+        } else { verify(render(), true, "cancelled recording retry"); }
 
         setting("rtTessellationMaxPatches", 1);
         const auto rejected = render(1);
@@ -567,7 +634,8 @@ public:
             const nlohmann::json comparison{{"pairedStates", pairedStates}, {"preciseRaysPerState", kRayCount},
                 {"imagePixelsPerState", kImageSize * kImageSize}, {"maximumAttributeDifference", maximumAttributeDifference},
                 {"maximumImageDifference", maximumImageDifference}, {"tolerance", .0002f},
-                {"modeSwitchSemanticChanges", 0}};
+                {"modeSwitchSemanticChanges", 0}, {"templateShape", templateShape}, {"instantiationFlags", instantiationFlags},
+                {"policySwitches", policySwitches}, {"policyReceipts", policyReceipts}};
             std::ofstream(directory / "TemplateComparison.json") << comparison.dump(2);
             if (context.evidence) { context.evidence->json("template-comparison.json", comparison); }
         }
@@ -577,6 +645,7 @@ public:
     }
 private:
     bool templates_;
+    TemplateCandidate candidate_;
 };
 METALLIC_REGISTER_RHI_TEST(CLASTessellationTest);
 class CLASTessellationTemplatesTest final : public CLASTessellationTest {
@@ -584,6 +653,16 @@ public:
     CLASTessellationTemplatesTest() : CLASTessellationTest(true) {}
 };
 METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesTest);
+class CLASTessellationTemplatesNoneTest final : public CLASTessellationTest {
+public:
+    CLASTessellationTemplatesNoneTest() : CLASTessellationTest(true, TemplateCandidate::InstantiationNone) {}
+};
+METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesNoneTest);
+class CLASTessellationTemplatesEquilateralTest final : public CLASTessellationTest {
+public:
+    CLASTessellationTemplatesEquilateralTest() : CLASTessellationTest(true, TemplateCandidate::Equilateral) {}
+};
+METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesEquilateralTest);
 
 } // namespace
 } // namespace metallic::tests

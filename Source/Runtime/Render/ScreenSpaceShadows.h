@@ -6,6 +6,9 @@
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 
+#include <functional>
+#include <string_view>
+
 namespace metallic::render {
 
 class ScenePathTraceResources;
@@ -75,7 +78,8 @@ public:
         ScenePathTraceResources* geometry,
         const MeshletStreamDeferredGPUResourcesView* streamGeometry = nullptr,
         CPUProfileRecorder* profiler = nullptr,
-        RayTracingAccelerationStructure* accelerationStructure = nullptr); // Optional identity check for a graph publication.
+        RayTracingAccelerationStructure* accelerationStructure = nullptr, // Optional identity check for a graph publication.
+        const std::function<void(std::string_view)>& checkpoint = {});
     void clear();
 
 private:

@@ -115,14 +115,19 @@ public:
 class TessellationFinalReceipt final : public render::IRenderDebugObserver
 {
 public:
+    explicit TessellationFinalReceipt(bool captureSizes) : captureSizes_(captureSizes) {}
     bool requiresResourceReadback() const override { return false; }
     bool captured = false, completed = false;
     bool afterPassSeen = false, bindingSeen = false;
-    std::unique_ptr<render::Buffer> buffer;
+    bool sizesCaptured = false;
+    std::unique_ptr<render::Buffer> buffer, sizesBuffer;
     void compiled(debug::DebugValue) override {}
     void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
     {
         captured = completed = afterPassSeen = bindingSeen = false;
+        sizesCaptured = false;
+        sizesBuffer.reset();
+        device_ = &device;
         auto result = device.createBuffer({.size = 16, .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback,
             .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute});
@@ -137,8 +142,20 @@ public:
         afterPassSeen = true;
         if (captured || !buffer) { return; }
         for (const auto& binding : resources) {
-            if (!binding.id.ends_with(".tessellationCounts") || !binding.buffer) { continue; }
-            bindingSeen = true;
+            if (!binding.buffer) { continue; }
+            const bool counts = binding.id.ends_with(".tessellationCounts");
+            const bool sizes = captureSizes_ && binding.id.ends_with(".tessellationSizes");
+            if (!counts && !sizes) { continue; }
+            const uint64_t bytes = counts ? 16 : binding.buffer->desc().size - binding.offset;
+            if (counts) { bindingSeen = true; }
+            else {
+                auto allocation = device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
+                    .memoryLocation = MemoryLocation::HostReadback,
+                    .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+                if (!allocation) { continue; }
+                sizesBuffer = std::move(*allocation);
+            }
+            auto& destination = counts ? buffer : sizesBuffer;
             const MemoryBarrierDesc before{
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite}};
@@ -147,12 +164,14 @@ public:
                 .after = {PipelineStageBits::AllCommands | PipelineStageBits::Host,
                     AccessBits::MemoryRead | AccessBits::MemoryWrite | AccessBits::HostRead}};
             auto result = commands.synchronize({.memory = {&before, 1}});
-            if (result) { result = commands.copyBuffer(*binding.buffer->slice({binding.offset, 16}), *buffer->slice()); }
+            if (result) { result = commands.copyBuffer(*binding.buffer->slice({binding.offset, bytes}), *destination->slice()); }
             if (result) { result = commands.synchronize({.memory = {&after, 1}}); }
-            captured = bool(result);
-            return;
+            (counts ? captured : sizesCaptured) = bool(result);
         }
     }
+private:
+    bool captureSizes_;
+    render::Device* device_ = nullptr;
 };
 
 class MaterialBaselineTest : public RHITest
@@ -469,7 +488,8 @@ public:
                         {"bytes", bytes.size()}, {"format", static_cast<uint32_t>(preview.readbackFormat())}});
                 };
                 auto cloudReceipt = spec.value("physicalCloudReceipt", false) ? std::make_unique<PhysicalCloudFinalReceipt>() : nullptr;
-                auto tessellationReceipt = spec.value("tessellationReceipt", false) ? std::make_unique<TessellationFinalReceipt>() : nullptr;
+                auto tessellationReceipt = spec.value("tessellationReceipt", false) ?
+                    std::make_unique<TessellationFinalReceipt>(spec.value("captureTessellationNativeSizes", false)) : nullptr;
                 if (cloudReceipt && tessellationReceipt) { return fail("Choose one final publication receipt"); }
                 for (uint32_t frame = 0; frame < caseFrames; ++frame) {
                     if (freezeStreamingFrame && frame == *freezeStreamingFrame) {
@@ -622,6 +642,34 @@ public:
                     result["tessellationCounts"] = counts;
                     if (counts[0] == 0 || counts[1] == 0 || counts[2] != 0 || counts[3] != 0) {
                         return fail("CLAS tessellation benchmark produced empty or rejected work");
+                    }
+                    if (spec.value("captureTessellationNativeSizes", false)) {
+                        if (!tessellationReceipt->sizesCaptured || !tessellationReceipt->sizesBuffer) {
+                            return fail("Missing final native CLAS size receipt");
+                        }
+                        auto& sizesBuffer = *tessellationReceipt->sizesBuffer;
+                        if (uint64_t(counts[0]) * sizeof(uint32_t) > sizesBuffer.desc().size) {
+                            return fail("Native CLAS count exceeds size receipt capacity");
+                        }
+                        const void* sizesMapped = sizesBuffer.map();
+                        if (!sizesMapped) { return fail("Cannot map native CLAS size receipt"); }
+                        sizesBuffer.invalidate();
+                        std::vector<uint32_t> sizes(counts[0]);
+                        std::memcpy(sizes.data(), sizesMapped, sizes.size() * sizeof(uint32_t));
+                        sizesBuffer.unmap();
+                        uint64_t total = 0;
+                        for (const auto size : sizes) {
+                            if (!size) { return fail("Native CLAS size receipt contains an empty cluster"); }
+                            total += size;
+                        }
+                        const auto file = id + "-CLASSizes.bin";
+                        const auto bytes = sizes.size() * sizeof(uint32_t);
+                        std::ofstream receipt(context.outputDirectory / file, std::ios::binary);
+                        receipt.write(reinterpret_cast<const char*>(sizes.data()), bytes);
+                        if (!receipt) { return fail("Cannot write native CLAS size receipt"); }
+                        result["nativeCLASSizeReceipt"] = {{"file", file}, {"count", sizes.size()}, {"bytes", bytes},
+                            {"totalBytes", total}, {"minBytes", *std::min_element(sizes.begin(), sizes.end())},
+                            {"maxBytes", *std::max_element(sizes.begin(), sizes.end())}};
                     }
                 }
                 if (cloudReceipt) {

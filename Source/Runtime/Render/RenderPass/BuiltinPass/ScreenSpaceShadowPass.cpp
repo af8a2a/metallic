@@ -157,8 +157,16 @@ public:
         ScreenSpaceShadowResult shadow;
         std::string log;
         profile.next("Prepare and record shadows");
+        auto shadowProfile = context.profileScope("Shadow setup");
+        const auto checkpoint = [&](std::string_view point) {
+            if (point == "BeforeShadowTrace") { shadowProfile.next("Shadow trace"); }
+            else if (point == "BeforeShadowDenoise") { shadowProfile.next("Shadow denoise"); }
+            else if (point == "BeforeShadowFinalize") { shadowProfile.next("Shadow finalize"); }
+            else { shadowProfile.end(); }
+        };
         result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, *context.preparedScene()->textureFeedback.samplingMetadata,
-            &geometry_, stream, &profiler, accelerationStructure).transform([&](auto value) { shadow = std::move(value); });
+            &geometry_, stream, &profiler, accelerationStructure, checkpoint).transform([&](auto value) { shadow = std::move(value); });
+        shadowProfile.end();
         if (!result) {
             spdlog::error("RayTracedShadowPass: {} ({})", log, resultToString(result));
             return result;

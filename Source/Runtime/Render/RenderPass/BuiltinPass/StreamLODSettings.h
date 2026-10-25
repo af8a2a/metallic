@@ -20,6 +20,11 @@ inline void applyStreamRayLODSettings(const RenderGraphProperties& properties,
     view.rtTessellation.maxPatches = properties.value("rtTessellationMaxPatches", 16384u);
     view.rtTessellation.buildMode = parseStreamCLASTessellationBuildMode(
         properties.value("rtTessellationBuildMode", std::string("triangles")));
+    view.rtTessellation.diagnosticBuildSizes = properties.value("benchmarkCLASBuildSizes", false);
+    view.rtTessellation.templateShape = parseStreamCLASTessellationTemplateShape(
+        properties.value("rtTessellationTemplateShape", std::string("right")));
+    view.rtTessellation.instantiationFlags = parseStreamCLASTessellationInstantiationFlags(
+        properties.value("rtTessellationInstantiationFlags", std::string("fastTrace")));
 }
 
 inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSetting>& settings)
@@ -33,6 +38,12 @@ inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSett
     settings.push_back({.key = "rtTessellationBuildMode", .label = "CLAS Tessellation Build",
         .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "triangles",
         .options = {{"Triangle build", "triangles"}, {"Template instantiation", "templates"}}});
+    settings.push_back({.key = "rtTessellationTemplateShape", .label = "CLAS Template Shape (advanced)",
+        .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "right",
+        .options = {{"Right triangle (default)", "right"}, {"Equilateral (spatial quality hint)", "equilateral"}}});
+    settings.push_back({.key = "rtTessellationInstantiationFlags", .label = "CLAS Instantiation Policy (advanced)",
+        .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "fastTrace",
+        .options = {{"Prefer tracing speed", "fastTrace"}, {"Driver build/trace policy", "none"}}});
     settings.push_back({.key = "rtTessellationEdgePixels", .label = "RT Tessellation Edge (render px)",
         .type = RenderGraphRuntimeSettingType::Float, .defaultValue = 8.0f, .minValue = 1.0f, .maxValue = 256.0f});
     settings.push_back({.key = "rtTessellationMaxFactor", .label = "RT Tessellation Leaf Edge Factor",

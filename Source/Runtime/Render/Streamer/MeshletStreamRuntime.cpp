@@ -3425,14 +3425,25 @@ Result<> MeshletStreamRuntime::configureTessellation(Device& device, const scene
     const ScenePathTraceResources& resources, const StreamCLASTessellationSettings& settings, std::string& log)
 {
     if (!settings.enabled) { return {}; }
+    if (settings.buildMode == StreamCLASTessellationBuildMode::Invalid ||
+        settings.templateShape == StreamCLASTessellationTemplateShape::Invalid ||
+        settings.instantiationFlags == StreamCLASTessellationInstantiationFlags::Invalid) {
+        log = "Invalid CLAS tessellation build mode, template shape, or instantiation flags.";
+        return makeError(Error::InvalidArgument);
+    }
     if (!clusterRtxEnabled_) {
         log = "CLAS tessellation requires the streamed ray-tracing runtime.";
         return makeError(Error::Unsupported);
     }
+    const auto templateShape = settings.buildMode == StreamCLASTessellationBuildMode::Templates
+        ? settings.templateShape : StreamCLASTessellationTemplateShape::Right;
+    const auto instantiationFlags = settings.buildMode == StreamCLASTessellationBuildMode::Templates
+        ? settings.instantiationFlags : StreamCLASTessellationInstantiationFlags::FastTrace;
     if (!tessellation_ || tessellation_->patchCapacity() != settings.maxPatches ||
-        tessellation_->buildMode() != settings.buildMode) {
+        tessellation_->buildMode() != settings.buildMode || tessellation_->templateShape() != templateShape ||
+        tessellation_->instantiationFlags() != instantiationFlags) {
         auto replacement = std::make_shared<StreamCLASTessellation>();
-        auto result = replacement->initialize(device, registry_, asset_, settings.maxPatches, settings.buildMode, log);
+        auto result = replacement->initialize(device, registry_, asset_, settings, log);
         if (!result) { return result; }
         if (tessellation_) { replacement->reusePersistentState(*tessellation_); }
         result = replacement->updateMaterials(scene, resources, log);
@@ -5303,10 +5314,11 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
                 {"blasStorageAddress", blasStorageBuffer_ ? blasStorageBuffer_->deviceAddress() : uint64_t{0}},
                 {"validity", "Only header-defined live ranges contain records"}}});
     };
-    // Counts always support transfer readback. Lightweight observers can inspect
-    // the current producer without rebuilding its resources for general debug capture.
+    // Counts and optional diagnostic sizes support transfer readback without
+    // rebuilding the current producer for general debug capture.
     if (tessellation_) {
         add("tessellationCounts", tessellation_->statisticsBuffer(), ResourceState::General, "u32");
+        add("tessellationSizes", tessellation_->buildSizesBuffer(), ResourceState::General, "u32");
     }
     if (!debugReadbackEnabled_) { return; }
     add("requestHeader", requestBuffer_.get(), requestBufferState_, "StreamRequestBufferHeader", 0, sizeof(StreamRequestBufferHeader));

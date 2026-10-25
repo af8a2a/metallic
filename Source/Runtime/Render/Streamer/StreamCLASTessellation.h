@@ -15,12 +15,28 @@ class ScenePathTraceResources;
 struct MeshletStreamFrameDesc;
 
 enum class StreamCLASTessellationBuildMode : uint32_t { Triangles, Templates, Invalid };
+enum class StreamCLASTessellationTemplateShape : uint32_t { Right, Equilateral, Invalid };
+enum class StreamCLASTessellationInstantiationFlags : uint32_t { FastTrace, None, Invalid };
 
 inline StreamCLASTessellationBuildMode parseStreamCLASTessellationBuildMode(std::string_view value)
 {
     if (value == "triangles") { return StreamCLASTessellationBuildMode::Triangles; }
     if (value == "templates") { return StreamCLASTessellationBuildMode::Templates; }
     return StreamCLASTessellationBuildMode::Invalid;
+}
+
+inline StreamCLASTessellationTemplateShape parseStreamCLASTessellationTemplateShape(std::string_view value)
+{
+    if (value == "right") { return StreamCLASTessellationTemplateShape::Right; }
+    if (value == "equilateral") { return StreamCLASTessellationTemplateShape::Equilateral; }
+    return StreamCLASTessellationTemplateShape::Invalid;
+}
+
+inline StreamCLASTessellationInstantiationFlags parseStreamCLASTessellationInstantiationFlags(std::string_view value)
+{
+    if (value == "fastTrace") { return StreamCLASTessellationInstantiationFlags::FastTrace; }
+    if (value == "none") { return StreamCLASTessellationInstantiationFlags::None; }
+    return StreamCLASTessellationInstantiationFlags::Invalid;
 }
 
 struct StreamCLASTessellationSettings {
@@ -30,6 +46,9 @@ struct StreamCLASTessellationSettings {
     uint32_t maxSplitDepth = 2;
     uint32_t maxPatches = 16384;
     StreamCLASTessellationBuildMode buildMode = StreamCLASTessellationBuildMode::Triangles;
+    bool diagnosticBuildSizes = false;
+    StreamCLASTessellationTemplateShape templateShape = StreamCLASTessellationTemplateShape::Right;
+    StreamCLASTessellationInstantiationFlags instantiationFlags = StreamCLASTessellationInstantiationFlags::FastTrace;
 };
 
 struct StreamCLASTessellationInputs {
@@ -55,8 +74,7 @@ public:
     StreamCLASTessellation();
     ~StreamCLASTessellation();
     Result<> initialize(Device& device, std::shared_ptr<ResourceRegistry> registry,
-        const scene::MeshletStreamAsset& asset, uint32_t maxPatches,
-        StreamCLASTessellationBuildMode buildMode, std::string& log);
+        const scene::MeshletStreamAsset& asset, const StreamCLASTessellationSettings& settings, std::string& log);
     // Capacity replacements in the same runtime retain semantic history and
     // material revisions independently of the generated geometry allocations.
     void reusePersistentState(const StreamCLASTessellation& previous);
@@ -68,8 +86,12 @@ public:
     Result<> publish(CommandBuffer& commands);
     uint32_t patchCapacity() const;
     StreamCLASTessellationBuildMode buildMode() const;
+    StreamCLASTessellationTemplateShape templateShape() const;
+    StreamCLASTessellationInstantiationFlags instantiationFlags() const;
     std::string diagnosticIdentity() const;
     Buffer* statisticsBuffer() const;
+    // Diagnostic-only u32 byte sizes; statisticsBuffer()[0] defines the live prefix.
+    Buffer* buildSizesBuffer() const;
     Buffer* metadataBuffer() const;
     Buffer* vertexBuffer() const;
 

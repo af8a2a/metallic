@@ -165,8 +165,9 @@ def capture_stream_asset(directory):
         shutil.copyfile(source.with_suffix(".source"), directory / "StreamSource.txt")
 
 
-def analyze_run(directory, config, expected_graph, arm):
+def analyze_run(directory, config, expected_graph, arm, *, expected_mode=None):
     import numpy as np
+    mode = expected_mode if expected_mode is not None else MODES[arm]
     xml = ET.parse(directory / "Tests.xml").getroot()
     require(len(list(xml.iter("testcase"))) == 1 and not list(xml.iter("failure")) and not list(xml.iter("skipped")), "Failed or skipped production test")
     report = read(directory / "MaterialBaseline.json")
@@ -203,14 +204,14 @@ def analyze_run(directory, config, expected_graph, arm):
         if isinstance(current, str):
             current = json.loads(current)
         properties = next(n for n in expected_graph["nodes"] if n["name"] == "VBuffer")["properties"]
-        require(current["mode"] == MODES[arm] and current["enabled"] and
+        require(current["mode"] == mode and current["enabled"] and
                 current["maxPatches"] == properties["rtTessellationMaxPatches"], "Backend receipt does not match requested work")
         require(current["module"] == "Features/GPUDriven/StreamCLASTessellation" and current["entry"] == "tessellationMain" and
                 len(current["spirvSha256"]) == 64, "Missing production shader identity")
         require(current["clasBytes"] > 0 and current["scratchBytes"] > 0 and current["buildInfoStride"] > 0,
                 "Missing actual backend allocation identity")
         require((current["templatesReady"] and current["patternCount"] > 0 and current["templateBytes"] > 0 and
-                 current["templateAuxiliaryBytes"] > 0) if arm == "B" else
+                 current["templateAuxiliaryBytes"] > 0) if mode == "templates" else
                 (not current["templatesReady"] and current["patternCount"] == 0 and current["templateBytes"] == 0 and
                  current["templateAuxiliaryBytes"] == 0), "Actual template pool does not match the requested backend")
         if backend_identity is None:
@@ -290,21 +291,21 @@ def decision(rows, stage, reference=()):
             "statisticalUnit": "complete ABBA block of four independent process medians; log-ratio Student-t 95% CI"}
 
 
-def receipts(directory):
+def receipts(directory, *, modules=("Features/GPUDriven/StreamCLASTessellation",)):
     result = []
     for path in sorted((directory / "recipes").rglob("*.recipe.json")):
         recipe = read(path)
         require(not recipe["source_device"]["validation_enabled"] and not recipe["source_device"]["synchronization_validation_enabled"], "Instrumented diagnostic recipe device")
         for stage, shader in recipe["shaders"].items():
             module = shader.get("module_name", "")
-            if module != "Features/GPUDriven/StreamCLASTessellation":
+            if module not in modules:
                 continue
             spirv = (path.parent / shader["spirv_file"]).resolve()
             require(spirv.is_relative_to(directory.resolve()) and spirv.is_file() and
                     spirv.stat().st_size == shader["spirv_bytes"] and not shader.get("source_identity_ambiguous", True), "Invalid bound production SPIR-V receipt")
             result.append({"module": module, "entry": shader["source_entry_point"], "stage": stage,
                            "sha256": digest(spirv), "device": recipe["source_device"]})
-    require(result, "No bound production CLAS tessellation shader receipt")
+    require({r["module"] for r in result} == set(modules), "Missing bound production shader receipt")
     return result
 
 
@@ -319,13 +320,13 @@ def validate_run_order(runs, manifest):
     require(len({r["directory"] for r in runs}) == len(runs), "Repeated process evidence directory")
 
 
-def collect(exe, fixtures, output, arm, stage, timeout):
+def collect(exe, fixtures, output, arm, stage, timeout, *, variant_directory=None, case_filename="Cases.json"):
     directory = output / f"{stage}-{len(list(output.glob('*/Process.json'))):02d}-{arm}"
     directory.mkdir()
     env = {k: v for k, v in os.environ.items() if not k.startswith("METALLIC_")}
     require(not env.get("VK_INSTANCE_LAYERS"), "Injected Vulkan layers invalidate normal timing")
     env.update(METALLIC_NSIGHT_GRAPHICS_CAPTURE="0", METALLIC_SHADER_CAPTURE_SYMBOLS="0",
-               METALLIC_MATERIAL_BASELINE_CASES=str(fixtures / MODES[arm] / "Cases.json"))
+               METALLIC_MATERIAL_BASELINE_CASES=str(fixtures / (variant_directory or MODES[arm]) / case_filename))
     if stage == "diagnostic":
         env["METALLIC_PIPELINE_RECIPE_DIRECTORY"] = str(directory / "recipes")
     command = [str(exe), "--gtest_filter=*material_phase0_baseline*", "--rhi-no-validation",

@@ -67,16 +67,19 @@ struct StreamCLASTessellation::Impl {
     std::unique_ptr<ComputePipeline> pipeline;
     std::unique_ptr<Buffer> leaves, vertices, triangles, instanceStates, counts;
     std::shared_ptr<Buffer> history;
-    std::unique_ptr<Buffer> clasInfos, clasAddresses, clasStorage, clasScratch;
+    std::unique_ptr<Buffer> clasInfos, clasAddresses, clasStorage, clasScratch, clasSizes;
     std::unique_ptr<Buffer> blasInfos, blasAddresses, blasStorage, blasScratch;
     std::unique_ptr<Buffer> parameters;
     std::shared_ptr<bool> historyInitialized = std::make_shared<bool>(false);
     ClusterAccelerationStructureTriangleBuildSizesDesc clasLimits;
     StreamCLASTessellationBuildMode buildMode = StreamCLASTessellationBuildMode::Triangles;
+    StreamCLASTessellationTemplateShape templateShape = StreamCLASTessellationTemplateShape::Right;
+    StreamCLASTessellationInstantiationFlags instantiationFlags = StreamCLASTessellationInstantiationFlags::FastTrace;
     uint32_t clasInfoStride = sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo);
     uint32_t capacity = 0, instanceCount = 0, baseClusterId = 0, materialRevision = 0;
     std::string shaderHash;
     bool enabled = false;
+    bool diagnosticBuildSizes = false;
 
     Result<> buffer(uint64_t bytes, MemoryLocation memory, std::unique_ptr<Buffer>& output,
         BufferUsageBits usage = kDataUsage)
@@ -135,9 +138,12 @@ struct StreamCLASTessellation::Impl {
                 const auto pattern = makeTessellationPattern({(index & 7u) + 1u,
                     ((index >> 3u) & 7u) + 1u, (index >> 6u) + 1u});
                 for (size_t vertex = 0; vertex < pattern.vertices.size(); ++vertex) {
-                    positions[index * METALLIC_TESS_VERTICES_PER_PATCH + vertex] = {
-                        float(pattern.vertices[vertex][1]) / 65535.0f,
-                        float(pattern.vertices[vertex][2]) / 65535.0f, 0.0f};
+                    const float b1 = float(pattern.vertices[vertex][1]) / 65535.0f;
+                    const float b2 = float(pattern.vertices[vertex][2]) / 65535.0f;
+                    positions[index * METALLIC_TESS_VERTICES_PER_PATCH + vertex] =
+                        templateShape == StreamCLASTessellationTemplateShape::Equilateral
+                        ? std::array<float, 3>{b1 + 0.5f * b2, std::sqrt(3.0f) * 0.5f * b2, 0.0f}
+                        : std::array<float, 3>{b1, b2, 0.0f};
                 }
                 std::copy(pattern.triangles.begin(), pattern.triangles.end(),
                     indices.begin() + index * METALLIC_TESS_TRIANGLES_PER_PATCH);
@@ -181,11 +187,11 @@ StreamCLASTessellation::StreamCLASTessellation() : impl_(std::make_unique<Impl>(
 StreamCLASTessellation::~StreamCLASTessellation() = default;
 
 Result<> StreamCLASTessellation::initialize(Device& device, std::shared_ptr<ResourceRegistry> registry,
-    const scene::MeshletStreamAsset& asset, uint32_t maxPatches,
-    StreamCLASTessellationBuildMode buildMode, std::string& log)
+    const scene::MeshletStreamAsset& asset, const StreamCLASTessellationSettings& settings, std::string& log)
 {
+    const auto maxPatches = settings.maxPatches;
+    const auto buildMode = settings.buildMode;
     if (maxPatches == 0 || maxPatches > 1048576u || asset.instanceCount() == 0 ||
-        buildMode == StreamCLASTessellationBuildMode::Invalid ||
         uint64_t(asset.pageCount()) * METALLIC_STREAM_CLAS_CLUSTER_STRIDE + maxPatches > UINT32_MAX) {
         log = "CLAS tessellation patch capacity or generated cluster namespace is invalid.";
         return makeError(Error::InvalidArgument);
@@ -195,6 +201,10 @@ Result<> StreamCLASTessellation::initialize(Device& device, std::shared_ptr<Reso
     p.registry = std::move(registry);
     p.capacity = maxPatches;
     p.buildMode = buildMode;
+    p.templateShape = buildMode == StreamCLASTessellationBuildMode::Templates
+        ? settings.templateShape : StreamCLASTessellationTemplateShape::Right;
+    p.instantiationFlags = buildMode == StreamCLASTessellationBuildMode::Templates
+        ? settings.instantiationFlags : StreamCLASTessellationInstantiationFlags::FastTrace;
     p.clasInfoStride = buildMode == StreamCLASTessellationBuildMode::Templates
         ? sizeof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo)
         : sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo);
@@ -208,7 +218,10 @@ Result<> StreamCLASTessellation::initialize(Device& device, std::shared_ptr<Reso
         .maxAccelerationStructureCount = maxPatches,
         .operation = buildMode == StreamCLASTessellationBuildMode::Templates
             ? ClusterAccelerationStructureTriangleOperation::InstantiateTemplate
-            : ClusterAccelerationStructureTriangleOperation::Build};
+            : ClusterAccelerationStructureTriangleOperation::Build,
+        .flags = p.instantiationFlags == StreamCLASTessellationInstantiationFlags::None
+            ? RayTracingAccelerationStructureBuildFlags::None
+            : RayTracingAccelerationStructureBuildFlags::PreferFastTrace};
     auto properties = device.queryClusterAccelerationStructureProperties();
     auto clasSize = device.queryClusterAccelerationStructureTriangleBuildSizes(p.clasLimits,
         ClusterAccelerationStructureDestinationMode::Implicit);
@@ -269,7 +282,7 @@ void StreamCLASTessellation::reusePersistentState(const StreamCLASTessellation& 
     p.historyInitialized = prior.historyInitialized;
     p.materials = prior.materials;
     p.materialRevision = prior.materialRevision;
-    p.templates = prior.templates;
+    if (p.templateShape == prior.templateShape) { p.templates = prior.templates; }
 }
 
 Result<> StreamCLASTessellation::updateMaterials(const scene::Scene& scene,
@@ -321,11 +334,19 @@ Result<> StreamCLASTessellation::record(CommandBuffer& commands, const StreamCLA
     auto& p = *impl_;
     const auto& settings = frame.rtTessellation;
     p.enabled = settings.enabled;
+    p.diagnosticBuildSizes = settings.diagnosticBuildSizes;
     assert(p.buildMode == settings.buildMode || !settings.enabled);
+    assert(!settings.enabled || p.buildMode != StreamCLASTessellationBuildMode::Templates ||
+        (p.templateShape == settings.templateShape && p.instantiationFlags == settings.instantiationFlags));
     if (!p.materials || !std::isfinite(settings.edgePixels) || settings.edgePixels < 1.0f ||
         settings.edgePixels > 256.0f || settings.maxFactor < 1u || settings.maxFactor > 8u || settings.maxSplitDepth > 3u) {
         log = "Invalid CLAS tessellation quality settings or unpublished height data.";
         return makeError(Error::InvalidArgument);
+    }
+    if (p.diagnosticBuildSizes && !p.clasSizes) {
+        log = "Allocate diagnostic CLAS build sizes";
+        if (auto result = p.buffer(uint64_t(p.capacity) * sizeof(uint32_t), MemoryLocation::Device,
+                p.clasSizes, kASUsage); !result) { return result; }
     }
     if (p.buildMode == StreamCLASTessellationBuildMode::Templates) {
         log = "Prepare persistent CLAS tessellation templates";
@@ -382,6 +403,7 @@ Result<> StreamCLASTessellation::record(CommandBuffer& commands, const StreamCLA
         .buildInfoBuffer = *p.clasInfos->slice(), .buildInfoStride = p.clasInfoStride,
         .buildInfoCountBuffer = *p.counts->slice({0, 4}),
         .destinationStorageBuffer = *p.clasStorage->slice(), .destinationAddressBuffer = *p.clasAddresses->slice(),
+        .destinationSizeBuffer = p.diagnosticBuildSizes ? *p.clasSizes->slice() : BufferSlice{},
         .scratchBuffer = *p.clasScratch->slice(), .geometryBuffers = geometry,
         .templateStorageBuffer = p.buildMode == StreamCLASTessellationBuildMode::Templates
             ? p.templates->storageRange : BufferSlice{}});
@@ -426,11 +448,24 @@ StreamCLASTessellationBuildMode StreamCLASTessellation::buildMode() const
     return impl_->buildMode;
 }
 
+StreamCLASTessellationTemplateShape StreamCLASTessellation::templateShape() const
+{
+    return impl_->templateShape;
+}
+
+StreamCLASTessellationInstantiationFlags StreamCLASTessellation::instantiationFlags() const
+{
+    return impl_->instantiationFlags;
+}
+
 std::string StreamCLASTessellation::diagnosticIdentity() const
 {
     const auto& p = *impl_;
     return nlohmann::json{{"mode", p.buildMode == StreamCLASTessellationBuildMode::Templates ? "templates" : "triangles"},
-        {"enabled", p.enabled}, {"module", "Features/GPUDriven/StreamCLASTessellation"},
+        {"templateShape", p.templateShape == StreamCLASTessellationTemplateShape::Equilateral ? "equilateral" : "right"},
+        {"instantiationFlags", p.instantiationFlags == StreamCLASTessellationInstantiationFlags::None ? "none" : "fastTrace"},
+        {"enabled", p.enabled}, {"diagnosticBuildSizes", p.diagnosticBuildSizes},
+        {"module", "Features/GPUDriven/StreamCLASTessellation"},
         {"entry", "tessellationMain"}, {"spirvSha256", p.shaderHash}, {"maxPatches", p.capacity},
         {"patternCount", p.templates ? kTemplateCount : 0u},
         {"templatesReady", p.templates && p.templates->initialized},
@@ -445,6 +480,11 @@ std::string StreamCLASTessellation::diagnosticIdentity() const
 Buffer* StreamCLASTessellation::statisticsBuffer() const
 {
     return impl_->counts.get();
+}
+
+Buffer* StreamCLASTessellation::buildSizesBuffer() const
+{
+    return impl_->diagnosticBuildSizes ? impl_->clasSizes.get() : nullptr;
 }
 
 Buffer* StreamCLASTessellation::metadataBuffer() const

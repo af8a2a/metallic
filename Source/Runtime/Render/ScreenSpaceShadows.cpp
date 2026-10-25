@@ -128,7 +128,8 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     ScenePathTraceResources* geometry,
     const MeshletStreamDeferredGPUResourcesView* streamGeometry,
     CPUProfileRecorder* profiler,
-    RayTracingAccelerationStructure* accelerationStructure)
+    RayTracingAccelerationStructure* accelerationStructure,
+    const std::function<void(std::string_view)>& checkpoint)
 {
     ScreenSpaceShadowResult output{};
     CPUProfileScope profile(profiler, "Validate shadow resources");
@@ -350,6 +351,9 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     }
     result = enterStage(1);
     if (!result) { return makeError(result.error()); }
+    // The trace interval starts after the access barrier so it measures the
+    // actual dispatch separately from setup and final output transitions.
+    if (checkpoint) { checkpoint("BeforeShadowTrace"); }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
     result = dispatchResources(trace, traceEncoder_, {
         .commandBuffer = &commands,
@@ -361,10 +365,12 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         .profiler = profiler,
     });
     commands.endDebugLabel();
+    if (checkpoint) { checkpoint("AfterShadowTrace"); }
     if (!result) { return makeError(result.error()); }
     profile.next("Record denoising");
 #if METALLIC_HAS_NRD
     if (denoise) {
+        if (checkpoint) { checkpoint("BeforeShadowDenoise"); }
         result = enterStage(2);
         if (!result) { return makeError(result.error()); }
         if (!state->sigma.valid()) {
@@ -405,10 +411,12 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         }
         result = state->sigma.setSigmaSettings(sigma);
         if (result) { result = state->sigma.denoise(NRDDenoiserMode::Sigma, commands); }
+        if (checkpoint) { checkpoint("AfterShadowDenoise"); }
         if (!result) { return makeError(result.error()); }
     }
 #endif
     profile.next("Finalize shadow state");
+    if (checkpoint) { checkpoint("BeforeShadowFinalize"); }
     result = enterStage(3);
     if (!result) { return makeError(result.error()); }
     state->initialized = true;
@@ -420,6 +428,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     state->traceEnabled = parameters.control[0] != 0;
     state->angularRadius = parameters.trace[3];
     output = {.texture = state->textures[4].get(), .shadow = state->views[4].get(), .parameters = state->parameters.get()};
+    if (checkpoint) { checkpoint("AfterShadowFinalize"); }
     return output;
 }
 

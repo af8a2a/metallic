@@ -367,7 +367,12 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
             const StreamCLASTessellationSettings settings{
                 .enabled = true, .maxPatches = context.properties().value("rtTessellationMaxPatches", 16384u),
                 .buildMode = parseStreamCLASTessellationBuildMode(
-                    context.properties().value("rtTessellationBuildMode", std::string("triangles")))};
+                    context.properties().value("rtTessellationBuildMode", std::string("triangles"))),
+                .diagnosticBuildSizes = context.properties().value("benchmarkCLASBuildSizes", false),
+                .templateShape = parseStreamCLASTessellationTemplateShape(
+                    context.properties().value("rtTessellationTemplateShape", std::string("right"))),
+                .instantiationFlags = parseStreamCLASTessellationInstantiationFlags(
+                    context.properties().value("rtTessellationInstantiationFlags", std::string("fastTrace")))};
             const auto configured = prepared.geometry->configureTessellation(*device_, *prepared.sourceScene,
                 *resources, settings, log);
             if (!configured) { return configured; }

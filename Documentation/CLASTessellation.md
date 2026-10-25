@@ -12,6 +12,8 @@ The device must support `VK_NV_cluster_acceleration_structure`.
 | --- | --- | --- |
 | `rtTessellation` | false | Enable generated CLAS geometry; changing it rebuilds the graph |
 | `rtTessellationBuildMode` | `triangles` | `triangles` builds generated clusters directly; `templates` instantiates fixed topology templates |
+| `rtTessellationTemplateShape` | `right` | Template canonical positions: `right` or experimental `equilateral`; actual displaced vertices are unchanged |
+| `rtTessellationInstantiationFlags` | `fastTrace` | Instantiation build hint: `fastTrace` or experimental `none`; template construction still prefers fast tracing |
 | `rtTessellationEdgePixels` | 8 | Unjittered render-pixel edge target, 1–256 |
 | `rtTessellationMaxFactor` | 4 | Leaf edge factor, 1–8 |
 | `rtTessellationMaxSplitDepth` | 2 | Recursive split depth, 0–3 |
@@ -20,7 +22,9 @@ The device must support `VK_NV_cluster_acceleration_structure`.
 The three quality controls update the next traversal without shader variants.
 The build mode changes how the same generated geometry becomes CLAS; it does
 not change quality, source-domain mapping or the capacity policy. `triangles`
-remains the default. Unknown build-mode values fail validation.
+remains the default. Unknown build-mode, template-shape or instantiation-policy
+values fail validation. Triangle builds ignore the two template policies and
+report their effective defaults in the runtime identity.
 Raster and ray quality settings are independent; set matching values when
 comparing their surfaces. Material authoring, world-unit magnitude, height
 sampling, UV0 transforms and seam limitations are described in
@@ -79,7 +83,9 @@ guessed canonical bound would be incorrect.
 The first template use allocates the pool and records its native build before
 instantiation. Initialization becomes accepted only with submission; cancelled
 recording must retry it. The pool and its address table remain alive through
-all consumers and are shared across capacity or build-mode replacements.
+all consumers and are shared across capacity or build-mode replacements when
+the canonical shape matches. Changing the shape builds a matching pool;
+changing only instantiation flags can reuse it. Both preserve semantic history.
 Subsequent frames reuse the initialized topology but still perform selection,
 count/emit, vertex dicing, CLAS instantiation, BLAS and TLAS work.
 
@@ -88,6 +94,16 @@ GPU timing. The controlled A/B harness and its fixed workload, warmup,
 correctness and ABBA rules are described in
 [MeasureCLASTessellation](../Tools/Perf/MeasureCLASTessellation.md). No template
 performance conclusion is established by this implementation description.
+
+The separate [Shadow qualification runner](../Tools/Perf/MeasureCLASTemplateShadow.md)
+compares triangle builds, the original template policy and one declared candidate
+in symmetric six-process blocks. It retains whole-Shadow and whole-graph gates
+alongside the CLAS gain. `Shadow trace` timestamps separate the dispatch from
+setup, final transitions and the existing `Publish shadow` copy interval.
+Diagnostic-only `benchmarkCLASBuildSizes` publishes the native per-cluster size
+array; it is disabled in ordinary timing. Its live prefix is defined by
+`tessellationCounts[0]`, and its sum is not the preallocated arena size or whole
+renderer VRAM use.
 
 ## Capacity, history and lifetime
 
@@ -154,6 +170,11 @@ and steady state reported separately.
   128x128 color/depth ray image, and checks that mode switches do not invalidate
   history. The original triangle test retains shared-edge probes; the paired
   test uses interior probes to avoid legal adjacent-triangle tie differences.
+- `scene_clas_tessellation_templates_c1_right_none` and
+  `scene_clas_tessellation_templates_c2_equilateral_fast_trace`: the candidate
+  policies run the same matrix and also check policy switches, cancelled
+  replacement retries, runtime policy receipts and unchanged history. The
+  image alpha carries nearest-hit distance in addition to color comparisons.
 - Existing `tessellation_*`, `scene_clas_attributes*`, `stream_blas_cut_cache`,
   `stream_rt_representation_lifecycle` and `stream_clas_cut_readiness` protect
   shared geometry, decoding and publication contracts.
@@ -220,6 +241,88 @@ Earlier `diagnostic-01` through `diagnostic-03` preserve harness qualification
 failures: hidden count binding, missing explicit internal resolution, and a
 process-specific cache path mistaken for cross-process identity. They contain
 no ordinary A/B samples and were not included in the performance statistics.
+
+## Shadow regression investigation (2026-10-25)
+
+This follow-up did **not** eliminate the shadow regression. Defaults remain
+`triangles`, template shape `right`, instantiation flags `fastTrace`. The two
+experimental policies are available for reproducible investigation, not promoted
+as qualified fixes.
+
+The original fixed workload/settings above were preserved, including explicit
+1444x694 internal resolution, 32 warmup / 64 timed frames and frame-16 residency
+freeze. Both arms now have the same additional shadow timestamps. Each candidate
+received its predeclared three six-process ABCCBA discovery blocks plus three
+separate diagnostic processes. Both failed discovery, so neither entered the
+reserved five-block confirmation stage. No samples were removed, extended or
+pooled between candidates. RTX 5070 Ti / NVIDIA 621.01 and build SDKs were unchanged.
+
+Positive gain means less time. These are paired complete-block log-ratio
+estimates with 95% intervals, not ratios of overall medians:
+
+| Candidate | CLAS gain vs triangles | Complete Shadows gain vs triangles | Shadows gain vs original templates |
+| --- | ---: | ---: | ---: |
+| C1: right / none | +83.07% [82.66, 83.48] | -6.58% [-7.99, -5.20] | +0.17% [-0.78, 1.11] |
+| C2: equilateral / fastTrace | +80.88% [80.67, 81.09] | -7.11% [-7.99, -6.23] | -0.70% [-2.74, 1.31] |
+
+C1 made the CLAS operation 7.23% faster than original templates, but did not fix
+its consumer. C2 did not improve shadows and its CLAS operation was about 5%
+slower than original templates. The new same-binary original-template comparisons
+reproduced a 6.37–6.77% complete-Shadow regression. These new timestamp scopes
+change instrumentation from the earlier 7.67% observation; the experiments are
+reported separately rather than pooling old and new timings.
+
+The narrowed dispatch interval excludes its preceding access barrier. Original
+templates' trace regressed 6.26–6.32%; C1's trace still regressed 6.14%, and C2's
+6.63%. Original templates' pure `Publish shadow` copy interval also regressed
+about 20%. A post-hoc absolute-time decomposition of C1 gives +5.136 us for
+complete Shadows, +3.840 us for trace, and +1.373 us for copy. Setup/finalization
+were essentially unchanged. Medians of individual scopes are not additive.
+
+Separate native destination-size diagnostics returned **3,616,896 bytes** for
+triangle CLAS (1536–2176 bytes per cluster), versus **5,242,880 bytes** for all
+three template policies (all 2048 clusters exactly 2560 bytes): **44.96% more
+live CLAS data**. These are actual native outputs, not arena capacity or total
+VRAM. All template policies returned byte-identical size arrays. This supports
+investigating representation/encoding and cache cost, but does not measure BVH
+nodes, traversal steps, cache misses, or establish that the extra bytes cause
+the regression. No dynamic RT hardware counters were collected.
+
+Zero `instantiationBoundingBoxLimit` remains a plausible encoding constraint.
+The [Vulkan extension proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_NV_cluster_acceleration_structure.html)
+describes bounds as an optimization hint; it does not promise that this driver's
+encoding will shrink. A future bounded-template experiment must derive bounds
+from every relevant LOD and current instance/material state, include world-to-local
+displacement and floating-point error, and rebuild the retained pool when bounds
+expand. A guessed canonical box or fixed percentage expansion cannot guarantee
+correctness for animated/nonuniform transforms. This follow-up did not add such
+an unproven bound or truncate positions.
+
+Validation completed:
+
+- Both executables built; 378 shader modules passed ownership audit; both unique
+  bound tessellation/shadow SPIR-V modules passed `spirv-val --target-env vulkan1.4`.
+- 50 focused Python checks passed (16 new protocol, 16 original protocol,
+  18 MaterialBaseline); original sealed v1 evidence still verifies unchanged.
+- Four original strict GPU cases and both candidate cases passed without skips
+  or captured Vulkan messages. Each candidate covered 23 paired states, 8 precise
+  rays and a 128x128 color/distance image per state, plus policy switching and
+  cancellation. Maximum attribute/image difference and extra history changes
+  were zero.
+- All 42 experiment processes produced byte-identical HDR, depth and shadow.
+  Four additional complete-scene synchronization-validation runs, including
+  native size writes/readback, passed and matched those same bytes. All runs
+  produced 2048 patches, one generated BLAS, zero rejected/invalid work.
+- `strict-01` retains the two initial candidate harness failures caused by
+  setting an unchanged runtime property and expecting a synchronization update.
+  Only the switch helper's call sites were corrected; all original checks and
+  image/distance thresholds stayed intact. `strict-02` contains the passing
+  reruns. Build logs also retain the corrected test-name type error.
+
+Local untracked evidence is under `.tmp/clas-shadow-optimization/`: sealed
+`c1-01` / `c2-01`, reviewed `c1-report` / `c2-report`, `analysis-c1.md`,
+`Correctness.png`, `NativeCLASSizes.png`, `VisualVerification.json`, and
+`report.md`. `plot_diagnostics.py` reproduces the image/size plots from raw data.
 
 ## Previous executed baseline (2026-10-25, triangle builds only)
 
