@@ -61,6 +61,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/DeferredShaderCacheWriter.cpp
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
+    Runtime/Render/Shadow/VirtualShadowMapPrototype.cpp
     Runtime/Render/MeshletLOD.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp

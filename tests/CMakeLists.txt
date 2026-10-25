@@ -499,6 +499,7 @@ add_executable(MetallicRHITests
     rhi/RealtimePipelineTests.cpp
     rhi/EnvironmentPrefilterTests.cpp
     rhi/HybridRasterTests.cpp
+    rhi/VirtualShadowMapTests.cpp
     rhi/StreamClusterCandidateTests.cpp
     rhi/StreamClusterClassificationTests.cpp
     rhi/StreamGroupRasterTests.cpp
