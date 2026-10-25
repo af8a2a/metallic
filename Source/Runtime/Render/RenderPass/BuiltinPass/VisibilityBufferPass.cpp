@@ -1006,6 +1006,10 @@ public:
         }
         gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
             streamEnabled_ ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGPUResourcesView{});
+        auto shadowGeometry = streamEnabled_ ? streamRuntime_->shadowGeometryResources() : MeshletStreamShadowGeometryView{};
+        shadowGeometry.owner = streamEnabled_ ? streamRuntime_ : nullptr;
+        gpuSceneSubsystem->publishShadowGeometry(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
+            std::move(shadowGeometry));
         ++frameIndex_;
         gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 1, 0u);
         return {};

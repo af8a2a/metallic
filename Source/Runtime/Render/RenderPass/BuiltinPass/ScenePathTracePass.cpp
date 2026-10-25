@@ -1088,6 +1088,7 @@ public:
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
+                    .requiresRayQuery = !visibilityDeferred_,
                     .resourceParameterSize = pathDiagnosticsEnabled() ? sizeof(ScenePathDiagnosticResourceParameters) :
                         splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) : sizeof(SceneResourceParameters),
                     .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines),

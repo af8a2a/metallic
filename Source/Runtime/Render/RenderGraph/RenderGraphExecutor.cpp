@@ -4545,7 +4545,7 @@ const RenderGraphExecutionStats& RenderGraphPreviewRenderer::executionStats() co
 }
 
 Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath,
-    bool enableSynchronizationValidation)
+    bool enableSynchronizationValidation, ValidationSink validationSink)
 {
     Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic RenderGraph Preview",
@@ -4565,6 +4565,7 @@ Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enab
             .enableRayTracingPipeline = enableRayQuery,
             .enableRayTracingInvocationReorder = enableRayQuery,
             .enableClusterAccelerationStructure = enableRayQuery,
+            .validationSink = validationSink,
             .enableAsyncCompute = true,
             .enableAftermath = enableAftermath,
         }).transform([&](auto rhiValue) { impl_->device = std::move(rhiValue); });

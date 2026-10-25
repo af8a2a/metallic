@@ -28,6 +28,7 @@ std::unique_ptr<RenderGraphPass> createSceneAccelerationStructurePass();
 std::unique_ptr<RenderGraphPass> createVisibilityBufferPass();
 std::unique_ptr<RenderGraphPass> createVisibilityBufferDeferredPass();
 std::unique_ptr<RenderGraphPass> createScreenSpaceShadowPass();
+std::unique_ptr<RenderGraphPass> createVirtualShadowMapPass();
 std::unique_ptr<RenderGraphPass> createGPUDrivenStreamAssetPass();
 std::unique_ptr<RenderGraphPass> createScenePathTracePass();
 std::unique_ptr<RenderGraphPass> createSceneRealtimeLightingPass();

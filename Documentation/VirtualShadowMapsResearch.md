@@ -2,7 +2,7 @@
 
 调研日期：2026-10-22。Metallic 基线：`9c38bc4581d129b8ff2c42a0110db4828bb9fac4`。
 
-本文记录 2026-10-22 的设计建议。2026-10-25 已完成 [P0 固定页 GPU 原型及验收](VirtualShadowMapPrototype.md)，生产实时图尚未接入 VSM，也没有性能加速结论。下述调研结论来自当时 Metallic 源码、本机 UE 源码及 Epic 官方资料；历史文档只作为检索线索，冲突时以当前代码为准。
+本文记录 2026-10-22 的设计建议。2026-10-25 已完成 [P0 固定页 GPU 原型及验收](VirtualShadowMapPrototype.md)，并新增 [P1 单太阳硬阴影与独立 sample](VirtualShadowMapsP1.md)：按接收点分配页、方向光 clipmap、完整场景粗级及 resident/StreamAsset caster。P1 的验证范围以该阶段文档为准；现有实时图和运行时默认项保持原有配置，没有性能加速结论。下述调研结论来自当时 Metallic 源码、本机 UE 源码及 Epic 官方资料；历史文档只作为检索线索，冲突时以当前代码为准。
 
 ## 1. 建议与范围
 
@@ -228,4 +228,4 @@ GPUScene / MeshletStreamRuntime 增加共享驻留与独立 shadow-view traversa
 
 待 P0/P1 回答：D32 图集 tile 隔离的最佳实现、真正跨视图的 stream cut 复用程度、物理池大小、热点是否在光栅还是查询、默认 SMRT 质量与目标 frame budget。默认范围和架构可以现在确定，这些参数应由原型实测确定。
 
-**调研交付状态（2026-10-22）：完成源码与资料调研及阶段方案，当次仅新增本文档。后续进展（2026-10-25）：P0 D32 atlas + 页内几何裁剪通过离屏 GPU 验收，详见 [P0 原型](VirtualShadowMapPrototype.md)；运行时默认项保持原有配置。**
+**调研交付状态（2026-10-22）：完成源码与资料调研及阶段方案，当次仅新增本文档。后续进展（2026-10-25）：P0 D32 atlas + 页内几何裁剪通过离屏 GPU 验收，详见 [P0 原型](VirtualShadowMapPrototype.md)；单太阳 Pass 和可选 sample 见 [P1](VirtualShadowMapsP1.md)，运行时默认项保持原有配置。**

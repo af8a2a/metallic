@@ -505,6 +505,7 @@ bool GPUSceneSubsystem::destroyView(GPUSceneViewId view)
         return false;
     }
     visibilityStreams_.erase(viewResourceKey(view));
+    shadowGeometry_.erase(viewResourceKey(view));
     const auto grids = lightGrids_.find(viewResourceKey(view));
     if (grids != lightGrids_.end()) {
         for (auto& grid : grids->second) {
@@ -1506,9 +1507,32 @@ const MeshletStreamDeferredGPUResourcesView* GPUSceneSubsystem::visibilityStream
         ? &found->second.resources : nullptr;
 }
 
+void GPUSceneSubsystem::publishShadowGeometry(GPUSceneViewId view, uint64_t frameIndex,
+    uint64_t sceneIdentity, MeshletStreamShadowGeometryView resources)
+{
+    shadowGeometry_[viewResourceKey(view)] = {frameIndex, sceneIdentity, std::move(resources)};
+}
+
+const MeshletStreamShadowGeometryView* GPUSceneSubsystem::shadowGeometry(
+    GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const
+{
+    const auto found = shadowGeometry_.find(viewResourceKey(view));
+    return found != shadowGeometry_.end() && found->second.frameIndex == frameIndex &&
+        found->second.sceneIdentity == sceneIdentity && found->second.resources.valid()
+        ? &found->second.resources : nullptr;
+}
+
+void GPUSceneSubsystem::endFrame(const RenderSubsystemFrameContext&)
+{
+    // This publication is only consumed while recording the matching frame.
+    // Recorded consumers retain their runtime until the submission retires.
+    shadowGeometry_.clear();
+}
+
 void GPUSceneSubsystem::shutdown()
 {
     visibilityStreams_.clear();
+    shadowGeometry_.clear();
     if (pendingPublication_ != nullptr) { pendingPublication_->cancel(); }
     pendingPublication_.reset();
     scene_.invalidateGpuResources();

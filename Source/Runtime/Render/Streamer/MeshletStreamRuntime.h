@@ -38,6 +38,7 @@
 namespace metallic::render {
 
 class MeshletStreamCLASPool;
+class MeshletStreamRuntime;
 class ScenePathTraceResources;
 struct StreamSceneReadiness {
     uint32_t requiredPages = 0;
@@ -475,6 +476,22 @@ struct MeshletStreamGPURasterBindings {
     uint32_t instanceVisibilityResetCount = 0;
 };
 
+// Full scene geometry for an independent shadow view. This deliberately omits
+// the camera's active cut and visible records. The publisher supplies ownership.
+struct MeshletStreamShadowGeometryView {
+    Buffer* instanceBuffer = nullptr;
+    Buffer* pageBuffer = nullptr;
+    Buffer* pageTableBuffer = nullptr;
+    const scene::MeshletStreamAsset* asset = nullptr;
+    uint32_t pageBufferBytes = 0;
+    std::shared_ptr<MeshletStreamRuntime> owner;
+
+    bool valid() const
+    {
+        return instanceBuffer && pageBuffer && pageTableBuffer && asset && owner;
+    }
+};
+
 // Non-owning resources required by a unified deferred consumer. The stream
 // runtime retains ownership; a consumer registers these buffers in its own
 // bindless heap so one deferred dispatch can decode both resident and streamed
@@ -785,6 +802,10 @@ public:
     Result<> cmdPrepareVisibility(CommandBuffer& commandBuffer);
     Result<> cmdPrepareDeferred(CommandBuffer& commandBuffer);
     MeshletStreamDeferredGPUResourcesView deferredGpuResources() const;
+    MeshletStreamShadowGeometryView shadowGeometryResources() const;
+    // Consume after the frame's page publication, including after cmdEndFrame.
+    // Does not change the primary view's traversal/cut or issue stream requests.
+    Result<> cmdPrepareShadowGeometry(CommandBuffer& commandBuffer);
     uint32_t frameIndex() const { return frameIndex_; }
     uint32_t visibleClusterCapacity() const;
     uint32_t rasterCandidateCapacity() const { return rasterCandidateCapacity_; }

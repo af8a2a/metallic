@@ -94,6 +94,10 @@ void registerBuiltInRenderGraphPasses()
         "Legacy alias for RayTracedShadowPass (full TLAS tracing with NRD SIGMA)",
         []() { return builtin_pass::createScreenSpaceShadowPass(); });
     registerRenderGraphPassType(
+        "VirtualShadowMapPass",
+        "Experimental single-Sun virtual shadow pages with receiver demand, clipmaps and coarse fallback",
+        []() { return builtin_pass::createVirtualShadowMapPass(); });
+    registerRenderGraphPassType(
         "VisibilityBufferDeferredPass",
         "Resolve resident VBuffer surfaces with OpenPBR, physical lights, environment reflection and pipeline shadow visibility",
         []() { return builtin_pass::createVisibilityBufferDeferredPass(); });

@@ -3748,6 +3748,28 @@ Result<> MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
     return {};
 }
 
+MeshletStreamShadowGeometryView MeshletStreamRuntime::shadowGeometryResources() const
+{
+    return {.instanceBuffer = instanceBuffer_.get(), .pageBuffer = pageBuffer_.get(),
+        .pageTableBuffer = pageTableBuffer_.get(), .asset = &asset_,
+        .pageBufferBytes = static_cast<uint32_t>(residency_.pageBufferSize())};
+}
+
+Result<> MeshletStreamRuntime::cmdPrepareShadowGeometry(CommandBuffer& commandBuffer)
+{
+    if (!ready()) { return makeError(Error::InvalidArgument); }
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
+    auto* frame = RenderFrameContext::from(commandBuffer);
+    if (!frame || !frame->recording()) { return makeError(Error::InvalidArgument); }
+    residency_.trackGeometryUse(frame->completion());
+    for (const auto& lease : {pageHandle_, pageTableHandle_, instanceHandle_}) {
+        if (auto result = registry_->retain(commandBuffer, lease); !result) { return result; }
+    }
+    if (auto result = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead);
+        !result) { return result; }
+    return transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::ShaderRead);
+}
+
 MeshletStreamDeferredGPUResourcesView MeshletStreamRuntime::deferredGpuResources() const
 {
     return MeshletStreamDeferredGPUResourcesView{

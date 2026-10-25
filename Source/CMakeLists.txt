@@ -62,6 +62,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
     Runtime/Render/Shadow/VirtualShadowMapPrototype.cpp
+    Runtime/Render/Shadow/VirtualShadowMaps.cpp
+    Runtime/Render/Shadow/VirtualShadowMapCasters.cpp
     Runtime/Render/MeshletLOD.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp
@@ -119,6 +121,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/VirtualShadowMapPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ImageSamplePass.cpp
