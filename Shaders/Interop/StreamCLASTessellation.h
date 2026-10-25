@@ -56,6 +56,8 @@ TESS_PUBLIC struct StreamCLASTessellationParameters
     TESS_PUBLIC float edgePixels;
     TESS_PUBLIC uint32_t maxFactor, maxSplitDepth, revision;
     TESS_PUBLIC uint32_t pageDescriptor, pageTableDescriptor;
+    TESS_PUBLIC uint64_t templateAddresses;
+    TESS_PUBLIC uint32_t buildMode, reserved;
 };
 
 TESS_PUBLIC struct StreamCLASTessellationPush
@@ -69,7 +71,7 @@ static_assert(sizeof(StreamCLASTessellationLeaf) == 48);
 static_assert(sizeof(StreamCLASTessellationVertex) == 32);
 static_assert(sizeof(StreamCLASTessellationGeometry) == 32);
 static_assert(sizeof(StreamCLASTessellationInstance) == 32);
-static_assert(sizeof(StreamCLASTessellationParameters) == 216);
+static_assert(sizeof(StreamCLASTessellationParameters) == 232);
 static_assert(sizeof(StreamCLASTessellationPush) == 16);
 } // namespace metallic::render
 #endif

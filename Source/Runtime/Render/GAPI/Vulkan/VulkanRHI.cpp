@@ -602,6 +602,27 @@ VkGeometryInstanceFlagsKHR toVkInstanceFlags(RayTracingInstanceFlags flags)
 }
 
 #ifdef VK_NV_cluster_acceleration_structure
+Result<VkClusterAccelerationStructureOpTypeNV> toVkClusterTriangleOperation(
+    ClusterAccelerationStructureTriangleOperation operation)
+{
+    switch (operation) {
+    case ClusterAccelerationStructureTriangleOperation::Build:
+        return VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
+    case ClusterAccelerationStructureTriangleOperation::BuildTemplate:
+        return VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV;
+    case ClusterAccelerationStructureTriangleOperation::InstantiateTemplate:
+        return VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV;
+    }
+    return makeError(Error::InvalidArgument);
+}
+
+bool validClusterTriangleBuildFlags(RayTracingAccelerationStructureBuildFlags flags)
+{
+    return flags == RayTracingAccelerationStructureBuildFlags::None ||
+        flags == RayTracingAccelerationStructureBuildFlags::PreferFastTrace ||
+        flags == RayTracingAccelerationStructureBuildFlags::PreferFastBuild;
+}
+
 VkClusterAccelerationStructureTypeNV toVkClusterObjectType(ClusterAccelerationStructureObjectType type)
 {
     return type == ClusterAccelerationStructureObjectType::BottomLevel
@@ -6233,8 +6254,25 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTrianglesIndirect(
         offsetof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV, indexBuffer));
     static_assert(offsetof(ClusterAccelerationStructureTriangleIndirectBuildInfo, vertexBufferAddress) ==
         offsetof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV, vertexBuffer));
+    static_assert(sizeof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo) ==
+        sizeof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV));
+    static_assert(offsetof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo, instantiationBoundingBoxLimitAddress) ==
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, instantiationBoundingBoxLimit));
+    static_assert(sizeof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo) ==
+        sizeof(VkClusterAccelerationStructureInstantiateClusterInfoNV));
+    static_assert(offsetof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo, clusterTemplateAddress) ==
+        offsetof(VkClusterAccelerationStructureInstantiateClusterInfoNV, clusterTemplateAddress));
+    static_assert(offsetof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo, vertexBufferAddress) ==
+        offsetof(VkClusterAccelerationStructureInstantiateClusterInfoNV, vertexBuffer));
     const auto& bounds = desc.limits;
     const auto& properties = impl_->device->physicalProperties.cluster;
+    const auto operation = toVkClusterTriangleOperation(bounds.operation);
+    if (!operation || !validClusterTriangleBuildFlags(bounds.flags)) { return makeError(Error::InvalidArgument); }
+    const bool buildTemplate = bounds.operation == ClusterAccelerationStructureTriangleOperation::BuildTemplate;
+    const bool instantiate = bounds.operation == ClusterAccelerationStructureTriangleOperation::InstantiateTemplate;
+    const uint64_t recordSize = instantiate ? sizeof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo) :
+        buildTemplate ? sizeof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo) :
+        sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo);
     const auto vertexInfo = formatInfo(bounds.vertexFormat);
     if (!bounds.maxAccelerationStructureCount || !bounds.maxClusterTriangleCount || !bounds.maxClusterVertexCount ||
         bounds.maxClusterTriangleCount > std::min(properties.maxTrianglesPerCluster, 0x1ffu) ||
@@ -6243,8 +6281,11 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTrianglesIndirect(
         bounds.maxGeometryIndexValue > 0xffffffu || bounds.minPositionTruncateBitCount > 32u ||
         !bounds.maxTotalTriangleCount || !bounds.maxTotalVertexCount ||
         !vertexInfo.bytesPerBlock || vertexInfo.blockExtent != 1 || toVkFormat(bounds.vertexFormat) == VK_FORMAT_UNDEFINED ||
-        desc.geometryBuffers.empty() ||
-        desc.buildInfoStride < sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo) || desc.buildInfoStride % 8 ||
+        (!instantiate && desc.geometryBuffers.empty()) ||
+        (instantiate && !validCommandSlice(*impl_, desc.templateStorageBuffer,
+            BufferUsageBits::AccelerationStructureStorage, 1, properties.clusterTemplateByteAlignment)) ||
+        (!instantiate && desc.templateStorageBuffer.valid()) ||
+        desc.buildInfoStride < recordSize || desc.buildInfoStride % 8 ||
         desc.buildInfoStride > UINT64_MAX / bounds.maxAccelerationStructureCount ||
         desc.destinationAddressStride < sizeof(uint64_t) || desc.destinationAddressStride % 8 ||
         desc.destinationAddressStride > UINT64_MAX / bounds.maxAccelerationStructureCount ||
@@ -6286,8 +6327,8 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTrianglesIndirect(
     VkClusterAccelerationStructureInputInfoNV input{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
         .maxAccelerationStructureCount = bounds.maxAccelerationStructureCount,
-        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+        .flags = toVkAccelerationStructureBuildFlags(bounds.flags),
+        .opType = *operation,
         .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV,
         .opInput = {.pTriangleClusters = &triangleInput},
     };
@@ -6296,11 +6337,12 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTrianglesIndirect(
     auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, properties.clusterScratchByteAlignment, sizes.buildScratchSize);
     if (!scratch) { return makeError(scratch.error()); }
     if (!validCommandSlice(*impl_, desc.destinationStorageBuffer, BufferUsageBits::AccelerationStructureStorage,
-            sizes.accelerationStructureSize, properties.clusterByteAlignment)) {
+            sizes.accelerationStructureSize, buildTemplate ? properties.clusterTemplateByteAlignment : properties.clusterByteAlignment)) {
         return makeError(Error::InvalidArgument);
     }
     auto retained = retainBufferSlices(*this, {desc.buildInfoBuffer, desc.buildInfoCountBuffer,
-        desc.destinationStorageBuffer, desc.destinationAddressBuffer, desc.destinationSizeBuffer, desc.scratchBuffer});
+        desc.destinationStorageBuffer, desc.destinationAddressBuffer, desc.destinationSizeBuffer, desc.scratchBuffer,
+        desc.templateStorageBuffer});
     if (!retained) { return retained; }
     for (const auto& geometry : desc.geometryBuffers) {
         retained = retainResource(geometry.retainAllocation());
@@ -6327,7 +6369,8 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTrianglesIndirect(
         .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
+            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier,
@@ -7187,6 +7230,8 @@ Result<ClusterAccelerationStructureProperties> Device::queryClusterAccelerationS
             sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
         .bottomLevelBuildInfoSize =
             sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV),
+        .templateStorageAlignment = properties.clusterTemplateByteAlignment,
+        .templateBoundsAlignment = properties.clusterTemplateBoundsByteAlignment,
     };
     return queriedProperties;
 #endif
@@ -7219,6 +7264,15 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
     if (impl_->functions.vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
         return makeError(Error::Unsupported);
     }
+    const auto operation = toVkClusterTriangleOperation(desc.operation);
+    if (!operation || !validClusterTriangleBuildFlags(desc.flags)) { return makeError(Error::InvalidArgument); }
+    const auto& properties = impl_->physicalProperties.cluster;
+    if (desc.maxClusterTriangleCount > std::min(properties.maxTrianglesPerCluster, 0x1ffu) ||
+        desc.maxClusterVertexCount > std::min(properties.maxVerticesPerCluster, 0x1ffu) ||
+        desc.maxGeometryIndexValue > properties.maxClusterGeometryIndex || desc.maxGeometryIndexValue > 0xffffffu ||
+        desc.minPositionTruncateBitCount > 32u) {
+        return makeError(Error::InvalidArgument);
+    }
     const VkFormat vertexFormat = toVkFormat(desc.vertexFormat);
     if (vertexFormat == VK_FORMAT_UNDEFINED) {
         return makeError(Error::InvalidArgument);
@@ -7242,8 +7296,8 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
     VkClusterAccelerationStructureInputInfoNV inputInfo{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV,
         .maxAccelerationStructureCount = desc.maxAccelerationStructureCount,
-        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-        .opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+        .flags = toVkAccelerationStructureBuildFlags(desc.flags),
+        .opType = *operation,
         .opMode = destinationMode == ClusterAccelerationStructureDestinationMode::Implicit
             ? VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV
             : VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,

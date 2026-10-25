@@ -38,10 +38,34 @@ METALLIC_CLAS_PUBLIC struct ClusterAccelerationStructureTriangleIndirectBuildInf
     METALLIC_CLAS_PUBLIC uint64_t opacityMicromapIndexBufferAddress;
 };
 
+METALLIC_CLAS_PUBLIC struct ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo
+{
+    METALLIC_CLAS_PUBLIC ClusterAccelerationStructureTriangleIndirectBuildInfo triangle;
+    // Zero leaves instantiation positions unrestricted. Otherwise this points
+    // to six floats: minX, minY, minZ, maxX, maxY, maxZ.
+    METALLIC_CLAS_PUBLIC uint64_t instantiationBoundingBoxLimitAddress;
+};
+
+METALLIC_CLAS_PUBLIC struct ClusterAccelerationStructureTriangleTemplateInstantiationInfo
+{
+    METALLIC_CLAS_PUBLIC uint32_t clusterIdOffset;
+    // Signed 24-bit offset, with the reserved high eight bits zero.
+    METALLIC_CLAS_PUBLIC uint32_t geometryIndexOffset;
+    METALLIC_CLAS_PUBLIC uint64_t clusterTemplateAddress;
+    METALLIC_CLAS_PUBLIC uint64_t vertexBufferAddress;
+    METALLIC_CLAS_PUBLIC uint64_t vertexBufferStride;
+};
+
 #ifdef __cplusplus
 static_assert(sizeof(ClusterAccelerationStructureTriangleIndirectBuildInfo) == 64);
 static_assert(offsetof(ClusterAccelerationStructureTriangleIndirectBuildInfo, indexBufferAddress) == 24);
 static_assert(offsetof(ClusterAccelerationStructureTriangleIndirectBuildInfo, vertexBufferAddress) == 32);
+static_assert(sizeof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo) == 72);
+static_assert(offsetof(ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo, instantiationBoundingBoxLimitAddress) == 64);
+static_assert(sizeof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo) == 32);
+static_assert(offsetof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo, clusterTemplateAddress) == 8);
+static_assert(offsetof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo, vertexBufferAddress) == 16);
+static_assert(offsetof(ClusterAccelerationStructureTriangleTemplateInstantiationInfo, vertexBufferStride) == 24);
 } // namespace metallic::render
 #endif
 #undef METALLIC_CLAS_PUBLIC

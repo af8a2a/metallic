@@ -98,6 +98,7 @@ struct SceneStreamingProfile {
     std::string passName;
     std::string assetPath;
     std::string softwareRasterIdentity; // Resolved module/entry/SPIR-V hash and runtime mode, JSON.
+    std::string tessellationIdentity; // Resolved CLAS operation, shader hash, and allocation budget, JSON.
     std::string diagnosticSourceIdentity; // Same-process frozen source identity; diagnostics only.
     std::string diagnosticTextureSemanticIdentity; // Untimed capture only; source slots and published mip metadata.
     bool nodeDemandC1 = false; // Effective conservative RT node demand visibility pruning.

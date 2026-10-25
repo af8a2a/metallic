@@ -3350,7 +3350,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
             if (result) { result = buildBlasInputs(commandBuffer, checkpoint); }
             if (result && checkpoint) { checkpoint("BeforeBlasBuild"); }
             if (result) { result = cmdBuildBlas(commandBuffer, checkpoint); }
-            if (result) { result = cmdBuildTessellation(commandBuffer, frame); }
+            if (result) { result = cmdBuildTessellation(commandBuffer, frame, checkpoint); }
             if (result) {
                 topLevelBuildPending_ = true;
                 return deferTopLevelBuild ? Result<>{} : cmdBuildTopLevelAccelerationStructure(commandBuffer, checkpoint);
@@ -3415,7 +3415,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
     if (!result) {
         return result;
     }
-    result = cmdBuildTessellation(commandBuffer, frame);
+    result = cmdBuildTessellation(commandBuffer, frame, checkpoint);
     if (!result) { return result; }
     topLevelBuildPending_ = true;
     return deferTopLevelBuild ? Result<>{} : cmdBuildTopLevelAccelerationStructure(commandBuffer, checkpoint);
@@ -3429,9 +3429,10 @@ Result<> MeshletStreamRuntime::configureTessellation(Device& device, const scene
         log = "CLAS tessellation requires the streamed ray-tracing runtime.";
         return makeError(Error::Unsupported);
     }
-    if (!tessellation_ || tessellation_->patchCapacity() != settings.maxPatches) {
+    if (!tessellation_ || tessellation_->patchCapacity() != settings.maxPatches ||
+        tessellation_->buildMode() != settings.buildMode) {
         auto replacement = std::make_shared<StreamCLASTessellation>();
-        auto result = replacement->initialize(device, registry_, asset_, settings.maxPatches, log);
+        auto result = replacement->initialize(device, registry_, asset_, settings.maxPatches, settings.buildMode, log);
         if (!result) { return result; }
         if (tessellation_) { replacement->reusePersistentState(*tessellation_); }
         result = replacement->updateMaterials(scene, resources, log);
@@ -3442,7 +3443,8 @@ Result<> MeshletStreamRuntime::configureTessellation(Device& device, const scene
     return tessellation_->updateMaterials(scene, resources, log);
 }
 
-Result<> MeshletStreamRuntime::cmdBuildTessellation(CommandBuffer& commands, const MeshletStreamFrameDesc& frame)
+Result<> MeshletStreamRuntime::cmdBuildTessellation(CommandBuffer& commands, const MeshletStreamFrameDesc& frame,
+    const TraversalCheckpoint& checkpoint)
 {
     if (!tessellation_) {
         return frame.rtTessellation.enabled ? makeError(Error::InvalidArgument) : Result<>{};
@@ -3452,6 +3454,7 @@ Result<> MeshletStreamRuntime::cmdBuildTessellation(CommandBuffer& commands, con
     // including when a subsequent graph changes the tessellation capacity.
     if (auto* recording = RenderFrameContext::from(commands)) { recording->retain(tessellation_); }
     std::string log;
+    if (checkpoint) { checkpoint("BeforeTessellation"); }
     auto result = tessellation_->record(commands, {
         .pages = pageBuffer_.get(), .pageTable = pageTableBuffer_.get(),
         .instances = instanceBuffer_.get(), .primitives = primitiveBuffer_.get(),
@@ -3459,7 +3462,8 @@ Result<> MeshletStreamRuntime::cmdBuildTessellation(CommandBuffer& commands, con
         .representations = rtRepresentationBuffer_.get(), .representationGroups = rtRepresentationGroupBuffer_.get(),
         .representationState = rtRepresentationStateBuffer_.get(), .blasHeader = blasHeaderBuffer_.get(),
         .tlasInstances = tlasInstanceBuffer_.get(), .pageDescriptor = pageHandle_.shaderIndex(),
-        .pageTableDescriptor = pageTableHandle_.shaderIndex()}, frame, log);
+        .pageTableDescriptor = pageTableHandle_.shaderIndex()}, frame, log, checkpoint);
+    if (checkpoint) { checkpoint("AfterTessellation"); }
     if (!result) { spdlog::error("[MeshletStreamRuntime] CLAS tessellation: {}", log); }
     return result;
 }
@@ -3515,7 +3519,11 @@ Result<> MeshletStreamRuntime::cmdBuildTopLevelAccelerationStructure(CommandBuff
     if (checkpoint) { checkpoint("BeforeTlasInput"); }
     auto result = recordGraphAccessBarriers(commands, plan->passes[0], bindings);
     if (result) { result = buildTlasInstances(commands); }
-    if (result && tessellation_) { result = tessellation_->publish(commands); }
+    if (result && tessellation_) {
+        if (checkpoint) { checkpoint("BeforeTessellationPublish"); }
+        result = tessellation_->publish(commands);
+        if (checkpoint) { checkpoint("AfterTessellationPublish"); }
+    }
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeTlasBuild"); }
     result = recordGraphAccessBarriers(commands, plan->passes[1], bindings);
@@ -5282,7 +5290,7 @@ void MeshletStreamRuntime::appendReplayBindings(std::vector<profiling::WorkContr
 
 void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const
 {
-    if (!debugReadbackEnabled_ || !ready()) { return; }
+    if (!ready()) { return; }
     const auto add = [&](std::string name, Buffer* buffer, ResourceState state, std::string layout,
                          uint64_t offset = 0, uint64_t size = 0) {
         if (!buffer) { return; }
@@ -5295,6 +5303,12 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
                 {"blasStorageAddress", blasStorageBuffer_ ? blasStorageBuffer_->deviceAddress() : uint64_t{0}},
                 {"validity", "Only header-defined live ranges contain records"}}});
     };
+    // Counts always support transfer readback. Lightweight observers can inspect
+    // the current producer without rebuilding its resources for general debug capture.
+    if (tessellation_) {
+        add("tessellationCounts", tessellation_->statisticsBuffer(), ResourceState::General, "u32");
+    }
+    if (!debugReadbackEnabled_) { return; }
     add("requestHeader", requestBuffer_.get(), requestBufferState_, "StreamRequestBufferHeader", 0, sizeof(StreamRequestBufferHeader));
     add("loadRequests", requestBuffer_.get(), requestBufferState_, "u32", sizeof(StreamRequestBufferHeader), uint64_t(maxGpuPageRequests_) * 4);
     add("unloadRequests", requestBuffer_.get(), requestBufferState_, "u32", sizeof(StreamRequestBufferHeader) + uint64_t(maxGpuPageRequests_) * 4, uint64_t(maxGpuPageUnloadRequests_) * 4);
@@ -5311,7 +5325,6 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("blasHeader", blasHeaderBuffer_.get(), blasHeaderBufferState_, "MeshletStreamGPUBLASHeader", 0,
         sizeof(MeshletStreamGPUBLASHeader));
     if (tessellation_) {
-        add("tessellationCounts", tessellation_->statisticsBuffer(), ResourceState::General, "u32");
         add("tessellationLeaves", tessellation_->metadataBuffer(), ResourceState::General, "StreamCLASTessellationLeaf");
         add("tessellationVertices", tessellation_->vertexBuffer(), ResourceState::General, "StreamCLASTessellationVertex");
     }
@@ -5341,6 +5354,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     const auto stats = residency_.stats(false);
     SceneStreamingProfile result;
     result.assetPath = asset_.path().generic_string();
+    if (tessellation_) { result.tessellationIdentity = tessellation_->diagnosticIdentity(); }
     result.generation = debugGeneration_;
     result.frameIndex = frameIndex_;
     result.blasDiagnosticResetEpoch = diagnosticBlasResetEpoch_;

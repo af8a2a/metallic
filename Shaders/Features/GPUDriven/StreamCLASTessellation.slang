@@ -210,6 +210,17 @@ void dicePatch(StreamCLASTessellationParameters p, uint patchIndex, uint lane)
         ((uint3*)p.geometry.triangles)[patchIndex * METALLIC_TESS_TRIANGLES_PER_PATCH + triangle] = tessTriangle(data, pattern, triangle);
     }
     if (lane == 0u) {
+        if (p.buildMode == 1u) {
+            uint patternIndex = (rates.x - 1u) + 8u * (rates.y - 1u) + 64u * (rates.z - 1u);
+            ClusterAccelerationStructureTriangleTemplateInstantiationInfo info =
+                (ClusterAccelerationStructureTriangleTemplateInstantiationInfo)0;
+            info.clusterIdOffset = p.geometry.baseClusterId + patchIndex;
+            info.clusterTemplateAddress = ((uint64_t*)p.templateAddresses)[patternIndex];
+            info.vertexBufferAddress = p.geometry.vertices + uint64_t(patchIndex) * METALLIC_TESS_VERTICES_PER_PATCH * 32u;
+            info.vertexBufferStride = 32u;
+            ((ClusterAccelerationStructureTriangleTemplateInstantiationInfo*)p.clasBuildInfos)[patchIndex] = info;
+            return;
+        }
         ClusterAccelerationStructureTriangleIndirectBuildInfo info = (ClusterAccelerationStructureTriangleIndirectBuildInfo)0;
         info.clusterId = p.geometry.baseClusterId + patchIndex;
         info.countsAndIndexType = METALLIC_CLAS_PACK_COUNTS(leaf.triangleCount, leaf.vertexCount, 0u, METALLIC_CLAS_INDEX_UINT32);

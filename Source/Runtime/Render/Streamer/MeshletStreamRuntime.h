@@ -870,7 +870,8 @@ private:
     Result<> cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
     Result<> buildTlasInstances(CommandBuffer& commandBuffer);
     Result<> cmdBuildTlas(CommandBuffer& commandBuffer);
-    Result<> cmdBuildTessellation(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame);
+    Result<> cmdBuildTessellation(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
+        const TraversalCheckpoint& checkpoint);
     Result<> copyRequestBufferForReadback(CommandBuffer& commandBuffer);
     Result<> updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result<> transitionPageBufferForTraversal(CommandBuffer& commandBuffer);

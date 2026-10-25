@@ -749,18 +749,34 @@ struct AccelerationStructureBarrierDesc {
     SyncScope after;
 };
 
+enum class RayTracingAccelerationStructureBuildFlags : uint8_t {
+    None = 0,
+    PreferFastTrace = 1u << 0,
+    PreferFastBuild = 1u << 1,
+    AllowUpdate = 1u << 2,
+    AllowCompaction = 1u << 3,
+};
+
 struct ClusterAccelerationStructureProperties {
     uint64_t clusterStorageAlignment = 0;
     uint64_t bottomLevelStorageAlignment = 0;
     uint64_t scratchAlignment = 0;
     uint64_t triangleBuildInfoSize = 0;
     uint64_t bottomLevelBuildInfoSize = 0;
+    uint64_t templateStorageAlignment = 0;
+    uint64_t templateBoundsAlignment = 0;
 };
 
 struct ClusterAccelerationStructureBuildSizes {
     uint64_t accelerationStructureSize = 0;
     uint64_t updateScratchSize = 0;
     uint64_t buildScratchSize = 0;
+};
+
+enum class ClusterAccelerationStructureTriangleOperation : uint8_t {
+    Build,
+    BuildTemplate,
+    InstantiateTemplate,
 };
 
 struct ClusterAccelerationStructureTriangleBuildSizesDesc {
@@ -773,6 +789,9 @@ struct ClusterAccelerationStructureTriangleBuildSizesDesc {
     uint32_t maxTotalVertexCount = 0;
     Format vertexFormat = Format::RGB32Sfloat;
     uint32_t maxAccelerationStructureCount = 1;
+    ClusterAccelerationStructureTriangleOperation operation = ClusterAccelerationStructureTriangleOperation::Build;
+    // Triangle operations support None, PreferFastTrace, or PreferFastBuild.
+    RayTracingAccelerationStructureBuildFlags flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
 };
 
 enum class ClusterAccelerationStructureIndexFormat : uint8_t {
@@ -821,6 +840,13 @@ enum class ClusterAccelerationStructureDestinationMode : uint8_t {
 // per-record/aggregate counts within limits, and valid aligned geometry
 // addresses inside geometryBuffers. All referenced inputs remain alive until
 // command completion. A zero GPU count is valid empty work.
+// limits.operation selects the matching shared record and size-query operation;
+// template records use 72 bytes, instantiation records use 32 bytes. Producers
+// supply the corresponding buildInfoStride. Template indices are copied into
+// the template; their source buffers need only survive the template build.
+// Optional bounds must use templateBoundsAlignment and contain every future
+// instantiation. Instantiated cluster IDs and geometry indices include their
+// template values plus the record offsets and must remain in the native limits.
 struct ClusterAccelerationStructureTriangleIndirectBuildDesc {
     ClusterAccelerationStructureTriangleBuildSizesDesc limits;
     BufferSlice buildInfoBuffer;
@@ -834,6 +860,10 @@ struct ClusterAccelerationStructureTriangleIndirectBuildDesc {
     uint64_t destinationSizeStride = sizeof(uint32_t);
     BufferSlice scratchBuffer;
     std::span<const BufferSlice> geometryBuffers;
+    // Required for InstantiateTemplate; retains every referenced template.
+    // Dynamic vertex buffers belong in geometryBuffers. A zero vertex address
+    // is allowed only when the template was built with stored vertex data.
+    BufferSlice templateStorageBuffer;
 };
 
 enum class ClusterAccelerationStructureObjectType : uint8_t {
@@ -882,14 +912,6 @@ enum class RayTracingAccelerationStructureType : uint8_t {
 enum class RayTracingAccelerationStructureBuildMode : uint8_t {
     Build,
     Update,
-};
-
-enum class RayTracingAccelerationStructureBuildFlags : uint8_t {
-    None = 0,
-    PreferFastTrace = 1u << 0,
-    PreferFastBuild = 1u << 1,
-    AllowUpdate = 1u << 2,
-    AllowCompaction = 1u << 3,
 };
 
 constexpr RayTracingAccelerationStructureBuildFlags operator|(

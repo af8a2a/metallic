@@ -112,6 +112,49 @@ public:
     }
 };
 
+class TessellationFinalReceipt final : public render::IRenderDebugObserver
+{
+public:
+    bool requiresResourceReadback() const override { return false; }
+    bool captured = false, completed = false;
+    bool afterPassSeen = false, bindingSeen = false;
+    std::unique_ptr<render::Buffer> buffer;
+    void compiled(debug::DebugValue) override {}
+    void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
+    {
+        captured = completed = afterPassSeen = bindingSeen = false;
+        auto result = device.createBuffer({.size = 16, .usage = render::BufferUsageBits::TransferDestination,
+            .memoryLocation = render::MemoryLocation::HostReadback,
+            .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute});
+        buffer = result ? std::move(*result) : nullptr;
+    }
+    void endExecution(bool success) override { completed = success; }
+    void boundary(render::CommandBuffer& commands, std::string_view checkpoint, uint32_t,
+        std::string_view pass, std::span<const render::DebugResourceBinding> resources, const debug::DebugValue&) override
+    {
+        using namespace render;
+        if (checkpoint != "AfterPass" || pass != "VBuffer") { return; }
+        afterPassSeen = true;
+        if (captured || !buffer) { return; }
+        for (const auto& binding : resources) {
+            if (!binding.id.ends_with(".tessellationCounts") || !binding.buffer) { continue; }
+            bindingSeen = true;
+            const MemoryBarrierDesc before{
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite}};
+            const MemoryBarrierDesc after{
+                .before = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite},
+                .after = {PipelineStageBits::AllCommands | PipelineStageBits::Host,
+                    AccessBits::MemoryRead | AccessBits::MemoryWrite | AccessBits::HostRead}};
+            auto result = commands.synchronize({.memory = {&before, 1}});
+            if (result) { result = commands.copyBuffer(*binding.buffer->slice({binding.offset, 16}), *buffer->slice()); }
+            if (result) { result = commands.synchronize({.memory = {&after, 1}}); }
+            captured = bool(result);
+            return;
+        }
+    }
+};
+
 class MaterialBaselineTest : public RHITest
 {
 public:
@@ -223,11 +266,16 @@ public:
                 const uint32_t caseFrames = spec.value("frameCount", frames);
                 const auto captureFrames = spec.value("captureFrames", std::vector<uint32_t>{});
                 std::optional<uint32_t> freezeStreamingFrame;
-                if (spec.contains("freezeStreamingFrame")) {
-                    const auto& requestedFrame = spec.at("freezeStreamingFrame");
+                const bool freezeResidency = spec.contains("freezeResidencyFrame");
+                if (freezeResidency && spec.contains("freezeStreamingFrame")) {
+                    return fail("Choose either raster snapshot freeze or source residency freeze");
+                }
+                const auto freezeProperty = freezeResidency ? "benchmarkFreezeResidency" : "benchmarkFreezeStreaming";
+                if (freezeResidency || spec.contains("freezeStreamingFrame")) {
+                    const auto& requestedFrame = spec.at(freezeResidency ? "freezeResidencyFrame" : "freezeStreamingFrame");
                     if (!requestedFrame.is_number_unsigned() || requestedFrame.get<uint64_t>() == 0 ||
                         requestedFrame.get<uint64_t>() >= warmup) {
-                        return fail("Streaming freeze requires 0 < freezeStreamingFrame < warmupFrames");
+                        return fail("Streaming freeze requires 0 < freeze frame < warmupFrames");
                     }
                     freezeStreamingFrame = requestedFrame.get<uint32_t>();
                 }
@@ -261,8 +309,8 @@ public:
                 }
                 if (freezeStreamingFrame) {
                     const auto* node = graph.findNode(freezeStreamingNode);
-                    if (!node || node->properties.value("benchmarkFreezeStreaming", false) ||
-                        node->runtimeProperties.value("benchmarkFreezeStreaming", false)) {
+                    if (!node || node->properties.value(freezeProperty, false) ||
+                        node->runtimeProperties.value(freezeProperty, false)) {
                         return fail("Streaming freeze needs an initially unfrozen node: " + freezeStreamingNode);
                     }
                 }
@@ -282,7 +330,7 @@ public:
                             properties["camera"].contains("center")) { explicitCamera = true; }
                     }
                     if ((!explicitCamera && (document.cameras().empty() || document.cameras()[0].fallback)) ||
-                        (!artifact && document.lighting().autoExposure.enabled)) {
+                        (!artifact && !spec.value("manualExposure", false) && document.lighting().autoExposure.enabled)) {
                         return fail("Baseline requires an authored camera and manual exposure");
                     }
                     if (assetRoundTrip_) {
@@ -345,6 +393,24 @@ public:
                     preview.setEnvironment({.enabled = true, .path = (root / env.at("path").get<std::string>()).string(),
                         .intensity = env.at("intensity"), .rotationDegrees = env.at("rotationDegrees"), .visible = true});
                 }
+                if (spec.value("manualExposure", false)) {
+                    auto lighting = spec.at("scene").is_null() ? scene::LightingSettings{} : document.lighting();
+                    lighting.autoExposure.enabled = false;
+                    lighting.exposureEV100 = spec.value("exposureEV100", 0.0f);
+                    if (!preview.setLighting(lighting)) { return fail("Invalid explicit baseline exposure"); }
+                }
+                if (spec.contains("lighting")) {
+                    const auto& sun = spec.at("lighting").at("sun");
+                    const auto direction = sun.at("direction").get<std::array<float, 3>>();
+                    const auto color = sun.value("color", std::array<float, 3>{1, 1, 1});
+                    environment::WorldEnvironment environment;
+                    environment.sun.enabled = true;
+                    environment.sun.direction = {direction[0], direction[1], direction[2]};
+                    environment.sun.color = {color[0], color[1], color[2]};
+                    environment.sun.illuminance = sun.at("illuminance");
+                    environment.sun.angularRadius = sun.at("angularRadius");
+                    if (!preview.setWorldEnvironment(environment)) { return fail("Invalid explicit baseline sun"); }
+                }
                 Json viewCamera;
                 const bool useView = spec.value("useRenderView", false);
                 if (useView) {
@@ -403,13 +469,15 @@ public:
                         {"bytes", bytes.size()}, {"format", static_cast<uint32_t>(preview.readbackFormat())}});
                 };
                 auto cloudReceipt = spec.value("physicalCloudReceipt", false) ? std::make_unique<PhysicalCloudFinalReceipt>() : nullptr;
+                auto tessellationReceipt = spec.value("tessellationReceipt", false) ? std::make_unique<TessellationFinalReceipt>() : nullptr;
+                if (cloudReceipt && tessellationReceipt) { return fail("Choose one final publication receipt"); }
                 for (uint32_t frame = 0; frame < caseFrames; ++frame) {
                     if (freezeStreamingFrame && frame == *freezeStreamingFrame) {
                         const auto* node = graph.findNode(freezeStreamingNode);
-                        if (!node || !graph.setNodeRuntimeProperty(node->id, "benchmarkFreezeStreaming", true)) {
+                        if (!node || !graph.setNodeRuntimeProperty(node->id, freezeProperty, true)) {
                             return fail("Cannot freeze streaming after priming: " + freezeStreamingNode);
                         }
-                        result["streamingFreeze"] = {{"node", freezeStreamingNode}, {"appliedFrame", frame}};
+                        result["streamingFreeze"] = {{"node", freezeStreamingNode}, {"appliedFrame", frame}, {"property", freezeProperty}};
                     }
                     if (spec.contains("cameraFrames")) {
                         for (const auto& change : spec.at("cameraFrames")) {
@@ -428,9 +496,10 @@ public:
                     const bool differentialCapture = std::find(captureFrames.begin(), captureFrames.end(), frame) != captureFrames.end();
                     const bool capture = frame + 1 == caseFrames || differentialCapture;
                     preview.setRawReadbackEnabled(capture);
-                    const bool proofFrame = cloudReceipt && frame + 1 == caseFrames;
+                    const bool proofFrame = (cloudReceipt || tessellationReceipt) && frame + 1 == caseFrames;
                     const auto rendered = [&]() {
-                        if (proofFrame) { preview.setDebugObserver(cloudReceipt.get()); }
+                        if (proofFrame) { preview.setDebugObserver(cloudReceipt ?
+                            static_cast<IRenderDebugObserver*>(cloudReceipt.get()) : tessellationReceipt.get()); }
                         struct Reset
                         {
                             RenderGraphPreviewRenderer& preview;
@@ -514,7 +583,15 @@ public:
                     Json timing = {{"frame", frame}, {"executionId", stats.executionId}, {"graphMs", stats.gpuMilliseconds},
                         {"warmup", frame < warmup},
                         {"asyncComputeBranches", stats.asyncComputeBranches},
-                        {"nodes", Json::array()}};
+                        {"nodes", Json::array()}, {"streaming", Json::array()}};
+                    for (const auto& stream : stats.streaming) {
+                        timing["streaming"].push_back({{"passName", stream.passName}, {"assetPath", stream.assetPath},
+                            {"diagnosticSourceIdentity", stream.diagnosticSourceIdentity},
+                            {"tessellationIdentity", stream.tessellationIdentity},
+                            {"originalTopologyHash", stream.originalTopologyHash},
+                            {"primitiveMetadataHash", stream.primitiveMetadataHash},
+                            {"residentPages", stream.residentPages}, {"textureResidentBytes", stream.textureResidentBytes}});
+                    }
                     for (const auto& node : stats.nodes) {
                         Json entry = {{"name", node.name}, {"gpuMs", node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)},
                             {"queue", static_cast<uint32_t>(node.queue)},
@@ -526,6 +603,26 @@ public:
                         timing["nodes"].push_back(std::move(entry));
                     }
                     result[frame < warmup ? "warmup" : "frames"].push_back(std::move(timing));
+                }
+                if (tessellationReceipt) {
+                    if (!tessellationReceipt->captured || !tessellationReceipt->completed) {
+                        const auto& receipt = *tessellationReceipt;
+                        return fail("Missing final production CLAS tessellation count receipt: " + Json{
+                            {"readbackAllocated", receipt.buffer != nullptr}, {"afterPassSeen", receipt.afterPassSeen},
+                            {"bindingSeen", receipt.bindingSeen}, {"copyRecorded", receipt.captured},
+                            {"executionCompleted", receipt.completed}}.dump());
+                    }
+                    auto& buffer = *tessellationReceipt->buffer;
+                    const void* mapped = buffer.map();
+                    if (!mapped) { return fail("Cannot map CLAS tessellation receipt"); }
+                    buffer.invalidate();
+                    std::array<uint32_t, 4> counts;
+                    std::memcpy(counts.data(), mapped, sizeof(counts));
+                    buffer.unmap();
+                    result["tessellationCounts"] = counts;
+                    if (counts[0] == 0 || counts[1] == 0 || counts[2] != 0 || counts[3] != 0) {
+                        return fail("CLAS tessellation benchmark produced empty or rejected work");
+                    }
                 }
                 if (cloudReceipt) {
                     const auto* vbuffer = graph.findNode("VBuffer");
@@ -558,7 +655,12 @@ public:
                 const bool half = format == Format::RGBA16Sfloat;
                 if (!half && format != Format::RGBA32Sfloat) { return fail("Baseline must be linear HDR"); }
                 const auto& bytes = preview.readbackBytes();
-                if (bytes.size() != size_t(width) * height * (half ? 8 : 16)) { return fail("Truncated HDR capture"); }
+                const size_t expectedBytes = size_t(width) * height * (half ? 8 : 16);
+                if (bytes.size() != expectedBytes) {
+                    return fail("Truncated HDR capture: " + Json{{"actualBytes", bytes.size()}, {"expectedBytes", expectedBytes},
+                        {"format", half ? "RGBA16F" : "RGBA32F"}, {"declaredExtent", {width, height}},
+                        {"actualExtent", {preview.width(), preview.height()}}}.dump());
+                }
                 uint64_t nonfiniteComponents = 0;
                 for (size_t i = 0; i < bytes.size(); i += half ? 2 : 4) {
                     if (half) {

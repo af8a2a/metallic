@@ -18,6 +18,8 @@ inline void applyStreamRayLODSettings(const RenderGraphProperties& properties,
     view.rtTessellation.maxFactor = properties.value("rtTessellationMaxFactor", 4u);
     view.rtTessellation.maxSplitDepth = properties.value("rtTessellationMaxSplitDepth", 2u);
     view.rtTessellation.maxPatches = properties.value("rtTessellationMaxPatches", 16384u);
+    view.rtTessellation.buildMode = parseStreamCLASTessellationBuildMode(
+        properties.value("rtTessellationBuildMode", std::string("triangles")));
 }
 
 inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSetting>& settings)
@@ -28,6 +30,9 @@ inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSett
         .type = RenderGraphRuntimeSettingType::Float, .defaultValue = 0.2f, .minValue = 0.0f, .maxValue = 0.9f});
     settings.push_back({.key = "rtTessellation", .label = "CLAS Displacement Tessellation",
         .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = false, .rebuildGraph = true});
+    settings.push_back({.key = "rtTessellationBuildMode", .label = "CLAS Tessellation Build",
+        .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "triangles",
+        .options = {{"Triangle build", "triangles"}, {"Template instantiation", "templates"}}});
     settings.push_back({.key = "rtTessellationEdgePixels", .label = "RT Tessellation Edge (render px)",
         .type = RenderGraphRuntimeSettingType::Float, .defaultValue = 8.0f, .minValue = 1.0f, .maxValue = 256.0f});
     settings.push_back({.key = "rtTessellationMaxFactor", .label = "RT Tessellation Leaf Edge Factor",

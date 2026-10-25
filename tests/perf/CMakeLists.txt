@@ -62,6 +62,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicExperimentRunnerTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestExperimentRunner.py")
     set_tests_properties(MetallicExperimentRunnerTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
+    add_test(NAME MetallicCLASTessellationABTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestCLASTessellationAB.py")
+    set_tests_properties(MetallicCLASTessellationABTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
     add_test(NAME MetallicWorkloadCaseTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestWorkloadCase.py")
     set_tests_properties(MetallicWorkloadCaseTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)

@@ -365,7 +365,9 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         // the pass properties here, while traversal receives its resolved view.
         if (prepared.geometry && context.properties().value("rtTessellation", false)) {
             const StreamCLASTessellationSettings settings{
-                .enabled = true, .maxPatches = context.properties().value("rtTessellationMaxPatches", 16384u)};
+                .enabled = true, .maxPatches = context.properties().value("rtTessellationMaxPatches", 16384u),
+                .buildMode = parseStreamCLASTessellationBuildMode(
+                    context.properties().value("rtTessellationBuildMode", std::string("triangles")))};
             const auto configured = prepared.geometry->configureTessellation(*device_, *prepared.sourceScene,
                 *resources, settings, log);
             if (!configured) { return configured; }
@@ -383,6 +385,7 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
     auto phaseProfile = context.profileScope("Traversal setup");
     RenderGraphExecutionContext::ProfileScope clasProfile;
     RenderGraphExecutionContext::ProfileScope rtCutProfile;
+    RenderGraphExecutionContext::ProfileScope tessellationClasProfile;
     const bool profilePrepare = context.properties().value("benchmarkPrepareProfile", false);
     const auto result = prepared.geometry->cmdPreTraversal(context.commandBuffer(), view,
         [&](std::string_view point) {
@@ -425,6 +428,12 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             else if (point == "BeforeBlasMove") { phaseProfile.next("BLAS move"); }
             else if (point == "BeforeBlasPublish") { phaseProfile.next("BLAS publish"); }
             else if (point == "BeforeBlasStatistics") { phaseProfile.next("BLAS statistics"); }
+            else if (point == "BeforeTessellation") { phaseProfile.next("CLAS tessellation"); }
+            else if (point == "BeforeTessellationCLAS") { tessellationClasProfile = context.profileScope("Tessellation CLAS build"); }
+            else if (point == "AfterTessellationCLAS") { tessellationClasProfile.end(); }
+            else if (point == "AfterTessellation") { phaseProfile.end(); }
+            else if (point == "BeforeTessellationPublish") { phaseProfile.next("Tessellation publish"); }
+            else if (point == "AfterTessellationPublish") { phaseProfile.end(); }
             else if (point == "BeforeTlasInput") { phaseProfile.next("TLAS input"); }
             else if (point == "BeforeTlasBuild") { phaseProfile.next("TLAS build"); }
             else if (point == "AfterTlasBuild") { phaseProfile.end(); }
@@ -433,6 +442,7 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             context.properties().value("AsyncComputePreferred", true) && context.supportsParallelCompute());
     clasProfile.end();
     rtCutProfile.end();
+    tessellationClasProfile.end();
     phaseProfile.end();
     if (result && checkpoint) { checkpoint("AfterTraversal"); }
     return result;

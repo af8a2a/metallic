@@ -25,7 +25,7 @@ namespace {
 using namespace render;
 
 constexpr uint32_t kRayCount = 8;
-constexpr uint32_t kRayWords = 28;
+constexpr uint32_t kRayWords = 32;
 constexpr uint32_t kImageSize = 128;
 constexpr uint64_t kOutputBytes = sizeof(float) * (kRayCount * kRayWords + kImageSize * kImageSize * 4);
 using TessellationObservations = std::array<float, kRayCount * kRayWords>;
@@ -33,6 +33,15 @@ constexpr std::array<std::array<float, 2>, kRayCount> kRayUV{{
     {.25f, .25f}, {.75f, .25f}, {.25f, .75f}, {.75f, .75f},
     {.5f, .5f}, {.125f, .375f}, {.875f, .625f}, {1.5f, .5f}}};
 constexpr uint32_t kHeightWidth = 65;
+
+float2 rayUV(uint32_t ray, bool comparisonRays)
+{
+    constexpr std::array<std::array<float, 2>, kRayCount> offsets{{
+        {.013f, -.007f}, {-.017f, .011f}, {.011f, .013f}, {-.013f, .009f},
+        {.013f, -.007f}, {.007f, -.011f}, {-.009f, .013f}, {0, 0}}};
+    return float2(kRayUV[ray][0], kRayUV[ray][1]) +
+        (comparisonRays ? float2(offsets[ray][0], offsets[ray][1]) : float2(0, 0));
+}
 
 // The graph's AS field carries a TLAS, not its streamed attribute tables. This
 // test bridge publishes the exact production builder's runtime; a separate
@@ -88,7 +97,8 @@ struct ReferenceHit {
     float3 normal;
 };
 
-std::array<std::vector<ReferenceHit>, kRayCount> referenceTessellationHits(uint32_t factor = 4, uint32_t splitDepth = 0)
+std::array<std::vector<ReferenceHit>, kRayCount> referenceTessellationHits(
+    uint32_t factor = 4, uint32_t splitDepth = 0, bool comparisonRays = false)
 {
     // Independently interpolate the LUT domain, sample the UNORM texture and
     // intersect each emitted triangle on the CPU. Ring triangles can cross the
@@ -133,7 +143,8 @@ std::array<std::vector<ReferenceHit>, kRayCount> referenceTessellationHits(uint3
             const float denominator = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
             const auto normal = normalize(cross(b - a, c - a));
             for (uint32_t ray = 0; ray + 1 < kRayCount; ++ray) {
-                const float x = kRayUV[ray][0] * 2.f - 1.f, y = kRayUV[ray][1] * 2.f - 1.f;
+                const auto uv = rayUV(ray, comparisonRays);
+                const float x = uv.x * 2.f - 1.f, y = uv.y * 2.f - 1.f;
                 const float wa = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / denominator;
                 const float wb = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / denominator;
                 const float wc = 1.f - wa - wb;
@@ -175,9 +186,10 @@ public:
         const auto& material = *context.preparedScene->snapshot->pathTraceResources;
         const char* capabilities[]{"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure",
             "spvRayTracingClusterAccelerationStructureNV"};
+        const SlangMacroDefine defines[]{{"METALLIC_PT_PATH_DIAGNOSTICS", "1"}};
         auto shader = compileSlangShaderToSpirv({.moduleName = "Features/SmokeTests/CLASTessellationProbe",
             .entryPointName = "clasTessellationProbeMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
+            .capabilities = capabilities, .macroDefines = defines, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return makeError(shader.error()); }
         std::vector<ComputeResourceBindingDesc> layout{
             {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), ComputeResourceBindingKind::AccelerationStructure},
@@ -218,7 +230,7 @@ public:
         builtin_pass::appendStreamRayBindings(bindings, stream, geometry->shadingChangeBuffer());
         const auto& transform = context.runtimeScene()->nodes()[0].localMatrix;
         const std::array<float, 8> push{transform.a00, transform.a11, transform.a22, transform.a03,
-            transform.a13, transform.a23, 0, 0};
+            transform.a13, transform.a23, properties().value("comparisonRays", false) ? 1.f : 0.f, 0};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
             .pushData = push.data(), .pushDataSize = sizeof(push), .groupCountX = (kRayCount + kImageSize * kImageSize) / 8});
     }
@@ -272,13 +284,21 @@ bool writeCLASTessellationFixture(const std::filesystem::path& directory, std::s
     return bool(binary) && bool(gltf);
 }
 
-class CLASTessellationTest final : public RHITest {
+class CLASTessellationTest : public RHITest {
 public:
-    CLASTessellationTest() { type = RHITestType::Rendering; name = "scene_clas_tessellation"; }
+    explicit CLASTessellationTest(bool templates = false) : templates_(templates)
+    {
+        type = RHITestType::Rendering;
+        name = templates ? "scene_clas_tessellation_templates" : "scene_clas_tessellation";
+    }
     std::optional<bench::Metadata> metadata() const override
     {
         auto result = bench::gpuMetadata({"clas.tessellation.production.displacement.attributes.lifecycle"},
             bench::Layer::Core, "ray-query", "core", {"readback.bin"});
+        if (templates_) {
+            result.coverage.push_back("clas.tessellation.templates.triangles.surface.equivalence");
+            result.artifacts.push_back("template-comparison.json");
+        }
         result.timeout = std::chrono::seconds(180);
         return result;
     }
@@ -315,9 +335,10 @@ public:
             {"path", (directory / "scene.gltf").string()}, {"AsyncComputePreferred", false},
             {"rtTessellation", false}, {"rtTessellationEdgePixels", 1.f}, {"rtTessellationMaxFactor", 4},
             {"rtTessellationMaxSplitDepth", 0}, {"rtTessellationMaxPatches", 64},
+            {"rtTessellationBuildMode", templates_ ? "templates" : "triangles"},
             {"camera", {{"eye", {0, 0, 4}}, {"center", {0, 0, 0}}, {"projection", "orthographic"},
                 {"orthoHeight", 4.f}, {"znear", .001f}, {"zfar", 100.f}}}})->id;
-        graph.addNode("CLASTessellationProbe", "Probe");
+        graph.addNode("CLASTessellationProbe", "Probe", {{"comparisonRays", templates_}});
         check(graph.addEdge("Build.accelerationStructure", "Probe.accelerationStructure"), "AS graph edge failed");
         check(graph.markOutput("Probe.hits"), "Probe output failed");
         RenderGraphExecutor executor;
@@ -332,7 +353,7 @@ public:
             }
             else { check(executor.syncRuntimeProperties(graph), std::string("Setting did not reach executor: ") + key); }
         };
-        const auto render = [&](uint32_t frames = 4, const char* imageName = nullptr) {
+        const auto renderRaw = [&](uint32_t frames, const char* imageName, std::vector<float>* complete) {
             for (uint32_t frame = 0; frame < frames; ++frame) {
                 checked(executor.execute({.graphicsQueue = device.getQueue(QueueType::Graphics),
                     .computeQueue = device.getQueue(QueueType::Compute)}), "Graph execution");
@@ -344,6 +365,9 @@ public:
             buffer->invalidate();
             TessellationObservations result;
             std::memcpy(result.data(), mapped, sizeof(result));
+            if (complete) {
+                complete->assign(static_cast<const float*>(mapped), static_cast<const float*>(mapped) + kOutputBytes / sizeof(float));
+            }
             // Keep the complete last GPU observation in legacy runs as well as
             // testbench runs, including the image pixels and diagnostic counters.
             std::ofstream binary(directory / "readback.bin", std::ios::binary | std::ios::trunc);
@@ -365,7 +389,7 @@ public:
             bench::readbackEvidence(context, "readback.bin", std::span<const float>(result));
             return result;
         };
-        auto reference = referenceTessellationHits();
+        auto reference = referenceTessellationHits(4, 0, templates_);
         for (uint32_t ray = 0; ray + 1 < kRayCount; ++ray) {
             check(!reference[ray].empty() && reference[ray][0].height > .05f, "CPU reference lacks displaced interior coverage");
         }
@@ -380,7 +404,8 @@ public:
                     ", uv=" + std::to_string(value[20]) + "," + std::to_string(value[21]) + "]";
                 check(value[11] == (ray + 1 == kRayCount ? 0.f : 1.f), label + " lost surface coverage or hit outside geometry");
                 if (ray + 1 == kRayCount) { continue; }
-                const float u = kRayUV[ray][0], v = kRayUV[ray][1];
+                const auto uv = rayUV(ray, templates_);
+                const float u = uv.x, v = uv.y;
                 const float h = displaced ? reference[ray][0].height : 0.f;
                 const bool back = ray == 6;
                 const auto near = [](float a, float b, float epsilon) {
@@ -393,6 +418,9 @@ public:
                     label + " wrong displaced hit/t: z=" + std::to_string(value[2]) + " expected=" +
                         std::to_string(h + transform.a23));
                 check(near(value[20], u, .001f) && near(value[21], v, .001f), label + " lost source UV/domain mapping");
+                check(std::isfinite(value[28]) && std::isfinite(value[29]) && value[28] >= -.0001f &&
+                    value[29] >= -.0001f && value[28] + value[29] <= 1.0001f,
+                    label + " generated triangle did not map to a valid source domain");
                 check(value[7] == (back ? 0.f : 1.f), label + " changed authored front/back orientation");
                 for (uint32_t offset : {4u, 8u}) {
                     const float norm = std::sqrt(value[offset] * value[offset] + value[offset + 1] * value[offset + 1] +
@@ -411,6 +439,40 @@ public:
             }
         };
 
+        uint32_t pairedStates = 0;
+        float maximumAttributeDifference = 0.f, maximumImageDifference = 0.f;
+        const auto compare = [&](std::span<const float> expected, std::span<const float> actual, const char* mode) {
+            check(expected.size() == actual.size(), "Build-mode output size mismatch");
+            for (size_t word = 0; word < expected.size(); ++word) {
+                // Only the first accepted frame after a scene edit invalidates
+                // history. The paired mode switch must separately remain zero.
+                if (word < kRayCount * kRayWords && word % kRayWords == 24) { continue; }
+                const float difference = std::abs(expected[word] - actual[word]);
+                check(std::isfinite(actual[word]) && difference <= .0002f,
+                    std::string("Build-mode ") + mode + " differs at GPU word " + std::to_string(word) +
+                    ": expected=" + std::to_string(expected[word]) + " actual=" + std::to_string(actual[word]));
+                auto& maximum = word < kRayCount * kRayWords ? maximumAttributeDifference : maximumImageDifference;
+                maximum = std::max(maximum, difference);
+            }
+        };
+        const auto render = [&](uint32_t frames = 4, const char* imageName = nullptr) {
+            std::vector<float> templateOutput;
+            const auto result = renderRaw(frames, imageName, templates_ ? &templateOutput : nullptr);
+            if (templates_) {
+                std::vector<float> triangleOutput, restoredOutput;
+                setting("rtTessellationBuildMode", "triangles");
+                const auto triangleHits = renderRaw(1, imageName ? "CLASPairedTriangles.png" : nullptr, &triangleOutput);
+                check(triangleHits[24] == 0.f, "Template-to-triangle mode switch invalidated unchanged shading history");
+                compare(templateOutput, triangleOutput, "triangles");
+                setting("rtTessellationBuildMode", "templates");
+                const auto restoredHits = renderRaw(1, nullptr, &restoredOutput);
+                check(restoredHits[24] == 0.f, "Triangle-to-template mode switch invalidated unchanged shading history");
+                compare(templateOutput, restoredOutput, "templates restored");
+                ++pairedStates;
+            }
+            return result;
+        };
+
         verify(render(4, "CLASBase.png"), false, "disabled");
         setting("rtTessellation", true);
         const auto displaced = render(4, "CLASTessellation.png");
@@ -421,12 +483,12 @@ public:
             "Stationary tessellated geometry changed hits or invalidated shading history");
 
         setting("rtTessellationMaxFactor", 2);
-        reference = referenceTessellationHits(2);
+        reference = referenceTessellationHits(2, 0, templates_);
         verify(render(), true, "factor two");
         setting("rtTessellationMaxFactor", 4);
         for (uint32_t depth : {1u, 2u}) {
             setting("rtTessellationMaxSplitDepth", depth);
-            reference = referenceTessellationHits(4, depth);
+            reference = referenceTessellationHits(4, depth, templates_);
             const auto recursive = render();
             verify(recursive, true, "recursive subdivision");
             check(recursive[25] == float(2u << (2u * depth)) && recursive[26] == 0.f,
@@ -435,7 +497,7 @@ public:
                 "Stationary recursive geometry invalidated shading history");
         }
         setting("rtTessellationMaxSplitDepth", 0);
-        reference = referenceTessellationHits();
+        reference = referenceTessellationHits(4, 0, templates_);
         check(render() == displaced, "Restoring tessellation quality changed geometry or history");
         const auto originalMaterial = scene.materials()[0];
         auto flatMaterial = originalMaterial;
@@ -501,11 +563,27 @@ public:
         }
         setting("rtTessellation", false);
         verify(render(), false, "runtime disabled");
+        if (templates_) {
+            const nlohmann::json comparison{{"pairedStates", pairedStates}, {"preciseRaysPerState", kRayCount},
+                {"imagePixelsPerState", kImageSize * kImageSize}, {"maximumAttributeDifference", maximumAttributeDifference},
+                {"maximumImageDifference", maximumImageDifference}, {"tolerance", .0002f},
+                {"modeSwitchSemanticChanges", 0}};
+            std::ofstream(directory / "TemplateComparison.json") << comparison.dump(2);
+            if (context.evidence) { context.evidence->json("template-comparison.json", comparison); }
+        }
         return RHITestResult::pass("Production tessellated CLAS hits match a tent-ridge oracle; source UV, microtriangle normals, "
-            "material edits, mirrored/nonuniform transforms, offscreen rays, cancellation and whole-instance capacity fallback");
+            "material edits, mirrored/nonuniform transforms, offscreen rays, cancellation and whole-instance capacity fallback" +
+            std::string(templates_ ? "; template/triangle source-domain and full-image equivalence with history-preserving mode switches" : ""));
     }
+private:
+    bool templates_;
 };
 METALLIC_REGISTER_RHI_TEST(CLASTessellationTest);
+class CLASTessellationTemplatesTest final : public CLASTessellationTest {
+public:
+    CLASTessellationTemplatesTest() : CLASTessellationTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesTest);
 
 } // namespace
 } // namespace metallic::tests

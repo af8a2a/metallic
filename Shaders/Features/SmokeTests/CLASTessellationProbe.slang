@@ -38,6 +38,12 @@ void clasTessellationProbeMain(uint3 id : SV_DispatchThreadID)
         float2(0.5, 0.5), float2(0.125, 0.375),
         float2(0.875, 0.625), float2(1.5, 0.5)
     };
+    const float2 comparisonOffsets[8] = {
+        float2(0.013, -0.007), float2(-0.017, 0.011),
+        float2(0.011, 0.013), float2(-0.013, 0.009),
+        float2(0.013, -0.007), float2(0.007, -0.011),
+        float2(-0.009, 0.013), float2(0.0)
+    };
     const float3 scale = gProbePush.scaleTranslationX.xyz;
     const float3 translation = float3(gProbePush.scaleTranslationX.w, gProbePush.translationYZ.xy);
     ScenePathTracePush push = {};
@@ -47,7 +53,9 @@ void clasTessellationProbeMain(uint3 id : SV_DispatchThreadID)
         // Oblique rays provide an inspectable surface image from the same
         // production TLAS and hit decoder as the precise acceptance probes.
         const uint pixel = id.x - 8u;
-        const float2 screen = (float2(pixel % 128u, pixel / 128u) + 0.5) / 128.0 * 3.0 - 1.5;
+        // Keep image rays away from dyadic shared edges: equivalent native
+        // builds may legally choose different adjacent normals at exact ties.
+        const float2 screen = (float2(pixel % 128u, pixel / 128u) + float2(0.471, 0.537)) / 128.0 * 3.0 - 1.5;
         Ray imageRay;
         imageRay.origin = float3(screen.x, screen.y - 3.0, 4.0) * scale + translation;
         imageRay.direction = normalize(float3(0.0, 3.0, -4.0) * scale);
@@ -58,17 +66,18 @@ void clasTessellationProbeMain(uint3 id : SV_DispatchThreadID)
             const float light = 0.15 + 0.85 * saturate(dot(imageHit.geometryNormal, normalize(float3(-0.6, -0.3, 1.0))));
             color = lerp(float3(0.08, 0.35, 0.52), float3(0.9, 0.5, 0.14), imageHit.texcoord.x) * light;
         }
-        gProbeOutput[8u * 7u + pixel] = float4(color, imageFound ? imageHit.t : 0.0);
+        gProbeOutput[8u * 8u + pixel] = float4(color, imageFound ? imageHit.t : 0.0);
         return;
     }
     const bool back = id.x == 6u;
     Ray ray;
-    ray.origin = float3(coordinates[id.x] * 2.0 - 1.0, back ? -2.0 : 2.0) * scale + translation;
+    const float2 coordinate = coordinates[id.x] + (gProbePush.translationYZ.z != 0.0 ? comparisonOffsets[id.x] : float2(0.0));
+    ray.origin = float3(coordinate * 2.0 - 1.0, back ? -2.0 : 2.0) * scale + translation;
     ray.direction = float3(0.0, 0.0, back ? 1.0 : -1.0);
     HitInfo hit = {};
     const bool found = traceClosest(ray, push, hit);
     if (!found) { hit = (HitInfo)0; }
-    const uint base = id.x * 7u;
+    const uint base = id.x * 8u;
     gProbeOutput[base + 0u] = float4(hit.position, hit.t);
     gProbeOutput[base + 1u] = float4(hit.normal, hit.frontFace ? 1.0 : 0.0);
     gProbeOutput[base + 2u] = float4(hit.geometryNormal, found ? 1.0 : 0.0);
@@ -79,4 +88,6 @@ void clasTessellationProbeMain(uint3 id : SV_DispatchThreadID)
     gProbeOutput[base + 6u] = float4(float(changes[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD]),
         float(changes[METALLIC_STREAM_BLAS_TESS_ADDRESS_WORD + 2u]),
         float(changes[METALLIC_STREAM_BLAS_TESS_ADDRESS_WORD + 3u]), 0.0);
+    gProbeOutput[base + 7u] = float4(hit.diagnosticBarycentrics,
+        float(hit.diagnosticCluster), float(hit.diagnosticStreamInstance));
 }
