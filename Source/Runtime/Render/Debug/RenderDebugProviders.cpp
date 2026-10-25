@@ -5,7 +5,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
-#include "Shaders/Interop/StreamCLASTessellation.h"
+#include "../../../../Shaders/Interop/StreamCLASTessellation.h"
 
 namespace metallic::render {
 using debug::DebugFieldDesc;

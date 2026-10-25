@@ -9,7 +9,7 @@
 #include "Runtime/Render/GPUDrivenTessellation.h"
 #include "Runtime/Render/GAPI/CommandSubmission.h"
 #include "Runtime/Debug/DebugHash.h"
-#include "Shaders/Interop/StreamCLASTessellation.h"
+#include "../../../../Shaders/Interop/StreamCLASTessellation.h"
 
 #include <algorithm>
 #include <array>
