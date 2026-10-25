@@ -162,8 +162,15 @@ struct StreamCLASTessellation::Impl {
                 const auto pattern = makeTessellationPattern({(index & 7u) + 1u,
                     ((index >> 3u) & 7u) + 1u, (index >> 6u) + 1u});
                 for (size_t vertex = 0; vertex < pattern.vertices.size(); ++vertex) {
-                    const float b1 = float(pattern.vertices[vertex][1]) / 65535.0f;
-                    const float b2 = float(pattern.vertices[vertex][2]) / 65535.0f;
+                    // Only the template's spatial guide is quantized. Instantiation
+                    // consumes the unchanged displaced vertices generated on the GPU.
+                    const auto guideCoordinate = [this](uint16_t value) {
+                        return templateShape == StreamCLASTessellationTemplateShape::RightDyadic
+                            ? float(std::lround(double(value) * 32768.0 / 65535.0)) / 32768.0f
+                            : float(value) / 65535.0f;
+                    };
+                    const float b1 = guideCoordinate(pattern.vertices[vertex][1]);
+                    const float b2 = guideCoordinate(pattern.vertices[vertex][2]);
                     positions[index * METALLIC_TESS_VERTICES_PER_PATCH + vertex] =
                         templateShape == StreamCLASTessellationTemplateShape::Equilateral
                         ? std::array<float, 3>{b1 + 0.5f * b2, std::sqrt(3.0f) * 0.5f * b2, 0.0f}
@@ -568,7 +575,8 @@ std::string StreamCLASTessellation::diagnosticIdentity() const
 {
     const auto& p = *impl_;
     return nlohmann::json{{"mode", p.buildMode == StreamCLASTessellationBuildMode::Templates ? "templates" : "triangles"},
-        {"templateShape", p.templateShape == StreamCLASTessellationTemplateShape::Equilateral ? "equilateral" : "right"},
+        {"templateShape", p.templateShape == StreamCLASTessellationTemplateShape::Equilateral ? "equilateral" :
+            p.templateShape == StreamCLASTessellationTemplateShape::RightDyadic ? "rightDyadic" : "right"},
         {"instantiationFlags", p.instantiationFlags == StreamCLASTessellationInstantiationFlags::None ? "none" : "fastTrace"},
         {"templateBoundsMode", p.boundsMode == StreamCLASTessellationTemplateBoundsMode::Geometry ? "geometry" : "none"},
         {"templateBounds", p.templates && p.templates->bounds ? nlohmann::json(*p.templates->bounds) : nlohmann::json(nullptr)},

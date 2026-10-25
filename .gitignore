@@ -72,6 +72,7 @@ vcpkg_installed/
 Testing/
 rhi-test-output/
 scene-test-output/
+shader-math-harness-output/
 .cache/
 # Slang (downloaded binary)
 External/slang/

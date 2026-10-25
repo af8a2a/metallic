@@ -1,0 +1,38 @@
+# Numeric validation contract: polynomial approximation of exp(-tau) on the
+# small optical depth range, the phase-1 pilot of the shader math harness.
+id: attenuation_exp_small_tau_v1
+
+reference:
+  expression: "exp(-tau)"
+  interpretation: exact_real_at_binary32_input
+
+inputs:
+  tau:
+    format: binary32
+    domain: ["0", "1/4"]
+    finite_only: true
+
+candidate:
+  form: horner_degree_4
+  coefficient_bits:
+    - "0x3f800000"
+    - "0xbf800000"
+    - "0x3f000000"
+    - "0xbe2aaaab"
+    - "0x3d2aaaab"
+  ideal_coefficients: ["1", "-1", "1/2", "-1/6", "1/24"]
+  postprocess: clamp_0_1
+
+proof_model:
+  operations: binary32_fma
+  rounding: nearest_even
+  subnormal_inputs: preserve
+  reassociation: forbidden
+
+requirements:
+  max_absolute_error: "8.5e-6"
+  output_range: ["0", "1"]
+  endpoint_at_zero: "1"
+
+outside_domain:
+  action: reference_fallback

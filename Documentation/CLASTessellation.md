@@ -12,7 +12,7 @@ The device must support `VK_NV_cluster_acceleration_structure`.
 | --- | --- | --- |
 | `rtTessellation` | false | Enable generated CLAS geometry; changing it rebuilds the graph |
 | `rtTessellationBuildMode` | `triangles` | `triangles` builds generated clusters directly; `templates` instantiates fixed topology templates |
-| `rtTessellationTemplateShape` | `right` | Template canonical positions: `right` or experimental `equilateral`; actual displaced vertices are unchanged |
+| `rtTessellationTemplateShape` | `right` | Template canonical positions: `right`, experimental `equilateral`, or diagnostic `rightDyadic`; actual displaced vertices are unchanged. Both alternative shapes failed Shadow performance qualification in the fixed sample. |
 | `rtTessellationInstantiationFlags` | `fastTrace` | Instantiation build hint: `fastTrace` or experimental `none`; template construction still prefers fast tracing |
 | `rtTessellationTemplateBounds` | `none` | `geometry` derives conservative bounds from all LOD geometry, current instance transforms and displacement; `none` keeps unrestricted templates |
 | `rtTessellationEdgePixels` | 8 | Unjittered render-pixel edge target, 1–256 |
@@ -441,6 +441,111 @@ Local untracked evidence: `.tmp/clas-bounds-optimization/experiment-01` (sealed)
 `report-01/report.md`, `report-01/VisualVerification.json`, `report.md`, and
 `plot_diagnostics.py`. The v3 verifier still supports the sealed v1/v2 evidence
 under their original acceptance rules.
+
+## Bounding-limit and vertex-encoding investigation (2026-10-25)
+
+The global limit was too loose to reduce native output in this sample; an ABI or
+upload failure does not explain the result. A fixed 16-arm native diagnostic
+replayed 2048 captured production patches with identical actual vertex bytes,
+topology, primitive order, flags and zero position truncation. Its original
+guide/index32/global arm reproduced the production per-cluster size array exactly.
+
+The reference has two distinct paths. `src/tessellation_table.cpp` builds planar
+dyadic guides (`q / 32768`), uint8 indices, 12-byte positions and **no bounding
+limit**. `src/raytracing_cluster_data.cpp` instead builds original geometry clusters
+with per-cluster expanded boxes. Metallic's existing guides use `q / 65535`, uint32
+indices and 12-byte canonical positions; actual instantiated positions occupy the
+first 12 bytes of an unchanged 32-byte vertex record. Template build flags are
+PreferFastTrace in both projects; the reference's default instantiation flags are
+None (already tested by C1), whereas Metallic uses PreferFastTrace. Bounding-limit
+alignment, the six-float layout and native field offset were verified.
+
+| Native diagnostic control | Live CLAS bytes | Change from original templates |
+| --- | ---: | ---: |
+| Triangle builds | 3,616,896 | -31.01% |
+| Original guide, none or global bounds | 5,242,880 | 0% |
+| Original guide, current-frame per-patch tight bounds | 4,079,616 | -22.19% |
+| Dyadic guide, none or global bounds | 4,980,736 | -5.00% |
+| Dyadic guide, current-frame per-patch tight bounds | 3,824,640 | -27.05% |
+
+Index8 versus index32, opaque versus the existing geometry flags, and packed
+12-byte versus original 32-byte actual vertex stride did not change size. Tight
+boxes prove the bounding-limit parameter works at truncation zero, but only cover
+the captured frame. They are not installed as future-frame template limits.
+Final displaced positions contain nonzero low mantissa bits, so truncating those
+bits would change geometry. No native BVH or coordinate-code format is inferred.
+
+C4 adds the opt-in `rightDyadic` guide: round the existing canonical coordinate
+to `round(q * 32768 / 65535) / 32768`. Only CPU template guide positions change;
+the GPU displacement shader, actual vertex words, index table and tessellation
+factors stay unchanged. This retains Metallic's factor-8 61 vertices / 96 triangles,
+rather than replacing its pattern with the reference's 45 vertices / 64 triangles.
+Default shape remains `right`; default build mode remains `triangles`.
+
+The same Release binary, RTX 5070 Ti / NVIDIA 621.01, 1444x694 graph, authored
+displaced-plane scene, camera, material, lighting, quality and cache conditions
+were used for A (triangles), B (original templates), and C4 (dyadic templates).
+Each process used 32 warmup and 64 timed frames, with residency frozen at frame 16.
+Validation, recipe export and size reads were separate from ordinary timing.
+The declared three ABCCBA discovery blocks completed; C4 failed, so the reserved
+five confirmation blocks did not run. No samples were removed or pooled with
+older experiments. All within-arm relative ranges were below 10%.
+
+Positive gain means lower time; 95% intervals use complete-block log ratios:
+
+| GPU scope | C4 vs triangles gain [95% CI] | C4 vs original templates gain [95% CI] |
+| --- | ---: | ---: |
+| CLAS build / instantiate | +80.66% [80.17, 81.13] | -5.80% [-10.68, -1.14] |
+| Complete tessellation | +4.72% [-2.95, 11.82] | +0.73% [-4.69, 5.86] |
+| Whole measured graph | +1.95% [-4.15, 7.70] | -0.13% [-6.08, 5.48] |
+| Complete Shadows pass | -14.30% [-15.29, -13.32] | -6.58% [-7.22, -5.95] |
+| Shadow trace | -12.46% [-13.11, -11.81] | -5.57% [-5.82, -5.31] |
+| Publish shadow copy | -33.92% [-38.38, -29.61] | -12.21% [-15.43, -9.08] |
+
+B reproduced a 7.24% [6.14, 8.35] complete-Shadow slowdown against A. C4's
+native size reduction reproduced in production, but its complete Shadow pass
+became slower still. This rejects total CLAS byte reduction as a sufficient
+condition for faster tracing; it does not identify internal BVH topology or
+cache behavior. Whole-graph intervals cross zero, so no end-to-end gain is claimed.
+The retained CLAS arena and template allocation capacities did not decrease;
+the 5% figure concerns live native output, not total renderer VRAM.
+
+Validation completed:
+
+- Release renderer and RHI targets built; 379 Slang files passed module ownership.
+  Both unique production tessellation/Shadow SPIR-V modules passed Vulkan 1.4 validation.
+- All 16 native arms passed synchronization validation, 53,248 paired rays per arm
+  (including three 128x128 distance images), and 448 independent double-precision
+  CPU oracle rays. GPU distance, position, primitive ID and same-primitive attribute
+  differences were zero. The corrected oracle uses 8x8 image cell centers per view,
+  hits 28/28/36 image samples, and has maximum distance error 2.24e-7.
+- Four strict production cases passed without skips or validation messages:
+  triangles, original templates, C3 and C4. C4 covered 23 paired states with
+  eight precise rays and a 128x128 image each, including material/transform,
+  capacity, cancellation, history and policy transitions; all differences were zero.
+- All 21 A/B processes plus three additional full-scene synchronization runs
+  produced byte-identical HDR, depth and shadow, 2048 patches, one generated BLAS,
+  zero invalid/rejected work and no template-bound fallback. Full-scene validation
+  logs had no warning/error; generated correctness and performance plots were inspected.
+- Thirty focused runner tests passed; sealed v1, v2 C1/C2 and v3 C3 evidence still
+  verifies with its original policies. New collections use the fixed C4 v4 protocol.
+
+Local untracked evidence is under `.tmp/clas-encoding-investigation/`: `capture-02`,
+`native-02`, `report-03/ParameterComparison.md`, `strict-c4-01`, sealed
+`experiment-c4-01`, `perf-report-01`, `visual-review-01` and `report.md`.
+The initial native-01 CPU image sampling concentrated on edge columns; native-02
+corrected that diagnostic coverage without changing geometry, tolerances, budget
+or any of the 16 size arrays. Both records remain available.
+
+The native diagnostic is reproducible after a separate bounded geometry capture
+(`captureTessellationGeometry`, `captureTessellationNativeSizes`, and
+`tessellationReceipt` enabled in MaterialBaseline cases):
+
+```powershell
+$env:METALLIC_CLAS_ENCODING_CAPTURE = '<absolute-path>/CLASTessellation-Geometry.json'
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --tb-run --tb-suite extensions --tb-filter '*clas_template_encoding_diagnostic' --tb-validation sync --tb-require-all --output-dir <fresh-directory>
+Remove-Item Env:METALLIC_CLAS_ENCODING_CAPTURE
+```
 
 ## Previous executed baseline (2026-10-25, triangle builds only)
 

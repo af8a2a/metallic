@@ -367,7 +367,7 @@ bool writeCLASTessellationFixture(const std::filesystem::path& directory, std::s
     return bool(binary) && bool(gltf);
 }
 
-enum class TemplateCandidate { Default, InstantiationNone, Equilateral, GeometryBounds };
+enum class TemplateCandidate { Default, InstantiationNone, Equilateral, GeometryBounds, RightDyadic };
 
 class CLASTessellationTest : public RHITest {
 public:
@@ -379,6 +379,7 @@ public:
         if (candidate == TemplateCandidate::InstantiationNone) { name = "scene_clas_tessellation_templates_c1_right_none"; }
         if (candidate == TemplateCandidate::Equilateral) { name = "scene_clas_tessellation_templates_c2_equilateral_fast_trace"; }
         if (candidate == TemplateCandidate::GeometryBounds) { name = "scene_clas_tessellation_templates_c3_geometry_bounds"; }
+        if (candidate == TemplateCandidate::RightDyadic) { name = "scene_clas_tessellation_templates_c4_right_dyadic"; }
     }
     std::optional<bench::Metadata> metadata() const override
     {
@@ -393,6 +394,8 @@ public:
                 ? "clas.tessellation.templates.geometry.bounds.containment.lifecycle"
                 : candidate_ == TemplateCandidate::InstantiationNone
                 ? "clas.tessellation.templates.instantiation.none.lifecycle"
+                : candidate_ == TemplateCandidate::RightDyadic
+                ? "clas.tessellation.templates.canonical.right.dyadic.lifecycle"
                 : "clas.tessellation.templates.canonical.equilateral.lifecycle");
         }
         if (candidate_ == TemplateCandidate::GeometryBounds) { result.artifacts.push_back("template-bounds.json"); }
@@ -428,7 +431,8 @@ public:
         tessellationProducer.reset();
         registerBuiltInRenderGraphPasses();
         const bool geometryBounds = candidate_ == TemplateCandidate::GeometryBounds;
-        const char* templateShape = candidate_ == TemplateCandidate::Equilateral ? "equilateral" : "right";
+        const char* templateShape = candidate_ == TemplateCandidate::Equilateral ? "equilateral"
+            : candidate_ == TemplateCandidate::RightDyadic ? "rightDyadic" : "right";
         const char* instantiationFlags = candidate_ == TemplateCandidate::InstantiationNone ? "none" : "fastTrace";
         const char* candidateKey = geometryBounds ? "rtTessellationTemplateBounds" : candidate_ == TemplateCandidate::InstantiationNone
             ? "rtTessellationInstantiationFlags" : "rtTessellationTemplateShape";
@@ -1028,6 +1032,11 @@ public:
     CLASTessellationTemplatesGeometryBoundsTest() : CLASTessellationTest(true, TemplateCandidate::GeometryBounds) {}
 };
 METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesGeometryBoundsTest);
+class CLASTessellationTemplatesRightDyadicTest final : public CLASTessellationTest {
+public:
+    CLASTessellationTemplatesRightDyadicTest() : CLASTessellationTest(true, TemplateCandidate::RightDyadic) {}
+};
+METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesRightDyadicTest);
 
 } // namespace
 } // namespace metallic::tests

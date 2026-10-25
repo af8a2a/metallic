@@ -5330,6 +5330,10 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
         add("tessellationSizes", tessellation_->buildSizesBuffer(), ResourceState::General, "u32");
         add("tessellationBounds", tessellation_->templateBoundsBuffer(), ResourceState::General, "f32",
             tessellation_->templateBoundsOffset(), 24);
+        if (tessellation_->buildSizesBuffer()) {
+            add("tessellationLeaves", tessellation_->metadataBuffer(), ResourceState::General, "StreamCLASTessellationLeaf");
+            add("tessellationVertices", tessellation_->vertexBuffer(), ResourceState::General, "StreamCLASTessellationVertex");
+        }
     }
     if (!debugReadbackEnabled_) { return; }
     add("requestHeader", requestBuffer_.get(), requestBufferState_, "StreamRequestBufferHeader", 0, sizeof(StreamRequestBufferHeader));
@@ -5347,7 +5351,7 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("activeHeader", activeHeaderBuffer_.get(), activeHeaderBufferState_, "MeshletStreamGPUActiveHeader");
     add("blasHeader", blasHeaderBuffer_.get(), blasHeaderBufferState_, "MeshletStreamGPUBLASHeader", 0,
         sizeof(MeshletStreamGPUBLASHeader));
-    if (tessellation_) {
+    if (tessellation_ && !tessellation_->buildSizesBuffer()) {
         add("tessellationLeaves", tessellation_->metadataBuffer(), ResourceState::General, "StreamCLASTessellationLeaf");
         add("tessellationVertices", tessellation_->vertexBuffer(), ResourceState::General, "StreamCLASTessellationVertex");
     }

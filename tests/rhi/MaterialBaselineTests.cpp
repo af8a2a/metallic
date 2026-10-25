@@ -9,6 +9,7 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "../../Shaders/Interop/StreamCLASTessellation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -115,21 +116,27 @@ public:
 class TessellationFinalReceipt final : public render::IRenderDebugObserver
 {
 public:
-    explicit TessellationFinalReceipt(bool captureSizes) : captureSizes_(captureSizes) {}
+    TessellationFinalReceipt(bool captureSizes, bool captureGeometry)
+        : captureSizes_(captureSizes), captureGeometry_(captureGeometry) {}
     bool requiresResourceReadback() const override { return false; }
     bool captured = false, completed = false;
     bool afterPassSeen = false, bindingSeen = false;
     bool sizesCaptured = false, boundsCaptured = false, boundsSeen = false;
+    bool leavesCaptured = false, verticesCaptured = false;
     uint64_t templatePoolGeneration = 0;
     std::unique_ptr<render::Buffer> buffer, sizesBuffer, boundsBuffer;
+    std::unique_ptr<render::Buffer> leavesBuffer, verticesBuffer;
     void compiled(debug::DebugValue) override {}
     void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
     {
         captured = completed = afterPassSeen = bindingSeen = false;
         sizesCaptured = false;
         boundsCaptured = boundsSeen = false;
+        leavesCaptured = verticesCaptured = false;
         sizesBuffer.reset();
         boundsBuffer.reset();
+        leavesBuffer.reset();
+        verticesBuffer.reset();
         device_ = &device;
         auto result = device.createBuffer({.size = 24, .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback,
@@ -149,8 +156,12 @@ public:
             const bool counts = binding.id.ends_with(".tessellationCounts");
             const bool sizes = captureSizes_ && binding.id.ends_with(".tessellationSizes");
             const bool bounds = captureSizes_ && binding.id.ends_with(".tessellationBounds");
-            if (!counts && !sizes && !bounds) { continue; }
+            const bool leaves = captureGeometry_ && binding.id.ends_with(".tessellationLeaves");
+            const bool vertices = captureGeometry_ && binding.id.ends_with(".tessellationVertices");
+            if (!counts && !sizes && !bounds && !leaves && !vertices) { continue; }
             const uint64_t bytes = counts || bounds ? 24 : binding.buffer->desc().size - binding.offset;
+            auto& destination = counts ? buffer : bounds ? boundsBuffer : leaves ? leavesBuffer :
+                vertices ? verticesBuffer : sizesBuffer;
             if (counts) {
                 bindingSeen = true;
                 templatePoolGeneration = binding.metadata.at("templatePoolGeneration").get<uint64_t>();
@@ -161,9 +172,8 @@ public:
                     .memoryLocation = MemoryLocation::HostReadback,
                     .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
                 if (!allocation) { continue; }
-                (bounds ? boundsBuffer : sizesBuffer) = std::move(*allocation);
+                destination = std::move(*allocation);
             }
-            auto& destination = counts ? buffer : (bounds ? boundsBuffer : sizesBuffer);
             const MemoryBarrierDesc before{
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite}};
@@ -174,11 +184,13 @@ public:
             auto result = commands.synchronize({.memory = {&before, 1}});
             if (result) { result = commands.copyBuffer(*binding.buffer->slice({binding.offset, bytes}), *destination->slice()); }
             if (result) { result = commands.synchronize({.memory = {&after, 1}}); }
-            (counts ? captured : (bounds ? boundsCaptured : sizesCaptured)) = bool(result);
+            (counts ? captured : bounds ? boundsCaptured : leaves ? leavesCaptured :
+                vertices ? verticesCaptured : sizesCaptured) = bool(result);
         }
     }
 private:
     bool captureSizes_;
+    bool captureGeometry_;
     render::Device* device_ = nullptr;
 };
 
@@ -496,8 +508,13 @@ public:
                         {"bytes", bytes.size()}, {"format", static_cast<uint32_t>(preview.readbackFormat())}});
                 };
                 auto cloudReceipt = spec.value("physicalCloudReceipt", false) ? std::make_unique<PhysicalCloudFinalReceipt>() : nullptr;
+                if (spec.value("captureTessellationGeometry", false) &&
+                    (!spec.value("captureTessellationNativeSizes", false) || !spec.value("tessellationReceipt", false))) {
+                    return fail("Geometry encoding diagnostics require final tessellation counts and native sizes");
+                }
                 auto tessellationReceipt = spec.value("tessellationReceipt", false) ?
-                    std::make_unique<TessellationFinalReceipt>(spec.value("captureTessellationNativeSizes", false)) : nullptr;
+                    std::make_unique<TessellationFinalReceipt>(spec.value("captureTessellationNativeSizes", false),
+                        spec.value("captureTessellationGeometry", false)) : nullptr;
                 if (cloudReceipt && tessellationReceipt) { return fail("Choose one final publication receipt"); }
                 for (uint32_t frame = 0; frame < caseFrames; ++frame) {
                     if (freezeStreamingFrame && frame == *freezeStreamingFrame) {
@@ -697,6 +714,71 @@ public:
                             if (!output) { return fail("Cannot write native template bound receipt"); }
                             result["nativeCLASBoundsReceipt"] = {{"file", boundsFile}, {"bytes", sizeof(values)}, {"values", values}};
                         }
+                    }
+                    if (spec.value("captureTessellationGeometry", false)) {
+                        const auto& receipt = *tessellationReceipt;
+                        if (!receipt.leavesCaptured || !receipt.verticesCaptured) {
+                            return fail("Missing actual CLAS geometry encoding receipt");
+                        }
+                        const auto read = [&](Buffer& source, size_t bytes, void* destination) {
+                            if (bytes > source.desc().size) { throw std::runtime_error("CLAS geometry receipt exceeds buffer"); }
+                            const void* data = source.map();
+                            if (!data) { throw std::runtime_error("Cannot map CLAS geometry receipt"); }
+                            source.invalidate();
+                            std::memcpy(destination, data, bytes);
+                            source.unmap();
+                        };
+                        std::vector<StreamCLASTessellationLeaf> leaves(counts[0]);
+                        std::vector<StreamCLASTessellationVertex> vertices(size_t(counts[0]) * METALLIC_TESS_VERTICES_PER_PATCH);
+                        read(*receipt.leavesBuffer, leaves.size() * sizeof(leaves[0]), leaves.data());
+                        read(*receipt.verticesBuffer, vertices.size() * sizeof(vertices[0]), vertices.data());
+                        for (size_t patch = 0; patch < leaves.size(); ++patch) {
+                            if (leaves[patch].vertexCount > METALLIC_TESS_VERTICES_PER_PATCH) {
+                                return fail("Invalid live vertex count in geometry encoding receipt");
+                            }
+                            // Do not export uninitialized, unused GPU allocation contents.
+                            // Every live vertex word is preserved exactly, including its domain.
+                            std::fill(vertices.begin() + patch * METALLIC_TESS_VERTICES_PER_PATCH + leaves[patch].vertexCount,
+                                vertices.begin() + (patch + 1) * METALLIC_TESS_VERTICES_PER_PATCH, StreamCLASTessellationVertex{});
+                        }
+                        std::vector<uint32_t> sizes(counts[0]);
+                        read(*receipt.sizesBuffer, sizes.size() * sizeof(sizes[0]), sizes.data());
+                        Json geometry = {{"schemaVersion", 1}, {"patchCount", counts[0]},
+                            {"verticesPerPatch", METALLIC_TESS_VERTICES_PER_PATCH},
+                            {"trianglesPerPatch", METALLIC_TESS_TRIANGLES_PER_PATCH},
+                            {"leafStride", sizeof(leaves[0])}, {"vertexStride", sizeof(vertices[0])},
+                            {"unusedVertexSlotsZeroed", true}, {"sha256", Json::object()},
+                            {"frame", caseFrames - 1}, {"scope", "final untimed frame; actual live GPU vertices unchanged"}};
+                        const auto save = [&](const char* key, const char* suffix, const void* data, size_t bytes) {
+                            const auto file = id + suffix;
+                            std::ofstream output(context.outputDirectory / file, std::ios::binary);
+                            output.write(static_cast<const char*>(data), std::streamsize(bytes));
+                            if (!output) { throw std::runtime_error("Cannot write CLAS geometry encoding receipt"); }
+                            geometry[key] = file;
+                            geometry["sha256"][file] = debug::debugSha256(std::span(static_cast<const uint8_t*>(data), bytes));
+                        };
+                        save("leavesFile", "-CLASLeaves.bin", leaves.data(), leaves.size() * sizeof(leaves[0]));
+                        save("verticesFile", "-CLASVertices.bin", vertices.data(), vertices.size() * sizeof(vertices[0]));
+                        save("countsFile", "-CLASCounts.bin", statistics.data(), sizeof(statistics));
+                        save("sizesFile", "-CLASGeometrySizes.bin", sizes.data(), sizes.size() * sizeof(sizes[0]));
+                        for (const auto& stream : result["frames"].back()["streaming"]) {
+                            if (stream.at("passName") == "VBuffer") {
+                                geometry["identity"] = Json::parse(stream.at("tessellationIdentity").get<std::string>());
+                            }
+                        }
+                        if (!geometry.contains("identity") || !result.contains("nativeCLASBoundsReceipt")) {
+                            return fail("Encoding receipt requires bounded VBuffer identity and actual bounds");
+                        }
+                        geometry["templateBounds"] = result["nativeCLASBoundsReceipt"]["values"];
+                        if (geometry["identity"].at("templatePoolGeneration") != receipt.templatePoolGeneration ||
+                            geometry["identity"].at("templateBounds") != geometry["templateBounds"]) {
+                            return fail("Final encoding receipt changed its bounded template pool");
+                        }
+                        const auto file = id + "-Geometry.json";
+                        std::ofstream output(context.outputDirectory / file);
+                        output << geometry.dump(2);
+                        if (!output) { return fail("Cannot write CLAS encoding manifest"); }
+                        result["nativeCLASGeometryReceipt"] = {{"file", file}, {"patchCount", counts[0]}};
                     }
                 }
                 if (cloudReceipt) {

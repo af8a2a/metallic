@@ -16,14 +16,17 @@ import MeasureCLASTessellation as base
 
 ROOT = base.ROOT
 LEGACY_PROTOCOL = "metallic-clas-tessellation-ab-v2"
-PROTOCOL = "metallic-clas-tessellation-ab-v3"
+BOUNDED_PROTOCOL = "metallic-clas-tessellation-ab-v3"
+PROTOCOL = "metallic-clas-tessellation-ab-v4"
+SUPPORTED_PROTOCOLS = (LEGACY_PROTOCOL, BOUNDED_PROTOCOL, PROTOCOL)
+FIXED_BUDGETS = {"discovery": 3, "confirmation": 5}
 ARMS = {"A": "triangles", "B": "templates", "C": "candidate"}
 MODES = {"A": "triangles", "B": "templates", "C": "templates"}
 BLOCK = "ABCCBA"
 PAIRS = {"B/A": ("A", "B"), "C/A": ("A", "C"), "C/B": ("B", "C")}
 METRICS = (*base.METRICS, "shadowTraceMs", "shadowCopyMs")
 STRATEGY_KEYS = ("rtTessellationTemplateShape", "rtTessellationInstantiationFlags")
-TEMPLATE_SHAPES = ("right", "equilateral")
+TEMPLATE_SHAPES = ("right", "equilateral", "rightDyadic")
 INSTANTIATION_FLAGS = ("fastTrace", "none")
 DEFAULT_STRATEGY = dict(zip(STRATEGY_KEYS, ("right", "fastTrace")))
 CANDIDATES = {"C1": dict(zip(STRATEGY_KEYS, ("right", "none"))),
@@ -31,6 +34,7 @@ CANDIDATES = {"C1": dict(zip(STRATEGY_KEYS, ("right", "none"))),
 BOUNDS_KEY = "rtTessellationTemplateBounds"
 BOUNDED_DEFAULT = {**DEFAULT_STRATEGY, BOUNDS_KEY: "none"}
 BOUNDED_CANDIDATES = {"C3": {**DEFAULT_STRATEGY, BOUNDS_KEY: "geometry"}}
+DYADIC_CANDIDATES = {"C4": {**BOUNDED_DEFAULT, STRATEGY_KEYS[0]: "rightDyadic"}}
 MODULES = ("Features/GPUDriven/StreamCLASTessellation", "Features/Lighting/ScreenSpaceShadows")
 POLICY = {"statistic": "abccba-block-log-ratio", "confidence": .95, "imagePolicy": "exact-bytes",
           "gates": [{"pair": "C/A", "metric": "shadowsMs", "minimum": -.02, "strict": False},
@@ -52,10 +56,10 @@ def properties(graph):
 
 
 def strategy_schema(protocol):
-    require(protocol in (LEGACY_PROTOCOL, PROTOCOL), "Unknown strategy protocol")
+    require(protocol in SUPPORTED_PROTOCOLS, "Unknown strategy protocol")
     if protocol == LEGACY_PROTOCOL:
         return STRATEGY_KEYS, DEFAULT_STRATEGY, CANDIDATES
-    return (*STRATEGY_KEYS, BOUNDS_KEY), BOUNDED_DEFAULT, BOUNDED_CANDIDATES
+    return (*STRATEGY_KEYS, BOUNDS_KEY), BOUNDED_DEFAULT, (BOUNDED_CANDIDATES if protocol == BOUNDED_PROTOCOL else DYADIC_CANDIDATES)
 
 
 def normalize_graph(graph, protocol=PROTOCOL):
@@ -77,8 +81,8 @@ def prepare(args):
     candidate = {STRATEGY_KEYS[0]: args.template_shape, STRATEGY_KEYS[1]: args.instantiation_flags,
                  BOUNDS_KEY: args.template_bounds}
     validate_strategy(candidate)
-    require(candidate == BOUNDED_CANDIDATES["C3"], "Only C3 right/fastTrace/geometry is registered in v3")
-    require(args.native_sizes, "v3 requires native size and actual template-bound diagnostics")
+    require(candidate == DYADIC_CANDIDATES["C4"], "Only C4 rightDyadic/fastTrace/none is registered in v4")
+    require(args.native_sizes, "v4 requires native size diagnostics")
     # Preserve the production v1 scene/camera/native-resolution fixture builder.
     base.prepare(args)
     output = args.output.resolve()
@@ -99,7 +103,7 @@ def prepare(args):
         save(output / directory / "DiagnosticCases.json", diagnostic)
     fixture = read(output / "Fixture.json")
     fixture.update(protocol=PROTOCOL, candidate=candidate, baselineStrategy=BOUNDED_DEFAULT,
-                   candidateId="C3",
+                   candidateId="C4", budgets=FIXED_BUDGETS,
                    nativeSizeDiagnostic=args.native_sizes, blockOrder=BLOCK)
     save(output / "Fixture.json", fixture)
     fixture_configs(output)
@@ -110,7 +114,9 @@ def fixture_configs(directory):
     protocol = fixture["protocol"]
     keys, default, candidates = strategy_schema(protocol)
     require(fixture["blockOrder"] == BLOCK, "Unknown three-arm fixture protocol")
-    require(protocol == LEGACY_PROTOCOL or fixture["nativeSizeDiagnostic"] is True, "v3 requires actual bound diagnostics")
+    require(protocol == LEGACY_PROTOCOL or fixture["nativeSizeDiagnostic"] is True, "v3/v4 require native size diagnostics")
+    if protocol == PROTOCOL:
+        require(fixture["budgets"] == FIXED_BUDGETS, "v4 requires the declared 3 discovery and 5 confirmation blocks")
     validate_strategy(fixture["candidate"], protocol)
     require(fixture["baselineStrategy"] == default and
             candidates.get(fixture["candidateId"]) == fixture["candidate"],
@@ -210,7 +216,7 @@ def native_sizes(directory, case):
             "median": float(np.median(sizes)), "scope": "native CLAS destination sizes; separate untimed diagnostic publication"}
 
 
-def bounded_path_evidence(directory, case, identity, graph, arm, diagnostic):
+def bounded_path_evidence(directory, case, identity, graph, arm, diagnostic, protocol=BOUNDED_PROTOCOL):
     mode = properties(graph)[BOUNDS_KEY]
     require(identity["templateBoundsMode"] == mode, "Actual template bounds mode differs from graph")
     count, observed = case["templateBoundFallbacks"], case["templateBoundFallbackObserved"]
@@ -226,13 +232,17 @@ def bounded_path_evidence(directory, case, identity, graph, arm, diagnostic):
             profile = json.loads(profile)
         require(profile["templatePoolGeneration"] == generation,
                 "Template pool replaced during warmup/timing; sticky fallback history does not cover the window")
-    require(identity["nativeTemplateCount"] == (0 if arm == "A" else 512 if arm == "B" else 1024),
+    bounded_candidate = protocol == BOUNDED_PROTOCOL and arm == "C"
+    require(identity["nativeTemplateCount"] == (0 if arm == "A" else 1024 if bounded_candidate else 512),
             "Actual template population differs from registered arm")
     require(generation == 0 if arm == "A" else generation > 0, "Invalid template pool generation")
     raw_receipt = case.get("nativeCLASBoundsReceipt")
-    if arm != "C":
+    if not bounded_candidate:
         require(mode == "none" and identity["templateBounds"] is None and not identity["boundedTemplatesReady"] and
-                raw_receipt is None, "Unbounded baseline unexpectedly published bounded templates")
+                raw_receipt is None, "Unbounded arm unexpectedly published bounded templates")
+        if protocol == PROTOCOL:
+            require(count == 0 and observed is False, "Unbounded v4 arm published a template-bound fallback")
+            require(identity["patternCount"] == (0 if arm == "A" else 512), "Actual v4 template pattern count differs")
     else:
         require(mode == "geometry" and identity["boundedTemplatesReady"] is True and count == 0 and observed is False,
                 "C3 did not exclusively use bounded templates throughout warmup and timing")
@@ -278,8 +288,9 @@ def analyze_run(directory, config, graph, arm, diagnostic, protocol=LEGACY_PROTO
     require(("nativeCLASSizeReceipt" in case) == collect_sizes, "Native size diagnostic receipt does not match its request")
     if collect_sizes:
         value["nativeCLASSizes"] = native_sizes(directory, case)
-    if protocol == PROTOCOL:
-        value["boundPathEvidence"] = bounded_path_evidence(directory, case, receipt, graph, arm, diagnostic)
+    if protocol in (BOUNDED_PROTOCOL, PROTOCOL):
+        key = "boundPathEvidence" if protocol == BOUNDED_PROTOCOL else "templatePathEvidence"
+        value[key] = bounded_path_evidence(directory, case, receipt, graph, arm, diagnostic, protocol)
     return value
 
 
@@ -309,7 +320,7 @@ def validate_results(rows, diagnostics, protocol=LEGACY_PROTOCOL):
         def ordinary_identity(identity):
             result = dict(identity)
             del result["diagnosticBuildSizes"]
-            if protocol == PROTOCOL:
+            if protocol in (BOUNDED_PROTOCOL, PROTOCOL):
                 # Allocation generations establish a single process's sticky
                 # history; they are not portable identities across processes.
                 del result["templatePoolGeneration"]
@@ -321,23 +332,37 @@ def validate_results(rows, diagnostics, protocol=LEGACY_PROTOCOL):
             require(all(r["device"] == device for r in row["recipes"]), "Device changed across diagnostic arms")
 
 
-def bound_size_diagnostic(diagnostics):
+def native_size_diagnostic(diagnostics):
     values = {row["arm"]: row["result"]["nativeCLASSizes"] for row in diagnostics}
     require(set(values) == set(ARMS) and len({v["count"] for v in values.values()}) == 1,
-            "Bounded native-size comparison requires the same actual live CLAS count")
+            "Native-size comparison requires the same actual live CLAS count")
     baseline, candidate = values["B"]["totalBytes"], values["C"]["totalBytes"]
     return {"scope": "untimed native live CLAS output; separate from retained template pool capacity",
             "requiredForPerformanceAcceptance": False, "liveCLASCount": values["C"]["count"],
-            "originalTemplateBytes": baseline, "boundedTemplateBytes": candidate,
+            "originalTemplateBytes": baseline, "candidateTemplateBytes": candidate,
             "reductionFraction": 1 - candidate / baseline, "smallerThanOriginalTemplates": candidate < baseline,
             "classification": "reduced" if candidate < baseline else "unchanged" if candidate == baseline else "larger",
             "arms": {arm: {k: value[k] for k in ("totalBytes", "minimum", "maximum", "median")} for arm, value in values.items()}}
 
 
+def bound_size_diagnostic(diagnostics):
+    value = native_size_diagnostic(diagnostics)
+    value["boundedTemplateBytes"] = value.pop("candidateTemplateBytes")
+    return value
+
+
+def validate_budgets(budgets, protocol):
+    require(set(budgets) == {"discovery", "confirmation"} and
+            all(type(n) is int and 2 <= n <= 10 for n in budgets.values()), "Invalid fixed stage budgets")
+    if protocol == PROTOCOL:
+        require(budgets == FIXED_BUDGETS, "v4 requires the declared 3 discovery and 5 confirmation blocks")
+
+
 def run(args):
     exe, fixtures, output = args.exe.resolve(), args.fixtures.resolve(), args.output.resolve()
     config, diagnostic_configs, graphs, diagnostic_graphs = fixture_configs(fixtures)
-    require(read(fixtures / "Fixture.json")["protocol"] == PROTOCOL, "Only the bounded C3 candidate can start a new experiment")
+    require(read(fixtures / "Fixture.json")["protocol"] == PROTOCOL, "Only the rightDyadic C4 candidate can start a new experiment")
+    validate_budgets({"discovery": args.blocks, "confirmation": args.confirmation_blocks}, PROTOCOL)
     require(exe.is_file() and not output.exists(), "Existing executable and fresh evidence directory required")
     require("CMAKE_BUILD_TYPE:STRING=Release" in (exe.parent.parent / "CMakeCache.txt").read_text(), "Existing Release build required")
     locks = [ROOT / "build/shader-experiment.lock", ROOT / "build/material-phase0.lock"]
@@ -384,7 +409,7 @@ def run(args):
                     validate_results([row], diagnostics, PROTOCOL)
             if stage == "diagnostic":
                 validate_results([], diagnostics, PROTOCOL)
-                manifest["boundSizeDiagnostic"] = bound_size_diagnostic(diagnostics)
+                manifest["nativeSizeDiagnostic"] = native_size_diagnostic(diagnostics)
                 save(output / "Experiment.json", manifest)
             else:
                 manifest[stage] = assess(stage_rows, stage)
@@ -410,10 +435,9 @@ def verify(directory):
     require(read(directory / "Manifest.json") == {p.relative_to(directory).as_posix(): digest(p)
             for p in directory.rglob("*") if p.is_file() and p.name != "Manifest.json"}, "Evidence file set/hash changed")
     protocol = manifest["protocol"]
-    require(protocol in (LEGACY_PROTOCOL, PROTOCOL) and manifest["policy"] == POLICY and manifest["status"] == "complete" and
+    require(protocol in SUPPORTED_PROTOCOLS and manifest["policy"] == POLICY and manifest["status"] == "complete" and
             manifest["blockOrder"] == BLOCK, "Unsupported/incomplete three-arm experiment")
-    require(set(manifest["budgets"]) == {"discovery", "confirmation"} and
-            all(type(n) is int and 2 <= n <= 10 for n in manifest["budgets"].values()), "Invalid fixed stage budgets")
+    validate_budgets(manifest["budgets"], protocol)
     config, diagnostic_configs, graphs, diagnostic_graphs = fixture_configs(directory / "fixtures")
     require(read(directory / "fixtures/Fixture.json")["protocol"] == protocol, "Experiment and fixture protocols disagree")
     initial = read(directory / "Identity.json")
@@ -455,9 +479,12 @@ def verify(directory):
     require(base.experiment.independent_processes(rows), "Process lifetimes overlap")
     diagnostics = rows[:3]
     validate_results(rows[3:], diagnostics, protocol)
-    if protocol == PROTOCOL:
+    if protocol == BOUNDED_PROTOCOL:
         require(bound_size_diagnostic(diagnostics) == manifest["boundSizeDiagnostic"],
                 "Saved bound-size diagnostic differs from actual native readback")
+    elif protocol == PROTOCOL:
+        require(native_size_diagnostic(diagnostics) == manifest["nativeSizeDiagnostic"],
+                "Saved native-size diagnostic differs from actual native readback")
     decisions = {}
     for stage in ("discovery", "confirmation"):
         selected = [r for r in rows if r["stage"] == stage]
@@ -478,7 +505,7 @@ def report(directory, output):
     import numpy as np
     require(not output.exists() and not output.resolve().is_relative_to(directory.resolve()), "Report must be new and outside sealed evidence")
     verified = verify(directory)
-    require(verified["protocol"] in (LEGACY_PROTOCOL, PROTOCOL), "Use the v1 report command for a v1 bundle")
+    require(verified["protocol"] in SUPPORTED_PROTOCOLS, "Use the v1 report command for a v1 bundle")
     manifest = read(directory / "Experiment.json")
     runs = [r for r in manifest["runs"] if r["stage"] != "diagnostic"]
     require(runs, "Diagnostic-only collection has no ordinary timing report")
@@ -523,25 +550,34 @@ def report(directory, output):
                         "contrasts": {pair: gains[pair][metric] for pair in PAIRS}})
     save(output / "TimingSummary.json", summary)
     diagnostics = [r for r in manifest["runs"] if r["stage"] == "diagnostic"]
+    path_key = "templatePathEvidence" if verified["protocol"] == PROTOCOL else "boundPathEvidence"
     backend = {r["arm"]: {"identity": r["result"]["identity"], "nativeCLASSizes": r["result"].get("nativeCLASSizes"),
-                           "boundPathEvidence": r["result"].get("boundPathEvidence")} for r in diagnostics}
+                           path_key: r["result"].get(path_key)}
+               for r in diagnostics}
     save(output / "BackendAllocations.json", backend)
     bound_text = ""
-    if verified["protocol"] == PROTOCOL:
-        sizes = bound_size_diagnostic(diagnostics)
-        save(output / "BoundSizeDiagnostic.json", sizes)
+    if verified["protocol"] in (BOUNDED_PROTOCOL, PROTOCOL):
+        bounded = verified["protocol"] == BOUNDED_PROTOCOL
+        sizes = bound_size_diagnostic(diagnostics) if bounded else native_size_diagnostic(diagnostics)
+        save(output / ("BoundSizeDiagnostic.json" if bounded else "NativeSizeDiagnostic.json"), sizes)
+        path_key = "boundPathEvidence" if bounded else "templatePathEvidence"
         evidence = [{"directory": r["directory"], "stage": r["stage"], "arm": r["arm"],
-                     **r["result"]["boundPathEvidence"]} for r in manifest["runs"]]
-        save(output / "BoundPathEvidence.json", evidence)
+                     **r["result"][path_key]} for r in manifest["runs"]]
+        save(output / ("BoundPathEvidence.json" if bounded else "TemplatePathEvidence.json"), evidence)
         allocation_rows = "\n".join("| " + arm + " | " + " | ".join(str(item["identity"][key]) for key in
             ("nativeTemplateCount", "templateBytes", "templateAuxiliaryBytes", "clasBytes", "scratchBytes")) + " |"
             for arm, item in backend.items())
-        bound_text = (f"C3 bounded-path evidence: final fallback count zero and sticky any-fallback bit false in every C process; "
+        path_text = ("C3 bounded-path evidence: final fallback count zero and sticky any-fallback bit false in every C process; "
             "each process retained one generation across all warmup/timed frames and the final untimed receipt. Actual diagnostic 24-byte bounds match the production identity.\n\n" +
-            f"Native live CLAS size check: **{sizes['classification']}**, C3 {sizes['boundedTemplateBytes']:,} bytes versus "
+            "Retained allocation capacity includes both unbounded and bounded sets in the single C3 template pool.\n\n") if bounded else (
+            "C4 rightDyadic guide evidence: 512 unbounded templates, no bounds receipt, zero final fallback count and false sticky fallback bit in every process; "
+            "one pool generation covers warmup, timing and final publication. Only the CPU template guide changes to round(q * 32768 / 65535) / 32768; instantiated geometry and sampler settings remain unchanged.\n\n")
+        candidate_bytes = sizes["boundedTemplateBytes" if bounded else "candidateTemplateBytes"]
+        bound_text = (path_text +
+            f"Native live CLAS size check: **{sizes['classification']}**, candidate {candidate_bytes:,} bytes versus "
             f"original templates {sizes['originalTemplateBytes']:,} bytes ({100*sizes['reductionFraction']:+.2f}% reduction, "
             f"{sizes['liveCLASCount']:,} live CLAS). This is a diagnostic observation; it neither adds an acceptance gate nor proves a traversal-cost cause. No bounds-volume threshold is applied.\n\n" +
-            "Retained allocation capacity (bytes), including both unbounded and bounded sets in the single C3 template pool:\n\n" +
+            "Retained allocation capacity (bytes), including template storage and auxiliary buffers:\n\n" +
             "| Arm | Native templates | Template storage | Template auxiliary | Runtime CLAS arena | Runtime scratch |\n"
             "|---|---:|---:|---:|---:|---:|\n" + allocation_rows + "\n\n")
     save(output / "Verification.json", verified)
@@ -569,15 +605,15 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--width", type=int, default=1444); p.add_argument("--height", type=int, default=694)
     p.add_argument("--warmup", type=int, default=32); p.add_argument("--frames", type=int, default=64)
-    p.add_argument("--template-shape", choices=TEMPLATE_SHAPES, default="right")
+    p.add_argument("--template-shape", choices=TEMPLATE_SHAPES, default="rightDyadic")
     p.add_argument("--instantiation-flags", choices=INSTANTIATION_FLAGS, default="fastTrace")
-    p.add_argument("--template-bounds", choices=("geometry",), default="geometry")
+    p.add_argument("--template-bounds", choices=("none", "geometry"), default="none")
     p.add_argument("--native-sizes", action="store_true", default=True)
     p = commands.add_parser("run")
     p.add_argument("--exe", type=Path, required=True); p.add_argument("--fixtures", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--blocks", type=int, choices=range(2, 11), default=3)
-    p.add_argument("--confirmation-blocks", type=int, choices=range(2, 11), default=5)
+    p.add_argument("--blocks", type=int, choices=(3,), default=3)
+    p.add_argument("--confirmation-blocks", type=int, choices=(5,), default=5)
     p.add_argument("--timeout", type=int, default=300); p.add_argument("--diagnostics-only", action="store_true")
     for name in ("verify", "report"):
         p = commands.add_parser(name); p.add_argument("--input", type=Path, required=True)

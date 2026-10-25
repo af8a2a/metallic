@@ -310,3 +310,9 @@ if(METALLIC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+option(METALLIC_BUILD_SHADER_MATH_HARNESS
+    "Build the standalone shader math numeric validation harness (shader-math-harness/)" OFF)
+if(METALLIC_BUILD_SHADER_MATH_HARNESS)
+    add_subdirectory(shader-math-harness)
+endif()
