@@ -120,6 +120,11 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
     uint2 pixel = dispatchId.xy;
     uint2 size = uint2(p.view.current.viewport.yz);
     if (any(pixel >= size)) { return; }
+#if METALLIC_SHADOW_RAY_CAPTURE
+    ShadowRayCaptureRecord capture = (ShadowRayCaptureRecord)0;
+    capture.rawCommittedT = -1.0;
+    capture.instanceId = capture.clusterId = capture.primitiveId = 0xffffffffu;
+#endif
     float viewZ = shadowLinearDepth(int2(pixel), p.view.current);
     bool background = viewZ >= p.view.current.clipOrtho.y * 0.9999;
     float3 position = shadowWorldPosition(int2(pixel), p);
@@ -173,7 +178,11 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
                 direction = delta / max(targetDistance, 1e-6);
                 rayLength = min(rayLength, targetDistance - 0.001);
             }
-            if (rayLength > 0.001) { distance = traceGeometryShadow(origin, direction, rayLength); }
+            if (rayLength > 0.001) { distance = traceGeometryShadow(origin, direction, rayLength
+#if METALLIC_SHADOW_RAY_CAPTURE
+                , capture
+#endif
+            ); }
             penumbra = celestialSource ? packNrdPenumbra(distance, p.trace.w)
                 : packNrdPenumbra(distance, light.distance, p.shape.x * 2.0);
         }
@@ -181,4 +190,10 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
     gPenumbra[pixel] = penumbra;
     // SIGMA reads the previous encoded output during Copy; preserve it until denoising.
     if (p.shape.y == 0.0 || background) { gShadow[pixel] = distance >= kNRDFP16Max ? 1.0 : 0.0; }
+#if METALLIC_SHADOW_RAY_CAPTURE
+    capture.shadowDistance = distance;
+    capture.penumbra = penumbra;
+    capture.visibility = distance >= kNRDFP16Max ? 1.0 : 0.0;
+    ((ShadowRayCaptureRecord*)getConstants<ShadowGeometryPush>().outputAddress)[pixel.y * size.x + pixel.x] = capture;
+#endif
 }

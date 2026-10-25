@@ -58,7 +58,7 @@ struct StreamCLASTessellation::Impl {
         std::unique_ptr<Buffer> vertices, indices, infos, storage, addresses, scratch, boundsBuffer;
         BufferSlice storageRange, boundsRange;
         std::optional<StreamCLASTemplateBounds> bounds;
-        uint32_t nativeCount = kTemplateCount;
+        uint32_t variantCount = 1, unboundedCount = kTemplateCount, nativeCount = kTemplateCount;
         ClusterAccelerationStructureTriangleBuildSizesDesc limits;
         bool initialized = false;
     };
@@ -117,9 +117,11 @@ struct StreamCLASTessellation::Impl {
         if (!templates) {
             auto pool = std::make_shared<Templates>();
             pool->bounds = requestedBounds;
-            // Both representations share one retained storage allocation. The
-            // shader can choose the unbounded copy without changing geometry.
-            pool->nativeCount = pool->bounds ? 2u * kTemplateCount : kTemplateCount;
+            pool->variantCount = templateShape == StreamCLASTessellationTemplateShape::RightCorner ? 3u : 1u;
+            pool->unboundedCount = pool->variantCount * kTemplateCount;
+            // Every guide variant has an unbounded representation and, when
+            // requested, a bounded copy in the same retained allocation.
+            pool->nativeCount = pool->bounds ? 2u * pool->unboundedCount : pool->unboundedCount;
             pool->limits = {.maxClusterTriangleCount = METALLIC_TESS_TRIANGLES_PER_PATCH,
                 .maxClusterVertexCount = METALLIC_TESS_VERTICES_PER_PATCH,
                 .maxTotalTriangleCount = pool->nativeCount * METALLIC_TESS_TRIANGLES_PER_PATCH,
@@ -131,7 +133,7 @@ struct StreamCLASTessellation::Impl {
             const auto properties = device->queryClusterAccelerationStructureProperties();
             if (!sizes || !properties) { return makeError(!sizes ? sizes.error() : properties.error()); }
             Result<> result;
-            if (!(result = buffer(uint64_t(kTemplateCount) * METALLIC_TESS_VERTICES_PER_PATCH * 12u,
+            if (!(result = buffer(uint64_t(pool->unboundedCount) * METALLIC_TESS_VERTICES_PER_PATCH * 12u,
                     MemoryLocation::HostUpload, pool->vertices)) ||
                 !(result = buffer(uint64_t(kTemplateCount) * METALLIC_TESS_TRIANGLES_PER_PATCH * 12u,
                     MemoryLocation::HostUpload, pool->indices)) ||
@@ -155,39 +157,42 @@ struct StreamCLASTessellation::Impl {
                 std::memcpy(bytes.data() + boundsOffset, pool->bounds->data(), sizeof(StreamCLASTemplateBounds));
                 if (!(result = upload(*pool->boundsBuffer, bytes.data(), bytes.size()))) { return result; }
             }
-            std::vector<std::array<float, 3>> positions(kTemplateCount * METALLIC_TESS_VERTICES_PER_PATCH);
+            std::vector<std::array<float, 3>> positions(pool->unboundedCount * METALLIC_TESS_VERTICES_PER_PATCH);
             std::vector<std::array<uint32_t, 3>> indices(kTemplateCount * METALLIC_TESS_TRIANGLES_PER_PATCH);
             std::vector<ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo> infos(pool->nativeCount);
             for (uint32_t index = 0; index < kTemplateCount; ++index) {
                 const auto pattern = makeTessellationPattern({(index & 7u) + 1u,
                     ((index >> 3u) & 7u) + 1u, (index >> 6u) + 1u});
-                for (size_t vertex = 0; vertex < pattern.vertices.size(); ++vertex) {
-                    // Only the template's spatial guide is quantized. Instantiation
-                    // consumes the unchanged displaced vertices generated on the GPU.
-                    const auto guideCoordinate = [this](uint16_t value) {
-                        return templateShape == StreamCLASTessellationTemplateShape::RightDyadic
-                            ? float(std::lround(double(value) * 32768.0 / 65535.0)) / 32768.0f
-                            : float(value) / 65535.0f;
-                    };
-                    const float b1 = guideCoordinate(pattern.vertices[vertex][1]);
-                    const float b2 = guideCoordinate(pattern.vertices[vertex][2]);
-                    positions[index * METALLIC_TESS_VERTICES_PER_PATCH + vertex] =
-                        templateShape == StreamCLASTessellationTemplateShape::Equilateral
-                        ? std::array<float, 3>{b1 + 0.5f * b2, std::sqrt(3.0f) * 0.5f * b2, 0.0f}
-                        : std::array<float, 3>{b1, b2, 0.0f};
-                }
                 std::copy(pattern.triangles.begin(), pattern.triangles.end(),
                     indices.begin() + index * METALLIC_TESS_TRIANGLES_PER_PATCH);
-                auto& info = infos[index].triangle;
-                info.countsAndIndexType = METALLIC_CLAS_PACK_COUNTS(uint32_t(pattern.triangles.size()),
-                    uint32_t(pattern.vertices.size()), 0u, METALLIC_CLAS_INDEX_UINT32);
-                info.indexAndVertexStrides = METALLIC_CLAS_PACK_STRIDES(4u, 12u);
-                info.indexBufferAddress = pool->indices->deviceAddress() + uint64_t(index) * METALLIC_TESS_TRIANGLES_PER_PATCH * 12u;
-                info.vertexBufferAddress = pool->vertices->deviceAddress() + uint64_t(index) * METALLIC_TESS_VERTICES_PER_PATCH * 12u;
-                // ID/geometry base zero; instantiation supplies the generated ID.
-                if (pool->bounds) {
-                    infos[kTemplateCount + index] = infos[index];
-                    infos[kTemplateCount + index].instantiationBoundingBoxLimitAddress = pool->boundsRange.deviceAddress();
+                for (uint32_t corner = 0; corner < pool->variantCount; ++corner) {
+                    const uint32_t templateIndex = corner * kTemplateCount + index;
+                    for (size_t vertex = 0; vertex < pattern.vertices.size(); ++vertex) {
+                        // Only the template's spatial guide changes. Instantiation
+                        // consumes the unchanged displaced vertices and index order.
+                        const auto guideCoordinate = [this](uint32_t value) {
+                            return templateShape == StreamCLASTessellationTemplateShape::RightDyadic
+                                ? float(std::lround(double(value) * 32768.0 / 65535.0)) / 32768.0f
+                                : float(value) / 65535.0f;
+                        };
+                        const float b1 = guideCoordinate(pattern.vertices[vertex][(corner + 1u) % 3u]);
+                        const float b2 = guideCoordinate(pattern.vertices[vertex][(corner + 2u) % 3u]);
+                        positions[templateIndex * METALLIC_TESS_VERTICES_PER_PATCH + vertex] =
+                            templateShape == StreamCLASTessellationTemplateShape::Equilateral
+                            ? std::array<float, 3>{b1 + 0.5f * b2, std::sqrt(3.0f) * 0.5f * b2, 0.0f}
+                            : std::array<float, 3>{b1, b2, 0.0f};
+                    }
+                    auto& info = infos[templateIndex].triangle;
+                    info.countsAndIndexType = METALLIC_CLAS_PACK_COUNTS(uint32_t(pattern.triangles.size()),
+                        uint32_t(pattern.vertices.size()), 0u, METALLIC_CLAS_INDEX_UINT32);
+                    info.indexAndVertexStrides = METALLIC_CLAS_PACK_STRIDES(4u, 12u);
+                    info.indexBufferAddress = pool->indices->deviceAddress() + uint64_t(index) * METALLIC_TESS_TRIANGLES_PER_PATCH * 12u;
+                    info.vertexBufferAddress = pool->vertices->deviceAddress() + uint64_t(templateIndex) * METALLIC_TESS_VERTICES_PER_PATCH * 12u;
+                    // ID/geometry base zero; instantiation supplies the generated ID.
+                    if (pool->bounds) {
+                        infos[pool->unboundedCount + templateIndex] = infos[templateIndex];
+                        infos[pool->unboundedCount + templateIndex].instantiationBoundingBoxLimitAddress = pool->boundsRange.deviceAddress();
+                    }
                 }
             }
             if (!(result = upload(*pool->vertices, positions.data(), positions.size() * sizeof(positions[0]))) ||
@@ -468,7 +473,8 @@ Result<> StreamCLASTessellation::record(CommandBuffer& commands, const StreamCLA
         .buildMode = uint32_t(p.buildMode), .initializeBoundStatistics = *p.statisticsInitialized ? 0u : 1u,
         .templateBoundsAddress = p.templates && p.templates->bounds ? p.templates->boundsRange.deviceAddress() : 0u,
         .templateBoundsRequested = p.boundsMode == StreamCLASTessellationTemplateBoundsMode::Geometry ? 1u : 0u,
-        .templatePatternCount = kTemplateCount};
+        .templateUnboundedCount = p.buildMode == StreamCLASTessellationBuildMode::Templates && p.templates
+            ? p.templates->unboundedCount : 0u};
     std::unique_ptr<Buffer> uploadBuffer;
     log = "Upload CLAS tessellation parameters";
     auto result = p.buffer(sizeof(parameters), MemoryLocation::HostUpload, uploadBuffer);
@@ -576,12 +582,14 @@ std::string StreamCLASTessellation::diagnosticIdentity() const
     const auto& p = *impl_;
     return nlohmann::json{{"mode", p.buildMode == StreamCLASTessellationBuildMode::Templates ? "templates" : "triangles"},
         {"templateShape", p.templateShape == StreamCLASTessellationTemplateShape::Equilateral ? "equilateral" :
-            p.templateShape == StreamCLASTessellationTemplateShape::RightDyadic ? "rightDyadic" : "right"},
+            p.templateShape == StreamCLASTessellationTemplateShape::RightDyadic ? "rightDyadic" :
+            p.templateShape == StreamCLASTessellationTemplateShape::RightCorner ? "rightCorner" : "right"},
         {"instantiationFlags", p.instantiationFlags == StreamCLASTessellationInstantiationFlags::None ? "none" : "fastTrace"},
         {"templateBoundsMode", p.boundsMode == StreamCLASTessellationTemplateBoundsMode::Geometry ? "geometry" : "none"},
         {"templateBounds", p.templates && p.templates->bounds ? nlohmann::json(*p.templates->bounds) : nlohmann::json(nullptr)},
         {"boundedTemplatesReady", p.templates && p.templates->bounds && p.templates->initialized},
         {"nativeTemplateCount", p.templates ? p.templates->nativeCount : 0u},
+        {"templateVariantCount", p.buildMode == StreamCLASTessellationBuildMode::Templates && p.templates ? p.templates->variantCount : 0u},
         {"templatePoolGeneration", p.poolGeneration},
         {"enabled", p.enabled}, {"diagnosticBuildSizes", p.diagnosticBuildSizes},
         {"module", "Features/GPUDriven/StreamCLASTessellation"},

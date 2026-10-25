@@ -17,6 +17,8 @@ TESS_PUBLIC struct StreamCLASTessellationLeaf
 {
     TESS_PUBLIC uint32_t instanceIndex, pageIndex, clusterIndex, sourceTriangle;
     TESS_PUBLIC uint32_t patch0, patch1, patch2, rates;
+    // RightCorner publishes its chosen guide corner in reserved0; geometry
+    // decoders ignore it. Other template shapes and triangle builds keep zero.
     TESS_PUBLIC uint32_t vertexCount, triangleCount, reserved0, reserved1;
 };
 
@@ -60,7 +62,9 @@ TESS_PUBLIC struct StreamCLASTessellationParameters
     TESS_PUBLIC uint64_t templateAddresses;
     TESS_PUBLIC uint32_t buildMode, initializeBoundStatistics;
     TESS_PUBLIC uint64_t templateBoundsAddress;
-    TESS_PUBLIC uint32_t templateBoundsRequested, templatePatternCount;
+    // 512 patterns per guide variant, followed by the optional bounded copies.
+    // RightCorner has three unbounded variants (1536); other shapes have 512.
+    TESS_PUBLIC uint32_t templateBoundsRequested, templateUnboundedCount;
 };
 
 TESS_PUBLIC struct StreamCLASTessellationPush

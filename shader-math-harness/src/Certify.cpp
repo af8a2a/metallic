@@ -34,12 +34,36 @@ Interval Inflate(Interval box)
         std::nextafter(box.hi, std::numeric_limits<double>::infinity())};
 }
 
+// Exact point interval when the rational is exactly representable as a double
+// (verified through the exact fma residual), widened otherwise. Requirement
+// endpoints like 0, 1, and 1/4 are dyadic; comparing against their exact
+// values keeps outputs that sit exactly on a requirement bound acceptable.
+// The exactness test is exact for the magnitudes used by contracts
+// (|num|, |den| < 2^53, quotient well inside the double exponent range).
+Interval RationalIntervalExactAware(std::int64_t num, std::int64_t den)
+{
+    assert(den != 0);
+    if (den < 0)
+    {
+        num = -num;
+        den = -den;
+    }
+    const double quotient = static_cast<double>(num) / static_cast<double>(den);
+    const double residual = std::fma(quotient, static_cast<double>(den), -static_cast<double>(num));
+    if (std::isfinite(quotient) && residual == 0.0)
+    {
+        return IntervalExact(quotient);
+    }
+    return IntervalFromRational(num, den);
+}
+
 } // namespace
 
 HullResult CertifiedHull(const FunctionPair& function, Interval domain, double targetWidth,
     std::uint32_t maxDepth, std::uint64_t maxBoxes)
 {
     HullResult result;
+    result.completed = true;
     Interval hull{std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
 
     std::vector<std::pair<Interval, std::uint32_t>> pending;
@@ -56,18 +80,21 @@ HullResult CertifiedHull(const FunctionPair& function, Interval domain, double t
         const Interval slope = function.derivative(Inflate(box));
         const Interval enclosure = Add(value, Mul(slope, offset));
 
-        hull = Hull(hull, enclosure);
         ++result.boxes;
         result.depthUsed = std::max(result.depthUsed, depth);
 
         const double width = enclosure.hi - enclosure.lo;
         if (width <= targetWidth)
         {
+            // Only accepted leaf enclosures form the hull; a subdivided box is
+            // fully covered by its children and would only loosen the bound.
+            hull = Hull(hull, enclosure);
             continue;
         }
         if (depth >= maxDepth || result.boxes + pending.size() >= maxBoxes)
         {
             result.completed = false;
+            hull = Hull(hull, enclosure);
             continue;
         }
         const double middle = midpoint;
@@ -83,8 +110,8 @@ CertificationReport RunCertification(const Contract& contract, const CandidateMo
 {
     CertificationReport report;
 
-    const Interval domainLo = IntervalFromRational(contract.domainLo.num, contract.domainLo.den);
-    const Interval domainHi = IntervalFromRational(contract.domainHi.num, contract.domainHi.den);
+    const Interval domainLo = RationalIntervalExactAware(contract.domainLo.num, contract.domainLo.den);
+    const Interval domainHi = RationalIntervalExactAware(contract.domainHi.num, contract.domainHi.den);
     report.domainBox = Interval{domainLo.lo, domainHi.hi};
 
     const CoefficientList ideal = IdealCoefficients(contract);
@@ -177,7 +204,8 @@ CertificationReport RunCertification(const Contract& contract, const CandidateMo
             CoefficientList second = PolynomialDerivative(PolynomialDerivative(ideal));
             return EvaluatePolynomialReal(second, box);
         };
-        const HullResult derivativeHull = CertifiedHull(derivativePair, report.domainBox, 1e-6, 48, 100'000);
+        const HullResult derivativeHull =
+            CertifiedHull(derivativePair, report.domainBox, 5e-3, 48, 500'000);
         if (derivativeHull.completed && derivativeHull.hull.hi < 0.0)
         {
             report.realPolynomialMonotoneDecreasing = true;
@@ -203,7 +231,7 @@ CertificationReport RunCertification(const Contract& contract, const CandidateMo
     // --- Binary32 model range over the real domain -------------------------
 
     {
-        constexpr std::uint32_t kBoxes = 1u << 14;
+        constexpr std::uint32_t kBoxes = 1u << 20;
         F32Interval raw{std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
         F32Interval clamped{std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
         bool noUnderflow = true;
@@ -274,7 +302,7 @@ CertificationReport RunCertification(const Contract& contract, const CandidateMo
         report.candidateRealError.hull.lo};
 
     {
-        const Interval requirement = IntervalFromRational(contract.maxAbsoluteError.num,
+        const Interval requirement = RationalIntervalExactAware(contract.maxAbsoluteError.num,
             contract.maxAbsoluteError.den);
         if (report.completed() && report.gammaNoUnderflow && totalUpper.hi <= requirement.lo)
         {
@@ -291,8 +319,10 @@ CertificationReport RunCertification(const Contract& contract, const CandidateMo
     }
 
     {
-        const Interval requiredLo = IntervalFromRational(contract.outputRangeLo.num, contract.outputRangeLo.den);
-        const Interval requiredHi = IntervalFromRational(contract.outputRangeHi.num, contract.outputRangeHi.den);
+        const Interval requiredLo = RationalIntervalExactAware(contract.outputRangeLo.num,
+            contract.outputRangeLo.den);
+        const Interval requiredHi = RationalIntervalExactAware(contract.outputRangeHi.num,
+            contract.outputRangeHi.den);
         const bool inside = static_cast<double>(report.modelOutputRange.lo) >= requiredLo.hi &&
             static_cast<double>(report.modelOutputRange.hi) <= requiredHi.lo;
         const bool outside = static_cast<double>(report.modelOutputRange.hi) < requiredLo.lo ||
@@ -305,7 +335,7 @@ CertificationReport RunCertification(const Contract& contract, const CandidateMo
         const float x0 = 0.0f;
         report.endpointValue = EvaluateModelF32(model, x0);
         report.endpointBits = BitsFromFloat(report.endpointValue);
-        const Interval expected = IntervalFromRational(contract.endpointAtZero.num,
+        const Interval expected = RationalIntervalExactAware(contract.endpointAtZero.num,
             contract.endpointAtZero.den);
         const double value = static_cast<double>(report.endpointValue);
         report.endpointVerdict = (value >= expected.lo && value <= expected.hi)

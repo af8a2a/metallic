@@ -7,6 +7,7 @@
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -164,12 +165,25 @@ public:
             else if (point == "BeforeShadowFinalize") { shadowProfile.next("Shadow finalize"); }
             else { shadowProfile.end(); }
         };
-        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, *context.preparedScene()->textureFeedback.samplingMetadata,
+        auto settings = screenSpaceShadowSettings(context.properties());
+        settings.diagnosticCaptureRays = context.properties().value("diagnosticCaptureRays", false);
+        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), settings, log, *context.preparedScene()->textureFeedback.samplingMetadata,
             &geometry_, stream, &profiler, accelerationStructure, checkpoint).transform([&](auto value) { shadow = std::move(value); });
         shadowProfile.end();
         if (!result) {
             spdlog::error("RayTracedShadowPass: {} ({})", log, resultToString(result));
             return result;
+        }
+        if (shadow.rayCapture) {
+            const std::array resources{
+                DebugResourceBinding{.id = "shadowRays", .buffer = shadow.rayCapture,
+                    .state = ResourceState::General, .layout = "ShadowRayCaptureRecord"},
+                DebugResourceBinding{.id = "shadowParameters", .buffer = shadow.parameters,
+                    .state = ResourceState::ShaderRead, .layout = "ScreenSpaceShadowParameters"}};
+            context.debugCheckpoint("ShadowRayCapture", resources, {{"width", context.width()}, {"height", context.height()},
+                {"frame", info.frameIndex}, {"sampleFrame", view.frame[0]},
+                {"captureShaderSha256", shadow.captureShaderSha256}, {"ordinaryShaderSha256", shadow.ordinaryShaderSha256},
+                {"queryFlags", 0}, {"queryMask", 255}});
         }
 
         profile.next("Publish shadow image");

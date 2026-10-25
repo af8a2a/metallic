@@ -367,7 +367,7 @@ bool writeCLASTessellationFixture(const std::filesystem::path& directory, std::s
     return bool(binary) && bool(gltf);
 }
 
-enum class TemplateCandidate { Default, InstantiationNone, Equilateral, GeometryBounds, RightDyadic };
+enum class TemplateCandidate { Default, InstantiationNone, Equilateral, GeometryBounds, RightDyadic, RightCorner };
 
 class CLASTessellationTest : public RHITest {
 public:
@@ -380,6 +380,7 @@ public:
         if (candidate == TemplateCandidate::Equilateral) { name = "scene_clas_tessellation_templates_c2_equilateral_fast_trace"; }
         if (candidate == TemplateCandidate::GeometryBounds) { name = "scene_clas_tessellation_templates_c3_geometry_bounds"; }
         if (candidate == TemplateCandidate::RightDyadic) { name = "scene_clas_tessellation_templates_c4_right_dyadic"; }
+        if (candidate == TemplateCandidate::RightCorner) { name = "scene_clas_tessellation_templates_c5_right_corner"; }
     }
     std::optional<bench::Metadata> metadata() const override
     {
@@ -394,11 +395,14 @@ public:
                 ? "clas.tessellation.templates.geometry.bounds.containment.lifecycle"
                 : candidate_ == TemplateCandidate::InstantiationNone
                 ? "clas.tessellation.templates.instantiation.none.lifecycle"
+                : candidate_ == TemplateCandidate::RightCorner
+                ? "clas.tessellation.templates.canonical.right.corner.selection.bounds.lifecycle"
                 : candidate_ == TemplateCandidate::RightDyadic
                 ? "clas.tessellation.templates.canonical.right.dyadic.lifecycle"
                 : "clas.tessellation.templates.canonical.equilateral.lifecycle");
         }
         if (candidate_ == TemplateCandidate::GeometryBounds) { result.artifacts.push_back("template-bounds.json"); }
+        if (candidate_ == TemplateCandidate::RightCorner) { result.artifacts.push_back("template-corners.json"); }
         result.timeout = std::chrono::seconds(180);
         return result;
     }
@@ -431,8 +435,9 @@ public:
         tessellationProducer.reset();
         registerBuiltInRenderGraphPasses();
         const bool geometryBounds = candidate_ == TemplateCandidate::GeometryBounds;
+        const bool rightCorner = candidate_ == TemplateCandidate::RightCorner;
         const char* templateShape = candidate_ == TemplateCandidate::Equilateral ? "equilateral"
-            : candidate_ == TemplateCandidate::RightDyadic ? "rightDyadic" : "right";
+            : candidate_ == TemplateCandidate::RightDyadic ? "rightDyadic" : rightCorner ? "rightCorner" : "right";
         const char* instantiationFlags = candidate_ == TemplateCandidate::InstantiationNone ? "none" : "fastTrace";
         const char* candidateKey = geometryBounds ? "rtTessellationTemplateBounds" : candidate_ == TemplateCandidate::InstantiationNone
             ? "rtTessellationInstantiationFlags" : "rtTessellationTemplateShape";
@@ -469,6 +474,39 @@ public:
         bool allowBoundsFallback = false;
         bool expectLocalNormalFallback = false;
         std::string boundsPhase = "lifecycle";
+        std::array<uint64_t, 3> totalCornerCounts{};
+        std::array<uint32_t, 3> lastCornerCounts{};
+        uint32_t cornerPatternsChecked = 0, factorOnePatternsChecked = 0;
+        if (rightCorner) {
+            // Check the source-corner indexing contract independently for every
+            // topology, including the special all-one triangle with no centre.
+            for (uint32_t z = 1; z <= 8; ++z) {
+                for (uint32_t y = 1; y <= 8; ++y) {
+                    for (uint32_t x = 1; x <= 8; ++x) {
+                        const auto pattern = makeTessellationPattern({x, y, z});
+                        const std::array<uint32_t, 3> indices{0, x, x + y};
+                        for (uint32_t corner = 0; corner < 3; ++corner) {
+                            std::array<uint32_t, 3> expected{};
+                            expected[corner] = 65535;
+                            check(indices[corner] < pattern.vertices.size() && pattern.vertices[indices[corner]] == expected,
+                                "C5 source corner index does not identify the original patch corner");
+                        }
+                        ++cornerPatternsChecked;
+                        factorOnePatternsChecked += x == 1 || y == 1 || z == 1 ? 1u : 0u;
+                    }
+                }
+            }
+            check(cornerPatternsChecked == 512 && factorOnePatternsChecked == 169, "C5 pattern contract coverage changed");
+        }
+        const auto cornerEdgeSquared = [](const StreamCLASTessellationVertex& a, const StreamCLASTessellationVertex& b) {
+            // Volatile intermediates force the documented scalar FP32 rounding
+            // order, independently of Slang and without fused contraction.
+            volatile float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            volatile float xx = dx * dx, yy = dy * dy, zz = dz * dz;
+            volatile float xy = xx + yy;
+            volatile float squared = xy + zz;
+            return float(squared);
+        };
         const auto renderRaw = [&](uint32_t frames, const char* imageName, std::vector<float>* complete) {
             for (uint32_t frame = 0; frame < frames; ++frame) {
                 checked(executor.execute({.graphicsQueue = device.getQueue(QueueType::Graphics),
@@ -494,11 +532,21 @@ public:
                     policyReceipts.push_back({{"mode", mode}, {"templateShape", shape}, {"instantiationFlags", flags},
                         {"maxPatches", receipt.at("maxPatches")}, {"templatesReady", receipt.at("templatesReady")}});
                 }
-                if (geometryBounds && mode == "templates") {
+                if ((geometryBounds || rightCorner) && mode == "templates") {
                     const auto boundsMode = properties.value("rtTessellationTemplateBounds", std::string("none"));
                     check(receipt.at("templateBoundsMode") == boundsMode, "C3 bounds policy receipt mismatch: " + receipt.dump());
                     const auto snapshot = readTessellationGeometry(device, *geometry);
                     const auto& counts = snapshot.counts;
+                    lastCornerCounts = {};
+                    const uint32_t variants = shape == "rightCorner" ? 3u : 1u;
+                    if (rightCorner) {
+                        check(receipt.at("templateVariantCount") == variants,
+                            "C5 template variant count differs from requested guide shape");
+                        if (boundsMode == "none") {
+                            check(receipt.at("nativeTemplateCount") == 512u * variants,
+                                "C5 unbounded template bank count is incorrect");
+                        }
+                    }
                     check(counts[0] <= snapshot.leaves.size() &&
                         uint64_t(counts[0]) * METALLIC_TESS_VERTICES_PER_PATCH <= snapshot.vertices.size(),
                         "C3 diagnostic patch count exceeds captured allocations");
@@ -506,7 +554,7 @@ public:
                         "C3 patch fallback count/sticky diagnostic is inconsistent");
                     const bool bounded = boundsMode == "geometry" && receipt.at("boundedTemplatesReady").get<bool>();
                     if (boundsMode == "geometry" && !allowBoundsFallback && counts[0] != 0) {
-                        check(bounded && receipt.at("nativeTemplateCount") == 1024 && counts[4] == 0 && counts[5] == 0,
+                        check(bounded && receipt.at("nativeTemplateCount") == 1024u * variants && counts[4] == 0 && counts[5] == 0,
                             "Ordinary C3 case did not use bounded templates without fallback: " + receipt.dump());
                     }
                     std::array<float, 6> bounds{};
@@ -526,6 +574,26 @@ public:
                         const auto& leaf = snapshot.leaves[patch];
                         check(leaf.vertexCount != 0 && leaf.vertexCount <= METALLIC_TESS_VERTICES_PER_PATCH,
                             "C3 diagnostic leaf has invalid vertex count");
+                        if (rightCorner && shape == "rightCorner") {
+                            const uint32_t rx = leaf.rates & 255u, ry = (leaf.rates >> 8u) & 255u;
+                            const std::array<uint32_t, 3> corners{0, rx, rx + ry};
+                            check(rx >= 1 && rx <= 8 && ry >= 1 && ry <= 8 && corners[2] < leaf.vertexCount,
+                                "C5 generated leaf violates the corner indexing contract");
+                            const auto* vertices = snapshot.vertices.data() + patch * METALLIC_TESS_VERTICES_PER_PATCH;
+                            uint32_t expectedCorner = 0;
+                            float largest = cornerEdgeSquared(vertices[corners[1]], vertices[corners[2]]);
+                            for (uint32_t corner = 1; corner < 3; ++corner) {
+                                const float squared = cornerEdgeSquared(vertices[corners[(corner + 1) % 3]],
+                                    vertices[corners[(corner + 2) % 3]]);
+                                if (squared > largest) { largest = squared; expectedCorner = corner; }
+                            }
+                            check(std::isfinite(largest) && leaf.reserved0 == expectedCorner,
+                                "C5 selected corner differs from independent actual-XYZ first-maximum edge oracle: patch " +
+                                std::to_string(patch) + ", expected " + std::to_string(expectedCorner) +
+                                ", actual " + std::to_string(leaf.reserved0));
+                            ++lastCornerCounts[expectedCorner];
+                            ++totalCornerCounts[expectedCorner];
+                        }
                         bool outside = false;
                         for (uint32_t vertex = 0; vertex < leaf.vertexCount; ++vertex) {
                             const auto& generated = snapshot.vertices[patch * METALLIC_TESS_VERTICES_PER_PATCH + vertex];
@@ -548,11 +616,49 @@ public:
                         check(bounded || counts[0] == counts[4], "C3 missing bounded pool did not fall back every active patch");
                     }
                     lastBoundsReceipt = {{"phase", boundsPhase}, {"identity", receipt}, {"counts", counts},
-                        {"checkedVertices", checkedVertices}, {"outsidePatches", outsidePatches},
+                        {"checkedVertices", checkedVertices}, {"outsidePatches", outsidePatches}, {"cornerCounts", lastCornerCounts},
                         {"generatedMinimum", checkedVertices ? nlohmann::json(minimum) : nlohmann::json(nullptr)},
                         {"generatedMaximum", checkedVertices ? nlohmann::json(maximum) : nlohmann::json(nullptr)},
                         {"allowFallback", allowBoundsFallback}, {"normalSafeguardExpected", expectLocalNormalFallback}};
                     boundsReceipts.push_back(lastBoundsReceipt);
+                    if (rightCorner && boundsPhase == "C5 conservative-bound fallback") {
+                        // Save live geometry before any coverage assertion. Zero
+                        // unused slots rather than exporting unwritten GPU bytes.
+                        const std::string prefix = "C5Fallback-" + boundsMode;
+                        std::vector<StreamCLASTessellationVertex> liveVertices(
+                            size_t(counts[0]) * METALLIC_TESS_VERTICES_PER_PATCH);
+                        for (uint32_t patch = 0; patch < counts[0]; ++patch) {
+                            std::copy_n(snapshot.vertices.data() + patch * METALLIC_TESS_VERTICES_PER_PATCH,
+                                snapshot.leaves[patch].vertexCount,
+                                liveVertices.data() + patch * METALLIC_TESS_VERTICES_PER_PATCH);
+                        }
+                        const auto writeBinary = [&](const std::string& filename, const void* data, size_t bytes) {
+                            std::ofstream output(directory / filename, std::ios::binary | std::ios::trunc);
+                            output.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
+                            output.close();
+                            check(bool(output), "C5 fallback geometry evidence write failed: " + filename);
+                        };
+                        writeBinary(prefix + "-leaves.bin", snapshot.leaves.data(),
+                            size_t(counts[0]) * sizeof(StreamCLASTessellationLeaf));
+                        writeBinary(prefix + "-vertices.bin", liveVertices.data(),
+                            liveVertices.size() * sizeof(StreamCLASTessellationVertex));
+                        const auto& matrix = scene.nodes()[0].localMatrix;
+                        nlohmann::json rays = nlohmann::json::array();
+                        for (uint32_t ray = 0; ray < kRayCount; ++ray) {
+                            const auto uv = rayUV(ray, templates_);
+                            rays.push_back({{"uv", {uv.x, uv.y}}, {"back", ray == 6}});
+                        }
+                        const nlohmann::json evidence{{"identity", receipt}, {"counts", counts},
+                            {"requestedProperties", properties}, {"cornerCounts", lastCornerCounts},
+                            {"matrixColumnMajor", std::vector<float>(matrix.a, matrix.a + 16)},
+                            {"leavesFile", prefix + "-leaves.bin"}, {"leafStride", sizeof(StreamCLASTessellationLeaf)},
+                            {"verticesFile", prefix + "-vertices.bin"}, {"vertexStride", sizeof(StreamCLASTessellationVertex)},
+                            {"verticesPerPatch", METALLIC_TESS_VERTICES_PER_PATCH}, {"unusedVertexSlotsZeroed", true},
+                            {"rayInputs", rays}, {"rayMode", "affine world-space normal; distance 8; tMin .001; tMax 100"},
+                            {"rayDefinition", "CLASTessellationProbe.probeAffinePoint/Normal; inputs, not captured GPU RayDesc"},
+                            {"imageRayDefinition", "128x128: ((pixelXY + (.471,.537))/128*3-1.5), same affine normal"}};
+                        std::ofstream(directory / (prefix + "-geometry.json")) << evidence.dump(2);
+                    }
                 }
             }
             auto* buffer = executor.outputResource("Probe.hits")->buffer;
@@ -698,6 +804,11 @@ public:
             policySwitches = 2;
         }
 
+        if (rightCorner) {
+            setting("rtTessellationMaxFactor", 1);
+            reference = referenceTessellationHits(1, 0, templates_);
+            verify(render(), true, "C5 factor one source corners");
+        }
         setting("rtTessellationMaxFactor", 2);
         reference = referenceTessellationHits(2, 0, templates_);
         verify(render(), true, "factor two");
@@ -707,6 +818,13 @@ public:
             reference = referenceTessellationHits(4, depth, templates_);
             const auto recursive = render();
             verify(recursive, true, "recursive subdivision");
+            if (rightCorner && depth == 2) {
+                // Each central child rotates the longest opposite-edge index.
+                // Two levels exercise all three choices even if asset packing
+                // rotates both source triangles into the same vertex order.
+                check(std::all_of(lastCornerCounts.begin(), lastCornerCounts.end(), [](uint32_t count) { return count != 0; }),
+                    "C5 depth-two control did not exercise all three actual-geometry guide corners");
+            }
             check(recursive[25] == float(2u << (2u * depth)) && recursive[26] == 0.f,
                 "Recursive CLAS patch count or admission was incorrect");
             check(render(1) == recursive && recursive[24] == 0.f,
@@ -785,6 +903,116 @@ public:
             verify(replaced, true, "sufficient capacity replacement");
             check(replaced[24] == 0.f && replaced[25] == 2.f && replaced[26] == 0.f,
                 "Address-only capacity replacement invalidated an unchanged surface");
+        }
+        if (rightCorner) {
+            const auto originalTransform = scene.nodes()[0].localMatrix;
+            const auto generation = [&]() {
+                return lastBoundsReceipt.at("identity").at("templatePoolGeneration").get<uint64_t>();
+            };
+            const auto renderBounded = [&](const char* phase) {
+                boundsPhase = phase;
+                const auto hits = renderRaw(1, nullptr, nullptr);
+                verify(hits, true, phase);
+                return hits;
+            };
+            setting("rtTessellationTemplateBounds", "geometry");
+            renderBounded("C5 bounded baseline");
+            const auto initialGeneration = generation();
+            check(renderBounded("C5 bounded stable")[24] == 0.f && generation() == initialGeneration,
+                "C5 stationary bounded pool rebuilt or invalidated history");
+            auto boundedMaterial = originalMaterial;
+            boundedMaterial.displacementMagnitude = 2.f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C5 bounds expansion material edit failed");
+            reference = referenceTessellationHits(4, 0, templates_, 2.f);
+            const auto expanded = renderBounded("C5 bounds expanded");
+            const auto expandedGeneration = generation();
+            check(expanded[24] > 0.f && expandedGeneration > initialGeneration,
+                "C5 bounds expansion lost generation or surface-history change");
+            boundedMaterial.displacementMagnitude = .2f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C5 contained material edit failed");
+            reference = referenceTessellationHits(4, 0, templates_, .2f);
+            check(renderBounded("C5 bounds contained")[24] > 0.f && generation() == expandedGeneration,
+                "C5 contained material change rebuilt its pool or lost history");
+            check(renderBounded("C5 contained stable")[24] == 0.f && generation() == expandedGeneration,
+                "C5 stable contained surface rebuilt or invalidated history");
+            boundedMaterial.displacementMagnitude = 3.5f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C5 cancelled bounds expansion edit failed");
+            reference = referenceTessellationHits(4, 0, templates_, 3.5f);
+            auto cancelPool = device.createCommandPool(*device.getQueue(QueueType::Graphics));
+            check(bool(cancelPool), "C5 cancellation command pool failed");
+            auto cancelCommands = (*cancelPool)->createCommandBuffer();
+            check(bool(cancelCommands), "C5 cancellation command buffer failed");
+            checked((*cancelCommands)->begin(), "C5 cancellation begin");
+            checked(executor.execute(**cancelCommands), "C5 cancelled expansion recording");
+            checked((*cancelCommands)->end(), "C5 cancellation end");
+            cancelCommands->reset(); cancelPool->reset();
+            check(renderBounded("C5 cancelled expansion retry")[24] > 0.f && generation() > expandedGeneration,
+                "C5 cancelled expansion consumed history or failed to publish its replacement pool");
+            const auto retryGeneration = generation();
+            check(renderBounded("C5 cancelled expansion stable")[24] == 0.f && generation() == retryGeneration,
+                "C5 retried bounded pool did not stabilize");
+            verify(render(1, "C5GeometryBounds.png"), true, "C5 bounded triangle image comparison");
+
+            // This invertible matrix has a cancellation-prone determinant. Its
+            // conservative interval contains zero, so every patch must select
+            // the matching unbounded corner bank. The XY source plane remains
+            // nondegenerate in world space; use the affine world-space rays.
+            // A small, nonzero displacement keeps admitted tessellation and
+            // limits world/local cancellation while exercising the bound guard.
+            boundedMaterial.displacementMagnitude = .0001f;
+            check(scene.setMaterialProperties(0, boundedMaterial), "C5 fallback material edit failed");
+            auto ambiguous = float4x4::Identity();
+            ambiguous.a20 = 1.f; ambiguous.a02 = 1.f; ambiguous.a22 = 1.f + 0x1p-20f;
+            // Keep the same relative determinant ambiguity, but reduce the
+            // eight-unit ray offset's inverse amplification by an exact 2^8.
+            // The unscaled control creates object-space ray origins near 1e7
+            // and loses interior coverage through FP32 cancellation.
+            for (uint32_t column = 0; column < 3; ++column) {
+                for (uint32_t row = 0; row < 3; ++row) { ambiguous.a[column * 4 + row] *= 256.f; }
+            }
+            check(scene.setNodeLocalMatrix(0, ambiguous), "C5 fallback transform edit failed");
+            check(graph.setNodeRuntimeProperty(probe, "affineRays", true) && executor.syncRuntimeProperties(graph),
+                "C5 fallback affine probe setting failed");
+            allowBoundsFallback = true;
+            boundsPhase = "C5 conservative-bound fallback";
+            std::vector<float> fallbackOutput, unboundedOutput;
+            const auto fallback = renderRaw(1, "C5BoundsFallback.png", &fallbackOutput);
+            const auto fallbackCounts = lastBoundsReceipt.at("counts").get<std::array<uint32_t, 6>>();
+            check(fallback[25] == 2.f && fallback[26] == 0.f && fallbackCounts[4] == 2 && fallbackCounts[5] != 0 &&
+                !lastBoundsReceipt.at("identity").at("boundedTemplatesReady").get<bool>() &&
+                lastBoundsReceipt.at("identity").at("nativeTemplateCount") == 1536,
+                "C5 cancellation-prone bound did not use the matching unbounded guide banks");
+            for (uint32_t ray = 0; ray < kRayCount; ++ray) {
+                check(fallback[ray * kRayWords + 11] == (ray + 1 == kRayCount ? 0.f : 1.f),
+                    "C5 fallback lost affine ray coverage");
+            }
+            uint32_t fallbackImageHits = 0;
+            for (size_t pixel = kRayCount * kRayWords; pixel < fallbackOutput.size(); pixel += 4) {
+                fallbackImageHits += fallbackOutput[pixel + 3] > 0.f ? 1u : 0u;
+            }
+            check(fallbackImageHits > 5000, "C5 fallback image is empty or lost surface coverage");
+            setting("rtTessellationTemplateBounds", "none");
+            const auto unbounded = renderRaw(1, nullptr, &unboundedOutput);
+            check(unbounded[24] == 0.f, "C5 bound fallback-to-none switch invalidated unchanged history");
+            compare(fallbackOutput, unboundedOutput, "C5 same-corner unbounded fallback");
+            render(1); // Retain the strict complete-image/attribute triangle comparison.
+            check(scene.setNodeLocalMatrix(0, originalTransform) && scene.setMaterialProperties(0, originalMaterial),
+                "C5 final fixture restore failed");
+            check(graph.setNodeRuntimeProperty(probe, "affineRays", false) && executor.syncRuntimeProperties(graph),
+                "C5 legacy probe restore failed");
+            allowBoundsFallback = false;
+            boundsPhase = "C5 restored fixture";
+            reference = referenceTessellationHits(4, 0, templates_);
+            verify(render(), true, "C5 restored fixture");
+            check(std::all_of(totalCornerCounts.begin(), totalCornerCounts.end(), [](uint64_t count) { return count != 0; }),
+                "C5 actual generated geometry did not exercise all guide corners");
+            const nlohmann::json cornerEvidence{{"patternsChecked", cornerPatternsChecked},
+                {"patternsWithFactorOne", factorOnePatternsChecked}, {"cornerCounts", totalCornerCounts},
+                {"expectedVariantCount", 3}, {"unboundedTemplateCount", 1536}, {"boundedTemplateCount", 3072},
+                {"oracle", "actual XYZ; scalar FP32 opposite-edge squared length; first maximum"},
+                {"frames", boundsReceipts}};
+            std::ofstream(directory / "TemplateCorners.json") << cornerEvidence.dump(2);
+            if (context.evidence) { context.evidence->json("template-corners.json", cornerEvidence); }
         }
         if (geometryBounds) {
             const auto originalTransform = scene.nodes()[0].localMatrix;
@@ -1037,6 +1265,11 @@ public:
     CLASTessellationTemplatesRightDyadicTest() : CLASTessellationTest(true, TemplateCandidate::RightDyadic) {}
 };
 METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesRightDyadicTest);
+class CLASTessellationTemplatesRightCornerTest final : public CLASTessellationTest {
+public:
+    CLASTessellationTemplatesRightCornerTest() : CLASTessellationTest(true, TemplateCandidate::RightCorner) {}
+};
+METALLIC_REGISTER_RHI_TEST(CLASTessellationTemplatesRightCornerTest);
 
 } // namespace
 } // namespace metallic::tests

@@ -547,6 +547,130 @@ $env:METALLIC_CLAS_ENCODING_CAPTURE = '<absolute-path>/CLASTessellation-Geometry
 Remove-Item Env:METALLIC_CLAS_ENCODING_CAPTURE
 ```
 
+## Template guide orientation and production shadow rays (2026-10-25)
+
+`rtTessellationTemplateShape = "rightCorner"` is the opt-in C5 diagnostic candidate.
+It retains three cyclic guide banks, each containing the same 512 rate patterns.
+For each patch, the GPU selects the guide's right corner opposite the longest
+edge of the actual displaced, object-space corner positions. The corner indices
+are `0`, `rates.x`, and `rates.x + rates.y`, including factor one. Separately
+rounded FP32 operations and first-maximum tie breaking match the independent
+readback oracle. `leaf.reserved0` records the selected corner; semantic geometry
+decoders ignore it. Actual vertices, index order, displacement sampling and
+tessellation rates do not change.
+
+The unbounded pool contains 1536 templates. Geometry bounds retain a matching
+unbounded fallback for every guide, for 3072 templates when bounds are available.
+The parameter ABI remains 248 bytes; `templateUnboundedCount` replaces the old
+bounded-bank offset. `templateVariantCount` distinguishes the number of guide
+banks from `patternCount` and `nativeTemplateCount`. Defaults remain unchanged.
+
+Evidence preceded this candidate:
+
+- The reference sample optimizes template meshlet ordering; Metallic retains
+  its existing 61-vertex/96-triangle factor-eight topology. Replacing it with the
+  reference's lower triangle count would change quality and was not attempted.
+- In the fixed production capture, 1605/2048 patches choose a corner other than
+  the original guide's corner zero. The three choices occur 443/648/957 times.
+  An affine distortion proxy improves, but that proxy alone is not a traversal
+  measurement or a view of the driver's internal hierarchy.
+- One Nsight trace per A/B/C4 arm showed increasing RT activity and RT-pipe wait
+  metrics in the actual Shadow dispatch. These single diagnostic frames do not
+  provide confidence intervals, box/triangle-test counts, or an internal BVH.
+- The capture records all actual closest-hit shadow rays without changing
+  ordinary shader SPIR-V. 155451 rays are active, with 45761 hits. Captured and
+  ordinary visibility, HDR and depth are byte-identical. Shader-visible Proceed
+  counts do not measure hardware intersection tests for this opaque instance.
+- An initial 32-byte observation probe reversed the production timing order.
+  Its instrumentation is retained as evidence, not used to select the candidate.
+  The corrected diagnostic separates one untimed full ID/counter check from a
+  counter-free, 4-byte distance timing entrypoint. Three fixed-budget processes
+  preserve full-resolution ray order, closest-hit flags and actual geometry.
+  RightCorner improves its all-ray dispatch by 1.10–2.38% versus the original
+  guide, while remaining 1.51–2.33% slower than triangle builds. This isolated
+  probe uses per-patch templates and does not reproduce the production shared
+  pool or complete Shadow shader; production measurements remain authoritative.
+
+The v5 production experiment retained the same native 1444x694 scene, camera,
+lighting, quality, synchronous queues, residency freeze at frame 16, retained
+disk caches, 32 warmup frames and 64 measured frames per process. Three ABCCBA
+discovery blocks were followed by five independent confirmation blocks. The
+following gains and 95% Student-t intervals use confirmation block log ratios;
+positive values mean faster. Readbacks and template-pool initialization are
+outside timing; selection/barrier work and persistent bank memory are included
+in the relevant production scopes or allocation receipts.
+
+| Scope | C5 / triangles gain | C5 / original templates gain |
+|---|---:|---:|
+| CLAS build/instantiate | +81.68% [81.38, 81.98] | +1.16% [0.21, 2.10] |
+| Complete tessellation | +4.30% [-0.34, 8.73] | -0.19% [-2.11, 1.69] |
+| Whole measured graph | +1.54% [-2.16, 5.10] | -0.25% [-2.26, 1.72] |
+| Complete Shadows pass | -1.24% [-1.9989, -0.48] | +5.09% [4.14, 6.04] |
+| Shadow trace | -1.75% [-1.97, -1.52] | +4.03% [3.63, 4.43] |
+| Publish shadow copy | -2.53% [-5.43, 0.29] | +13.83% [10.44, 17.10] |
+
+The five-gate result is **inconclusive**, not accepted: the graph lower bound
+(-2.1562%) crosses the unchanged -2% guardrail. The Shadow guardrail passes only
+narrowly (-1.9989% versus -2%). This is a confirmed Shadow improvement over the
+original template, with a residual slowdown against triangle builds; it does
+not establish zero regression, an end-to-end speedup, or general-scene acceptance.
+The fixed budget is exhausted without extra sampling. C5 remains opt-in.
+
+Live native CLAS sizes are unchanged between original templates and C5:
+5242880 bytes versus 3616896 for triangles. Original/C5 template storage is
+917535/2752543 bytes, auxiliary storage 1077696/2052672 bytes; the common CLAS
+arena remains 71303168 bytes. C5 therefore improves tracing without shrinking
+CLAS and adds 2809984 bytes of retained template-pool capacity. The experiment
+does not reveal which internal node layout, cache event or intersection count
+causes the remaining difference.
+
+Validation retained exact HDR/depth/shadow equality in all 51 C5 experiment
+processes. The C5 bounded full-scene capture independently matched all 2048 GPU
+corner choices and preserved actual vertices and raw Shadow records exactly.
+Six existing strict tessellation cases passed synchronization validation; C5
+passed 27 paired states with zero attribute/image differences, all 512 corner
+index contracts (169 involving factor one), actual-XYZ selection, bounded-pool
+expansion/reuse/cancellation, and a verified unbounded fallback. All final strict
+validation message counts were zero. The first extra near-singular test control
+lost expected ray coverage through FP32 world-to-object cancellation; scaling
+its entire linear transform by exact 256 preserved the same bound rejection
+while restoring stable rays. The seven-hit, image-coverage and 2e-4 comparison
+requirements were not weakened; both failed and corrected records are retained.
+Release builds, the 380-file module audit, 36 runner tests, and actual executed
+production/replay SPIR-V validation passed. Final rebuilds after performance
+collection changed only test evidence/fixture code, not renderer or shader code.
+
+### Reproducing the diagnostics
+
+MaterialBaseline's `captureShadowRays` requires the existing bounded geometry,
+native-size and tessellation receipts, the fixed opaque scene, sample frame zero
+and SIGMA off. It captures only the final untimed proof frame, restores the
+ordinary shader, and checks ordinary visibility exactly. `ShadowRayCapture` is
+a private MaterialBaseline observer checkpoint, not a registered generic Debug
+inspector capture/layout interface. The geometry manifest also retains stream
+instances and TLAS instances so the replay can validate transform, mask and
+opacity contracts.
+
+```powershell
+$env:METALLIC_CLAS_TRAVERSAL_CAPTURE = '<absolute-path>/CLASTessellation-ShadowRays.json'
+$env:METALLIC_CLAS_TRAVERSAL_GUIDES = '<absolute-path>/GuideManifest.json'
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --tb-run --tb-suite extensions --tb-filter '*clas_template_traversal_diagnostic' --tb-validation sync --tb-require-all --output-dir <fresh-directory>
+Remove-Item Env:METALLIC_CLAS_TRAVERSAL_CAPTURE, Env:METALLIC_CLAS_TRAVERSAL_GUIDES
+```
+
+The replay preserves full hit/instance/cluster/primitive checks, distance images,
+and 512 double-precision CPU-oracle rays (256 hits and 256 misses). Schema 2 keeps
+correctness and timing shader hashes separate and persists both executed SPIR-V
+modules. Hits/misses are masked full-resolution dispatches; their times cannot
+be added or divided into hardware per-ray costs.
+
+Local untracked evidence is under `.tmp/clas-traversal-investigation/`:
+`report-02` (Nsight), `capture-02`, `report-03-counterfree`, `experiment-ab-01`,
+`experiment-c5-01`, `perf-report-c5-01`, `capture-c5-01`,
+`C5CaptureVerification.json`, and `NativeSpirvValidation.json`.
+See `Tools/Perf/MeasureCLASTemplateShadow.md` for the v5 runner; sealed v1–v4
+evidence retains its original policy and verification behavior.
+
 ## Previous executed baseline (2026-10-25, triangle builds only)
 
 The following results predate template instantiation and do not validate the

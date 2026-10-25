@@ -53,7 +53,7 @@ std::vector<uint8_t> loadBytes(const std::filesystem::path& path)
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     require(bool(input), "Cannot read " + path.string());
     const auto size = input.tellg();
-    require(size > 0 && size <= 64 * 1024 * 1024, "Invalid diagnostic capture size");
+    require(size > 0 && size <= 128 * 1024 * 1024, "Invalid diagnostic capture size");
     std::vector<uint8_t> result(static_cast<size_t>(size));
     input.seekg(0); input.read(reinterpret_cast<char*>(result.data()), size);
     require(bool(input), "Incomplete diagnostic capture read");
@@ -698,5 +698,380 @@ private:
 };
 
 METALLIC_REGISTER_RHI_TEST(CLASTemplateEncodingTest);
+
+// Production-ray replay is deliberately separate from production timing. The
+// captured fixed sample must have a single opaque instance; no alpha evaluator
+// is substituted here for an arbitrary scene.
+struct CapturedShadowRay {
+    float originTMin[4], directionTMax[4];
+    uint32_t control[4];
+    float distances[4];
+    uint32_t ids[4];
+};
+struct TraversalObservation {
+    uint32_t hit, proceedCalls, candidates, cluster;
+    float distance;
+    uint32_t primitive, instance, accepted;
+};
+static_assert(sizeof(CapturedShadowRay) == 80 && sizeof(TraversalObservation) == 32);
+
+struct TraversalScene {
+    BuiltClusters templates, clusters;
+    std::unique_ptr<Buffer> blas;
+    std::unique_ptr<RayTracingAccelerationStructure> tlas;
+    Json sizes;
+};
+
+void buildTraversalScene(RHITestContext& context, TraversalScene& result, RayTracingGPUInstance instance)
+{
+    auto& device = context.device;
+    const auto properties = checked(device.queryClusterAccelerationStructureProperties());
+    const auto limits = ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+        .maxClusterCountPerAccelerationStructure = kPatchCount, .maxTotalClusterCount = kPatchCount};
+    const auto sizes = checked(device.queryClusterAccelerationStructureBottomLevelBuildSizes(limits));
+    result.blas = buffer(device, sizes.accelerationStructureSize + properties.bottomLevelStorageAlignment);
+    const auto storage = alignedSlice(*result.blas, properties.bottomLevelStorageAlignment, sizes.accelerationStructureSize);
+    auto references = buffer(device, kPatchCount * 8, MemoryLocation::HostUpload);
+    upload(*references, result.clusters.addresses.data(), kPatchCount * 8);
+    const ClusterAccelerationStructureBottomLevelBuildInfo info{.clusterReferencesCount = kPatchCount,
+        .clusterReferencesAddress = references->deviceAddress()};
+    auto infos = buffer(device, sizeof(info), MemoryLocation::HostUpload); upload(*infos, &info, sizeof(info));
+    auto address = buffer(device, 8, MemoryLocation::HostReadback);
+    auto scratch = buffer(device, sizes.buildScratchSize + properties.scratchAlignment);
+    {
+        bench::GPUCommands commands(context.graphicsQueue); checked(commands.initialize(device));
+        checked(commands.commands->buildClusterAccelerationStructureBottomLevels({
+            .maxClusterCountPerAccelerationStructure = kPatchCount, .maxTotalClusterCount = kPatchCount,
+            .buildInfoBuffer = slice(*infos), .destinationStorageBuffer = storage,
+            .destinationAddressBuffer = slice(*address), .scratchBuffer = slice(*scratch)}));
+        hostReadBarrier(*commands.commands); checked(commands.submitAndWait());
+    }
+    instance.accelerationStructureReference = read<uint64_t>(*address)[0];
+    auto instances = buffer(device, sizeof(instance), MemoryLocation::HostUpload);
+    upload(*instances, &instance, sizeof(instance));
+    const auto tlasSizes = checked(device.queryRayTracingAccelerationStructureBuildSizes({.instanceCount = 1}));
+    result.tlas = checked(device.createRayTracingAccelerationStructure({.size = tlasSizes.accelerationStructureSize}));
+    const auto rtProperties = checked(device.queryRayTracingAccelerationStructureProperties());
+    auto rtScratch = buffer(device, tlasSizes.buildScratchSize + rtProperties.scratchAlignment);
+    bench::GPUCommands commands(context.graphicsQueue); checked(commands.initialize(device));
+    checked(commands.commands->buildRayTracingAccelerationStructure({.destination = result.tlas.get(),
+        .instanceBuffer = slice(*instances), .instanceCount = 1, .scratchBuffer = slice(*rtScratch)}));
+    checked(commands.submitAndWait());
+}
+
+Json traceTraversalBatch(RHITestContext& context, TraversalScene& scene, Buffer& rays, Buffer& output, Buffer& readback,
+    ComputeProgram& program, uint32_t width, uint32_t height, uint32_t selection, uint32_t warmup, uint32_t samples)
+{
+    auto& device = context.device;
+    std::unique_ptr<TimestampQueryPool> queries;
+    if (samples != 0) { queries = checked(device.createTimestampQueryPool(context.graphicsQueue, {.queryCount = samples * 2})); }
+    struct Constants { uint64_t rays; uint32_t width, height, selection, padding; };
+    const Constants constants{rays.deviceAddress(), width, height, selection, 0};
+    auto pool = checked(device.createCommandPool(context.graphicsQueue)); auto commands = checked(pool->createCommandBuffer());
+    QueueSubmissionTracker tracker; checked(tracker.initialize(device, context.graphicsQueue)); RenderFrameContext frame;
+    struct Drain {
+        RenderFrameContext& frame; CommandPool& pool;
+        ~Drain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
+    } drain{frame, *pool};
+    checked(frame.begin(0)); checked(commands->begin(frame.submissionContext())); commands->hostWriteBarrier();
+    checked(commands->retainResource(rays.retainAllocation()));
+    if (queries) { checked(commands->resetTimestampQueries(*queries, 0, samples * 2)); }
+    const ComputeDispatchBinding bindings[]{
+        {.binding = METALLIC_RESOURCE_MEMBER(UnifiedTopLevelProbeResources, scene), .accelerationStructure = scene.tlas.get()},
+        {.binding = METALLIC_RESOURCE_MEMBER(UnifiedTopLevelProbeResources, output), .buffer = &output}};
+    // Serialize complete dispatches before the next TopOfPipe timestamp, so
+    // an earlier dispatch cannot enter the following sample's measured window.
+    const MemoryBarrierDesc between{.before = {PipelineStageBits::AllCommands, AccessBits::ShaderWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderWrite}};
+    const uint32_t dispatches = samples == 0 ? 1 : warmup + samples;
+    for (uint32_t sample = 0; sample < dispatches; ++sample) {
+        if (queries && sample >= warmup) { checked(commands->writeTimestamp(*queries, (sample - warmup) * 2, PipelineStageBits::TopOfPipe)); }
+        checked(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,
+            .pushData = &constants, .pushDataSize = sizeof(constants),
+            .groupCountX = (width + 7) / 8, .groupCountY = (height + 7) / 8}));
+        if (queries && sample >= warmup) { checked(commands->writeTimestamp(*queries, (sample - warmup) * 2 + 1, PipelineStageBits::BottomOfPipe)); }
+        checked(commands->synchronize({.memory = {&between, 1}}));
+    }
+    const MemoryBarrierDesc transfer{.before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+    checked(commands->synchronize({.memory = {&transfer, 1}}));
+    checked(commands->copyBuffer(slice(output), slice(readback)));
+    hostReadBarrier(*commands); checked(commands->end()); CommandBuffer* submitted[]{commands.get()};
+    checked(tracker.submit({.commandBuffers = submitted}, frame)); checked(frame.wait(30'000'000'000ull));
+    if (!queries) { return {{"dispatches", dispatches}}; }
+    std::vector<TimestampQueryResult> timestamps(samples * 2); checked(queries->readResults(0, timestamps));
+    std::vector<double> timings;
+    for (uint32_t sample = 0; sample < samples; ++sample) {
+        require(timestamps[sample * 2].available && timestamps[sample * 2 + 1].available, "Replay timestamps unavailable");
+        const double ms = queries->durationMilliseconds(timestamps[sample * 2].value, timestamps[sample * 2 + 1].value);
+        require(std::isfinite(ms) && ms > 0, "Invalid replay timestamp duration"); timings.push_back(ms);
+    }
+    auto sorted = timings; std::sort(sorted.begin(), sorted.end());
+    return {{"samplesMs", timings}, {"medianMs", (sorted[samples / 2 - 1] + sorted[samples / 2]) * .5},
+        {"warmupDispatches", warmup}, {"timedDispatches", samples}};
+}
+
+class CLASTemplateTraversalTest final : public RHITest {
+public:
+    CLASTemplateTraversalTest() { type = RHITestType::Rendering; name = "clas_template_traversal_diagnostic"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        auto result = bench::gpuMetadata({"clas.template.traversal.production-shadow-rays"},
+            bench::Layer::RHI, "ray-query", "extensions", {"traversal-matrix.json"});
+        result.timeout = std::chrono::seconds(180); return result;
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const char* captureFile = std::getenv("METALLIC_CLAS_TRAVERSAL_CAPTURE");
+        const char* guideFile = std::getenv("METALLIC_CLAS_TRAVERSAL_GUIDES");
+        if (!captureFile || !guideFile) { return RHITestResult::skip("Set production shadow capture and guide manifest paths"); }
+        auto created = bench::createTestDevice(context, {.applicationName = "CLAS production-ray traversal diagnostic",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableRayTracingAccelerationStructure = true, .enableRayQuery = true, .enableClusterAccelerationStructure = true});
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("CLAS/ray query unavailable"); }
+        if (!created) { return RHITestResult::fail("CLAS diagnostic device creation failed"); }
+        auto& device = **created;
+        RHITestContext active{device, *device.getQueue(QueueType::Graphics), context.outputDirectory,
+            context.enableValidation, context.validationMessageCount, context.nsightCapture, context.evidence, context.deviceDesc};
+        try { return runDevice(active, captureFile, guideFile); }
+        catch (const std::exception& error) { (void)device.waitIdle(); return RHITestResult::fail(error.what()); }
+    }
+private:
+    RHITestResult runDevice(RHITestContext& context, const std::filesystem::path& captureFile,
+        const std::filesystem::path& guideFile)
+    {
+        const auto readJson = [](const std::filesystem::path& path) { std::ifstream input(path); Json value; input >> value; return value; };
+        const Json shadow = readJson(captureFile), guideManifest = readJson(guideFile);
+        const auto geometryFile = captureFile.parent_path() / shadow.at("geometryFile").get<std::string>();
+        const auto capture = loadGeometry(geometryFile);
+        require(shadow.at("geometryManifestSha256") == debug::debugSha256(loadBytes(geometryFile)), "Shadow/geometry frame identity mismatch");
+        require(guideManifest.at("geometryManifestSha") == debug::debugSha256(loadBytes(geometryFile)), "Guides derived from another geometry capture");
+        require(shadow.at("recordStride") == sizeof(CapturedShadowRay) && shadow.at("queryFlags") == 0 && shadow.at("queryMask") == 255,
+            "Unexpected production shadow query contract");
+        const uint32_t width = shadow.at("width"), height = shadow.at("height");
+        require(width == 1444 && height == 694, "Replay requires the fixed full-resolution workload");
+        const auto rays = loadCapture<CapturedShadowRay>(shadow, captureFile.parent_path(), "recordsFile", size_t(width) * height);
+        require(capture.manifest.at("instanceCount") == 1, "Replay requires one captured stream instance");
+        const auto instances = loadCapture<RayTracingGPUInstance>(capture.manifest, geometryFile.parent_path(), "tlasInstancesFile", 1);
+        const auto instance = instances[0];
+        const RayTracingGPUInstance identity;
+        const uint32_t flags = instance.shaderBindingTableRecordOffsetAndFlags >> 24;
+        require(std::memcmp(instance.transform, identity.transform, sizeof(instance.transform)) == 0 &&
+            (instance.customIndexAndMask >> 24) == 255 &&
+            (flags & uint32_t(RayTracingInstanceFlags::ForceOpaque)) != 0 && (flags & ~7u) == 0,
+            "Replay requires captured identity transform, mask 255 and FORCE_OPAQUE instance");
+        require(std::ranges::all_of(capture.leaves, [](const auto& leaf) { return leaf.instanceIndex == 0; }), "Multiple geometry instances");
+        const uint32_t baseId = capture.manifest.at("generatedBaseClusterId");
+        uint64_t activeCount = 0, hitCount = 0;
+        std::array<std::vector<uint32_t>, 2> oraclePixels;
+        for (uint32_t pixel = 0; pixel < rays.size(); ++pixel) {
+            const auto& ray = rays[pixel];
+            require(ray.control[0] <= 1 && ray.control[1] <= 1, "Invalid captured shadow state");
+            if (!ray.control[0]) { continue; }
+            ++activeCount; hitCount += ray.control[1];
+            if (ray.control[1]) { require(std::isfinite(ray.distances[0]), "Non-finite captured hit distance"); }
+            require(ray.control[2] == 1 && ray.control[3] == 0 && ray.ids[3] == 0,
+                "Production opacity path is not the single opaque traversal expected by this replay");
+            require(ray.originTMin[3] == .001f && ray.directionTMax[3] >= ray.originTMin[3], "Unexpected production ray interval");
+            for (float value : ray.originTMin) { require(std::isfinite(value), "Non-finite captured ray"); }
+            for (float value : ray.directionTMax) { require(std::isfinite(value), "Non-finite captured ray"); }
+            oraclePixels[ray.control[1]].push_back(pixel);
+        }
+        require(activeCount > 0 && hitCount > 0 && hitCount < activeCount, "Expected both actual shadow hits and misses");
+        auto& device = context.device;
+        auto vertexBuffer = buffer(device, bytes(capture.vertices).size(), MemoryLocation::HostUpload);
+        upload(*vertexBuffer, capture.vertices.data(), bytes(capture.vertices).size());
+        auto indexBuffer = buffer(device, bytes(capture.indices).size(), MemoryLocation::HostUpload);
+        upload(*indexBuffer, capture.indices.data(), bytes(capture.indices).size());
+        auto rayUpload = buffer(device, bytes(rays).size(), MemoryLocation::HostUpload);
+        upload(*rayUpload, rays.data(), bytes(rays).size());
+        auto rayBuffer = buffer(device, bytes(rays).size());
+        {
+            bench::GPUCommands commands(context.graphicsQueue); checked(commands.initialize(device));
+            checked(commands.commands->copyBuffer(slice(*rayUpload), slice(*rayBuffer)));
+            const MemoryBarrierDesc ready{.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+            checked(commands.commands->synchronize({.memory = {&ready, 1}})); checked(commands.submitAndWait());
+        }
+        auto output = buffer(device, rays.size() * sizeof(TraversalObservation));
+        auto readback = buffer(device, rays.size() * sizeof(TraversalObservation), MemoryLocation::HostReadback);
+        auto timingOutput = buffer(device, rays.size() * sizeof(float));
+        auto timingReadback = buffer(device, rays.size() * sizeof(float), MemoryLocation::HostReadback);
+        const char* capabilities[]{"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"};
+        std::string log;
+        const auto shader = checked(compileSlangShaderToSpirv({.moduleName = "CLASTemplateTraversalProbe", .entryPointName = "clasTemplateTraversalProbeMain",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities,
+            .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log));
+        const auto timingShader = checked(compileSlangShaderToSpirv({.moduleName = "CLASTemplateTraversalProbe", .entryPointName = "clasTemplateTraversalTimingMain",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities,
+            .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log));
+        const ComputeResourceBindingDesc layout[]{
+            {METALLIC_RESOURCE_MEMBER(UnifiedTopLevelProbeResources, scene), ComputeResourceBindingKind::AccelerationStructure},
+            {METALLIC_RESOURCE_MEMBER(UnifiedTopLevelProbeResources, output)}};
+        ComputeProgram program; checked(program.initialize(device, {.spirv = shader.spirv, .pushConstantSize = 24,
+            .bindings = layout, .resourceParameterSize = sizeof(UnifiedTopLevelProbeResources)}, log));
+        ComputeProgram timingProgram; checked(timingProgram.initialize(device, {.spirv = timingShader.spirv, .pushConstantSize = 24,
+            .bindings = layout, .resourceParameterSize = sizeof(UnifiedTopLevelProbeResources)}, log));
+        const auto directory = context.outputDirectory / name; std::filesystem::create_directories(directory);
+        const auto saveShader = [&](const char* filename, const std::vector<uint32_t>& spirv) {
+            std::ofstream output(directory / filename, std::ios::binary);
+            output.write(reinterpret_cast<const char*>(spirv.data()), std::streamsize(spirv.size() * sizeof(uint32_t)));
+            require(bool(output), "Cannot save executed replay SPIR-V");
+        };
+        saveShader("correctness.spv", shader.spirv);
+        saveShader("timing.spv", timingShader.spirv);
+        Json report{{"schemaVersion", 2}, {"scope", "counter-free isolated production-ray replay; diagnostic only, not whole Shadow pass or acceptance timing"},
+            {"shadowManifestSha256", debug::debugSha256(loadBytes(captureFile))}, {"guideManifestSha256", debug::debugSha256(loadBytes(guideFile))},
+            {"correctnessSpirvSha256", debug::debugSha256(bytes(shader.spirv))},
+            {"timingSpirvSha256", debug::debugSha256(bytes(timingShader.spirv))}, {"validation", context.enableValidation},
+            {"correctnessEntry", "clasTemplateTraversalProbeMain"}, {"timingEntry", "clasTemplateTraversalTimingMain"},
+            {"correctnessOutputStride", sizeof(TraversalObservation)}, {"timingOutputStride", sizeof(float)},
+            {"rayInputStride", sizeof(CapturedShadowRay)}, {"counterFree", true},
+            {"templateSharing", "per-patch templates; not production shared pattern pool"},
+            {"width", width}, {"height", height}, {"activeRays", activeCount}, {"hitRays", hitCount},
+            {"queryFlags", 0}, {"queryMask", 255}, {"instanceCustomIndexAndMask", instance.customIndexAndMask},
+            {"instanceSbtAndFlags", instance.shaderBindingTableRecordOffsetAndFlags},
+            {"arms", Json::array()}, {"correctness", Json::array()}, {"batches", Json::array()}};
+        const std::array<std::string, 5> names{"triangles", "current", "actual", "affine", "rightCorner"};
+        std::array<TraversalScene, 5> scenes;
+        for (uint32_t arm = 0; arm < names.size(); ++arm) {
+            auto& scene = scenes[arm];
+            std::vector<ClusterAccelerationStructureTriangleTemplateIndirectBuildInfo> infos(kPatchCount);
+            std::vector<ClusterAccelerationStructureTriangleIndirectBuildInfo> triangleInfos(kPatchCount);
+            std::unique_ptr<Buffer> guideBuffer;
+            if (arm != 0) {
+                const auto& record = guideManifest.at("guides").at(names[arm]);
+                const auto raw = loadBytes(guideFile.parent_path() / record.at("file").get<std::string>());
+                require(raw.size() == size_t(kPatchCount) * METALLIC_TESS_VERTICES_PER_PATCH * sizeof(Guide) &&
+                    record.at("bytes") == raw.size() && record.at("sha256") == debug::debugSha256(raw), "Invalid guide receipt");
+                guideBuffer = buffer(device, raw.size(), MemoryLocation::HostUpload); upload(*guideBuffer, raw.data(), raw.size());
+            }
+            for (uint32_t patch = 0; patch < kPatchCount; ++patch) {
+                auto& info = infos[patch].triangle;
+                info.clusterId = arm == 0 ? baseId + patch : 0;
+                info.countsAndIndexType = METALLIC_CLAS_PACK_COUNTS(capture.leaves[patch].triangleCount,
+                    capture.leaves[patch].vertexCount, 0u, METALLIC_CLAS_INDEX_UINT32);
+                info.indexAndVertexStrides = METALLIC_CLAS_PACK_STRIDES(4u, arm == 0 ? 32u : 12u);
+                info.indexBufferAddress = indexBuffer->deviceAddress() + uint64_t(patch) * METALLIC_TESS_TRIANGLES_PER_PATCH * 12u;
+                info.vertexBufferAddress = (arm == 0 ? vertexBuffer : guideBuffer)->deviceAddress() +
+                    uint64_t(patch) * METALLIC_TESS_VERTICES_PER_PATCH * (arm == 0 ? 32u : 12u);
+                triangleInfos[patch] = info;
+            }
+            const std::array inputs{slice(*indexBuffer), slice(*(arm == 0 ? vertexBuffer : guideBuffer))};
+            if (arm == 0) {
+                scene.clusters = buildClusters(context, ClusterAccelerationStructureTriangleOperation::Build,
+                    bytes(triangleInfos), sizeof(triangleInfos[0]), inputs);
+            } else {
+                scene.templates = buildClusters(context, ClusterAccelerationStructureTriangleOperation::BuildTemplate,
+                    bytes(infos), sizeof(infos[0]), inputs);
+                std::vector<ClusterAccelerationStructureTriangleTemplateInstantiationInfo> instantiate(kPatchCount);
+                for (uint32_t patch = 0; patch < kPatchCount; ++patch) {
+                    instantiate[patch] = {.clusterIdOffset = baseId + patch, .clusterTemplateAddress = scene.templates.addresses[patch],
+                        .vertexBufferAddress = vertexBuffer->deviceAddress() + uint64_t(patch) * METALLIC_TESS_VERTICES_PER_PATCH * 32u,
+                        .vertexBufferStride = 32};
+                }
+                const std::array actualInputs{slice(*vertexBuffer)};
+                scene.clusters = buildClusters(context, ClusterAccelerationStructureTriangleOperation::InstantiateTemplate,
+                    bytes(instantiate), sizeof(instantiate[0]), actualInputs, scene.templates.storageSlice);
+                if (arm == 1) { require(scene.clusters.sizes == capture.sizes, "Current-guide replay does not reproduce native production sizes"); }
+            }
+            buildTraversalScene(context, scene, instance);
+            report["arms"].push_back({{"name", names[arm]}, {"nativeSizes", scene.clusters.sizes},
+                {"templateCount", arm == 0 ? 0u : kPatchCount},
+                {"nativeTotalBytes", std::accumulate(scene.clusters.sizes.begin(), scene.clusters.sizes.end(), uint64_t(0))}});
+        }
+        double oracleError = 0;
+        for (const auto& pixels : oraclePixels) {
+            for (uint32_t sample = 0; sample < 256; ++sample) {
+                const auto& input = rays[pixels[size_t(sample) * pixels.size() / 256]];
+                Ray ray{}; std::memcpy(&ray, &input, sizeof(ray));
+                const double expected = cpuDistance(ray, capture.triangles);
+                require(std::isfinite(expected) == bool(input.control[1]), "Production shadow/CPU oracle coverage mismatch");
+                if (std::isfinite(expected)) {
+                    oracleError = std::max(oracleError, std::abs(expected - input.distances[0]));
+                    require(std::abs(expected - input.distances[0]) <= kTolerance, "Production shadow/CPU oracle distance mismatch");
+                }
+            }
+        }
+        report["cpuOracle"] = {{"rayCount", 512}, {"hitSamples", 256}, {"missSamples", 256}, {"maximumDistanceDifference", oracleError}};
+        for (uint32_t arm = 0; arm < names.size(); ++arm) {
+            Json correctness = traceTraversalBatch(context, scenes[arm], *rayBuffer, *output, *readback,
+                program, width, height, 0, 0, 0);
+            const auto observations = read<TraversalObservation>(*readback);
+            std::ofstream raw(directory / (names[arm] + ".bin"), std::ios::binary);
+            raw.write(reinterpret_cast<const char*>(observations.data()), observations.size() * sizeof(TraversalObservation));
+            require(bool(raw), "Cannot save ray replay observations");
+            uint64_t hitDifferences = 0, idDifferences = 0, candidates = 0, proceedCalls = 0;
+            double maximumDistanceDifference = 0;
+            for (size_t pixel = 0; pixel < rays.size(); ++pixel) {
+                const auto& input = rays[pixel]; const auto& actual = observations[pixel];
+                const bool expectedHit = input.control[0] && input.control[1];
+                hitDifferences += actual.hit != uint32_t(expectedHit);
+                candidates += actual.candidates; proceedCalls += actual.proceedCalls;
+                if (expectedHit && actual.hit) {
+                    require(std::isfinite(actual.distance), "Non-finite native replay hit distance");
+                    maximumDistanceDifference = std::max(maximumDistanceDifference, double(std::abs(actual.distance - input.distances[0])));
+                    idDifferences += actual.instance != input.ids[0] || actual.cluster != input.ids[1] || actual.primitive != input.ids[2];
+                    require(actual.cluster >= baseId && actual.cluster < baseId + kPatchCount &&
+                        actual.primitive < capture.leaves[actual.cluster - baseId].triangleCount, "Native replay hit ID outside captured geometry");
+                }
+            }
+            require(hitDifferences == 0 && idDifferences == 0 && candidates == 0 && maximumDistanceDifference <= kTolerance,
+                "Native replay differs from production closest opaque shadow: hits=" + std::to_string(hitDifferences) +
+                ", IDs=" + std::to_string(idDifferences) + ", candidates=" + std::to_string(candidates) +
+                ", maxDistance=" + std::to_string(maximumDistanceDifference));
+            require(proceedCalls == activeCount, "Opaque replay query invocation count differs");
+            correctness.update({{"arm", names[arm]}, {"selection", "all"}, {"hitDifferences", hitDifferences},
+                {"idDifferences", idDifferences}, {"nonOpaqueCandidates", candidates}, {"proceedCalls", proceedCalls},
+                {"maximumDistanceDifference", maximumDistanceDifference}});
+            report["correctness"].push_back(std::move(correctness));
+            std::vector<uint8_t> pixels(size_t(width) * height * 4, 255);
+            for (size_t pixel = 0; pixel < observations.size(); ++pixel) {
+                for (uint32_t channel = 0; channel < 3; ++channel) { pixels[pixel * 4 + channel] = observations[pixel].hit ? 0 : 255; }
+            }
+            require(saveRgba8Png(directory / (names[arm] + ".png"), pixels.data(), width, height, log), "Cannot save replay visibility image");
+        }
+        for (uint32_t round = 0; round < 2; ++round) {
+            for (uint32_t order = 0; order < names.size(); ++order) {
+                const uint32_t arm = round == 0 ? order : uint32_t(names.size()) - 1 - order;
+                for (uint32_t selection = 0; selection < 3; ++selection) {
+                    Json batch = traceTraversalBatch(context, scenes[arm], *rayBuffer, *timingOutput, *timingReadback,
+                        timingProgram, width, height, selection, 8, 32);
+                    const auto distances = read<float>(*timingReadback);
+                    uint64_t hitDifferences = 0;
+                    double maximumDistanceDifference = 0;
+                    for (size_t pixel = 0; pixel < rays.size(); ++pixel) {
+                        const auto& input = rays[pixel]; const float distance = distances[pixel];
+                        const bool selected = input.control[0] && (selection == 0 || (selection == 1) == bool(input.control[1]));
+                        const bool expectedHit = selected && input.control[1];
+                        require(std::isfinite(distance), "Non-finite timed replay distance");
+                        const bool actualHit = distance >= 0;
+                        hitDifferences += actualHit != expectedHit;
+                        if (expectedHit && actualHit) {
+                            maximumDistanceDifference = std::max(maximumDistanceDifference, double(std::abs(distance - input.distances[0])));
+                        } else if (!actualHit) {
+                            require(distance == -1.f, "Invalid timed replay miss sentinel");
+                        }
+                    }
+                    require(hitDifferences == 0 && maximumDistanceDifference <= kTolerance,
+                        "Timed replay differs from production closest opaque shadow: hits=" + std::to_string(hitDifferences) +
+                        ", maxDistance=" + std::to_string(maximumDistanceDifference));
+                    batch.update({{"arm", names[arm]}, {"round", round}, {"selection", std::array{"all", "hits", "misses"}[selection]},
+                        {"hitDifferences", hitDifferences}, {"maximumDistanceDifference", maximumDistanceDifference}});
+                    report["batches"].push_back(std::move(batch));
+                }
+            }
+        }
+        require(debug::debugSha256(bytes(read<StreamCLASTessellationVertex>(*vertexBuffer))) == debug::debugSha256(bytes(capture.vertices)),
+            "Replay changed actual generated vertices");
+        report["actualVertexBytesUnchanged"] = true;
+        report["complete"] = true;
+        bench::writeJson(directory / "TraversalMatrix.json", report);
+        if (context.evidence) { context.evidence->json("traversal-matrix.json", report); }
+        return RHITestResult::pass("Five fixed-geometry guide controls, actual opaque production shadow rays, closest-hit and image checks");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(CLASTemplateTraversalTest);
+
 } // namespace
 } // namespace metallic::tests

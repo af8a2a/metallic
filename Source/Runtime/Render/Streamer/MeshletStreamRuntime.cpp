@@ -5327,12 +5327,15 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     if (tessellation_) {
         add("tessellationCounts", tessellation_->statisticsBuffer(), ResourceState::General, "u32");
         bindings.back().metadata["templatePoolGeneration"] = tessellation_->templatePoolGeneration();
+        bindings.back().metadata["generatedBaseClusterId"] = uint64_t(asset_.pageCount()) * METALLIC_STREAM_CLAS_CLUSTER_STRIDE;
         add("tessellationSizes", tessellation_->buildSizesBuffer(), ResourceState::General, "u32");
         add("tessellationBounds", tessellation_->templateBoundsBuffer(), ResourceState::General, "f32",
             tessellation_->templateBoundsOffset(), 24);
         if (tessellation_->buildSizesBuffer()) {
             add("tessellationLeaves", tessellation_->metadataBuffer(), ResourceState::General, "StreamCLASTessellationLeaf");
             add("tessellationVertices", tessellation_->vertexBuffer(), ResourceState::General, "StreamCLASTessellationVertex");
+            add("tessellationInstanceData", instanceBuffer_.get(), ResourceState::ShaderRead, "MeshletStreamGPUInstance");
+            add("tessellationTLASInstances", tlasInstanceBuffer_.get(), tlasInstanceBufferState_, "RayTracingGPUInstance");
         }
     }
     if (!debugReadbackEnabled_) { return; }

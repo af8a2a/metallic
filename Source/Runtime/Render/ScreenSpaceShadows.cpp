@@ -11,6 +11,8 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Runtime/Debug/DebugHash.h"
+#include "../../../Shaders/Interop/ShadowRayCapture.h"
 
 #include <algorithm>
 #include <cmath>
@@ -91,6 +93,7 @@ struct ScreenSpaceShadows::State {
     std::array<std::unique_ptr<TextureView>, 5> views;
     std::shared_ptr<Buffer> parameters;
     std::vector<std::shared_ptr<Buffer>> parameterPool;
+    std::unique_ptr<Buffer> rayCapture;
     uint32_t width = 0, height = 0;
     uint64_t sceneRevision = 0;
     uint64_t transformRevision = 0;
@@ -169,19 +172,24 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowOutput)
     };
     const uint32_t textureCount = geometry->materialTextureCount();
-    if (trace.valid() && traceTextureCount_ != textureCount) {
+    if (trace.valid() && (traceTextureCount_ != textureCount || traceCaptureRays_ != settings.diagnosticCaptureRays)) {
         if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ComputeKernel>(std::move(trace))); }
         else { (void)device.waitIdle(); trace.clear(); }
         traceEncoder_.clear();
     }
     traceTextureCount_ = textureCount;
+    traceCaptureRays_ = settings.diagnosticCaptureRays;
     if (!trace.valid()) {
-        const auto request = makeShadowShaderRequest();
+        auto request = makeShadowShaderRequest();
+        if (settings.diagnosticCaptureRays) { request.defines.emplace_back("METALLIC_SHADOW_RAY_CAPTURE", "1"); }
         const ShaderRequestView source(request);
         ShaderCompileResult shader;
         auto result = ShaderRegistry::instance().getShader(source.desc(), shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
+        traceShaderSha256_ = debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(shader.spirv.data()),
+            shader.spirv.size() * sizeof(uint32_t)));
+        if (!settings.diagnosticCaptureRays) { ordinaryShaderSha256_ = traceShaderSha256_; }
         std::vector<ComputeResourceBindingDesc> layout = {
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters)}, {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowDepth), .kind = ComputeResourceBindingKind::SampledImage},
         };
@@ -200,7 +208,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         }
         result = initializeResourceKernel(device, {
             .spirv = shader.spirv,
-            .pushConstantSize = sizeof(uint32_t),
+            .pushConstantSize = uint32_t(settings.diagnosticCaptureRays ? sizeof(ShadowRayCapturePush) : sizeof(uint32_t)),
             .bindings = layout,
             .debugName = "Ray-traced shadows",
             .requiresRayQuery = true,
@@ -227,6 +235,18 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     }
     auto state = state_;
     if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(state); }
+    state->rayCapture.reset();
+    if (settings.diagnosticCaptureRays) {
+        auto capture = device.createBuffer({.size = uint64_t(width) * height * sizeof(ShadowRayCaptureRecord),
+            .structureStride = sizeof(ShadowRayCaptureRecord),
+            .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress | BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::Device});
+        if (!capture) { return makeError(capture.error()); }
+        state->rayCapture = std::move(*capture);
+        // The raw device address is not tracked by the resource encoder.
+        auto retained = commands.retainResource(state->rayCapture->retainAllocation());
+        if (!retained) { return makeError(retained.error()); }
+    }
     profile.next("Prepare shadow parameters");
     state->parameters.reset();
     for (auto& candidate : state->parameterPool) {
@@ -325,7 +345,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     for (uint32_t i = 0; i < 5; ++i) {
         bindings.push_back({.binding = shadowOutputs[i], .textureView = state->views[i].get()});
     }
-    uint32_t geometryPush = 0;
+    ShadowRayCapturePush geometryPush{0, 0, state->rayCapture ? state->rayCapture->deviceAddress() : 0};
     {
         CPUProfileScope resources(profiler, "Prepare material textures");
         if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
@@ -340,7 +360,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), .buffer = streamGeometry->activeHeaderBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamChanges), .buffer = streamGeometry->shadingChangeBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = streamGeometry->paramsBuffer});
-        geometryPush = textureCount;
+        geometryPush.materialTextureCount = textureCount;
     }
 
     profile.next("Record trace dispatch");
@@ -359,7 +379,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         .commandBuffer = &commands,
         .bindings = bindings,
         .pushData = &geometryPush,
-        .pushDataSize = sizeof(geometryPush),
+        .pushDataSize = uint32_t(settings.diagnosticCaptureRays ? sizeof(geometryPush) : sizeof(uint32_t)),
         .groupCountX = (width + 7) / 8,
         .groupCountY = (height + 7) / 8,
         .profiler = profiler,
@@ -427,7 +447,9 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     state->settings = settings;
     state->traceEnabled = parameters.control[0] != 0;
     state->angularRadius = parameters.trace[3];
-    output = {.texture = state->textures[4].get(), .shadow = state->views[4].get(), .parameters = state->parameters.get()};
+    output = {.texture = state->textures[4].get(), .shadow = state->views[4].get(), .parameters = state->parameters.get(),
+        .rayCapture = state->rayCapture.get(), .captureShaderSha256 = settings.diagnosticCaptureRays ? traceShaderSha256_ : std::string{},
+        .ordinaryShaderSha256 = settings.diagnosticCaptureRays ? ordinaryShaderSha256_ : std::string{}};
     if (checkpoint) { checkpoint("AfterShadowFinalize"); }
     return output;
 }

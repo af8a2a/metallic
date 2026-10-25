@@ -139,10 +139,9 @@ std::string BuildReportJson(const ValidationRun& run)
     json << "    \"modelOutputRange\": {\"lo\": " << Number(cert.modelOutputRange.lo)
          << ", \"hi\": " << Number(cert.modelOutputRange.hi) << "},\n";
     json << "    \"modelRangeBoxes\": " << cert.modelRangeBoxes << ",\n";
-    json << "    \"errorSign\": {\"nonNegativeOn\": "
-         << (cert.signNonNegativeOnUpperPart
-                    ? "[\"" + Number(cert.signCertifiedFrom) + "\", domain hi]"
-                    : std::string("null"))
+    json << "    \"errorSign\": {\"nonNegativeFrom\": "
+         << (cert.signNonNegativeOnUpperPart ? Number(cert.signCertifiedFrom)
+                                             : std::string("null"))
          << ", \"globalFloor\": " << IntervalJson(cert.globalErrorFloor) << "}\n";
     json << "  },\n";
 

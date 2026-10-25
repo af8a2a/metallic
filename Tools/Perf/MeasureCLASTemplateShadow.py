@@ -17,8 +17,9 @@ import MeasureCLASTessellation as base
 ROOT = base.ROOT
 LEGACY_PROTOCOL = "metallic-clas-tessellation-ab-v2"
 BOUNDED_PROTOCOL = "metallic-clas-tessellation-ab-v3"
-PROTOCOL = "metallic-clas-tessellation-ab-v4"
-SUPPORTED_PROTOCOLS = (LEGACY_PROTOCOL, BOUNDED_PROTOCOL, PROTOCOL)
+DYADIC_PROTOCOL = "metallic-clas-tessellation-ab-v4"
+PROTOCOL = "metallic-clas-tessellation-ab-v5"
+SUPPORTED_PROTOCOLS = (LEGACY_PROTOCOL, BOUNDED_PROTOCOL, DYADIC_PROTOCOL, PROTOCOL)
 FIXED_BUDGETS = {"discovery": 3, "confirmation": 5}
 ARMS = {"A": "triangles", "B": "templates", "C": "candidate"}
 MODES = {"A": "triangles", "B": "templates", "C": "templates"}
@@ -26,7 +27,7 @@ BLOCK = "ABCCBA"
 PAIRS = {"B/A": ("A", "B"), "C/A": ("A", "C"), "C/B": ("B", "C")}
 METRICS = (*base.METRICS, "shadowTraceMs", "shadowCopyMs")
 STRATEGY_KEYS = ("rtTessellationTemplateShape", "rtTessellationInstantiationFlags")
-TEMPLATE_SHAPES = ("right", "equilateral", "rightDyadic")
+TEMPLATE_SHAPES = ("right", "equilateral", "rightDyadic", "rightCorner")
 INSTANTIATION_FLAGS = ("fastTrace", "none")
 DEFAULT_STRATEGY = dict(zip(STRATEGY_KEYS, ("right", "fastTrace")))
 CANDIDATES = {"C1": dict(zip(STRATEGY_KEYS, ("right", "none"))),
@@ -35,6 +36,7 @@ BOUNDS_KEY = "rtTessellationTemplateBounds"
 BOUNDED_DEFAULT = {**DEFAULT_STRATEGY, BOUNDS_KEY: "none"}
 BOUNDED_CANDIDATES = {"C3": {**DEFAULT_STRATEGY, BOUNDS_KEY: "geometry"}}
 DYADIC_CANDIDATES = {"C4": {**BOUNDED_DEFAULT, STRATEGY_KEYS[0]: "rightDyadic"}}
+CORNER_CANDIDATES = {"C5": {**BOUNDED_DEFAULT, STRATEGY_KEYS[0]: "rightCorner"}}
 MODULES = ("Features/GPUDriven/StreamCLASTessellation", "Features/Lighting/ScreenSpaceShadows")
 POLICY = {"statistic": "abccba-block-log-ratio", "confidence": .95, "imagePolicy": "exact-bytes",
           "gates": [{"pair": "C/A", "metric": "shadowsMs", "minimum": -.02, "strict": False},
@@ -59,7 +61,8 @@ def strategy_schema(protocol):
     require(protocol in SUPPORTED_PROTOCOLS, "Unknown strategy protocol")
     if protocol == LEGACY_PROTOCOL:
         return STRATEGY_KEYS, DEFAULT_STRATEGY, CANDIDATES
-    return (*STRATEGY_KEYS, BOUNDS_KEY), BOUNDED_DEFAULT, (BOUNDED_CANDIDATES if protocol == BOUNDED_PROTOCOL else DYADIC_CANDIDATES)
+    candidates = {BOUNDED_PROTOCOL: BOUNDED_CANDIDATES, DYADIC_PROTOCOL: DYADIC_CANDIDATES, PROTOCOL: CORNER_CANDIDATES}
+    return (*STRATEGY_KEYS, BOUNDS_KEY), BOUNDED_DEFAULT, candidates[protocol]
 
 
 def normalize_graph(graph, protocol=PROTOCOL):
@@ -81,8 +84,8 @@ def prepare(args):
     candidate = {STRATEGY_KEYS[0]: args.template_shape, STRATEGY_KEYS[1]: args.instantiation_flags,
                  BOUNDS_KEY: args.template_bounds}
     validate_strategy(candidate)
-    require(candidate == DYADIC_CANDIDATES["C4"], "Only C4 rightDyadic/fastTrace/none is registered in v4")
-    require(args.native_sizes, "v4 requires native size diagnostics")
+    require(candidate == CORNER_CANDIDATES["C5"], "Only C5 rightCorner/fastTrace/none is registered in v5")
+    require(args.native_sizes, "v5 requires native size diagnostics")
     # Preserve the production v1 scene/camera/native-resolution fixture builder.
     base.prepare(args)
     output = args.output.resolve()
@@ -103,7 +106,7 @@ def prepare(args):
         save(output / directory / "DiagnosticCases.json", diagnostic)
     fixture = read(output / "Fixture.json")
     fixture.update(protocol=PROTOCOL, candidate=candidate, baselineStrategy=BOUNDED_DEFAULT,
-                   candidateId="C4", budgets=FIXED_BUDGETS,
+                   candidateId="C5", budgets=FIXED_BUDGETS,
                    nativeSizeDiagnostic=args.native_sizes, blockOrder=BLOCK)
     save(output / "Fixture.json", fixture)
     fixture_configs(output)
@@ -114,9 +117,9 @@ def fixture_configs(directory):
     protocol = fixture["protocol"]
     keys, default, candidates = strategy_schema(protocol)
     require(fixture["blockOrder"] == BLOCK, "Unknown three-arm fixture protocol")
-    require(protocol == LEGACY_PROTOCOL or fixture["nativeSizeDiagnostic"] is True, "v3/v4 require native size diagnostics")
-    if protocol == PROTOCOL:
-        require(fixture["budgets"] == FIXED_BUDGETS, "v4 requires the declared 3 discovery and 5 confirmation blocks")
+    require(protocol == LEGACY_PROTOCOL or fixture["nativeSizeDiagnostic"] is True, "v3/v4/v5 require native size diagnostics")
+    if protocol in (DYADIC_PROTOCOL, PROTOCOL):
+        validate_budgets(fixture["budgets"], protocol)
     validate_strategy(fixture["candidate"], protocol)
     require(fixture["baselineStrategy"] == default and
             candidates.get(fixture["candidateId"]) == fixture["candidate"],
@@ -233,16 +236,23 @@ def bounded_path_evidence(directory, case, identity, graph, arm, diagnostic, pro
         require(profile["templatePoolGeneration"] == generation,
                 "Template pool replaced during warmup/timing; sticky fallback history does not cover the window")
     bounded_candidate = protocol == BOUNDED_PROTOCOL and arm == "C"
-    require(identity["nativeTemplateCount"] == (0 if arm == "A" else 1024 if bounded_candidate else 512),
+    native_count = 0 if arm == "A" else 1536 if protocol == PROTOCOL and arm == "C" else 1024 if bounded_candidate else 512
+    require(identity["nativeTemplateCount"] == native_count,
             "Actual template population differs from registered arm")
+    if protocol == PROTOCOL:
+        for key, expected in (("patternCount", 0 if arm == "A" else 512),
+                              ("nativeTemplateCount", native_count),
+                              ("templateVariantCount", {"A": 0, "B": 1, "C": 3}[arm])):
+            require(type(identity[key]) is int and identity[key] == expected,
+                    "Actual v5 " + key + " differs from registered arm or is not an integer")
     require(generation == 0 if arm == "A" else generation > 0, "Invalid template pool generation")
     raw_receipt = case.get("nativeCLASBoundsReceipt")
     if not bounded_candidate:
         require(mode == "none" and identity["templateBounds"] is None and not identity["boundedTemplatesReady"] and
                 raw_receipt is None, "Unbounded arm unexpectedly published bounded templates")
-        if protocol == PROTOCOL:
-            require(count == 0 and observed is False, "Unbounded v4 arm published a template-bound fallback")
-            require(identity["patternCount"] == (0 if arm == "A" else 512), "Actual v4 template pattern count differs")
+        if protocol in (DYADIC_PROTOCOL, PROTOCOL):
+            require(count == 0 and observed is False, "Unbounded v4/v5 arm published a template-bound fallback")
+            require(identity["patternCount"] == (0 if arm == "A" else 512), "Actual template pattern count differs")
     else:
         require(mode == "geometry" and identity["boundedTemplatesReady"] is True and count == 0 and observed is False,
                 "C3 did not exclusively use bounded templates throughout warmup and timing")
@@ -288,7 +298,7 @@ def analyze_run(directory, config, graph, arm, diagnostic, protocol=LEGACY_PROTO
     require(("nativeCLASSizeReceipt" in case) == collect_sizes, "Native size diagnostic receipt does not match its request")
     if collect_sizes:
         value["nativeCLASSizes"] = native_sizes(directory, case)
-    if protocol in (BOUNDED_PROTOCOL, PROTOCOL):
+    if protocol in (BOUNDED_PROTOCOL, DYADIC_PROTOCOL, PROTOCOL):
         key = "boundPathEvidence" if protocol == BOUNDED_PROTOCOL else "templatePathEvidence"
         value[key] = bounded_path_evidence(directory, case, receipt, graph, arm, diagnostic, protocol)
     return value
@@ -320,7 +330,7 @@ def validate_results(rows, diagnostics, protocol=LEGACY_PROTOCOL):
         def ordinary_identity(identity):
             result = dict(identity)
             del result["diagnosticBuildSizes"]
-            if protocol in (BOUNDED_PROTOCOL, PROTOCOL):
+            if protocol in (BOUNDED_PROTOCOL, DYADIC_PROTOCOL, PROTOCOL):
                 # Allocation generations establish a single process's sticky
                 # history; they are not portable identities across processes.
                 del result["templatePoolGeneration"]
@@ -354,14 +364,14 @@ def bound_size_diagnostic(diagnostics):
 def validate_budgets(budgets, protocol):
     require(set(budgets) == {"discovery", "confirmation"} and
             all(type(n) is int and 2 <= n <= 10 for n in budgets.values()), "Invalid fixed stage budgets")
-    if protocol == PROTOCOL:
-        require(budgets == FIXED_BUDGETS, "v4 requires the declared 3 discovery and 5 confirmation blocks")
+    if protocol in (DYADIC_PROTOCOL, PROTOCOL):
+        require(budgets == FIXED_BUDGETS, "v4/v5 require the declared 3 discovery and 5 confirmation blocks")
 
 
 def run(args):
     exe, fixtures, output = args.exe.resolve(), args.fixtures.resolve(), args.output.resolve()
     config, diagnostic_configs, graphs, diagnostic_graphs = fixture_configs(fixtures)
-    require(read(fixtures / "Fixture.json")["protocol"] == PROTOCOL, "Only the rightDyadic C4 candidate can start a new experiment")
+    require(read(fixtures / "Fixture.json")["protocol"] == PROTOCOL, "Only the rightCorner C5 candidate can start a new experiment")
     validate_budgets({"discovery": args.blocks, "confirmation": args.confirmation_blocks}, PROTOCOL)
     require(exe.is_file() and not output.exists(), "Existing executable and fresh evidence directory required")
     require("CMAKE_BUILD_TYPE:STRING=Release" in (exe.parent.parent / "CMakeCache.txt").read_text(), "Existing Release build required")
@@ -482,7 +492,7 @@ def verify(directory):
     if protocol == BOUNDED_PROTOCOL:
         require(bound_size_diagnostic(diagnostics) == manifest["boundSizeDiagnostic"],
                 "Saved bound-size diagnostic differs from actual native readback")
-    elif protocol == PROTOCOL:
+    elif protocol in (DYADIC_PROTOCOL, PROTOCOL):
         require(native_size_diagnostic(diagnostics) == manifest["nativeSizeDiagnostic"],
                 "Saved native-size diagnostic differs from actual native readback")
     decisions = {}
@@ -550,13 +560,13 @@ def report(directory, output):
                         "contrasts": {pair: gains[pair][metric] for pair in PAIRS}})
     save(output / "TimingSummary.json", summary)
     diagnostics = [r for r in manifest["runs"] if r["stage"] == "diagnostic"]
-    path_key = "templatePathEvidence" if verified["protocol"] == PROTOCOL else "boundPathEvidence"
+    path_key = "templatePathEvidence" if verified["protocol"] in (DYADIC_PROTOCOL, PROTOCOL) else "boundPathEvidence"
     backend = {r["arm"]: {"identity": r["result"]["identity"], "nativeCLASSizes": r["result"].get("nativeCLASSizes"),
                            path_key: r["result"].get(path_key)}
                for r in diagnostics}
     save(output / "BackendAllocations.json", backend)
     bound_text = ""
-    if verified["protocol"] in (BOUNDED_PROTOCOL, PROTOCOL):
+    if verified["protocol"] in (BOUNDED_PROTOCOL, DYADIC_PROTOCOL, PROTOCOL):
         bounded = verified["protocol"] == BOUNDED_PROTOCOL
         sizes = bound_size_diagnostic(diagnostics) if bounded else native_size_diagnostic(diagnostics)
         save(output / ("BoundSizeDiagnostic.json" if bounded else "NativeSizeDiagnostic.json"), sizes)
@@ -572,6 +582,14 @@ def report(directory, output):
             "Retained allocation capacity includes both unbounded and bounded sets in the single C3 template pool.\n\n") if bounded else (
             "C4 rightDyadic guide evidence: 512 unbounded templates, no bounds receipt, zero final fallback count and false sticky fallback bit in every process; "
             "one pool generation covers warmup, timing and final publication. Only the CPU template guide changes to round(q * 32768 / 65535) / 32768; instantiated geometry and sampler settings remain unchanged.\n\n")
+        if verified["protocol"] == PROTOCOL:
+            path_text = ("C5 rightCorner guide evidence: A/B/C report 0/512/512 patterns, 0/512/1536 native templates and 0/1/3 template variants. "
+                "All arms use bounds mode none, have no bounds receipt, zero final fallback count and a false sticky fallback bit; "
+                "one pool generation covers warmup, timing and final publication. C5 selects among three cyclic q/65535 guide banks using "
+                "the longest opposite edge of the actual generated corner positions. Actual vertices, indices and sampler settings remain unchanged, "
+                "and HDR/depth/shadow outputs match exactly. Selection work remains inside measured production scopes.\n\n"
+                "The three guide banks remain resident; their full template storage and auxiliary capacity are reported below. "
+                "Persistent bank memory is diagnostic, not an additional acceptance gate.\n\n")
         candidate_bytes = sizes["boundedTemplateBytes" if bounded else "candidateTemplateBytes"]
         bound_text = (path_text +
             f"Native live CLAS size check: **{sizes['classification']}**, candidate {candidate_bytes:,} bytes versus "
@@ -605,7 +623,7 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--width", type=int, default=1444); p.add_argument("--height", type=int, default=694)
     p.add_argument("--warmup", type=int, default=32); p.add_argument("--frames", type=int, default=64)
-    p.add_argument("--template-shape", choices=TEMPLATE_SHAPES, default="rightDyadic")
+    p.add_argument("--template-shape", choices=TEMPLATE_SHAPES, default="rightCorner")
     p.add_argument("--instantiation-flags", choices=INSTANTIATION_FLAGS, default="fastTrace")
     p.add_argument("--template-bounds", choices=("none", "geometry"), default="none")
     p.add_argument("--native-sizes", action="store_true", default=True)

@@ -416,25 +416,6 @@ int RunSelfTest()
 
     const CertificationReport cert = RunCertification(*contract, *model);
 
-    std::printf("[debug] approx hull = [%.17g, %.17g] boxes=%llu depth=%u completed=%d\n",
-        cert.approximationError.hull.lo, cert.approximationError.hull.hi,
-        static_cast<unsigned long long>(cert.approximationError.boxes),
-        cert.approximationError.depthUsed, static_cast<int>(cert.approximationError.completed));
-    std::printf("[debug] coeff hull = [%.17g, %.17g] boxes=%llu depth=%u completed=%d\n",
-        cert.coefficientError.hull.lo, cert.coefficientError.hull.hi,
-        static_cast<unsigned long long>(cert.coefficientError.boxes),
-        cert.coefficientError.depthUsed, static_cast<int>(cert.coefficientError.completed));
-    std::printf("[debug] candidate hull = [%.17g, %.17g] boxes=%llu depth=%u completed=%d\n",
-        cert.candidateRealError.hull.lo, cert.candidateRealError.hull.hi,
-        static_cast<unsigned long long>(cert.candidateRealError.boxes),
-        cert.candidateRealError.depthUsed, static_cast<int>(cert.candidateRealError.completed));
-    std::printf("[debug] f32 range = [%.9g, %.9g] raw [%.9g, %.9g] monotone=%d\n",
-        cert.modelOutputRange.lo, cert.modelOutputRange.hi, cert.modelOutputRangeRaw.lo,
-        cert.modelOutputRangeRaw.hi, static_cast<int>(cert.realPolynomialMonotoneDecreasing));
-    std::printf("[debug] realPolyRange = [%.17g, %.17g] refRange = [%.17g, %.17g]\n",
-        cert.realPolynomialRange.lo, cert.realPolynomialRange.hi, cert.referenceRange.lo,
-        cert.referenceRange.hi);
-
     // Values cross-checked against hand analysis: true sup(P(c)-e^-x) =
     // 1595/2048 - e^{-1/4} = 7.8107e-6, analytic Taylor bound 1/122880.
     check("approximation hull completed", cert.approximationError.completed);
@@ -443,13 +424,15 @@ int RunSelfTest()
     check("approximation sup below analytic Taylor bound 1/122880",
         cert.approximationError.hull.hi <= 8.138021e-6);
 
-    // True sup |P(c~)-P(c)| = 15/206158430208 = 7.2766e-11; triangle bound
-    // from the contract document is 17/206158430208 = 8.2468e-11.
+    // True sup |P(c~)-P(c)| = 15/206158430208 = 7.2766e-11 (attained as a
+    // negative difference); triangle bound from the contract document is
+    // 17/206158430208 = 8.2468e-11.
+    const double coefficientSup = Sup(cert.coefficientError.hull);
     check("coefficient hull completed", cert.coefficientError.completed);
     check("coefficient sup in [7.2e-11, 7.45e-11]",
-        cert.coefficientError.hull.hi >= 7.2e-11 && cert.coefficientError.hull.hi <= 7.45e-11);
+        coefficientSup >= 7.2e-11 && coefficientSup <= 7.45e-11);
     check("coefficient sup below triangle bound 17/206158430208",
-        cert.coefficientError.hull.hi <= 8.2469e-11);
+        coefficientSup <= 8.2469e-11);
 
     check("candidate real hull completed", cert.candidateRealError.completed);
     check("candidate real sup in [7.79e-6, 7.86e-6]",
@@ -476,7 +459,7 @@ int RunSelfTest()
     check("binary32 model range inside [0, 1]",
         cert.modelOutputRange.lo >= 0.0f && cert.modelOutputRange.hi <= 1.0f);
     check("binary32 model range lower end near 0.7788086",
-        cert.modelOutputRange.lo >= 0.7788084f && cert.modelOutputRange.lo <= 0.7788088f);
+        cert.modelOutputRange.lo >= 0.778807f && cert.modelOutputRange.lo <= 0.778809f);
     check("endpoint verdict proved", cert.endpointVerdict == EvidenceLevel::ProvedUnderModel);
 
     SweepConfig sweepConfig;

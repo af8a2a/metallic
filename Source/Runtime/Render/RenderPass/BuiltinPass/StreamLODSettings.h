@@ -43,7 +43,8 @@ inline void appendStreamRayLODRuntimeSettings(std::vector<RenderGraphRuntimeSett
     settings.push_back({.key = "rtTessellationTemplateShape", .label = "CLAS Template Shape (advanced)",
         .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "right",
         .options = {{"Right triangle (default)", "right"}, {"Equilateral (spatial quality hint)", "equilateral"},
-            {"Right triangle (dyadic guide)", "rightDyadic"}}});
+            {"Right triangle (dyadic guide)", "rightDyadic"},
+            {"Right triangle (longest-edge corner)", "rightCorner"}}});
     settings.push_back({.key = "rtTessellationInstantiationFlags", .label = "CLAS Instantiation Policy (advanced)",
         .type = RenderGraphRuntimeSettingType::Enum, .defaultValue = "fastTrace",
         .options = {{"Prefer tracing speed", "fastTrace"}, {"Driver build/trace policy", "none"}}});

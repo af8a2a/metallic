@@ -15,7 +15,7 @@ class ScenePathTraceResources;
 struct MeshletStreamFrameDesc;
 
 enum class StreamCLASTessellationBuildMode : uint32_t { Triangles, Templates, Invalid };
-enum class StreamCLASTessellationTemplateShape : uint32_t { Right, Equilateral, RightDyadic, Invalid };
+enum class StreamCLASTessellationTemplateShape : uint32_t { Right, Equilateral, RightDyadic, RightCorner, Invalid };
 enum class StreamCLASTessellationInstantiationFlags : uint32_t { FastTrace, None, Invalid };
 enum class StreamCLASTessellationTemplateBoundsMode : uint32_t { None, Geometry, Invalid };
 
@@ -31,6 +31,7 @@ inline StreamCLASTessellationTemplateShape parseStreamCLASTessellationTemplateSh
     if (value == "right") { return StreamCLASTessellationTemplateShape::Right; }
     if (value == "equilateral") { return StreamCLASTessellationTemplateShape::Equilateral; }
     if (value == "rightDyadic") { return StreamCLASTessellationTemplateShape::RightDyadic; }
+    if (value == "rightCorner") { return StreamCLASTessellationTemplateShape::RightCorner; }
     return StreamCLASTessellationTemplateShape::Invalid;
 }
 

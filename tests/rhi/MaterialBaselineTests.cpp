@@ -9,7 +9,10 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/ScreenSpaceShadows.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "../../Shaders/Interop/StreamCLASTessellation.h"
+#include "../../Shaders/Interop/ShadowRayCapture.h"
 
 #include <algorithm>
 #include <cmath>
@@ -116,16 +119,21 @@ public:
 class TessellationFinalReceipt final : public render::IRenderDebugObserver
 {
 public:
-    TessellationFinalReceipt(bool captureSizes, bool captureGeometry)
-        : captureSizes_(captureSizes), captureGeometry_(captureGeometry) {}
+    TessellationFinalReceipt(bool captureSizes, bool captureGeometry, bool captureShadowRays)
+        : captureSizes_(captureSizes), captureGeometry_(captureGeometry), captureShadowRays_(captureShadowRays) {}
     bool requiresResourceReadback() const override { return false; }
     bool captured = false, completed = false;
     bool afterPassSeen = false, bindingSeen = false;
     bool sizesCaptured = false, boundsCaptured = false, boundsSeen = false;
     bool leavesCaptured = false, verticesCaptured = false;
+    bool instancesCaptured = false, tlasInstancesCaptured = false, shadowRaysCaptured = false, shadowParametersCaptured = false;
     uint64_t templatePoolGeneration = 0;
+    uint32_t generatedBaseClusterId = 0, instanceCount = 0;
     std::unique_ptr<render::Buffer> buffer, sizesBuffer, boundsBuffer;
-    std::unique_ptr<render::Buffer> leavesBuffer, verticesBuffer;
+    std::unique_ptr<render::Buffer> leavesBuffer, verticesBuffer, tlasInstancesBuffer, shadowRaysBuffer;
+    std::vector<render::MeshletStreamGPUInstance> instances;
+    render::ScreenSpaceShadowParameters shadowParameters{};
+    debug::DebugValue shadowMetadata;
     void compiled(debug::DebugValue) override {}
     void beginExecution(render::Device& device, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
     {
@@ -133,10 +141,15 @@ public:
         sizesCaptured = false;
         boundsCaptured = boundsSeen = false;
         leavesCaptured = verticesCaptured = false;
+        instancesCaptured = tlasInstancesCaptured = shadowRaysCaptured = shadowParametersCaptured = false;
+        instances.clear();
+        shadowMetadata = debug::DebugValue::object();
         sizesBuffer.reset();
         boundsBuffer.reset();
         leavesBuffer.reset();
         verticesBuffer.reset();
+        tlasInstancesBuffer.reset();
+        shadowRaysBuffer.reset();
         device_ = &device;
         auto result = device.createBuffer({.size = 24, .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback,
@@ -145,9 +158,24 @@ public:
     }
     void endExecution(bool success) override { completed = success; }
     void boundary(render::CommandBuffer& commands, std::string_view checkpoint, uint32_t,
-        std::string_view pass, std::span<const render::DebugResourceBinding> resources, const debug::DebugValue&) override
+        std::string_view pass, std::span<const render::DebugResourceBinding> resources, const debug::DebugValue& values) override
     {
         using namespace render;
+        if (captureShadowRays_ && checkpoint == "ShadowRayCapture" && pass == "Shadows") {
+            shadowMetadata = values;
+            for (const auto& binding : resources) {
+                if (binding.id == "shadowParameters") {
+                    const void* mapped = binding.buffer->map();
+                    if (!mapped) { continue; }
+                    std::memcpy(&shadowParameters, mapped, sizeof(shadowParameters));
+                    binding.buffer->unmap();
+                    shadowParametersCaptured = true;
+                } else if (binding.id == "shadowRays") {
+                    shadowRaysCaptured = copy(commands, binding, binding.buffer->desc().size, shadowRaysBuffer);
+                }
+            }
+            return;
+        }
         if (checkpoint != "AfterPass" || pass != "VBuffer") { return; }
         afterPassSeen = true;
         if (captured || !buffer) { return; }
@@ -158,39 +186,63 @@ public:
             const bool bounds = captureSizes_ && binding.id.ends_with(".tessellationBounds");
             const bool leaves = captureGeometry_ && binding.id.ends_with(".tessellationLeaves");
             const bool vertices = captureGeometry_ && binding.id.ends_with(".tessellationVertices");
-            if (!counts && !sizes && !bounds && !leaves && !vertices) { continue; }
+            const bool instanceData = captureGeometry_ && binding.id.ends_with(".tessellationInstanceData");
+            const bool tlasInstances = captureGeometry_ && binding.id.ends_with(".tessellationTLASInstances");
+            if (instanceData) {
+                instanceCount = binding.metadata.at("sceneInstanceCount").get<uint32_t>();
+                instances.resize(instanceCount);
+                const void* mapped = binding.buffer->map();
+                if (!mapped) { continue; }
+                std::memcpy(instances.data(), static_cast<const std::byte*>(mapped) + binding.offset,
+                    instances.size() * sizeof(instances[0]));
+                binding.buffer->unmap();
+                instancesCaptured = true;
+                continue;
+            }
+            if (!counts && !sizes && !bounds && !leaves && !vertices && !tlasInstances) { continue; }
             const uint64_t bytes = counts || bounds ? 24 : binding.buffer->desc().size - binding.offset;
             auto& destination = counts ? buffer : bounds ? boundsBuffer : leaves ? leavesBuffer :
-                vertices ? verticesBuffer : sizesBuffer;
+                vertices ? verticesBuffer : tlasInstances ? tlasInstancesBuffer : sizesBuffer;
             if (counts) {
                 bindingSeen = true;
                 templatePoolGeneration = binding.metadata.at("templatePoolGeneration").get<uint64_t>();
+                generatedBaseClusterId = binding.metadata.at("generatedBaseClusterId").get<uint32_t>();
             }
             else {
                 boundsSeen |= bounds;
-                auto allocation = device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
-                    .memoryLocation = MemoryLocation::HostReadback,
-                    .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
-                if (!allocation) { continue; }
-                destination = std::move(*allocation);
             }
-            const MemoryBarrierDesc before{
-                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite}};
-            const MemoryBarrierDesc after{
-                .before = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite},
-                .after = {PipelineStageBits::AllCommands | PipelineStageBits::Host,
-                    AccessBits::MemoryRead | AccessBits::MemoryWrite | AccessBits::HostRead}};
-            auto result = commands.synchronize({.memory = {&before, 1}});
-            if (result) { result = commands.copyBuffer(*binding.buffer->slice({binding.offset, bytes}), *destination->slice()); }
-            if (result) { result = commands.synchronize({.memory = {&after, 1}}); }
             (counts ? captured : bounds ? boundsCaptured : leaves ? leavesCaptured :
-                vertices ? verticesCaptured : sizesCaptured) = bool(result);
+                vertices ? verticesCaptured : tlasInstances ? tlasInstancesCaptured : sizesCaptured) =
+                copy(commands, binding, bytes, destination);
         }
     }
 private:
+    bool copy(render::CommandBuffer& commands, const render::DebugResourceBinding& binding, uint64_t bytes,
+        std::unique_ptr<render::Buffer>& destination)
+    {
+        using namespace render;
+        if (!destination) {
+            auto allocation = device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+            if (!allocation) { return false; }
+            destination = std::move(*allocation);
+        }
+        const MemoryBarrierDesc before{
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite}};
+        const MemoryBarrierDesc after{
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferRead | AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands | PipelineStageBits::Host,
+                AccessBits::MemoryRead | AccessBits::MemoryWrite | AccessBits::HostRead}};
+        auto result = commands.synchronize({.memory = {&before, 1}});
+        if (result) { result = commands.copyBuffer(*binding.buffer->slice({binding.offset, bytes}), *destination->slice()); }
+        if (result) { result = commands.synchronize({.memory = {&after, 1}}); }
+        return bool(result);
+    }
     bool captureSizes_;
     bool captureGeometry_;
+    bool captureShadowRays_;
     render::Device* device_ = nullptr;
 };
 
@@ -508,13 +560,28 @@ public:
                         {"bytes", bytes.size()}, {"format", static_cast<uint32_t>(preview.readbackFormat())}});
                 };
                 auto cloudReceipt = spec.value("physicalCloudReceipt", false) ? std::make_unique<PhysicalCloudFinalReceipt>() : nullptr;
+                const bool captureShadowRays = spec.value("captureShadowRays", false);
+                if (captureShadowRays) {
+                    const auto* shadows = graph.findNode("Shadows");
+                    const auto outputs = spec.value("captureOutputs", std::vector<std::string>{});
+                    if (artifact || nsightTraceFrame || !spec.value("captureTessellationGeometry", false) || !shadows ||
+                        shadows->properties.value("sigmaDenoise", true) ||
+                        shadows->properties.value("diagnosticSampleFrame", UINT32_MAX) != 0u ||
+                        shadows->properties.value("diagnosticCaptureRays", false) ||
+                        spec.at("output") != "Deferred.color" || spec.contains("cameraFrames") || spec.contains("guideCameraStep") ||
+                        std::find(outputs.begin(), outputs.end(), "Shadows.shadow") == outputs.end()) {
+                        return fail("Shadow-ray capture requires final geometry, fixed sample frame 0, SIGMA off, Deferred.color and an ordinary Shadows.shadow capture");
+                    }
+                }
+                Json shadowManifest;
+                std::vector<uint8_t> capturedShadowVisibility;
                 if (spec.value("captureTessellationGeometry", false) &&
                     (!spec.value("captureTessellationNativeSizes", false) || !spec.value("tessellationReceipt", false))) {
                     return fail("Geometry encoding diagnostics require final tessellation counts and native sizes");
                 }
                 auto tessellationReceipt = spec.value("tessellationReceipt", false) ?
                     std::make_unique<TessellationFinalReceipt>(spec.value("captureTessellationNativeSizes", false),
-                        spec.value("captureTessellationGeometry", false)) : nullptr;
+                        spec.value("captureTessellationGeometry", false), captureShadowRays) : nullptr;
                 if (cloudReceipt && tessellationReceipt) { return fail("Choose one final publication receipt"); }
                 for (uint32_t frame = 0; frame < caseFrames; ++frame) {
                     if (freezeStreamingFrame && frame == *freezeStreamingFrame) {
@@ -543,17 +610,24 @@ public:
                     preview.setRawReadbackEnabled(capture);
                     const bool proofFrame = (cloudReceipt || tessellationReceipt) && frame + 1 == caseFrames;
                     const auto rendered = [&]() {
+                        const auto* shadows = captureShadowRays && proofFrame ? graph.findNode("Shadows") : nullptr;
+                        if (shadows && !graph.setNodeRuntimeProperty(shadows->id, "diagnosticCaptureRays", true)) {
+                            throw std::runtime_error("Cannot enable final shadow-ray capture");
+                        }
                         if (proofFrame) { preview.setDebugObserver(cloudReceipt ?
                             static_cast<IRenderDebugObserver*>(cloudReceipt.get()) : tessellationReceipt.get()); }
                         struct Reset
                         {
                             RenderGraphPreviewRenderer& preview;
+                            RenderGraph& graph;
                             bool active;
+                            std::optional<uint32_t> shadowPass;
                             ~Reset()
                             {
                                 if (active) { preview.setDebugObserver(nullptr); }
+                                if (shadowPass) { graph.setNodeRuntimeProperty(*shadowPass, "diagnosticCaptureRays", false); }
                             }
-                        } reset{preview, proofFrame};
+                        } reset{preview, graph, proofFrame, shadows ? std::optional<uint32_t>(shadows->id) : std::nullopt};
                         bool traceActive = false;
                         ArtifactReportGuard traceCleanup;
                         if (nsightTraceFrame && frame == *nsightTraceFrame) {
@@ -717,7 +791,7 @@ public:
                     }
                     if (spec.value("captureTessellationGeometry", false)) {
                         const auto& receipt = *tessellationReceipt;
-                        if (!receipt.leavesCaptured || !receipt.verticesCaptured) {
+                        if (!receipt.leavesCaptured || !receipt.verticesCaptured || !receipt.instancesCaptured || !receipt.tlasInstancesCaptured) {
                             return fail("Missing actual CLAS geometry encoding receipt");
                         }
                         const auto read = [&](Buffer& source, size_t bytes, void* destination) {
@@ -743,10 +817,14 @@ public:
                         }
                         std::vector<uint32_t> sizes(counts[0]);
                         read(*receipt.sizesBuffer, sizes.size() * sizeof(sizes[0]), sizes.data());
+                        std::vector<RayTracingGPUInstance> tlasInstances(receipt.instanceCount);
+                        read(*receipt.tlasInstancesBuffer, tlasInstances.size() * sizeof(tlasInstances[0]), tlasInstances.data());
                         Json geometry = {{"schemaVersion", 1}, {"patchCount", counts[0]},
                             {"verticesPerPatch", METALLIC_TESS_VERTICES_PER_PATCH},
                             {"trianglesPerPatch", METALLIC_TESS_TRIANGLES_PER_PATCH},
                             {"leafStride", sizeof(leaves[0])}, {"vertexStride", sizeof(vertices[0])},
+                            {"instanceCount", receipt.instanceCount}, {"instanceStride", sizeof(MeshletStreamGPUInstance)},
+                            {"tlasInstanceStride", sizeof(RayTracingGPUInstance)}, {"generatedBaseClusterId", receipt.generatedBaseClusterId},
                             {"unusedVertexSlotsZeroed", true}, {"sha256", Json::object()},
                             {"frame", caseFrames - 1}, {"scope", "final untimed frame; actual live GPU vertices unchanged"}};
                         const auto save = [&](const char* key, const char* suffix, const void* data, size_t bytes) {
@@ -761,6 +839,8 @@ public:
                         save("verticesFile", "-CLASVertices.bin", vertices.data(), vertices.size() * sizeof(vertices[0]));
                         save("countsFile", "-CLASCounts.bin", statistics.data(), sizeof(statistics));
                         save("sizesFile", "-CLASGeometrySizes.bin", sizes.data(), sizes.size() * sizeof(sizes[0]));
+                        save("instancesFile", "-CLASInstances.bin", receipt.instances.data(), receipt.instances.size() * sizeof(receipt.instances[0]));
+                        save("tlasInstancesFile", "-CLASTLASInstances.bin", tlasInstances.data(), tlasInstances.size() * sizeof(tlasInstances[0]));
                         for (const auto& stream : result["frames"].back()["streaming"]) {
                             if (stream.at("passName") == "VBuffer") {
                                 geometry["identity"] = Json::parse(stream.at("tessellationIdentity").get<std::string>());
@@ -775,10 +855,58 @@ public:
                             return fail("Final encoding receipt changed its bounded template pool");
                         }
                         const auto file = id + "-Geometry.json";
-                        std::ofstream output(context.outputDirectory / file);
-                        output << geometry.dump(2);
+                        const auto serialized = geometry.dump(2);
+                        std::ofstream output(context.outputDirectory / file, std::ios::binary);
+                        output.write(serialized.data(), std::streamsize(serialized.size()));
                         if (!output) { return fail("Cannot write CLAS encoding manifest"); }
                         result["nativeCLASGeometryReceipt"] = {{"file", file}, {"patchCount", counts[0]}};
+                        if (captureShadowRays) {
+                            if (!receipt.shadowRaysCaptured || !receipt.shadowParametersCaptured ||
+                                receipt.shadowMetadata.at("width") != width || receipt.shadowMetadata.at("height") != height ||
+                                receipt.shadowParameters.shape[1] != 0.0f || receipt.shadowParameters.view.frame[0] != 0u) {
+                                return fail("Missing/mismatched final production shadow-ray receipt");
+                            }
+                            std::vector<ShadowRayCaptureRecord> rays(size_t(width) * height);
+                            read(*receipt.shadowRaysBuffer, rays.size() * sizeof(rays[0]), rays.data());
+                            uint64_t activeRays = 0, hitRays = 0, proceedCalls = 0, candidates = 0, accepted = 0;
+                            capturedShadowVisibility.resize(rays.size());
+                            for (size_t pixel = 0; pixel < rays.size(); ++pixel) {
+                                const auto& ray = rays[pixel];
+                                if (ray.active > 1 || ray.hit > ray.active || !std::isfinite(ray.rawCommittedT) ||
+                                    !std::isfinite(ray.shadowDistance) || !std::isfinite(ray.penumbra) ||
+                                    ray.visibility != (ray.hit ? 0.0f : 1.0f) ||
+                                    (ray.hit && (ray.rawCommittedT < ray.tMin || ray.rawCommittedT > ray.tMax)) ||
+                                    (!ray.hit && ray.rawCommittedT != -1.0f)) {
+                                    return fail("Invalid captured production shadow ray at pixel " + std::to_string(pixel));
+                                }
+                                activeRays += ray.active; hitRays += ray.hit; proceedCalls += ray.proceedCalls;
+                                candidates += ray.nonOpaqueCandidates; accepted += ray.acceptedCandidates;
+                                capturedShadowVisibility[pixel] = ray.visibility == 0.0f ? 0u : 255u;
+                            }
+                            if (!activeRays || !hitRays || hitRays == activeRays) { return fail("Shadow capture must contain actual hits and misses"); }
+                            shadowManifest = {{"schemaVersion", 1}, {"geometryFile", file},
+                                {"geometryManifestSha256", debug::debugSha256(serialized)},
+                                {"recordStride", sizeof(ShadowRayCaptureRecord)}, {"rayCount", rays.size()},
+                                {"width", width}, {"height", height}, {"frame", caseFrames - 1},
+                                {"queryFlags", 0}, {"queryMask", 255}, {"activeCount", activeRays}, {"hitCount", hitRays},
+                                {"totalProceedCalls", proceedCalls}, {"totalNonOpaqueCandidates", candidates}, {"totalAcceptedCandidates", accepted},
+                                {"captureShaderSha256", receipt.shadowMetadata.at("captureShaderSha256")},
+                                {"ordinaryShaderSha256", receipt.shadowMetadata.at("ordinaryShaderSha256")},
+                                {"shaderMacro", "METALLIC_SHADOW_RAY_CAPTURE=1"}, {"timingInstrumented", true},
+                                {"queryCounterScope", "shader-visible calls/candidates, not hardware node/triangle tests"},
+                                {"dispatchMetadata", receipt.shadowMetadata}, {"sha256", Json::object()}};
+                            const auto saveShadow = [&](const char* key, const char* suffix, const void* data, size_t bytes) {
+                                const auto filename = id + suffix;
+                                std::ofstream binary(context.outputDirectory / filename, std::ios::binary);
+                                binary.write(static_cast<const char*>(data), std::streamsize(bytes));
+                                if (!binary) { throw std::runtime_error("Cannot write production shadow-ray receipt"); }
+                                shadowManifest[key] = filename;
+                                shadowManifest["sha256"][filename] = debug::debugSha256(std::span(static_cast<const uint8_t*>(data), bytes));
+                            };
+                            saveShadow("recordsFile", "-ShadowRays.bin", rays.data(), rays.size() * sizeof(rays[0]));
+                            saveShadow("parametersFile", "-ShadowParameters.bin", &receipt.shadowParameters, sizeof(receipt.shadowParameters));
+                            saveShadow("visibilityFile", "-CapturedShadow.r8", capturedShadowVisibility.data(), capturedShadowVisibility.size());
+                        }
                     }
                 }
                 if (cloudReceipt) {
@@ -863,6 +991,29 @@ public:
                         return fail(id + ": rejected artifact request or error-material fallback: " + preview.lastLog());
                     }
                     captureOutput(outputName, captureFrame++);
+                    if (captureShadowRays && outputName == "Shadows.shadow") {
+                        const auto& ordinary = preview.readbackBytes();
+                        if (preview.readbackFormat() != Format::R8Unorm || ordinary.size() != capturedShadowVisibility.size() ||
+                            !std::equal(ordinary.begin(), ordinary.end(), capturedShadowVisibility.begin(),
+                                [](std::byte a, uint8_t b) { return std::to_integer<uint8_t>(a) == b; })) {
+                            return fail("Instrumented production shadow visibility differs from the ordinary full image");
+                        }
+                        shadowManifest["ordinaryVisibilityFile"] = result["captures"].back().at("file");
+                        shadowManifest["ordinaryVisibilitySha256"] = debug::debugSha256(std::span(
+                            reinterpret_cast<const uint8_t*>(ordinary.data()), ordinary.size()));
+                        shadowManifest["ordinaryVisibilityExact"] = true;
+                    }
+                }
+                if (captureShadowRays) {
+                    if (!shadowManifest.value("ordinaryVisibilityExact", false)) { return fail("Missing ordinary shadow equivalence image"); }
+                    const auto filename = id + "-ShadowRays.json";
+                    const auto serialized = shadowManifest.dump(2);
+                    std::ofstream manifest(context.outputDirectory / filename, std::ios::binary);
+                    manifest.write(serialized.data(), std::streamsize(serialized.size()));
+                    if (!manifest) { return fail("Cannot write production shadow-ray manifest"); }
+                    result["shadowRayReceipt"] = {{"file", filename}, {"sha256", debug::debugSha256(serialized)},
+                        {"recordStride", sizeof(ShadowRayCaptureRecord)}, {"ordinaryVisibilityExact", true},
+                        {"activeCount", shadowManifest.at("activeCount")}, {"hitCount", shadowManifest.at("hitCount")}};
                 }
                 if (artifact) {
                     ShaderArtifactFixture::require(artifact->consumed() > caseConsumedBefore && artifact->rejected() == caseRejectedBefore,

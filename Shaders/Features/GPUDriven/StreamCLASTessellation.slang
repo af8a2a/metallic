@@ -13,6 +13,22 @@ using Metallic.GPUDriven;
 
 [[vk::push_constant]] ConstantBuffer<StreamCLASTessellationPush> gPush;
 groupshared uint gOutsideTemplateBounds;
+groupshared float3 gTemplateCorners[3];
+
+float templateOppositeEdgeSquared(float3 a, float3 b)
+{
+    // Match the native diagnostic's separately rounded FP32 operations. A dot
+    // product or contracted multiply-add can select another corner near a tie.
+    precise float x = a.x - b.x;
+    precise float y = a.y - b.y;
+    precise float z = a.z - b.z;
+    precise float xx = x * x;
+    precise float yy = y * y;
+    precise float zz = z * z;
+    precise float xy = xx + yy;
+    precise float squared = xy + zz;
+    return squared;
+}
 
 float3 worldPoint(GPUDrivenStreamAssetInstance instance, float3 point)
 {
@@ -181,6 +197,8 @@ void prefixInstances(StreamCLASTessellationParameters p)
 void dicePatch(StreamCLASTessellationParameters p, uint patchIndex, uint lane)
 {
     if (patchIndex >= ((uint*)p.counts)[0]) { return; }
+    // The host publishes three 512-pattern banks only for RightCorner.
+    bool selectTemplateCorner = p.templateUnboundedCount == 3u * 512u;
     if (p.templateBoundsRequested != 0u) {
         if (lane == 0u) { gOutsideTemplateBounds = p.templateBoundsAddress == 0u ? 1u : 0u; }
         GroupMemoryBarrierWithGroupSync();
@@ -212,6 +230,13 @@ void dicePatch(StreamCLASTessellationParameters p, uint patchIndex, uint lane)
         vertex.x = position.x; vertex.y = position.y; vertex.z = position.z;
         vertex.sourceU = bary.y; vertex.sourceV = bary.z;
         ((StreamCLASTessellationVertex*)p.geometry.vertices)[patchIndex * METALLIC_TESS_VERTICES_PER_PATCH + lane] = vertex;
+        if (selectTemplateCorner) {
+            // The pattern's outer edges start at 0, rates.x, rates.x+rates.y.
+            // This also covers the factor-1 special case, whose indices are 0,1,2.
+            if (lane == 0u) { gTemplateCorners[0] = position; }
+            else if (lane == rates.x) { gTemplateCorners[1] = position; }
+            else if (lane == rates.x + rates.y) { gTemplateCorners[2] = position; }
+        }
         if (p.templateBoundsAddress != 0u) {
             let bounds = (float*)p.templateBoundsAddress;
             // Validate the actual final FP32 positions at the native API boundary.
@@ -226,12 +251,24 @@ void dicePatch(StreamCLASTessellationParameters p, uint patchIndex, uint lane)
     for (uint triangle = lane; triangle < leaf.triangleCount; triangle += 64u) {
         ((uint3*)p.geometry.triangles)[patchIndex * METALLIC_TESS_TRIANGLES_PER_PATCH + triangle] = tessTriangle(data, pattern, triangle);
     }
-    if (p.templateBoundsRequested != 0u) { GroupMemoryBarrierWithGroupSync(); }
+    if (p.templateBoundsRequested != 0u || selectTemplateCorner) { GroupMemoryBarrierWithGroupSync(); }
     if (lane == 0u) {
         if (p.buildMode == 1u) {
             uint patternIndex = (rates.x - 1u) + 8u * (rates.y - 1u) + 64u * (rates.z - 1u);
+            if (selectTemplateCorner) {
+                uint corner = 0u;
+                float largest = templateOppositeEdgeSquared(gTemplateCorners[1], gTemplateCorners[2]);
+                for (uint i = 1u; i < 3u; ++i) {
+                    float squared = templateOppositeEdgeSquared(gTemplateCorners[(i + 1u) % 3u], gTemplateCorners[(i + 2u) % 3u]);
+                    if (squared > largest) { largest = squared; corner = i; }
+                }
+                // Publish the actual choice for diagnostic verification. It is
+                // outside the semantic geometry hash; the vertices do not change.
+                ((StreamCLASTessellationLeaf*)p.geometry.leaves)[patchIndex].reserved0 = corner;
+                patternIndex += corner * 512u;
+            }
             if (p.templateBoundsRequested != 0u) {
-                if (gOutsideTemplateBounds == 0u) { patternIndex += p.templatePatternCount; }
+                if (gOutsideTemplateBounds == 0u) { patternIndex += p.templateUnboundedCount; }
                 else {
                     InterlockedAdd(((uint*)p.counts)[4], 1u);
                     InterlockedOr(((uint*)p.counts)[5], 1u);

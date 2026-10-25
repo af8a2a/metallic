@@ -19,6 +19,7 @@ struct ScreenSpaceShadowSettings {
     bool enabled = true;
     bool denoise = true;
     bool debug = false;
+    bool diagnosticCaptureRays = false;
     int32_t lightIndex = -1; // Sun=0, Moon=1, local source slots follow; -1 prefers Sun/Moon.
     uint32_t historyLength = 5;
     float maxDistance = 100000.0f;
@@ -40,6 +41,9 @@ struct ScreenSpaceShadowResult {
     Texture* texture = nullptr;
     TextureView* shadow = nullptr; // SIGMA encoded visibility; unpack by squaring.
     Buffer* parameters = nullptr;
+    Buffer* rayCapture = nullptr;
+    std::string captureShaderSha256;
+    std::string ordinaryShaderSha256;
 };
 
 struct ScreenSpaceShadowLightRecord {
@@ -88,6 +92,9 @@ private:
     ComputeResourceEncoder traceEncoder_;
     ComputeKernel trace_;
     uint32_t traceTextureCount_ = 0;
+    bool traceCaptureRays_ = false;
+    std::string traceShaderSha256_;
+    std::string ordinaryShaderSha256_;
 };
 
 } // namespace metallic::render
