@@ -1,0 +1,115 @@
+# Virtual Shadow Maps P4：过滤与内容覆盖
+
+对应 [实施方案](VirtualShadowMapsResearch.md) 的 P4，基于 [P3](VirtualShadowMapsP3.md) 的多灯、稳定身份与提交后页缓存。实现 Hard / PCF / SMRT、receiver footprint 选级，以及完整场景位移 caster。默认实时图切换和代表性大场景长期验收仍属于 P5。
+
+## 光源与过滤合同
+
+`VirtualShadowMapLightsPass.filter` 接受 `hard`、`pcf`、`smrt`，缺省为 `hard`。旧 `VirtualShadowMapPass` 继续发布兼容 SIGMA sqrt 解码的硬阴影；其非 hard 配置明确拒绝，软阴影使用多灯线性可见度接口。
+
+Sun/Moon 直接使用已有 `angularRadius`，单位弧度、含义为半径。局部光新增可保存、可编辑的 `sourceRadius`，单位米、缺省零；经 `LightProperties`、原生/虚拟灯与 `GPUPunctualLight.spot[2]` 传递，原 64 B GPU 灯布局不变。这是 VSM 阴影发光尺寸，不改变现有解析点光/聚光的强度、BRDF 或 RT/PT 采样语义。旧场景未填写时保持零。
+
+| 属性 | 缺省 | 含义 |
+| --- | ---: | --- |
+| pcfRadius | 1 | 3×3 PCF 的选定虚拟 texel 间距；零严格走 Hard |
+| smrtRayCount | 8 | 每 receiver 的圆盘光源样本数，1–32 |
+| smrtSamplesPerRay | 8 | 每条有界射线的离散段数 |
+| smrtMaxRayLength | 10 m | 最大搜索距离；局部光还受采样光源端点限制 |
+| receiverFootprint | true | 过滤模式按相机像素世界足迹选择起始级 |
+| tessellationFactor | 4 | 位移 caster 独立细分因子，1–8 |
+| tessellationSubdivisionDepth | 0 | 位移 caster 额外均匀四分层级，0–2；每级增加 4 倍微三角 |
+
+SMRT 使用固定低差异圆盘序列和二次分布的射线段，查询每段中点的单层阴影深度，检查它是否落入该段的深度区间。只判断深度在 receiver 前面会错误地阻止射线离开遮挡轮廓，因此这里比较线段区间。每个查询沿用 receiver plane 的 texel-center 修正和米制 bias。无光源尺寸的 SMRT 严格回到 Hard。
+
+采样不使用逐帧随机种子，固定场景输出确定。P4 未引入独立 shadow history，也未把线性 VSM visibility 送入 SIGMA。下游时域滤波不构成本阶段独立过滤正确性的依据。
+
+单层深度不能恢复被第一层遮挡的其它几何。离散步长、遮挡层断点、极大光源和搜索距离限制仍会产生近似误差；SMRT 不是面积光几何射线的精确替代。
+
+## 页寻址、需求与缓存
+
+Hard 保留 P3 的查询规则。PCF 从 receiver 像素足迹选择细级；SMRT 还以沿射线增长的光源采样足迹限制查询层级，避免近接触半影被比它更宽的 texel 吞掉。每个 tap 独立重新投影、查页、定位物理 texel；方向光跨 clipmap 使用目标层自己的原点和 Z 映射。细页未准入或 raster work 溢出时查询已完成的粗级。使用整数 texel load，不对物理 atlas 相邻页做无边界过滤。
+
+Demand 覆盖同一 PCF tap / SMRT ray segment 中点及其各级页。当前实现保守逐 tap 标记，尤其点光六面和高样本数时成本较高，不能由热缓存没有光栅工作推断过滤便宜。
+
+过滤点光先录制六面的 atlas、页表和投影，再逐面 resolve。每面持有显式六面描述表，tap 根据世界位置重新选面；需求标记也处理其它 canonical face 的 receiver 射线。原始 receiver 最终仍只由自己的 canonical face 发布。六面资源由同一 recording 保活，继续禁止跨帧重叠写同一缓存域。
+
+发光尺寸和过滤参数不是深度内容身份；它们改变需求和查询，已有完整页仍可复用。新增需求可分配/重画新页。灯位置、投影、caster、纹理发布和位移开关等真实内容变化继续进入失效边界。
+
+CPU/Slang `ShadowPush` 扩为 192 B，`ShadowProjection` 保持 112 B，新增每面描述 `ShadowFace` 为 32 B。几何参数扩为 48 B，基础 triangle 保持 112 B。公开多灯 table 和 Deferred 参数布局保持 P3。
+
+每面统计仍为 32 uint。新增 `[30]` 为过滤页查询次数，`[31]` 为其中粗级查询次数；`[9]` 包括无效粗页查询。射线段在完整 caster 包围投影外没有可表示遮挡层，不计作缺页。中心页 debug 沿用原显示，不代表全部过滤 tap 的级别；过滤回退应读计数。
+
+## 位移、材质与纹理发布
+
+位移开关取自匹配 receiver 的 `VisibilityBufferFrameInfo.reserved`，和生产主视图一致。关闭 tessellation 时两者都消费基础网格；开启时 VSM 为完整 resident 场景或 Stream terminal cut 生成独立细分 caster，不借用主相机可见 patch 列表。
+
+几何求值复用 `VisibilityTessellation` 的 pattern/domain、边界规范化、插值法线和 `tessHeight`；高度来自当帧已发布物理纹理的 mip 0，使用相同 UV transform。额外层级使用同一 dyadic patch 四分规则，再在每个叶 patch 上应用固定细分因子。独立细分密度与主视图自适应拓扑不同，曲面近似误差取决于该密度，不宣称两者逐三角形一致。Bounds 扩张包含位移幅度，内容 key 包含位移参数、法线、因子和额外层级。48 B geometry 参数的原 reserved 字段现用于 subdivision depth，布局大小不变。
+
+Alpha / height texture 使用不可变 material texture snapshot 并保活。`materialTexturePublicationRevision()` 跟随实际物理 image/mip 发布进入 dependency key，不能仅用 descriptor 地址判定内容不变。颜色等与深度无关的编辑保持原缓存合同；共享纹理 publication 的保守失效粒度仍可在后续测量后细化。
+
+支持 OPAQUE、MASK、custom Coverage 和 double-sided 的既有合同。位移阶段对未实现的材质/UV/资源组合明确返回 Unsupported。OPAQUE/MASK caster 按不透射几何遮挡，即使其材质有 transmission；这是一种有限近似，不是有色玻璃透射支持。BLEND 明确拒绝，多层透射和体积使用显式 RT/PT 策略。Native strands 属独立 `StrandPass` 外部资产，不在三角形 Scene caster 域内，不向本 VSM 投影，继续使用原 strands 策略。
+
+## 示例、成本与验收边界
+
+独立 [virtual-shadow-map-p4](../Pipelines/Samples/virtual_shadow_map_p4.metallic_graph.json) 使用 [OpenPbrVSMQuality](../Asset/LookDev/OpenPbrDefault/OpenPbrVSMQuality.metallic_scene.json)，包含 Sun/Moon、0.12 m point 和 0.08 m spot。固定 512²、关闭 temporal jitter，SMRT 8 rays × 16 segments、总页预算 2048，receiver 请求 LOD 0。流式初始加载仅保证 terminal cut 驻留，不能把手动 LOD 0 设置等同于首帧已加载完整细节。
+
+P3 每灯屏幕纹理数组架构及内存/复制成本仍在：capacity=8、512² 的公开 R8+RGBA8 数组裸存储为 60 MiB；2048 个 128² D32 页的有效深度容量为 128 MiB，实际方形 atlas 分配还含取整浪费，另有私有输出、work buffers 与在途资源。当前没有直接 Deferred 页表查询，也没有同工作负载 RT/VSM 性能收益结论。Receiver mask、shadow HZB、静动双层未在缺少测量依据时添加。
+
+本阶段不承诺局部 near plane 内 caster、任意透明内容、主视图自适应细分完全同拓扑或长程大型场景质量。P3 的 near、Stream terminal cut、帧重叠和预算重建瞬时内存限制继续适用。
+
+## 验证记录
+
+使用既有 `build-pass-stages-nrd` Release、MSVC 14.51.36231 / Windows SDK 10.0.26100.0，没有改动配置。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| Metallic / MetallicRHITests / MetallicSceneTests / MetallicShaderRequestsTests 构建 | 通过 |
+| Slang module ownership | 386 files / 274 modules / 112 implementation units，通过 |
+| Deferred / Trusted / NativeShaderWarmupRequests CPU shader tests | 28/28 通过 |
+| Scene light / lighting / photometry / component round trip | 11/11 通过 |
+| `virtual_shadow_map_quality` | 83 帧 Cached / Redraw 全 24 层逐像素一致，Vulkan / synchronization validation 0 消息 |
+| `virtual_shadow_map_content` | 42 帧 Resident / Stream 缓存对照一致，10 个输入边界负例通过，validation 0 消息 |
+| 实际 runtime SPIR-V 与 scalar-layout Vulkan 1.4 校验 | 10 个入口、8 个 CPU/Slang 布局通过；无 RayQuery/RT capability |
+| P0–P3、RT+SIGMA、GPUScene lights / publication / recovery、RG array / sample、普通及递归位移回归 | 19/19 通过，无跳过 |
+| 四灯 OpenPBR：8×16 与独立 32×32 对照配置 | 两套配置各自 Cached / Force / Flat 输出完全一致且有限，validation / 编译错误 0 |
+| 真实 DisplacedPlane：512²、主视图自适应细分、VSM factor 8 + 额外两级 | Cached / Force 输出一致且有限，validation 0；16K 虚拟分辨率质量档已检查实际画面 |
+
+质量矩阵在 193×129、无 RayQuery/RTAS 的独立 preview device 上执行。页大小 128、virtual axis 16、总页预算 2048、32 rays × 32 segments、搜索距离 12 m、bias 0.002 m。CPU 参考以 authored triangles、双精度相机/光线求交和 256 个面积光源样本构造；起点是实际 receiver，只有 `1e-7` 求交 epsilon，没有沿法线移动参考点。
+
+合计 331,006 个独立接收样本：平面 ROI 每像素检查，Room 每 3 像素检查；这些区域内 receiver depth 错误为零。最大平面 MAE 为 0.00297434，最大半影 MAE 为 0.10562824，低于预定 0.04 / 0.20 门槛，亮区/本影中误差超过 0.1 的样本为零。接触处软像素数 Directional / Spot / Point 分别从 477 / 628 / 628 缩小至 6 / 37 / 34。相机、灯及 caster 移动、光源尺寸编辑、零尺寸严格回到 Hard、PCF、极低预算粗页回退和恢复均有断言；关闭阴影/零预算还要求全层 255、统计全零，并确认不进入 caster preparation。
+
+点光单层平面将实际阴影边缘放在两面接缝与三面交点上，seam / corner MAE 为 0.00550643 / 0.02146739，均有独立 CPU 半影和 GPU 软像素。多层 Room 在 Resident / Stream 各执行 20 个视角，覆盖全部 12 条接缝和 8 个 corner，各有 2,416 / 380 个 seam / corner 样本；该多层场景记录近似误差，不套用单层平面的质量门槛。Room 使用 32 个 quad primitives 保留相同的全部 64 个三角形，并解码 terminal cut 断言数量一致。原单 primitive 的 32-triangle 粗级与 GPU 的 262 个深度差异完全吻合；没有以删除几何或放宽误差阈值处理此问题。该 fixture 不构成任意简化 Stream cut 的质量保证。
+
+位移内容矩阵覆盖镜像非均匀变换、单面 winding、关闭位移、混合基础材质、负幅度/center 编辑、因子 4→8、额外层级 0→1→2→0、9×9→5×5 物理纹理重新发布，以及 MASK alpha publication。GPU 解码位置对独立双精度高度采样参考的误差门槛 `2e-5 m` 不变；额外层级还检查 UV 有向面积和一阶矩，防止遗漏或重复叶 patch。Stream Reference codec 的法线量化先作用于输入，随后独立计算变换和高度；没有用 GPU 结果反校参考。纹理测试验证不可变 image + publication revision 生命周期，未模拟完整 KTX 异步 mip 流送。
+
+真实位移场景保留主视图 `tessellationMaxFactor=8 / tessellationMaxSplitDepth=2 / tessellationEdgePixels=1`，阴影质量档为：
+
+```json
+{
+  "filter": "hard",
+  "virtualPagesPerAxis": 128,
+  "physicalPageBudget": 2048,
+  "maxWorkItems": 4194304,
+  "tessellationFactor": 8,
+  "tessellationSubdivisionDepth": 2,
+  "shadowBias": 0.002
+}
+```
+
+这是可选质量档，不是默认配置。128 个 128 px 页组成 16K 虚拟轴；该资产的 128 个基础三角形生成 196,608 个阴影微三角，是没有额外层级时的 16 倍。没有以增大 bias 或降低主视图细分解决暗斑。低分辨率诊断、同网格 CPU BVH 参考及额外高密度参考保留在 `vsm-p4-displaced-{matched,mask,fine}/`；同网格 N16→N128 的显著误阴影从 966 降到 76，保留的真实遮挡从 132 增至 179。receiver-plane 公式在掠射角下跨越曲面时存在有限 texel 近似误差，残余误差仍不能当作精确几何光线结果。
+
+额外 768² 直接 R8 mask 验证先审计 producer 实际边细分率，确认两级叶 patch 全部饱和 factor 8，再使用真实 StreamAsset、196,608 个三角形做独立 CPU 相机首交和向太阳求交。GPU / CPU 相机首交距离误差 P99 为 22.16 µm，只有 3 个轮廓像素的覆盖不同；参考起点无 normal offset，忽略自身三角形，自交 epsilon 为 `1e-7 m`。129,522 个直接受光面样本中有 15 个误阴影、9 个漏阴影、8 个正确阴影，其余正确受光。全部表面（含背光面）为 15 个误阴影、68 个漏阴影；这是保留 2 mm bias 的有限精度结果，不宣称零误差或全部微小接触阴影被保留。该检查与原始 512² 自适应主视图的缓存/重画及人工画面检查分别记录。
+
+四灯 OpenPBR 在 512² 下每变体运行 6 帧、读取第 0/1/5 帧 HDR，再额外读取显示输出和 receiver depth。8×16 和 32×32 均保留 Hard 对照并人工检查 PNG；提高样本数后仍有复杂曲面的颗粒状阴影，不能据此宣称达到默认画质。专用 GPU 矩阵和这个启用 RayQuery 的 baseline harness 分开记录，后者不证明全局没有 RTAS 成本，也不构成 RT/VSM 性能 A/B。
+
+主要复现入口：
+
+```powershell
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --filter virtual_shadow_map_quality --rhi-validation --output-dir .cache/vsm-p4
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --filter virtual_shadow_map_content --rhi-validation --output-dir .cache/vsm-p4
+.\build-pass-stages-nrd\tests\MetallicShaderRequestsTests.exe '--gtest_filter=*Deferred*:*Trusted*:NativeShaderWarmupRequests.*'
+.\build-pass-stages-nrd\tests\MetallicSceneTests.exe '--gtest_filter=*Light*:*Lighting*:Photometry.*:SceneEditing.ComponentPropertyRoundTrip'
+```
+
+本机证据位于忽略的 `.cache/`，不作为源码提交：`vsm-p4-quality-run10.log`、`vsm-p4-content-run6.log`、`vsm-p4-regression.log`、`vsm-p4-shader-tests-final.log`、`vsm-p4-scene-tests-final.log`，以及 `vsm-p4/{VirtualShadowMapQuality,VirtualShadowMapContent,spirv,diagnostics}/`。真实场景的 Cases/graphs/脚本分别保留于 `vsm-p4-openpbr-config/`、`vsm-p4-openpbr-high-config/`、`vsm-p4-displaced-final-config/`，输出对应 `vsm-p4-openpbr/`、`vsm-p4-openpbr-high/`、`vsm-p4-displaced-final/`，其中 `Comparison.json` 记录逐输出差异。
+
+未重新运行整个历史测试集；[P2](VirtualShadowMapsP2.md) 已记载的 Deferred 法线对照失败及 CPU shader suite 陈旧计数断言仍未解决。长程大场景、复杂曲面质量、峰值显存、同工作负载性能和默认图切换继续保留验收门槛。

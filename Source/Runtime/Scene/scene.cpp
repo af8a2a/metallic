@@ -2708,6 +2708,7 @@ void applyLightProperties(RenderLight& light, const LightProperties& properties)
     light.range = properties.range;
     light.innerConeAngle = properties.innerConeAngle;
     light.outerConeAngle = properties.outerConeAngle;
+    light.sourceRadius = properties.sourceRadius;
 }
 
 RenderCamera makeRenderCamera(

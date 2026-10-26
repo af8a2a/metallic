@@ -29,13 +29,22 @@ struct ShadowPush
     uint32_t arguments, triangleCount, clipmapCount, virtualPagesPerAxis;
     uint32_t physicalPagesX, physicalPagesY, physicalPageCount, pageSize;
     uint32_t workCapacity, batchCount, workBase, rasterCoarse;
-    uint32_t sampler, enabled, totalPages, reserved;
+    uint32_t sampler, enabled, totalPages, lightType;
     uint32_t previousPages, reuse, owners, cacheMode;
     uint32_t coarseBatchCount, cancelledCount, cacheEpoch, dirtyBoundsCount;
     float lightRange;
-    uint32_t projectionFace, padding0, padding1;
+    uint32_t projectionFace, filterMode, pointFaces;
+    float pcfRadius, rayLength, sourceRadius, angularRadius;
+    uint32_t rayCount, samplesPerRay, receiverFootprint, filterReserved;
 };
-static_assert(sizeof(ShadowPush) == 160);
+static_assert(sizeof(ShadowPush) == 192);
+
+struct ShadowFace
+{
+    uint32_t atlas, pages, projections, statistics;
+    uint32_t physicalPagesX, clipmapCount, pageSize, reserved;
+};
+static_assert(sizeof(ShadowFace) == 32);
 
 struct ShadowProjection
 {
@@ -262,6 +271,8 @@ struct VirtualShadowMaps::State
     std::array<std::shared_ptr<TextureView>, 3> views;
     std::shared_ptr<Cache> previous;
     std::shared_ptr<Cache> next;
+    std::shared_ptr<Buffer> pointFaces;
+    bool projectionPending = true;
 };
 
 VirtualShadowMaps::VirtualShadowMaps() = default;
@@ -270,19 +281,20 @@ VirtualShadowMaps::~VirtualShadowMaps() = default;
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
     TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
-    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log)
+    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection)
 {
     VirtualShadowMapLight light;
     light.enabled = (sun.flags & (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) ==
         (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow);
     if (light.enabled) { light.direction = {sun.direction[0], sun.direction[1], sun.direction[2]}; }
-    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log);
+    light.angularRadius = sun.angularRadius;
+    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection);
 }
 
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
     TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& inputLight,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
-    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log)
+    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection)
 {
     if (!device.capabilities().meshShader) { return makeError(Error::Unsupported); }
     // Scene geometry uses material slot zero when no material was authored,
@@ -295,6 +307,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         settings.maxWorkItems == 0 || settings.maxWorkItems > 4 * 1024 * 1024 ||
         !std::isfinite(settings.firstClipmapExtent) || settings.firstClipmapExtent <= 0 ||
         !std::isfinite(settings.shadowBias) || settings.shadowBias < 0 ||
+        uint32_t(settings.filter) > uint32_t(VirtualShadowMapFilter::SMRT) ||
+        !std::isfinite(settings.pcfRadius) || settings.pcfRadius < 0 || settings.pcfRadius > 8 ||
+        settings.smrtRayCount == 0 || settings.smrtRayCount > 32 ||
+        settings.smrtSamplesPerRay == 0 || settings.smrtSamplesPerRay > 64 ||
+        !std::isfinite(settings.smrtMaxRayLength) || settings.smrtMaxRayLength <= 0 || settings.smrtMaxRayLength > 10000 ||
         (!alphaTextures.empty() && alphaTextures.size() != materials.size()) ||
         view.current.viewport[1] < 1 || view.current.viewport[2] < 1 ||
         (view.current.clipOrtho[3] != 0 && view.current.clipOrtho[3] != 1)) {
@@ -308,6 +325,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         return std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); });
     };
     if (uint32_t(light.type) > uint32_t(VirtualShadowMapLightType::PointFace) ||
+        !std::isfinite(light.angularRadius) || light.angularRadius < 0 || light.angularRadius >= 1.5707963267948966f ||
+        !std::isfinite(light.sourceRadius) || light.sourceRadius < 0 ||
         (light.type != VirtualShadowMapLightType::PointFace && (!finite(light.direction) || dot(light.direction, light.direction) < 1e-12f)) ||
         (!directional && (!finite(light.position) || !std::isfinite(light.range) || light.range < 0 ||
             !std::isfinite(light.nearPlane) || light.nearPlane <= 0)) ||
@@ -320,12 +339,16 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         log += "VSM spot projection requires an outer half-angle strictly between zero and pi/2.\n";
         return makeError(Error::Unsupported);
     }
+    if (light.type == VirtualShadowMapLightType::PointFace && settings.filter != VirtualShadowMapFilter::Hard && !deferProjection) {
+        log += "Filtered point VSM requires six deferred faces before project().\n";
+        return makeError(Error::InvalidArgument);
+    }
     const auto direction = light.direction;
     for (size_t index = 0; index < materials.size(); ++index) {
         const auto& material = materials[index];
-        if ((material.alphaMode != "OPAQUE" && material.alphaMode != "MASK") || material.displacementMagnitude != 0 ||
+        if ((material.alphaMode != "OPAQUE" && material.alphaMode != "MASK") ||
             (!alphaTextures.empty() && alphaTextures[index] && material.baseColorTexture.texCoord != 0)) {
-            log += "VSM P1 supports opaque/MASK, UV0 alpha textures and undisplaced caster geometry.\n";
+            log += "VSM supports opaque/MASK caster Coverage with UV0 alpha textures.\n";
             return makeError(Error::Unsupported);
         }
     }
@@ -366,7 +389,23 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.coarseBatchCount = (casters.triangleCapacity + kDrawBatchSize - 1) / kDrawBatchSize;
     push.cancelledCount = cancelledCount;
     push.lightRange = light.range;
+    push.lightType = uint32_t(light.type);
     push.projectionFace = light.face;
+    push.filterMode = uint32_t(settings.filter);
+    if (settings.filter == VirtualShadowMapFilter::SMRT && (directional ? light.angularRadius == 0 : light.sourceRadius == 0)) {
+        push.filterMode = uint32_t(VirtualShadowMapFilter::Hard);
+    }
+    if (settings.filter == VirtualShadowMapFilter::PCF && settings.pcfRadius == 0) {
+        push.filterMode = uint32_t(VirtualShadowMapFilter::Hard);
+    }
+    push.pointFaces = UINT32_MAX;
+    push.pcfRadius = settings.pcfRadius;
+    push.rayLength = settings.smrtMaxRayLength;
+    push.sourceRadius = light.sourceRadius;
+    push.angularRadius = light.angularRadius;
+    push.rayCount = settings.smrtRayCount;
+    push.samplesPerRay = settings.smrtSamplesPerRay;
+    push.receiverFootprint = settings.receiverFootprint;
     push.enabled = enabled;
     push.totalPages = settings.clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1;
     state->leases = casters.leases;
@@ -657,25 +696,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         }
     }
     commands.endRendering(); commands.endDebugLabel();
-    const TextureBarrierDesc outputBegin[]{
-        {.texture = state->textures[0].get(), .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
-            .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite}, .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}},
-        {.texture = state->textures[1].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
-            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
-        {.texture = state->textures[2].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
-            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}}};
-    if (auto r = commands.synchronize({.textures = outputBegin}); !r) { return std::unexpected(r.error()); }
-    commands.beginDebugLabel({.name = "VSM: receiver projection"});
-    if (auto r = dispatch(5, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
-    commands.endDebugLabel();
-    const TextureBarrierDesc outputEnd[]{
-        {.texture = state->textures[1].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
-            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
-        {.texture = state->textures[2].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
-            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}}};
-    const BufferBarrierDesc statisticsReady{.buffer = state->buffers[4].get(),
-        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}};
-    if (auto r = commands.synchronize({.textures = outputEnd, .buffers = {&statisticsReady, 1}}); !r) { return std::unexpected(r.error()); }
+    const TextureBarrierDesc atlasReady{.texture = state->textures[0].get(),
+        .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
+        .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
+        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+    if (auto r = commands.synchronize({.textures = {&atlasReady, 1}}); !r) { return std::unexpected(r.error()); }
     if (settings.cacheEnabled) {
         auto next = std::make_shared<Cache>();
         next->device = &device;
@@ -691,8 +716,89 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         pending_ = std::move(next);
     }
     state_ = state;
+    if (!deferProjection) {
+        if (auto r = project(commands, {}, log); !r) { return std::unexpected(r.error()); }
+    }
     return VirtualShadowMapResult{state->textures[1].get(), state->views[1].get(), state->textures[2].get(), state->views[2].get(),
-        state->buffers[4].get(), state->textures[0].get(), state->views[0].get(), state->buffers[1].get(), state->buffers[5].get()};
+        state->buffers[4].get(), state->textures[0].get(), state->views[0].get(), state->buffers[1].get(), state->buffers[5].get(), push.physicalPagesX, push.clipmapCount, push.pageSize};
+}
+
+Result<> VirtualShadowMaps::project(CommandBuffer& commands,
+    std::span<const VirtualShadowMapResult> pointFaces, std::string& log)
+{
+    if (!state_ || !state_->projectionPending) {
+        log += "VSM project requires a recorded, unresolved face.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    auto& state = *state_;
+    auto& push = state.push;
+    if (push.lightType == uint32_t(VirtualShadowMapLightType::PointFace) &&
+        push.filterMode != uint32_t(VirtualShadowMapFilter::Hard) && pointFaces.size() != 6) {
+        log += "Filtered point VSM projection requires all six ordered faces.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!pointFaces.empty()) {
+        if (pointFaces.size() != 6) {
+            log += "Point VSM projection requires all six ordered faces.\n";
+            return makeError(Error::InvalidArgument);
+        }
+        std::array<ShadowFace, 6> faces{};
+        std::vector<BufferBarrierDesc> ready;
+        for (size_t index = 0; index < faces.size(); ++index) {
+            const auto& result = pointFaces[index];
+            auto atlas = state.registry->sampledImage(*result.atlasView);
+            auto pages = state.registry->storageBuffer(*result.pageTable);
+            auto projections = state.registry->storageBuffer(*result.projections);
+            auto statistics = state.registry->storageBuffer(*result.statistics);
+            if (!atlas) { return std::unexpected(atlas.error()); }
+            if (!pages) { return std::unexpected(pages.error()); }
+            if (!projections) { return std::unexpected(projections.error()); }
+            if (!statistics) { return std::unexpected(statistics.error()); }
+            state.leases.insert(state.leases.end(), {*atlas, *pages, *projections, *statistics});
+            faces[index] = {atlas->shaderIndex(), pages->shaderIndex(), projections->shaderIndex(), statistics->shaderIndex(),
+                result.physicalPagesX, result.clipmapCount, result.pageSize, 0};
+            ready.push_back({.buffer = result.statistics,
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
+        }
+        if (auto r = commands.synchronize({.buffers = ready}); !r) { return r; }
+        auto table = state.programs->device->createBuffer({.size = sizeof(faces), .structureStride = sizeof(ShadowFace),
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload});
+        if (!table) { return std::unexpected(table.error()); }
+        state.pointFaces = std::move(*table);
+        void* mapped = state.pointFaces->map();
+        if (!mapped) { return makeError(Error::Failure); }
+        std::memcpy(mapped, faces.data(), sizeof(faces));
+        state.pointFaces->flush(); state.pointFaces->unmap();
+        auto lease = state.registry->storageBuffer(*state.pointFaces);
+        if (!lease) { return std::unexpected(lease.error()); }
+        push.pointFaces = lease->shaderIndex(); state.leases.push_back(*lease);
+    }
+    if (auto r = state.registry->bind(commands, state.leases); !r) { return r; }
+    const TextureBarrierDesc outputBegin[]{
+        {.texture = state.textures[1].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
+        {.texture = state.textures[2].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}}};
+    if (auto r = commands.synchronize({.textures = outputBegin}); !r) { return r; }
+    commands.beginDebugLabel({.name = "VSM: receiver projection"});
+    if (auto r = commands.bindExecution(state.programs->compute[5]->execution(), &push, sizeof(push)); !r) { return r; }
+    const auto& desc = state.textures[1]->desc();
+    if (auto r = commands.dispatch((desc.width + 7) / 8, (desc.height + 7) / 8); !r) { return r; }
+    commands.endDebugLabel();
+    const TextureBarrierDesc outputEnd[]{
+        {.texture = state.textures[1].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
+            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
+        {.texture = state.textures[2].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
+            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}}};
+    const BufferBarrierDesc statisticsReady{.buffer = state.buffers[4].get(),
+        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}};
+    if (auto r = commands.synchronize({.textures = outputEnd, .buffers = {&statisticsReady, 1}}); !r) { return r; }
+    state.projectionPending = false;
+    return {};
 }
 
 } // namespace metallic::render

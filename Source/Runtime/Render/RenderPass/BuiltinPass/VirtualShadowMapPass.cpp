@@ -86,6 +86,8 @@ public:
             runtimeIntSetting("maxWorkItems", "Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Clipmap Half-width (m)", 4.0f, 0.01f, 10000.0f),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0.0f, 1.0f),
+            runtimeIntSetting("tessellationFactor", "Shadow Displacement Subdivisions", 4, 1, 8),
+            runtimeIntSetting("tessellationSubdivisionDepth", "Shadow Displacement Split Depth", 0, 0, 2),
         };
     }
 
@@ -96,6 +98,10 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (properties().value("filter", std::string("hard")) != "hard") {
+            log = "VirtualShadowMapPass publishes the legacy hard-shadow interface; use VirtualShadowMapLightsPass for PCF/SMRT";
+            return makeError(Error::Unsupported);
+        }
         if (context.device == nullptr || !context.preparedScene || !context.preparedScene->snapshot ||
             !context.preparedScene->snapshot->pathTraceResources) {
             log = "VirtualShadowMapPass requires a device and prepared material resources";
@@ -159,12 +165,6 @@ public:
             return makeError(Error::InvalidArgument);
         }
         std::string log;
-        auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
-            scene->hasStreamGeometry() ? stream : nullptr, log);
-        if (!casters) {
-            spdlog::error("VirtualShadowMapPass casters: {}", log);
-            return makeError(casters.error());
-        }
         const auto& materialResources = *context.preparedScene()->snapshot->pathTraceResources;
         auto textures = materialResources.materialTextureSnapshot();
         if (!textures) { return makeError(Error::InvalidArgument); }
@@ -172,6 +172,7 @@ public:
         if (!result) { return result; }
         const auto logicalTextures = materialResources.logicalTextureIndices();
         std::vector<TextureView*> alphaTextures(scene->materials().size());
+        std::vector<TextureView*> displacementTextures(scene->materials().size());
         for (size_t materialIndex = 0; materialIndex < scene->materials().size(); ++materialIndex) {
             const auto& material = scene->materials()[materialIndex];
             const auto logical = material.baseColorTexture.textureIndex;
@@ -179,13 +180,25 @@ public:
                 const uint32_t slot = logicalTextures[logical];
                 if (slot < textures->views.size()) { alphaTextures[materialIndex] = textures->views[slot].get(); }
             }
+            const auto displacement = material.displacementTexture.textureIndex;
+            if (material.displacementMagnitude != 0 && displacement >= 0 && size_t(displacement) < logicalTextures.size()) {
+                const uint32_t slot = logicalTextures[displacement];
+                if (slot < textures->views.size()) { displacementTextures[materialIndex] = textures->views[slot].get(); }
+            }
         }
-        if (std::any_of(alphaTextures.begin(), alphaTextures.end(), [](const auto* texture) { return texture != nullptr; })) {
-            // MASK coverage samples the immutable image generation directly.
-            // Descriptor reuse and sampling-metadata changes do not identify its pixels.
-            const uint64_t revision = materialResources.materialTexturePublicationRevision();
-            casters->dependencyKey ^= revision + 0x9e3779b97f4a7c15ull +
-                (casters->dependencyKey << 6) + (casters->dependencyKey >> 2);
+        const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
+        const bool textureDependent = std::any_of(alphaTextures.begin(), alphaTextures.end(), hasTexture) ||
+            std::any_of(displacementTextures.begin(), displacementTextures.end(), hasTexture);
+        const VirtualShadowMapCasterSettings casterSettings{
+            .tessellationEnabled = (info.reserved & 1u) != 0,
+            .tessellationFactor = context.properties().value("tessellationFactor", 4u),
+            .subdivisionDepth = context.properties().value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
+            .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
+        auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
+            scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
+        if (!casters) {
+            spdlog::error("VirtualShadowMapPass casters: {}", log);
+            return makeError(casters.error());
         }
         const auto lightIndex = context.properties().value("lightIndex", 0u);
         if (lightIndex >= environment::kCelestialLightCount) {

@@ -4943,6 +4943,9 @@ void EditorApplication::drawLightingControls()
                 const double minRange = 0.0;
                 changed |= ImGui::DragScalar("Range (m; 0 = infinite)", ImGuiDataType_Double,
                     &p.range, 0.1f, &minRange, nullptr, "%.2f");
+                const double maxSourceRadius = 10000.0;
+                changed |= ImGui::DragScalar("Shadow source radius (m)", ImGuiDataType_Double,
+                    &p.sourceRadius, 0.01f, &minRange, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
             }
             if (spot) {
                 float direction[] = {light.direction.x, light.direction.y, light.direction.z};
@@ -6121,6 +6124,11 @@ void EditorApplication::drawSelectedLightComponentInspector()
     changed = intensityChanged || changed;
 
     if (point || spot) {
+        const double maxSourceRadius = 10000.0;
+        const bool radiusChanged = ImGui::DragScalar("Shadow source radius (m)", ImGuiDataType_Double,
+            &edited.sourceRadius, kSmallStep, &kMinimumValue, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
+        changed = radiusChanged || changed;
         const bool rangeChanged = ImGui::DragScalar(
             "Range",
             ImGuiDataType_Double,

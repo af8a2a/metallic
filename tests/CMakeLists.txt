@@ -501,6 +501,8 @@ add_executable(MetallicRHITests
     rhi/HybridRasterTests.cpp
     rhi/VirtualShadowMapTests.cpp
     rhi/VirtualShadowMapSceneTests.cpp
+    rhi/VirtualShadowMapQualityTests.cpp
+    rhi/VirtualShadowMapContentTests.cpp
     rhi/StreamClusterCandidateTests.cpp
     rhi/StreamClusterClassificationTests.cpp
     rhi/StreamGroupRasterTests.cpp

@@ -7,6 +7,22 @@ namespace metallic::render {
 
 struct MeshletStreamShadowGeometryView;
 
+struct VirtualShadowMapCasterSettings
+{
+    bool tessellationEnabled = false; // Must match the receiver producer's explicit mode.
+    // Independent shadow-domain subdivision. Uses the raster displacement
+    // evaluator, but does not borrow the primary camera's visible patch list.
+    uint32_t tessellationFactor = 4;
+    // Uniform dyadic patch splits, independent of the primary camera. Depth 2
+    // emits sixteen times as many microtriangles as depth 0 at the same factor.
+    uint32_t subdivisionDepth = 0;
+    // Empty or one published height view per material, already in ShaderRead.
+    std::span<TextureView* const> displacementTextures;
+    // Immutable physical image/mip publication, including alpha and height.
+    // Zero is appropriate only when no shadow material samples a texture.
+    uint64_t texturePublicationRevision = 0;
+};
+
 struct VirtualShadowMapCasterState
 {
     // Render-node identity is stable within the published structural revision.
@@ -23,10 +39,10 @@ struct VirtualShadowMapCasterResources
     std::vector<ResourceLease> leases;
     std::shared_ptr<void> owner;
     bool streamed = false;
+    bool displacedGeometry = false;
     uint64_t sceneIdentity = 0;
     uint64_t structuralRevision = 0;
-    // Immutable terminal geometry publication; the pass combines the current
-    // material texture publication when Coverage samples an alpha texture.
+    // Immutable terminal geometry and shadow material texture publication.
     uint64_t dependencyKey = 0;
     // Sorted by id. Hidden/deleted casters are absent so the cache can invalidate
     // their previous bounds when comparing committed snapshots.
@@ -39,6 +55,7 @@ struct VirtualShadowMapCasterResources
 // retained by this recording. No shadow cache or stream traversal is performed.
 Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
-    const MeshletStreamShadowGeometryView* stream, std::string& log);
+    const MeshletStreamShadowGeometryView* stream, std::string& log,
+    const VirtualShadowMapCasterSettings& settings = {});
 
 } // namespace metallic::render

@@ -19,11 +19,13 @@ struct ShadowPush
     uint arguments, triangleCount, clipmapCount, virtualPagesPerAxis;
     uint physicalPagesX, physicalPagesY, physicalPageCount, pageSize;
     uint workCapacity, batchCount, workBase, rasterCoarse;
-    uint sampler, enabled, totalPages, reserved;
+    uint sampler, enabled, totalPages, lightType;
     uint previousPages, reuse, owners, cacheMode;
     uint coarseBatchCount, cancelledCount, cacheEpoch, dirtyBoundsCount;
     float lightRange;
-    uint projectionFace, padding0, padding1;
+    uint projectionFace, filterMode, pointFaces;
+    float pcfRadius, rayLength, sourceRadius, angularRadius;
+    uint rayCount, samplesPerRay, receiverFootprint, filterReserved;
 };
 
 struct ShadowProjection
@@ -31,6 +33,12 @@ struct ShadowProjection
     float4 rowX, rowY, rowZ, rowW, metric;
     uint4 page; // Virtual-page offset, pages per axis, level, coarse flag.
     float4 originNear;
+};
+
+struct ShadowFace
+{
+    uint atlas, pages, projections, statistics;
+    uint physicalPagesX, clipmapCount, pageSize, reserved;
 };
 
 struct ShadowMaterial
@@ -255,6 +263,224 @@ float vsmPerspectiveReceiverDepth(float3 position, float3 normal, uint2 virtualT
     return clip.z / clip.w;
 }
 
+// Filter rays use a fixed low-discrepancy disk. There is deliberately no frame
+// seed: history is owned by downstream TAA, while this baseline is deterministic.
+float2 vsmDiskSample(uint ray, uint rayCount)
+{
+    float angle = float(ray) * 2.399963229728653;
+    return sqrt((float(ray) + 0.5) / float(rayCount)) * float2(cos(angle), sin(angle));
+}
+
+float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, uint ray)
+{
+    float3 toLight = push.lightType == 0u ? normalize(projection.rowZ.xyz) :
+        normalize(projection.originNear.xyz - position);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    float2 disk = vsmDiskSample(ray, push.rayCount);
+    float3 offset = right * disk.x + up * disk.y;
+    if (push.lightType == 0u) {
+        return position + normalize(toLight + offset * tan(push.angularRadius)) * push.rayLength;
+    }
+    float3 delta = projection.originNear.xyz + offset * push.sourceRadius - position;
+    float distance = length(delta);
+    return position + delta * min(1.0, push.rayLength / distance);
+}
+
+float vsmWorldTexelSize(float3 position, ShadowProjection projection, uint pageSize, uint lightType)
+{
+    if (lightType == 0u) { return projection.metric.y; }
+    float3 delta = abs(position - projection.originNear.xyz);
+    float axial = lightType == 2u ? max(delta.x, max(delta.y, delta.z)) :
+        dot(projection.rowW, float4(position, 1.0));
+    return 2.0 * max(axial, projection.originNear.w) * projection.metric.x / float(projection.page.y * pageSize);
+}
+
+float vsmPixelFootprint(float linearDepth, ViewConstants view, ShadowPush push)
+{
+    if (push.receiverFootprint == 0u) { return 0.0; }
+    return view.current.upProjection.w > 0.5 ? view.current.clipOrtho.z / view.current.viewport.z :
+        2.0 * linearDepth * tan(view.current.viewport.w * 0.5) / view.current.viewport.z;
+}
+
+uint vsmFilterLevel(float3 position, StructuredBuffer<ShadowProjection> projections,
+    ShadowPush push, float footprint)
+{
+    uint level = 0u;
+    while (level + 1u < push.clipmapCount &&
+        vsmWorldTexelSize(position, projections[level], push.pageSize, push.lightType) < footprint * 0.5) { ++level; }
+    return level;
+}
+
+float3 vsmPCFPosition(float3 position, float3 normal, ShadowProjection projection,
+    ShadowPush push, int2 tap)
+{
+    float3 right = normalize(projection.rowX.xyz), up = normalize(projection.rowY.xyz);
+    float3 toLight = push.lightType == 0u ? normalize(projection.rowZ.xyz) :
+        normalize(projection.originNear.xyz - position);
+    if (push.lightType == 2u) {
+        float3 forward;
+        virtualShadowMapPointBasis(virtualShadowMapPointFace(position - projection.originNear.xyz), right, up, forward);
+    }
+    float scale = push.pcfRadius * vsmWorldTexelSize(position, projection, push.pageSize, push.lightType);
+    float3 offset = (right * float(tap.x) + up * float(tap.y)) * scale;
+    float denominator = dot(normal, toLight);
+    if (abs(denominator) > 1e-5) { offset -= toLight * (dot(normal, offset) / denominator); }
+    return position + offset;
+}
+
+float vsmComparisonDepth(float3 position, float3 normal, float3 projected, uint2 texel,
+    ShadowProjection projection, uint pageSize)
+{
+    if (projection.metric.w > 0.5) { return vsmPerspectiveReceiverDepth(position, normal, texel, projection, pageSize); }
+    float denominator = dot(normal, normalize(projection.rowZ.xyz));
+    float correction = 0.0;
+    if (abs(denominator) > 1e-5) {
+        float2 sampleNDC = (float2(texel) + 0.5) * (2.0 / float(projection.page.y * pageSize)) - 1.0;
+        float2 offset = (sampleNDC - projected.xy) * projection.metric.x;
+        float3 delta = normalize(projection.rowX.xyz) * offset.x + normalize(projection.rowY.xyz) * offset.y;
+        correction = -dot(normal, delta) * length(projection.rowZ.xyz) / denominator;
+    }
+    return projected.z + correction + projection.metric.z;
+}
+
+struct ShadowLookup
+{
+    ShadowProjection projection;
+    float3 projected;
+    uint2 virtualTexel;
+    float storedDepth;
+    uint level;
+    bool valid;
+};
+
+ShadowLookup vsmFilterLookup(float3 position, float footprint, ShadowPush push)
+{
+    ShadowLookup result;
+    result.valid = false;
+    result.storedDepth = 0.0;
+    uint atlasHandle = push.atlas, pagesHandle = push.pages, projectionsHandle = push.projections;
+    uint statisticsHandle = push.statistics, physicalPagesX = push.physicalPagesX;
+    if (push.lightType == 2u) {
+        StructuredBuffer<ShadowProjection> own = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+        StructuredBuffer<ShadowFace> faces = resolveUniform(ResourceHandle<StructuredBuffer<ShadowFace>>(push.pointFaces));
+        ShadowFace face = faces[virtualShadowMapPointFace(position - own[0].originNear.xyz)];
+        atlasHandle = face.atlas; pagesHandle = face.pages; projectionsHandle = face.projections;
+        statisticsHandle = face.statistics; physicalPagesX = face.physicalPagesX;
+    }
+    StructuredBuffer<ShadowProjection> projections = resolveNonUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(projectionsHandle));
+    StructuredBuffer<uint4> pages = resolveNonUniform(ResourceHandle<StructuredBuffer<uint4>>(pagesHandle));
+    StructuredBuffer<uint> faceStatistics = resolveNonUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint physicalPage = 0xffffffffu;
+    uint firstLevel = vsmFilterLevel(position, projections, push, footprint);
+    result.level = push.clipmapCount;
+    InterlockedAdd(statistics[30], 1u);
+    if (faceStatistics[5] == 0u) {
+        for (uint level = firstLevel; level < push.clipmapCount; ++level) {
+            ShadowProjection projection = projections[level];
+            float3 p = vsmProjectPosition(position, projection);
+            if (!vsmContains(p, projection, push.pageSize, true)) { continue; }
+            uint2 texel = vsmVirtualTexel(p, projection, push.pageSize);
+            uint4 entry = pages[vsmVirtualPage(texel, projection, push.pageSize)];
+            if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 1u) == 0u) { continue; }
+            physicalPage = entry.x; result.level = level;
+            result.projection = projection; result.projected = p; result.virtualTexel = texel;
+            break;
+        }
+    }
+    if (physicalPage == 0xffffffffu) {
+        result.projection = projections[push.clipmapCount];
+        result.projected = vsmProjectPosition(position, result.projection);
+        // The complete coarse projection encloses all represented casters.
+        // A trace segment outside that volume has no represented depth layer.
+        if (!vsmContains(result.projected, result.projection, push.pageSize, false)) { return result; }
+        uint4 entry = pages[result.projection.page.x];
+        if ((entry.y & 2u) == 0u || (entry.w & 1u) == 0u) {
+            InterlockedAdd(statistics[9], 1u);
+            return result;
+        }
+        physicalPage = entry.x;
+        result.virtualTexel = vsmVirtualTexel(result.projected, result.projection, push.pageSize);
+        InterlockedAdd(statistics[31], 1u);
+    }
+    uint2 physical = uint2(physicalPage % physicalPagesX, physicalPage / physicalPagesX);
+    uint2 texel = physical * push.pageSize + result.virtualTexel % push.pageSize;
+    Texture2D<float> atlas = resolveNonUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
+    result.storedDepth = atlas.Load(int3(texel, 0));
+    result.valid = true;
+    return result;
+}
+
+float vsmFilterVisibility(float3 position, float3 normal, float footprint,
+    StructuredBuffer<ShadowProjection> projections, ShadowPush push)
+{
+    if (push.filterMode == 1u) {
+        uint level = vsmFilterLevel(position, projections, push, footprint);
+        float sum = 0.0;
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                float3 tap = vsmPCFPosition(position, normal, projections[level], push, int2(x, y));
+                ShadowLookup sample = vsmFilterLookup(tap, footprint, push);
+                float compare = sample.valid ? vsmComparisonDepth(tap, normal, sample.projected,
+                    sample.virtualTexel, sample.projection, push.pageSize) : 1.0;
+                sum += !sample.valid || sample.storedDepth == 0.0 || compare >= sample.storedDepth ? 1.0 : 0.0;
+            }
+        }
+        return sum / 9.0;
+    }
+    float visibility = 0.0;
+    float sourceAngularDiameter = push.lightType == 0u ? 2.0 * tan(push.angularRadius) :
+        2.0 * push.sourceRadius / length(projections[0].originNear.xyz - position);
+    for (uint ray = 0u; ray < push.rayCount; ++ray) {
+        float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray);
+        bool blocked = false;
+        // Test each ray segment against the single stored depth layer. A depth
+        // sample merely in front of a distant segment is not an intersection;
+        // that distinction lets rays leave an occluder's projected silhouette.
+        for (uint step = 0u; step < push.samplesPerRay; ++step) {
+            float a = float(step) / float(push.samplesPerRay);
+            float b = float(step + 1u) / float(push.samplesPerRay);
+            a *= a; b *= b;
+            float3 begin = lerp(position, endpoint, a);
+            float3 end = lerp(position, endpoint, b);
+            // Match demand marking's operation order at virtual page boundaries.
+            float3 midpoint = lerp(position, endpoint, (a + b) * 0.5);
+            // A full receiver-pixel footprint is too coarse near contact:
+            // the emitter strata have not yet spread by even one such texel.
+            // Bound the mip footprint by one ray's angular stratum at this
+            // distance, retaining fine contact edges while widening far away.
+            float rayFootprint = length(midpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
+            ShadowLookup sample = vsmFilterLookup(midpoint, min(footprint, rayFootprint), push);
+            if (!sample.valid || sample.storedDepth == 0.0) { continue; }
+            float compare = vsmComparisonDepth(midpoint, normal, sample.projected,
+                sample.virtualTexel, sample.projection, push.pageSize);
+            float4 startClip = vsmProjectClip(begin, sample.projection);
+            float4 endClip = vsmProjectClip(end, sample.projection);
+            float startDepth = push.lightType == 0u ? startClip.z : startClip.z / max(startClip.w, sample.projection.originNear.w);
+            float endDepth = push.lightType == 0u ? endClip.z : endClip.z / max(endClip.w, sample.projection.originNear.w);
+            float correction = compare - sample.projected.z;
+            if (sample.storedDepth > min(startDepth, endDepth) + correction &&
+                sample.storedDepth <= max(startDepth, endDepth) + correction) { blocked = true; break; }
+        }
+        visibility += blocked ? 0.0 : 1.0;
+    }
+    return visibility / float(push.rayCount);
+}
+
+void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
+    RWStructuredBuffer<uint4> pages, ShadowPush push)
+{
+    if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
+    for (uint level = 0u; level < push.clipmapCount; ++level) {
+        ShadowProjection projection = projections[level];
+        float3 projected = vsmProjectPosition(position, projection);
+        if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
+        uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
+        InterlockedOr(pages[page].y, 1u);
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
@@ -312,16 +538,30 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) { return; }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     bool nearPlane;
-    if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
+    if (push.lightType == 2u && push.filterMode != 0u) {
+        float3 delta = abs(position - projections[0].originNear.xyz);
+        if ((push.lightRange > 0.0 && length(delta) >= push.lightRange) ||
+            max(delta.x, max(delta.y, delta.z)) <= projections[0].originNear.w) { return; }
+    } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
-    // All covering ancestors are requested, so an unallocated fine page can
-    // use a coarser projection with its own origin and depth mapping.
-    for (uint level = 0u; level < push.clipmapCount; ++level) {
-        ShadowProjection projection = projections[level];
-        float3 projected = vsmProjectPosition(position, projection);
-        if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
-        uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
-        InterlockedOr(pages[page].y, 1u);
+    vsmMarkPosition(position, projections, pages, push);
+    if (push.filterMode == 1u) {
+        float footprint = vsmPixelFootprint(linearDepth, view, push);
+        uint level = vsmFilterLevel(position, projections, push, footprint);
+        float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                vsmMarkPosition(vsmPCFPosition(position, normal, projections[level], push, int2(x, y)), projections, pages, push);
+            }
+        }
+    } else if (push.filterMode == 2u) {
+        for (uint ray = 0u; ray < push.rayCount; ++ray) {
+            float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray);
+            for (uint step = 0u; step < push.samplesPerRay; ++step) {
+                float a = float(step) / float(push.samplesPerRay), b = float(step + 1u) / float(push.samplesPerRay);
+                vsmMarkPosition(lerp(position, endpoint, (a * a + b * b) * 0.5), projections, pages, push);
+            }
+        }
     }
 }
 
@@ -679,6 +919,10 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     }
     ShadowProjection projection = projections[selectedLevel];
     float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
+    if (push.filterMode != 0u) {
+        shadow[id.xy] = vsmFilterVisibility(position, normal, vsmPixelFootprint(linearDepth, view, push), projections, push);
+        return;
+    }
     float compareDepth;
     if (projection.metric.w > 0.5) {
         compareDepth = vsmPerspectiveReceiverDepth(position, normal, virtualTexel, projection, push.pageSize);

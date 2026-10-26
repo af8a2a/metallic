@@ -22,7 +22,7 @@ struct GPUPunctualLight {
     float positionRange[4] = {};
     float directionType[4] = {};
     float colorIntensity[4] = {};
-    float spot[4] = {};
+    float spot[4] = {}; // Inner/outer cone cosine, VSM source radius (m), reserved.
 };
 static_assert(sizeof(GPUPunctualLight) == 64);
 

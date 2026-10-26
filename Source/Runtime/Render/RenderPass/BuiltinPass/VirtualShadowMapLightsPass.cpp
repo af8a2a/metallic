@@ -79,6 +79,14 @@ public:
             runtimeIntSetting("maxWorkItems", "Per-face Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Directional Half-width (m)", 4, 0.01f, 10000),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0, 1),
+            runtimeEnumSetting("filter", "Shadow Filter", "hard", {{"Hard", "hard"}, {"PCF", "pcf"}, {"SMRT", "smrt"}}),
+            runtimeFloatSetting("pcfRadius", "PCF Radius (texels)", 1, 0, 8),
+            runtimeIntSetting("smrtRayCount", "SMRT Rays", 8, 1, 32),
+            runtimeIntSetting("smrtSamplesPerRay", "SMRT Samples per Ray", 8, 1, 32),
+            runtimeFloatSetting("smrtMaxRayLength", "SMRT Maximum Distance (m)", 10, 0.001f, 10000),
+            runtimeBoolSetting("receiverFootprint", "Match Receiver Footprint", true),
+            runtimeIntSetting("tessellationFactor", "Shadow Displacement Subdivisions", 4, 1, 8),
+            runtimeIntSetting("tessellationSubdivisionDepth", "Shadow Displacement Split Depth", 0, 0, 2),
             runtimeFloatSetting("nearPlane", "Local Near Plane (m)", 0.001f, 0.00001f, 1)};
     }
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
@@ -136,6 +144,15 @@ public:
         settings.maxWorkItems = properties.value("maxWorkItems", settings.maxWorkItems);
         settings.firstClipmapExtent = properties.value("firstClipmapExtent", settings.firstClipmapExtent);
         settings.shadowBias = properties.value("shadowBias", settings.shadowBias);
+        const auto filter = properties.value("filter", std::string("hard"));
+        if (filter != "hard" && filter != "pcf" && filter != "smrt") { return makeError(Error::InvalidArgument); }
+        settings.filter = filter == "smrt" ? VirtualShadowMapFilter::SMRT :
+            filter == "pcf" ? VirtualShadowMapFilter::PCF : VirtualShadowMapFilter::Hard;
+        settings.pcfRadius = properties.value("pcfRadius", settings.pcfRadius);
+        settings.smrtRayCount = properties.value("smrtRayCount", settings.smrtRayCount);
+        settings.smrtSamplesPerRay = properties.value("smrtSamplesPerRay", settings.smrtSamplesPerRay);
+        settings.smrtMaxRayLength = properties.value("smrtMaxRayLength", settings.smrtMaxRayLength);
+        settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);
@@ -154,6 +171,7 @@ public:
                 item.stableId = (uint64_t(1) << 62) | index;
                 item.entry.source = kCelestialLightSourceTag | index;
                 std::copy_n(light.direction, 3, item.light.direction.begin());
+                item.light.angularRadius = light.angularRadius;
                 item.light.enabled = settings.enabled && (light.flags & kGPUCelestialLightEnabled) &&
                     (light.flags & kGPUCelestialLightCastsShadow);
                 item.entry.faceCount = 1;
@@ -177,6 +195,7 @@ public:
                 std::copy_n(light.directionType, 3, item.light.direction.begin());
                 std::copy_n(light.positionRange, 4, item.entry.positionRange);
                 item.light.range = light.positionRange[3];
+                item.light.sourceRadius = light.spot[2];
                 item.light.outerConeAngle = std::acos(std::clamp(light.spot[1], -1.0f, 1.0f));
                 item.light.enabled = settings.enabled && source.enabled;
             }
@@ -231,43 +250,6 @@ public:
         // release their old pools when the global budget shrinks.
         std::erase_if(caches_, [&](const auto& cache) { return !identities.contains(cache.first); });
 
-        ViewConstants view{};
-        static_assert(offsetof(VisibilityBufferFrameInfo, width) == sizeof(ViewCameraConstants));
-        std::memcpy(&view.current, info.eye, sizeof(ViewCameraConstants));
-        view.current.eye[3] = view.current.center[3] = 0;
-        view.previous = view.current;
-        view.jitter[0] = view.jitter[2] = info.jitter[0];
-        view.jitter[1] = view.jitter[3] = info.jitter[1];
-        view.frame[0] = uint32_t(info.frameIndex);
-        view.frame[2] = info.temporalJitter;
-        if (const auto* shared = context.viewConstants()) { view.frame[3] = shared->frame[3]; }
-        auto& commands = context.commandBuffer();
-        const auto* stream = gpuScene->shadowGeometry({info.lightGridViewIndex, info.lightGridViewGeneration},
-            info.frameIndex, info.sceneIdentity);
-        if (scene->hasStreamGeometry() && !stream) { return makeError(Error::InvalidArgument); }
-        std::string log;
-        auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
-            scene->hasStreamGeometry() ? stream : nullptr, log);
-        if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
-        const auto& materialResources = *context.preparedScene()->snapshot->pathTraceResources;
-        auto textures = materialResources.materialTextureSnapshot();
-        if (!textures) { return makeError(Error::InvalidArgument); }
-        auto result = commands.retainResource(std::make_shared<decltype(textures)>(textures));
-        if (!result) { return result; }
-        const auto logicalTextures = materialResources.logicalTextureIndices();
-        std::vector<TextureView*> alphaTextures(scene->materials().size());
-        for (size_t index = 0; index < scene->materials().size(); ++index) {
-            const auto& material = scene->materials()[index];
-            const auto logical = material.baseColorTexture.textureIndex;
-            if (material.alphaMode == "MASK" && logical >= 0 && size_t(logical) < logicalTextures.size()) {
-                const uint32_t slot = logicalTextures[logical];
-                if (slot < textures->views.size()) { alphaTextures[index] = textures->views[slot].get(); }
-            }
-        }
-        if (std::any_of(alphaTextures.begin(), alphaTextures.end(), [](const auto* texture) { return texture != nullptr; })) {
-            const uint64_t revision = materialResources.materialTexturePublicationRevision();
-            casters->dependencyKey ^= revision + 0x9e3779b97f4a7c15ull + (casters->dependencyKey << 6) + (casters->dependencyKey >> 2);
-        }
         struct FacePublication
         {
             VirtualShadowMapResult shadow;
@@ -278,26 +260,86 @@ public:
         };
         std::vector<FacePublication> publications;
         publications.reserve(admittedFaces);
-        for (uint32_t index : order) {
-            auto& item = lights[index];
-            if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
-            auto& faces = caches_[item.stableId];
-            for (uint32_t face = item.entry.faceCount; face < faces.size(); ++face) { faces[face].reset(); }
-            for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
-                if (!faces[face]) { faces[face] = std::make_unique<VirtualShadowMaps>(); }
-                item.light.face = face;
-                settings.physicalPageCount = item.faceBudgets[face];
-                auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
-                    scene->materials(), alphaTextures, settings, log);
-                if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
-                const uint32_t layer = item.entry.baseLayer + face;
-                auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize});
-                auto destinationStats = statistics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapFaceStatisticsSize,
-                    kVirtualShadowMapFaceStatisticsSize});
-                if (!sourceStats || !destinationStats) { return makeError(Error::InvalidArgument); }
-                const auto suffix = std::to_string(layer);
-                publications.push_back({*shadow, *sourceStats, *destinationStats, layer,
-                    {"faceShadow" + suffix, "faceDebug" + suffix, "faceStatistics" + suffix}});
+        if (admittedFaces != 0) {
+            ViewConstants view{};
+            static_assert(offsetof(VisibilityBufferFrameInfo, width) == sizeof(ViewCameraConstants));
+            std::memcpy(&view.current, info.eye, sizeof(ViewCameraConstants));
+            view.current.eye[3] = view.current.center[3] = 0;
+            view.previous = view.current;
+            view.jitter[0] = view.jitter[2] = info.jitter[0];
+            view.jitter[1] = view.jitter[3] = info.jitter[1];
+            view.frame[0] = uint32_t(info.frameIndex);
+            view.frame[2] = info.temporalJitter;
+            if (const auto* shared = context.viewConstants()) { view.frame[3] = shared->frame[3]; }
+            auto& commands = context.commandBuffer();
+            const auto* stream = gpuScene->shadowGeometry({info.lightGridViewIndex, info.lightGridViewGeneration},
+                info.frameIndex, info.sceneIdentity);
+            if (scene->hasStreamGeometry() && !stream) { return makeError(Error::InvalidArgument); }
+            std::string log;
+            const auto& materialResources = *context.preparedScene()->snapshot->pathTraceResources;
+            auto textures = materialResources.materialTextureSnapshot();
+            if (!textures) { return makeError(Error::InvalidArgument); }
+            auto result = commands.retainResource(std::make_shared<decltype(textures)>(textures));
+            if (!result) { return result; }
+            const auto logicalTextures = materialResources.logicalTextureIndices();
+            std::vector<TextureView*> alphaTextures(scene->materials().size());
+            std::vector<TextureView*> displacementTextures(scene->materials().size());
+            for (size_t index = 0; index < scene->materials().size(); ++index) {
+                const auto& material = scene->materials()[index];
+                const auto logical = material.baseColorTexture.textureIndex;
+                if (material.alphaMode == "MASK" && logical >= 0 && size_t(logical) < logicalTextures.size()) {
+                    const uint32_t slot = logicalTextures[logical];
+                    if (slot < textures->views.size()) { alphaTextures[index] = textures->views[slot].get(); }
+                }
+                const auto displacement = material.displacementTexture.textureIndex;
+                if (material.displacementMagnitude != 0 && displacement >= 0 && size_t(displacement) < logicalTextures.size()) {
+                    const uint32_t slot = logicalTextures[displacement];
+                    if (slot < textures->views.size()) { displacementTextures[index] = textures->views[slot].get(); }
+                }
+            }
+            const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
+            const bool textureDependent = std::any_of(alphaTextures.begin(), alphaTextures.end(), hasTexture) ||
+                std::any_of(displacementTextures.begin(), displacementTextures.end(), hasTexture);
+            const VirtualShadowMapCasterSettings casterSettings{
+                .tessellationEnabled = (info.reserved & 1u) != 0,
+                .tessellationFactor = properties.value("tessellationFactor", 4u),
+                .subdivisionDepth = properties.value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
+                .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
+            auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
+                scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
+            if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
+            for (uint32_t index : order) {
+                auto& item = lights[index];
+                if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                auto& faces = caches_[item.stableId];
+                for (uint32_t face = item.entry.faceCount; face < faces.size(); ++face) { faces[face].reset(); }
+                const bool deferredProjection = item.entry.faceCount == 6 && settings.filter != VirtualShadowMapFilter::Hard;
+                std::array<VirtualShadowMapResult, 6> pointResults;
+                for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
+                    if (!faces[face]) { faces[face] = std::make_unique<VirtualShadowMaps>(); }
+                    item.light.face = face;
+                    settings.physicalPageCount = item.faceBudgets[face];
+                    auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
+                        scene->materials(), alphaTextures, settings, log, deferredProjection);
+                    if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
+                    pointResults[face] = *shadow;
+                    const uint32_t layer = item.entry.baseLayer + face;
+                    auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize});
+                    auto destinationStats = statistics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapFaceStatisticsSize,
+                        kVirtualShadowMapFaceStatisticsSize});
+                    if (!sourceStats || !destinationStats) { return makeError(Error::InvalidArgument); }
+                    const auto suffix = std::to_string(layer);
+                    publications.push_back({*shadow, *sourceStats, *destinationStats, layer,
+                        {"faceShadow" + suffix, "faceDebug" + suffix, "faceStatistics" + suffix}});
+                }
+                if (deferredProjection) {
+                    for (auto& face : faces) {
+                        if (auto projected = face->project(commands, pointResults, log); !projected) {
+                            spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
+                            return projected;
+                        }
+                    }
+                }
             }
         }
         // Build views only after the owning names have reached their final
@@ -368,7 +410,7 @@ public:
                 }
                 return {};
             }}};
-        result = context.executeStages(stages, bufferImports, textureImports);
+        auto result = context.executeStages(stages, bufferImports, textureImports);
         if (!result) { (void)context.streamer()->cancelCopyBatch(*batch); return result; }
         return {};
     }

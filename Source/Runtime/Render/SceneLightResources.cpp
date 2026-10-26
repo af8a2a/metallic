@@ -226,6 +226,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         light.colorIntensity[3] = static_cast<float>(intensity);
         light.spot[0] = static_cast<float>(std::cos(properties.innerConeAngle));
         light.spot[1] = static_cast<float>(std::cos(properties.outerConeAngle));
+        light.spot[2] = static_cast<float>(properties.sourceRadius);
         record.gpu = light;
         record.enabled = true;
     };
@@ -244,6 +245,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
                 .type = light.type, .color = light.color, .intensity = light.intensity,
                 .range = light.range, .innerConeAngle = light.innerConeAngle,
                 .outerConeAngle = light.outerConeAngle, .intensityUnit = light.intensityUnit,
+                .sourceRadius = light.sourceRadius,
             }, float3(m.a03, m.a13, m.a23), light.type == "point"
                 ? float3(0.0f, -1.0f, 0.0f) : float3(-m.a02, -m.a12, -m.a22));
         }
