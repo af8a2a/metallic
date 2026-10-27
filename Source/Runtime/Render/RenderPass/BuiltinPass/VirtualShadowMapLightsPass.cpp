@@ -42,33 +42,40 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         const uint32_t capacity = properties().value("lightCapacity", 8u);
+        const bool compact = properties().value("compactOutputs", false);
         RenderPassReflection reflection;
         reflection.addTextureInput("depth", "Receiver depth from the matching visibility raster")
             .sampledRead().format = Format::D32Sfloat;
         auto& info = reflection.addBufferInput("rasterInfo", "Matching raster camera and scene identity")
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         info.memoryLocation = MemoryLocation::HostUpload;
-        auto& shadows = reflection.addTextureOutput("shadows", "Linear per-light visibility, six layers per entry")
+        auto& shadows = reflection.addTextureOutput("shadows", "Linear visibility; one compact layer or six face layers per light")
             .transferWrite().transient(RenderGraphInitialization::FullOverwrite);
         shadows.format = Format::R8Unorm;
-        shadows.layerCount = capacity * 6;
+        shadows.layerCount = compact ? capacity : capacity * 6;
+        if (compact) { shadows.stageAccess(RenderGraphResourceAccess::TextureStorageWrite, RenderGraphPassKind::Compute); }
         auto& debug = reflection.addTextureOutput("debug", "Per-face page selection; magenta marks unavailable layers")
             .transferWrite().transient(RenderGraphInitialization::FullOverwrite);
         debug.format = Format::RGBA8Unorm;
-        debug.layerCount = capacity * 6;
+        debug.layerCount = compact ? capacity : capacity * 6;
+        if (compact) { debug.stageAccess(RenderGraphResourceAccess::TextureStorageWrite, RenderGraphPassKind::Compute); }
         reflection.addBufferOutput("lights", "Current source-to-layer table and explicit light admission")
             .buffer(sizeof(VirtualShadowMapLightsHeader) + uint64_t(capacity) * sizeof(VirtualShadowMapLightEntry), 0)
             .transferWrite();
         reflection.addBufferOutput("statistics", "Six 32-uint face blocks per light entry")
             .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapFaceStatisticsSize, sizeof(uint32_t))
             .bufferLayout("u32").transferWrite();
+        reflection.addBufferOutput("memory", "Logical owned bytes: atlas, private output, buffers, public output, faces, atlas pages")
+            .buffer(8 * sizeof(uint64_t), sizeof(uint64_t)).transferWrite();
         return reflection;
     }
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         auto capacity = runtimeIntSetting("lightCapacity", "Light Table Capacity", 8, 2, 64);
         capacity.rebuildGraph = true;
-        return {capacity,
+        auto compact = runtimeBoolSetting("compactOutputs", "One Output Layer per Light", false);
+        compact.rebuildGraph = true;
+        return {capacity, compact,
             runtimeBoolSetting("enabled", "Virtual Shadows", true),
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", true),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
@@ -92,6 +99,7 @@ public:
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         capacity_ = properties().value("lightCapacity", 8u);
+        compact_ = properties().value("compactOutputs", false);
         if (capacity_ < 2 || capacity_ > 64 || !context.device || !context.preparedScene ||
             !context.preparedScene->snapshot || !context.preparedScene->snapshot->pathTraceResources) {
             log = "VirtualShadowMapLightsPass requires material resources and lightCapacity in [2,64]";
@@ -112,12 +120,13 @@ public:
         const auto debug = context.outputTexture("debug");
         const auto table = context.outputBuffer("lights");
         const auto statistics = context.outputBuffer("statistics");
+        const auto memory = context.outputBuffer("memory");
         const auto* scene = context.runtimeScene();
         const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
         if (!scene || !gpuScene || !context.streamer() || !depth.valid() || !depth.view() ||
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
-            !output.valid() || !debug.valid() || !table.valid() || !statistics.valid()) {
+            !output.valid() || !debug.valid() || !table.valid() || !statistics.valid() || !memory.valid()) {
             return makeError(Error::InvalidArgument);
         }
         VisibilityBufferFrameInfo info;
@@ -164,7 +173,7 @@ public:
         std::vector<ManagedLight> lights(sources.size() + 2);
         for (uint32_t index = 0; index < lights.size(); ++index) {
             auto& item = lights[index];
-            item.entry.baseLayer = index * 6;
+            item.entry.baseLayer = compact_ ? index : index * 6;
             item.light.nearPlane = nearPlane;
             if (index < 2) {
                 const auto& light = celestials[index];
@@ -209,6 +218,7 @@ public:
         header.version = kVirtualShadowMapLightsVersion;
         header.count = uint32_t(lights.size());
         header.capacity = capacity_;
+        header.reserved[0] = compact_ ? 1u : 0u;
         header.physicalPageBudget = budget;
         header.sceneIdentity[0] = uint32_t(info.sceneIdentity);
         header.sceneIdentity[1] = uint32_t(info.sceneIdentity >> 32);
@@ -260,113 +270,6 @@ public:
         };
         std::vector<FacePublication> publications;
         publications.reserve(admittedFaces);
-        if (admittedFaces != 0) {
-            ViewConstants view{};
-            static_assert(offsetof(VisibilityBufferFrameInfo, width) == sizeof(ViewCameraConstants));
-            std::memcpy(&view.current, info.eye, sizeof(ViewCameraConstants));
-            view.current.eye[3] = view.current.center[3] = 0;
-            view.previous = view.current;
-            view.jitter[0] = view.jitter[2] = info.jitter[0];
-            view.jitter[1] = view.jitter[3] = info.jitter[1];
-            view.frame[0] = uint32_t(info.frameIndex);
-            view.frame[2] = info.temporalJitter;
-            if (const auto* shared = context.viewConstants()) { view.frame[3] = shared->frame[3]; }
-            auto& commands = context.commandBuffer();
-            const auto* stream = gpuScene->shadowGeometry({info.lightGridViewIndex, info.lightGridViewGeneration},
-                info.frameIndex, info.sceneIdentity);
-            if (scene->hasStreamGeometry() && !stream) { return makeError(Error::InvalidArgument); }
-            std::string log;
-            const auto& materialResources = *context.preparedScene()->snapshot->pathTraceResources;
-            auto textures = materialResources.materialTextureSnapshot();
-            if (!textures) { return makeError(Error::InvalidArgument); }
-            auto result = commands.retainResource(std::make_shared<decltype(textures)>(textures));
-            if (!result) { return result; }
-            const auto logicalTextures = materialResources.logicalTextureIndices();
-            std::vector<TextureView*> alphaTextures(scene->materials().size());
-            std::vector<TextureView*> displacementTextures(scene->materials().size());
-            for (size_t index = 0; index < scene->materials().size(); ++index) {
-                const auto& material = scene->materials()[index];
-                const auto logical = material.baseColorTexture.textureIndex;
-                if (material.alphaMode == "MASK" && logical >= 0 && size_t(logical) < logicalTextures.size()) {
-                    const uint32_t slot = logicalTextures[logical];
-                    if (slot < textures->views.size()) { alphaTextures[index] = textures->views[slot].get(); }
-                }
-                const auto displacement = material.displacementTexture.textureIndex;
-                if (material.displacementMagnitude != 0 && displacement >= 0 && size_t(displacement) < logicalTextures.size()) {
-                    const uint32_t slot = logicalTextures[displacement];
-                    if (slot < textures->views.size()) { displacementTextures[index] = textures->views[slot].get(); }
-                }
-            }
-            const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
-            const bool textureDependent = std::any_of(alphaTextures.begin(), alphaTextures.end(), hasTexture) ||
-                std::any_of(displacementTextures.begin(), displacementTextures.end(), hasTexture);
-            const VirtualShadowMapCasterSettings casterSettings{
-                .tessellationEnabled = (info.reserved & 1u) != 0,
-                .tessellationFactor = properties.value("tessellationFactor", 4u),
-                .subdivisionDepth = properties.value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
-                .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
-            auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
-                scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
-            if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
-            for (uint32_t index : order) {
-                auto& item = lights[index];
-                if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
-                auto& faces = caches_[item.stableId];
-                for (uint32_t face = item.entry.faceCount; face < faces.size(); ++face) { faces[face].reset(); }
-                const bool deferredProjection = item.entry.faceCount == 6 && settings.filter != VirtualShadowMapFilter::Hard;
-                std::array<VirtualShadowMapResult, 6> pointResults;
-                for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
-                    if (!faces[face]) { faces[face] = std::make_unique<VirtualShadowMaps>(); }
-                    item.light.face = face;
-                    settings.physicalPageCount = item.faceBudgets[face];
-                    auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
-                        scene->materials(), alphaTextures, settings, log, deferredProjection);
-                    if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
-                    pointResults[face] = *shadow;
-                    const uint32_t layer = item.entry.baseLayer + face;
-                    auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize});
-                    auto destinationStats = statistics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapFaceStatisticsSize,
-                        kVirtualShadowMapFaceStatisticsSize});
-                    if (!sourceStats || !destinationStats) { return makeError(Error::InvalidArgument); }
-                    const auto suffix = std::to_string(layer);
-                    publications.push_back({*shadow, *sourceStats, *destinationStats, layer,
-                        {"faceShadow" + suffix, "faceDebug" + suffix, "faceStatistics" + suffix}});
-                }
-                if (deferredProjection) {
-                    for (auto& face : faces) {
-                        if (auto projected = face->project(commands, pointResults, log); !projected) {
-                            spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
-                            return projected;
-                        }
-                    }
-                }
-            }
-        }
-        // Build views only after the owning names have reached their final
-        // addresses. Every face's private outputs remain ShaderRead until this
-        // single graph-stage sequence transitions them for publication.
-        std::vector<RenderGraphTextureImport> textureImports;
-        std::vector<RenderGraphBufferImport> bufferImports;
-        std::vector<RenderGraphStageUse> publishUses{
-            {"shadows", RenderGraphResourceAccess::TextureTransferWrite},
-            {"debug", RenderGraphResourceAccess::TextureTransferWrite},
-            {"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
-        textureImports.reserve(publications.size() * 2);
-        bufferImports.reserve(publications.size());
-        publishUses.reserve(3 + publications.size() * 3);
-        for (const auto& publication : publications) {
-            const auto& shadow = publication.shadow;
-            const auto& names = publication.names;
-            textureImports.push_back({names[0], shadow.texture, shadow.shadow,
-                ResourceState::ShaderRead, ResourceState::ShaderRead});
-            textureImports.push_back({names[1], shadow.debugTexture, shadow.debug,
-                ResourceState::ShaderRead, ResourceState::ShaderRead});
-            bufferImports.push_back({names[2], publication.sourceStats, RenderGraphResourceAccess::BufferShaderRead});
-            publishUses.push_back({names[0], RenderGraphResourceAccess::TextureTransferRead});
-            publishUses.push_back({names[1], RenderGraphResourceAccess::TextureTransferRead});
-            publishUses.push_back({names[2], RenderGraphResourceAccess::BufferTransferRead});
-        }
-
         std::vector<std::byte> tableData(table.desc().size);
         std::memcpy(tableData.data(), &header, sizeof(header));
         for (size_t index = 0; index < lights.size(); ++index) {
@@ -388,6 +291,150 @@ public:
             RenderGraphStageUse{"debug", RenderGraphResourceAccess::TextureTransferWrite},
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
+        struct ProjectionGroup
+        {
+            std::array<VirtualShadowMaps*, 6> faces{};
+            std::array<VirtualShadowMapResult, 6> results{};
+            uint32_t faceCount = 0;
+            bool filteredPoint = false;
+        };
+        std::vector<ProjectionGroup> projections;
+        auto recordFaces = [&](CommandBuffer&) -> Result<> {
+            auto profile = context.profileScope("VSM caster preparation");
+            if (admittedFaces != 0) {
+                ViewConstants view{};
+                static_assert(offsetof(VisibilityBufferFrameInfo, width) == sizeof(ViewCameraConstants));
+                std::memcpy(&view.current, info.eye, sizeof(ViewCameraConstants));
+                view.current.eye[3] = view.current.center[3] = 0;
+                view.previous = view.current;
+                view.jitter[0] = view.jitter[2] = info.jitter[0];
+                view.jitter[1] = view.jitter[3] = info.jitter[1];
+                view.frame[0] = uint32_t(info.frameIndex);
+                view.frame[2] = info.temporalJitter;
+                if (const auto* shared = context.viewConstants()) { view.frame[3] = shared->frame[3]; }
+                auto& commands = context.commandBuffer();
+                const auto* stream = gpuScene->shadowGeometry({info.lightGridViewIndex, info.lightGridViewGeneration},
+                    info.frameIndex, info.sceneIdentity);
+                if (scene->hasStreamGeometry() && !stream) { return makeError(Error::InvalidArgument); }
+                std::string log;
+                const auto& materialResources = *context.preparedScene()->snapshot->pathTraceResources;
+                auto textures = materialResources.materialTextureSnapshot();
+                if (!textures) { return makeError(Error::InvalidArgument); }
+                auto result = commands.retainResource(std::make_shared<decltype(textures)>(textures));
+                if (!result) { return result; }
+                const auto logicalTextures = materialResources.logicalTextureIndices();
+                std::vector<TextureView*> alphaTextures(scene->materials().size());
+                std::vector<TextureView*> displacementTextures(scene->materials().size());
+                for (size_t index = 0; index < scene->materials().size(); ++index) {
+                    const auto& material = scene->materials()[index];
+                    const auto logical = material.baseColorTexture.textureIndex;
+                    if (material.alphaMode == "MASK" && logical >= 0 && size_t(logical) < logicalTextures.size()) {
+                        const uint32_t slot = logicalTextures[logical];
+                        if (slot < textures->views.size()) { alphaTextures[index] = textures->views[slot].get(); }
+                    }
+                    const auto displacement = material.displacementTexture.textureIndex;
+                    if (material.displacementMagnitude != 0 && displacement >= 0 && size_t(displacement) < logicalTextures.size()) {
+                        const uint32_t slot = logicalTextures[displacement];
+                        if (slot < textures->views.size()) { displacementTextures[index] = textures->views[slot].get(); }
+                    }
+                }
+                const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
+                const bool textureDependent = std::any_of(alphaTextures.begin(), alphaTextures.end(), hasTexture) ||
+                    std::any_of(displacementTextures.begin(), displacementTextures.end(), hasTexture);
+                const VirtualShadowMapCasterSettings casterSettings{
+                    .tessellationEnabled = (info.reserved & 1u) != 0,
+                    .tessellationFactor = properties.value("tessellationFactor", 4u),
+                    .subdivisionDepth = properties.value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
+                    .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
+                auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
+                    scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
+                if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
+                profile.next("VSM page demand, cache and raster");
+                for (uint32_t index : order) {
+                    auto& item = lights[index];
+                    if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                    auto& faces = caches_[item.stableId];
+                    for (uint32_t face = item.entry.faceCount; face < faces.size(); ++face) { faces[face].reset(); }
+                    const bool filteredPoint = item.entry.faceCount == 6 && settings.filter != VirtualShadowMapFilter::Hard;
+                    const bool deferredProjection = compact_ || filteredPoint;
+                    std::array<VirtualShadowMapResult, 6> pointResults;
+                    for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
+                        if (!faces[face]) { faces[face] = std::make_unique<VirtualShadowMaps>(); }
+                        item.light.face = face;
+                        settings.physicalPageCount = item.faceBudgets[face];
+                        const VirtualShadowMapProjectionTarget target{output.texture(), debug.texture(), item.entry.baseLayer, item.entry.faceCount == 6};
+                        auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
+                            scene->materials(), alphaTextures, settings, log, deferredProjection, compact_ ? &target : nullptr);
+                        if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
+                        pointResults[face] = *shadow;
+                        const uint32_t layer = index * 6 + face;
+                        auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize});
+                        auto destinationStats = statistics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapFaceStatisticsSize,
+                            kVirtualShadowMapFaceStatisticsSize});
+                        if (!sourceStats || !destinationStats) { return makeError(Error::InvalidArgument); }
+                        const auto suffix = std::to_string(layer);
+                        publications.push_back({*shadow, *sourceStats, *destinationStats, layer,
+                            {"faceShadow" + suffix, "faceDebug" + suffix, "faceStatistics" + suffix}});
+                    }
+                    if (compact_) {
+                        ProjectionGroup group;
+                        group.results = pointResults;
+                        group.faceCount = item.entry.faceCount;
+                        group.filteredPoint = filteredPoint;
+                        for (uint32_t face = 0; face < group.faceCount; ++face) { group.faces[face] = faces[face].get(); }
+                        projections.push_back(group);
+                    } else if (deferredProjection) {
+                        for (auto& face : faces) {
+                            if (auto projected = face->project(commands, pointResults, log); !projected) {
+                                spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
+                                return projected;
+                            }
+                        }
+                    }
+                }
+            }
+            return {};
+        };
+        if (auto r = recordFaces(context.commandBuffer()); !r) { (void)context.streamer()->cancelCopyBatch(*batch); return r; }
+        // Build views only after the owning names have reached their final
+        // addresses. Every face's private outputs remain ShaderRead until this
+        // single graph-stage sequence transitions them for publication.
+        std::vector<RenderGraphTextureImport> textureImports;
+        std::vector<RenderGraphBufferImport> bufferImports;
+        std::vector<RenderGraphStageUse> projectionUses;
+        if (compact_) {
+            projectionUses = {{"shadows", RenderGraphResourceAccess::TextureStorageWrite},
+                {"debug", RenderGraphResourceAccess::TextureStorageWrite},
+                {"depth", RenderGraphResourceAccess::TextureSampleRead}};
+        }
+        std::vector<RenderGraphStageUse> publishUses{
+            {"statistics", RenderGraphResourceAccess::BufferTransferWrite},
+            {"memory", RenderGraphResourceAccess::BufferTransferWrite}};
+        if (!compact_) {
+            publishUses.push_back({"shadows", RenderGraphResourceAccess::TextureTransferWrite});
+            publishUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite});
+        }
+        textureImports.reserve(publications.size() * 2);
+        bufferImports.reserve(publications.size());
+        publishUses.reserve(3 + publications.size() * 3);
+        for (const auto& publication : publications) {
+            const auto& shadow = publication.shadow;
+            const auto& names = publication.names;
+            if (!compact_) {
+                textureImports.push_back({names[0], shadow.texture, shadow.shadow,
+                    ResourceState::ShaderRead, ResourceState::ShaderRead});
+                textureImports.push_back({names[1], shadow.debugTexture, shadow.debug,
+                    ResourceState::ShaderRead, ResourceState::ShaderRead});
+                publishUses.push_back({names[0], RenderGraphResourceAccess::TextureTransferRead});
+                publishUses.push_back({names[1], RenderGraphResourceAccess::TextureTransferRead});
+            }
+            bufferImports.push_back({names[2], publication.sourceStats, RenderGraphResourceAccess::BufferShaderRead});
+            publishUses.push_back({names[2], RenderGraphResourceAccess::BufferTransferRead});
+            if (compact_) { projectionUses.push_back({names[2], RenderGraphResourceAccess::BufferStorageReadWrite}); }
+        }
+
+        auto memoryBatch = context.streamer()->beginCopyBatch();
+        if (!memoryBatch) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(memoryBatch.error()); }
         const std::array stages{RenderGraphStage{"Initialize VSM light publication", initializeUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 auto cleared = cmd.clearColorTexture(*output.texture(), TextureLayout::TransferDestination, {1, 1, 1, 1});
@@ -395,28 +442,66 @@ public:
                 cleared = cmd.clearColorTexture(*debug.texture(), TextureLayout::TransferDestination, {1, 0, 1, 1});
                 if (!cleared) { return cleared; }
                 return context.streamer()->copyStreamedData(cmd, *batch);
-            }}, RenderGraphStage{"Publish VSM faces", publishUses,
+            }}, RenderGraphStage{"Project compact VSM lights", projectionUses,
             [&](CommandBuffer& cmd) -> Result<> {
-                for (const auto& publication : publications) {
-                    const auto& shadow = publication.shadow;
-                    auto copied = cmd.copyTexture({.source = shadow.texture, .destination = output.texture(),
-                        .width = context.width(), .height = context.height(), .destinationBaseLayer = publication.layer});
-                    if (!copied) { return copied; }
-                    copied = cmd.copyTexture({.source = shadow.debugTexture, .destination = debug.texture(),
-                        .width = context.width(), .height = context.height(), .destinationBaseLayer = publication.layer});
-                    if (!copied) { return copied; }
-                    copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
-                    if (!copied) { return copied; }
+                std::string log;
+                for (const auto& group : projections) {
+                    for (uint32_t face = 0; face < group.faceCount; ++face) {
+                        const auto pointFaces = group.filteredPoint ? std::span<const VirtualShadowMapResult>(group.results) :
+                            std::span<const VirtualShadowMapResult>{};
+                        if (auto r = group.faces[face]->project(cmd, pointFaces, log); !r) {
+                            spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
+                            return r;
+                        }
+                    }
                 }
                 return {};
+            }}, RenderGraphStage{"Publish VSM faces", publishUses,
+            [&](CommandBuffer& cmd) -> Result<> {
+                std::array<uint64_t, 8> memoryData{};
+                for (const auto& [identity, faces] : caches_) {
+                    for (const auto& face : faces) {
+                        if (!face) { continue; }
+                        const auto usage = face->memoryUsage();
+                        memoryData[0] += usage.atlasBytes;
+                        memoryData[1] += usage.privateOutputBytes;
+                        memoryData[2] += usage.bufferBytes;
+                        ++memoryData[4];
+                        memoryData[5] += usage.allocatedAtlasPages;
+                    }
+                }
+                memoryData[3] = uint64_t(context.width()) * context.height() * output.desc().layerCount * 5;
+                const StreamDataChunk memoryChunk{memoryData.data(), sizeof(memoryData)};
+                const auto memoryUpload = context.streamer()->streamBufferData({.dataChunks = {&memoryChunk, 1},
+                    .placementAlignment = 16, .dstBuffer = memory.buffer(), .copyBatch = *memoryBatch});
+                if (!memoryUpload.valid()) { (void)context.streamer()->cancelCopyBatch(*memoryBatch); return makeError(Error::OutOfMemory); }
+                for (const auto& publication : publications) {
+                    const auto& shadow = publication.shadow;
+                    if (!compact_) {
+                        auto copied = cmd.copyTexture({.source = shadow.texture, .destination = output.texture(),
+                            .width = context.width(), .height = context.height(), .destinationBaseLayer = publication.layer});
+                        if (!copied) { return copied; }
+                        copied = cmd.copyTexture({.source = shadow.debugTexture, .destination = debug.texture(),
+                            .width = context.width(), .height = context.height(), .destinationBaseLayer = publication.layer});
+                        if (!copied) { return copied; }
+                    }
+                    auto copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
+                    if (!copied) { return copied; }
+                }
+                return context.streamer()->copyStreamedData(cmd, *memoryBatch);
             }}};
         auto result = context.executeStages(stages, bufferImports, textureImports);
-        if (!result) { (void)context.streamer()->cancelCopyBatch(*batch); return result; }
+        if (!result) {
+            (void)context.streamer()->cancelCopyBatch(*batch);
+            (void)context.streamer()->cancelCopyBatch(*memoryBatch);
+            return result;
+        }
         return {};
     }
 private:
     Device* device_ = nullptr;
     uint32_t capacity_ = 8;
+    bool compact_ = false;
     uint64_t sceneIdentity_ = 0;
     std::unordered_map<uint64_t, std::array<std::unique_ptr<VirtualShadowMaps>, 6>> caches_;
 };

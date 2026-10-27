@@ -469,10 +469,12 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint,
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, float footprint)
 {
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
-    for (uint level = 0u; level < push.clipmapCount; ++level) {
+    // Match the query's first usable level. Requesting finer pages here spends
+    // the fine-first admission budget on pages the filter will never sample.
+    for (uint level = vsmFilterLevel(position, projections, push, footprint); level < push.clipmapCount; ++level) {
         ShadowProjection projection = projections[level];
         float3 projected = vsmProjectPosition(position, projection);
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
@@ -544,103 +546,218 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             max(delta.x, max(delta.y, delta.z)) <= projections[0].originNear.w) { return; }
     } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
-    vsmMarkPosition(position, projections, pages, push);
+    if (push.filterMode == 0u) {
+        vsmMarkPosition(position, projections, pages, push, 0.0);
+        return;
+    }
+    float footprint = vsmPixelFootprint(linearDepth, view, push);
     if (push.filterMode == 1u) {
-        float footprint = vsmPixelFootprint(linearDepth, view, push);
         uint level = vsmFilterLevel(position, projections, push, footprint);
         float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
-                vsmMarkPosition(vsmPCFPosition(position, normal, projections[level], push, int2(x, y)), projections, pages, push);
+                vsmMarkPosition(vsmPCFPosition(position, normal, projections[level], push, int2(x, y)),
+                    projections, pages, push, footprint);
             }
         }
     } else if (push.filterMode == 2u) {
+        float sourceAngularDiameter = push.lightType == 0u ? 2.0 * tan(push.angularRadius) :
+            2.0 * push.sourceRadius / length(projections[0].originNear.xyz - position);
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
             float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray);
             for (uint step = 0u; step < push.samplesPerRay; ++step) {
                 float a = float(step) / float(push.samplesPerRay), b = float(step + 1u) / float(push.samplesPerRay);
-                vsmMarkPosition(lerp(position, endpoint, (a * a + b * b) * 0.5), projections, pages, push);
+                a *= a; b *= b;
+                float3 midpoint = lerp(position, endpoint, (a + b) * 0.5);
+                float rayFootprint = length(midpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
+                vsmMarkPosition(midpoint, projections, pages, push, min(footprint, rayFootprint));
             }
         }
     }
 }
 
+// Allocation scratch follows the physical owner table in the same buffer:
+// local page ranks, block counts/prefixes, then free/evictable physical slots.
+// Every scan invocation participates, including rounded dispatch tails.
+groupshared uint3 gVsmAllocationScan[256];
+uint3 vsmAllocationPrefix(uint3 value, uint lane)
+{
+    gVsmAllocationScan[lane] = value;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint offset = 1u; offset < 256u; offset <<= 1u) {
+        uint3 previous = lane >= offset ? gVsmAllocationScan[lane - offset] : uint3(0u);
+        GroupMemoryBarrierWithGroupSync();
+        gVsmAllocationScan[lane] += previous;
+        GroupMemoryBarrierWithGroupSync();
+    }
+    return gVsmAllocationScan[lane] - value;
+}
+
 [shader("compute")]
-[numthreads(1, 1, 1)]
-void vsmAllocateMain(uniform ShadowPush push)
+[numthreads(256, 1, 1)]
+void vsmCountMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+    uniform ShadowPush push)
+{
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    RWStructuredBuffer<uint> scratch = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint3 counts = uint3(0u);
+    if (id.x < push.totalPages) {
+        uint4 entry = pages[id.x];
+        counts.x = id.x + 1u < push.totalPages && (entry.y & 1u) != 0u ? 1u : 0u;
+        if ((push.cacheMode & 1u) != 0u && entry.x != 0xffffffffu) {
+            StructuredBuffer<uint2> reuse = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.reuse));
+            uint2 mapping = reuse[id.x];
+            if (mapping.x != 0xffffffffu) {
+                counts.y = mapping.y != 0u ? 1u : 0u;
+                counts.z = mapping.x != id.x ? 1u : 0u;
+            }
+        }
+    }
+    uint3 prefix = vsmAllocationPrefix(counts, lane);
+    if (id.x < push.totalPages) { scratch[push.physicalPageCount + id.x] = prefix.x; }
+    if (lane == 255u) {
+        uint3 total = prefix + counts;
+        scratch[push.physicalPageCount + push.totalPages + group.x] = total.x;
+        InterlockedAdd(statistics[18], total.y);
+        InterlockedAdd(statistics[19], total.z);
+    }
+}
+
+// The established allocation entry now prefixes per-block demand counts;
+// its one group replaces the old serial traversal of the full virtual table.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void vsmAllocateMain(uint lane : SV_GroupIndex, uniform ShadowPush push)
+{
+    RWStructuredBuffer<uint> scratch = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint blockCount = (push.totalPages + 255u) / 256u;
+    uint blocksPerLane = (blockCount + 255u) / 256u;
+    uint first = lane * blocksPerLane, end = min(first + blocksPerLane, blockCount);
+    uint offset = push.physicalPageCount + push.totalPages;
+    uint count = 0u;
+    for (uint block = first; block < end; ++block) { count += scratch[offset + block]; }
+    uint prefix = vsmAllocationPrefix(uint3(count, 0u, 0u), lane).x;
+    for (uint block = first; block < end; ++block) {
+        uint value = scratch[offset + block];
+        scratch[offset + block] = prefix;
+        prefix += value;
+    }
+    if (lane == 0u) {
+        uint requested = gVsmAllocationScan[255].x;
+        uint allocated = min(requested, push.physicalPageCount - 1u);
+        statistics[0] = requested;
+        statistics[1] = allocated;
+        statistics[2] = requested - allocated;
+    }
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+    uniform ShadowPush push)
 {
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
-    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
-    StructuredBuffer<uint2> reuse = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.reuse));
-    uint requested = 0u, allocated = 0u;
-    uint invalidated = 0u, remapped = 0u;
-    // Virtual pages are laid out fine-to-coarse. Physical zero always belongs
-    // to the complete scene projection. Admission is independent of residency,
-    // so an unrequested cached page cannot displace a requested fine page.
-    for (uint page = 0u; page < push.totalPages; ++page) {
-        uint4 entry = pages[page];
-        if ((push.cacheMode & 1u) != 0u && entry.x != 0xffffffffu) {
-            uint2 mapping = reuse[page];
-            if (mapping.x != 0xffffffffu) {
-                invalidated += mapping.y != 0u ? 1u : 0u;
-                remapped += mapping.x != page ? 1u : 0u;
-            }
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint3 counts = uint3(0u);
+    uint rankOffset = push.physicalPageCount;
+    uint blockOffset = rankOffset + push.totalPages;
+    if (id.x < push.totalPages) {
+        uint4 entry = pages[id.x];
+        bool fine = id.x + 1u < push.totalPages;
+        if (fine && (entry.y & 1u) != 0u) {
+            uint rank = owners[blockOffset + group.x] + owners[rankOffset + id.x];
+            if (rank < push.physicalPageCount - 1u) { entry.y |= 2u; }
+            else { entry.x = 0xffffffffu; entry.w = 2u; }
         }
-        if (page + 1u < push.totalPages && (entry.y & 1u) != 0u) {
-            ++requested;
-            if (allocated + 1u < push.physicalPageCount) {
-                ++allocated;
-                entry.y |= 2u;
-            } else {
-                entry.x = 0xffffffffu;
-                entry.w = 2u;
-            }
+        pages[id.x] = entry;
+        if (entry.x != 0xffffffffu) { owners[entry.x] = id.x + 1u; }
+        if (fine && (entry.y & 2u) != 0u) {
+            counts.x = entry.x == 0xffffffffu ? 1u : 0u;
+            counts.y = entry.x != 0xffffffffu && (entry.w & 2u) != 0u ? 1u : 0u;
+            counts.z = entry.x != 0xffffffffu && (entry.w & 3u) == 1u ? 1u : 0u;
         }
-        pages[page] = entry;
-        if (entry.x != 0xffffffffu) { owners[entry.x] = page + 1u; }
     }
-    uint freeCursor = 1u, evictionCursor = 1u, newlyAllocated = 0u;
-    uint dirty = 0u, clean = 0u;
-    for (uint page = 0u; page + 1u < push.totalPages; ++page) {
-        uint4 entry = pages[page];
-        if ((entry.y & 2u) == 0u) { continue; }
-        if (entry.x == 0xffffffffu) {
-            while (freeCursor < push.physicalPageCount && owners[freeCursor] != 0u) { ++freeCursor; }
-            uint physical = freeCursor;
-            if (physical == push.physicalPageCount) {
-                // Admission reserves at most poolSize-1 slots. Once all free
-                // slots are used, a remaining admitted page has an unrequested
-                // owner available for eviction; admitted owners stay protected.
-                while (evictionCursor < push.physicalPageCount &&
-                    (pages[owners[evictionCursor] - 1u].y & 2u) != 0u) { ++evictionCursor; }
-                physical = evictionCursor++;
-                uint evicted = owners[physical] - 1u;
-                uint4 old = pages[evicted];
-                old.x = 0xffffffffu;
-                old.w = 2u;
-                pages[evicted] = old;
-            } else {
-                ++freeCursor;
-            }
-            entry.x = physical;
-            entry.w = 2u;
-            owners[physical] = page + 1u;
-            pages[page] = entry;
-            ++newlyAllocated;
-        }
-        dirty += (entry.w & 2u) != 0u ? 1u : 0u;
-        clean += (entry.w & 1u) != 0u && (entry.w & 2u) == 0u ? 1u : 0u;
+    uint3 prefix = vsmAllocationPrefix(counts, lane);
+    if (id.x < push.totalPages) { owners[rankOffset + id.x] = counts.x != 0u ? prefix.x : 0xffffffffu; }
+    if (lane == 255u) {
+        uint3 total = prefix + counts;
+        owners[blockOffset + group.x] = total.x;
+        InterlockedAdd(statistics[16], total.y);
+        InterlockedAdd(statistics[17], total.z);
     }
-    statistics[0] = requested;
-    statistics[1] = allocated;
-    statistics[2] = requested - allocated;
-    statistics[16] = dirty;
-    statistics[17] = clean;
-    statistics[18] = invalidated;
-    statistics[19] = remapped;
-    statistics[20] = newlyAllocated;
-    statistics[21] = push.enabled != 0u && (pages[push.totalPages - 1u].w & 2u) != 0u ? 1u : 0u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void vsmPhysicalMain(uint lane : SV_GroupIndex, uniform ShadowPush push)
+{
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint blockCount = (push.totalPages + 255u) / 256u;
+    uint blocksPerLane = (blockCount + 255u) / 256u;
+    uint firstBlock = lane * blocksPerLane, endBlock = min(firstBlock + blocksPerLane, blockCount);
+    uint blockOffset = push.physicalPageCount + push.totalPages;
+    uint candidatesOffset = blockOffset + blockCount;
+    uint slotsPerLane = (push.physicalPageCount - 1u + 255u) / 256u;
+    uint firstSlot = 1u + lane * slotsPerLane, endSlot = min(firstSlot + slotsPerLane, push.physicalPageCount);
+    uint3 counts = uint3(0u);
+    for (uint block = firstBlock; block < endBlock; ++block) { counts.x += owners[blockOffset + block]; }
+    for (uint physical = firstSlot; physical < endSlot; ++physical) {
+        uint owner = owners[physical];
+        if (owner == 0u) { ++counts.y; }
+        else if ((pages[owner - 1u].y & 2u) == 0u) { ++counts.z; }
+    }
+    uint3 prefix = vsmAllocationPrefix(counts, lane);
+    uint freeCount = gVsmAllocationScan[255].y;
+    for (uint block = firstBlock; block < endBlock; ++block) {
+        uint count = owners[blockOffset + block];
+        owners[blockOffset + block] = prefix.x;
+        prefix.x += count;
+    }
+    // Retained admitted pages are pinned. Allocation consumes every genuinely
+    // free slot in ascending order before evicting an unrequested old owner.
+    for (uint physical = firstSlot; physical < endSlot; ++physical) {
+        uint owner = owners[physical];
+        if (owner == 0u) { owners[candidatesOffset + prefix.y++] = physical; }
+        else if ((pages[owner - 1u].y & 2u) == 0u) { owners[candidatesOffset + freeCount + prefix.z++] = physical; }
+    }
+    if (lane == 0u) {
+        uint missing = gVsmAllocationScan[255].x;
+        statistics[20] = missing;
+        statistics[16] += missing;
+        statistics[21] = push.enabled != 0u && (pages[push.totalPages - 1u].w & 2u) != 0u ? 1u : 0u;
+    }
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uniform ShadowPush push)
+{
+    if (id.x >= push.totalPages) { return; }
+    RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
+    RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    uint blockCount = (push.totalPages + 255u) / 256u;
+    uint blockOffset = push.physicalPageCount + push.totalPages;
+    uint localRank = owners[push.physicalPageCount + id.x];
+    if (localRank == 0xffffffffu) { return; }
+    uint rank = owners[blockOffset + group.x] + localRank;
+    uint physical = owners[blockOffset + blockCount + rank];
+    uint evicted = owners[physical];
+    if (evicted != 0u) {
+        // Only missing admitted pages run this phase. An evicted unrequested
+        // page has no competing invocation reading/writing its page entry.
+        uint4 old = pages[evicted - 1u];
+        old.x = 0xffffffffu; old.w = 2u;
+        pages[evicted - 1u] = old;
+    }
+    uint4 entry = pages[id.x];
+    entry.x = physical; entry.w = 2u;
+    pages[id.x] = entry;
+    owners[physical] = id.x + 1u;
 }
 
 [shader("compute")]
@@ -861,15 +978,21 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
     float3 position;
     float linearDepth;
-    shadow[id.xy] = 1.0;
-    debug[id.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    bool sharedPointLayer = push.filterReserved != 0u && push.lightType == 2u;
     if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) {
+        if (!sharedPointLayer || push.projectionFace == 0u) {
+            shadow[id.xy] = 1.0;
+            debug[id.xy] = float4(0.0, 0.0, 0.0, 1.0);
+        }
         InterlockedAdd(statistics[8], 1u);
         return;
     }
     InterlockedAdd(statistics[6], 1u);
-    if (push.enabled == 0u) { return; }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+    if (sharedPointLayer && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
+    shadow[id.xy] = 1.0;
+    debug[id.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    if (push.enabled == 0u) { return; }
     bool nearPlane;
     if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) {
         if (nearPlane) { InterlockedAdd(statistics[29], 1u); }

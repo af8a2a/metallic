@@ -3315,6 +3315,9 @@ void EditorApplication::drawDockspace()
             if (ImGui::MenuItem(gpuDrivenScenesOnly_ ? "Reset Scene" : "New Render Graph")) {
                 resetDefaultRenderGraph();
             }
+            if (!gpuDrivenScenesOnly_ && ImGui::MenuItem("New Realtime Graph (VSM Candidate)")) {
+                loadBuiltInSample("realtime-lighting-vsm");
+            }
             if (!gpuDrivenScenesOnly_ && ImGui::MenuItem("Load Render Graph")) {
                 loadRenderGraph();
             }

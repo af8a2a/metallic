@@ -24,14 +24,14 @@ VSM_PUBLIC struct VirtualShadowMapLightsHeader
     uint32_t frameIndex[2];
     uint32_t lightGeneration;
     uint32_t sourceSlotCount;
-    uint32_t reserved[2];
+    uint32_t reserved[2]; // [0] bit 0: compact publication, one layer per light.
 };
 
 VSM_PUBLIC struct VirtualShadowMapLightEntry
 {
     uint32_t source; // Celestial tag | Sun/Moon slot, or local GPUScene source slot.
     uint32_t kind; // 0 directional, 1 spot, 2 point.
-    uint32_t baseLayer; // Entry index * 6, including disabled and dropped entries.
+    uint32_t baseLayer; // Entry index * 6, or entry index for compact publication.
     uint32_t faceCount;
     uint32_t stableId[2];
     uint32_t pageBudget; // Total across this light's faces.

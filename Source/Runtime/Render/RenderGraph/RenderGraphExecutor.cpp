@@ -13,6 +13,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphGPULabels.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/Core/HistoryResources.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
@@ -4444,6 +4445,7 @@ struct RenderGraphPreviewRenderer::Impl {
     std::vector<std::byte> rawReadback;
     Format rawFormat = Format::Unknown;
     bool rawReadbackEnabled = false;
+    bool enableStreamline = false;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t readbackWidth = 0;
@@ -4452,6 +4454,16 @@ struct RenderGraphPreviewRenderer::Impl {
     uint64_t historyFrameIndex = 0;
     uint32_t recordingWorkerLimit = 0;
     std::string lastLog;
+
+    Result<> finishOffscreenFrame()
+    {
+        if (!enableStreamline) { return {}; }
+        // Preview owns no swapchain. Its completed evaluations still need the
+        // common plugin's per-frame bookkeeping and tagged-resource retirement.
+        auto result = vulkan::notifyStreamlineOffscreenFrame();
+        if (!result) { lastLog = resultMessage("Streamline offscreen frame completion", result); }
+        return result;
+    }
 
     Result<> ensureReadback(uint32_t newWidth, uint32_t newHeight, uint32_t texelByteSize)
     {
@@ -4546,7 +4558,7 @@ const RenderGraphExecutionStats& RenderGraphPreviewRenderer::executionStats() co
 }
 
 Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath,
-    bool enableSynchronizationValidation, ValidationSink validationSink)
+    bool enableSynchronizationValidation, ValidationSink validationSink, bool enableStreamline)
 {
     Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic RenderGraph Preview",
@@ -4568,12 +4580,14 @@ Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enab
             .enableClusterAccelerationStructure = enableRayQuery,
             .validationSink = validationSink,
             .enableAsyncCompute = true,
+            .enableStreamline = enableStreamline,
             .enableAftermath = enableAftermath,
         }).transform([&](auto rhiValue) { impl_->device = std::move(rhiValue); });
     if (!result) {
         return result;
     }
 
+    impl_->enableStreamline = enableStreamline;
     impl_->graphicsQueue = impl_->device->getQueue(QueueType::Graphics);
     if (impl_->graphicsQueue == nullptr) {
         return makeError(Error::Unsupported);
@@ -4698,6 +4712,7 @@ Result<> RenderGraphPreviewRenderer::render(
             .recordingWorkerLimit = impl_->recordingWorkerLimit});
         phase.next("preview.waitAndCollect");
         if (result) { result = impl_->executor.waitForSubmittedWork(); }
+        if (result) { result = impl_->finishOffscreenFrame(); }
         phase.next("preview.finish");
         impl_->pixels.clear();
         impl_->rawReadback.clear();
@@ -4788,6 +4803,8 @@ Result<> RenderGraphPreviewRenderer::render(
     if (!result) {
         return result;
     }
+    result = impl_->finishOffscreenFrame();
+    if (!result) { return result; }
 
     phase.next("preview.readbackConvert");
     impl_->readbackBuffer->invalidate();

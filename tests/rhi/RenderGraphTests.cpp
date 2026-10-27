@@ -2612,6 +2612,65 @@ public:
             return RHITestResult::fail("material visualization Sample graph first output changed");
         }
 
+        for (const char* id : {"realtime-lighting-vsm", "gpu-driven-vsm",
+                "gpu-driven-zorah-full-vsm", "gpu-driven-tessellation-vsm"}) {
+            render::RenderSampleLoadResult candidate;
+            if (!render::loadBuiltInRenderSample(id, candidate, message) ||
+                !candidate.graph.validate(validationLog)) {
+                return RHITestResult::fail(message + validationLog);
+            }
+            const auto* visibility = candidate.graph.findNode("VBuffer");
+            const auto* shadows = candidate.graph.findNode("Shadows");
+            if (!visibility || !shadows || shadows->type != "VirtualShadowMapLightsPass" ||
+                visibility->properties.value("enableClusterRtx", true) ||
+                visibility->properties.value("enableClas", true) ||
+                visibility->properties.value("rtTessellation", false) ||
+                !visibility->properties.value("initialLoad", false) ||
+                !shadows->properties.value("compactOutputs", false) ||
+                shadows->properties.value("filter", "") != "pcf" ||
+                candidate.graph.firstOutputName() != "FinalBlit.color") {
+                return RHITestResult::fail("VSM realtime candidates must use compact PCF outputs without shadow RTAS");
+            }
+            bool visibilityEdge = false;
+            bool lightTableEdge = false;
+            for (const auto& edge : candidate.graph.edges()) {
+                if (edge.srcField == "accelerationStructure" || edge.dstField == "accelerationStructure") {
+                    return RHITestResult::fail("VSM realtime candidate retained an acceleration structure edge");
+                }
+                visibilityEdge |= edge.srcPass == "Shadows" && edge.srcField == "shadows" &&
+                    edge.dstPass == "Deferred" && edge.dstField == "virtualShadows";
+                lightTableEdge |= edge.srcPass == "Shadows" && edge.srcField == "lights" &&
+                    edge.dstPass == "Deferred" && edge.dstField == "virtualShadowLights";
+            }
+            if (!visibilityEdge || !lightTableEdge) {
+                return RHITestResult::fail("VSM candidate must connect linear per-light visibility and its source table");
+            }
+            for (const auto& node : candidate.graph.nodes()) {
+                auto pass = render::createRenderGraphPass(node.type);
+                pass->setProperties(node.properties);
+                const auto requirements = pass->sceneResourcesRequired({});
+                if ((uint32_t(requirements.features) &
+                        uint32_t(render::SceneResourceFeatureBits::AccelerationStructure)) != 0) {
+                    return RHITestResult::fail("VSM candidate pass unexpectedly requests scene acceleration structures");
+                }
+            }
+            if (std::string_view(id) == "gpu-driven-tessellation-vsm" &&
+                (!visibility->properties.value("tessellation", false) ||
+                    visibility->properties.value("tessellationMaxFactor", 0) != 8 ||
+                    visibility->properties.value("tessellationMaxSplitDepth", 0) != 2 ||
+                    shadows->properties.value("tessellationFactor", 0) != 8 ||
+                    shadows->properties.value("tessellationSubdivisionDepth", 0) != 2)) {
+                return RHITestResult::fail("VSM displacement quality must preserve primary geometry and its independent shadow density");
+            }
+        }
+
+        render::RenderSampleLoadResult realtimeRT;
+        if (!render::loadBuiltInRenderSample("realtime-lighting", realtimeRT, message) ||
+            realtimeRT.graph.findNode("Shadows")->type != "RayTracedShadowPass" ||
+            !realtimeRT.graph.findNode("VBuffer")->properties.value("enableClusterRtx", false)) {
+            return RHITestResult::fail("The existing realtime RT sample must remain available during VSM acceptance");
+        }
+
         render::RenderSampleLoadResult gpuDrivenSample;
         if (!render::loadBuiltInRenderSample(render::kDefaultGPUDrivenSampleId, gpuDrivenSample, message)) {
             return RHITestResult::fail(message);

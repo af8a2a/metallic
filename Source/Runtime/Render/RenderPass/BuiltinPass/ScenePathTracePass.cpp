@@ -1852,10 +1852,14 @@ public:
             }
             if (virtualShadows.valid()) {
                 const auto layerCount = virtualShadows.desc().layerCount;
+                const auto tableBytes = virtualLights.desc().size;
+                const bool faceLayers = layerCount % kVirtualShadowMapLightFaceCapacity == 0 &&
+                    tableBytes == sizeof(VirtualShadowMapLightsHeader) +
+                        uint64_t(layerCount / kVirtualShadowMapLightFaceCapacity) * sizeof(VirtualShadowMapLightEntry);
+                const bool compactLayers = tableBytes == sizeof(VirtualShadowMapLightsHeader) +
+                    uint64_t(layerCount) * sizeof(VirtualShadowMapLightEntry);
                 if (virtualShadows.desc().width != context.width() || virtualShadows.desc().height != context.height() ||
-                    layerCount == 0 || layerCount % kVirtualShadowMapLightFaceCapacity != 0 ||
-                    virtualLights.desc().size != sizeof(VirtualShadowMapLightsHeader) +
-                        uint64_t(layerCount / kVirtualShadowMapLightFaceCapacity) * sizeof(VirtualShadowMapLightEntry)) {
+                    layerCount == 0 || (!faceLayers && !compactLayers)) {
                     return makeError(Error::InvalidArgument);
                 }
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, virtualShadows),

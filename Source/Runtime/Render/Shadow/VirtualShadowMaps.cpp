@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <unordered_set>
 #include <vector>
 
 namespace metallic::render {
@@ -235,8 +236,8 @@ struct VirtualShadowMaps::Programs
 {
     Device* device = nullptr;
     uint64_t coverageKey = 0;
-    std::array<std::unique_ptr<ShaderModule>, 10> shaders;
-    std::array<std::unique_ptr<ComputePipeline>, 6> compute;
+    std::array<std::unique_ptr<ShaderModule>, 14> shaders;
+    std::array<std::unique_ptr<ComputePipeline>, 10> compute;
     std::unique_ptr<GraphicsPipeline> raster;
     std::unique_ptr<GraphicsPipeline> clear;
 };
@@ -269,6 +270,8 @@ struct VirtualShadowMaps::State
     std::array<std::shared_ptr<Buffer>, 10> buffers;
     std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
     std::array<std::shared_ptr<TextureView>, 3> views;
+    std::array<Texture*, 2> outputTextures{};
+    bool externalOutput = false;
     std::shared_ptr<Cache> previous;
     std::shared_ptr<Cache> next;
     std::shared_ptr<Buffer> pointFaces;
@@ -281,20 +284,22 @@ VirtualShadowMaps::~VirtualShadowMaps() = default;
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
     TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
-    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection)
+    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
+    const VirtualShadowMapProjectionTarget* output)
 {
     VirtualShadowMapLight light;
     light.enabled = (sun.flags & (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) ==
         (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow);
     if (light.enabled) { light.direction = {sun.direction[0], sun.direction[1], sun.direction[2]}; }
     light.angularRadius = sun.angularRadius;
-    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection);
+    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection, output);
 }
 
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
     TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& inputLight,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
-    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection)
+    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
+    const VirtualShadowMapProjectionTarget* output)
 {
     if (!device.capabilities().meshShader) { return makeError(Error::Unsupported); }
     // Scene geometry uses material slot zero when no material was authored,
@@ -377,6 +382,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (!registry) { return std::unexpected(registry.error()); }
     state->registry = *registry;
     auto& push = state->push;
+    state->externalOutput = output != nullptr;
+    push.filterReserved = output && output->sharedPointLayer ? 1u : 0u;
     push.triangleCount = casters.triangleCapacity;
     push.clipmapCount = settings.clipmapCount;
     push.virtualPagesPerAxis = settings.virtualPagesPerAxis;
@@ -515,10 +522,12 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             {alpha, material.doubleSided ? 1u : 0u, 0, 0},
             {transform[0], transform[1], transform[2], 0}, {transform[3], transform[4], transform[5], 0}});
     }
+    const uint32_t allocationBlocks = (push.totalPages + 255u) / 256u;
+    const uint64_t allocationWords = uint64_t(push.physicalPageCount) * 2 + push.totalPages + allocationBlocks;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128,
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
-        remapping.size() * sizeof(remapping[0]), uint64_t(push.physicalPageCount) * 4};
+        remapping.size() * sizeof(remapping[0]), allocationWords * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 8, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
         remapping.data(), nullptr};
@@ -545,7 +554,19 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const Format formats[]{Format::D32Sfloat, Format::R8Unorm, Format::RGBA8Unorm};
     uint32_t* textureIndices[]{&push.atlas, &push.shadow, &push.debug};
     for (size_t index = 0; index < 3; ++index) {
-        if (index == 0 && reuse) {
+        if (index != 0 && output) {
+            auto* target = index == 1 ? output->shadow : output->debug;
+            if (!target || target->desc().format != formats[index] || target->desc().width != width ||
+                target->desc().height != height || output->layer >= target->desc().layerCount ||
+                !hasFlag(target->desc().usage, TextureUsageBits::Storage)) {
+                log += "VSM projection target must be a matching storage texture layer.\n";
+                return makeError(Error::InvalidArgument);
+            }
+            state->outputTextures[index - 1] = target;
+            auto textureView = device.createTextureView(*target, {.format = formats[index], .range = {.baseLayer = output->layer}});
+            if (!textureView) { return std::unexpected(textureView.error()); }
+            state->views[index] = std::move(*textureView);
+        } else if (index == 0 && reuse) {
             state->textures[index] = cache_->atlas->texture;
             state->views[index] = cache_->atlas->view;
         } else {
@@ -559,6 +580,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (!textureView) { return std::unexpected(textureView.error()); }
             state->views[index] = std::move(*textureView);
         }
+        if (index != 0 && !output) { state->outputTextures[index - 1] = state->textures[index].get(); }
         auto lease = index == 0 ? state->registry->sampledImage(*state->views[index]) : state->registry->storageImage(*state->views[index]);
         if (!lease) { return std::unexpected(lease.error()); }
         *textureIndices[index] = lease->shaderIndex(); state->leases.push_back(*lease);
@@ -578,7 +600,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->device = &device;
         programs->coverageKey = coverage->coverageKey();
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
-            "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain"};
+            "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
+            "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -591,11 +614,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
             if (!module) { return std::unexpected(module.error()); }
             programs->shaders[index] = std::move(*module);
-            if (index < 6) {
+            if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
                     .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
                 if (!pipeline) { return std::unexpected(pipeline.error()); }
-                programs->compute[index] = std::move(*pipeline);
+                programs->compute[index < 6 ? index : index - 4] = std::move(*pipeline);
             }
         }
         auto raster = ShaderRegistry::instance().getGraphicsPipeline(device, {.meshShader = {programs->shaders[6].get()},
@@ -641,8 +664,16 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = barrier({1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
     if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1}); !r) { return std::unexpected(r.error()); }
+    if (auto r = dispatch(6, allocationBlocks); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
     if (auto r = dispatch(2, 1); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
+    if (auto r = dispatch(7, allocationBlocks); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
+    if (auto r = dispatch(8, 1); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
+    if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
     if (push.triangleCount && enabled) {
         // Compute dispatch limit is 65535 workgroups; split immutable triangle ranges.
         for (uint32_t base = 0; base < push.triangleCount;) {
@@ -719,7 +750,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (!deferProjection) {
         if (auto r = project(commands, {}, log); !r) { return std::unexpected(r.error()); }
     }
-    return VirtualShadowMapResult{state->textures[1].get(), state->views[1].get(), state->textures[2].get(), state->views[2].get(),
+    return VirtualShadowMapResult{state->outputTextures[0], state->views[1].get(), state->outputTextures[1], state->views[2].get(),
         state->buffers[4].get(), state->textures[0].get(), state->views[0].get(), state->buffers[1].get(), state->buffers[5].get(), push.physicalPagesX, push.clipmapCount, push.pageSize};
 }
 
@@ -775,15 +806,30 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
         push.pointFaces = lease->shaderIndex(); state.leases.push_back(*lease);
     }
     if (auto r = state.registry->bind(commands, state.leases); !r) { return r; }
+    if (state.externalOutput) {
+        // Point faces share one layer. Canonical ownership makes their writes
+        // disjoint, while the explicit dependency also satisfies whole-view
+        // synchronization validation and orders any prior initialization.
+        const TextureBarrierDesc sharedReady[]{
+            {.texture = state.outputTextures[0], .oldLayout = TextureLayout::General, .newLayout = TextureLayout::General,
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.views[1]->desc().range},
+            {.texture = state.outputTextures[1], .oldLayout = TextureLayout::General, .newLayout = TextureLayout::General,
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.views[2]->desc().range}};
+        if (auto r = commands.synchronize({.textures = sharedReady}); !r) { return r; }
+    }
     const TextureBarrierDesc outputBegin[]{
         {.texture = state.textures[1].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
         {.texture = state.textures[2].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}}};
-    if (auto r = commands.synchronize({.textures = outputBegin}); !r) { return r; }
+    if (!state.externalOutput) {
+        if (auto r = commands.synchronize({.textures = outputBegin}); !r) { return r; }
+    }
     commands.beginDebugLabel({.name = "VSM: receiver projection"});
     if (auto r = commands.bindExecution(state.programs->compute[5]->execution(), &push, sizeof(push)); !r) { return r; }
-    const auto& desc = state.textures[1]->desc();
+    const auto& desc = state.outputTextures[0]->desc();
     if (auto r = commands.dispatch((desc.width + 7) / 8, (desc.height + 7) / 8); !r) { return r; }
     commands.endDebugLabel();
     const TextureBarrierDesc outputEnd[]{
@@ -796,9 +842,49 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
     const BufferBarrierDesc statisticsReady{.buffer = state.buffers[4].get(),
         .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}};
-    if (auto r = commands.synchronize({.textures = outputEnd, .buffers = {&statisticsReady, 1}}); !r) { return r; }
+    if (auto r = commands.synchronize({.textures = state.externalOutput ? std::span<const TextureBarrierDesc>{} : std::span<const TextureBarrierDesc>{outputEnd},
+        .buffers = {&statisticsReady, 1}}); !r) { return r; }
     state.projectionPending = false;
     return {};
+}
+
+VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
+{
+    VirtualShadowMapMemoryUsage usage;
+    std::unordered_set<const Texture*> textures;
+    std::unordered_set<const Buffer*> buffers;
+    const auto addAtlas = [&](const Texture* texture, uint32_t pageSize) {
+        if (texture && textures.insert(texture).second) {
+            const auto& desc = texture->desc();
+            usage.atlasBytes += uint64_t(desc.width) * desc.height * 4;
+            usage.allocatedAtlasPages += uint64_t(desc.width / pageSize) * (desc.height / pageSize);
+        }
+    };
+    const auto addBuffer = [&](const Buffer* buffer) {
+        if (buffer && buffers.insert(buffer).second) { usage.bufferBytes += buffer->desc().size; }
+    };
+    const auto addCache = [&](const std::shared_ptr<Cache>& cache) {
+        if (cache) {
+            addAtlas(cache->atlas->texture.get(), cache->settings.pageSize);
+            addBuffer(cache->pages.get());
+        }
+    };
+    addCache(cache_);
+    addCache(pending_);
+    if (state_) {
+        addAtlas(state_->textures[0].get(), state_->push.pageSize);
+        for (size_t index = 1; index < state_->textures.size(); ++index) {
+            if (const auto& texture = state_->textures[index]; texture && textures.insert(texture.get()).second) {
+                const auto& desc = texture->desc();
+                usage.privateOutputBytes += uint64_t(desc.width) * desc.height * (index == 1 ? 1 : 4);
+            }
+        }
+        for (const auto& buffer : state_->buffers) { addBuffer(buffer.get()); }
+        addBuffer(state_->pointFaces.get());
+        addCache(state_->previous);
+        addCache(state_->next);
+    }
+    return usage;
 }
 
 } // namespace metallic::render

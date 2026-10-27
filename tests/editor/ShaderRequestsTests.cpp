@@ -939,8 +939,9 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
     studio["id"] = "studio-white-test";
     write(root / "build/MaterialValidation/WhiteStudio02/Catalog.json", {{"version", 1}, {"samples", {studio}}});
     const auto requests = metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR);
-    // One CLAS path trace request plus deferred render and deferred material-kernel requests.
-    ASSERT_EQ(requests.size(), 3u);
+    // One CLAS path trace request and one flat Deferred request. Deferred's
+    // global/local camera choice is a runtime flag, so both catalog views deduplicate.
+    ASSERT_EQ(requests.size(), 2u);
     metallic::scene::RenderMaterial material;
     material.valueProgram = valueProgram;
     std::string diagnostics;

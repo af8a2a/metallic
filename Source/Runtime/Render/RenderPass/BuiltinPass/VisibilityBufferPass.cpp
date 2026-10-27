@@ -176,7 +176,10 @@ public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
         return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,
-            .geometry = true};
+            .geometry = true,
+            // Semantic capture consumes the current sampling metadata in scene
+            // end, so its producer must publish it before raster execution.
+            .textureFeedback = properties().value("benchmarkCaptureSemanticSource", false)};
     }
 
     bool supportsFrameOverlap() const override

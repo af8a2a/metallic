@@ -71,6 +71,25 @@ struct VirtualShadowMapResult
     uint32_t pageSize = 0;
 };
 
+// The caller owns these graph textures through GPU completion and transitions
+// them to General for projection. Each view covers one layer. Point faces may
+// share that layer because only the canonical face writes a receiver pixel.
+struct VirtualShadowMapProjectionTarget
+{
+    Texture* shadow = nullptr;
+    Texture* debug = nullptr;
+    uint32_t layer = 0;
+    bool sharedPointLayer = false;
+};
+
+struct VirtualShadowMapMemoryUsage
+{
+    uint64_t atlasBytes = 0;
+    uint64_t privateOutputBytes = 0;
+    uint64_t bufferBytes = 0;
+    uint64_t allocatedAtlasPages = 0;
+};
+
 // A complete coarse projection plus directional clipmaps or local mip levels.
 // Physical page zero is reserved for complete coarse coverage. Fine allocation
 // failure or work overflow queries that rendered coarse page, never uninitialized depth.
@@ -83,17 +102,24 @@ public:
         TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
-        const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false);
+        const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
+        const VirtualShadowMapProjectionTarget* output = nullptr);
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
-        const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false);
+        const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
+        const VirtualShadowMapProjectionTarget* output = nullptr);
 
     // A filtered point light records all six faces before projecting any face.
     // The ordered face results keep each tap's page table, projection and atlas
     // explicit; no tap may wrap into an unrelated physical atlas tile.
     Result<> project(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
+
+    // Logical resource bytes currently owned by this cache and its recording.
+    // Native allocation padding and retired in-flight recordings are excluded;
+    // use Device::memoryBudget() for whole-device live/peak allocation evidence.
+    VirtualShadowMapMemoryUsage memoryUsage() const;
 
 private:
     struct Programs;

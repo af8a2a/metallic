@@ -1,0 +1,242 @@
+{
+    "name": "Realtime VSM Candidate",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
+            "position": {
+                "x": 80,
+                "y": 250
+            },
+            "properties": {
+                "path": "Asset/meet_mat.glb",
+                "visualization": "none",
+                "enableClusterRtx": false,
+                "instanceFrustumCull": true,
+                "enableClas": false,
+                "initialLoad": true
+            }
+        },
+        {
+            "id": 7,
+            "name": "Shadows",
+            "type": "VirtualShadowMapLightsPass",
+            "position": {
+                "x": 420,
+                "y": 0
+            },
+            "properties": {
+                "enabled": true,
+                "pageSize": 128,
+                "virtualPagesPerAxis": 128,
+                "clipmapCount": 6,
+                "maxWorkItems": 1048576,
+                "firstClipmapExtent": 4.0,
+                "shadowBias": 0.002,
+                "cacheEnabled": true,
+                "lightCapacity": 8,
+                "compactOutputs": true,
+                "physicalPageBudget": 2048,
+                "nearPlane": 0.001,
+                "filter": "pcf",
+                "pcfRadius": 1.0,
+                "smrtRayCount": 8,
+                "smrtSamplesPerRay": 16,
+                "smrtMaxRayLength": 10.0,
+                "receiverFootprint": true,
+                "tessellationFactor": 4,
+                "tessellationSubdivisionDepth": 0
+            }
+        },
+        {
+            "id": 2,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {
+                "x": 760,
+                "y": 250
+            },
+            "properties": {
+                "path": "Asset/meet_mat.glb",
+                "exportUpscalerGuides": true,
+                "materialBinning": true,
+                "outputLinear": true
+            }
+        },
+        {
+            "id": 3,
+            "name": "DLSSSR",
+            "type": "StreamlineDLSSSRPass",
+            "position": {
+                "x": 1100,
+                "y": 250
+            },
+            "properties": {
+                "mode": "Quality",
+                "exportOutputGuides": true
+            }
+        },
+        {
+            "id": 4,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 1440,
+                "y": 250
+            },
+            "properties": {}
+        },
+        {
+            "id": 5,
+            "name": "DLSSNR",
+            "type": "DLSSNRPass",
+            "position": {
+                "x": 1780,
+                "y": 250
+            },
+            "properties": {
+                "enabled": false,
+                "fallbackToInput": true,
+                "intensity": 1.0,
+                "preset": 0,
+                "style": 0
+            }
+        },
+        {
+            "id": 6,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {
+                "x": 2120,
+                "y": 250
+            },
+            "properties": {}
+        },
+        {
+            "id": 8,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 2120,
+                "y": 490
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
+        }
+    ],
+    "edges": [
+        {
+            "id": 1,
+            "src": "VBuffer.visibility",
+            "dst": "Deferred.visibility"
+        },
+        {
+            "id": 2,
+            "src": "VBuffer.depth",
+            "dst": "Deferred.depth"
+        },
+        {
+            "id": 3,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Deferred.rasterInfo"
+        },
+        {
+            "id": 4,
+            "src": "Deferred.color",
+            "dst": "DLSSSR.inputColor"
+        },
+        {
+            "id": 5,
+            "src": "Deferred.motionVectors",
+            "dst": "DLSSSR.motionVectors"
+        },
+        {
+            "id": 6,
+            "src": "Deferred.deviceDepth",
+            "dst": "DLSSSR.depth"
+        },
+        {
+            "id": 8,
+            "src": "DLSSSR.color",
+            "dst": "AutoExposure.source"
+        },
+        {
+            "id": 9,
+            "src": "AutoExposure.color",
+            "dst": "DLSSNR.inputColor"
+        },
+        {
+            "id": 10,
+            "src": "DLSSSR.motionVectors",
+            "dst": "DLSSNR.motionVectors"
+        },
+        {
+            "id": 11,
+            "src": "DLSSSR.depth",
+            "dst": "DLSSNR.depth"
+        },
+        {
+            "id": 12,
+            "src": "DLSSNR.color",
+            "dst": "FinalBlit.source"
+        },
+        {
+            "id": 13,
+            "src": "VBuffer.depth",
+            "dst": "Shadows.depth"
+        },
+        {
+            "id": 14,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Shadows.rasterInfo"
+        },
+        {
+            "id": 15,
+            "src": "Shadows.shadows",
+            "dst": "Deferred.virtualShadows"
+        },
+        {
+            "id": 16,
+            "src": "Shadows.lights",
+            "dst": "Deferred.virtualShadowLights"
+        },
+        {
+            "id": 17,
+            "src": "VBuffer.domain",
+            "dst": "Deferred.domain"
+        },
+        {
+            "id": 18,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
+        }
+    ],
+    "outputs": [],
+    "view": {
+        "camera": {
+            "eye": [
+                0.0,
+                1.35,
+                4.4
+            ],
+            "center": [
+                0.0,
+                1.2,
+                0.0
+            ],
+            "up": [
+                0,
+                1,
+                0
+            ],
+            "fovDegrees": 50.0,
+            "znear": 0.05,
+            "zfar": 1000.0,
+            "projection": "perspective"
+        },
+        "temporalJitter": true
+    }
+}

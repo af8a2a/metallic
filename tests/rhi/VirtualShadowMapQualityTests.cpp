@@ -70,6 +70,7 @@ Point point(const float* value)
 struct EvidenceState {
     std::map<std::string, Buffer*> buffers;
     VisibilityBufferFrameInfo camera;
+    std::map<std::string, uint32_t> layers;
 };
 std::shared_ptr<EvidenceState> evidence;
 constexpr uint64_t kShadowStride = (kPixels + 3) & ~uint64_t(3);
@@ -77,7 +78,9 @@ constexpr uint64_t kDepthOffset = kShadowStride * kLayers;
 constexpr uint64_t kStatsOffset = kDepthOffset + kPixels * 4;
 constexpr uint64_t kTableOffset = kStatsOffset + kLayers * kVirtualShadowMapFaceStatisticsSize;
 constexpr uint64_t kTableSize = sizeof(VirtualShadowMapLightsHeader) + kCapacity * sizeof(VirtualShadowMapLightEntry);
-constexpr uint64_t kReadbackSize = kTableOffset + kTableSize;
+constexpr uint64_t kMemoryOffset = kTableOffset + kTableSize;
+constexpr uint64_t kDebugOffset = kMemoryOffset + 8 * sizeof(uint64_t);
+constexpr uint64_t kReadbackSize = kDebugOffset + kPixels * 4 * kLayers;
 
 class VSMQualityEvidencePass final : public UnsafePass {
 public:
@@ -86,12 +89,13 @@ public:
     {
         RenderPassReflection reflection;
         auto& shadows = reflection.addTextureInput("shadows").transferRead();
-        shadows.format = Format::R8Unorm; shadows.layerCount = kLayers;
+        shadows.format = Format::R8Unorm; shadows.layerCount = 0;
         auto& debug = reflection.addTextureInput("debug").transferRead();
-        debug.format = Format::RGBA8Unorm; debug.layerCount = kLayers;
+        debug.format = Format::RGBA8Unorm; debug.layerCount = 0;
         reflection.addTextureInput("depth").transferRead().format = Format::D32Sfloat;
         reflection.addBufferInput("statistics").buffer(kLayers * kVirtualShadowMapFaceStatisticsSize).transferRead();
         reflection.addBufferInput("lights").buffer(kTableSize).transferRead();
+        reflection.addBufferInput("memory").buffer(8 * sizeof(uint64_t)).transferRead();
         reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
             .shaderRead().memoryLocation = MemoryLocation::HostUpload;
         reflection.addBufferOutput("data").buffer(kReadbackSize).transferWrite().hostReadback();
@@ -102,19 +106,28 @@ public:
     {
         auto& commands = context.commandBuffer();
         auto* buffer = context.outputBuffer("data").buffer();
-        state_->buffers[context.properties().at("evidenceName").get<std::string>()] = buffer;
-        for (uint32_t layer = 0; layer < kLayers; ++layer) {
+        const auto name = context.properties().at("evidenceName").get<std::string>();
+        state_->buffers[name] = buffer;
+        const uint32_t layers = context.inputTexture("shadows").desc().layerCount;
+        state_->layers[name] = layers;
+        for (uint32_t layer = 0; layer < layers; ++layer) {
             auto destination = buffer->slice({layer * kShadowStride, kPixels});
             if (!destination) { return std::unexpected(destination.error()); }
             if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("shadows").texture(),
                 .buffer = *destination, .width = kWidth, .height = kHeight, .baseLayer = layer}); !result) { return result; }
+            if (context.properties().value("captureDebug", false)) {
+                auto debugDestination = buffer->slice({kDebugOffset + uint64_t(layer) * kPixels * 4, kPixels * 4});
+                if (!debugDestination) { return std::unexpected(debugDestination.error()); }
+                if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("debug").texture(),
+                    .buffer = *debugDestination, .width = kWidth, .height = kHeight, .baseLayer = layer}); !result) { return result; }
+            }
         }
         auto depth = buffer->slice({kDepthOffset, kPixels * 4});
         if (!depth) { return std::unexpected(depth.error()); }
         if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("depth").texture(),
             .buffer = *depth, .width = kWidth, .height = kHeight}); !result) { return result; }
         for (const auto& [name, offset, size] : {std::tuple{"statistics", kStatsOffset, uint64_t(kLayers * kVirtualShadowMapFaceStatisticsSize)},
-            std::tuple{"lights", kTableOffset, kTableSize}}) {
+            std::tuple{"lights", kTableOffset, kTableSize}, std::tuple{"memory", kMemoryOffset, uint64_t(8 * sizeof(uint64_t))}}) {
             auto source = context.inputBuffer(name).buffer()->slice({0, size});
             auto destination = buffer->slice({offset, size});
             if (!source) { return std::unexpected(source.error()); }
@@ -138,10 +151,12 @@ struct Snapshot {
     std::array<VirtualShadowMapLightEntry, kCapacity> entries{};
     std::array<std::array<uint32_t, 32>, kLayers> statistics{};
     std::array<std::vector<uint8_t>, kLayers> shadows;
+    std::array<std::vector<uint8_t>, kLayers> debug;
+    std::array<uint64_t, 8> memory{};
     std::vector<float> depth;
     VisibilityBufferFrameInfo camera;
 };
-Snapshot snapshot(const std::string& name)
+Snapshot snapshot(const std::string& name, bool captureDebug = false)
 {
     Snapshot result;
     auto* buffer = evidence->buffers.at(name);
@@ -149,13 +164,20 @@ Snapshot snapshot(const std::string& name)
     const auto* mapped = static_cast<const std::byte*>(buffer->map());
     require(mapped != nullptr, "Map VSM quality evidence");
     for (uint32_t layer = 0; layer < kLayers; ++layer) {
-        result.shadows[layer].resize(kPixels);
-        std::memcpy(result.shadows[layer].data(), mapped + layer * kShadowStride, kPixels);
+        result.shadows[layer].resize(kPixels, 255);
+        if (layer < evidence->layers.at(name)) {
+            std::memcpy(result.shadows[layer].data(), mapped + layer * kShadowStride, kPixels);
+            if (captureDebug) {
+                result.debug[layer].resize(kPixels * 4);
+                std::memcpy(result.debug[layer].data(), mapped + kDebugOffset + uint64_t(layer) * kPixels * 4, kPixels * 4);
+            }
+        }
     }
     result.depth.resize(kPixels);
     std::memcpy(result.depth.data(), mapped + kDepthOffset, kPixels * 4);
     std::memcpy(result.statistics.data(), mapped + kStatsOffset, sizeof(result.statistics));
     std::memcpy(&result.header, mapped + kTableOffset, sizeof(result.header));
+    std::memcpy(result.memory.data(), mapped + kMemoryOffset, sizeof(result.memory));
     std::memcpy(result.entries.data(), mapped + kTableOffset + sizeof(result.header), sizeof(result.entries));
     buffer->unmap(); result.camera = evidence->camera;
     require(result.header.version == kVirtualShadowMapLightsVersion && result.header.capacity == kCapacity,
@@ -358,7 +380,7 @@ struct Source {
     double size = .35;
 };
 
-RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt")
+RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt", bool compactComparison = false)
 {
     RenderGraph graph;
     graph.setName("VirtualShadowMapQuality");
@@ -371,18 +393,20 @@ RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt"
         {"autoLod",false},{"lodLevel",0},{"instanceFrustumCull",false},{"meshletFrustumCull",false},
         {"instanceHzbCull",false},{"meshletHzbCull",false},
         {"meshletNormalConeCull",false},{"hybridRaster",false},{"enableClas",false},{"enableClusterRtx",false}});
-    for (const char* name : {"Cached","Redraw","Hard"}) {
+    const std::vector<const char*> names = compactComparison ? std::vector<const char*>{"Cached", "Compact"} :
+        std::vector<const char*>{"Cached", "Redraw", "Hard"};
+    for (const char* name : names) {
         graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kCapacity},{"physicalPageBudget",2048},
             {"pageSize",128},{"virtualPagesPerAxis",16},{"clipmapCount",4},{"firstClipmapExtent",4},
             {"maxWorkItems",131072},{"shadowBias",.002},{"cacheEnabled",true},
             {"forceRedraw",std::string_view(name)=="Redraw"},{"filter",std::string_view(name)=="Hard" ? "hard" : filter},
             {"pcfRadius",1.5},{"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},
-            {"receiverFootprint",true}});
+            {"receiverFootprint",true},{"compactOutputs",std::string_view(name)=="Compact"}});
         graph.addEdge("Raster.depth",std::string(name)+".depth");
         graph.addEdge("Raster.rasterInfo",std::string(name)+".rasterInfo");
         const std::string readback=std::string(name)+"Evidence";
-        graph.addNode("VSMQualityEvidencePass",readback,{{"evidenceName",name}});
-        for (const char* field : {"shadows","debug","lights","statistics"}) {
+        graph.addNode("VSMQualityEvidencePass",readback,{{"evidenceName",name},{"captureDebug",compactComparison}});
+        for (const char* field : {"shadows","debug","lights","statistics","memory"}) {
             graph.addEdge(std::string(name)+"."+field,readback+"."+field);
         }
         graph.addEdge("Raster.depth",readback+".depth");
@@ -658,6 +682,13 @@ void verifyUnadmittedFrame(RenderGraphPreviewRenderer& preview, RenderGraph& gra
     std::ofstream(directory/"VirtualShadowMapQuality.json") << report.dump(2) << '\n';
 }
 
+void registerQualityEvidence()
+{
+    static const bool registered = registerRenderGraphPassType("VSMQualityEvidencePass",
+        "Test-only filtered VSM publication readback", [] { return std::make_unique<VSMQualityEvidencePass>(evidence); });
+    require(registered, "Register VSM quality evidence pass");
+}
+
 class VirtualShadowMapQualityTest final : public RHITest {
 public:
     VirtualShadowMapQualityTest() { type=RHITestType::Rendering; name="virtual_shadow_map_quality"; }
@@ -677,9 +708,7 @@ public:
         bench::ValidationRecorder validation;
         try {
             std::filesystem::create_directories(directory);
-            static const bool registered=registerRenderGraphPassType("VSMQualityEvidencePass",
-                "Test-only filtered VSM publication readback",[] { return std::make_unique<VSMQualityEvidencePass>(evidence); });
-            require(registered,"Register VSM quality evidence pass");
+            registerQualityEvidence();
             const auto floor=writeFixture(directory/"Floor",false);
             const auto contact=writeFixture(directory/"Contact",false,.15);
             const auto cornerPlane=writeFixture(directory/"CornerPlane",false,1.5,.5);
@@ -861,6 +890,239 @@ public:
         }
     }
 };
+class VirtualShadowMapCompactTest final : public RHITest {
+public:
+    VirtualShadowMapCompactTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_compact"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapCompact";
+        Json report{{"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto floor = writeFixture(directory / "Floor", false);
+            const auto room = writeFixture(directory / "Room", true);
+            const auto compare = [&](RenderGraphPreviewRenderer& preview, RenderGraph& graph, const std::string& name) {
+                validation.phase(name);
+                require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"),
+                    "Compact VSM render: " + preview.lastLog());
+                const auto legacy = snapshot("Cached", true), compact = snapshot("Compact", true);
+                require(legacy.depth == compact.depth, name + ": receiver depth mismatch");
+                require(legacy.header.reserved[0] == 0 && compact.header.reserved[0] == 1, name + ": layout flags");
+                require(legacy.memory[3] == compact.memory[3] * 6 && compact.memory[1] == 0,
+                    name + ": compact memory accounting did not remove face outputs");
+                require(legacy.memory[0] == compact.memory[0] && legacy.memory[4] == compact.memory[4] &&
+                    legacy.memory[5] == compact.memory[5], name + ": compact projection changed atlas allocation");
+                uint64_t visibilityMismatches = 0, debugMismatches = 0;
+                for (uint32_t index = 0; index < legacy.header.count; ++index) {
+                    const auto& a = legacy.entries[index];
+                    const auto& b = compact.entries[index];
+                    require(a.source == b.source && a.faceCount == b.faceCount && a.status == b.status &&
+                        a.pageBudget == b.pageBudget && b.baseLayer == index, name + ": compact table identity");
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const auto pixel = size_t(y) * kWidth + x;
+                        const uint32_t faceCount = a.kind == 2 && a.status == kVirtualShadowMapLightAdmitted ? 6 : 1;
+                        uint8_t expectedShadow = 255;
+                        std::array<uint8_t, 4> expectedDebug{};
+                        uint32_t coloredFaces = 0;
+                        for (uint32_t face = 0; face < faceCount; ++face) {
+                            const auto layer = a.baseLayer + face;
+                            expectedShadow = std::min(expectedShadow, legacy.shadows[layer][pixel]);
+                            coloredFaces += legacy.debug[layer][pixel * 4] || legacy.debug[layer][pixel * 4 + 1] ||
+                                legacy.debug[layer][pixel * 4 + 2];
+                            for (uint32_t channel = 0; channel < 4; ++channel) {
+                                expectedDebug[channel] = std::max(expectedDebug[channel], legacy.debug[layer][pixel * 4 + channel]);
+                            }
+                        }
+                        require(coloredFaces <= 1, name + ": multiple point faces own the same receiver");
+                        visibilityMismatches += expectedShadow != compact.shadows[b.baseLayer][pixel];
+                        for (uint32_t channel = 0; channel < 4; ++channel) {
+                            debugMismatches += expectedDebug[channel] != compact.debug[b.baseLayer][pixel * 4 + channel];
+                        }
+                    }}
+                }
+                report["frames"].push_back({{"name", name}, {"visibilityMismatches", visibilityMismatches},
+                    {"debugMismatches", debugMismatches}, {"legacyMemory", legacy.memory}, {"compactMemory", compact.memory}});
+                require(visibilityMismatches == 0 && debugMismatches == 0, name + ": compact differs from canonical legacy face");
+            };
+            for (const std::string filter : {"hard", "pcf", "smrt"}) {
+                for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                    scene::SceneDocument scene; require(scene.load(floor.source), "Load compact VSM fixture");
+                    RenderView view; RenderGraphPreviewRenderer preview;
+                    configurePreview(preview, scene, view, context, validation);
+                    Source source{kind}; source.size = kind == "Directional" ? .08 : .35;
+                    publishSource(scene, preview, source);
+                    evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(floor, filter, true);
+                    const auto name = filter + "-" + kind;
+                    compare(preview, graph, name + "-Cold");
+                    compare(preview, graph, name + "-Warm");
+                    if (filter == "hard" && kind == "Directional") {
+                        for (const char* node : {"Cached", "Compact"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "enabled", false), "Disable compact shadows");
+                        }
+                        compare(preview, graph, name + "-Disabled");
+                        for (const char* node : {"Cached", "Compact"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "enabled", true), "Enable compact shadows");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "physicalPageBudget", 0), "Remove compact budget");
+                        }
+                        compare(preview, graph, name + "-ZeroBudget");
+                    }
+                }
+            }
+            {
+                scene::SceneDocument scene; require(scene.loadStreamMetadata(room.source), "Load compact Stream room");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                Source source{"Point", {0,0,0}, {0,-1,0}, .2}; publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(room, "smrt", true);
+                for (const auto target : {float3(6,6,0), float3(6,6,6)}) {
+                    require(view.setCamera({.eye={0,0,3}, .center={target.x,target.y,target.z}, .up={0,0,1},
+                        .fovDegrees=65, .nearPlane=.05f, .farPlane=30}), "Set compact seam/corner camera");
+                    const auto name = target.z == 0 ? "PointRoom-Seam" : "PointRoom-Corner";
+                    compare(preview, graph, std::string(name) + "-Cold");
+                    compare(preview, graph, std::string(name) + "-Warm");
+                }
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Compact VSM validation error");
+            report["passed"] = true;
+            std::ofstream(directory / "VirtualShadowMapCompact.json") << report.dump(2) << '\n';
+            return RHITestResult::pass("Compact VSM matches canonical legacy shadow/debug with no private screen outputs");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot();
+            std::ofstream(directory / "VirtualShadowMapCompact.json") << report.dump(2) << '\n';
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCompactTest);
+
+class VirtualShadowMapFilterDemandTest final : public RHITest {
+public:
+    VirtualShadowMapFilterDemandTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_filter_demand"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapFilterDemand";
+        Json report{{"passed", false}, {"scope", "Filtered demand admission, not one-segment SMRT quality"},
+            {"virtualPagesPerAxis", 128}, {"physicalPagesPerFace", 256}, {"orthographicHeight", 4},
+            {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapFilterDemand.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "Plane", false, 1.5, .5);
+            for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                scene::SceneDocument scene;
+                require(scene.load(fixture.source), "Load demand fixture");
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                const float center = kind == "Point" ? 2.0f : 0.0f;
+                ViewCamera camera{.eye = {center, 10, center}, .center = {center, 0, center}, .up = {0,0,-1},
+                    .fovDegrees = 52, .nearPlane = .1f, .farPlane = 30, .orthoHeight = 4, .orthographic = true};
+                require(view.setCamera(camera), "Set orthographic footprint camera");
+                Source source{kind, {-2,4,-2}, {.6,-1,0}, kind == "Directional" ? .2 : 1.0};
+                publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>();
+                auto graph = makeGraph(fixture, "pcf");
+                const uint32_t pageBudget = kind == "Point" ? 6 * 256 : 256;
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    const auto id = graph.findNode(node)->id;
+                    require(graph.setNodeRuntimeProperty(id, "virtualPagesPerAxis", 128), "Set demand virtual resolution");
+                    require(graph.setNodeRuntimeProperty(id, "physicalPageBudget", pageBudget), "Set demand physical budget");
+                    require(graph.setNodeRuntimeProperty(id, "smrtRayCount", 4), "Set demand ray count");
+                    require(graph.setNodeRuntimeProperty(id, "smrtSamplesPerRay", 1), "Set demand segment count");
+                    require(graph.setNodeRuntimeProperty(id, "smrtMaxRayLength", 1), "Set demand ray length");
+                }
+                const auto render = [&](const std::string& suffix, bool expectCompleteDemand) {
+                    const auto name = kind + "-" + suffix;
+                    validation.phase(name);
+                    require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"), "Demand render: " + preview.lastLog());
+                    const auto cached = snapshot("Cached"), redraw = snapshot("Redraw");
+                    const auto& entry = activeEntry(cached);
+                    std::array<uint64_t, 32> totals{};
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        const auto& counters = cached.statistics[entry.baseLayer + face];
+                        for (size_t index = 0; index < totals.size(); ++index) { totals[index] += counters[index]; }
+                    }
+                    const bool equal = cached.shadows == redraw.shadows && cached.depth == redraw.depth;
+                    report["frames"].push_back({{"name", name}, {"cacheRedrawEqual", equal},
+                        {"statistics", cached.statistics}, {"totals", totals}, {"expectCompleteDemand", expectCompleteDemand}});
+                    save();
+                    require(equal, name + ": cached and forced redraw differ");
+                    require(totals[5] == 0 && totals[9] == 0, name + ": raster overflow or unresolved coarse page");
+                    if (expectCompleteDemand) {
+                        // These orthographic receivers select coarse clipmap/mip
+                        // levels. Their useful demand fits the declared pool; an
+                        // unconditional level-zero request fills it first instead.
+                        require(totals[0] > 0 && totals[0] == totals[1] && totals[2] == 0,
+                            name + ": useful filtered demand was not fully admitted");
+                        require(totals[30] > 0 && totals[31] == 0,
+                            name + ": filtered queries unexpectedly fell back to the complete coarse map");
+                    }
+                    return cached;
+                };
+                const auto pcf = render("PCF-Cold", true);
+                requireReused(render("PCF-Warm", true), kind + " PCF reuse");
+                saveGray(directory / (kind + "-PCF.png"), visibility(pcf, fixture, source));
+                if (kind == "Point") {
+                    uint32_t seams = 0, corners = 0;
+                    std::array<bool, 6> visibleFaces{};
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const auto hit = cameraHit(pcf.camera, x, y, fixture);
+                        if (!hit.valid || std::abs(hit.position[1]) > .01) { continue; }
+                        const auto delta = add(hit.position, scale(source.position, -1));
+                        visibleFaces[pointFace(delta)] = true;
+                        std::array<double, 3> magnitudes{std::abs(delta[0]), std::abs(delta[1]), std::abs(delta[2])};
+                        std::sort(magnitudes.begin(), magnitudes.end());
+                        seams += magnitudes[2] - magnitudes[1] < .15;
+                        corners += magnitudes[2] - magnitudes[0] < .3;
+                    }}
+                    const auto faces = std::count(visibleFaces.begin(), visibleFaces.end(), true);
+                    report["pointBoundaries"] = {{"seamSamples", seams}, {"cornerSamples", corners}, {"canonicalFaces", faces}};
+                    require(seams > 100 && corners > 20 && faces >= 3, "Demand fixture missed point seams/corner");
+                }
+                camera.eye[0] += .07f; camera.center[0] += .07f;
+                require(view.setCamera(camera), "Move demand camera across virtual page boundary");
+                (void)render("PCF-Move", true);
+                setProperty(graph, "pcfRadius", 0);
+                const auto zeroPCF = render("PCF-ZeroRadius", false);
+                require(zeroPCF.shadows == snapshot("Hard").shadows, kind + ": zero-radius PCF differs from Hard");
+                const auto& zeroEntry = activeEntry(zeroPCF);
+                for (uint32_t face = 0; face < zeroEntry.faceCount; ++face) {
+                    require(zeroPCF.statistics[zeroEntry.baseLayer + face][30] == 0, "Zero-radius PCF still issued filtered taps");
+                }
+                setProperty(graph, "pcfRadius", 1.5);
+                setProperty(graph, "filter", "smrt");
+                (void)render("SMRT-Cold", true);
+                requireReused(render("SMRT-Warm", true), kind + " SMRT reuse");
+                setProperty(graph, "physicalPageBudget", kind == "Point" ? 6 : 1);
+                const auto coarse = render("SMRT-CoarseOnly", false);
+                const auto& coarseEntry = activeEntry(coarse);
+                uint64_t coarseTaps = 0;
+                for (uint32_t face = 0; face < coarseEntry.faceCount; ++face) { coarseTaps += coarse.statistics[coarseEntry.baseLayer + face][31]; }
+                require(coarseTaps > 0, kind + ": coarse-only pool did not exercise filtered fallback");
+                setProperty(graph, "physicalPageBudget", pageBudget);
+                (void)render("SMRT-PoolRecovery", true);
+                requireReused(render("SMRT-RecoveryWarm", true), kind + " recovered cache reuse");
+                source.size = 0; publishSource(scene, preview, source);
+                const auto zeroSMRT = render("SMRT-ZeroSource", false);
+                require(zeroSMRT.shadows == snapshot("Hard").shadows, kind + ": zero-source SMRT differs from Hard");
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Filtered demand validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("High-resolution filtered demand fits its pool with no coarse taps; cache, point boundaries and Hard reductions match");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapFilterDemandTest);
+
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 
 } // namespace

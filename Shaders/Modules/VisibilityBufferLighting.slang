@@ -147,7 +147,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
                 VirtualShadowMapLightEntry entry = table.Load<VirtualShadowMapLightEntry>(64u + index * 64u);
                 if (entry.source != light.source) { continue; }
                 if (entry.status != 1u) { return float3(1); }
-                uint face = entry.kind == 2u ? Metallic.Shadow::virtualShadowMapPointFace(
+                uint face = entry.kind == 2u && (header.reserved[0] & 1u) == 0u ? Metallic.Shadow::virtualShadowMapPointFace(
                     position - float3(entry.positionRange[0], entry.positionRange[1], entry.positionRange[2])) : 0u;
                 let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
                     ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));

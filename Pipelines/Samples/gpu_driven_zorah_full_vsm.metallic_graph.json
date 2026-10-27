@@ -1,0 +1,292 @@
+{
+    "name": "ZorahFull VSM Candidate",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
+            "position": {
+                "x": 80,
+                "y": 250
+            },
+            "properties": {
+                "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+                "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+                "sceneBinding": "asset",
+                "viewBinding": "global",
+                "autoBuildStreamAsset": false,
+                "enableClusterRtx": false,
+                "enableClas": false,
+                "compactClas": true,
+                "coldPageRetentionFrames": 120,
+                "startClasBytes": 0,
+                "growClasBytes": 67108864,
+                "persistentClasGrowBytes": 33554432,
+                "clasEmptyChunkRetentionFrames": 30,
+                "maxClasBytes": 2147483648,
+                "maxClasBuildClusters": 8192,
+                "maxResidentBytes": 3758096384,
+                "maxResidentPages": 0,
+                "maxLockedFallbackPages": 65536,
+                "maxActiveGroups": 1048575,
+                "maxRasterCandidates": 8388608,
+                "maxPageUploadsPerFrame": 256,
+                "maxUploadBytesPerFrame": 8388608,
+                "maxPageLoadsInFlight": 1024,
+                "pageLoadConcurrency": 4,
+                "maxGpuPageRequests": 65536,
+                "maxGpuPageUnloadRequests": 65536,
+                "maxTraversalWorkers": 4096,
+                "distributedPageDemand": true,
+                "distributedDemandMinGroups": 65536,
+                "maxTraversalWorkItems": 1048576,
+                "autoLod": true,
+                "lodPixelError": 1.5,
+                "visualization": "none",
+                "instanceFrustumCull": true,
+                "instanceHzbCull": true,
+                "meshletFrustumCull": true,
+                "meshletNormalConeCull": false,
+                "hybridRaster": true,
+                "asyncSoftwareRaster": false,
+                "maxBlasBytes": 536870912,
+                "materialTextureMaxDimension": 128,
+                "materialTextureRefineDimension": 512,
+                "materialTextureColdFrames": 180,
+                "materialTextureMaskMaxDimension": 512,
+                "materialTextureBudgetMiB": 512,
+                "compactShadingAttributes": true,
+                "initialLoad": true
+            }
+        },
+        {
+            "id": 7,
+            "name": "Shadows",
+            "type": "VirtualShadowMapLightsPass",
+            "position": {
+                "x": 420,
+                "y": 0
+            },
+            "properties": {
+                "materialTextureMaxDimension": 128,
+                "materialTextureRefineDimension": 512,
+                "materialTextureColdFrames": 180,
+                "materialTextureMaskMaxDimension": 512,
+                "materialTextureBudgetMiB": 512,
+                "enabled": true,
+                "pageSize": 128,
+                "virtualPagesPerAxis": 128,
+                "clipmapCount": 6,
+                "maxWorkItems": 1048576,
+                "firstClipmapExtent": 4.0,
+                "shadowBias": 0.002,
+                "cacheEnabled": true,
+                "lightCapacity": 8,
+                "compactOutputs": true,
+                "physicalPageBudget": 2048,
+                "nearPlane": 0.001,
+                "filter": "pcf",
+                "pcfRadius": 1.0,
+                "smrtRayCount": 8,
+                "smrtSamplesPerRay": 16,
+                "smrtMaxRayLength": 10.0,
+                "receiverFootprint": true,
+                "tessellationFactor": 4,
+                "tessellationSubdivisionDepth": 0
+            }
+        },
+        {
+            "id": 2,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {
+                "x": 760,
+                "y": 250
+            },
+            "properties": {
+                "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+                "exportUpscalerGuides": true,
+                "materialBinning": true,
+                "outputLinear": true,
+                "materialTextureMaxDimension": 128,
+                "materialTextureRefineDimension": 512,
+                "materialTextureColdFrames": 180,
+                "materialTextureMaskMaxDimension": 512,
+                "materialTextureBudgetMiB": 512
+            }
+        },
+        {
+            "id": 3,
+            "name": "DLSSSR",
+            "type": "StreamlineDLSSSRPass",
+            "position": {
+                "x": 1100,
+                "y": 250
+            },
+            "properties": {
+                "mode": "Quality",
+                "exportOutputGuides": true
+            }
+        },
+        {
+            "id": 4,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 1440,
+                "y": 250
+            },
+            "properties": {}
+        },
+        {
+            "id": 5,
+            "name": "DLSSNR",
+            "type": "DLSSNRPass",
+            "position": {
+                "x": 1780,
+                "y": 250
+            },
+            "properties": {
+                "enabled": false,
+                "fallbackToInput": true,
+                "intensity": 1.0,
+                "preset": 0,
+                "style": 0
+            }
+        },
+        {
+            "id": 6,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {
+                "x": 2120,
+                "y": 250
+            },
+            "properties": {}
+        },
+        {
+            "id": 8,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 2120,
+                "y": 490
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
+        }
+    ],
+    "edges": [
+        {
+            "id": 1,
+            "src": "VBuffer.visibility",
+            "dst": "Deferred.visibility"
+        },
+        {
+            "id": 2,
+            "src": "VBuffer.depth",
+            "dst": "Deferred.depth"
+        },
+        {
+            "id": 3,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Deferred.rasterInfo"
+        },
+        {
+            "id": 4,
+            "src": "Deferred.color",
+            "dst": "DLSSSR.inputColor"
+        },
+        {
+            "id": 5,
+            "src": "Deferred.motionVectors",
+            "dst": "DLSSSR.motionVectors"
+        },
+        {
+            "id": 6,
+            "src": "Deferred.deviceDepth",
+            "dst": "DLSSSR.depth"
+        },
+        {
+            "id": 8,
+            "src": "DLSSSR.color",
+            "dst": "AutoExposure.source"
+        },
+        {
+            "id": 9,
+            "src": "AutoExposure.color",
+            "dst": "DLSSNR.inputColor"
+        },
+        {
+            "id": 10,
+            "src": "DLSSSR.motionVectors",
+            "dst": "DLSSNR.motionVectors"
+        },
+        {
+            "id": 11,
+            "src": "DLSSSR.depth",
+            "dst": "DLSSNR.depth"
+        },
+        {
+            "id": 12,
+            "src": "DLSSNR.color",
+            "dst": "FinalBlit.source"
+        },
+        {
+            "id": 13,
+            "src": "VBuffer.depth",
+            "dst": "Shadows.depth"
+        },
+        {
+            "id": 14,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Shadows.rasterInfo"
+        },
+        {
+            "id": 15,
+            "src": "Shadows.shadows",
+            "dst": "Deferred.virtualShadows"
+        },
+        {
+            "id": 16,
+            "src": "Shadows.lights",
+            "dst": "Deferred.virtualShadowLights"
+        },
+        {
+            "id": 17,
+            "src": "VBuffer.domain",
+            "dst": "Deferred.domain"
+        },
+        {
+            "id": 20,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
+        }
+    ],
+    "outputs": [],
+    "view": {
+        "camera": {
+            "eye": [
+                7.729438781716869,
+                2.278317616701172,
+                -11.146185904338534
+            ],
+            "center": [
+                -0.48448207571498436,
+                4.16349113944963,
+                -8.020231954707505
+            ],
+            "up": [
+                0.0,
+                1.0,
+                0.0
+            ],
+            "fovDegrees": 60.000008,
+            "znear": 0.020000003,
+            "zfar": 29999.998
+        },
+        "temporalJitter": true
+    }
+}
