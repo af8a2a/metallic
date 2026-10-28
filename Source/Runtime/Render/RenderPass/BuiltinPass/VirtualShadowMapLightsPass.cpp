@@ -109,6 +109,7 @@ public:
             log = "VirtualShadowMapLightsPass requires mesh shaders and bindless descriptors";
             return makeError(Error::Unsupported);
         }
+        if (device_ != context.device) { casterCache_ = {}; }
         device_ = context.device;
         return {};
     }
@@ -251,7 +252,11 @@ public:
                 item.entry.pageBudget += item.faceBudgets[face];
             }
         }
-        if (sceneIdentity_ != info.sceneIdentity) { caches_.clear(); sceneIdentity_ = info.sceneIdentity; }
+        if (sceneIdentity_ != info.sceneIdentity) {
+            caches_.clear();
+            casterCache_ = {};
+            sceneIdentity_ = info.sceneIdentity;
+        }
         std::unordered_set<uint64_t> identities;
         for (const auto& item : lights) {
             if (item.entry.status == kVirtualShadowMapLightAdmitted) { identities.insert(item.stableId); }
@@ -346,7 +351,7 @@ public:
                     .tessellationFactor = properties.value("tessellationFactor", 4u),
                     .subdivisionDepth = properties.value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
                     .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
-                auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
+                auto casters = casterCache_.prepare(*device_, commands, *scene,
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
                 profile.next("VSM page demand, cache and raster");
@@ -500,6 +505,7 @@ public:
     }
 private:
     Device* device_ = nullptr;
+    VirtualShadowMapCasterCache casterCache_;
     uint32_t capacity_ = 8;
     bool compact_ = false;
     uint64_t sceneIdentity_ = 0;

@@ -66,11 +66,22 @@ struct ContentCommands
         check(pool->reset(), "Content pool reset");
         check(commands->begin(frame.submissionContext()), "Content command begin");
     }
-    void finish()
+    void submit(Semaphore* gate = nullptr)
     {
         check(commands->end(), "Content command end");
         CommandBuffer* list[]{commands.get()};
-        check(tracker.submit({.commandBuffers = list}, frame), "Content submit");
+        const SemaphoreSubmitDesc wait{.semaphore = gate, .value = 1};
+        check(tracker.submit({.waitSemaphores = {gate ? &wait : nullptr, gate ? 1u : 0u},
+            .commandBuffers = list}, frame), "Content submit");
+    }
+    void finish(bool cancel = false)
+    {
+        if (cancel) {
+            check(commands->end(), "Content cancelled command end");
+            frame.cancel();
+            return;
+        }
+        submit();
         check(frame.wait(), "Content wait");
     }
 };
@@ -153,8 +164,10 @@ std::filesystem::path writeContentFixture(const std::filesystem::path& directory
       binary.write(reinterpret_cast<const char*>(uvs), sizeof(uvs));
       binary.write(reinterpret_cast<const char*>(indices), sizeof(indices));
       check(binary.good(), "Write content geometry"); }
-    Json doc = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
-      "nodes":[{"mesh":0},{"mesh":1}],"buffers":[{"uri":"Geometry.bin","byteLength":280}],
+    Json doc = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1,2]}],
+      "nodes":[{"mesh":0},{"mesh":1},{"camera":0,"translation":[0,0,4]}],
+      "cameras":[{"type":"perspective","perspective":{"yfov":0.7,"znear":0.01,"zfar":10}}],
+      "buffers":[{"uri":"Geometry.bin","byteLength":280}],
       "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},
         {"buffer":0,"byteOffset":96,"byteLength":96},{"buffer":0,"byteOffset":192,"byteLength":64},
         {"buffer":0,"byteOffset":256,"byteLength":24}],
@@ -186,6 +199,9 @@ struct ContentSnapshot
     std::vector<uint8_t> shadow;
     std::array<uint32_t, 32> stats{};
     std::vector<Triangle> triangles;
+    std::vector<uint8_t> geometryBytes;
+    std::vector<uint64_t> contentKeys;
+    std::shared_ptr<void> casterOwner;
     uint64_t dependency = 0;
 };
 
@@ -224,6 +240,26 @@ public:
             ComputeKernel probe;
             check(probe.initialize(device, {.spirv = shader->spirv,
                 .parameters = parameterAbi<ProbePush>(kProbeABI, ParameterTransport::InlinePush)}, log), "Content probe: " + log);
+            const auto decodeGeometry = [&](ContentCommands& execution, const VirtualShadowMapCasterResources& casters) {
+                std::unique_ptr<Buffer> decoded;
+                check(device.createBuffer({.size = uint64_t(casters.triangleCapacity) * sizeof(Triangle), .structureStride = sizeof(Triangle),
+                    .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
+                    .transform([&](auto b) { decoded = std::move(b); }), "Content decode output");
+                ParameterWriter writer(device, **registry);
+                ProbePush push{writer.buffer(casters.parameters).index, writer.buffer(decoded.get()).index, casters.triangleCapacity, 0};
+                auto encoded = writer.encode(push, kProbeABI, ParameterTransport::InlinePush); check(encoded, "Content probe parameters");
+                execution.commands->hostWriteBarrier();
+                check(probe.dispatch(*execution.commands, *encoded, (push.count + 63) / 64), "Content probe dispatch");
+                return decoded;
+            };
+            const auto readGeometry = [&](Buffer& decoded, uint32_t count) {
+                decoded.invalidate();
+                const auto* bytes = static_cast<const uint8_t*>(decoded.map());
+                check(bytes != nullptr, "Map content geometry");
+                std::vector<uint8_t> result(bytes, bytes + uint64_t(count) * sizeof(Triangle));
+                decoded.unmap();
+                return result;
+            };
             std::unique_ptr<Texture> depth;
             std::unique_ptr<TextureView> depthView;
             check(device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
@@ -275,6 +311,10 @@ public:
                     check(runtime->sceneReady(), "Content terminal pages not ready");
                 }
                 VirtualShadowMaps cached, forced;
+                VirtualShadowMapCasterCache casterCache;
+                std::shared_ptr<void> previousCasterOwner;
+                VirtualShadowMapLight light;
+                light.direction = {1,0,-1};
                 auto material = scene.materials()[1];
                 material.displacementTexture.textureIndex = 0;
                 material.displacementMagnitude = .8f;
@@ -283,29 +323,21 @@ public:
                 VirtualShadowMapCasterSettings casterSettings{.tessellationEnabled = true, .tessellationFactor = 4,
                     .texturePublicationRevision = 101};
                 HeightImage* currentHeight = &heightA;
-                auto record = [&](VirtualShadowMaps& shadows, bool force, bool captureGeometry) {
+                auto record = [&](VirtualShadowMaps& shadows, bool force, bool cancel = false) {
                     gpu.begin();
                     if (runtime) { check(runtime->syncRuntimeScene(scene, log), "Synchronize content edit: " + log); }
                     auto stream = runtime ? runtime->shadowGeometryResources() : MeshletStreamShadowGeometryView{};
                     stream.owner = runtime;
                     std::array<TextureView*, 2> heightViews{nullptr, currentHeight->view.get()};
                     casterSettings.displacementTextures = heightViews;
-                    auto casters = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, casterSettings);
+                    auto casters = force ?
+                        prepareVirtualShadowMapCasters(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, casterSettings) :
+                        casterCache.prepare(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, casterSettings);
                     check(casters, "Prepare content: " + log);
                     ContentSnapshot result; result.dependency = casters->dependencyKey;
-                    std::unique_ptr<Buffer> decoded;
-                    if (captureGeometry) {
-                        check(device.createBuffer({.size = uint64_t(casters->triangleCapacity) * sizeof(Triangle), .structureStride = sizeof(Triangle),
-                            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
-                            .transform([&](auto b) { decoded = std::move(b); }), "Content decode output");
-                        ParameterWriter writer(device, **registry);
-                        ProbePush push{writer.buffer(casters->parameters).index, writer.buffer(decoded.get()).index, casters->triangleCapacity, 0};
-                        auto encoded = writer.encode(push, kProbeABI, ParameterTransport::InlinePush); check(encoded, "Content probe parameters");
-                        gpu.commands->hostWriteBarrier();
-                        check(probe.dispatch(*gpu.commands, *encoded, (push.count + 63) / 64), "Content probe dispatch");
-                    }
-                    VirtualShadowMapLight light;
-                    light.direction = {1,0,-1};
+                    result.casterOwner = casters->owner;
+                    for (const auto& state : casters->states) { result.contentKeys.push_back(state.contentKey); }
+                    auto decoded = decodeGeometry(gpu, *casters);
                     VirtualShadowMapSettings settings;
                     settings.pageSize = 32; settings.virtualPagesPerAxis = 8; settings.clipmapCount = 3;
                     settings.physicalPageCount = 256; settings.cacheEnabled = true; settings.forceRedraw = force;
@@ -332,26 +364,31 @@ public:
                     auto from = shadow->statistics->slice(), to = (*readback)->slice({statsOffset, sizeof(result.stats)});
                     check(from, "Content statistics source"); check(to, "Content statistics destination");
                     check(gpu.commands->copyBuffer(*from, *to), "Content statistics copy");
-                    gpu.finish();
+                    gpu.finish(cancel);
+                    if (cancel) { return result; }
                     (*readback)->invalidate(); const auto* bytes = static_cast<const uint8_t*>((*readback)->map());
                     check(bytes != nullptr, "Map content shadow");
                     result.shadow.assign(bytes, bytes + kPixels); std::memcpy(result.stats.data(), bytes + statsOffset, sizeof(result.stats));
                     (*readback)->unmap();
-                    if (decoded) {
-                        decoded->invalidate(); const auto* triangles = static_cast<const Triangle*>(decoded->map());
-                        check(triangles != nullptr, "Map content geometry");
-                        for (uint32_t i = 0; i < casters->triangleCapacity; ++i) {
-                            if (triangles[i].reserved[1] != 0) { result.triangles.push_back(triangles[i]); }
-                        }
-                        decoded->unmap();
+                    result.geometryBytes = readGeometry(*decoded, casters->triangleCapacity);
+                    for (uint32_t i = 0; i < casters->triangleCapacity; ++i) {
+                        Triangle triangle;
+                        std::memcpy(&triangle, result.geometryBytes.data() + uint64_t(i) * sizeof(Triangle), sizeof(Triangle));
+                        if (triangle.reserved[1] != 0) { result.triangles.push_back(triangle); }
                     }
                     return result;
                 };
-                const auto compare = [&](const std::string& name, bool geometry) {
+                const auto compare = [&](const std::string& name, bool geometry, bool expectReuse = false) {
                     validation.phase((streamed ? "Stream-" : "Resident-") + name);
                     report["activeCase"] = {{"name", name}, {"stream", streamed}};
-                    auto actual = record(cached, false, geometry), reference = record(forced, true, false);
+                    auto actual = record(cached, false), reference = record(forced, true);
                     check(actual.shadow == reference.shadow, "Stale content cache at " + name);
+                    check(actual.geometryBytes == reference.geometryBytes, "Cached GPU geometry differs from uncached preparation at " + name);
+                    check(actual.contentKeys == reference.contentKeys && actual.dependency == reference.dependency,
+                        "Cached caster metadata differs from uncached preparation at " + name);
+                    const bool reused = actual.casterOwner == previousCasterOwner;
+                    check(reused == (!streamed && expectReuse), "Unexpected caster package reuse at " + name);
+                    previousCasterOwner = actual.casterOwner;
                     double maximumError = 0;
                     uint32_t displacedVertices = 0;
                     uint32_t windingErrors = 0;
@@ -437,6 +474,7 @@ public:
                             std::abs(casterUVCoverage[2] - .5) < 2e-5, "Shadow patches do not cover the authored UV square at " + name);
                     }
                     report["frames"].push_back({{"name", name}, {"stream", streamed}, {"equal", true},
+                        {"geometryBytesEqual", true}, {"casterPackageReused", reused},
                         {"statistics", actual.stats}, {"triangles", actual.triangles.size()}, {"maximumGeometryError", maximumError},
                         {"windingErrors", windingErrors}, {"tessellationFactor", casterSettings.tessellationFactor},
                         {"casterUVAreaAndFirstMoments", casterUVCoverage},
@@ -448,8 +486,80 @@ public:
                     return actual;
                 };
                 const auto initial = compare("Displaced", true);
-                auto stable = compare("Stable", false);
+                auto stable = compare("Stable", false, true);
                 check(stable.stats[16] == 0 && stable.stats[21] == 0, "Stable displacement redrew depth");
+                if (!streamed) {
+                    const auto originalCameraMatrix = scene.nodes()[2].localMatrix;
+                    const auto originalCamera = scene.objectForNode(2).getComponent<scene::CameraComponent>().properties;
+                    auto editedCamera = originalCamera;
+                    editedCamera.yfov = .9;
+                    float4x4 cameraMatrix;
+                    cameraMatrix.SetupByTranslation(float3(.25f, 0, 4));
+                    check(scene.setNodeLocalMatrix(2, cameraMatrix), "Move camera without changing geometry");
+                    check(scene.setObjectCameraProperties(scene.objectForNode(2).entity(), editedCamera), "Edit camera projection");
+                    check(camera.setCamera({.eye = {.25f,0,4}, .center = {.25f,0,0}, .nearPlane = .01f,
+                        .farPlane = 10, .orthoHeight = 4, .orthographic = true}), "Move content camera");
+                    auto lighting = scene.lighting();
+                    lighting.lights.push_back({.name = "Cache independence", .position = {2,3,4}});
+                    check(scene.setLighting(lighting), "Edit scene light without changing geometry");
+                    light.direction = {.8f,.2f,-1};
+                    (void)compare("CameraAndLightEdit", true, true);
+                    check(scene.setNodeLocalMatrix(2, originalCameraMatrix), "Restore camera transform");
+                    check(scene.setObjectCameraProperties(scene.objectForNode(2).entity(), originalCamera), "Restore camera projection");
+                    check(camera.setCamera({.eye = {0,0,4}, .center = {0,0,0}, .nearPlane = .01f,
+                        .farPlane = 10, .orthoHeight = 4, .orthographic = true}), "Restore content camera");
+                    light.direction = {1,0,-1};
+                    (void)compare("CameraAndLightRestored", false, true);
+                    material.baseColorFactor.x = .25f;
+                    check(scene.setMaterialProperties(1, material), "Edit RGB through material setter");
+                    const auto rgb = compare("RGBOnlyMaterialEdit", false);
+                    check(rgb.contentKeys == initial.contentKeys && rgb.dependency == initial.dependency &&
+                        rgb.shadow == initial.shadow && rgb.stats[16] == 0 && rgb.stats[21] == 0,
+                        "RGB-only edit changed shadow content or dirtied depth");
+                    check(scene.setObjectVisible(scene.objectForNode(1).entity(), false), "Hide resident caster");
+                    const auto hidden = compare("HiddenCaster", false);
+                    check(std::ranges::all_of(hidden.shadow, [](uint8_t value) { return value == 255; }), "Hidden caster retained shadow");
+                    check(scene.setObjectVisible(scene.objectForNode(1).entity(), true), "Restore resident caster visibility");
+                    (void)compare("VisibleCaster", true);
+                    const auto originalCaster = scene.nodes()[1].localMatrix;
+                    float4x4 movedCaster;
+                    movedCaster.SetupByTranslation(float3(.35f, 0, 0));
+                    check(scene.setNodeLocalMatrix(1, movedCaster * originalCaster), "Move resident caster before cancellation");
+                    const auto cancelled = record(cached, false, true);
+                    check(cancelled.casterOwner != previousCasterOwner, "Cancelled edit did not rebuild caster package");
+                    previousCasterOwner = cancelled.casterOwner;
+                    const auto retry = compare("CancelledPreparationRetry", true, true);
+                    check(retry.stats[28] > 0 && retry.stats[16] > 0, "Cancelled depth was reused instead of redrawn");
+                    (void)compare("CancelledPreparationStable", false, true);
+                    check(scene.setNodeLocalMatrix(1, originalCaster), "Restore resident caster after cancellation");
+                    (void)compare("CancelledPreparationRestored", true);
+
+                    std::array<TextureView*, 2> validViews{nullptr, heightA.view.get()}, missingViews{};
+                    std::array<TextureView*, 1> shortViews{heightA.view.get()};
+                    auto validSettings = casterSettings;
+                    validSettings.displacementTextures = validViews;
+                    const auto rejectHot = [&](const char* name, VirtualShadowMapCasterSettings invalid) {
+                        gpu.begin();
+                        const auto actual = casterCache.prepare(device, *gpu.commands, scene, nullptr, log, invalid);
+                        const auto reference = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, nullptr, log, invalid);
+                        check(hasError(actual, Error::InvalidArgument) && hasError(reference, Error::InvalidArgument),
+                            std::string("Invalid settings bypassed cached boundary: ") + name);
+                        const auto restored = casterCache.prepare(device, *gpu.commands, scene, nullptr, log, validSettings);
+                        check(restored, "Restore valid settings after cached rejection");
+                        check(restored->owner == previousCasterOwner, "Rejected settings replaced successful caster package");
+                        gpu.finish();
+                        report["rejected"].push_back({{"name", name}, {"stream", false}, {"retainedSuccessfulPackage", true}});
+                    };
+                    auto invalidSettings = validSettings;
+                    invalidSettings.displacementTextures = shortViews;
+                    rejectHot("Cached wrong slot count", invalidSettings);
+                    invalidSettings.displacementTextures = {};
+                    rejectHot("Cached missing slots", invalidSettings);
+                    invalidSettings.displacementTextures = missingViews;
+                    rejectHot("Cached missing height view", invalidSettings);
+                    invalidSettings = validSettings; invalidSettings.tessellationFactor = 0;
+                    rejectHot("Cached zero tessellation factor", invalidSettings);
+                }
                 material.displacementMagnitude = -.9f; material.displacementCenter = .25f;
                 check(scene.setMaterialProperties(1, material), "Negative height material edit");
                 const auto negative = compare("NegativeMagnitude", true);
@@ -460,7 +570,7 @@ public:
                 currentHeight = &heightB; casterSettings.texturePublicationRevision = 102;
                 const auto published = compare("PublishedImageMip", true);
                 check(published.dependency != negative.dependency && published.stats[22] > 0, "Height image publication retained stale pages");
-                stable = compare("PublishedStable", false);
+                stable = compare("PublishedStable", false, true);
                 check(stable.stats[16] == 0 && stable.stats[21] == 0, "Published height cache never became stable");
                 casterSettings.tessellationFactor = 8;
                 const auto factor8 = compare("Factor8", true);
@@ -471,7 +581,7 @@ public:
                     check(refined.dependency != previousDependency && refined.stats[22] > 0,
                         "Shadow subdivision edit retained stale pages");
                     previousDependency = refined.dependency;
-                    stable = compare("Subdivision" + std::to_string(depth) + "Stable", false);
+                    stable = compare("Subdivision" + std::to_string(depth) + "Stable", false, true);
                     check(stable.stats[16] == 0 && stable.stats[21] == 0, "Stable subdivision redrew depth");
                 }
                 casterSettings.subdivisionDepth = 0;
@@ -530,8 +640,9 @@ public:
                     stream.owner = runtime;
                     std::array<TextureView*, 2> views{nullptr, heightA.view.get()};
                     if (rejected.texturePublicationRevision != 0) { rejected.displacementTextures = views; }
-                    auto prepared = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, rejected);
-                    check(hasError(prepared, expected), std::string("Accepted invalid caster boundary: ") + name);
+                    const auto prepared = casterCache.prepare(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, rejected);
+                    const auto reference = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, rejected);
+                    check(hasError(prepared, expected) && hasError(reference, expected), std::string("Accepted invalid caster boundary: ") + name);
                     gpu.finish();
                     report["rejected"].push_back({{"name", name}, {"stream", streamed}});
                 };
@@ -549,7 +660,7 @@ public:
                         check(incomplete.load(writeContentFixture(directory / attribute, attribute)), "Load incomplete vertex streams");
                         gpu.begin();
                         std::array<TextureView*, 2> views{nullptr, heightA.view.get()};
-                        const auto rejected = prepareVirtualShadowMapCasters(device, *gpu.commands, incomplete, nullptr, log,
+                        const auto rejected = casterCache.prepare(device, *gpu.commands, incomplete, nullptr, log,
                             {.tessellationEnabled = true, .displacementTextures = views, .texturePublicationRevision = 105});
                         check(hasError(rejected, Error::Unsupported), std::string("Accepted displaced geometry without ") + attribute);
                         gpu.finish();
@@ -557,12 +668,86 @@ public:
                     }
                 }
             }
+            {
+                validation.phase("Resident-cached-package-in-flight");
+                scene::SceneDocument lifetimeScene;
+                check(lifetimeScene.load(path), "Load resident package lifetime fixture");
+                auto lifetimeCache = std::make_unique<VirtualShadowMapCasterCache>();
+                std::weak_ptr<void> oldOwner;
+                gpu.begin();
+                {
+                    const auto warmed = lifetimeCache->prepare(device, *gpu.commands, lifetimeScene, nullptr, log);
+                    check(warmed, "Warm resident package lifetime cache");
+                    oldOwner = warmed->owner;
+                }
+                gpu.finish();
+                check(gpu.pool->reset(), "Release warmup recording package");
+                check(gpu.frame.reset(), "Release warmup frame package");
+
+                auto gate = device.createSemaphore();
+                check(gate, "Resident package lifetime gate");
+                ContentCommands earlier(device), later(device);
+                std::unique_ptr<Buffer> oldDecoded, oldReference, newDecoded, newReference;
+                uint32_t oldCount = 0, newCount = 0;
+                // Every failure releases the gate before local GPU resources die.
+                struct Drain
+                {
+                    Queue& queue;
+                    Semaphore& gate;
+                    ~Drain()
+                    {
+                        if (gate.currentValue() < 1) { (void)gate.signal(1); }
+                        (void)queue.waitIdle();
+                    }
+                } drain{*device.getQueue(QueueType::Graphics), **gate};
+                earlier.begin();
+                {
+                    const auto actual = lifetimeCache->prepare(device, *earlier.commands, lifetimeScene, nullptr, log);
+                    const auto reference = prepareVirtualShadowMapCasters(device, *earlier.commands, lifetimeScene, nullptr, log);
+                    check(actual, "Reuse old resident package"); check(reference, "Prepare old uncached reference");
+                    check(actual->owner == oldOwner.lock(), "In-flight lifetime path did not hit resident cache");
+                    check(actual->triangleCapacity == reference->triangleCapacity, "Old package/reference capacity differs");
+                    oldCount = actual->triangleCapacity;
+                    oldDecoded = decodeGeometry(earlier, *actual);
+                    oldReference = decodeGeometry(earlier, *reference);
+                }
+                earlier.submit(gate->get());
+                check(!earlier.frame.completion().isComplete(), "Lifetime gate did not retain in-flight work");
+                float4x4 moved;
+                moved.SetupByTranslation(float3(.5f, 0, .25f));
+                check(lifetimeScene.setNodeLocalMatrix(1, moved), "Replace in-flight resident geometry");
+                later.begin();
+                {
+                    const auto actual = lifetimeCache->prepare(device, *later.commands, lifetimeScene, nullptr, log);
+                    const auto reference = prepareVirtualShadowMapCasters(device, *later.commands, lifetimeScene, nullptr, log);
+                    check(actual, "Prepare replacement resident package"); check(reference, "Prepare replacement reference");
+                    check(actual->owner != oldOwner.lock(), "Geometry edit reused in-flight package");
+                    check(actual->triangleCapacity == reference->triangleCapacity, "Replacement package/reference capacity differs");
+                    newCount = actual->triangleCapacity;
+                    newDecoded = decodeGeometry(later, *actual);
+                    newReference = decodeGeometry(later, *reference);
+                }
+                lifetimeCache.reset();
+                check(!oldOwner.expired(), "Cache hit did not retain old package for its submitted command");
+                later.submit();
+                check((*gate)->signal(1), "Release resident package lifetime gate");
+                check(earlier.frame.wait(), "Wait old resident package");
+                check(later.frame.wait(), "Wait replacement resident package");
+                const auto oldBytes = readGeometry(*oldDecoded, oldCount);
+                const auto newBytes = readGeometry(*newDecoded, newCount);
+                check(oldBytes == readGeometry(*oldReference, oldCount), "In-flight old package bytes changed after replacement");
+                check(newBytes == readGeometry(*newReference, newCount), "Replacement package differs from uncached geometry");
+                check(oldBytes != newBytes, "Lifetime transform fixture did not change GPU geometry");
+                report["residentPackageLifetime"] = {{"cacheHit", true}, {"submittedGateHeld", true},
+                    {"ownerRetainedAfterCacheDestruction", true}, {"oldGeometryBytesEqual", true},
+                    {"replacementGeometryBytesEqual", true}, {"geometryChanged", true}};
+            }
             report.erase("activeCase");
             report["validation"] = validation.snapshot();
             check(!validation.failed(), "Vulkan validation reported content errors");
             report["passed"] = true;
             std::ofstream(directory / "VirtualShadowMapContent.json") << report.dump(2);
-            return RHITestResult::pass("Resident/Stream displaced geometry agrees with CPU height oracle; material, height/alpha publication and factor cache edits match redraw");
+            return RHITestResult::pass("Resident cache/uncached GPU geometry and shadows agree; hit/miss, edits, cancellation and in-flight package lifetime verified with Resident/Stream height oracle");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot();
             std::filesystem::create_directories(directory);

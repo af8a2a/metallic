@@ -109,7 +109,7 @@ python -B Tools/Perf/VirtualShadowMapAcceptance.py report .cache/vsm-p5-core-run
 | LookDev | 2.107 / 2.246 / 2.214 | 0.691 / 0.690 / 0.686 | 32.421 / 31.393 / 34.121 |
 | Sponza | 1.770 / 1.742 / 1.745 | 0.230 / 0.236 / 0.233 | 43.641 / 42.793 / 43.036 |
 
-Shadows 自身 CPU 录制中位数为 LookDev 29.56–32.32 ms、Sponza 41.05–41.88 ms，是当前明显成本问题。GPU envelope 不能替代 CPU / presentation / 帧间重叠，也不能据此推算实时 FPS。验收仍采集 CPU execution snapshot，不能把这套离屏 CPU 数字称为普通编辑器开销；但也没有证据把 Shadows 内部的全部耗时归因于该采集。当前没有同条件 RT A/B，不作整帧提速或生产成本达标判断。
+本轮 P5 基线的 Shadows CPU 录制中位数为 LookDev 29.56–32.32 ms、Sponza 41.05–41.88 ms。随后 [resident caster CPU 优化](VirtualShadowMapsCPU.md) 已通过独立 ABBA 对照收敛该成本，原始数字保留作历史记录。GPU envelope 不能替代 CPU / presentation / 帧间重叠，也不能据此推算实时 FPS。验收仍采集 CPU execution snapshot，不能把这套离屏 CPU 数字称为普通编辑器开销；但也没有证据把 Shadows 内部的全部耗时归因于该采集。当前没有同条件 RT A/B，不作 RT / VSM 提速或生产成本达标判断。
 
 完整统计、三条进程曲线和复现脚本分别保存在 [LookDev 计时报告](../.cache/vsm-p5-lookdev-timing-report/report.md)、[Sponza 计时报告](../.cache/vsm-p5-sponza-timing-report/report.md)。四份报告均已使用当前 v2 verifier 重新检查包内文件集合 / SHA256、进程退出、帧数、比较凭据与错误日志，并实际生成、查看 PNG。报告目录保留 `Summary.json`、逐帧 JSON、`plot_report.py` 及 Python / numpy / matplotlib 版本；诊断与普通计时分图，逐帧 P95/P99 只描述本次回放，不作为独立重复实验。
 

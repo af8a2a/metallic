@@ -111,6 +111,7 @@ public:
             log = "VirtualShadowMapPass requires mesh shaders and bindless descriptors";
             return makeError(Error::Unsupported);
         }
+        if (device_ != context.device) { casterCache_ = {}; }
         device_ = context.device;
         return {};
     }
@@ -194,7 +195,7 @@ public:
             .tessellationFactor = context.properties().value("tessellationFactor", 4u),
             .subdivisionDepth = context.properties().value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
             .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
-        auto casters = prepareVirtualShadowMapCasters(*device_, commands, *scene,
+        auto casters = casterCache_.prepare(*device_, commands, *scene,
             scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
         if (!casters) {
             spdlog::error("VirtualShadowMapPass casters: {}", log);
@@ -290,6 +291,7 @@ public:
 
 private:
     Device* device_ = nullptr;
+    VirtualShadowMapCasterCache casterCache_;
     VirtualShadowMaps shadows_;
 };
 

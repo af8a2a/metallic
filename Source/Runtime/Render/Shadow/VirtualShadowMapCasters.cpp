@@ -443,4 +443,73 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
     return resources;
 }
 
+struct VirtualShadowMapCasterCache::Resident
+{
+    struct Key
+    {
+        const Device* device = nullptr;
+        uint64_t sceneIdentity = 0;
+        uint64_t structuralRevision = 0;
+        uint64_t geometryTransformRevision = 0;
+        uint64_t visibilityRevision = 0;
+        uint64_t materialRevision = 0;
+        uint64_t texturePublicationRevision = 0;
+        bool tessellationEnabled = false;
+        uint32_t tessellationFactor = 0;
+        uint32_t subdivisionDepth = 0;
+
+        bool operator==(const Key&) const = default;
+    };
+
+    Key key;
+    std::vector<TextureView*> displacementTextures;
+    VirtualShadowMapCasterResources resources;
+};
+
+Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
+    Device& device, CommandBuffer& commands, const scene::Scene& scene,
+    const MeshletStreamShadowGeometryView* stream, std::string& log,
+    const VirtualShadowMapCasterSettings& settings)
+{
+    if (stream) {
+        resident_.reset();
+        return prepareVirtualShadowMapCasters(device, commands, scene, stream, log, settings);
+    }
+
+    // Scene exposes resident geometry/materials read-only. Its mutation APIs
+    // publish these revisions; camera/light-only edits leave geometry unchanged.
+    const Resident::Key key{
+        .device = &device,
+        .sceneIdentity = scene.resourceIdentity(),
+        .structuralRevision = scene.sceneGraph().structuralRevision(),
+        .geometryTransformRevision = scene.geometryTransformRevision(),
+        .visibilityRevision = scene.visibilityRevision(),
+        .materialRevision = scene.materialRevision(),
+        .texturePublicationRevision = settings.texturePublicationRevision,
+        .tessellationEnabled = settings.tessellationEnabled,
+        .tessellationFactor = settings.tessellationFactor,
+        .subdivisionDepth = settings.subdivisionDepth};
+    if (resident_ && resident_->key == key &&
+        std::ranges::equal(resident_->displacementTextures, settings.displacementTextures)) {
+        auto registry = ResourceRegistry::forDevice(device);
+        if (!registry) { return std::unexpected(registry.error()); }
+        const auto& resources = resident_->resources;
+        if (auto result = commands.retainResource(resources.owner); !result) { return std::unexpected(result.error()); }
+        for (const auto& lease : resources.leases) {
+            if (auto result = (*registry)->retain(commands, lease); !result) { return std::unexpected(result.error()); }
+        }
+        return resources;
+    }
+
+    auto resources = prepareVirtualShadowMapCasters(device, commands, scene, nullptr, log, settings);
+    if (!resources) { return std::unexpected(resources.error()); }
+    // Keep the original shadow-specific hashes. A material RGB edit rebuilds
+    // this upload snapshot without invalidating otherwise unchanged shadow pages.
+    resident_ = std::make_shared<Resident>(Resident{
+        .key = key,
+        .displacementTextures = {settings.displacementTextures.begin(), settings.displacementTextures.end()},
+        .resources = *resources});
+    return resources;
+}
+
 } // namespace metallic::render

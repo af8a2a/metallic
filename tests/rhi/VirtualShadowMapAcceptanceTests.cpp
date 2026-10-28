@@ -264,6 +264,7 @@ Json frameStatistics(RenderGraphPreviewRenderer& preview)
             {"cpuMs", node.cpuMilliseconds}, {"sections", Json::array()}};
         for (const auto& section : node.sections) {
             entry["sections"].push_back({{"name", section.name}, {"parent", section.parent},
+                {"cpuMs", section.cpuMilliseconds},
                 {"gpuMs", section.gpuTimingAvailable ? Json(section.gpuMilliseconds) : Json(nullptr)}});
         }
         result["nodes"].push_back(std::move(entry));

@@ -58,4 +58,20 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
     const MeshletStreamShadowGeometryView* stream, std::string& log,
     const VirtualShadowMapCasterSettings& settings = {});
 
+// Pass-owned resident uploads, independent of the view and frame. The cache
+// must be destroyed before its device, like the pass's other GPU resources.
+// Streamed preparation remains per recording to preserve residency and sync.
+class VirtualShadowMapCasterCache
+{
+public:
+    Result<VirtualShadowMapCasterResources> prepare(
+        Device& device, CommandBuffer& commands, const scene::Scene& scene,
+        const MeshletStreamShadowGeometryView* stream, std::string& log,
+        const VirtualShadowMapCasterSettings& settings = {});
+
+private:
+    struct Resident;
+    std::shared_ptr<const Resident> resident_;
+};
+
 } // namespace metallic::render
