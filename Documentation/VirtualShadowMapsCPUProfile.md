@@ -49,6 +49,8 @@ Compact output 的 atlas 在 reuse 时复用，output texture view 创建是 CPU
 
 单面数据保存在报告中。Point 第 5 面的 inclusive record 均值约 1.776 ms，其他 point 面约 1.115–1.248 ms。每个旧 State 的 point-face leases 都持有六面的 projection/statistics；按 0→5 替换时，前五面的 allocation 可持续存活到旧 face 5 被替换。因此 face 5 可以多承担五个 statistics 和五个 projection allocation 的释放，不能直接把耗时差异当作该面几何或 GPU 负载差异。稳态 page table / atlas 仍由 cache 持有，不属于这批最后释放；比较优化时应累计整盏点光源或所有 faces。
 
+UE 对照与下一轮候选拆分见 [Unreal VSM CPU 工作研究](VirtualShadowMapsUnrealCPU.md)：资源池/子分配、compact 页变更、跨灯面批处理及增量失效的源码锚点均已核实。
+
 ## 计时和复现合同
 
 两个 VSM Pass 支持 graph property `benchmarkCPUProfile: true`；默认 false。`VirtualShadowMaps::record/project` 接受可选 `CPUProfileRecorder*`，沿用纯 CPU scope，不增加 GPU timestamp 查询。十个 buffer 的 create/upload/descriptor 子区间分别累计发布，LookDev 共 210 sections，低于既有每 node 256 上限。默认不启用 `benchmarkCPUThreadDiagnostics`；此结果是主机 elapsed time，包含抢占/驱动等待，不能称为纯线程执行时间。
