@@ -610,37 +610,39 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     total.work("reuse", reuse);
     phase.work("dirtyBounds", dirtyBounds.size());
     phase.next("Build VSM page remapping");
-    std::vector<std::array<uint32_t, 2>> remapping(push.totalPages, {UINT32_MAX, 1u});
+    // One uint4 per fine level: signed old-page offset, first rectangle, count.
+    // Inclusive integer rectangles follow the level records. Keep projection and
+    // edge rounding on the CPU identical to the former dense remap producer.
+    std::vector<std::array<uint32_t, 4>> pageChanges(settings.clipmapCount);
     if (reuse) {
-        const int64_t stride = settings.virtualPagesPerAxis * settings.virtualPagesPerAxis;
         for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
             const int64_t axis = projections[level].page[1];
             const auto dx = origins[level][0] - cache_->origins[level][0];
             const auto dy = origins[level][1] - cache_->origins[level][1];
-            for (int64_t y = 0; y < axis; ++y) {
-                for (int64_t x = 0; x < axis; ++x) {
-                    const int64_t oldX = x + dx, oldY = y + dy;
-                    auto& entry = remapping[level * stride + y * axis + x];
-                    entry = {oldX >= 0 && oldX < axis && oldY >= 0 && oldY < axis ?
-                        uint32_t(level * stride + oldY * axis + oldX) : UINT32_MAX, settings.forceRedraw ? 1u : 0u};
-                }
-            }
+            const auto offsetX = int32_t(std::clamp(dx, -axis, axis));
+            const auto offsetY = int32_t(std::clamp(dy, -axis, axis));
+            const auto firstRectangle = uint32_t(pageChanges.size());
+            pageChanges[level] = {uint32_t(offsetX), uint32_t(offsetY), firstRectangle, 0};
+            // A whole-level scroll cannot retain pages. Force redraw retains
+            // mappings, but its dirty bit already covers every rectangle.
+            if (std::abs(offsetX) == axis || std::abs(offsetY) == axis || settings.forceRedraw) { continue; }
             for (const auto& bounds : dirtyBounds) {
                 if (!bounds.valid) { continue; }
                 const auto [low, high] = projectedBounds(bounds, projections[level]);
                 if (high[0] < -1 || low[0] > 1 || high[1] < -1 || low[1] > 1) { continue; }
                 const auto page = [axis](float v, float epsilon) {
-                    return std::clamp(int(std::floor((std::clamp(v, -1.f, 1.f) * .5f + .5f) * axis + epsilon)), 0, int(axis - 1));
+                    return uint32_t(std::clamp(int(std::floor((std::clamp(v, -1.f, 1.f) * .5f + .5f) * axis + epsilon)), 0, int(axis - 1)));
                 };
-                for (int y = page(low[1], -.0001f); y <= page(high[1], .0001f); ++y) {
-                    for (int x = page(low[0], -.0001f); x <= page(high[0], .0001f); ++x) {
-                        remapping[level * stride + y * axis + x][1] = 1;
-                    }
-                }
+                pageChanges.push_back({page(low[0], -.0001f), page(low[1], -.0001f),
+                    page(high[0], .0001f), page(high[1], .0001f)});
             }
+            pageChanges[level][3] = uint32_t(pageChanges.size()) - firstRectangle;
         }
-        remapping.back() = {push.totalPages - 1, !dirtyBounds.empty() || settings.forceRedraw ? 1u : 0u};
     }
+    phase.work("remapBytes", pageChanges.size() * sizeof(pageChanges[0]));
+    phase.work("denseRemapBytes", uint64_t(push.totalPages) * 8);
+    phase.work("remapLevels", settings.clipmapCount);
+    phase.work("dirtyRectangles", pageChanges.size() - settings.clipmapCount);
     phase.next("Prepare VSM materials and alpha leases");
     std::vector<ShadowMaterial> gpuMaterials;
     for (size_t index = 0; index < materials.size(); ++index) {
@@ -661,10 +663,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128,
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
-        remapping.size() * sizeof(remapping[0]), allocationWords * sizeof(uint32_t)};
-    const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 8, 4};
+        pageChanges.size() * sizeof(pageChanges[0]), allocationWords * sizeof(uint32_t)};
+    const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
-        remapping.data(), nullptr};
+        pageChanges.data(), nullptr};
     uint32_t* indices[]{&push.materials, &push.pages, &push.coverageInputs, &push.workItems,
         &push.statistics, &push.projections, &push.view, &push.arguments, &push.reuse, &push.owners};
     phase.next("Prepare VSM buffers");

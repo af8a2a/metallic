@@ -495,20 +495,47 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         bool coarse = id.x == push.totalPages - 1u;
         uint4 entry = uint4(coarse ? 0u : 0xffffffffu, coarse && push.enabled != 0u ? 3u : 0u,
             coarse ? push.clipmapCount : id.x / (push.virtualPagesPerAxis * push.virtualPagesPerAxis), 2u);
+        uint mappingFlags = 0u;
         if ((push.cacheMode & 1u) != 0u) {
-            StructuredBuffer<uint2> reuse = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.reuse));
-            uint2 mapping = reuse[id.x];
-            if (mapping.x != 0xffffffffu) {
+            // Fine levels occupy fixed VPA^2 strides; local mips only use the
+            // packed axis^2 prefix. The remaining slots must stay unmapped.
+            StructuredBuffer<uint4> changes = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.reuse));
+            uint4 change = uint4(0u);
+            uint2 page = uint2(0u);
+            uint oldIndex = coarse ? id.x : 0xffffffffu;
+            if (!coarse) {
+                uint stride = push.virtualPagesPerAxis * push.virtualPagesPerAxis;
+                uint level = id.x / stride, local = id.x % stride;
+                uint axis = push.lightType == 0u ? push.virtualPagesPerAxis : max(1u, push.virtualPagesPerAxis >> level);
+                change = changes[level];
+                if (local < axis * axis) {
+                    page = uint2(local % axis, local / axis);
+                    int2 oldPage = int2(page) + asint(change.xy);
+                    if (all(uint2(oldPage) < uint2(axis))) {
+                        oldIndex = level * stride + uint(oldPage.y) * axis + uint(oldPage.x);
+                    }
+                }
+            }
+            if (oldIndex != 0xffffffffu) {
                 StructuredBuffer<uint4> previous = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.previousPages));
-                uint4 old = previous[mapping.x];
+                uint4 old = previous[oldIndex];
+                bool mappingDirty = (push.cacheMode & 4u) != 0u || (coarse && push.dirtyBoundsCount != 0u);
+                // Only resident pages need rectangle tests. Count consumes these
+                // flags before replacing the same scratch words with scan ranks.
                 if (old.x != 0xffffffffu) {
+                    for (uint rectangle = 0u; !mappingDirty && rectangle < change.w; ++rectangle) {
+                        uint4 bounds = changes[change.z + rectangle];
+                        mappingDirty = all(page >= bounds.xy) && all(page <= bounds.zw);
+                    }
+                    mappingFlags = (mappingDirty ? 1u : 0u) | (oldIndex != id.x ? 2u : 0u);
                     entry.x = old.x;
-                    bool dirty = mapping.y != 0u || (old.w & 1u) == 0u || (push.cacheMode & 4u) != 0u;
+                    bool dirty = mappingDirty || (old.w & 1u) == 0u;
                     entry.w = dirty ? 2u : 1u;
                 }
             }
         }
         pages[id.x] = entry;
+        owners[push.physicalPageCount + id.x] = mappingFlags;
     }
     // Each counter has exactly one writer, including the diagnostic constants.
     if (id.x < 32u) {
@@ -606,12 +633,9 @@ void vsmCountMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
         uint4 entry = pages[id.x];
         counts.x = id.x + 1u < push.totalPages && (entry.y & 1u) != 0u ? 1u : 0u;
         if ((push.cacheMode & 1u) != 0u && entry.x != 0xffffffffu) {
-            StructuredBuffer<uint2> reuse = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.reuse));
-            uint2 mapping = reuse[id.x];
-            if (mapping.x != 0xffffffffu) {
-                counts.y = mapping.y != 0u ? 1u : 0u;
-                counts.z = mapping.x != id.x ? 1u : 0u;
-            }
+            uint mappingFlags = scratch[push.physicalPageCount + id.x];
+            counts.y = mappingFlags & 1u;
+            counts.z = (mappingFlags >> 1u) & 1u;
         }
     }
     uint3 prefix = vsmAllocationPrefix(counts, lane);

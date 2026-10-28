@@ -192,12 +192,20 @@ public:
                     validation.phase(std::to_string(config[0]) + "-" + std::to_string(config[1]) + "-" + std::to_string(config[2]));
                     auto owners = input.owners;
                     owners.resize(uint64_t(config[1]) * 2 + config[0] + blocks, 0xcdcdcdcdu);
-                    const std::array<uint64_t, 4> bytes{input.pages.size() * sizeof(Page), input.reuse.size() * sizeof(Mapping),
+                    // Reset now leaves compact-remap diagnostic flags in the
+                    // rank slots. Seed them from this fixture's independent
+                    // dense mappings before testing the allocator in isolation.
+                    for (uint32_t page = 0; page < config[0]; ++page) {
+                        const auto mapping = input.reuse[page];
+                        owners[config[1] + page] = mapping[0] == kInvalid ? 0u :
+                            (mapping[1] != 0 ? 1u : 0u) | (mapping[0] != page ? 2u : 0u);
+                    }
+                    const std::array<uint64_t, 3> bytes{input.pages.size() * sizeof(Page),
                         sizeof(input.statistics), owners.size() * sizeof(uint32_t)};
-                    const std::array<const void*, 4> data{input.pages.data(), input.reuse.data(), input.statistics.data(), owners.data()};
-                    const std::array<uint32_t, 4> stride{16,8,4,4};
-                    std::array<std::unique_ptr<Buffer>, 4> buffers;
-                    std::array<ResourceLease, 4> leases;
+                    const std::array<const void*, 3> data{input.pages.data(), input.statistics.data(), owners.data()};
+                    const std::array<uint32_t, 3> stride{16,4,4};
+                    std::array<std::unique_ptr<Buffer>, 3> buffers;
+                    std::array<ResourceLease, 3> leases;
                     for (size_t index = 0; index < buffers.size(); ++index) {
                         auto buffer = device->createBuffer({.size = bytes[index], .structureStride = stride[index],
                             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload});
@@ -209,17 +217,16 @@ public:
                     }
                     AllocatorPush push;
                     push.words[2] = leases[0].shaderIndex(); // pages
-                    push.words[5] = leases[2].shaderIndex(); // statistics
+                    push.words[5] = leases[1].shaderIndex(); // statistics
                     push.words[18] = config[1]; // physicalPageCount
                     push.words[25] = 1; // enabled
                     push.words[26] = config[0]; // totalPages
-                    push.words[29] = leases[1].shaderIndex(); // reuse
-                    push.words[30] = leases[3].shaderIndex(); // owners and scratch
+                    push.words[30] = leases[2].shaderIndex(); // owners and scratch
                     push.words[31] = input.cacheMode;
                     bench::GPUCommands gpu(*queue);
                     requireAllocator(gpu.initialize(*device), "Begin allocator commands");
                     requireAllocator(registry->bind(*gpu.commands, leases), "Bind allocator resources");
-                    std::array<BufferBarrierDesc, 4> barriers;
+                    std::array<BufferBarrierDesc, 3> barriers;
                     for (size_t index = 0; index < barriers.size(); ++index) {
                         barriers[index] = {.buffer = buffers[index].get(),
                             .before = {PipelineStageBits::Host, AccessBits::HostWrite},
@@ -238,8 +245,8 @@ public:
                     }
                     requireAllocator(gpu.submitAndWait(), "Complete allocator commands");
                     const std::array<const void*, 3> expectedData{expected.pages.data(), expected.statistics.data(), expected.owners.data()};
-                    const std::array<size_t, 3> outputIndices{0,2,3};
-                    const std::array<uint64_t, 3> outputBytes{bytes[0],bytes[2],uint64_t(config[1])*4};
+                    const std::array<size_t, 3> outputIndices{0,1,2};
+                    const std::array<uint64_t, 3> outputBytes{bytes[0],bytes[1],uint64_t(config[1])*4};
                     for (size_t index = 0; index < outputIndices.size(); ++index) {
                         auto& buffer = *buffers[outputIndices[index]]; buffer.invalidate();
                         const void* mapped = buffer.map(); requireAllocator(mapped != nullptr, "Allocator result map");

@@ -2,6 +2,8 @@
 
 2026-10-28，基于包含 resident caster cache 的 `6631ee04a`。本轮添加默认关闭的 CPU 诊断和可复核报告，没有改变 VSM 分配策略、shader、灯光、页预算或默认图。结果用于选择下一轮优化目标；上一轮普通 A/B 仍见 [CPU 优化记录](VirtualShadowMapsCPU.md)。
 
+后续优化与测量：[资源复用与池化](VirtualShadowMapsResourcePool.md)、[紧凑页变更上传](VirtualShadowMapsCompactUpdates.md)。下文耗时保留原基线口径。
+
 ## 当前开销与优先级
 
 固定相机、temporal jitter 开启、输出 768×512、DLSS Quality 实际内部 512×341。每场景 3 个诊断开启进程，每进程 128 帧，排除前 16 帧。表中为相同保留帧的**排他耗时均值**和占 Shadows node CPU 的份额；父区间扣除直接子区间，不相加重复计时，也不相加阶段中位数。所有进程等权，计时包括诊断本身的成本。

@@ -2,6 +2,8 @@
 
 2026-10-28。结论：当前最值得参考的是 **资源寿命分层与复用、紧凑的 CPU→GPU 页变更描述、跨灯面批处理**。Metallic 已有持久深度 atlas、GPU 页分配和 resident caster cache；下一步应重点消除逐面录制中的资源创建/释放，再减少 CPU dense remap。并行录制排在这两项之后。
 
+后续实施记录：[资源复用与池化](VirtualShadowMapsResourcePool.md)、[紧凑页变更上传](VirtualShadowMapsCompactUpdates.md)。下文保留研究时的基线，实际 CPU/GPU 收益及验收限制见对应实现记录。
+
 ## 证据范围
 
 - 直接读取 `E:/UnrealEngine/Engine/`。`Build/Build.version` 为 **5.7.4**，`Changelist=0`、`CompatibleChangelist=47537391`。本轮 Git 查询因目录访问权限失败，未用历史记录的 commit 冒充当前提交；16 个相关文件的 SHA256 记录于 [SourceIdentity.json](../.cache/vsm-ue-cpu-research/SourceIdentity.json)。
