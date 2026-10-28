@@ -256,16 +256,28 @@ Json frameStatistics(RenderGraphPreviewRenderer& preview)
         !completed->front().profilingOverflow, "Missing, ambiguous or overflowed GPU timestamp frame");
     const auto& stats = completed->front();
     requireAcceptance(std::isfinite(stats.gpuMilliseconds) && stats.gpuMilliseconds > 0, "Invalid graph GPU duration");
+    const auto serializeSection = [](const RenderGraphProfileSection& section) {
+        Json work = Json::array();
+        for (const auto& counter : section.cpuWork) {
+            work.push_back({{"name", counter.name}, {"value", counter.value}});
+        }
+        return Json{{"name", section.name}, {"parent", section.parent},
+            {"cpuMs", section.cpuMilliseconds}, {"cpuOnly", section.cpuOnly},
+            {"cpuWork", std::move(work)},
+            {"cpuThreadProfile", section.cpuThreadProfile ? Json(*section.cpuThreadProfile) : Json(nullptr)},
+            {"gpuMs", section.gpuTimingAvailable ? Json(section.gpuMilliseconds) : Json(nullptr)}};
+    };
     Json result{{"executionId", stats.executionId}, {"graphMs", stats.gpuMilliseconds}, {"cpuMs", stats.cpuMilliseconds},
-        {"nodes", Json::array()}, {"streaming", Json::array()}};
+        {"preparation", Json::array()}, {"nodes", Json::array()}, {"streaming", Json::array()}};
+    for (const auto& section : stats.preparation) {
+        result["preparation"].push_back(serializeSection(section));
+    }
     for (const auto& node : stats.nodes) {
         Json entry{{"name", node.name}, {"type", node.type},
             {"gpuMs", node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)},
             {"cpuMs", node.cpuMilliseconds}, {"sections", Json::array()}};
         for (const auto& section : node.sections) {
-            entry["sections"].push_back({{"name", section.name}, {"parent", section.parent},
-                {"cpuMs", section.cpuMilliseconds},
-                {"gpuMs", section.gpuTimingAvailable ? Json(section.gpuMilliseconds) : Json(nullptr)}});
+            entry["sections"].push_back(serializeSection(section));
         }
         result["nodes"].push_back(std::move(entry));
     }
@@ -361,6 +373,14 @@ public:
                 requireAcceptance(loadRenderGraphFromFile(manifestPath.parent_path() / spec.at("graph").get<std::string>(), graph, log), log);
                 auto* shadows = graph.findNode("Shadows");
                 requireAcceptance(shadows && shadows->type == "VirtualShadowMapLightsPass", "Acceptance requires a production VSM Lights pass named Shadows");
+                const bool cpuProfileDiagnostics = shadows->properties.value("benchmarkCPUProfile", false);
+                requireAcceptance(!cpuProfileDiagnostics || diagnostic, "CPU profile attribution requires diagnostic mode");
+                output["cpuProfileDiagnostics"] = cpuProfileDiagnostics;
+                report["cpuProfileDiagnostics"] = cpuProfileDiagnostics;
+                if (cpuProfileDiagnostics) {
+                    report["performanceEligible"] = false;
+                    report["cpuProfileScope"] = "CPU attribution includes diagnostic clocks and counters; nested sections are inclusive and must not be summed with their children. This is not ordinary performance acceptance.";
+                }
                 const uint32_t shadowId = shadows->id;
                 auto* raster = graph.findNode("VBuffer");
                 requireAcceptance(raster && raster->type == "VisibilityBufferPass", "Acceptance requires production VBuffer");

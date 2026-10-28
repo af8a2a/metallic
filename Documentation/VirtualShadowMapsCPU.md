@@ -52,3 +52,5 @@ caster 准备中位数为 LookDev 17.141 → 0.0014 ms、Sponza 38.722 → 0.002
 LookDev 的 A 侧进程中位数在 29.60–39.58 ms、B 侧在 8.73–9.96 ms，存在明显运行波动。全部样本保留在区组计算中，完整进程点图和各侧 range/median 警告见 [最终报告](../.cache/vsm-cpu-abba-final-report/report.md)、[CPU/GPU 图](../.cache/vsm-cpu-abba-final-report/CPUAndGPU.png)。报告目录包含逐进程 CSV / JSON、版本信息、原始包 hash、[采集脚本](../.cache/vsm-cpu-abba-final-report/run_abba.py)和[绘图脚本](../.cache/vsm-cpu-abba-final-report/plot_report.py)。已实际运行 verifier 和绘图，检查图例、坐标轴和裁切。
 
 本轮结论为所测 resident 完整图的 CPU 优化成立；动态几何仍按原路径重建，stream 场景性能不外推，默认阴影选择保持 P5 当前状态。
+
+后续 [CPU 开销细分](VirtualShadowMapsCPUProfile.md) 已在当前缓存实现上增加默认关闭的纯 CPU 阶段诊断，并记录 12 次开关对照、资源寿命调用链和优化优先级。状态替换与 buffer 创建占诊断 Shadows CPU 的 82.23% / 74.23%；这些诊断均值不替代本页普通 A/B 结论。

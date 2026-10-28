@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -115,6 +116,18 @@ public:
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        CPUProfileRecorder cpuRecorder;
+        auto* cpu = context.properties().value("benchmarkCPUProfile", false) ? &cpuRecorder : nullptr;
+        cpuRecorder.threadDiagnostics = context.properties().value("benchmarkCPUThreadDiagnostics", false);
+        const auto result = executeProfiled(context, cpu);
+        if (cpu) { context.publishCpuProfile(cpuRecorder.sections); }
+        return result;
+    }
+
+    Result<> executeProfiled(RenderGraphExecutionContext& context, CPUProfileRecorder* cpu)
+    {
+        CPUProfileScope cpuTotal(cpu, "VSM lights CPU");
+        CPUProfileScope cpuPhase(cpu, "Validate inputs and resolve settings");
         const auto depth = context.inputTexture("depth");
         const auto metadata = context.inputBuffer("rasterInfo");
         const auto output = context.outputTexture("shadows");
@@ -170,6 +183,7 @@ public:
         const float nearPlane = properties.value("nearPlane", 0.001f);
         if (budget > 262144 || !std::isfinite(nearPlane) || nearPlane <= 0) { return makeError(Error::InvalidArgument); }
         const auto celestials = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()));
+        cpuPhase.next("Light admission and cache pruning");
         const auto lighting = resolveSceneLighting(scene, context.world());
         std::vector<ManagedLight> lights(sources.size() + 2);
         for (uint32_t index = 0; index < lights.size(); ++index) {
@@ -264,6 +278,10 @@ public:
         // Admission owns persistent pool memory. Disabled/rejected lights must
         // release their old pools when the global budget shrinks.
         std::erase_if(caches_, [&](const auto& cache) { return !identities.contains(cache.first); });
+        cpuTotal.work("sourceSlots", sources.size());
+        cpuTotal.work("admittedLights", header.admittedCount);
+        cpuTotal.work("admittedFaces", admittedFaces);
+        cpuPhase.next("Light table and statistics upload");
 
         struct FacePublication
         {
@@ -305,6 +323,7 @@ public:
         };
         std::vector<ProjectionGroup> projections;
         auto recordFaces = [&](CommandBuffer&) -> Result<> {
+            cpuPhase.next("Caster textures and geometry");
             auto profile = context.profileScope("VSM caster preparation");
             if (admittedFaces != 0) {
                 ViewConstants view{};
@@ -355,6 +374,7 @@ public:
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
                 profile.next("VSM page demand, cache and raster");
+                cpuPhase.next("Record all faces");
                 for (uint32_t index : order) {
                     auto& item = lights[index];
                     if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
@@ -369,7 +389,7 @@ public:
                         settings.physicalPageCount = item.faceBudgets[face];
                         const VirtualShadowMapProjectionTarget target{output.texture(), debug.texture(), item.entry.baseLayer, item.entry.faceCount == 6};
                         auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
-                            scene->materials(), alphaTextures, settings, log, deferredProjection, compact_ ? &target : nullptr);
+                            scene->materials(), alphaTextures, settings, log, deferredProjection, compact_ ? &target : nullptr, cpu);
                         if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
                         pointResults[face] = *shadow;
                         const uint32_t layer = index * 6 + face;
@@ -390,7 +410,7 @@ public:
                         projections.push_back(group);
                     } else if (deferredProjection) {
                         for (auto& face : faces) {
-                            if (auto projected = face->project(commands, pointResults, log); !projected) {
+                            if (auto projected = face->project(commands, pointResults, log, cpu); !projected) {
                                 spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
                                 return projected;
                             }
@@ -401,6 +421,7 @@ public:
             return {};
         };
         if (auto r = recordFaces(context.commandBuffer()); !r) { (void)context.streamer()->cancelCopyBatch(*batch); return r; }
+        cpuPhase.next("Publication stage setup");
         // Build views only after the owning names have reached their final
         // addresses. Every face's private outputs remain ShaderRead until this
         // single graph-stage sequence transitions them for publication.
@@ -442,6 +463,7 @@ public:
         if (!memoryBatch) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(memoryBatch.error()); }
         const std::array stages{RenderGraphStage{"Initialize VSM light publication", initializeUses,
             [&](CommandBuffer& cmd) -> Result<> {
+                CPUProfileScope stageCPU(cpu, "Initialize publication commands");
                 auto cleared = cmd.clearColorTexture(*output.texture(), TextureLayout::TransferDestination, {1, 1, 1, 1});
                 if (!cleared) { return cleared; }
                 cleared = cmd.clearColorTexture(*debug.texture(), TextureLayout::TransferDestination, {1, 0, 1, 1});
@@ -449,12 +471,13 @@ public:
                 return context.streamer()->copyStreamedData(cmd, *batch);
             }}, RenderGraphStage{"Project compact VSM lights", projectionUses,
             [&](CommandBuffer& cmd) -> Result<> {
+                CPUProfileScope stageCPU(cpu, "Project all faces");
                 std::string log;
                 for (const auto& group : projections) {
                     for (uint32_t face = 0; face < group.faceCount; ++face) {
                         const auto pointFaces = group.filteredPoint ? std::span<const VirtualShadowMapResult>(group.results) :
                             std::span<const VirtualShadowMapResult>{};
-                        if (auto r = group.faces[face]->project(cmd, pointFaces, log); !r) {
+                        if (auto r = group.faces[face]->project(cmd, pointFaces, log, cpu); !r) {
                             spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
                             return r;
                         }
@@ -463,6 +486,7 @@ public:
                 return {};
             }}, RenderGraphStage{"Publish VSM faces", publishUses,
             [&](CommandBuffer& cmd) -> Result<> {
+                CPUProfileScope stageCPU(cpu, "Memory statistics and publication commands");
                 std::array<uint64_t, 8> memoryData{};
                 for (const auto& [identity, faces] : caches_) {
                     for (const auto& face : faces) {
@@ -495,6 +519,7 @@ public:
                 }
                 return context.streamer()->copyStreamedData(cmd, *memoryBatch);
             }}};
+        cpuPhase.next("Execute publication stages");
         auto result = context.executeStages(stages, bufferImports, textureImports);
         if (!result) {
             (void)context.streamer()->cancelCopyBatch(*batch);

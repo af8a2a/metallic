@@ -14,6 +14,7 @@ namespace metallic::scene { struct RenderMaterial; }
 namespace metallic::render {
 
 struct VirtualShadowMapCasterResources;
+struct CPUProfileRecorder;
 
 enum class VirtualShadowMapLightType : uint32_t { Directional, Spot, PointFace };
 enum class VirtualShadowMapFilter : uint32_t { Hard, PCF, SMRT };
@@ -103,18 +104,19 @@ public:
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
-        const VirtualShadowMapProjectionTarget* output = nullptr);
+        const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr);
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
-        const VirtualShadowMapProjectionTarget* output = nullptr);
+        const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr);
 
     // A filtered point light records all six faces before projecting any face.
     // The ordered face results keep each tap's page table, projection and atlas
     // explicit; no tap may wrap into an unrelated physical atlas tile.
-    Result<> project(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
+    Result<> project(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log,
+        CPUProfileRecorder* profiler = nullptr);
 
     // Logical resource bytes currently owned by this cache and its recording.
     // Native allocation padding and retired in-flight recordings are excluded;

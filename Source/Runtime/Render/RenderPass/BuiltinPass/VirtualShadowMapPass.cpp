@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -118,6 +119,18 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        CPUProfileRecorder cpuRecorder;
+        auto* cpu = context.properties().value("benchmarkCPUProfile", false) ? &cpuRecorder : nullptr;
+        cpuRecorder.threadDiagnostics = context.properties().value("benchmarkCPUThreadDiagnostics", false);
+        const auto result = executeProfiled(context, cpu);
+        if (cpu) { context.publishCpuProfile(cpuRecorder.sections); }
+        return result;
+    }
+
+    Result<> executeProfiled(RenderGraphExecutionContext& context, CPUProfileRecorder* cpu)
+    {
+        CPUProfileScope cpuTotal(cpu, "VSM single light CPU");
+        CPUProfileScope cpuPhase(cpu, "Validate inputs and prepare view");
         const auto depth = context.inputTexture("depth");
         const auto metadata = context.inputBuffer("rasterInfo");
         const auto output = context.outputTexture("shadow");
@@ -159,6 +172,7 @@ public:
 
         auto& commands = context.commandBuffer();
         auto profile = context.profileScope("VSM casters");
+        cpuPhase.next("Caster textures and geometry");
         const auto* stream = gpuScene->shadowGeometry({info.lightGridViewIndex, info.lightGridViewGeneration},
             info.frameIndex, info.sceneIdentity);
         if (scene->hasStreamGeometry() && stream == nullptr) {
@@ -209,14 +223,16 @@ public:
         const auto light = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[lightIndex];
         const auto settings = shadowSettings(context.properties());
         profile.next("VSM demand, raster and resolve");
+        cpuPhase.next("Record shadow face");
         auto shadow = shadows_.record(*device_, commands, *depth.view(), view, light, *casters,
-            scene->materials(), alphaTextures, settings, log);
+            scene->materials(), alphaTextures, settings, log, false, nullptr, cpu);
         if (!shadow) {
             spdlog::error("VirtualShadowMapPass: {}", log);
             return makeError(shadow.error());
         }
 
         ScreenSpaceShadowParameters parameters{};
+        cpuPhase.next("Publication setup and commands");
         parameters.view = view;
         for (size_t i = 0; i < 3; ++i) {
             parameters.light.directionType[i] = light.direction[i];
