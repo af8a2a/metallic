@@ -51,6 +51,8 @@ Compact output 的 atlas 在 reuse 时复用，output texture view 创建是 CPU
 
 UE 对照与下一轮候选拆分见 [Unreal VSM CPU 工作研究](VirtualShadowMapsUnrealCPU.md)：资源池/子分配、compact 页变更、跨灯面批处理及增量失效的源码锚点均已核实。
 
+资源复用已实现，稳态创建计数、寿命回归及普通 ABBA 结果见 [VSM 资源池](VirtualShadowMapsResourcePool.md)。该轮确认 CPU 收益，同时保留 LookDev Shadows GPU 增加和 Sponza 整图 GPU guard 未通过的边界。
+
 ## 计时和复现合同
 
 两个 VSM Pass 支持 graph property `benchmarkCPUProfile: true`；默认 false。`VirtualShadowMaps::record/project` 接受可选 `CPUProfileRecorder*`，沿用纯 CPU scope，不增加 GPU timestamp 查询。十个 buffer 的 create/upload/descriptor 子区间分别累计发布，LookDev 共 210 sections，低于既有每 node 256 上限。默认不启用 `benchmarkCPUThreadDiagnostics`；此结果是主机 elapsed time，包含抢占/驱动等待，不能称为纯线程执行时间。

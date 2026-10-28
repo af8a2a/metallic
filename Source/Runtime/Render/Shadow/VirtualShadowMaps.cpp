@@ -261,21 +261,126 @@ struct VirtualShadowMaps::Cache
     std::shared_ptr<SubmissionTransaction> submission;
 };
 
+struct VirtualShadowMaps::ResourcePool
+{
+    struct BufferEntry
+    {
+        std::shared_ptr<Buffer> buffer;
+        GPUCompletionPoint completion;
+    };
+    struct TextureEntry
+    {
+        ShadowAtlas resource;
+        GPUCompletionPoint completion;
+        uint32_t pageSize = 0;
+    };
+    Device* device = nullptr;
+    std::array<std::vector<BufferEntry>, 11> buffers;
+    std::array<std::vector<TextureEntry>, 3> textures;
+    std::array<std::shared_ptr<TextureView>, 2> externalViews;
+    VirtualShadowMapResourcePoolStats stats;
+
+    Result<std::shared_ptr<Buffer>> buffer(size_t slot, const BufferDesc& desc, const GPUCompletionPoint& completion)
+    {
+        BufferEntry* vacant = nullptr;
+        if (completion.valid()) {
+            for (auto& entry : buffers[slot]) {
+                // Descriptor leases retain allocations, not wrappers. Completion
+                // covers those GPU users; wrapper owners protect cache readers
+                // and deferred projection results independently of that point.
+                if (entry.buffer.use_count() != 1 || !entry.completion.isComplete()) { continue; }
+                const auto& existing = entry.buffer->desc();
+                if (existing.size >= desc.size && existing.structureStride == desc.structureStride &&
+                    existing.usage == desc.usage && existing.memoryLocation == desc.memoryLocation) {
+                    entry.completion = completion;
+                    ++stats.bufferReuses;
+                    return entry.buffer;
+                }
+                vacant = &entry;
+            }
+        }
+        if (vacant) { vacant->buffer.reset(); ++stats.bufferEvictions; }
+        auto created = device->createBuffer(desc);
+        if (!created) {
+            if (vacant) {
+                std::erase_if(buffers[slot], [](const auto& entry) { return !entry.buffer; });
+            }
+            return std::unexpected(created.error());
+        }
+        ++stats.bufferCreates;
+        std::shared_ptr<Buffer> result = std::move(*created);
+        if (completion.valid()) {
+            if (vacant) { *vacant = {result, completion}; }
+            else { buffers[slot].push_back({result, completion}); }
+        }
+        return result;
+    }
+
+    Result<ShadowAtlas> texture(size_t slot, const TextureDesc& desc, const GPUCompletionPoint& completion, uint32_t pageSize)
+    {
+        TextureEntry* vacant = nullptr;
+        if (completion.valid()) {
+            for (auto& entry : textures[slot]) {
+                if (entry.resource.texture.use_count() != 1 || !entry.completion.isComplete()) { continue; }
+                const auto& existing = entry.resource.texture->desc();
+                if (existing.width == desc.width && existing.height == desc.height && existing.format == desc.format &&
+                    existing.usage == desc.usage) {
+                    entry.completion = completion;
+                    entry.pageSize = pageSize;
+                    ++stats.textureReuses;
+                    return entry.resource;
+                }
+                vacant = &entry;
+            }
+        }
+        if (vacant) { vacant->resource = {}; ++stats.textureEvictions; }
+        auto created = device->createTexture(desc);
+        if (!created) {
+            if (vacant) {
+                std::erase_if(textures[slot], [](const auto& entry) { return !entry.resource.texture; });
+            }
+            return std::unexpected(created.error());
+        }
+        ++stats.textureCreates;
+        auto view = device->createTextureView(**created, {.format = desc.format});
+        if (!view) {
+            if (vacant) {
+                std::erase_if(textures[slot], [](const auto& entry) { return !entry.resource.texture; });
+            }
+            return std::unexpected(view.error());
+        }
+        ++stats.viewCreates;
+        ShadowAtlas result{std::move(*created), std::move(*view)};
+        if (completion.valid()) {
+            if (vacant) { *vacant = {result, completion, pageSize}; }
+            else { textures[slot].push_back({result, completion, pageSize}); }
+        }
+        return result;
+    }
+};
+
 struct VirtualShadowMaps::State
 {
+    // Backing owners contain no State/cache links. Results and projection
+    // commands may retain these across faces without forming frame chains.
+    struct Resources
+    {
+        // materials, page table, coverage, work, statistics, projections, view, indirect, reuse, owners.
+        std::array<std::shared_ptr<Buffer>, 10> buffers;
+        std::shared_ptr<Buffer> pointFaces;
+        std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
+        std::array<std::shared_ptr<TextureView>, 3> views;
+    };
+    std::shared_ptr<Resources> resources = std::make_shared<Resources>();
+    std::shared_ptr<ResourcePool> pool;
     ShadowPush push{};
     std::shared_ptr<ResourceRegistry> registry;
     std::shared_ptr<Programs> programs;
     std::vector<ResourceLease> leases;
-    // materials, page table, coverage, work, statistics, projections, view, indirect, reuse, owners.
-    std::array<std::shared_ptr<Buffer>, 10> buffers;
-    std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
-    std::array<std::shared_ptr<TextureView>, 3> views;
     std::array<Texture*, 2> outputTextures{};
     bool externalOutput = false;
     std::shared_ptr<Cache> previous;
     std::shared_ptr<Cache> next;
-    std::shared_ptr<Buffer> pointFaces;
     bool projectionPending = true;
 };
 
@@ -388,7 +493,19 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         }
     }
     if (!settings.cacheEnabled) { cache_.reset(); }
+    phase.next("Replace VSM recording state");
+    // Commands and returned results retain their backing independently. Release
+    // the coordinator's old snapshot before choosing an idle resource slot.
+    state_.reset();
+    if (!pool_ || pool_->device != &device) {
+        pool_ = std::make_shared<ResourcePool>();
+        pool_->device = &device;
+    }
+    const auto poolBefore = pool_->stats;
+    const auto completion = frame && frame->recording() ? frame->completion() : GPUCompletionPoint{};
+    phase.next("Prepare VSM recording resources");
     auto state = std::make_shared<State>();
+    state->pool = pool_;
     auto registry = ResourceRegistry::forDevice(device);
     if (!registry) { return std::unexpected(registry.error()); }
     state->registry = *registry;
@@ -554,25 +671,25 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     constexpr const char* bufferPhases[]{"Create VSM buffers", "Upload VSM buffers", "Acquire VSM buffer descriptors"};
     CPUProfileRecorder bufferProfile;
     uint64_t bufferBytes = 0, hostUploadBytes = 0, hostUploadBuffers = 0;
-    for (size_t index = 0; index < state->buffers.size(); ++index) {
+    for (size_t index = 0; index < state->resources->buffers.size(); ++index) {
         bufferBytes += sizes[index];
         if (data[index]) { hostUploadBytes += sizes[index]; ++hostUploadBuffers; }
         CPUProfileScope bufferPhase(profiler ? &bufferProfile : nullptr, bufferPhases[0]);
-        auto buffer = device.createBuffer({.size = sizes[index], .structureStride = strides[index],
+        auto buffer = pool_->buffer(index, {.size = sizes[index], .structureStride = strides[index],
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                 (index == 7 ? BufferUsageBits::Indirect : BufferUsageBits::None),
-            .memoryLocation = data[index] ? MemoryLocation::HostUpload : MemoryLocation::Device});
+            .memoryLocation = data[index] ? MemoryLocation::HostUpload : MemoryLocation::Device}, completion);
         if (!buffer) { return std::unexpected(buffer.error()); }
-        state->buffers[index] = std::move(*buffer);
+        state->resources->buffers[index] = std::move(*buffer);
         bufferPhase.next(bufferPhases[1]);
         if (data[index]) {
-            void* mapped = state->buffers[index]->map();
+            void* mapped = state->resources->buffers[index]->map();
             if (!mapped) { return makeError(Error::Failure); }
             std::memcpy(mapped, data[index], sizes[index]);
-            state->buffers[index]->flush(); state->buffers[index]->unmap();
+            state->resources->buffers[index]->flush(); state->resources->buffers[index]->unmap();
         }
         bufferPhase.next(bufferPhases[2]);
-        auto lease = state->registry->storageBuffer(*state->buffers[index]);
+        auto lease = state->registry->storageBuffer(*state->resources->buffers[index]);
         if (!lease) { return std::unexpected(lease.error()); }
         *indices[index] = lease->shaderIndex(); state->leases.push_back(*lease);
     }
@@ -589,19 +706,34 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 .cpuMilliseconds = milliseconds[index], .cpuOnly = true});
         }
     }
-    phase.work("buffers", state->buffers.size());
+    phase.work("buffers", state->resources->buffers.size());
     phase.work("bufferBytes", bufferBytes);
     phase.work("hostUploadBuffers", hostUploadBuffers);
     phase.work("hostUploadBytes", hostUploadBytes);
-    phase.work("deviceBuffers", state->buffers.size() - hostUploadBuffers);
+    phase.work("deviceBuffers", state->resources->buffers.size() - hostUploadBuffers);
     phase.work("deviceBytes", bufferBytes - hostUploadBytes);
     phase.work("uploadBytes", hostUploadBytes);
+    phase.work("bufferCreates", pool_->stats.bufferCreates - poolBefore.bufferCreates);
+    phase.work("bufferReuses", pool_->stats.bufferReuses - poolBefore.bufferReuses);
+    phase.work("bufferEvictions", pool_->stats.bufferEvictions - poolBefore.bufferEvictions);
     total.work("bufferBytes", bufferBytes);
     phase.next("Prepare VSM textures and descriptors");
     const uint32_t width = static_cast<uint32_t>(view.current.viewport[1]), height = static_cast<uint32_t>(view.current.viewport[2]);
     const Format formats[]{Format::D32Sfloat, Format::R8Unorm, Format::RGBA8Unorm};
     uint32_t* textureIndices[]{&push.atlas, &push.shadow, &push.debug};
     for (size_t index = 0; index < 3; ++index) {
+        const uint32_t textureWidth = index == 0 ? push.physicalPagesX * push.pageSize : width;
+        const uint32_t textureHeight = index == 0 ? push.physicalPagesY * push.pageSize : height;
+        // Cache hits bypass texture acquisition. Still retire obsolete extents
+        // once their GPU work and readers finish, so shrinking a page budget
+        // does not retain the previous large atlas indefinitely.
+        std::erase_if(pool_->textures[index], [&](const auto& entry) {
+            const auto& desc = entry.resource.texture->desc();
+            const bool obsolete = (index != 0 && output) || desc.width != textureWidth || desc.height != textureHeight;
+            if (!obsolete || entry.resource.texture.use_count() != 1 || !entry.completion.isComplete()) { return false; }
+            ++pool_->stats.textureEvictions;
+            return true;
+        });
         if (index != 0 && output) {
             auto* target = index == 1 ? output->shadow : output->debug;
             if (!target || target->desc().format != formats[index] || target->desc().width != width ||
@@ -611,25 +743,27 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 return makeError(Error::InvalidArgument);
             }
             state->outputTextures[index - 1] = target;
-            auto textureView = device.createTextureView(*target, {.format = formats[index], .range = {.baseLayer = output->layer}});
-            if (!textureView) { return std::unexpected(textureView.error()); }
-            state->views[index] = std::move(*textureView);
+            auto& cached = pool_->externalViews[index - 1];
+            if (!cached || cached->retainTexture() != target->retainAllocation() || cached->desc().range.baseLayer != output->layer) {
+                auto textureView = device.createTextureView(*target, {.format = formats[index], .range = {.baseLayer = output->layer}});
+                if (!textureView) { return std::unexpected(textureView.error()); }
+                cached = std::move(*textureView);
+                ++pool_->stats.viewCreates;
+            }
+            state->resources->views[index] = cached;
         } else if (index == 0 && reuse) {
-            state->textures[index] = cache_->atlas->texture;
-            state->views[index] = cache_->atlas->view;
+            state->resources->textures[index] = cache_->atlas->texture;
+            state->resources->views[index] = cache_->atlas->view;
         } else {
-            auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferSource |
+            auto texture = pool_->texture(index, {.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferSource |
                 (index == 0 ? TextureUsageBits::DepthStencilAttachment : TextureUsageBits::Storage),
-                .format = formats[index], .width = index == 0 ? push.physicalPagesX * push.pageSize : width,
-                .height = index == 0 ? push.physicalPagesY * push.pageSize : height});
+                .format = formats[index], .width = textureWidth, .height = textureHeight}, completion, push.pageSize);
             if (!texture) { return std::unexpected(texture.error()); }
-            state->textures[index] = std::move(*texture);
-            auto textureView = device.createTextureView(*state->textures[index], {.format = formats[index]});
-            if (!textureView) { return std::unexpected(textureView.error()); }
-            state->views[index] = std::move(*textureView);
+            state->resources->textures[index] = std::move(texture->texture);
+            state->resources->views[index] = std::move(texture->view);
         }
-        if (index != 0 && !output) { state->outputTextures[index - 1] = state->textures[index].get(); }
-        auto lease = index == 0 ? state->registry->sampledImage(*state->views[index]) : state->registry->storageImage(*state->views[index]);
+        if (index != 0 && !output) { state->outputTextures[index - 1] = state->resources->textures[index].get(); }
+        auto lease = index == 0 ? state->registry->sampledImage(*state->resources->views[index]) : state->registry->storageImage(*state->resources->views[index]);
         if (!lease) { return std::unexpected(lease.error()); }
         *textureIndices[index] = lease->shaderIndex(); state->leases.push_back(*lease);
     }
@@ -639,6 +773,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     auto sampler = state->registry->sampler({});
     if (!sampler) { return std::unexpected(sampler.error()); }
     push.sampler = sampler->shaderIndex(); state->leases.push_back(*sampler);
+    phase.work("textureCreates", pool_->stats.textureCreates - poolBefore.textureCreates);
+    phase.work("textureReuses", pool_->stats.textureReuses - poolBefore.textureReuses);
+    phase.work("textureEvictions", pool_->stats.textureEvictions - poolBefore.textureEvictions);
+    phase.work("viewCreates", pool_->stats.viewCreates - poolBefore.viewCreates);
     phase.next("Prepare VSM pipeline cache");
     phase.work("cacheMiss", !programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey());
     if (!programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey()) {
@@ -701,12 +839,21 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         AccessBits access = AccessBits::ShaderRead | AccessBits::ShaderWrite) -> Result<> {
         std::vector<BufferBarrierDesc> barriers;
         for (auto index : buffers) {
-            barriers.push_back({.buffer = state->buffers[index].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            barriers.push_back({.buffer = state->resources->buffers[index].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
                 .after = {stages, access}});
         }
         return commands.synchronize({.buffers = barriers});
     };
     phase.next("Record VSM demand and build commands");
+    commands.hostWriteBarrier();
+    std::array<BufferBarrierDesc, 5> recycledReady;
+    constexpr std::array<size_t, 5> deviceSlots{1, 3, 4, 7, 9};
+    for (size_t index = 0; index < deviceSlots.size(); ++index) {
+        recycledReady[index] = {.buffer = state->resources->buffers[deviceSlots[index]].get(),
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+    }
+    if (auto r = commands.synchronize({.buffers = recycledReady}); !r) { return std::unexpected(r.error()); }
     if (reuse) {
         const BufferBarrierDesc previousReady{.buffer = cache_->pages.get(),
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite}, .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
@@ -748,13 +895,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.next("Record VSM raster commands");
     phase.work("coarseBatches", push.coarseBatchCount);
     phase.work("fineBatches", push.batchCount);
-    const TextureBarrierDesc depthBegin{.texture = state->textures[0].get(), .oldLayout = reuse ? TextureLayout::ShaderRead : TextureLayout::Undefined,
+    const TextureBarrierDesc depthBegin{.texture = state->resources->textures[0].get(), .oldLayout = reuse ? TextureLayout::ShaderRead : TextureLayout::Undefined,
         .newLayout = TextureLayout::DepthStencilAttachment,
         .before = {PipelineStageBits::AllCommands, reuse ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
         .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite}};
     if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
     const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
-    const RenderingAttachmentDesc attachment{.view = state->views[0].get(), .layout = TextureLayout::DepthStencilAttachment,
+    const RenderingAttachmentDesc attachment{.view = state->resources->views[0].get(), .layout = TextureLayout::DepthStencilAttachment,
         .loadOp = reuse ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
     commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"});
     if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment}); !r) { return std::unexpected(r.error()); }
@@ -769,7 +916,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
             push.workBase = batch * kDrawBatchSize;
             if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-            auto args = state->buffers[7]->slice({uint64_t(push.batchCount + batch) * 12, 12});
+            auto args = state->resources->buffers[7]->slice({uint64_t(push.batchCount + batch) * 12, 12});
             if (!args) { return std::unexpected(args.error()); }
             if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
         }
@@ -777,13 +924,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
             push.workBase = batch * kDrawBatchSize;
             if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-            auto args = state->buffers[7]->slice({uint64_t(batch) * 12, 12});
+            auto args = state->resources->buffers[7]->slice({uint64_t(batch) * 12, 12});
             if (!args) { return std::unexpected(args.error()); }
             if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
         }
     }
     commands.endRendering(); commands.endDebugLabel();
-    const TextureBarrierDesc atlasReady{.texture = state->textures[0].get(),
+    const TextureBarrierDesc atlasReady{.texture = state->resources->textures[0].get(),
         .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
         .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
         .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
@@ -792,8 +939,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (settings.cacheEnabled) {
         auto next = std::make_shared<Cache>();
         next->device = &device;
-        next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->textures[0], state->views[0]});
-        next->pages = state->buffers[1]; next->projections = std::move(projections); next->origins = origins;
+        next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->resources->textures[0], state->resources->views[0]});
+        next->pages = state->resources->buffers[1]; next->projections = std::move(projections); next->origins = origins;
         next->casters = casters.states; next->settings = settings; next->light = light; next->farPlane = farPlane;
         next->sceneIdentity = casters.sceneIdentity; next->structuralRevision = casters.structuralRevision;
         next->dependencyKey = casters.dependencyKey; next->epoch = push.cacheEpoch; next->enabled = enabled;
@@ -803,15 +950,16 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         state->next = next;
         pending_ = std::move(next);
     }
-    phase.next("Replace VSM recording state");
+    phase.next("Publish VSM recording state");
     state_ = state;
     phase.next("Project VSM immediately");
     if (!deferProjection) {
         if (auto r = project(commands, {}, log, profiler); !r) { return std::unexpected(r.error()); }
     }
     phase.next("Finish VSM record");
-    return VirtualShadowMapResult{state->outputTextures[0], state->views[1].get(), state->outputTextures[1], state->views[2].get(),
-        state->buffers[4].get(), state->textures[0].get(), state->views[0].get(), state->buffers[1].get(), state->buffers[5].get(), push.physicalPagesX, push.clipmapCount, push.pageSize};
+    return VirtualShadowMapResult{state->outputTextures[0], state->resources->views[1].get(), state->outputTextures[1], state->resources->views[2].get(),
+        state->resources->buffers[4].get(), state->resources->textures[0].get(), state->resources->views[0].get(), state->resources->buffers[1].get(), state->resources->buffers[5].get(), push.physicalPagesX, push.clipmapCount, push.pageSize,
+        state->resources};
 }
 
 Result<> VirtualShadowMaps::project(CommandBuffer& commands,
@@ -824,6 +972,7 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
         return makeError(Error::InvalidArgument);
     }
     auto& state = *state_;
+    if (auto r = commands.retainResource(state_); !r) { return r; }
     auto& push = state.push;
     total.work("lightType", push.lightType);
     total.work("face", push.projectionFace);
@@ -835,6 +984,7 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
         return makeError(Error::InvalidArgument);
     }
     CPUProfileScope phase(profiler, "Prepare VSM point face table");
+    const auto poolBefore = state.pool->stats;
     if (!pointFaces.empty()) {
         if (pointFaces.size() != 6) {
             log += "Point VSM projection requires all six ordered faces.\n";
@@ -844,6 +994,7 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
         std::vector<BufferBarrierDesc> ready;
         for (size_t index = 0; index < faces.size(); ++index) {
             const auto& result = pointFaces[index];
+            if (auto r = commands.retainResource(result.resourceOwner); !r) { return r; }
             auto atlas = state.registry->sampledImage(*result.atlasView);
             auto pages = state.registry->storageBuffer(*result.pageTable);
             auto projections = state.registry->storageBuffer(*result.projections);
@@ -860,18 +1011,24 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
                 .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
         }
         if (auto r = commands.synchronize({.buffers = ready}); !r) { return r; }
-        auto table = state.programs->device->createBuffer({.size = sizeof(faces), .structureStride = sizeof(ShadowFace),
-            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload});
+        auto* frame = RenderFrameContext::from(commands);
+        auto table = state.pool->buffer(10, {.size = sizeof(faces), .structureStride = sizeof(ShadowFace),
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload},
+            frame && frame->recording() ? frame->completion() : GPUCompletionPoint{});
         if (!table) { return std::unexpected(table.error()); }
-        state.pointFaces = std::move(*table);
-        void* mapped = state.pointFaces->map();
+        state.resources->pointFaces = std::move(*table);
+        void* mapped = state.resources->pointFaces->map();
         if (!mapped) { return makeError(Error::Failure); }
         std::memcpy(mapped, faces.data(), sizeof(faces));
-        state.pointFaces->flush(); state.pointFaces->unmap();
-        auto lease = state.registry->storageBuffer(*state.pointFaces);
+        state.resources->pointFaces->flush(); state.resources->pointFaces->unmap();
+        auto lease = state.registry->storageBuffer(*state.resources->pointFaces);
         if (!lease) { return std::unexpected(lease.error()); }
         push.pointFaces = lease->shaderIndex(); state.leases.push_back(*lease);
+        commands.hostWriteBarrier();
     }
+    phase.work("bufferCreates", state.pool->stats.bufferCreates - poolBefore.bufferCreates);
+    phase.work("bufferReuses", state.pool->stats.bufferReuses - poolBefore.bufferReuses);
+    phase.work("bufferEvictions", state.pool->stats.bufferEvictions - poolBefore.bufferEvictions);
     phase.next("Bind VSM projection resources");
     total.work("leases", state.leases.size());
     if (auto r = state.registry->bind(commands, state.leases); !r) { return r; }
@@ -883,16 +1040,16 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
         const TextureBarrierDesc sharedReady[]{
             {.texture = state.outputTextures[0], .oldLayout = TextureLayout::General, .newLayout = TextureLayout::General,
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.views[1]->desc().range},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.resources->views[1]->desc().range},
             {.texture = state.outputTextures[1], .oldLayout = TextureLayout::General, .newLayout = TextureLayout::General,
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.views[2]->desc().range}};
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.resources->views[2]->desc().range}};
         if (auto r = commands.synchronize({.textures = sharedReady}); !r) { return r; }
     }
     const TextureBarrierDesc outputBegin[]{
-        {.texture = state.textures[1].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
+        {.texture = state.resources->textures[1].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
-        {.texture = state.textures[2].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
+        {.texture = state.resources->textures[2].get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}}};
     if (!state.externalOutput) {
         if (auto r = commands.synchronize({.textures = outputBegin}); !r) { return r; }
@@ -903,13 +1060,13 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
     if (auto r = commands.dispatch((desc.width + 7) / 8, (desc.height + 7) / 8); !r) { return r; }
     commands.endDebugLabel();
     const TextureBarrierDesc outputEnd[]{
-        {.texture = state.textures[1].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
+        {.texture = state.resources->textures[1].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
             .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
-        {.texture = state.textures[2].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
+        {.texture = state.resources->textures[2].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
             .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}}};
-    const BufferBarrierDesc statisticsReady{.buffer = state.buffers[4].get(),
+    const BufferBarrierDesc statisticsReady{.buffer = state.resources->buffers[4].get(),
         .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}};
     if (auto r = commands.synchronize({.textures = state.externalOutput ? std::span<const TextureBarrierDesc>{} : std::span<const TextureBarrierDesc>{outputEnd},
@@ -942,19 +1099,54 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
     addCache(cache_);
     addCache(pending_);
     if (state_) {
-        addAtlas(state_->textures[0].get(), state_->push.pageSize);
-        for (size_t index = 1; index < state_->textures.size(); ++index) {
-            if (const auto& texture = state_->textures[index]; texture && textures.insert(texture.get()).second) {
+        addAtlas(state_->resources->textures[0].get(), state_->push.pageSize);
+        for (size_t index = 1; index < state_->resources->textures.size(); ++index) {
+            if (const auto& texture = state_->resources->textures[index]; texture && textures.insert(texture.get()).second) {
                 const auto& desc = texture->desc();
                 usage.privateOutputBytes += uint64_t(desc.width) * desc.height * (index == 1 ? 1 : 4);
             }
         }
-        for (const auto& buffer : state_->buffers) { addBuffer(buffer.get()); }
-        addBuffer(state_->pointFaces.get());
+        for (const auto& buffer : state_->resources->buffers) { addBuffer(buffer.get()); }
+        addBuffer(state_->resources->pointFaces.get());
         addCache(state_->previous);
         addCache(state_->next);
     }
+    if (pool_) {
+        for (const auto& slot : pool_->buffers) {
+            for (const auto& entry : slot) { addBuffer(entry.buffer.get()); }
+        }
+        for (size_t slot = 0; slot < pool_->textures.size(); ++slot) {
+            for (const auto& entry : pool_->textures[slot]) {
+                const auto* texture = entry.resource.texture.get();
+                if (slot == 0) { addAtlas(texture, entry.pageSize); }
+                else if (textures.insert(texture).second) {
+                    const auto& desc = texture->desc();
+                    usage.privateOutputBytes += uint64_t(desc.width) * desc.height * (slot == 1 ? 1 : 4);
+                }
+            }
+        }
+    }
     return usage;
+}
+
+VirtualShadowMapResourcePoolStats VirtualShadowMaps::resourcePoolStats() const
+{
+    if (!pool_) { return {}; }
+    auto stats = pool_->stats;
+    for (const auto& slot : pool_->buffers) {
+        for (const auto& entry : slot) {
+            ++stats.retainedBuffers;
+            stats.retainedBufferBytes += entry.buffer->desc().size;
+        }
+    }
+    for (const auto& slot : pool_->textures) {
+        for (const auto& entry : slot) {
+            ++stats.retainedTextures;
+            const auto& desc = entry.resource.texture->desc();
+            stats.retainedTextureBytes += uint64_t(desc.width) * desc.height * (desc.format == Format::R8Unorm ? 1 : 4);
+        }
+    }
+    return stats;
 }
 
 } // namespace metallic::render

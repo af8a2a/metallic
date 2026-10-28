@@ -742,12 +742,193 @@ public:
                     {"ownerRetainedAfterCacheDestruction", true}, {"oldGeometryBytesEqual", true},
                     {"replacementGeometryBytesEqual", true}, {"geometryChanged", true}};
             }
+            {
+                validation.phase("VSM-resource-pool");
+                scene::SceneDocument poolScene;
+                check(poolScene.load(path), "Load resource pool fixture");
+                auto pooled = std::make_unique<VirtualShadowMaps>();
+                VirtualShadowMaps reference;
+                VirtualShadowMapLight light;
+                light.direction = {1, 0, -1};
+                VirtualShadowMapSettings settings;
+                settings.pageSize = 32; settings.virtualPagesPerAxis = 8; settings.clipmapCount = 3;
+                settings.physicalPageCount = 256; settings.cacheEnabled = true; settings.maxWorkItems = 65535;
+                constexpr uint64_t statsOffset = (kPixels + 3u) & ~3u;
+                struct Capture
+                {
+                    std::unique_ptr<Buffer> readback;
+                    VirtualShadowMapResult resources;
+                    std::array<uint32_t, 32> statistics{};
+                };
+                const auto record = [&](ContentCommands& execution, VirtualShadowMaps& shadows, bool force) {
+                    const auto casters = prepareVirtualShadowMapCasters(device, *execution.commands, poolScene, nullptr, log);
+                    check(casters, "Prepare resource pool casters: " + log);
+                    auto current = settings;
+                    current.forceRedraw = force;
+                    const auto view = camera.constants(execution.index, kWidth, kHeight, kWidth, kHeight);
+                    const auto shadow = shadows.record(device, *execution.commands, *depthView, view, light, *casters,
+                        poolScene.materials(), {}, current, log);
+                    check(shadow, "Record resource pool shadow: " + log);
+                    auto buffer = device.createBuffer({.size = statsOffset + 128, .usage = BufferUsageBits::TransferDestination,
+                        .memoryLocation = MemoryLocation::HostReadback});
+                    check(buffer, "Resource pool shadow readback");
+                    Capture capture{std::move(*buffer), *shadow};
+                    const TextureBarrierDesc before{.texture = shadow->texture, .oldLayout = TextureLayout::ShaderRead,
+                        .newLayout = TextureLayout::TransferSource, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                    const BufferBarrierDesc statisticsReady{.buffer = shadow->statistics,
+                        .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                    check(execution.commands->synchronize({.textures = {&before, 1}, .buffers = {&statisticsReady, 1}}),
+                        "Resource pool readback barrier");
+                    check(capture.readback->slice({0, kPixels}).and_then([&](const auto& slice) {
+                        return execution.commands->copyTextureToBuffer({.texture = shadow->texture, .buffer = slice,
+                            .width = kWidth, .height = kHeight});
+                    }), "Resource pool shadow copy");
+                    auto from = shadow->statistics->slice({0, sizeof(capture.statistics)});
+                    auto to = capture.readback->slice({statsOffset, sizeof(capture.statistics)});
+                    check(from, "Resource pool statistics source"); check(to, "Resource pool statistics destination");
+                    check(execution.commands->copyBuffer(*from, *to), "Resource pool statistics copy");
+                    return capture;
+                };
+                const auto read = [&](Capture& capture) {
+                    capture.readback->invalidate();
+                    const auto* bytes = static_cast<const uint8_t*>(capture.readback->map());
+                    check(bytes != nullptr, "Map resource pool shadow");
+                    std::vector<uint8_t> pixels(bytes, bytes + kPixels);
+                    std::memcpy(capture.statistics.data(), bytes + statsOffset, sizeof(capture.statistics));
+                    capture.readback->unmap();
+                    return pixels;
+                };
+                const auto serial = [&](const char* name) {
+                    validation.phase(name);
+                    gpu.begin();
+                    auto actual = record(gpu, *pooled, false);
+                    auto expected = record(gpu, reference, true);
+                    gpu.finish();
+                    check(read(actual) == read(expected), std::string("Pooled/forced shadow mismatch: ") + name);
+                    return actual;
+                };
+                for (uint32_t frame = 0; frame < 6; ++frame) { (void)serial("PoolWarmup"); }
+                const auto warmed = pooled->resourcePoolStats();
+                for (uint32_t frame = 0; frame < 8; ++frame) { (void)serial("PoolSteady"); }
+                const auto steady = pooled->resourcePoolStats();
+                check(steady.bufferCreates == warmed.bufferCreates, "Steady VSM still creates buffers");
+                check(steady.textureCreates == warmed.textureCreates, "Steady VSM still creates textures");
+                check(steady.bufferReuses > warmed.bufferReuses && steady.textureReuses > warmed.textureReuses,
+                    "Steady VSM did not reuse pooled resources");
+
+                const auto small = settings;
+                settings.virtualPagesPerAxis = 16; settings.physicalPageCount = 512; settings.maxWorkItems = 131070;
+                (void)serial("PoolCapacityGrowth");
+                (void)serial("PoolCapacityGrowthStable");
+                const auto grown = pooled->resourcePoolStats();
+                check(grown.bufferCreates > steady.bufferCreates && grown.textureCreates > steady.textureCreates,
+                    "Resource pool growth fixture did not exercise new capacity");
+                settings = small;
+                for (uint32_t frame = 0; frame < 4; ++frame) { (void)serial("PoolCapacityShrink"); }
+                const auto shrunk = pooled->resourcePoolStats();
+                for (uint32_t frame = 0; frame < 4; ++frame) { (void)serial("PoolCapacityShrinkStable"); }
+                const auto restabilized = pooled->resourcePoolStats();
+                check(restabilized.bufferCreates == shrunk.bufferCreates && restabilized.textureCreates == shrunk.textureCreates,
+                    "VSM capacity change did not return to steady resource reuse");
+                check(restabilized.retainedTextureBytes <= steady.retainedTextureBytes,
+                    "Resource pool retained the old atlas after capacity shrink");
+
+                const auto original = poolScene.nodes()[1].localMatrix;
+                float4x4 moved;
+                moved.SetupByTranslation(float3(.4f, 0, 0));
+                check(poolScene.setNodeLocalMatrix(1, moved * original), "Edit geometry before pooled cancellation");
+                gpu.begin();
+                auto cancelled = record(gpu, *pooled, false);
+                gpu.finish(true);
+                check(gpu.frame.completion().isCancelled(), "Resource pool cancellation did not cancel completion");
+                cancelled.resources.resourceOwner.reset();
+                {
+                    auto retry = serial("PoolCancelledRetry");
+                    check(retry.statistics[28] == 1, "Pooled retry did not report cancellation invalidation");
+                }
+                check(poolScene.setNodeLocalMatrix(1, original), "Restore geometry after pooled cancellation");
+                auto completed = serial("PoolCompletedPreviousPage");
+
+                auto gate = device.createSemaphore();
+                check(gate, "Resource pool lifetime gate");
+                ContentCommands earlier(device), later(device);
+                VirtualShadowMaps earlierReference, laterReference;
+                Capture old, oldReference, next, nextReference;
+                // Release the gate before any retained commands/resources unwind.
+                struct Drain
+                {
+                    Queue& queue;
+                    Semaphore& gate;
+                    ~Drain()
+                    {
+                        if (gate.currentValue() < 1) { (void)gate.signal(1); }
+                        (void)queue.waitIdle();
+                    }
+                } drain{*device.getQueue(QueueType::Graphics), **gate};
+                check(poolScene.setNodeLocalMatrix(1, moved * original), "First in-flight pooled geometry edit");
+                earlier.begin();
+                old = record(earlier, *pooled, false);
+                oldReference = record(earlier, earlierReference, true);
+                check(old.resources.pageTable != completed.resources.pageTable,
+                    "Current VSM overwrote its previous page table");
+                old.resources.resourceOwner.reset();
+                earlier.submit(gate->get());
+                check(!earlier.frame.completion().isComplete(), "Resource pool gate did not hold GPU work");
+                // A has completed; B is still reading A behind the gate. Remove
+                // A's command/frame owners so B's cache reader protects A alone.
+                completed.resources.resourceOwner.reset();
+                check(gpu.pool->reset(), "Release completed VSM command owners");
+                check(gpu.frame.reset(), "Release completed VSM frame owners");
+                moved.SetupByTranslation(float3(.9f, 0, 0));
+                check(poolScene.setNodeLocalMatrix(1, moved * original), "Second in-flight pooled geometry edit");
+                later.begin();
+                next = record(later, *pooled, false);
+                nextReference = record(later, laterReference, true);
+                check(next.resources.pageTable != completed.resources.pageTable && next.resources.pageTable != old.resources.pageTable,
+                    "Pooled page table reused while a completed producer still had an in-flight reader");
+                check(next.resources.projections != old.resources.projections && next.resources.statistics != old.resources.statistics &&
+                    next.resources.texture != old.resources.texture,
+                    "Pooled upload, statistics or output resource reused before GPU completion");
+                const auto inFlight = pooled->resourcePoolStats();
+                next.resources.resourceOwner.reset();
+                later.submit();
+                pooled.reset();
+                check((*gate)->signal(1), "Release resource pool lifetime gate");
+                check(earlier.frame.wait(), "Wait first pooled recording");
+                check(later.frame.wait(), "Wait second pooled recording");
+                const auto oldPixels = read(old), nextPixels = read(next);
+                check(old.statistics[22] == 0 && next.statistics[22] == 0,
+                    "Gated resource pool fixture did not consume previous page tables");
+                check(old.statistics[25] > 0 && next.statistics[25] > 0,
+                    "Gated resource pool geometry edits did not exercise dirty bounds");
+                check(oldPixels == read(oldReference), "First in-flight pooled shadow corrupted after replacement/destruction");
+                check(nextPixels == read(nextReference), "Second in-flight pooled shadow differs from forced redraw");
+                check(oldPixels != nextPixels, "Resource pool geometry edits did not change the shadow");
+                report["resourcePool"] = {{"steadyFrames", 8}, {"steadyBufferCreates", steady.bufferCreates - warmed.bufferCreates},
+                    {"steadyTextureCreates", steady.textureCreates - warmed.textureCreates},
+                    {"steadyBufferReuses", steady.bufferReuses - warmed.bufferReuses},
+                    {"steadyTextureReuses", steady.textureReuses - warmed.textureReuses},
+                    {"growthBufferCreates", grown.bufferCreates - steady.bufferCreates},
+                    {"growthTextureCreates", grown.textureCreates - steady.textureCreates},
+                    {"steadyRetainedTextureBytes", steady.retainedTextureBytes},
+                    {"grownRetainedTextureBytes", grown.retainedTextureBytes},
+                    {"shrunkRetainedTextureBytes", restabilized.retainedTextureBytes},
+                    {"retainedBuffers", inFlight.retainedBuffers}, {"retainedBufferBytes", inFlight.retainedBufferBytes},
+                    {"retainedTextures", inFlight.retainedTextures}, {"retainedTextureBytes", inFlight.retainedTextureBytes},
+                    {"inFlightBufferCreates", inFlight.bufferCreates}, {"cancelledRetryEqual", true},
+                    {"capacityChangesEqual", true}, {"completedProducerReaderProtected", true},
+                    {"pendingUploadProtected", true}, {"rendererDestroyedBeforeGPUCompletion", true},
+                    {"firstInFlightStatistics", old.statistics}, {"secondInFlightStatistics", next.statistics},
+                    {"bothInFlightShadowsEqual", true}, {"inFlightShadowsChanged", true}};
+            }
             report.erase("activeCase");
             report["validation"] = validation.snapshot();
             check(!validation.failed(), "Vulkan validation reported content errors");
             report["passed"] = true;
             std::ofstream(directory / "VirtualShadowMapContent.json") << report.dump(2);
-            return RHITestResult::pass("Resident cache/uncached GPU geometry and shadows agree; hit/miss, edits, cancellation and in-flight package lifetime verified with Resident/Stream height oracle");
+            return RHITestResult::pass("Resident cache/uncached GPU geometry and shadows agree; resource pooling, capacity changes, cancellation and gated in-flight readers verified with Resident/Stream height oracle");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot();
             std::filesystem::create_directories(directory);

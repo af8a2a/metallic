@@ -70,6 +70,9 @@ struct VirtualShadowMapResult
     uint32_t physicalPagesX = 0;
     uint32_t clipmapCount = 0;
     uint32_t pageSize = 0;
+    // Keeps backing wrappers alive for deferred projection/readback. It owns no
+    // State or cache links, so cross-face projection cannot form reference cycles.
+    std::shared_ptr<void> resourceOwner;
 };
 
 // The caller owns these graph textures through GPU completion and transitions
@@ -89,6 +92,15 @@ struct VirtualShadowMapMemoryUsage
     uint64_t privateOutputBytes = 0;
     uint64_t bufferBytes = 0;
     uint64_t allocatedAtlasPages = 0;
+};
+
+struct VirtualShadowMapResourcePoolStats
+{
+    uint64_t bufferCreates = 0, bufferReuses = 0, bufferEvictions = 0;
+    uint64_t textureCreates = 0, textureReuses = 0, textureEvictions = 0;
+    uint64_t viewCreates = 0;
+    uint64_t retainedBuffers = 0, retainedBufferBytes = 0;
+    uint64_t retainedTextures = 0, retainedTextureBytes = 0;
 };
 
 // A complete coarse projection plus directional clipmaps or local mip levels.
@@ -118,15 +130,20 @@ public:
     Result<> project(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log,
         CPUProfileRecorder* profiler = nullptr);
 
-    // Logical resource bytes currently owned by this cache and its recording.
-    // Native allocation padding and retired in-flight recordings are excluded;
+    // Logical resource bytes currently owned by this cache, recording and pool.
+    // Native padding and retired recordings outside this cache/pool are excluded;
     // use Device::memoryBudget() for whole-device live/peak allocation evidence.
     VirtualShadowMapMemoryUsage memoryUsage() const;
+    // Creation calls and pool hits/evictions, cumulative for the current device.
+    // Eviction releases the pool owner, not necessarily the last native lease.
+    VirtualShadowMapResourcePoolStats resourcePoolStats() const;
 
 private:
     struct Programs;
     struct State;
     struct Cache;
+    struct ResourcePool;
+    std::shared_ptr<ResourcePool> pool_;
     std::shared_ptr<Programs> programs_;
     std::shared_ptr<State> state_;
     std::shared_ptr<Cache> cache_;
