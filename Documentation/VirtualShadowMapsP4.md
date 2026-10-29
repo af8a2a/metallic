@@ -12,25 +12,25 @@ Sun/Moon 直接使用已有 `angularRadius`，单位弧度、含义为半径。�
 | --- | ---: | --- |
 | pcfRadius | 1 | 3×3 PCF 的选定虚拟 texel 间距；零严格走 Hard |
 | smrtRayCount | 8 | 每 receiver 的圆盘光源样本数，1–32 |
-| smrtSamplesPerRay | 8 | 每条有界射线的离散段数 |
-| smrtMaxRayLength | 10 m | 软阴影搜索距离；局部光还受采样光源端点限制，超出搜索距离的遮挡仍有效 |
+| smrtSamplesPerRay | 8 | 每条有界射线的步数，另含一次接收点查询 |
+| smrtMaxRayLength | 10 m | 米制软阴影搜索上限；局部光另受光源视角展开限制，超出搜索距离的遮挡仍有效 |
 | receiverFootprint | true | 过滤模式按相机像素世界足迹选择起始级 |
 | tessellationFactor | 4 | 位移 caster 独立细分因子，1–8 |
 | tessellationSubdivisionDepth | 0 | 位移 caster 额外均匀四分层级，0–2；每级增加 4 倍微三角 |
 
-SMRT 使用固定低差异圆盘序列和二次分布的射线段，查询每段中点的单层阴影深度，检查它是否落入该段的深度区间。只判断深度在 receiver 前面会错误地阻止射线离开遮挡轮廓，因此这里比较线段区间。每个查询沿用 receiver plane 的 texel-center 修正和米制 bias。无光源尺寸的 SMRT 严格回到 Hard。
+SMRT 参考本机 Unreal 5.7.4 的反向深度历史算法：从远端向 receiver 走二次分布采样，最后显式查询 receiver。首个有效样本做普通深度比较，以保留有界搜索之外的遮挡；后续按相邻参考深度的间隔判断交点。遇到当前单层深度无法表示的遮挡间隙时，沿前一表面的深度历史作有界斜率外推。有效清空深度也参与历史，未映射样本才跳过。每个查询沿用 receiver plane 的 texel-center 修正和米制 bias；零光源尺寸严格回到 Hard。
 
-有限搜索结束后，若射线被搜索距离截断，会在端点追加朝中心光源的深度比较，保留搜索范围外的遮挡。方向光的剩余查询固定端点在光平面的偏移，因此远处半影的扩展受搜索距离限制，但整片阴影不会消失。局部光若已经到达采样的发光面端点，则不追加朝光源中心的查询。此前仅检查有限射线段会使 Sponza 上层建筑等超过 10 m 的遮挡漏光；增加射线数不能修复这种遗漏。
+方向光在统一米制灯光深度中维护历史，外推斜率上限为 0.05 m。局部光限制光源视角展开（0.03 rad）并最多行进 receiver-light 距离的 0.75，避免接近发光面的透视奇点；采样按起始面投影深度参数化。点光跨面使用统一逆径向深度，外推斜率上限为射线逆径向深度变化的 0.05，不混用六个面的轴向深度。保留本项目的 `smrtMaxRayLength` 米制上限，因此搜索距离仍限制可表示的半影宽度。
 
-采样不使用逐帧随机种子，固定场景输出确定。P4 未引入独立 shadow history，也未把线性 VSM visibility 送入 SIGMA。下游时域滤波不构成本阶段独立过滤正确性的依据。
+光源圆盘采用逐像素扰动的低差异序列，步长也使用像素种子；不再让全屏共享同一个光源样本。另以独立随机维度在 receiver 选定的 texel 范围内抖动阴影图查询，接收平面修正仍锚定原射线点。固定世界偏移在点光跨面时连续。不使用逐帧随机种子，固定场景输出确定。1 条射线的原始可见度仍为二值，但空间平均能估计半影；当前无 TAA 的 Sample 不宣称具有 Unreal 时域累积后的低噪画质。P4 未引入独立 shadow history，也未把线性 VSM visibility 送入 SIGMA。
 
 单层深度不能恢复被第一层遮挡的其它几何。离散步长、遮挡层断点、极大光源和搜索距离限制仍会产生近似误差；SMRT 不是面积光几何射线的精确替代。
 
 ## 页寻址、需求与缓存
 
-Hard 保留 P3 的查询规则。PCF 从 receiver 像素足迹选择细级；SMRT 还以沿射线增长的光源采样足迹限制查询层级，避免近接触半影被比它更宽的 texel 吞掉。每个 tap 独立重新投影、查页、定位物理 texel；方向光跨 clipmap 使用目标层自己的原点和 Z 映射。细页未准入或 raster work 溢出时查询已完成的粗级。使用整数 texel load，不对物理 atlas 相邻页做无边界过滤。
+Hard 保留 P3 的查询规则。PCF 从 receiver 像素足迹选择细级；SMRT 在 receiver 处选定起始 clipmap/mip，并在整条射线上沿用该级或更粗映射。逐步趋零的光源采样足迹不能用于提升精细度，否则会请求大量不需要的细页、挤出有效 receiver 页面。每个 tap 独立重新投影、查页、定位物理 texel。细页未准入或 raster work 溢出时查询已完成的粗级。使用整数 texel load，不对物理 atlas 相邻页做无边界过滤。
 
-Demand 覆盖同一 PCF tap / SMRT ray segment 中点，以及截断射线端点的各级页；端点使用与查询相同的 footprint。当前实现保守逐 tap 标记，尤其点光六面和高样本数时成本较高，不能由热缓存没有光栅工作推断过滤便宜。
+Demand 覆盖同一 PCF tap / SMRT 反向采样位置，并共用像素种子、投影插值和 receiver 起始级。当前实现保守逐 tap 标记，尤其点光六面和高样本数时成本较高，不能由热缓存没有光栅工作推断过滤便宜。
 
 过滤点光先录制六面的 atlas、页表和投影，再逐面 resolve。每面持有显式六面描述表，tap 根据世界位置重新选面；需求标记也处理其它 canonical face 的 receiver 射线。原始 receiver 最终仍只由自己的 canonical face 发布。六面资源由同一 recording 保活，继续禁止跨帧重叠写同一缓存域。
 
@@ -129,3 +129,30 @@ python -B Tools/CheckShaderModules.py
 上述四项 GPU 测试和 shader module 审计通过，无跳过。另在 Sponza Sample 的普通 GPUDriven 管线上验证 Hard、SMRT 1×16 和 8×16，保留 10 m 搜索距离及原相机、太阳、bias 和页预算；1280×720 静态各 32 帧，8×16 沿长廊移动相机 64 帧，再以 1920×1080 验证 1×16 共 32 帧。检查实际 PNG 后确认建筑投影从近到远连续保留。静态第 31 帧、移动第 31/63 帧的阴影及 HDR 与强制重绘逐字节一致；Hard 修复前后 PNG 也逐像素一致。各实景进程均确认无 RayQuery/RTAS、无光追分配，Vulkan / synchronization validation 消息为零。
 
 本机证据保留于忽略的 `.cache/VSMSMRTFix/`：`BeforeRegression`、`AfterRegression`、`BeforeSMRT1Settled`、`AfterHard`、`AfterSMRT1`、`AfterSMRT8`、`AfterMotionSMRT8`、`AfterNativeSMRT1`。实景的 2048 页预算会触发粗级回退，修复前后均存在；本次无 raster work overflow 或无法解析的粗页查询，不把该检查当作全分辨率驻留或长时间显存压力测试。端点查询仍是单层深度近似，远处半影扩展仍受软搜索距离限制。
+
+## Unreal 源码对照后的 SMRT 修正（2026-10-29）
+
+上一节只验证了远处本影保留，未能识别全屏共用采样和严重粗页回退。当前实现已替换其独立线段检测加末端补查方案。参考的是本机 `F:/UnrealEngine` 的 5.7.4 源码：
+
+- `Engine/Shaders/Private/VirtualShadowMaps/VirtualShadowMapSMRTTemplate.ush`：远到近追踪、首样本深度比较、历史斜率外推。
+- 同目录 `VirtualShadowMapProjectionDirectional.ush` / `VirtualShadowMapProjectionSpot.ush`：receiver 选级、纹理抖动、局部光角度截断及投影插值。
+- 同目录 `VirtualShadowMapSMRTCommon.ush`：逐像素光源采样。
+- `Engine/Source/Runtime/Renderer/Private/VirtualShadowMaps/VirtualShadowMapArray.cpp`：斜率与角度默认值。方向光 5 cm 转为本项目的 0.05 m。
+
+这里使用 Metallic 的平面圆盘光源合同、米制搜索上限、确定性像素散列和点光逆径向历史坐标；没有引入 Unreal 的蓝噪声资源、时域累积或自适应射线终止。
+
+新增 `virtual_shadow_map_smrt_penumbra`，以 12 m 遮挡板和独立 256 样本 CPU 几何参考验证真实太阳角 `.00465`、较宽方向光 `.04`、聚光和点光。32 条射线检查每像素误差，1 条射线检查半影三个窄带的空间平均。旧实现的 8 个窄带失败，修正后通过；32 条射线的半影 MAE 为 0.0256 / 0.0263 / 0.0852 / 0.0444。`virtual_shadow_map_filter_demand` 新增 16 段、小光源、10 m 用例，旧实现无法满足页面需求，新实现完整准入且不回退粗页。
+
+质量矩阵改用虚拟轴 128，保留所有原误差阈值、广角接触及近远半影收缩检查。原因是旧轴 16 在 receiver 选定级只有 31.25 mm texel，无法解析约 24 mm 的方向光接触半影；它此前依靠错误的逐段细级提升偶然获得更细 texel。轴 128 使该级 texel 为 3.906 mm。额外接触近景对三类光源各检查 516 个独立半影像素，避免仅依赖原广角的 6 / 34 / 34 个样本；近景半影 MAE 为 0.0797 / 0.0520 / 0.0705，门槛仍为 0.20。旧低分辨率失败证据保留在 `AfterRegression` 和 `DitherRegression`，没有放宽断言掩盖它。
+
+Sponza 使用原场景、相机、太阳、2048 页预算和 10 m 搜索距离，1920×1080 原生分辨率、普通 GPUDriven 管线。1×16 与 8×16 静态各 32 帧，8×16 移动相机 64 帧。静态页需求分别为 692 / 697，全部准入，过滤粗级查询为零；旧 1280×720 的 8×16 则请求 7758 页并有超过 90% 的过滤查询回退全场景 128² 粗图。新截图的长廊投影连续，保留半影与细小遮挡，消除了粗图造成的大块锯齿。静态第 31 帧及移动第 31/63 帧的阴影和 HDR 均与强制重绘逐字节一致，无 RayQuery/RTAS 或光追分配，Vulkan / synchronization validation 消息为零。
+
+复现回归：
+
+```powershell
+cmake --build build-release --target MetallicRHITests MetallicVSMSample --parallel 8
+.\build-release\tests\MetallicRHITests.exe '--gtest_filter=*virtual_shadow_map_smrt_penumbra:*virtual_shadow_map_filter_demand:*virtual_shadow_map_smrt_distance:*virtual_shadow_map_quality:*virtual_shadow_map_compact' --rhi-validation --output-dir .cache/SMRTUE/Regression
+python -B Tools/CheckShaderModules.py
+```
+
+上述 5 项 GPU 回归均通过，无跳过；shader module 审计通过，Sample 已重新构建。本机输出在 `.cache/SMRTUE/` 下的 `BeforeRegression`、`DitherRegression`、`ResolvedQuality`、`FinalCoreRegression`、`SponzaSMRT8`、`SponzaNativeSMRT1`、`SponzaMotionSMRT8`。仅对单层几何质量及所列实景做验收；多层遮挡仍有单层深度近似误差，未进行独立斜面／掠射接收面质量门槛或长时间显存压力测试。1 条射线仍会有空间噪声，当前 Sample 没有时域降噪。

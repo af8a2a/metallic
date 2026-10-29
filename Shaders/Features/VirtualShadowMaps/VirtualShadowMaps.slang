@@ -263,30 +263,85 @@ float vsmPerspectiveReceiverDepth(float3 position, float3 normal, uint2 virtualT
     return clip.z / clip.w;
 }
 
-// Filter rays use a fixed low-discrepancy disk. There is deliberately no frame
-// seed: history is owned by downstream TAA, while this baseline is deterministic.
-float2 vsmDiskSample(uint ray, uint rayCount)
+uint vsmSampleHash(uint value)
 {
-    float angle = float(ray) * 2.399963229728653;
-    return sqrt((float(ray) + 0.5) / float(rayCount)) * float2(cos(angle), sin(angle));
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    return value ^ (value >> 16);
 }
 
-float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, uint ray, out bool truncated)
+float vsmSampleRandom(uint2 pixel, uint dimension)
+{
+    return float(vsmSampleHash(pixel.x ^ vsmSampleHash(pixel.y + dimension * 0x9e3779b9u)) >> 8) / 16777216.0;
+}
+
+float2 vsmDiskSample(uint ray, uint rayCount, uint2 pixel)
+{
+    // Scramble the stratified disk per receiver. A common disk point at one ray
+    // shifts a hard shadow instead of estimating area-source visibility. Keep
+    // the seed spatial: this pass has no temporal reconstruction of its own.
+    float2 sample = frac(float2(float(ray) / float(rayCount), float(ray) * 0.61803398875) +
+        float2(vsmSampleRandom(pixel, 0u), vsmSampleRandom(pixel, 1u)));
+    float angle = sample.y * 6.28318530718;
+    return sqrt(sample.x) * float2(cos(angle), sin(angle));
+}
+
+float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, uint ray, uint2 pixel)
 {
     float3 toLight = push.lightType == 0u ? normalize(projection.rowZ.xyz) :
         normalize(projection.originNear.xyz - position);
     float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
     float3 up = cross(toLight, right);
-    float2 disk = vsmDiskSample(ray, push.rayCount);
+    float2 disk = vsmDiskSample(ray, push.rayCount, pixel);
     float3 offset = right * disk.x + up * disk.y;
     if (push.lightType == 0u) {
-        truncated = true;
         return position + normalize(toLight + offset * tan(push.angularRadius)) * push.rayLength;
     }
-    float3 delta = projection.originNear.xyz + offset * push.sourceRadius - position;
-    float distance = length(delta);
-    truncated = push.rayLength < distance;
-    return position + delta * min(1.0, push.rayLength / distance);
+    float distance = length(projection.originNear.xyz - position);
+    // Metallic's local source is a planar disk at the light center.
+    float3 direction = normalize(toLight * distance + offset * push.sourceRadius);
+    float sinTheta = length(cross(direction, toLight));
+    float cosTheta = dot(direction, toLight);
+    // A single center-light depth layer becomes a poor proxy near the emitter.
+    // Limit its angular span, and stay clear of the perspective singularity.
+    float distanceScale = 0.75 * saturate(1.5 / (cosTheta + sinTheta / tan(0.03)));
+    float3 endpoint = position + direction * min(push.rayLength, distance * distanceScale);
+    if (push.lightType == 1u) {
+        float startW = dot(projection.rowW, float4(position, 1.0));
+        float endW = dot(projection.rowW, float4(endpoint, 1.0));
+        // Very wide spots can cross the near plane even with the angular cap.
+        // Clip once in world space before interpolating post-projection depth.
+        if (endW < projection.originNear.w) {
+            endpoint = lerp(position, endpoint, (startW - projection.originNear.w) / (startW - endW));
+        }
+    }
+    return endpoint;
+}
+
+float vsmRaySampleTime(uint step, ShadowPush push, uint2 pixel)
+{
+    if (step == push.samplesPerRay) { return 0.0; }
+    float t = 1.0 - (float(step + 1u) - vsmSampleRandom(pixel, 2u)) / float(push.samplesPerRay);
+    return t * t;
+}
+
+float3 vsmRayPosition(float3 position, float3 endpoint, float time, ShadowProjection projection, ShadowPush push)
+{
+    if (push.lightType != 0u) {
+        float3 forward = normalize(projection.rowW.xyz);
+        if (push.lightType == 2u) {
+            float3 right, up;
+            virtualShadowMapPointBasis(virtualShadowMapPointFace(position - projection.originNear.xyz), right, up, forward);
+        }
+        float startW = dot(position - projection.originNear.xyz, forward);
+        float endW = dot(endpoint - projection.originNear.xyz, forward);
+        // Linear interpolation after perspective division, reconstructed into
+        // world space so a point-light trace can cross canonical cube faces.
+        time = time * startW / lerp(endW, startW, time);
+    }
+    return lerp(position, endpoint, time);
 }
 
 float vsmWorldTexelSize(float3 position, ShadowProjection projection, uint pageSize, uint lightType)
@@ -296,6 +351,19 @@ float vsmWorldTexelSize(float3 position, ShadowProjection projection, uint pageS
     float axial = lightType == 2u ? max(delta.x, max(delta.y, delta.z)) :
         dot(projection.rowW, float4(position, 1.0));
     return 2.0 * max(axial, projection.originNear.w) * projection.metric.x / float(projection.page.y * pageSize);
+}
+
+float3 vsmRayDither(float3 position, ShadowProjection projection, ShadowPush push, uint ray, uint2 pixel)
+{
+    float3 toLight = push.lightType == 0u ? normalize(projection.rowZ.xyz) :
+        normalize(projection.originNear.xyz - position);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    float2 offset = float2(vsmSampleRandom(pixel, 3u + 2u * ray), vsmSampleRandom(pixel, 4u + 2u * ray)) - 0.5;
+    // Dither the shadow-map texel independently of the source sample. This
+    // antialiases contact edges narrower than a receiver-selected texel. A
+    // world-space offset remains continuous when a ray crosses a cube face.
+    return (right * offset.x + up * offset.y) * vsmWorldTexelSize(position, projection, push.pageSize, push.lightType);
 }
 
 float vsmPixelFootprint(float linearDepth, ViewConstants view, ShadowPush push)
@@ -356,7 +424,7 @@ struct ShadowLookup
     bool valid;
 };
 
-ShadowLookup vsmFilterLookup(float3 position, float footprint, ShadowPush push)
+ShadowLookup vsmFilterLookup(float3 position, float footprint, ShadowPush push, uint minimumLevel = 0u)
 {
     ShadowLookup result;
     result.valid = false;
@@ -375,7 +443,7 @@ ShadowLookup vsmFilterLookup(float3 position, float footprint, ShadowPush push)
     StructuredBuffer<uint> faceStatistics = resolveNonUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     uint physicalPage = 0xffffffffu;
-    uint firstLevel = vsmFilterLevel(position, projections, push, footprint);
+    uint firstLevel = max(minimumLevel, vsmFilterLevel(position, projections, push, footprint));
     result.level = push.clipmapCount;
     InterlockedAdd(statistics[30], 1u);
     if (faceStatistics[5] == 0u) {
@@ -414,7 +482,25 @@ ShadowLookup vsmFilterLookup(float3 position, float footprint, ShadowPush push)
     return result;
 }
 
-float vsmFilterVisibility(float3 position, float3 normal, float footprint,
+float vsmRayDepth(float depth, ShadowLookup sample, float3 receiver, uint pageSize)
+{
+    ShadowProjection projection = sample.projection;
+    if (projection.metric.w < 0.5) {
+        return (depth - dot(projection.rowZ, float4(receiver, 1.0))) / length(projection.rowZ.xyz);
+    }
+    float2 ndc = (float2(sample.virtualTexel) + 0.5) *
+        (2.0 / float(projection.page.y * pageSize)) - 1.0;
+    float3 forward = normalize(projection.rowW.xyz);
+    float3 texelRay = forward + projection.metric.x *
+        (normalize(projection.rowX.xyz) * ndc.x + normalize(projection.rowY.xyz) * ndc.y);
+    float scale = dot(projection.rowZ.xyz, forward);
+    float offset = dot(projection.rowZ, float4(projection.originNear.xyz, 1.0));
+    // Inverse radial depth gives every cube face the same continuous history
+    // coordinate. Larger values, as for directional depth, are toward the light.
+    return (depth - scale) / (offset * length(texelRay));
+}
+
+float vsmFilterVisibility(float3 position, float3 normal, float footprint, uint2 pixel,
     StructuredBuffer<ShadowProjection> projections, ShadowPush push)
 {
     if (push.filterMode == 1u) {
@@ -432,52 +518,52 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint,
         return sum / 9.0;
     }
     float visibility = 0.0;
-    float sourceAngularDiameter = push.lightType == 0u ? 2.0 * tan(push.angularRadius) :
-        2.0 * push.sourceRadius / length(projections[0].originNear.xyz - position);
+    // A ray keeps its receiver's resolution. An angular footprint shrinks to
+    // zero at contact and would request entire fine clipmaps, starving the
+    // receiver pages and forcing nearly all samples onto the coarse map.
+    uint receiverLevel = vsmFilterLevel(position, projections, push, footprint);
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
-        bool truncated;
-        float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, truncated);
+        float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, pixel);
+        float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, pixel);
+        float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
+            1.0 / length(endpoint - projections[0].originNear.xyz) -
+            1.0 / length(position - projections[0].originNear.xyz));
+        float historyDepth = 0.0, historyTime = 0.0, historySlope = 0.0, previousReference = 0.0;
+        bool hasHistory = false;
         bool blocked = false;
-        // Test each ray segment against the single stored depth layer. A depth
-        // sample merely in front of a distant segment is not an intersection;
-        // that distinction lets rays leave an occluder's projected silhouette.
-        for (uint step = 0u; step < push.samplesPerRay; ++step) {
-            float a = float(step) / float(push.samplesPerRay);
-            float b = float(step + 1u) / float(push.samplesPerRay);
-            a *= a; b *= b;
-            float3 begin = lerp(position, endpoint, a);
-            float3 end = lerp(position, endpoint, b);
-            // Match demand marking's operation order at virtual page boundaries.
-            float3 midpoint = lerp(position, endpoint, (a + b) * 0.5);
-            // A full receiver-pixel footprint is too coarse near contact:
-            // the emitter strata have not yet spread by even one such texel.
-            // Bound the mip footprint by one ray's angular stratum at this
-            // distance, retaining fine contact edges while widening far away.
-            float rayFootprint = length(midpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
-            ShadowLookup sample = vsmFilterLookup(midpoint, min(footprint, rayFootprint), push);
-            if (!sample.valid || sample.storedDepth == 0.0) { continue; }
-            float compare = vsmComparisonDepth(midpoint, normal, sample.projected,
+        // Trace back toward the receiver, including t=0. Depth discontinuities
+        // can expose only the front layer: continue the preceding surface with
+        // bounded slope through that gap instead of inventing an intersection.
+        for (uint step = 0u; step <= push.samplesPerRay; ++step) {
+            float time = vsmRaySampleTime(step, push, pixel);
+            float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
+            ShadowLookup sample = vsmFilterLookup(point + dither, 0.0, push, receiverLevel);
+            if (!sample.valid) { continue; }
+            float compare = vsmComparisonDepth(point, normal, vsmProjectPosition(point, sample.projection),
                 sample.virtualTexel, sample.projection, push.pageSize);
-            float4 startClip = vsmProjectClip(begin, sample.projection);
-            float4 endClip = vsmProjectClip(end, sample.projection);
-            float startDepth = push.lightType == 0u ? startClip.z : startClip.z / max(startClip.w, sample.projection.originNear.w);
-            float endDepth = push.lightType == 0u ? endClip.z : endClip.z / max(endClip.w, sample.projection.originNear.w);
-            float correction = compare - sample.projected.z;
-            if (sample.storedDepth > min(startDepth, endDepth) + correction &&
-                sample.storedDepth <= max(startDepth, endDepth) + correction) { blocked = true; break; }
-        }
-        if (!blocked && truncated) {
-            // The finite march caps penumbra growth, not shadow distance. Keep
-            // farther blockers with a depth comparison toward the central light
-            // from its endpoint. A local ray that reached its sampled emitter
-            // has no remaining tail and must not trace back toward the center.
-            float rayFootprint = length(endpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
-            ShadowLookup sample = vsmFilterLookup(endpoint, min(footprint, rayFootprint), push);
-            if (sample.valid && sample.storedDepth != 0.0) {
-                float compare = vsmComparisonDepth(endpoint, normal, sample.projected,
-                    sample.virtualTexel, sample.projection, push.pageSize);
-                blocked = sample.storedDepth > compare;
+            float reference = vsmRayDepth(compare, sample, position, push.pageSize);
+            float depth = push.lightType != 0u && sample.storedDepth == 0.0 ? 0.0 :
+                vsmRayDepth(sample.storedDepth, sample, position, push.pageSize);
+            if (!hasHistory) {
+                // This ordinary comparison also retains blockers beyond the
+                // bounded search; there is no separate hard-shadow tail.
+                blocked = depth > reference;
+                historyDepth = depth; historyTime = time;
+                hasHistory = true;
+            } else {
+                float tolerance = abs(reference - previousReference) * 1.05;
+                float reconstructed = depth;
+                if (depth - reference > tolerance) {
+                    reconstructed = historyDepth + historySlope * (time - historyTime);
+                } else if (depth != historyDepth) {
+                    historySlope = clamp((depth - historyDepth) / (time - historyTime), -maxSlope, maxSlope);
+                    historyDepth = depth; historyTime = time;
+                }
+                float separation = reconstructed - reference;
+                blocked = separation > 0.0 && separation <= tolerance;
             }
+            if (blocked) { break; }
+            previousReference = reference;
         }
         visibility += blocked ? 0.0 : 1.0;
     }
@@ -485,12 +571,12 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint,
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, float footprint)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, float footprint, uint minimumLevel = 0u)
 {
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
     // Match the query's first usable level. Requesting finer pages here spends
     // the fine-first admission budget on pages the filter will never sample.
-    for (uint level = vsmFilterLevel(position, projections, push, footprint); level < push.clipmapCount; ++level) {
+    for (uint level = max(minimumLevel, vsmFilterLevel(position, projections, push, footprint)); level < push.clipmapCount; ++level) {
         ShadowProjection projection = projections[level];
         float3 projected = vsmProjectPosition(position, projection);
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
@@ -604,21 +690,14 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             }
         }
     } else if (push.filterMode == 2u) {
-        float sourceAngularDiameter = push.lightType == 0u ? 2.0 * tan(push.angularRadius) :
-            2.0 * push.sourceRadius / length(projections[0].originNear.xyz - position);
+        uint receiverLevel = vsmFilterLevel(position, projections, push, footprint);
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
-            bool truncated;
-            float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, truncated);
-            for (uint step = 0u; step < push.samplesPerRay; ++step) {
-                float a = float(step) / float(push.samplesPerRay), b = float(step + 1u) / float(push.samplesPerRay);
-                a *= a; b *= b;
-                float3 midpoint = lerp(position, endpoint, (a + b) * 0.5);
-                float rayFootprint = length(midpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
-                vsmMarkPosition(midpoint, projections, pages, push, min(footprint, rayFootprint));
-            }
-            if (truncated) {
-                float rayFootprint = length(endpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
-                vsmMarkPosition(endpoint, projections, pages, push, min(footprint, rayFootprint));
+            float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, id.xy);
+            float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, id.xy);
+            for (uint step = 0u; step <= push.samplesPerRay; ++step) {
+                float time = vsmRaySampleTime(step, push, id.xy);
+                float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
+                vsmMarkPosition(point + dither, projections, pages, push, 0.0, receiverLevel);
             }
         }
     }
@@ -1088,7 +1167,7 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     ShadowProjection projection = projections[selectedLevel];
     float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
     if (push.filterMode != 0u) {
-        shadow[id.xy] = vsmFilterVisibility(position, normal, vsmPixelFootprint(linearDepth, view, push), projections, push);
+        shadow[id.xy] = vsmFilterVisibility(position, normal, vsmPixelFootprint(linearDepth, view, push), id.xy, projections, push);
         return;
     }
     float compareDepth;

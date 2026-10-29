@@ -380,7 +380,8 @@ struct Source {
     double size = .35;
 };
 
-RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt", bool compactComparison = false)
+RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt", bool compactComparison = false,
+    uint32_t virtualPagesPerAxis = 16)
 {
     RenderGraph graph;
     graph.setName("VirtualShadowMapQuality");
@@ -397,7 +398,7 @@ RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt"
         std::vector<const char*>{"Cached", "Redraw", "Hard"};
     for (const char* name : names) {
         graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kCapacity},{"physicalPageBudget",2048},
-            {"pageSize",128},{"virtualPagesPerAxis",16},{"clipmapCount",4},{"firstClipmapExtent",4},
+            {"pageSize",128},{"virtualPagesPerAxis",virtualPagesPerAxis},{"clipmapCount",4},{"firstClipmapExtent",4},
             {"maxWorkItems",131072},{"shadowBias",.002},{"cacheEnabled",true},
             {"forceRedraw",std::string_view(name)=="Redraw"},{"filter",std::string_view(name)=="Hard" ? "hard" : filter},
             {"pcfRadius",1.5},{"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},
@@ -698,7 +699,7 @@ public:
         Json report{{"scope","P4 deterministic SMRT, independent area-source geometry oracle and cache equivalence"},
             {"passed",false},{"frames",Json::array()},{"planarOracle",Json::array()},
             {"qualityFailures",Json::array()},
-            {"settings",{{"width",kWidth},{"height",kHeight},{"pageSize",128},{"virtualPagesPerAxis",16},
+            {"settings",{{"width",kWidth},{"height",kHeight},{"pageSize",128},{"virtualPagesPerAxis",128},
                 {"clipmapCount",4},{"firstClipmapExtent",4},{"physicalPageBudget",2048},
                 {"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},{"receiverFootprint",true},
                 {"shadowBiasMetres",.002},{"cpuAreaSamples",256},{"oracleOriginOffset",0},{"triangleEpsilon",1e-7},
@@ -735,7 +736,11 @@ public:
                     configurePreview(preview,scene,view,context,validation);
                     Source source{kind}; source.size=kind=="Directional" ? .08 : .35;
                     publishSource(scene,preview,source);
-                    evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(authored);
+                    // Resolve the 24 mm directional contact penumbra even at
+                    // the receiver-selected mip. The old 16-page axis left a
+                    // 31 mm texel there and only looked sharp by requesting an
+                    // incorrectly finer mip for the first trace segment.
+                    evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(authored,"smrt",false,128);
                     const auto first=compareFrame(preview,graph,directory,prefix+"-Initial",report);
                     const auto metric=oracle(first,oracleFixture,source,prefix,false,!nearContact);
                     report["planarOracle"].push_back({{"name",prefix},{"metrics",metric}});
@@ -743,7 +748,17 @@ public:
                     const auto stable=compareFrame(preview,graph,directory,prefix+"-Stable",report);
                     requireReused(stable,prefix+" stable");
                     require(first.shadows==stable.shadows,prefix+": deterministic soft sampling changed between stable frames");
-                    if (nearContact) { continue; }
+                    if (nearContact) {
+                        require(view.setCamera({.eye={.9f,5,0},.center={.9f,0,0},.up={0,0,-1},
+                            .fovDegrees=52,.nearPlane=.1f,.farPlane=100,.orthoHeight=.8f,.orthographic=true}),
+                            "Resolve contact penumbra in a close-up view");
+                        const auto closeup=compareFrame(preview,graph,directory,prefix+"-Closeup",report);
+                        const auto closeupMetric=oracle(closeup,oracleFixture,source,prefix+"-Closeup",false);
+                        require(closeupMetric["penumbraSamples"].get<uint32_t>()>50,
+                            prefix+": close-up lacks independent penumbra sample coverage");
+                        report["planarOracle"].push_back({{"name",prefix+"-Closeup"},{"metrics",closeupMetric}});
+                        continue;
+                    }
 
                     source.size*=.5; publishSource(scene,preview,source);
                     const auto reduced=compareFrame(preview,graph,directory,prefix+"-HalfRadius",report);
@@ -820,7 +835,7 @@ public:
                 RenderView view; RenderGraphPreviewRenderer preview;
                 configurePreview(preview,scene,view,context,validation);
                 Source source{"Point",{-2,4,-2},{0,-1,0},.35}; publishSource(scene,preview,source);
-                evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(cornerPlane);
+                evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(cornerPlane,"smrt",false,128);
                 const std::string name="PointCornerPlane"; validation.phase(name);
                 const auto image=compareFrame(preview,graph,directory,name,report);
                 const auto metric=oracle(image,cornerPlane,source,name,false);
@@ -845,7 +860,7 @@ public:
                 RenderView view; RenderGraphPreviewRenderer preview;
                 configurePreview(preview,scene,view,context,validation);
                 Source source{"Point",{0,0,0},{0,-1,0},.2}; publishSource(scene,preview,source);
-                evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(room);
+                evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(room,"smrt",false,128);
                 const std::string prefix=stream ? "StreamRoom" : "ResidentRoom";
                 uint64_t seamSamples=0,cornerSamples=0;
                 uint32_t viewIndex=0;
@@ -1107,6 +1122,15 @@ public:
                 setProperty(graph, "physicalPageBudget", pageBudget);
                 (void)render("SMRT-PoolRecovery", true);
                 requireReused(render("SMRT-RecoveryWarm", true), kind + " recovered cache reuse");
+                // A small source with the normal segment count must retain the
+                // receiver's useful mip. Shrinking demand to a ray's first
+                // angular stratum requests fine pages that exhaust this pool.
+                source.size = kind == "Directional" ? .00465 : .02;
+                publishSource(scene, preview, source);
+                setProperty(graph, "smrtSamplesPerRay", 16);
+                setProperty(graph, "smrtMaxRayLength", 10);
+                (void)render("SMRT-SmallSource", true);
+                requireReused(render("SMRT-SmallSourceWarm", true), kind + " small-source cache reuse");
                 source.size = 0; publishSource(scene, preview, source);
                 const auto zeroSMRT = render("SMRT-ZeroSource", false);
                 require(zeroSMRT.shadows == snapshot("Hard").shadows, kind + ": zero-source SMRT differs from Hard");
@@ -1236,6 +1260,107 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTDistanceTest);
+
+class VirtualShadowMapSMRTPenumbraTest final : public RHITest {
+public:
+    VirtualShadowMapSMRTPenumbraTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_penumbra"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTPenumbra";
+        Json report{{"passed", false}, {"scope", "Far-blocker penumbra and spatially unbiased one-ray sampling"},
+            {"blockerHeight", 12}, {"blockerHalfExtent", .8}, {"traceDistance", 32}, {"samplesPerRay", 32},
+            {"cpuAreaSamples", 256}, {"maximumOneRayBandMeanError", .18},
+            {"frames", Json::array()}, {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTPenumbra.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "FarBlocker", false, 12);
+            for (const std::string name : {"Directional-Sun", "Directional-Broad", "Spot", "Point"}) {
+                const bool directional = name.starts_with("Directional");
+                Source source{directional ? "Directional" : name, {0,20,0}, {0,-1,0},
+                    directional ? (name == "Directional-Sun" ? .00465 : .04) : .1};
+                // View a straight edge from below the elevated blocker. A
+                // close orthographic view resolves even a solar-size penumbra.
+                const double edge = directional ? .8 : 2.0;
+                const double radius = directional ? 12 * std::tan(source.size) : 1.5 * source.size;
+                const float height = directional ? (name == "Directional-Sun" ? 1.0f : 2.0f) : 1.5f;
+                scene::SceneDocument scene;
+                require(scene.load(fixture.source), "Load SMRT penumbra fixture");
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                require(view.setCamera({.eye={float(edge),5,0}, .center={float(edge),0,0}, .up={0,0,-1},
+                    .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=height, .orthographic=true}),
+                    "Set SMRT penumbra edge camera");
+                publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>();
+                auto graph = makeGraph(fixture);
+                setProperty(graph, "smrtMaxRayLength", 32);
+                validation.phase(name + "-ManyRays");
+                const auto many = compareFrame(preview, graph, directory, name + "-ManyRays", report);
+                const auto metric = measureOracle(many, fixture, source, directory, name + "-ManyRays", false);
+                if (!metric.at("qualityPassed").get<bool>()) {
+                    report["failures"].push_back({{"name", name}, {"qualityFailures", metric.at("qualityFailures")}});
+                }
+
+                setProperty(graph, "smrtRayCount", 1);
+                validation.phase(name + "-OneRay");
+                const auto one = compareFrame(preview, graph, directory, name + "-OneRay", report);
+                const auto pixels = visibility(one, fixture, source);
+                saveGray(directory / (name + "-OneRay.png"), pixels);
+                const auto stable = compareFrame(preview, graph, directory, name + "-OneRayStable", report);
+                requireReused(stable, name + " one-ray stable");
+                require(one.shadows == stable.shadows, name + ": fixed-frame spatial samples changed between renders");
+
+                // A single ray is binary; per-pixel soft visibility is not a
+                // valid assertion. Independent narrow bands across the edge
+                // should nevertheless estimate the area-source visibility.
+                // A globally shared disk point makes a shifted hard edge and
+                // fails the outer bands even when its full-image mean agrees.
+                Json bands = Json::array();
+                for (const double offset : {-.5, 0., .5}) {
+                    uint32_t samples = 0, depthErrors = 0;
+                    double actualSum = 0, expectedSum = 0;
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const auto hit = cameraHit(one.camera, x, y, fixture);
+                        if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[2]) > .25 ||
+                            std::abs((hit.position[0] - edge) / radius - offset) > .15) { continue; }
+                        const size_t pixel = size_t(y) * kWidth + x;
+                        ++samples;
+                        depthErrors += std::abs(one.depth[pixel] - hit.depth) > 2e-5;
+                        actualSum += pixels[pixel] / 255.;
+                        expectedSum += referenceVisibility(hit, fixture, source);
+                    }}
+                    require(samples > 50 && depthErrors == 0, name + ": insufficient independent edge-band coverage");
+                    const double actual = actualSum / samples, expected = expectedSum / samples;
+                    require(expected > .1 && expected < .9, name + ": edge band is not in the physical penumbra");
+                    const double error = std::abs(actual - expected);
+                    bands.push_back({{"offsetInPenumbraRadii", offset}, {"samples", samples},
+                        {"gpuMean", actual}, {"cpuMean", expected}, {"absoluteMeanError", error}});
+                    if (error > .18) {
+                        report["failures"].push_back({{"name", name}, {"offsetInPenumbraRadii", offset},
+                            {"error", "One-ray spatial mean differs from the geometric area-source oracle"},
+                            {"absoluteMeanError", error}});
+                    }
+                }
+                report["cases"].push_back({{"name", name}, {"sourceSize", source.size}, {"manyRayMetrics", metric},
+                    {"oneRayBands", bands}, {"stableOneRayAndRedrawEqual", true}});
+                save();
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT penumbra Vulkan validation error");
+            require(report["failures"].empty(), "SMRT penumbra or spatial sampling disagrees with the independent oracle");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Far SMRT penumbra matches area-source geometry; one-ray spatial bands remain unbiased");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTPenumbraTest);
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 
