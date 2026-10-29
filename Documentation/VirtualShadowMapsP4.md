@@ -205,3 +205,30 @@ PCF 与点光源几何参考比较边缘和稳定内区；其预期的平滑带�
 Sponza 最终使用原普通 GPUDriven 图、1920×1080、2048 页和关闭 jitter，三种过滤各静态 32 帧，Hard / SMRT 8×16 各移动 64 帧。静态 Hard / PCF / SMRT 请求 3016 / 3032 / 3709 页，各准入 2047 个细页及保底粗页；超额细页使用较粗 clipmap，所有静态／移动帧的中心与过滤全场景粗图查询、work overflow 均为零。静态第 31 帧和移动第 31/63 帧的阴影及 HDR 与强制重画逐字节一致。已检查最终截图；无 RT 能力／分配，Vulkan / synchronization validation 零消息。精细页需求增加是质量成本，这些诊断回放不作为性能提升或长期显存验收。
 
 13 项相关 GPU 回归已通过、无跳过：`scene`、`cache`、`local_lights`、`compact`、`filter_demand`、`smrt_distance`、`smrt_penumbra`、`quality`、`receiver_quality`、`allocator`、`remap`、`content`、`scroll_precision`（均加 `virtual_shadow_map_` 前缀）。`MetallicRHITests`、`MetallicVSMSample`、`Metallic` Release 构建及 shader module 审计通过。本机证据在 `.cache/VSMReceiverQuality/`：`FinalBaseline` 保存旧选级失败；`StableRegression` 保存最终质量与场景回归；`BeforeStableScroll` / `StableScroll` 保存页面精度 A/B；`StableSponza*` 保存最终实景回放。早期 `CoreRegression` 的一次 quality 运行被并行源码写入触发的 shader epoch 检查中止，冻结源码后的 `FinalQuality` 和 `StableRegression` 均通过。
+
+## 页请求与过滤统计开销（2026-10-29）
+
+SMRT 在每个 receiver 内为最多 12 个细级保存上次请求的页，跨射线保留，跳过同一级连续重复的全局 OR。选级、射线和采样数、父级请求及最终请求集合不变。Hard 和九点 PCF 保留原短路径，避免引入无收益的缓存初始化和展开成本。
+
+过滤查询数、粗图查询数及未解析查询数先在线程内累计，再由 8×8 工作组汇总，每组每个非零统计槽只做一次全局 Add。点光跨 face 查询仍归属于 receiver 的统计缓冲；槽 30/31/9 的条件及全部 32 槽含义不变。尾组、无效 receiver 和 point face 拒绝从 helper 返回，保证过滤组的所有线程经过两道 barrier；Hard 直接跳过这些同步。不增加 subgroup 能力、资源绑定或 push 布局要求。
+
+RTX 5060、Release、普通 GPUDriven Sponza，原生 1920×1080、固定 LOD 0、2048 页、关闭 jitter，沿用相机、太阳和 10 m SMRT 搜索距离。PCF 半径 1 texel，SMRT 8×16。每种模式优化前后各 3 个独立进程，每次 256 帧，前 32 帧预热；表中为每个进程剩余 224 帧中位数再取三次中位数。使用相同输入哈希，所记录渲染器源码仅 VSM shader 不同。磁盘缓存保留，关闭验证及图像/统计回读；未锁频或独占 GPU。范围是串行预览中的 GPU pass 时间，不包含编辑器呈现，也不代表端到端帧率提升。
+
+| 过滤 | Shadows GPU，之前 → 之后（ms） | 变化 |
+| --- | ---: | ---: |
+| Hard | 1.070 → 1.075 | +0.5% |
+| PCF | 3.842 → 3.840 | −0.1% |
+| SMRT | 32.977 → 27.325 | −17.1% |
+
+SMRT 的 `VSM page demand, cache and raster` 从 24.855 降至 19.133 ms（−23.0%）；`Project compact VSM lights` 从 8.186 降至 8.001 ms（−2.3%）。主要收益来自页请求阶段，不能把逻辑原子次数的减少等同于投影时间同比下降。SMRT 三次 Shadows 中位数由 33.338 / 32.977 / 32.389 ms 变为 27.458 / 27.214 / 27.325 ms。
+
+新增 `virtual_shadow_map_demand_equivalence`：三类光源 × 三种过滤 × 冷/热/强制重画，另含点光 12 级、32×64 采样的三个状态，共 30 状态。129×97 尾组、至少三个点光 receiver face、全部 12 级实际请求及提前终止均有覆盖断言。报告保留完整请求页 ID、32 槽统计和阴影字节。`filter_demand` 的 54 状态增加逐 face PCF 精确九次查询、SMRT 查询范围和零尺寸退化断言，以及阴影/debug/depth 哈希。使用同一测试执行旧/新 shader，84 状态的全部证据字段完全一致；现有点光精确面边界的域外计数也保持一致。
+
+上述两项及原 12 项相关回归全部通过，无跳过，Vulkan/synchronization validation 零消息；108 项斜面/掠射/曲面质量门槛未改动且全部通过。最大采样用例额外验证了实际请求覆盖 0–11 级。三种静态 Sponza 各 32 帧，Hard/SMRT 移动各 64 帧；与上一节旧 shader 的全部逐帧统计和截图像素哈希相同，检查点的阴影与深度哈希相同。每个回放的缓存/强制重画阴影和 HDR 逐字节一致，无 RT 能力或分配。静态请求数仍为 3016 / 3032 / 3709，细页超额时仍使用较粗 clipmap，未通过缩小请求集合获得性能收益。
+
+`MetallicRHITests`、`MetallicVSMSample`、`Metallic` 构建及 shader module 审计通过。本机证据位于 `.cache/VSMDemandCost/`：`Before-*` / `Final-*` 为计时与源码/输入/二进制身份记录；`TimingSummary.json` 为进程中位数；`BeforeEquivalence` / `FinalRegression`、`EquivalenceSummary.json` 为精确 A/B；`FinalSponza-*`、`SponzaSummary.json` 为实景回放。中间候选保留在其他目录，不进入最终计时汇总。
+
+```powershell
+.\build-release\tests\MetallicRHITests.exe '--gtest_filter=*virtual_shadow_map_filter_demand:*virtual_shadow_map_demand_equivalence' --rhi-bindless --rhi-validation --output-dir .cache/vsm-demand-check
+python -B Tools/Perf/VirtualShadowMapAcceptance.py run --cases .cache/VSMDemandCost/smrtTiming.json --exe build-release/tests/MetallicRHITests.exe --output .cache/vsm-demand-repeat --runs 3
+```

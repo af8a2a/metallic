@@ -1,5 +1,6 @@
 #include "RHITest.h"
 #include "harness/ValidationRecorder.h"
+#include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
@@ -1074,8 +1075,48 @@ public:
                     const auto cached = snapshot("Cached", true), redraw = snapshot("Redraw", true), hard = snapshot("Hard", true);
                     const auto totals = totalStatistics(cached), hardTotals = totalStatistics(hard);
                     const bool equal = cached.shadows == redraw.shadows && cached.depth == redraw.depth;
+                    const auto& node = *graph.findNode("Cached");
+                    auto settings = node.properties;
+                    settings.merge_patch(node.runtimeProperties);
+                    const auto filter = settings.at("filter").get<std::string>();
+                    const bool actualFiltered = filter == "pcf" ? settings.at("pcfRadius").get<float>() > 0 :
+                        filter == "smrt" && source.size > 0;
+                    require(filtered == actualFiltered, name + ": filter oracle does not match the effective mode");
+                    const uint64_t rays = settings.at("smrtRayCount").get<uint32_t>();
+                    const uint64_t samples = settings.at("smrtSamplesPerRay").get<uint32_t>() + 1u;
+                    Json queryEvidence = Json::array();
+                    for (const auto* image : {&cached, &redraw}) {
+                        const auto& entry = activeEntry(*image);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            const auto layer = entry.baseLayer + face;
+                            const auto& debugPixels = image->debug[layer];
+                            uint64_t receivers = 0;
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                // Fine green or valid coarse blue reaches filtering;
+                                // domain/near-plane rejects stay black, invalid coarse is magenta.
+                                receivers += debugPixels[pixel * 4 + 1] != 0 ||
+                                    (debugPixels[pixel * 4] == 0 && debugPixels[pixel * 4 + 2] != 0);
+                            }
+                            const auto& stats = image->statistics[layer];
+                            const uint64_t minimum = !actualFiltered ? 0 : receivers * (filter == "pcf" ? 9 : rays);
+                            const uint64_t maximum = !actualFiltered ? 0 :
+                                receivers * (filter == "pcf" ? 9 : rays * samples);
+                            require(stats[30] >= minimum && stats[30] <= maximum,
+                                name + ": incorrect filtered query count on receiver face " + std::to_string(face));
+                            require(stats[31] <= stats[30], name + ": coarse taps exceed filtered queries");
+                            if (image == &cached) {
+                                queryEvidence.push_back({{"face", face}, {"receivers", receivers},
+                                    {"minimumQueries", minimum}, {"maximumQueries", maximum},
+                                    {"shadowSha256", debug::debugSha256(image->shadows[layer])},
+                                    {"debugSha256", debug::debugSha256(debugPixels)}});
+                            }
+                        }
+                    }
                     report["frames"].push_back({{"name", name}, {"cacheRedrawEqual", equal},
                         {"statistics", cached.statistics}, {"totals", totals}, {"hardTotals", hardTotals},
+                        {"queryEvidence", std::move(queryEvidence)},
+                        {"depthSha256", debug::debugSha256(std::span(
+                            reinterpret_cast<const uint8_t*>(cached.depth.data()), cached.depth.size() * sizeof(float)))},
                         {"expectCompleteDemand", expectCompleteDemand}, {"filtered", filtered},
                         {"expectLastFineLevel", expectLastFineLevel}});
                     save();

@@ -1,5 +1,6 @@
 #include "RHITest.h"
 #include "harness/ValidationRecorder.h"
+#include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -1155,5 +1156,256 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapScrollPrecisionTest);
+
+class VirtualShadowMapDemandEquivalenceTest final : public RHITest
+{
+public:
+    VirtualShadowMapDemandEquivalenceTest() { name = "virtual_shadow_map_demand_equivalence"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory / "VirtualShadowMapDemandEquivalence");
+        std::filesystem::create_directories(directory);
+        Json report{{"passed", false}, {"width", kWidth}, {"height", kHeight}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapDemandEquivalence.json") << report.dump(2); };
+        try {
+            const auto path = writeContentFixture(directory / "Plane");
+            scene::SceneDocument scene;
+            check(scene.load(path), "Load demand equivalence fixture");
+            auto material = scene.materials()[1];
+            material.displacementMagnitude = 0;
+            check(scene.setMaterialProperties(1, material), "Disable demand fixture displacement");
+            auto deviceResult = createDevice({.applicationName = "VSM demand equivalence",
+                .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
+                .enableRayTracingAccelerationStructure = false, .enableRayQuery = false,
+                .enableRayTracingPipeline = false, .enableClusterAccelerationStructure = false,
+                .validationSink = validation.sink()});
+            if (hasError(deviceResult, Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and bindless"); }
+            check(deviceResult, "Demand equivalence device");
+            auto& device = **deviceResult;
+            ContentCommands gpu(device);
+            std::string log;
+            RenderView camera;
+            check(camera.setCamera({.eye = {0,0,4}, .center = {0,0,0}, .nearPlane = .01f,
+                .farPlane = 10, .orthoHeight = 4, .orthographic = true}), "Demand equivalence camera");
+            std::unique_ptr<Texture> depth;
+            std::unique_ptr<TextureView> depthView;
+            check(device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+                .format = Format::D32Sfloat, .width = kWidth, .height = kHeight})
+                .transform([&](auto t) { depth = std::move(t); }), "Demand receiver depth");
+            check(device.createTextureView(*depth, {.format = Format::D32Sfloat})
+                .transform([&](auto v) { depthView = std::move(v); }), "Demand receiver view");
+            auto upload = device.createBuffer({.size = kPixels * sizeof(float), .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload});
+            check(upload, "Demand receiver upload");
+            auto* values = static_cast<float*>((*upload)->map()); check(values != nullptr, "Map demand receiver");
+            std::fill(values, values + kPixels, (10.f - 4.f) / (10.f - .01f));
+            (*upload)->flush(); (*upload)->unmap();
+            gpu.begin();
+            const TextureBarrierDesc begin{.texture = depth.get(), .oldLayout = TextureLayout::Undefined,
+                .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+            check(gpu.commands->synchronize({.textures = {&begin, 1}}), "Demand depth begin");
+            check((*upload)->slice().and_then([&](const auto& slice) {
+                return gpu.commands->copyBufferToTexture({.texture = depth.get(), .buffer = slice, .width = kWidth, .height = kHeight});
+            }), "Demand receiver copy");
+            const TextureBarrierDesc ready{.texture = depth.get(), .oldLayout = TextureLayout::TransferDestination,
+                .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+            check(gpu.commands->synchronize({.textures = {&ready, 1}}), "Demand depth ready");
+            gpu.finish();
+
+            struct Capture
+            {
+                std::vector<uint32_t> requestedPages;
+                std::array<uint32_t, 32> statistics{};
+                std::vector<uint8_t> shadow;
+                uint32_t receivers = 0;
+            };
+            const std::array kinds{VirtualShadowMapLightType::Directional, VirtualShadowMapLightType::Spot,
+                VirtualShadowMapLightType::PointFace};
+            const std::array filters{VirtualShadowMapFilter::Hard, VirtualShadowMapFilter::PCF, VirtualShadowMapFilter::SMRT};
+            const std::array kindNames{"Directional", "Spot", "Point"};
+            const std::array filterNames{"Hard", "PCF", "SMRT"};
+            VirtualShadowMapCasterCache casterCache;
+            for (size_t kind = 0; kind < kinds.size(); ++kind) {
+                for (size_t filter = 0; filter < filters.size(); ++filter) {
+                    const bool point = kinds[kind] == VirtualShadowMapLightType::PointFace;
+                    const uint32_t faceCount = point ? 6u : 1u;
+                    // The extra point case exercises the 32 x 64 public limits,
+                    // all 12 fine levels and cross-face filtering.
+                    const uint32_t variants = point && filters[filter] == VirtualShadowMapFilter::SMRT ? 2u : 1u;
+                    for (uint32_t variant = 0; variant < variants; ++variant) {
+                        const std::string label = std::string(kindNames[kind]) + "-" + filterNames[filter] +
+                            (variant ? "-MaximumSamples" : "");
+                        VirtualShadowMapLight light;
+                        light.type = kinds[kind]; light.position = {-2,-2,2}; light.direction = {.5f,.3f,-1};
+                        light.outerConeAngle = 1.2f; light.range = 20; light.angularRadius = .05f; light.sourceRadius = .6f;
+                        VirtualShadowMapSettings settings;
+                        settings.pageSize = 32; settings.virtualPagesPerAxis = 32; settings.clipmapCount = variant ? 12u : 3u;
+                        settings.physicalPageCount = 256; settings.cacheEnabled = true; settings.filter = filters[filter];
+                        settings.pcfRadius = 1.5f; settings.smrtRayCount = variant ? 32u : 4u;
+                        settings.smrtSamplesPerRay = variant ? 64u : 8u; settings.smrtMaxRayLength = 3;
+                        settings.receiverFootprint = variant == 0;
+                        std::array<VirtualShadowMaps, 6> shadows;
+                        std::vector<Capture> reference;
+                        for (const std::string phase : {"Cold", "Warm", "Forced"}) {
+                            validation.phase(label + "-" + phase);
+                            settings.forceRedraw = phase == "Forced";
+                            gpu.begin();
+                            auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log);
+                            check(casters, "Demand casters: " + log);
+                            std::vector<VirtualShadowMapResult> results;
+                            for (uint32_t face = 0; face < faceCount; ++face) {
+                                light.face = face;
+                                auto result = shadows[face].record(device, *gpu.commands, *depthView,
+                                    camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight), light,
+                                    *casters, scene.materials(), {}, settings, log, true);
+                                check(result, "Record demand face: " + log); results.push_back(std::move(*result));
+                            }
+                            // A filtered point tap can sample another face. Keep
+                            // every face alive and resolve only after all six rasterize.
+                            for (uint32_t face = 0; face < faceCount; ++face) {
+                                check(shadows[face].project(*gpu.commands, point ?
+                                    std::span<const VirtualShadowMapResult>(results) : std::span<const VirtualShadowMapResult>{}, log),
+                                    "Project demand face: " + log);
+                            }
+                            const uint32_t finePages = settings.clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis;
+                            const uint64_t tableBytes = uint64_t(finePages + 1u) * sizeof(std::array<uint32_t, 4>);
+                            const uint64_t statsOffset = tableBytes, shadowOffset = statsOffset + 32u * sizeof(uint32_t);
+                            const uint64_t debugOffset = (shadowOffset + kPixels + 3u) & ~uint64_t(3);
+                            const uint64_t faceBytes = debugOffset + kPixels * 4u;
+                            auto readback = device.createBuffer({.size = faceBytes * faceCount,
+                                .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback});
+                            check(readback, "Demand equivalence readback");
+                            for (uint32_t face = 0; face < faceCount; ++face) {
+                                const auto& result = results[face];
+                                const TextureBarrierDesc textures[]{
+                                    {.texture = result.texture, .oldLayout = TextureLayout::ShaderRead,
+                                    .newLayout = TextureLayout::TransferSource,
+                                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+                                    {.texture = result.debugTexture, .oldLayout = TextureLayout::ShaderRead,
+                                    .newLayout = TextureLayout::TransferSource,
+                                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}}};
+                                const BufferBarrierDesc buffers[]{
+                                    {.buffer = result.pageTable, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+                                    {.buffer = result.statistics, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}}};
+                                check(gpu.commands->synchronize({.textures = textures, .buffers = buffers}), "Demand readback barriers");
+                                for (const auto& [texture, offset, bytes] : {std::tuple{result.texture, shadowOffset, uint64_t(kPixels)},
+                                    std::tuple{result.debugTexture, debugOffset, uint64_t(kPixels * 4u)}}) {
+                                    check((*readback)->slice({face * faceBytes + offset, bytes}).and_then([&](const auto& slice) {
+                                        return gpu.commands->copyTextureToBuffer({.texture = texture, .buffer = slice, .width = kWidth, .height = kHeight});
+                                    }), "Demand texture readback");
+                                }
+                                for (const auto& [source, offset, bytes] : {std::tuple{result.pageTable, uint64_t(0), tableBytes},
+                                    std::tuple{result.statistics, statsOffset, uint64_t(32u * sizeof(uint32_t))}}) {
+                                    auto from = source->slice({0, bytes}), to = (*readback)->slice({face * faceBytes + offset, bytes});
+                                    check(from, "Demand buffer source"); check(to, "Demand buffer destination");
+                                    check(gpu.commands->copyBuffer(*from, *to), "Demand buffer readback");
+                                }
+                                const TextureBarrierDesc restore[]{
+                                    {.texture = result.texture, .oldLayout = TextureLayout::TransferSource,
+                                    .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                                    .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
+                                    {.texture = result.debugTexture, .oldLayout = TextureLayout::TransferSource,
+                                    .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                                    .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}}};
+                                check(gpu.commands->synchronize({.textures = restore}), "Restore demand textures");
+                            }
+                            gpu.finish();
+                            (*readback)->invalidate();
+                            const auto* bytes = static_cast<const uint8_t*>((*readback)->map());
+                            check(bytes != nullptr, "Map demand equivalence readback");
+                            std::vector<Capture> captures(faceCount);
+                            for (uint32_t face = 0; face < faceCount; ++face) {
+                                auto& capture = captures[face];
+                                const auto* data = bytes + face * faceBytes;
+                                for (uint32_t page = 0; page < finePages; ++page) {
+                                    std::array<uint32_t, 4> entry;
+                                    std::memcpy(entry.data(), data + uint64_t(page) * sizeof(entry), sizeof(entry));
+                                    if ((entry[1] & 1u) != 0u) { capture.requestedPages.push_back(page); }
+                                }
+                                std::memcpy(capture.statistics.data(), data + statsOffset, sizeof(capture.statistics));
+                                capture.shadow.assign(data + shadowOffset, data + shadowOffset + kPixels);
+                                for (uint32_t pixel = 0; pixel < kPixels; ++pixel) {
+                                    const auto* debug = data + debugOffset + pixel * 4u;
+                                    capture.receivers += debug[1] != 0 || (debug[0] == 0 && debug[2] != 0);
+                                }
+                            }
+                            (*readback)->unmap();
+                            Json faces = Json::array();
+                            uint32_t activeFaces = 0;
+                            uint64_t reused = 0, queries = 0, receivers = 0;
+                            for (uint32_t face = 0; face < faceCount; ++face) {
+                                const auto& capture = captures[face];
+                                const auto& stats = capture.statistics;
+                                activeFaces += capture.receivers > 0;
+                                reused += stats[17];
+                                queries += stats[30];
+                                receivers += capture.receivers;
+                                faces.push_back({{"face", face}, {"receivers", capture.receivers},
+                                    {"requestedPages", capture.requestedPages}, {"statistics", stats},
+                                    {"shadowSha256", debug::debugSha256(capture.shadow)}, {"shadowBytes", capture.shadow}});
+                            }
+                            report["frames"].push_back({{"name", label + "-" + phase}, {"activeFaces", activeFaces},
+                                {"rays", settings.smrtRayCount}, {"samplesPerRay", settings.smrtSamplesPerRay},
+                                {"receiverFootprint", settings.receiverFootprint}, {"filteredQueries", queries},
+                                {"faces", std::move(faces)}});
+                            save();
+                            for (uint32_t face = 0; face < faceCount; ++face) {
+                                const auto& capture = captures[face];
+                                const auto& stats = capture.statistics;
+                                check(capture.requestedPages.size() == stats[0], label + ": page set disagrees with requested count");
+                                check(stats[5] == 0, label + ": fine raster overflow");
+                                // Exact cube-face boundary receivers can already
+                                // fail the old coarse-domain test. Preserve [9]
+                                // as evidence and compare it across both paths.
+                                if (!reference.empty()) {
+                                    check(capture.requestedPages == reference[face].requestedPages, label + ": cached/forced page sets differ");
+                                    check(capture.shadow == reference[face].shadow, label + ": cached/forced visibility differs");
+                                    for (uint32_t index : {0u, 1u, 2u, 5u, 6u, 7u, 8u, 9u, 13u, 29u, 30u, 31u}) {
+                                        check(stats[index] == reference[face].statistics[index], label + ": cached/forced query statistics differ");
+                                    }
+                                }
+                            }
+                            check(!point || activeFaces >= 3, label + ": fixture missed point receiver faces and seams");
+                            check(phase != "Warm" || reused > 0, label + ": warm frame did not reuse fine pages");
+                            if (variant != 0) {
+                                std::array<bool, 12> requestedLevels{};
+                                for (const auto& capture : captures) {
+                                    for (const uint32_t page : capture.requestedPages) {
+                                        requestedLevels[page / (settings.virtualPagesPerAxis * settings.virtualPagesPerAxis)] = true;
+                                    }
+                                }
+                                check(std::all_of(requestedLevels.begin(), requestedLevels.end(), [](bool requested) { return requested; }),
+                                    label + ": fixture missed a fine level in the per-receiver request cache");
+                                // Count only receivers that actually enter filtering,
+                                // excluding domain/near/coarse rejects. Retain both
+                                // longer lit rays and blocked rays that terminate early.
+                                const uint64_t minimum = receivers * settings.smrtRayCount;
+                                const uint64_t maximum = minimum * (settings.smrtSamplesPerRay + 1u);
+                                check(queries > minimum && queries < maximum, label + ": fixture missed SMRT early termination");
+                            }
+                            if (reference.empty()) { reference = std::move(captures); }
+                        }
+                    }
+                }
+            }
+            report["validation"] = validation.snapshot();
+            check(!validation.failed(), "Demand equivalence Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Exact per-face request sets, query statistics and visibility survive warm cache and forced redraw");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDemandEquivalenceTest);
 } // namespace
 } // namespace metallic::tests
