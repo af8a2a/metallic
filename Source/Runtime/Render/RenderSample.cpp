@@ -186,6 +186,22 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_tessellation_vsm.metallic_graph.json"; }
 };
 
+class VirtualShadowMapSponzaSample final : public RenderSample {
+public:
+    std::string_view id() const override { return kVSMSponzaSampleId; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Sponza"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Sponza courtyard with GPU-driven raster visibility and cached virtual shadows, "
+            "framed to compare shadow detail from foreground to distance.";
+    }
+    std::string scenePath() const override { return "Asset/Sponza/SponzaVSM.metallic_scene.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_sponza.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Shadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class VirtualShadowMapSample final : public RenderSample {
 public:
     std::string_view id() const override { return "virtual-shadow-map-p1"; }
@@ -979,6 +995,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GPUDrivenVSMSample gpuDrivenVSM;
     static const GPUDrivenZorahFullVSMSample gpuDrivenZorahFullVSM;
     static const GPUDrivenTessellationVSMSample gpuDrivenTessellationVSM;
+    static const VirtualShadowMapSponzaSample virtualShadowMapSponza;
     static const VirtualShadowMapSample virtualShadowMap;
     static const VirtualShadowMapCacheSample virtualShadowMapCache;
     static const VirtualShadowMapLightsSample virtualShadowMapLights;
@@ -1004,6 +1021,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenVSM,
         &gpuDrivenZorahFullVSM,
         &gpuDrivenTessellationVSM,
+        &virtualShadowMapSponza,
         &virtualShadowMap,
         &virtualShadowMapCache,
         &virtualShadowMapLights,

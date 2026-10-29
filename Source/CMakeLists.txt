@@ -580,6 +580,12 @@ add_executable(MetallicGPUDrivenSample
 )
 configure_metallic_editor_sample(MetallicGPUDrivenSample)
 
+add_executable(MetallicVSMSample
+    Samples/VSMSampleMain.cpp
+    ${METALLIC_EDITOR_SOURCES}
+)
+configure_metallic_editor_sample(MetallicVSMSample)
+
 add_executable(MetallicRTXCRSample
     Samples/RTXCRSampleMain.cpp
     ${METALLIC_EDITOR_SOURCES}

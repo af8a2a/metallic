@@ -58,6 +58,10 @@ USD tests skip when USD is disabled; a separate test checks the disabled importe
 Closing optional integrations changes which render passes can run. Use the full
 profile when working on those integrations.
 
+For the Sponza virtual shadow map showcase, build `MetallicVSMSample` explicitly
+in the configured tree. Camera, lighting, controls and validation commands are
+documented in [Sponza VSM Sample](VSMSponzaSample.md).
+
 ## Runtime shader cache and warmup
 
 Applications compile the active graph/UI requests on demand by default, using

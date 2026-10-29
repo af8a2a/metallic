@@ -1,0 +1,193 @@
+{
+    "name": "Sponza VSM - Near to Far",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
+            "position": {
+                "x": 80,
+                "y": 240
+            },
+            "properties": {
+                "path": "Asset/Sponza/SponzaVSM.metallic_scene.json",
+                "visualization": "none",
+                "enableClusterRtx": false,
+                "initialLoad": true,
+                "autoLod": false,
+                "lodLevel": 0,
+                "instanceFrustumCull": true,
+                "enableClas": false,
+                "hybridRaster": false,
+                "instanceHzbCull": true,
+                "meshletFrustumCull": true,
+                "meshletNormalConeCull": true
+            }
+        },
+        {
+            "id": 2,
+            "name": "Shadows",
+            "type": "VirtualShadowMapLightsPass",
+            "position": {
+                "x": 420,
+                "y": 0
+            },
+            "properties": {
+                "enabled": true,
+                "pageSize": 128,
+                "virtualPagesPerAxis": 128,
+                "clipmapCount": 6,
+                "maxWorkItems": 1048576,
+                "firstClipmapExtent": 1.0,
+                "shadowBias": 0.002,
+                "cacheEnabled": true,
+                "lightCapacity": 2,
+                "physicalPageBudget": 2048,
+                "nearPlane": 0.001,
+                "filter": "pcf",
+                "pcfRadius": 1.0,
+                "smrtRayCount": 8,
+                "smrtSamplesPerRay": 16,
+                "smrtMaxRayLength": 10.0,
+                "receiverFootprint": true,
+                "tessellationFactor": 4,
+                "tessellationSubdivisionDepth": 0,
+                "compactOutputs": true
+            }
+        },
+        {
+            "id": 3,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {
+                "x": 760,
+                "y": 240
+            },
+            "properties": {
+                "path": "Asset/Sponza/SponzaVSM.metallic_scene.json",
+                "materialBinning": true,
+                "outputLinear": true
+            }
+        },
+        {
+            "id": 4,
+            "name": "AutoExposure",
+            "type": "AutoExposurePass",
+            "position": {
+                "x": 1100,
+                "y": 240
+            },
+            "properties": {}
+        },
+        {
+            "id": 5,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {
+                "x": 1440,
+                "y": 240
+            },
+            "properties": {}
+        },
+        {
+            "id": 6,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1100,
+                "y": 490
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
+        }
+    ],
+    "edges": [
+        {
+            "id": 1,
+            "src": "VBuffer.visibility",
+            "dst": "Deferred.visibility"
+        },
+        {
+            "id": 2,
+            "src": "VBuffer.depth",
+            "dst": "Deferred.depth"
+        },
+        {
+            "id": 3,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Deferred.rasterInfo"
+        },
+        {
+            "id": 4,
+            "src": "VBuffer.domain",
+            "dst": "Deferred.domain"
+        },
+        {
+            "id": 5,
+            "src": "VBuffer.depth",
+            "dst": "Shadows.depth"
+        },
+        {
+            "id": 6,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Shadows.rasterInfo"
+        },
+        {
+            "id": 7,
+            "src": "Shadows.shadows",
+            "dst": "Deferred.virtualShadows"
+        },
+        {
+            "id": 8,
+            "src": "Shadows.lights",
+            "dst": "Deferred.virtualShadowLights"
+        },
+        {
+            "id": 9,
+            "src": "Deferred.color",
+            "dst": "AutoExposure.source"
+        },
+        {
+            "id": 10,
+            "src": "AutoExposure.color",
+            "dst": "FinalBlit.source"
+        },
+        {
+            "id": 11,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
+        }
+    ],
+    "outputs": [],
+    "view": {
+        "camera": {
+            "eye": [
+                8.7,
+                1.65,
+                0.15
+            ],
+            "center": [
+                -8.0,
+                1.3,
+                -0.3
+            ],
+            "up": [
+                0,
+                1,
+                0
+            ],
+            "fovDegrees": 60.0,
+            "projection": "perspective",
+            "znear": 0.05,
+            "zfar": 100.0
+        },
+        "temporalJitter": false,
+        "renderResolution": {
+            "width": 1920,
+            "height": 1080,
+            "adaptive": false
+        }
+    }
+}

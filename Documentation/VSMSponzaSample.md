@@ -1,0 +1,53 @@
+# Sponza VSM Sample
+
+`MetallicVSMSample` 使用仓库内的 Sponza，展示同一视图内从近处地砖、柱脚到远处柱廊和端墙的 Virtual Shadow Map 阴影。
+
+## 构建与启动
+
+在仓库根目录的 x64 Visual Studio developer shell 中，复用已配置的构建目录：
+
+```powershell
+cmake --build build-release --target MetallicVSMSample --parallel 8
+.\build-release\Source\MetallicVSMSample.exe
+```
+
+也可以在通用编辑器的内置 Sample 列表中选择 **Virtual Shadow Maps / Sponza**，ID 为 `virtual-shadow-map-sponza`。首次运行按需编译当前图的 shader/PSO。
+
+## 场景与构图
+
+- 场景：[SponzaVSM.metallic_scene.json](../Asset/Sponza/SponzaVSM.metallic_scene.json)，引用原始 `glTF/Sponza.gltf`，保留原始模型和材质。
+- 相机：[SponzaVSMCamera.gltf](../Asset/Sponza/SponzaVSMCamera.gltf)。这是独立的相机源，通过组合场景加载，使编辑器加载场景时也能选择展示相机。
+- 管线：[virtual_shadow_map_sponza.metallic_graph.json](../Pipelines/Samples/virtual_shadow_map_sponza.metallic_graph.json)，保存相同的视图预设。
+
+相机位于 `(8.7, 1.65, 0.15)`，朝向 `(-8, 1.3, -0.3)`，垂直视场角 60°。低机位沿庭院 X 轴长向观察，轻微俯视以保留前景地面，同时让重复的柱廊向远端收拢。
+
+太阳的光线传播方向为 `(-0.30, -0.94, -0.16)`，即光源约位于 70° 仰角。较高的太阳可以照进狭窄庭院，沿 X/Z 的分量让建筑投影斜穿地面。HDRI 强度为 0.25，太阳照度为 6 lux；这组数值用于固定曝光下的阴影展示，不代表正午室外实测照度。月亮关闭，手动曝光 EV100 为 0，避免曝光适应干扰阴影比较。
+
+## 渲染配置
+
+图使用常规 GPUDriven mesh shader 光栅路径：
+
+```text
+VBuffer ── depth / rasterInfo ── Shadows (VirtualShadowMapLightsPass)
+   └── visibility / depth / rasterInfo / domain ── Deferred
+Shadows ── shadows / lights ── Deferred
+Deferred → AutoExposure → FinalBlit ← ColorGrading
+```
+
+使用固定 LOD 0、硬件光栅和实例/HZB/meshlet 裁剪，关闭 Hybrid Software Rasterization、CLAS 和 cluster ray tracing。阴影走 VSM；图中没有 RT shadow、NRD 或 DLSS pass。输出为原生 1920×1080，关闭 temporal jitter。
+
+VSM 使用 128×128 texel 页、每轴 128 个虚拟页、2048 个物理页预算、6 层 clipmap、PCF 半径 1 texel，开启页缓存和 receiver footprint。第一层在灯光平面的半宽为 1 m，后续为 2/4/8/16/32 m；这些是灯光投影范围，并非相机深度分割距离。每层虚拟分辨率为 16384×16384，实际物理页按接收点需求分配。
+
+观察时先看前景地面上的阴影边缘，再沿重复柱列看向中远景。沿长廊前后移动，可检查细节与缓存更新。选择 Shadows 节点可切换 Hard / PCF / SMRT，也可使用 Force Shadow Redraw 对照缓存。`Shadows.debug` 的红色强度表示中心查询的 clipmap，蓝色表示 coarse fallback；它不代表 PCF 全部 tap 的层级。
+
+## 验证方式
+
+```powershell
+$env:METALLIC_SMOKE_TEST_FRAMES = '128'
+.\build-release\Source\MetallicVSMSample.exe --smoke-test --debug-control
+Remove-Item Env:METALLIC_SMOKE_TEST_FRAMES
+```
+
+使用 `METALLIC_DEBUG_VALIDATION=1` 可开启 Vulkan validation；结合 `metallicctl` 捕获 `FinalBlit.color`、`Shadows.debug` 和 `Shadows.statistics`，可以检查实际输出和页面统计。`Shadows.shadows` 为 R8 格式，当前 debug capture 不支持直接读取。截图、捕获和日志保存在本地 `.cache/`，不进入源码。
+
+2026-10-29 验证：Windows x64 / MSVC Release 构建通过，实际加载组合场景并检查画面。启用 Vulkan validation 连续观察至第 4509 次图执行，无 validation 事件；第 272 与 3902 次执行的最终输出逐字节相同。静态视图请求并分配 654 页，缓存命中 654 页，无页面分配失败、raster work overflow 或过滤粗级回退；debug 图包含 3 个 clipmap 层级。内部渲染为 1920×1080，截图是编辑器视口缩放后的 653×282 输出。本次未覆盖移动相机巡检或 Force Shadow Redraw A/B。
