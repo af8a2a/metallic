@@ -14,7 +14,7 @@ Sun/Moon 直接使用已有 `angularRadius`，单位弧度、含义为半径。�
 | smrtRayCount | 8 | 每 receiver 的圆盘光源样本数，1–32 |
 | smrtSamplesPerRay | 8 | 每条有界射线的步数，另含一次接收点查询 |
 | smrtMaxRayLength | 10 m | 米制软阴影搜索上限；局部光另受光源视角展开限制，超出搜索距离的遮挡仍有效 |
-| receiverFootprint | true | Hard / PCF / SMRT 均按相机像素世界足迹选择起始级；false 显式从最细级开始 |
+| receiverFootprint | true | Hard / PCF / SMRT 均按接收面像素投影到光空间的足迹选择起始级；false 显式从最细级开始 |
 | tessellationFactor | 4 | 位移 caster 独立细分因子，1–8 |
 | tessellationSubdivisionDepth | 0 | 位移 caster 额外均匀四分层级，0–2；每级增加 4 倍微三角 |
 
@@ -29,6 +29,8 @@ SMRT 参考本机 Unreal 5.7.4 的反向深度历史算法：从远端向 receiv
 ## 页寻址、需求与缓存
 
 Hard / PCF / SMRT 共用 receiver 像素足迹选级：在原始接收点确定起始 clipmap/mip，Hard 中心查询、PCF 全部 tap 和 SMRT 整条射线均从该级开始，覆盖范围或驻留不足时再向更粗级查询。PCF 不再按偏移后的 tap 重新选级。标页和查询使用相同起始级；中心 debug 及回退计数也遵守该策略。PCF 半径为零、SMRT 光源尺寸为零时仍严格回到 Hard，且不改变基础分辨率。关闭 `receiverFootprint` 可显式恢复三种模式的最细级起点，单灯兼容 pass 也提供这个开关。
+
+足迹由深度重建的接收面法线、相机像素微分和光投影共同计算，使用二维投影 Jacobian 的最小奇异值，保留掠射方向被压缩的细节；局部光包含透视除法，点光统一使用接收点所在的 canonical face。页预算不足时按粗层优先准入，再补细级；已准入 resident 保持物理槽，缺页仍先使用空闲槽再驱逐。这样细化需求超过预算时可使用相邻粗级，避免优先铺满细级后失去较粗层覆盖。
 
 逐步趋零的光源采样足迹不能用于提升精细度，否则会请求大量不需要的细页、挤出有效 receiver 页面。每个 tap 独立重新投影、查页、定位物理 texel。细页未准入或 raster work 溢出时查询已完成的粗级。使用整数 texel load，不对物理 atlas 相邻页做无边界过滤。
 
@@ -168,3 +170,38 @@ Sponza 使用同一普通 GPUDriven 图、原始相机／太阳、1920×1080、2
 选级矩阵共 54 个状态通过，其中 6 个降低虚拟页轴后的 PCF / SMRT 状态覆盖非末级：每状态对照 24,897 个中心查询，均与 Hard 选级一致；方向光／聚光各有 24,897 个非末级像素，点光为 24,385 个。10 项 GPU 回归通过、无跳过：`scene`、`cache`、`local_lights`、`compact`、`filter_demand`、`smrt_distance`、`smrt_penumbra`、`quality`、`remap`、`content`（均带 `virtual_shadow_map_` 前缀）。Shader module 审计通过，`MetallicRHITests`、`MetallicVSMSample` 与 `Metallic` Release 构建通过。
 
 本机证据保留于 `.cache/VSMReceiverLevel/`；`BeforeRegression` 和 `BeforeHard` 保存旧实现失败及画面，`AfterRegression` 保存过滤／SMRT／质量／紧凑输出回归，`FinalRegression` 保存最终 54 状态及固定精度夹具回归；`HardRegression` 中另保留夹具迁移前的失败和已通过的 remap/content。`Afterhard`、`Afterpcf`、`Aftersmrt`、`AfterHardMotion` 保存实景对照。
+
+## 接收面质量门槛（2026-10-29）
+
+`virtual_shadow_map_receiver_quality` 覆盖 30° 斜面、中心 `NdotL=0.1` 的掠射平面，以及半径 3 m、32 段的凸／凹柱面。每种几何测试无遮挡、沿中心光线相距 0.15 m 的近接触遮挡、1.2 m 的分离遮挡，再组合方向光／聚光／点光，得到 36 个状态、108 项 Hard / PCF / SMRT 质量结果。每状态执行 SMRT 冷／热缓存和 PCF，共 108 帧，并与强制重绘逐字节对照。
+
+测试使用 193×129 正交视图，近接触视野高度 0.4 m，其余 1.4 m；相机沿接收面法线相距 2 m，保证最细方向光 clipmap 覆盖接收面。局部光距原点 8 m、半径 0.32 m，方向光角半径 0.04 rad。页尺寸 128、虚拟页轴 128、4 层、第一层半宽 4 m，每面 1024 个物理页；开启 receiver footprint，bias 为 0.002 m。SMRT 使用 32 条射线、每条 32 段、32 m 搜索距离；PCF 半径为 1 texel。
+
+参考由独立的 double 精度 authored-triangle 射线求交产生，BVH 与原始暴力求交在固定子集上交叉验证。先验证接收面的深度和 triangle 身份，再使用 256 个均匀圆盘样本计算面积可见度，不读取阴影 atlas 作为真值。平面遮挡的 50% 边缘使用连续解析投影，避免有限 CPU 样本的 0.5 平台末端造成像素偏移；解析位置在三个截面上分别验证中心光线两侧的 1/0 可见度及圆盘中心的 0.5 可见度。曲面继续使用三角形几何积分参考。
+
+| 门槛 | 要求 |
+| --- | --- |
+| Hard / SMRT 接收区平均绝对误差 | < 0.04 |
+| SMRT 半影平均绝对误差 | < 0.20，至少 20 个半影像素 |
+| 50% 阴影边缘位移 | 每行误差的 P95 ≤ 2 px，至少 20 条有效边缘行 |
+| 内区漏光与误阴影 | 本影可见度 > 0.1、纯亮可见度 < 0.9 的比例分别 < 1%；有足够样本的 `NdotL` 桶分别执行 |
+| 有效覆盖 | 至少 500 个 receiver、100 个纯亮内区；有遮挡的 Hard / SMRT 至少 50 个本影内区 |
+| 页面与缓存 | 零丢页、零 raster work overflow、零未解析／全场景粗图查询；冷／热／强制重绘一致 |
+
+PCF 与点光源几何参考比较边缘和稳定内区；其预期的平滑带按核半径与 `NdotL` 排除，不使用面积光源 MAE 门槛。无遮挡状态检查自身误阴影；24 个遮挡状态另要求全亮、全暗和偏移 4 px 的负对照被拒绝。JSON 记录角度桶、中心级别直方图、解析与离散边缘的差值，输出 GPU／CPU／误差 PNG。当前覆盖约 0.1 的掠射及 `(0.35,1]` 内区角度，`(0.15,0.35]` 桶无样本；这不是连续角度扫描。曲面边缘也没有平面解析参考同等的精度保证。
+
+```powershell
+.\build-release\tests\MetallicRHITests.exe --gtest_filter=*virtual_shadow_map_receiver_quality* --rhi-bindless --rhi-validation --output-dir .cache/vsm-receiver-quality
+```
+
+新门槛暴露了仅按相机世界像素大小选级的问题：在掠射接收面上，光空间 texel 展开后大于屏幕像素。当前使用接收面到光空间 Jacobian 的最小奇异值修正三种过滤共享的 footprint。细化增加页需求后，分配器改为粗层优先，保留覆盖再补细节；18 个配置各重复两次的独立串行 allocator 对照覆盖准入顺序、resident pin 和先空闲后驱逐。
+
+移动实景还暴露了方向光整数页 remap 后的浮点舍入差：先生成随相机移动的 clipmap 坐标、再减页边界，会改变裁剪插值和深度。方向光精细页现在从 snapped page-grid origin 与虚拟页索引构造固定的世界页中心，在顶点点积前合并页面平移，以固定页边界裁剪；现有 projection 字段传递该原点，资源布局不变。局部光和全场景粗图维持原投影。
+
+最终 108 项结果全部通过：Hard / PCF / SMRT 最大接收区 MAE 分别为 0.00909 / 0.01550 / 0.02495；SMRT 最大半影 MAE 为 0.14064，最大边缘 P95 为 1.99370 px，Hard / PCF 最大边缘 P95 均为 1 px。三种模式的内区漏光和误阴影计数、接收面深度错误均为零。使用同一最终测试复测旧选级实现时有 8 项失败，包括 2% 的 Hard 内区漏光和最高 3.99370 px 的 SMRT 边缘位移；没有通过放宽门槛消除这些失败。
+
+`virtual_shadow_map_scroll_precision` 直接回读生产 atlas D32，覆盖半宽 `4/.01 m × 页轴 128/127 × 滚动 1/2/7 页` 共 12 个检查点、28 帧。要求实际 remap/reuse、足够非空深度、准入物理槽不变，缓存／强制重画的深度位模式和阴影字节完全相同。旧 raster 路径失败 8 项、累计 434,203 个深度 texel 位差；固定页坐标后全部为零。该 A/B 保留相同 CPU canonical grid，仅回退 raster 路径。
+
+Sponza 最终使用原普通 GPUDriven 图、1920×1080、2048 页和关闭 jitter，三种过滤各静态 32 帧，Hard / SMRT 8×16 各移动 64 帧。静态 Hard / PCF / SMRT 请求 3016 / 3032 / 3709 页，各准入 2047 个细页及保底粗页；超额细页使用较粗 clipmap，所有静态／移动帧的中心与过滤全场景粗图查询、work overflow 均为零。静态第 31 帧和移动第 31/63 帧的阴影及 HDR 与强制重画逐字节一致。已检查最终截图；无 RT 能力／分配，Vulkan / synchronization validation 零消息。精细页需求增加是质量成本，这些诊断回放不作为性能提升或长期显存验收。
+
+13 项相关 GPU 回归已通过、无跳过：`scene`、`cache`、`local_lights`、`compact`、`filter_demand`、`smrt_distance`、`smrt_penumbra`、`quality`、`receiver_quality`、`allocator`、`remap`、`content`、`scroll_precision`（均加 `virtual_shadow_map_` 前缀）。`MetallicRHITests`、`MetallicVSMSample`、`Metallic` Release 构建及 shader module 审计通过。本机证据在 `.cache/VSMReceiverQuality/`：`FinalBaseline` 保存旧选级失败；`StableRegression` 保存最终质量与场景回归；`BeforeStableScroll` / `StableScroll` 保存页面精度 A/B；`StableSponza*` 保存最终实景回放。早期 `CoreRegression` 的一次 quality 运行被并行源码写入触发的 shader epoch 检查中止，冻结源码后的 `FinalQuality` 和 `StableRegression` 均通过。

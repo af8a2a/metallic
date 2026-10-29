@@ -373,6 +373,41 @@ float vsmPixelFootprint(float linearDepth, ViewConstants view, ShadowPush push)
         2.0 * linearDepth * tan(view.current.viewport.w * 0.5) / view.current.viewport.z;
 }
 
+float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,
+    ViewConstants view, ShadowProjection projection, ShadowPush push)
+{
+    float footprint = vsmPixelFootprint(linearDepth, view, push);
+    if (push.receiverFootprint == 0u) { return footprint; }
+    float3 forward = normalize(view.current.center.xyz - view.current.eye.xyz);
+    float3 right = normalize(cross(forward, view.current.upProjection.xyz));
+    float3 up = cross(right, forward);
+    float3 viewRay = view.current.upProjection.w > 0.5 ? forward : position - view.current.eye.xyz;
+    float denominator = dot(normal, viewRay);
+    // An undefined or edge-on depth plane has no finite pixel differential.
+    if (abs(denominator) <= 1e-5 * length(viewRay)) { return footprint; }
+    float3 dx = right - viewRay * (dot(normal, right) / denominator);
+    float3 dy = up - viewRay * (dot(normal, up) / denominator);
+    float3 lightRight = normalize(projection.rowX.xyz), lightUp = normalize(projection.rowY.xyz);
+    if (push.lightType != 0u) {
+        float3 fromLight = position - projection.originNear.xyz;
+        float3 lightForward = normalize(projection.rowW.xyz);
+        if (push.lightType == 2u) {
+            // Every face's demand dispatch must choose the same receiver mip.
+            virtualShadowMapPointBasis(virtualShadowMapPointFace(fromLight), lightRight, lightUp, lightForward);
+        }
+        float axial = dot(fromLight, lightForward);
+        dx -= fromLight * (dot(dx, lightForward) / axial);
+        dy -= fromLight * (dot(dy, lightForward) / axial);
+    }
+    float2 a = float2(dot(dx, lightRight), dot(dx, lightUp));
+    float2 b = float2(dot(dy, lightRight), dot(dy, lightUp));
+    float aa = dot(a, a), ab = dot(a, b), bb = dot(b, b);
+    float maximumSquared = 0.5 * (aa + bb + length(float2(aa - bb, 2.0 * ab)));
+    // The smaller singular value preserves resolution along the compressed
+    // axis at grazing incidence. An area ratio misses projection shear.
+    return footprint * abs(a.x * b.y - a.y * b.x) * rsqrt(maximumSquared);
+}
+
 uint vsmReceiverLevel(float3 position, StructuredBuffer<ShadowProjection> projections,
     ShadowPush push, float footprint)
 {
@@ -572,7 +607,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 {
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
     // Match the query's first usable level. Requesting finer pages here spends
-    // the fine-first admission budget on pages the receiver will never sample.
+    // the admission budget on pages the receiver will never sample.
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ShadowProjection projection = projections[level];
         float3 projected = vsmProjectPosition(position, projection);
@@ -673,13 +708,17 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     // Resolution belongs to the receiver, independently of the filter kernel.
-    uint receiverLevel = vsmReceiverLevel(position, projections, push, vsmPixelFootprint(linearDepth, view, push));
+    float3 normal = float3(0.0);
+    if (push.receiverFootprint != 0u || push.filterMode == 1u) {
+        normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
+    }
+    uint receiverLevel = vsmReceiverLevel(position, projections, push,
+        vsmProjectedReceiverFootprint(position, normal, linearDepth, view, projections[0], push));
     if (push.filterMode == 0u) {
         vsmMarkPosition(position, projections, pages, push, receiverLevel);
         return;
     }
     if (push.filterMode == 1u) {
-        float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
                 vsmMarkPosition(vsmPCFPosition(position, normal, projections[receiverLevel], push, int2(x, y)),
@@ -789,6 +828,10 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
         bool fine = id.x + 1u < push.totalPages;
         if (fine && (entry.y & 1u) != 0u) {
             uint rank = owners[blockOffset + group.x] + owners[rankOffset + id.x];
+            // Keep requested parent coverage before spending the remaining
+            // budget on refinement. A missing fine page can then use a nearby
+            // coarser mip instead of the complete low-resolution scene map.
+            rank = statistics[0] - 1u - rank;
             if (rank < push.physicalPageCount - 1u) { entry.y |= 2u; }
             else { entry.x = 0xffffffffu; entry.w = 2u; }
         }
@@ -1031,6 +1074,19 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
             uint4 page = pages[virtualPage];
             ShadowProjection projection = projections[page.z];
             float4 bounds = vsmPageBounds(virtualPage, projection);
+            if (projection.metric.w < 0.5 && push.rasterCoarse == 0u) {
+                uint local = virtualPage - projection.page.x;
+                uint2 pageXY = uint2(local % projection.page.y, local / projection.page.y);
+                // Directional originNear.xy carries the snapped page-grid
+                // origin. Form a canonical world-page translation before the
+                // vertex dot product: subtracting rolling clipmap bounds after
+                // projection changes clipping/depth rounding in cached pages.
+                float2 center = projection.originNear.xy + float2(pageXY) + 0.5 - 0.5 * float(projection.page.y);
+                float halfPage = 1.0 / float(projection.page.y);
+                projection.rowX.w = -center.x * (2.0 * halfPage);
+                projection.rowY.w = -center.y * (2.0 * halfPage);
+                bounds = float4(-halfPage, -halfPage, halfPage, halfPage);
+            }
             ShadowClipVertex polygon[9];
             for (uint i = 0u; i < 3u; ++i) {
                 polygon[i].position = vsmProjectClip(triangle.vertices[i].position.xyz, projection);
@@ -1119,7 +1175,9 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         return;
     }
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    uint receiverLevel = vsmReceiverLevel(position, projections, push, vsmPixelFootprint(linearDepth, view, push));
+    float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
+    uint receiverLevel = vsmReceiverLevel(position, projections, push,
+        vsmProjectedReceiverFootprint(position, normal, linearDepth, view, projections[0], push));
     uint selectedLevel = push.clipmapCount;
     uint firstLevel = 0xffffffffu;
     uint physicalPage = 0xffffffffu;
@@ -1162,7 +1220,6 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         debug[id.xy] = float4(float(selectedLevel + 1u) / float(push.clipmapCount), 0.5, 0.0, 1.0);
     }
     ShadowProjection projection = projections[selectedLevel];
-    float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
     if (push.filterMode != 0u) {
         shadow[id.xy] = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, push);
         return;

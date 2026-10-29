@@ -201,11 +201,13 @@ void addFixtureQuad(Fixture& fixture, Point center, Point u, Point v)
 }
 
 Fixture writeFixture(const std::filesystem::path& directory, bool room, double blockerHeight = 1.5,
-    double blockerHalfExtent = .8)
+    double blockerHalfExtent = .8, const Fixture* authored = nullptr)
 {
     std::filesystem::create_directories(directory);
     Fixture fixture;
-    if (!room) {
+    if (authored) {
+        fixture = *authored;
+    } else if (!room) {
         addFixtureQuad(fixture, {0,0,0}, {8,0,0}, {0,0,-8});
         addFixtureQuad(fixture, {0,blockerHeight,0}, {blockerHalfExtent,0,0}, {0,0,blockerHalfExtent});
     } else {
@@ -274,10 +276,10 @@ Fixture writeFixture(const std::filesystem::path& directory, bool room, double b
         Json{{"bufferView",3},{"componentType",5125},{"count",indices.size()},{"type","SCALAR"}}});
     Json primitive{{"attributes",{{"POSITION",0},{"NORMAL",1},{"TEXCOORD_0",2}}},{"indices",3},{"material",0}};
     Json primitives=Json::array();
-    if (room) {
+    if (room || authored) {
         // Keep each authored quad in its own primitive. The quality reference
-        // requires the complete 64-triangle geometry even on the locked stream
-        // terminal cut; a single 64-triangle primitive has a simplified parent.
+        // requires the complete geometry even on the locked stream terminal
+        // cut; combining all quads can introduce a simplified parent.
         for (size_t quad=0; quad<fixture.triangles.size()/2; ++quad) {
             primitive["indices"]=gltf["accessors"].size();
             gltf["accessors"].push_back({{"bufferView",3},{"byteOffset",quad*6*sizeof(uint32_t)},
@@ -340,7 +342,7 @@ double triangleDistance(Point origin, Point direction, const AuthoredTriangle& t
         u + v <= 1 + kBarycentricRoundoff && distance > 1e-7 ? distance : 1e30;
 }
 
-struct Hit { Point position{}, normal{}; double depth = 0; bool valid = false; };
+struct Hit { Point position{}, normal{}; double depth = 0; bool valid = false; size_t triangleIndex = 0; };
 
 Hit cameraHit(const VisibilityBufferFrameInfo& camera, uint32_t x, uint32_t y, const Fixture& fixture)
 {
@@ -352,12 +354,13 @@ Hit cameraHit(const VisibilityBufferFrameInfo& camera, uint32_t x, uint32_t y, c
         scale(up,(1 - 2 * (y + .5 + camera.jitter[1]) / kHeight) * halfHeight));
     const Point origin = orthographic ? add(eye,lateral) : eye, direction = orthographic ? forward : add(forward,lateral);
     Hit result; double nearest = 1e30;
-    for (const auto& triangle : fixture.triangles) {
+    for (size_t triangleIndex = 0; triangleIndex < fixture.triangles.size(); ++triangleIndex) {
+        const auto& triangle = fixture.triangles[triangleIndex];
         const double distance = triangleDistance(origin,direction,triangle);
         const Point position = add(origin,scale(direction,distance));
         const double viewZ = dot(add(position,scale(eye,-1)),forward);
         if (distance >= nearest || viewZ < camera.clipOrtho[0] || viewZ > camera.clipOrtho[1]) { continue; }
-        nearest = distance; result.valid = true; result.position = position;
+        nearest = distance; result.valid = true; result.position = position; result.triangleIndex = triangleIndex;
         result.normal = normalized(cross(add(triangle.b,scale(triangle.a,-1)),add(triangle.c,scale(triangle.a,-1))));
         const double n = camera.clipOrtho[0], f = camera.clipOrtho[1];
         result.depth = orthographic ? (f-viewZ)/(f-n) : n*(f-viewZ)/(viewZ*(f-n));
@@ -639,13 +642,13 @@ void requireReused(const Snapshot& image, const std::string& name)
 }
 
 Snapshot compareFrame(RenderGraphPreviewRenderer& preview, RenderGraph& graph,
-    const std::filesystem::path& directory, const std::string& name, Json& report)
+    const std::filesystem::path& directory, const std::string& name, Json& report, bool captureDebug = false)
 {
     const auto rendered=preview.render(graph,kWidth,kHeight,"CachedEvidence.color");
     require(rendered,"VSM quality render: "+preview.lastLog());
     require(preview.lastLog().find("Initial material compilation failed")==std::string::npos,
         "Quality scene rendered the error material");
-    auto cached=snapshot("Cached"),redraw=snapshot("Redraw");
+    auto cached=snapshot("Cached",captureDebug),redraw=snapshot("Redraw",captureDebug);
     size_t mismatches=0;
     for (uint32_t layer=0; layer<kLayers; ++layer) {
         for (size_t pixel=0; pixel<kPixels; ++pixel) { mismatches+=cached.shadows[layer][pixel]!=redraw.shadows[layer][pixel]; }
@@ -1459,6 +1462,520 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTPenumbraTest);
+
+// This oracle accelerates authored double-precision triangles only. Neither
+// its bounds nor its leaves depend on a GPU depth sample or VSM projection.
+class ReceiverOracle
+{
+    struct Node {
+        Point low{1e30,1e30,1e30}, high{-1e30,-1e30,-1e30};
+        uint32_t first = 0, count = 0, left = 0, right = 0;
+    };
+    const Fixture& fixture_;
+    std::vector<uint32_t> indices_;
+    std::vector<Node> nodes_;
+
+    uint32_t build(uint32_t first, uint32_t count)
+    {
+        const uint32_t index = uint32_t(nodes_.size());
+        nodes_.emplace_back();
+        Node node; node.first = first; node.count = count;
+        for (uint32_t i = first; i < first + count; ++i) {
+            const auto& triangle = fixture_.triangles[indices_[i]];
+            for (Point p : {triangle.a, triangle.b, triangle.c}) {
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    node.low[axis] = std::min(node.low[axis], p[axis]);
+                    node.high[axis] = std::max(node.high[axis], p[axis]);
+                }
+            }
+        }
+        if (count > 4) {
+            uint32_t axis = 0;
+            for (uint32_t i = 1; i < 3; ++i) {
+                if (node.high[i] - node.low[i] > node.high[axis] - node.low[axis]) { axis = i; }
+            }
+            const uint32_t middle = first + count / 2;
+            std::nth_element(indices_.begin() + first, indices_.begin() + middle, indices_.begin() + first + count,
+                [&](uint32_t a, uint32_t b) {
+                    const auto& ta = fixture_.triangles[a]; const auto& tb = fixture_.triangles[b];
+                    return ta.a[axis] + ta.b[axis] + ta.c[axis] < tb.a[axis] + tb.b[axis] + tb.c[axis];
+                });
+            node.left = build(first, middle - first); node.right = build(middle, first + count - middle);
+            node.count = 0;
+        }
+        nodes_[index] = node;
+        return index;
+    }
+
+    bool occluded(Point origin, Point direction, double maximum) const
+    {
+        // Median splitting gives depth <= ceil(log2(triangle count)); these
+        // fixtures contain at most 66 triangles, including the blocker.
+        std::array<uint32_t, 64> stack{}; uint32_t size = 1;
+        while (size) {
+            const auto& node = nodes_[stack[--size]];
+            double near = 1e-7, far = maximum - .001;
+            bool intersects = true;
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                if (std::abs(direction[axis]) < 1e-12) {
+                    intersects &= origin[axis] >= node.low[axis] - 1e-9 && origin[axis] <= node.high[axis] + 1e-9;
+                } else {
+                    const double a = (node.low[axis] - 1e-9 - origin[axis]) / direction[axis];
+                    const double b = (node.high[axis] + 1e-9 - origin[axis]) / direction[axis];
+                    near = std::max(near, std::min(a,b)); far = std::min(far, std::max(a,b));
+                }
+            }
+            if (!intersects || far < near) { continue; }
+            if (node.count) {
+                for (uint32_t i = node.first; i < node.first + node.count; ++i) {
+                    if (triangleDistance(origin, direction, fixture_.triangles[indices_[i]]) < maximum - .001) { return true; }
+                }
+            } else { stack[size++] = node.left; stack[size++] = node.right; }
+        }
+        return false;
+    }
+public:
+    explicit ReceiverOracle(const Fixture& fixture) : fixture_(fixture)
+    {
+        for (uint32_t i = 0; i < fixture.triangles.size(); ++i) { indices_.push_back(i); }
+        build(0, uint32_t(indices_.size()));
+    }
+    double visibility(const Hit& hit, const Source& source) const
+    {
+        const Point toLight = source.kind == "Directional" ? normalized(scale(source.direction,-1)) :
+            normalized(add(source.position,scale(hit.position,-1)));
+        const Point tangent = normalized(cross(toLight,std::abs(toLight[1]) < .9 ? Point{0,1,0} : Point{1,0,0}));
+        const Point bitangent = cross(toLight,tangent);
+        const uint32_t samples = source.size > 0 ? 256 : 1;
+        uint32_t visible = 0;
+        for (uint32_t i = 0; i < samples; ++i) {
+            const double radius = std::sqrt((i / 16 + .5) / 16.);
+            const double angle = (i % 16 + .5) * 2 * kPi / 16;
+            const Point disk = add(scale(tangent,radius * std::cos(angle)),scale(bitangent,radius * std::sin(angle)));
+            Point direction; double maximum;
+            if (source.kind == "Directional") {
+                direction = normalized(add(toLight,scale(disk,std::tan(source.size)))); maximum = 100;
+            } else {
+                const Point ray = add(add(source.position,scale(disk,source.size)),scale(hit.position,-1));
+                maximum = std::sqrt(dot(ray,ray)); direction = scale(ray,1 / maximum);
+            }
+            visible += !occluded(hit.position,direction,maximum);
+        }
+        return double(visible) / samples;
+    }
+};
+
+constexpr double kReceiverBlockerHalfExtent = .6;
+
+struct ReceiverFixture {
+    Fixture geometry;
+    size_t receiverTriangles = 0;
+    Point tangent{1,0,0}, normal{0,1,0}, toLight{};
+    double blockerDistance = 0, viewHeight = 1.4;
+    bool grazing = false, planar = false;
+};
+
+ReceiverFixture writeReceiverFixture(const std::filesystem::path& directory, const std::string& shape, double gap)
+{
+    ReceiverFixture result; result.blockerDistance = gap; result.viewHeight = gap == .15 ? .4 : 1.4;
+    result.grazing = shape == "Grazing";
+    const bool curved = shape == "Convex" || shape == "Concave";
+    result.planar = !curved;
+    if (!curved) {
+        result.tangent = {std::sqrt(.75),.5,0}; result.normal = {-.5,std::sqrt(.75),0};
+        addFixtureQuad(result.geometry,{0,0,0},scale(result.tangent,8),{0,0,-8});
+    } else {
+        constexpr double radius = 3, halfWidth = 2.4;
+        const double sign = shape == "Convex" ? 1 : -1;
+        for (uint32_t segment = 0; segment < 32; ++segment) {
+            const double x0 = -halfWidth + 2 * halfWidth * segment / 32;
+            const double x1 = -halfWidth + 2 * halfWidth * (segment + 1) / 32;
+            const double y0 = sign * (std::sqrt(radius * radius - x0 * x0) - radius);
+            const double y1 = sign * (std::sqrt(radius * radius - x1 * x1) - radius);
+            const Point a{x0,y0,4}, b{x1,y1,4}, c{x1,y1,-4}, d{x0,y0,-4};
+            result.geometry.triangles.push_back({a,b,c}); result.geometry.triangles.push_back({a,c,d});
+        }
+    }
+    result.receiverTriangles = result.geometry.triangles.size();
+    const double cosine = result.grazing ? .1 : .8;
+    result.toLight = add(scale(result.normal,cosine),scale(result.tangent,std::sqrt(1 - cosine * cosine)));
+    if (gap > 0) {
+        addFixtureQuad(result.geometry,scale(result.toLight,gap),scale(result.tangent,kReceiverBlockerHalfExtent),{0,0,-1.5});
+    }
+    result.geometry = writeFixture(directory,false,1.5,.8,&result.geometry);
+    return result;
+}
+
+struct ReceiverReference {
+    std::vector<double> area, hard, ndotl;
+    std::vector<uint8_t> mask, faces;
+    uint32_t depthSamples = 0, depthErrors = 0;
+    bool hasAnalyticEdge = false;
+    double analyticEdgePixels = 0;
+    Json analyticEdgeValidation;
+};
+
+ReceiverReference receiverReference(const Snapshot& image, const ReceiverFixture& fixture, const Source& source)
+{
+    ReceiverReference reference;
+    reference.area.resize(kPixels,1); reference.hard.resize(kPixels,1);
+    reference.ndotl.resize(kPixels); reference.mask.resize(kPixels); reference.faces.resize(kPixels);
+    ReceiverOracle oracle(fixture.geometry);
+    Source pointSource = source; pointSource.size = 0;
+    if (fixture.planar && fixture.blockerDistance > 0) {
+        // The receiver and blocker are parallel planes. Their left-edge
+        // projection is u=-halfExtent for a directional source, and
+        // u=-halfExtent/(1-gap/sourceDistance) for a finite source. At that
+        // point the blocker edge splits the uniform disk through its center,
+        // giving exactly 50% visibility independent of a sampled CDF plateau.
+        const double distance = std::sqrt(dot(source.position,source.position));
+        const double u = -kReceiverBlockerHalfExtent /
+            (source.kind == "Directional" ? 1 : 1 - fixture.blockerDistance / distance);
+        const Point edgePoint = scale(fixture.tangent,u);
+        const Point eye = point(image.camera.eye);
+        const Point forward = normalized(add(point(image.camera.center),scale(eye,-1)));
+        const Point right = normalized(cross(forward,point(image.camera.upProjection)));
+        const double halfWidth = image.camera.clipOrtho[2] * .5 * image.camera.viewport[0];
+        reference.analyticEdgePixels = (dot(add(edgePoint,scale(eye,-1)),right) / halfWidth + 1) *
+            kWidth * .5 - .5 - image.camera.jitter[0];
+        reference.hasAnalyticEdge = true;
+        require(reference.analyticEdgePixels >= 0 && reference.analyticEdgePixels < kWidth - 1,
+            "Analytic receiver edge lies outside the configured camera");
+        Json checks = Json::array();
+        constexpr double epsilon = 1e-4;
+        for (double z : {-fixture.viewHeight * .35,0.,fixture.viewHeight * .35}) {
+            Hit center; center.position = add(edgePoint,{0,0,z}); center.normal = fixture.normal; center.valid = true;
+            Hit left = center, right = center;
+            left.position = add(center.position,scale(fixture.tangent,-epsilon));
+            right.position = add(center.position,scale(fixture.tangent,epsilon));
+            const double leftVisibility = referenceVisibility(left,fixture.geometry,pointSource);
+            const double rightVisibility = referenceVisibility(right,fixture.geometry,pointSource);
+            const double centerAreaVisibility = referenceVisibility(center,fixture.geometry,source);
+            checks.push_back({{"z",z},{"litSide",leftVisibility},{"shadowSide",rightVisibility},
+                {"diskCenterVisibility",centerAreaVisibility}});
+            require(leftVisibility == 1 && rightVisibility == 0 && centerAreaVisibility == .5,
+                "Analytic planar edge disagrees with independent authored-triangle rays");
+        }
+        reference.analyticEdgeValidation = {{"receiverU",u},{"pixel",reference.analyticEdgePixels},
+            {"centerRaySideOffsetMetres",epsilon},{"geometryChecks",checks},
+            {"reference","Parallel authored planes and a uniform source disk; no GPU visibility input"}};
+    }
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        const auto hit = cameraHit(image.camera,x,y,fixture.geometry);
+        if (!hit.valid || hit.triangleIndex >= fixture.receiverTriangles) { continue; }
+        const double u = dot(hit.position,fixture.tangent);
+        // At NdotL=0.1, the shallow directions from the 8 m local source stretch
+        // the separated left penumbra to about u=-1.85. Include a lit interior.
+        const double halfWidth = fixture.grazing && fixture.blockerDistance == 1.2 ? 1.35 :
+            fixture.blockerDistance == .15 ? .25 : .7;
+        if (std::abs(u + .6) > halfWidth || std::abs(hit.position[2]) > fixture.viewHeight * .4) { continue; }
+        ++reference.depthSamples;
+        reference.depthErrors += std::abs(image.depth[pixel] - hit.depth) > 2e-5;
+        const Point toLight = source.kind == "Directional" ? fixture.toLight :
+            normalized(add(source.position,scale(hit.position,-1)));
+        reference.ndotl[pixel] = dot(hit.normal,toLight);
+        // All source directions must lie above the local tangent hemisphere.
+        // Outside it, backface irradiance and geometric visibility differ.
+        if (reference.ndotl[pixel] <= .06) { continue; }
+        reference.mask[pixel] = 1;
+        reference.faces[pixel] = source.kind == "Point" ? uint8_t(pointFace(add(hit.position,scale(source.position,-1)))) : 0;
+        reference.area[pixel] = oracle.visibility(hit,source);
+        reference.hard[pixel] = oracle.visibility(hit,pointSource);
+        // Cross-check the independent BVH against the original brute-force
+        // triangle oracle on a fixed subset, including finite-source rays.
+        if (x % 31 == 0 && y % 29 == 0) {
+            require(reference.area[pixel] == referenceVisibility(hit,fixture.geometry,source),
+                "Receiver BVH and brute-force authored geometry disagree");
+        }
+    }}
+    return reference;
+}
+
+Json receiverMetrics(const std::vector<uint8_t>& actual, const ReceiverReference& reference,
+    const std::string& filter, bool blocker, bool grazing)
+{
+    const auto& expected = filter == "SMRT" ? reference.area : reference.hard;
+    uint32_t checked = 0, penumbra = 0, lit = 0, dark = 0, falseShadow = 0, leaks = 0, grazingSamples = 0;
+    double error = 0, penumbraError = 0;
+    std::array<std::array<uint32_t,4>,4> buckets{};
+    std::vector<double> edgeDistances;
+    std::vector<std::array<double,2>> discreteOracleEdges;
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        if (!reference.mask[pixel]) { continue; }
+        const double value = actual[pixel] / 255., difference = std::abs(value - expected[pixel]);
+        ++checked; error += difference;
+        grazingSamples += reference.ndotl[pixel] >= .06 && reference.ndotl[pixel] <= .15;
+        if (expected[pixel] > .05 && expected[pixel] < .95) { ++penumbra; penumbraError += difference; }
+        // Protect only the independently predicted transition band. PCF's
+        // radius is 1 texel; receiver matching bounds its world texel by one
+        // camera pixel here. Projecting the square kernel onto the receiver
+        // adds at most sqrt(2)/NdotL pixels, plus two raster coverage pixels.
+        const uint32_t radius = filter == "PCF" ? uint32_t(std::ceil(std::sqrt(2.) / reference.ndotl[pixel])) + 2 : 1;
+        bool stable = expected[pixel] == 0 || expected[pixel] == 1;
+        if (x < radius || y < radius || x + radius >= kWidth || y + radius >= kHeight) { stable = false; }
+        if (stable) {
+            for (int dy = -int(radius); dy <= int(radius) && stable; ++dy) {
+                for (int dx = -int(radius); dx <= int(radius); ++dx) {
+                    const size_t other = size_t(int(y) + dy) * kWidth + int(x) + dx;
+                    if (!reference.mask[other] || expected[other] != expected[pixel]) { stable = false; break; }
+                }
+            }
+        }
+        if (stable) {
+            const uint32_t bucket = reference.ndotl[pixel] <= .15 ? 0 : reference.ndotl[pixel] <= .35 ? 1 :
+                reference.ndotl[pixel] <= .65 ? 2 : 3;
+            if (expected[pixel] == 1) {
+                ++lit; falseShadow += value < .9; ++buckets[bucket][0]; buckets[bucket][1] += value < .9;
+            } else {
+                ++dark; leaks += value > .1; ++buckets[bucket][2]; buckets[bucket][3] += value > .1;
+            }
+        }
+        const bool discreteCrossing = blocker && x + 1 < kWidth && reference.mask[pixel + 1] &&
+            expected[pixel] >= .5 && expected[pixel + 1] < .5;
+        const double discreteEdge = discreteCrossing ?
+            x + (expected[pixel] - .5) / (expected[pixel] - expected[pixel + 1]) : 0;
+        if (discreteCrossing) { discreteOracleEdges.push_back({double(y),discreteEdge}); }
+        const bool edgeRow = reference.hasAnalyticEdge ?
+            blocker && x == uint32_t(std::floor(reference.analyticEdgePixels)) && reference.mask[pixel + 1] : discreteCrossing;
+        if (edgeRow) {
+            const double edge = reference.hasAnalyticEdge ? reference.analyticEdgePixels : discreteEdge;
+            double nearest = 16;
+            for (int offset = -16; offset <= 16; ++offset) {
+                const int xx = int(x) + offset;
+                if (xx < 0 || xx + 1 >= int(kWidth)) { continue; }
+                const size_t other = size_t(y) * kWidth + xx;
+                if (!reference.mask[other] || !reference.mask[other + 1]) { continue; }
+                const double a = actual[other] / 255., b = actual[other + 1] / 255.;
+                if (a >= .5 && b < .5) {
+                    nearest = std::min(nearest,std::abs(xx + (a - .5) / (a - b) - edge));
+                }
+            }
+            edgeDistances.push_back(nearest);
+        }
+    }}
+    std::sort(edgeDistances.begin(),edgeDistances.end());
+    const double edge95 = edgeDistances.empty() ? 0 : edgeDistances[size_t((edgeDistances.size() - 1) * .95)];
+    Json discreteDifference = Json::array();
+    if (reference.hasAnalyticEdge) {
+        for (const auto& sample : discreteOracleEdges) { discreteDifference.push_back({sample[0],sample[1] - reference.analyticEdgePixels}); }
+    }
+    Json failures = Json::array();
+    if (checked < 500 || lit < 100 || (blocker && filter != "PCF" && dark < 50)) { failures.push_back("insufficient receiver/interior coverage"); }
+    if (grazing && grazingSamples < 500) { failures.push_back("insufficient measured grazing-angle coverage"); }
+    if (filter != "PCF" && error / std::max(checked,1u) >= .04) { failures.push_back("receiver MAE >= 0.04"); }
+    if (filter == "SMRT" && blocker && (penumbra < 20 || penumbraError / std::max(penumbra,1u) >= .20)) {
+        failures.push_back("penumbra coverage < 20 or MAE >= 0.20");
+    }
+    if (double(falseShadow) / std::max(lit,1u) >= .01) { failures.push_back("false-shadow fraction >= 0.01"); }
+    if (double(leaks) / std::max(dark,1u) >= .01) { failures.push_back("light-leak fraction >= 0.01"); }
+    for (const auto& bucket : buckets) {
+        if ((bucket[0] >= 100 && double(bucket[1]) / bucket[0] >= .01) ||
+            (bucket[2] >= 100 && double(bucket[3]) / bucket[2] >= .01)) { failures.push_back("NdotL bucket interior error fraction >= 0.01"); }
+    }
+    if (blocker && (edgeDistances.size() < 20 || edge95 > 2)) { failures.push_back("edge coverage < 20 or 95th-percentile displacement > 2 pixels"); }
+    return {{"checked",checked},{"meanAbsoluteError",error / std::max(checked,1u)},
+        {"penumbraSamples",penumbra},{"penumbraMeanAbsoluteError",penumbraError / std::max(penumbra,1u)},
+        {"litInteriorSamples",lit},{"umbraInteriorSamples",dark},{"falseShadowSamples",falseShadow},{"lightLeakSamples",leaks},
+        {"grazingSamples",grazingSamples},{"NdotLBucketsLitFalseShadowUmbraLeak",buckets},
+        {"edgeSamples",edgeDistances.size()},{"edgeDisplacement95Pixels",edge95},
+        {"edgeReference",reference.hasAnalyticEdge ? "analytic planar disk median" : "authored-triangle visibility profile"},
+        {"analyticEdgePixels",reference.hasAnalyticEdge ? Json(reference.analyticEdgePixels) : Json()},
+        {"discreteOracleEdgesByRow",discreteOracleEdges},{"discreteOracleMinusAnalyticByRow",discreteDifference},
+        {"qualityPassed",failures.empty()},{"qualityFailures",failures}};
+}
+
+Json receiverRowAverageEdge(const std::vector<uint8_t>& actual, const ReceiverReference& reference,
+    const std::string& filter)
+{
+    const auto& expected = filter == "SMRT" ? reference.area : reference.hard;
+    std::array<double,kWidth> actualProfile{}, expectedProfile{};
+    std::array<uint32_t,kWidth> counts{};
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        if (!reference.mask[pixel]) { continue; }
+        actualProfile[x] += actual[pixel] / 255.; expectedProfile[x] += expected[pixel]; ++counts[x];
+    }}
+    for (uint32_t x = 0; x < kWidth; ++x) {
+        if (counts[x]) { actualProfile[x] /= counts[x]; expectedProfile[x] /= counts[x]; }
+    }
+    double discreteEdge = -1, actualEdge = -1;
+    for (uint32_t x = 0; x + 1 < kWidth; ++x) {
+        if (counts[x] < 20 || counts[x + 1] < 20) { continue; }
+        if (expectedProfile[x] >= .5 && expectedProfile[x + 1] < .5) {
+            discreteEdge = x + (expectedProfile[x] - .5) / (expectedProfile[x] - expectedProfile[x + 1]);
+            break;
+        }
+    }
+    const double expectedEdge = reference.hasAnalyticEdge ? reference.analyticEdgePixels : discreteEdge;
+    if (expectedEdge >= 0) {
+        double nearest = 1e30;
+        for (uint32_t x = 0; x + 1 < kWidth; ++x) {
+            if (counts[x] < 20 || counts[x + 1] < 20) { continue; }
+            if (actualProfile[x] >= .5 && actualProfile[x + 1] < .5) {
+                const double edge = x + (actualProfile[x] - .5) / (actualProfile[x] - actualProfile[x + 1]);
+                if (std::abs(edge - expectedEdge) < nearest) { nearest = std::abs(edge - expectedEdge); actualEdge = edge; }
+            }
+        }
+    }
+    const bool available = expectedEdge >= 0 && actualEdge >= 0;
+    // Diagnostic only: averaging rows separates a systematic edge displacement
+    // from per-pixel finite-ray noise. It never replaces the existing P95 gate.
+    return {{"diagnosticOnly",true},{"available",available},{"columnSamples",counts},
+        {"expectedProfile",expectedProfile},{"actualProfile",actualProfile},
+        {"expectedEdgePixels",expectedEdge >= 0 ? Json(expectedEdge) : Json()},
+        {"discreteOracleEdgePixels",discreteEdge >= 0 ? Json(discreteEdge) : Json()},
+        {"analyticEdgePixels",reference.hasAnalyticEdge ? Json(reference.analyticEdgePixels) : Json()},
+        {"discreteOracleMinusAnalyticPixels",reference.hasAnalyticEdge && discreteEdge >= 0 ?
+            Json(discreteEdge - reference.analyticEdgePixels) : Json()},
+        {"actualEdgePixels",actualEdge >= 0 ? Json(actualEdge) : Json()},
+        {"signedDisplacementPixels",available ? Json(actualEdge - expectedEdge) : Json()},
+        {"absoluteDisplacementPixels",available ? Json(std::abs(actualEdge - expectedEdge)) : Json()}};
+}
+
+class VirtualShadowMapReceiverQualityTest final : public RHITest {
+public:
+    VirtualShadowMapReceiverQualityTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_receiver_quality"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapReceiverQuality";
+        Json report{{"passed",false},{"frames",Json::array()},{"cases",Json::array()},{"qualityFailures",Json::array()},
+            {"contract",{{"receiverFootprint",true},{"virtualPagesPerAxis",128},{"clipmapCount",4},{"cpuAreaSamples",256},
+                {"triangleEpsilonMetres",1e-7},{"oracleOriginOffsetMetres",0},{"planeTiltDegrees",30},
+                {"grazingCenterNdotL",.1},{"curveRadiusMetres",3},{"curveSegments",32},
+                {"sourceAngularRadius",.04},{"localSourceDistanceMetres",8},{"cameraNormalDistanceMetres",2},
+                {"receiverMAE",.04},{"penumbraMAE",.20},
+                {"separateInteriorErrorFraction",.01},{"edgeDisplacement95Pixels",2},
+                {"minimumOracleNdotL",.06},{"NdotLBucketUpperBounds",{.15,.35,.65,1.0}},
+                {"pcfRadiusTexels",1},{"pcfInteriorGuardPixels","ceil(sqrt(2)/NdotL)+2"}}}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapReceiverQuality.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            for (const std::string shape : {"Tilted","Grazing","Convex","Concave"}) {
+                for (double gap : {0.,.15,1.2}) {
+                    const std::string geometryName = shape + (gap == 0 ? "-Clear" : gap == .15 ? "-Contact" : "-Separated");
+                    const auto fixture = writeReceiverFixture(directory / geometryName,shape,gap);
+                    for (const std::string kind : {"Directional","Spot","Point"}) {
+                        const std::string name = geometryName + "-" + kind; validation.phase(name);
+                        scene::SceneDocument scene; require(scene.load(fixture.geometry.source),"Load receiver quality geometry");
+                        RenderView view; RenderGraphPreviewRenderer preview;
+                        configurePreview(preview,scene,view,context,validation);
+                        // Translate the grazing separated view without changing
+                        // its pixel footprint or the selected shadow resolution.
+                        Point center = scale(fixture.tangent,fixture.grazing && gap == 1.2 ? -.95 : -.6);
+                        if (shape == "Convex" || shape == "Concave") {
+                            center[1] = (shape == "Convex" ? 1 : -1) * (std::sqrt(9 - .36) - 3);
+                        }
+                        const Point eye = add(center,scale(fixture.normal,2));
+                        require(view.setCamera({.eye={float(eye[0]),float(eye[1]),float(eye[2])},
+                            .center={float(center[0]),float(center[1]),float(center[2])},.up={0,0,-1},
+                            .fovDegrees=52,.nearPlane=.1f,.farPlane=100,.orthoHeight=float(fixture.viewHeight),.orthographic=true}),
+                            "Set receiver quality close-up camera");
+                        Source source{kind,scale(fixture.toLight,8),scale(fixture.toLight,-1),kind == "Directional" ? .04 : .32};
+                        publishSource(scene,preview,source);
+                        if (kind == "Spot") {
+                            auto lighting = scene.lighting(); auto& light = lighting.lights[0];
+                            light.direction = float3(float(source.direction[0]),float(source.direction[1]),float(source.direction[2]));
+                            light.properties.outerConeAngle = .6; light.properties.innerConeAngle = .4;
+                            require(scene.setLighting(lighting),"Aim receiver spot at the authored surface");
+                            require(preview.setLighting(scene.lighting()),"Publish aimed receiver spot");
+                        }
+                        evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture.geometry,"smrt",false,128);
+                        for (const char* node : {"Cached","Redraw","Hard"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"physicalPageBudget",kind == "Point" ? 6 * 1024 : 1024),
+                                "Set receiver quality page budget");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"smrtMaxRayLength",32),"Set receiver quality trace length");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"pcfRadius",1),"Set bounded receiver PCF kernel");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(std::string(node) + "Evidence")->id,"captureDebug",true),
+                                "Capture receiver quality center levels");
+                        }
+                        const auto first = compareFrame(preview,graph,directory,name + "-SMRT",report,true);
+                        const auto reference = receiverReference(first,fixture,source);
+                        require(reference.depthSamples > 500 && reference.depthErrors == 0,name + ": authored receiver depth mismatch");
+                        const auto stable = compareFrame(preview,graph,directory,name + "-Warm",report,true);
+                        requireReused(stable,name); require(first.shadows == stable.shadows,name + ": stable visibility changed");
+                        Json item{{"name",name},{"receiverTriangles",fixture.receiverTriangles},{"blockerDistance",gap},
+                            {"viewHeight",fixture.viewHeight},{"depthSamples",reference.depthSamples},{"depthErrors",reference.depthErrors},
+                            {"cameraEye",eye},{"cameraCenter",center},{"receiverTangent",fixture.tangent},
+                            {"sourcePosition",source.position},{"sourceDirection",source.direction},{"sourceSize",source.size},
+                            {"analyticEdgeValidation",reference.analyticEdgeValidation},
+                            {"filters",Json::array()}};
+                        const auto measure = [&](const Snapshot& image, const std::string& filter) {
+                            const auto& entry = activeEntry(image);
+                            for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                                const auto& stats = image.statistics[entry.baseLayer + face];
+                                require(stats[2] == 0 && stats[5] == 0 && stats[7] == 0 && stats[9] == 0 && stats[31] == 0,
+                                    name + ": quality fixture has dropped pages, unresolved depth or coarse fallback");
+                            }
+                            const auto pixels = visibility(image,fixture.geometry,source);
+                            auto metric = receiverMetrics(pixels,reference,filter,gap > 0,fixture.grazing);
+                            std::array<uint32_t,4> levels{}; uint32_t coarse = 0, other = 0;
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (!reference.mask[pixel]) { continue; }
+                                const auto& debug = image.debug[entry.baseLayer + reference.faces[pixel]];
+                                if (debug[pixel * 4 + 1] > 100) {
+                                    const uint32_t level = (uint32_t(debug[pixel * 4]) * 4 + 127) / 255 - 1;
+                                    ++levels[level];
+                                } else if (debug[pixel * 4 + 2] > 200 && debug[pixel * 4] < 30) { ++coarse; }
+                                else { ++other; }
+                            }
+                            metric["centerLevelHistogram"] = levels;
+                            metric["centerCoarsePixels"] = coarse; metric["centerOtherPixels"] = other;
+                            if (fixture.grazing && gap == 1.2) {
+                                metric["rowAverageEdgeDiagnostic"] = receiverRowAverageEdge(pixels,reference,filter);
+                            }
+                            std::vector<uint8_t> cpu(kPixels,255), errors(kPixels,0);
+                            const auto& expected = filter == "SMRT" ? reference.area : reference.hard;
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (!reference.mask[pixel]) { continue; }
+                                cpu[pixel] = uint8_t(std::lround(expected[pixel] * 255));
+                                errors[pixel] = uint8_t(std::lround(std::abs(pixels[pixel] / 255. - expected[pixel]) * 255));
+                            }
+                            saveGray(directory / (name + "-" + filter + "-GPU.png"),pixels);
+                            saveGray(directory / (name + "-" + filter + "-CPU.png"),cpu);
+                            saveGray(directory / (name + "-" + filter + "-Error.png"),errors);
+                            item["filters"].push_back({{"filter",filter},{"metrics",metric}});
+                            if (!metric["qualityPassed"].get<bool>()) {
+                                report["qualityFailures"].push_back({{"case",name},{"filter",filter},{"failures",metric["qualityFailures"]}});
+                            }
+                        };
+                        measure(first,"SMRT"); measure(snapshot("Hard",true),"Hard");
+                        setProperty(graph,"filter","pcf");
+                        measure(compareFrame(preview,graph,directory,name + "-PCF",report,true),"PCF");
+                        if (gap > 0) {
+                            std::vector<uint8_t> allLit(kPixels,255), allDark(kPixels,0), shifted(kPixels,255);
+                            for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 4; x < kWidth; ++x) {
+                                shifted[size_t(y) * kWidth + x] = uint8_t(reference.hard[size_t(y) * kWidth + x - 4] * 255);
+                            }}
+                            const auto litControl = receiverMetrics(allLit,reference,"Hard",true,fixture.grazing);
+                            const auto darkControl = receiverMetrics(allDark,reference,"Hard",true,fixture.grazing);
+                            const auto shiftedControl = receiverMetrics(shifted,reference,"Hard",true,fixture.grazing);
+                            require(litControl["lightLeakSamples"].get<uint32_t>() > 0 &&
+                                darkControl["falseShadowSamples"].get<uint32_t>() > 0 &&
+                                shiftedControl["edgeDisplacement95Pixels"].get<double>() > 2,
+                                name + ": oracle negative controls did not reject missing, false or shifted shadows");
+                            item["negativeControls"] = {{"allLitRejected",!litControl["qualityPassed"].get<bool>()},
+                                {"allDarkRejected",!darkControl["qualityPassed"].get<bool>()},
+                                {"fourPixelShiftRejected",!shiftedControl["qualityPassed"].get<bool>()}};
+                        }
+                        report["cases"].push_back(item); save();
+                    }
+                }
+            }
+            report["validation"] = validation.snapshot(); save();
+            require(!validation.failed(),"Receiver quality Vulkan validation error");
+            require(report["qualityFailures"].empty(),"Receiver quality gates failed; see complete per-filter matrix");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Sloped, grazing, convex and concave receivers match independent geometry with separate leak, acne and edge gates");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapReceiverQualityTest);
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 

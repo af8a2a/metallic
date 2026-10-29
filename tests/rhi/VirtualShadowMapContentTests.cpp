@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
+#include <tuple>
 
 namespace metallic::tests {
 namespace {
@@ -939,5 +940,220 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapContentTest);
+
+class VirtualShadowMapScrollPrecisionTest final : public RHITest
+{
+public:
+    VirtualShadowMapScrollPrecisionTest() { name = "virtual_shadow_map_scroll_precision"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory / "VirtualShadowMapScrollPrecision");
+        std::filesystem::create_directories(directory);
+        Json report{{"passed", false}, {"cases", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapScrollPrecision.json") << report.dump(2); };
+        try {
+            auto deviceResult = createDevice({.applicationName = "VSM scroll precision",
+                .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
+                .enableRayTracingAccelerationStructure = false, .enableRayQuery = false,
+                .enableRayTracingPipeline = false, .enableClusterAccelerationStructure = false,
+                .validationSink = validation.sink()});
+            if (hasError(deviceResult, Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and bindless"); }
+            check(deviceResult, "Scroll device");
+            auto& device = **deviceResult;
+            ContentCommands gpu(device);
+            std::string log;
+            const auto unit = [](std::array<float, 3> v) {
+                const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                for (float& x : v) { x /= length; }
+                return v;
+            };
+            const auto direction = unit({-.3f, -.94f, -.16f});
+            const auto right = unit({direction[2], 0, -direction[0]});
+            bool exact = true;
+            for (float extent : {4.f, .01f}) { for (uint32_t axis : {128u, 127u}) {
+                const std::string label = "Extent-" + std::to_string(extent) + "-Axis-" + std::to_string(axis);
+                validation.phase(label);
+                const auto fixtureDirectory = directory / label;
+                std::filesystem::create_directories(fixtureDirectory);
+                // Non-binary vertices and an oblique light exercise depth and
+                // clipping interpolation; an axis-aligned constant-Z quad does not.
+                std::array<float, 12> positions{-1.137f,-1.291f,0, 1.423f,-1.291f,0,
+                    1.423f,1.173f,0, -1.137f,1.173f,0};
+                for (uint32_t vertex = 0; vertex < 4; ++vertex) {
+                    positions[vertex * 3 + 2] = .213f + .173f * positions[vertex * 3] - .117f * positions[vertex * 3 + 1];
+                    for (uint32_t component = 0; component < 3; ++component) { positions[vertex * 3 + component] *= extent; }
+                }
+                const uint32_t indices[]{0,1,2, 0,2,3};
+                {
+                    std::ofstream binary(fixtureDirectory / "Geometry.bin", std::ios::binary);
+                    binary.write(reinterpret_cast<const char*>(positions.data()), sizeof(positions));
+                    binary.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+                    check(binary.good(), "Write scroll geometry");
+                }
+                Json document = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+                    "nodes":[{"mesh":0}],"buffers":[{"uri":"Geometry.bin","byteLength":72}],
+                    "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":24}],
+                    "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},
+                        {"bufferView":1,"componentType":5125,"count":6,"type":"SCALAR"}],
+                    "materials":[{"doubleSided":true}],
+                    "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1,"material":0}]}]})");
+                for (uint32_t component = 0; component < 3; ++component) {
+                    float low = positions[component], high = low;
+                    for (uint32_t vertex = 1; vertex < 4; ++vertex) {
+                        low = std::min(low, positions[vertex * 3 + component]); high = std::max(high, positions[vertex * 3 + component]);
+                    }
+                    document["accessors"][0]["min"].push_back(low); document["accessors"][0]["max"].push_back(high);
+                }
+                const auto path = fixtureDirectory / "Scroll.gltf";
+                { std::ofstream file(path); file << document.dump(2); check(file.good(), "Write scroll fixture"); }
+                scene::SceneDocument scene;
+                check(scene.load(path), "Load scroll fixture");
+                VirtualShadowMapCasterCache casterCache;
+                VirtualShadowMaps shadows;
+                VirtualShadowMapLight light; light.direction = direction;
+                VirtualShadowMapSettings settings;
+                settings.pageSize = 32; settings.virtualPagesPerAxis = axis; settings.clipmapCount = 1;
+                settings.firstClipmapExtent = extent; settings.physicalPageCount = 512;
+                settings.receiverFootprint = false; settings.cacheEnabled = true;
+                RenderView camera;
+                std::unique_ptr<Texture> depth;
+                std::unique_ptr<TextureView> depthView;
+                check(device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+                    .format = Format::D32Sfloat, .width = kWidth, .height = kHeight})
+                    .transform([&](auto t) { depth = std::move(t); }), "Scroll receiver depth");
+                check(device.createTextureView(*depth, {.format = Format::D32Sfloat})
+                    .transform([&](auto v) { depthView = std::move(v); }), "Scroll depth view");
+                auto upload = device.createBuffer({.size = kPixels * sizeof(float), .usage = BufferUsageBits::TransferSource,
+                    .memoryLocation = MemoryLocation::HostUpload});
+                check(upload, "Scroll receiver upload");
+                auto* values = static_cast<float*>((*upload)->map()); check(values != nullptr, "Map scroll receiver");
+                // The depth fixture is a plane perpendicular to the camera,
+                // two extent units away; it requests a fixed visible page patch.
+                std::fill(values, values + kPixels, (4.f - 2.f) / (4.f - .01f));
+                (*upload)->flush(); (*upload)->unmap();
+                gpu.begin();
+                const TextureBarrierDesc begin{.texture = depth.get(), .oldLayout = TextureLayout::Undefined,
+                    .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+                check(gpu.commands->synchronize({.textures = {&begin, 1}}), "Scroll depth begin");
+                check((*upload)->slice().and_then([&](const auto& slice) {
+                    return gpu.commands->copyBufferToTexture({.texture = depth.get(), .buffer = slice, .width = kWidth, .height = kHeight});
+                }), "Scroll depth upload");
+                const TextureBarrierDesc ready{.texture = depth.get(), .oldLayout = TextureLayout::TransferDestination,
+                    .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+                check(gpu.commands->synchronize({.textures = {&ready, 1}}), "Scroll depth ready");
+                gpu.finish();
+                struct Capture {
+                    std::vector<uint32_t> atlas;
+                    std::vector<std::array<uint32_t,4>> pages;
+                    std::array<uint32_t,32> stats{};
+                    std::vector<uint8_t> visibility;
+                    uint32_t atlasWidth = 0, physicalPagesX = 0;
+                };
+                const auto record = [&](uint32_t scroll, bool force) {
+                    const float shift = float(scroll) * (2 * extent / axis);
+                    std::array<float,3> center{.337f * extent, -.193f * extent, (.213f + .173f * .337f + .117f * .193f) * extent};
+                    std::array<float,3> eye{};
+                    for (uint32_t i = 0; i < 3; ++i) { center[i] += right[i] * shift; eye[i] = center[i] - direction[i] * (2 * extent); }
+                    check(camera.setCamera({.eye = {eye[0],eye[1],eye[2]}, .center = {center[0],center[1],center[2]},
+                        .nearPlane = .01f * extent, .farPlane = 4 * extent, .orthoHeight = .24f * extent, .orthographic = true}), "Scroll camera");
+                    gpu.begin();
+                    auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log); check(casters, "Scroll casters: " + log);
+                    settings.forceRedraw = force;
+                    const auto shadow = shadows.record(device, *gpu.commands, *depthView,
+                        camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight), light, *casters, scene.materials(), {}, settings, log);
+                    check(shadow, "Scroll shadow: " + log);
+                    Capture capture;
+                    const auto atlasDesc = shadow->atlas->desc();
+                    capture.atlasWidth = atlasDesc.width; capture.physicalPagesX = shadow->physicalPagesX;
+                    capture.atlas.resize(size_t(atlasDesc.width) * atlasDesc.height); capture.pages.resize(axis * axis + 1);
+                    capture.visibility.resize(kPixels);
+                    const uint64_t atlasBytes = capture.atlas.size() * sizeof(uint32_t), tableBytes = capture.pages.size() * sizeof(capture.pages[0]);
+                    const uint64_t statsOffset = atlasBytes + tableBytes, visibilityOffset = statsOffset + sizeof(capture.stats);
+                    auto readback = device.createBuffer({.size = visibilityOffset + kPixels, .usage = BufferUsageBits::TransferDestination,
+                        .memoryLocation = MemoryLocation::HostReadback});
+                    check(readback, "Scroll atlas readback");
+                    const TextureBarrierDesc textures[]{
+                        {.texture = shadow->atlas, .oldLayout = TextureLayout::ShaderRead, .newLayout = TextureLayout::TransferSource,
+                            .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::DepthStencilWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+                        {.texture = shadow->texture, .oldLayout = TextureLayout::ShaderRead, .newLayout = TextureLayout::TransferSource,
+                            .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}}};
+                    const BufferBarrierDesc buffers[]{
+                        {.buffer = shadow->pageTable, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+                        {.buffer = shadow->statistics, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}}};
+                    check(gpu.commands->synchronize({.textures = textures, .buffers = buffers}), "Scroll readback barriers");
+                    check((*readback)->slice({0, atlasBytes}).and_then([&](const auto& slice) {
+                        return gpu.commands->copyTextureToBuffer({.texture = shadow->atlas, .buffer = slice, .width = atlasDesc.width, .height = atlasDesc.height});
+                    }), "Scroll atlas copy");
+                    check((*readback)->slice({visibilityOffset, kPixels}).and_then([&](const auto& slice) {
+                        return gpu.commands->copyTextureToBuffer({.texture = shadow->texture, .buffer = slice, .width = kWidth, .height = kHeight});
+                    }), "Scroll visibility copy");
+                    for (const auto& [source, offset, bytes] : {std::tuple{shadow->pageTable, atlasBytes, tableBytes},
+                        std::tuple{shadow->statistics, statsOffset, uint64_t(sizeof(capture.stats))}}) {
+                        auto from = source->slice({0, bytes}), to = (*readback)->slice({offset, bytes});
+                        check(from, "Scroll buffer source"); check(to, "Scroll buffer destination");
+                        check(gpu.commands->copyBuffer(*from, *to), "Scroll buffer copy");
+                    }
+                    const TextureBarrierDesc restore[]{
+                        {.texture = shadow->atlas, .oldLayout = TextureLayout::TransferSource, .newLayout = TextureLayout::ShaderRead,
+                            .before = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
+                        {.texture = shadow->texture, .oldLayout = TextureLayout::TransferSource, .newLayout = TextureLayout::ShaderRead,
+                            .before = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}}};
+                    check(gpu.commands->synchronize({.textures = restore}), "Restore scroll cache layouts");
+                    gpu.finish();
+                    (*readback)->invalidate(); const auto* bytes = static_cast<const std::byte*>((*readback)->map());
+                    check(bytes != nullptr, "Map scroll atlas");
+                    std::memcpy(capture.atlas.data(), bytes, atlasBytes); std::memcpy(capture.pages.data(), bytes + atlasBytes, tableBytes);
+                    std::memcpy(capture.stats.data(), bytes + statsOffset, sizeof(capture.stats));
+                    std::memcpy(capture.visibility.data(), bytes + visibilityOffset, kPixels); (*readback)->unmap();
+                    check(capture.stats[2] == 0 && capture.stats[5] == 0 && capture.stats[7] == 0 && capture.stats[9] == 0,
+                        "Scroll fixture must use fully resident fine pages");
+                    return capture;
+                };
+                (void)record(0, false);
+                for (uint32_t scroll : {1u, 2u, 7u}) {
+                    const auto cached = record(scroll, false), forced = record(scroll, true);
+                    check(cached.stats[17] > 0 && cached.stats[19] > 0, "Scroll must retain and remap pages");
+                    check(cached.atlasWidth == forced.atlasWidth && cached.physicalPagesX == forced.physicalPagesX, "Scroll atlas layout changed");
+                    uint32_t pages = 0, occupied = 0, depthDifferences = 0, visibilityDifferences = 0;
+                    // Inspect fine pages only; coarse coverage must not make
+                    // an otherwise empty precision fixture pass its coverage gate.
+                    for (size_t page = 0; page + 1 < cached.pages.size(); ++page) {
+                        const auto& a = cached.pages[page]; const auto& b = forced.pages[page];
+                        check((a[1] & 2u) == (b[1] & 2u), "Scroll admission changed during force redraw");
+                        if ((a[1] & 2u) == 0u) { continue; }
+                        check(a[0] == b[0] && a[0] != 0xffffffffu && (a[3] & 1u) != 0u && (b[3] & 1u) != 0u,
+                            "Scroll physical page or valid depth changed during force redraw");
+                        ++pages;
+                        for (uint32_t y = 0; y < settings.pageSize; ++y) { for (uint32_t x = 0; x < settings.pageSize; ++x) {
+                            const size_t texel = size_t(a[0] / cached.physicalPagesX * settings.pageSize + y) * cached.atlasWidth +
+                                a[0] % cached.physicalPagesX * settings.pageSize + x;
+                            occupied += cached.atlas[texel] != 0; depthDifferences += cached.atlas[texel] != forced.atlas[texel];
+                        }}
+                    }
+                    for (size_t pixel = 0; pixel < kPixels; ++pixel) { visibilityDifferences += cached.visibility[pixel] != forced.visibility[pixel]; }
+                    check(pages > 20 && occupied > 1000, "Scroll fixture has insufficient raster coverage");
+                    exact &= depthDifferences == 0 && visibilityDifferences == 0;
+                    report["cases"].push_back({{"extent",extent},{"axis",axis},{"scrollPages",scroll},
+                        {"admittedPages",pages},{"occupiedTexels",occupied},{"reusedPages",cached.stats[17]},{"remappedPages",cached.stats[19]},
+                        {"changedDepthTexels",depthDifferences},{"changedVisibilityBytes",visibilityDifferences}});
+                    save();
+                }
+            }}
+            report["validation"] = validation.snapshot();
+            check(!validation.failed(), "Scroll precision Vulkan validation error");
+            check(exact, "Cached and forced D32 pages differ after clipmap scrolling");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Scrolled directional pages retain bit-identical D32 depth at binary/non-binary extents and page grids");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapScrollPrecisionTest);
 } // namespace
 } // namespace metallic::tests

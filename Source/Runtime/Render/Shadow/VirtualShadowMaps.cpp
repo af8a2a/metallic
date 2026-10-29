@@ -109,14 +109,21 @@ std::vector<ShadowProjection> makeProjections(const scene::Bounds& bounds, const
         const float extent = coarse ? std::max({(high[0] - low[0]) * .5f, (high[1] - low[1]) * .5f, 0.01f}) *
             (1.0f + 4.0f / settings.pageSize + (settings.cacheEnabled ? .25f : 0.f)) + margin : std::ldexp(settings.firstClipmapExtent, int(level));
         const float pageWorldSize = 2 * extent / axis;
-        const float centerX = coarse ? (low[0] + high[0]) * .5f : std::floor(eyeLight[0] / pageWorldSize) * pageWorldSize;
-        const float centerY = coarse ? (low[1] + high[1]) * .5f : std::floor(eyeLight[1] / pageWorldSize) * pageWorldSize;
-        result.push_back({{x[0] / extent, x[1] / extent, x[2] / extent, -centerX / extent},
-            {y[0] / extent, y[1] / extent, y[2] / extent, -centerY / extent},
+        const float pageOriginX = coarse ? 0.f : std::floor(eyeLight[0] / pageWorldSize);
+        const float pageOriginY = coarse ? 0.f : std::floor(eyeLight[1] / pageWorldSize);
+        const float centerX = coarse ? (low[0] + high[0]) * .5f : pageOriginX * pageWorldSize;
+        const float centerY = coarse ? (low[1] + high[1]) * .5f : pageOriginY * pageWorldSize;
+        // Fine projection offsets share the canonical page grid used by the
+        // rasterizer; avoid a world-size multiply/divide round trip.
+        result.push_back({{x[0] / extent, x[1] / extent, x[2] / extent,
+                coarse ? -centerX / extent : -pageOriginX * (2.f / axis)},
+            {y[0] / extent, y[1] / extent, y[2] / extent,
+                coarse ? -centerY / extent : -pageOriginY * (2.f / axis)},
             {-z[0] / depthRange, -z[1] / depthRange, -z[2] / depthRange, high[2] / depthRange},
             {0, 0, 0, 1},
             {extent, pageWorldSize / settings.pageSize, settings.shadowBias / depthRange, 0},
-            {level * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis, axis, level, coarse ? 1u : 0u}, {0, 0, 0, 0}});
+            {level * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis, axis, level, coarse ? 1u : 0u},
+            {pageOriginX, pageOriginY, 0, 0}});
     }
     return result;
 }
