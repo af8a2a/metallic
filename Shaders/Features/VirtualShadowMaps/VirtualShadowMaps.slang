@@ -636,7 +636,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
 }
 
 #ifndef VSM_OPTIMIZE_MARK
-#define VSM_OPTIMIZE_MARK 0
+#define VSM_OPTIMIZE_MARK 1
 #endif
 
 #if VSM_OPTIMIZE_MARK

@@ -1,12 +1,12 @@
 # VSM 标页合并与 cluster 粗筛
 
-默认启用 cluster 粗筛，保留原标页路径。共享页缓存标页已实现为可选实验，但独立耗时收益未获确认，默认关闭；最初 wave 合并候选已因明显回退撤除。所有路径保留原采样、分辨率、页面预算和粗图兜底。
+按用户要求，默认同时启用共享页缓存标页和 cluster 粗筛。共享页缓存的独立耗时收益仍未获确认，原始测量与不确定性保留；最初 wave 合并候选已因明显回退撤除。所有路径保留原采样、分辨率、页面预算和粗图兜底。
 
 ## 标页
 
 每个 8×8 线程组初始化 256 个共享页缓存槽（1 KiB），在所有 receiver/disabled/rounded-tail 提前退出之前完成一次组同步。`vsmMarkPage` 在原有面、containment 和 SMRT last-page cache 检查后，将完整页号通过 atomic exchange 写入乘法 hash 对应的槽。旧值等于当前页号时复用已有请求；否则执行原全局 atomic OR。Hard/PCF/SMRT 共用该 helper，投影、射线与采样计算不变。
 
-完整页号含 level；不同页发生 hash 冲突只会驱逐缓存并增加重复写，不会复用错误页。每个命中都能追溯到一个实际插入线程，该线程在 dispatch 结束前必执行全局 OR；现有 mark→allocator buffer barrier 保证 allocator 晚于所有写入。有效页号小于 196608，`UINT_MAX` 空槽标记不与合法页冲突。共享页缓存不需要 subgroup feature。默认 `VirtualShadowMapSettings::optimizeMark=false`；显式设置 `benchmarkLegacyMark=false` 或 `settings.optimizeMark=true` 才启用实验路径。两个 Pass 从 settings 默认值推导缺省开关，Slang 无宏编译也默认禁用；`VSM_OPTIMIZE_MARK` 进入 shader permutation/cache identity。
+完整页号含 level；不同页发生 hash 冲突只会驱逐缓存并增加重复写，不会复用错误页。每个命中都能追溯到一个实际插入线程，该线程在 dispatch 结束前必执行全局 OR；现有 mark→allocator buffer barrier 保证 allocator 晚于所有写入。有效页号小于 196608，`UINT_MAX` 空槽标记不与合法页冲突。共享页缓存不需要 subgroup feature。默认 `VirtualShadowMapSettings::optimizeMark=true`；显式设置 `benchmarkLegacyMark=true` 或 `settings.optimizeMark=false` 可恢复旧路径。两个 Pass 从 settings 默认值推导缺省开关，Slang 无宏编译也默认启用；`VSM_OPTIMIZE_MARK` 进入 shader permutation/cache identity。
 
 ## Cluster 粗筛
 
@@ -125,26 +125,28 @@ Mark 原子操作减少 50.8%，cluster 粗筛后的解码三角减少 73.8%。�
 
 | 候选与主指标 | 区组收益估计 | 95% 区间 | 判定 |
 | --- | ---: | ---: | --- |
-| Mark only / mark | 3.81% | -5.16% – 12.02% | inconclusive，默认关闭 |
+| Mark only / mark | 3.81% | -5.16% – 12.02% | inconclusive；后续按用户要求默认开启 |
 | Cluster only / build | 35.46% | 33.37% – 37.48% | performance_confirmed，默认开启 |
-| Both / Shadows | 22.53% | 18.17% – 26.65% | 组合有收益，但不能替代 mark 单项确认；不选为默认 |
+| Both / Shadows | 22.53% | 18.17% – 26.65% | 组合有收益，但不能替代 mark 单项确认；现按用户要求作为默认 |
 
-默认采用的 Cluster only 相对 Legacy：Shadows 区组收益为 **23.65% [20.83%, 26.38%]**，整图 GPU 为 **18.15% [14.84%, 21.33%]**。这些是冻结快照、串行提交 preview 的 GPU 时间，不能推广为动态流送、交互相机或编辑器端到端 FPS 收益。时钟未锁定，GPU 不保证系统独占；mark 的独立进程波动已保留在图和原始数据中。
+单独启用 Cluster 相对 Legacy：Shadows 区组收益为 **23.65% [20.83%, 26.38%]**，整图 GPU 为 **18.15% [14.84%, 21.33%]**。现在默认的 Both 组合 Shadows 收益为 **22.53% [18.17%, 26.65%]**，整图 GPU 为 **16.79% [10.85%, 22.35%]**。这些是冻结快照、串行提交 preview 的 GPU 时间，不能推广为动态流送、交互相机或编辑器端到端 FPS 收益。时钟未锁定，GPU 不保证系统独占；mark 的独立进程波动已保留在图和原始数据中。
 
 下表为每进程去掉 warmup 后取中位数，再跨每臂 6 个进程取中位数，单位 ms；它是描述性汇总，上表置信区间以完整区组 log 比值计算：
 
-| GPU 范围 | Legacy | 默认 Cluster only |
-| --- | ---: | ---: |
-| reset | 0.00828 | 0.00670 |
-| mark | 2.41705 | 2.40828 |
-| allocator | 0.08843 | 0.08867 |
-| build | 8.03656 | 5.21006 |
-| raster | 0.04866 | 0.04802 |
-| projection | 1.05284 | 1.05374 |
-| Shadows pass | 12.01315 | 9.19866 |
-| graph | 15.48671 | 12.66628 |
+| GPU 范围 | Legacy | Cluster only（单独粗筛） | Both（当前默认） |
+| --- | ---: | ---: | ---: |
+| reset | 0.00828 | 0.00670 | 0.00817 |
+| mark | 2.41705 | 2.40828 | 2.39455 |
+| allocator | 0.08843 | 0.08867 | 0.08742 |
+| build | 8.03656 | 5.21006 | 5.22646 |
+| raster | 0.04866 | 0.04802 | 0.04809 |
+| projection | 1.05284 | 1.05374 | 1.05382 |
+| Shadows pass | 12.01315 | 9.19866 | 9.25906 |
+| graph | 15.48671 | 12.66628 | 12.75303 |
 
-最终修改仅选择默认开关后，重新 build，并执行一个省略两个实验开关的生产 LightsPass diagnostic。`DefaultControlReport/Control.json` 验证了最终默认确为旧 mark + cluster；实际 mark/build SPIR-V 与确认臂相同，第 16–63 帧的输入、完整 stats32，以及第 16/32/63 帧 PNG/HDR/depth/shadow 全部一致。该进程只验证控制面，不加入性能样本。Settings 直调和旧单灯 Pass 的缺省解析已静态审查并编译，未借这一个生产图声称覆盖它们的动态运行。
+首次选择 Cluster only 默认后，重新 build，并执行一个省略两个实验开关的生产 LightsPass diagnostic。`DefaultControlReport/Control.json` 验证了当时默认确为旧 mark + cluster；实际 mark/build SPIR-V 与确认臂相同，第 16–63 帧的输入、完整 stats32，以及第 16/32/63 帧 PNG/HDR/depth/shadow 全部一致。该进程只验证控制面，不加入性能样本。Settings 直调和旧单灯 Pass 的缺省解析已静态审查并编译，未借这一个生产图声称覆盖它们的动态运行。
+
+随后按用户要求将共享页缓存也默认开启，统一 C++ settings、Programs 初始化值及 Slang 无宏缺省值。重新构建 Release 编辑器和 RHI tests，并以省略两个实验开关的生产图复核：`DefaultBothControlReport/Control.json` 确认实际选中 mark=true、cluster=true，mark/build SPIR-V 与已测 Both 臂一致，48 个 canonical 帧的输入和完整旧统计、三个捕获点的 PNG/HDR/depth/shadow 全部一致。原始性能判定不变，本次仅验证默认开关，没有新增性能样本。
 
 最终 Release 编辑器和 RHI tests 构建成功；shader module ownership audit、19 项 optimization runner 测试、15 项 GPU profile runner 测试通过。输出图像、diagnostic 计数图和 confirmation 的进程中位数/区组置信区间图均已打开检查。未提交改动。
 
@@ -153,14 +155,14 @@ Mark 原子操作减少 50.8%，cluster 粗筛后的解码三角减少 73.8%。�
 - 实现、边界和采用决定：本文。
 - 最终普通计时报告：`build/vsm-optimization/ConfirmationSharedReport/report.md`；关键图为 `BlockGains.png`、`ProcessMedians.png`，CSV/JSON 保留所有进程和帧。
 - 当前算法质量证据：`build/vsm-optimization/DiagnosticSharedReport/report.md` 与 `RegressionShared/`。
-- 最终默认控制面：`build/vsm-optimization/DefaultControlReport/report.md`；复核脚本为 `build/vsm-optimization/VerifyDefaultControl.py`。
+- 当前 Both 默认控制面：`build/vsm-optimization/DefaultBothControlReport/report.md`；复核脚本为 `build/vsm-optimization/VerifyDefaultBothControl.py`。先前 Cluster only 默认的 `DefaultControlReport/` 保留。
 - 被拒绝的 wave：`RejectedWaveCandidate/`、`DiscoveryPrimedReport/`。原前史不一致的诊断：`Diagnostic/`、`DiagnosticReport/Failure.json`，均未覆盖。
 
 离线重算使用当前受信任工具，不运行归档包内未知脚本。以下只读原证据、写入新的报告目录，不重新采样 GPU：
 
 ```powershell
 python -B Tools/Perf/VirtualShadowMapOptimization.py report build/vsm-optimization/ConfirmationShared build/vsm-optimization/ConfirmationRecheck --diagnostic build/vsm-optimization/DiagnosticShared --reference build/vsm-optimization/DiscoveryShared
-python -B build/vsm-optimization/VerifyDefaultControl.py build/vsm-optimization/DefaultControlRecheck
+python -B build/vsm-optimization/VerifyDefaultBothControl.py build/vsm-optimization/DefaultBothControlRecheck
 ```
 
 `ConfirmationSharedReport/Reproduce.py` 提供同样的报告重算入口，`ReportIdentity.json` 记录 Python/matplotlib、工具和计划 hash；封存子包含二进制、源码、输入和日志身份。大资产仍受 acceptance 的 path-only 身份限制，diagnostic 另外验证已发布纹理语义 hash 与几何拓扑/驻留字段，不能等同于所有源资产的完整内容 hash。

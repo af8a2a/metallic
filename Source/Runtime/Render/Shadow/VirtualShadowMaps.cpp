@@ -251,7 +251,7 @@ struct VirtualShadowMaps::Programs
     Device* device = nullptr;
     uint64_t coverageKey = 0;
     bool collectGPUWork = false;
-    bool optimizeMark = false;
+    bool optimizeMark = true;
     bool clusterCulling = true;
     std::array<std::unique_ptr<ShaderModule>, 14> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 10> compute;

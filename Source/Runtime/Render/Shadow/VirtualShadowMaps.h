@@ -40,7 +40,7 @@ struct VirtualShadowMapLight
 struct VirtualShadowMapSettings
 {
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
-    bool optimizeMark = false;
+    bool optimizeMark = true;
     bool clusterCulling = true;
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
