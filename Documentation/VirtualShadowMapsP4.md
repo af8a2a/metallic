@@ -13,12 +13,14 @@ Sun/Moon 直接使用已有 `angularRadius`，单位弧度、含义为半径。�
 | pcfRadius | 1 | 3×3 PCF 的选定虚拟 texel 间距；零严格走 Hard |
 | smrtRayCount | 8 | 每 receiver 的圆盘光源样本数，1–32 |
 | smrtSamplesPerRay | 8 | 每条有界射线的离散段数 |
-| smrtMaxRayLength | 10 m | 最大搜索距离；局部光还受采样光源端点限制 |
+| smrtMaxRayLength | 10 m | 软阴影搜索距离；局部光还受采样光源端点限制，超出搜索距离的遮挡仍有效 |
 | receiverFootprint | true | 过滤模式按相机像素世界足迹选择起始级 |
 | tessellationFactor | 4 | 位移 caster 独立细分因子，1–8 |
 | tessellationSubdivisionDepth | 0 | 位移 caster 额外均匀四分层级，0–2；每级增加 4 倍微三角 |
 
 SMRT 使用固定低差异圆盘序列和二次分布的射线段，查询每段中点的单层阴影深度，检查它是否落入该段的深度区间。只判断深度在 receiver 前面会错误地阻止射线离开遮挡轮廓，因此这里比较线段区间。每个查询沿用 receiver plane 的 texel-center 修正和米制 bias。无光源尺寸的 SMRT 严格回到 Hard。
+
+有限搜索结束后，若射线被搜索距离截断，会在端点追加朝中心光源的深度比较，保留搜索范围外的遮挡。方向光的剩余查询固定端点在光平面的偏移，因此远处半影的扩展受搜索距离限制，但整片阴影不会消失。局部光若已经到达采样的发光面端点，则不追加朝光源中心的查询。此前仅检查有限射线段会使 Sponza 上层建筑等超过 10 m 的遮挡漏光；增加射线数不能修复这种遗漏。
 
 采样不使用逐帧随机种子，固定场景输出确定。P4 未引入独立 shadow history，也未把线性 VSM visibility 送入 SIGMA。下游时域滤波不构成本阶段独立过滤正确性的依据。
 
@@ -28,7 +30,7 @@ SMRT 使用固定低差异圆盘序列和二次分布的射线段，查询每段
 
 Hard 保留 P3 的查询规则。PCF 从 receiver 像素足迹选择细级；SMRT 还以沿射线增长的光源采样足迹限制查询层级，避免近接触半影被比它更宽的 texel 吞掉。每个 tap 独立重新投影、查页、定位物理 texel；方向光跨 clipmap 使用目标层自己的原点和 Z 映射。细页未准入或 raster work 溢出时查询已完成的粗级。使用整数 texel load，不对物理 atlas 相邻页做无边界过滤。
 
-Demand 覆盖同一 PCF tap / SMRT ray segment 中点及其各级页。当前实现保守逐 tap 标记，尤其点光六面和高样本数时成本较高，不能由热缓存没有光栅工作推断过滤便宜。
+Demand 覆盖同一 PCF tap / SMRT ray segment 中点，以及截断射线端点的各级页；端点使用与查询相同的 footprint。当前实现保守逐 tap 标记，尤其点光六面和高样本数时成本较高，不能由热缓存没有光栅工作推断过滤便宜。
 
 过滤点光先录制六面的 atlas、页表和投影，再逐面 resolve。每面持有显式六面描述表，tap 根据世界位置重新选面；需求标记也处理其它 canonical face 的 receiver 射线。原始 receiver 最终仍只由自己的 canonical face 发布。六面资源由同一 recording 保活，继续禁止跨帧重叠写同一缓存域。
 
@@ -113,3 +115,17 @@ P3 每灯屏幕纹理数组架构及内存/复制成本仍在：capacity=8、512
 本机证据位于忽略的 `.cache/`，不作为源码提交：`vsm-p4-quality-run10.log`、`vsm-p4-content-run6.log`、`vsm-p4-regression.log`、`vsm-p4-shader-tests-final.log`、`vsm-p4-scene-tests-final.log`，以及 `vsm-p4/{VirtualShadowMapQuality,VirtualShadowMapContent,spirv,diagnostics}/`。真实场景的 Cases/graphs/脚本分别保留于 `vsm-p4-openpbr-config/`、`vsm-p4-openpbr-high-config/`、`vsm-p4-displaced-final-config/`，输出对应 `vsm-p4-openpbr/`、`vsm-p4-openpbr-high/`、`vsm-p4-displaced-final/`，其中 `Comparison.json` 记录逐输出差异。
 
 未重新运行整个历史测试集；[P2](VirtualShadowMapsP2.md) 已记载的 Deferred 法线对照失败及 CPU shader suite 陈旧计数断言仍未解决。长程大场景、复杂曲面质量、峰值显存、同工作负载性能和默认图切换继续保留验收门槛。
+
+## SMRT 搜索距离漏影回归（2026-10-29）
+
+`virtual_shadow_map_smrt_distance` 使用独立几何参考检查方向光、聚光和点光。遮挡板高度为 1.5 / 12 m，软搜索距离为 1 / 10 m，射线数为 1 / 8，每条射线 16 段；局部光位于 20 m 高处。24 组组合另加三类光源各一组 `1e-6` 非零尺寸控制，共 27 组。亮区和本影内部逐像素断言，并检查主视图深度、Hard 对照、热缓存与强制重绘；不会借精确零尺寸的 Hard 旁路掩盖错误。旧实现的基础 24 组中 18 组失败，修复后全部 27 组通过。
+
+```powershell
+cmake --build build-release --target MetallicRHITests MetallicVSMSample --parallel 8
+.\build-release\tests\MetallicRHITests.exe '--gtest_filter=*virtual_shadow_map_smrt_distance:*virtual_shadow_map_quality:*virtual_shadow_map_filter_demand:*virtual_shadow_map_compact' --rhi-validation --output-dir .cache/VSMSMRTFix/AfterRegression
+python -B Tools/CheckShaderModules.py
+```
+
+上述四项 GPU 测试和 shader module 审计通过，无跳过。另在 Sponza Sample 的普通 GPUDriven 管线上验证 Hard、SMRT 1×16 和 8×16，保留 10 m 搜索距离及原相机、太阳、bias 和页预算；1280×720 静态各 32 帧，8×16 沿长廊移动相机 64 帧，再以 1920×1080 验证 1×16 共 32 帧。检查实际 PNG 后确认建筑投影从近到远连续保留。静态第 31 帧、移动第 31/63 帧的阴影及 HDR 与强制重绘逐字节一致；Hard 修复前后 PNG 也逐像素一致。各实景进程均确认无 RayQuery/RTAS、无光追分配，Vulkan / synchronization validation 消息为零。
+
+本机证据保留于忽略的 `.cache/VSMSMRTFix/`：`BeforeRegression`、`AfterRegression`、`BeforeSMRT1Settled`、`AfterHard`、`AfterSMRT1`、`AfterSMRT8`、`AfterMotionSMRT8`、`AfterNativeSMRT1`。实景的 2048 页预算会触发粗级回退，修复前后均存在；本次无 raster work overflow 或无法解析的粗页查询，不把该检查当作全分辨率驻留或长时间显存压力测试。端点查询仍是单层深度近似，远处半影扩展仍受软搜索距离限制。

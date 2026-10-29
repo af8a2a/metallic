@@ -1123,6 +1123,120 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapFilterDemandTest);
 
+class VirtualShadowMapSMRTDistanceTest final : public RHITest {
+public:
+    VirtualShadowMapSMRTDistanceTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_distance"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTDistance";
+        Json report{{"passed", false}, {"scope", "SMRT trace distance must not remove farther shadow casters"},
+            {"samplesPerRay", 16}, {"cpuAreaSamples", 256}, {"localLightHeight", 20},
+            {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTDistance.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto nearFixture = writeFixture(directory / "NearBlocker", false, 1.5);
+            const auto farFixture = writeFixture(directory / "FarBlocker", false, 12);
+            for (const auto& fixture : {nearFixture, farFixture}) {
+                const bool farBlocker = fixture.source == farFixture.source;
+                for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                    scene::SceneDocument scene;
+                    require(scene.load(fixture.source), "Load SMRT distance fixture");
+                    RenderView view;
+                    RenderGraphPreviewRenderer preview;
+                    configurePreview(preview, scene, view, context, validation);
+                    Source source{kind, {0,20,0}, {0,-1,0}, kind == "Directional" ? .00465 : .05};
+                    publishSource(scene, preview, source);
+                    evidence = std::make_shared<EvidenceState>();
+                    auto graph = makeGraph(fixture);
+                    setProperty(graph, "smrtSamplesPerRay", 16);
+                    const auto runCase = [&](uint32_t rays, uint32_t distance, const char* suffix) {
+                        setProperty(graph, "smrtRayCount", rays);
+                        setProperty(graph, "smrtMaxRayLength", distance);
+                        const std::string name = kind + (farBlocker ? "-Far" : "-Near") +
+                            "-Rays" + std::to_string(rays) + "-Distance" + std::to_string(distance) + suffix;
+                        validation.phase(name);
+                        require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"),
+                            name + ": render failed: " + preview.lastLog());
+                        const auto first = snapshot("Cached"), redraw = snapshot("Redraw"), hard = snapshot("Hard");
+                        require(first.shadows == redraw.shadows && first.depth == redraw.depth,
+                            name + ": cached shadow differs from forced redraw");
+                        const auto actual = visibility(first, fixture, source);
+                        const auto hardPixels = visibility(hard, fixture, source);
+                        uint32_t umbraSamples = 0, litSamples = 0, umbraErrors = 0, litErrors = 0;
+                        uint32_t receiverDepthErrors = 0, hardErrors = 0;
+                        for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                            const auto hit = cameraHit(first.camera, x, y, fixture);
+                            if (!hit.valid || std::abs(hit.position[1]) > .01) { continue; }
+                            // Interior patches avoid finite-texel silhouette ambiguity.
+                            // The independent area-source oracle still checks every
+                            // selected receiver against all authored triangles.
+                            const bool umbra = std::abs(hit.position[0]) < .35 && std::abs(hit.position[2]) < .35;
+                            const bool lit = std::abs(hit.position[0]) > 3 && std::abs(hit.position[0]) < 4 &&
+                                std::abs(hit.position[2]) < 1;
+                            if (!umbra && !lit) { continue; }
+                            const auto pixel = size_t(y) * kWidth + x;
+                            const double expected = referenceVisibility(hit, fixture, source);
+                            require(expected == (umbra ? 0.0 : 1.0), name + ": authored interior oracle is ambiguous");
+                            receiverDepthErrors += std::abs(first.depth[pixel] - hit.depth) > 2e-5;
+                            hardErrors += hardPixels[pixel] != (umbra ? 0 : 255);
+                            umbraSamples += umbra; litSamples += lit;
+                            umbraErrors += umbra && actual[pixel] != 0;
+                            litErrors += lit && actual[pixel] != 255;
+                        }}
+                        require(umbraSamples > 20 && litSamples > 100, name + ": insufficient independent receiver coverage");
+                        require(receiverDepthErrors == 0 && hardErrors == 0,
+                            name + ": primary geometry or Hard shadow disagrees with the interior oracle");
+                        saveGray(directory / (name + "-SMRT.png"), actual);
+                        saveGray(directory / (name + "-Hard.png"), hardPixels);
+                        require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"),
+                            name + ": stable render failed: " + preview.lastLog());
+                        const auto stable = snapshot("Cached");
+                        requireReused(stable, name);
+                        require(stable.shadows == first.shadows && stable.shadows == snapshot("Redraw").shadows,
+                            name + ": stable shadow or redraw changed");
+                        const auto& entry = activeEntry(stable);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            require(stable.statistics[entry.baseLayer + face][5] == 0 &&
+                                stable.statistics[entry.baseLayer + face][9] == 0,
+                                name + ": raster overflow or unresolved shadow query");
+                        }
+                        report["cases"].push_back({{"name", name}, {"blockerHeight", farBlocker ? 12.0 : 1.5},
+                            {"rayCount", rays}, {"traceDistance", distance}, {"sourceSize", source.size}, {"umbraSamples", umbraSamples},
+                            {"litSamples", litSamples}, {"umbraErrors", umbraErrors}, {"litErrors", litErrors},
+                            {"receiverDepthErrors", receiverDepthErrors}, {"hardErrors", hardErrors},
+                            {"stableCacheAndRedrawEqual", true}, {"statistics", stable.statistics}});
+                        if (umbraErrors || litErrors) {
+                            report["failures"].push_back({{"name", name}, {"umbraErrors", umbraErrors}, {"litErrors", litErrors}});
+                        }
+                        save();
+                    };
+                    for (const uint32_t rays : {1u, 8u}) {
+                        for (const uint32_t distance : {10u, 1u}) { runCase(rays, distance, ""); }
+                    }
+                    if (farBlocker) {
+                        // A positive source must exercise SMRT instead of its exact-zero Hard reduction.
+                        source.size = 1e-6;
+                        publishSource(scene, preview, source);
+                        runCase(1, 10, "-TinySource");
+                    }
+                }
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT distance Vulkan validation error");
+            require(report["failures"].empty(), "SMRT distance lost distant occlusion or shadowed the lit control; see failures");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Directional, spot and point SMRT retain distant umbra and lit controls with bounded tracing");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTDistanceTest);
+
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 
 } // namespace

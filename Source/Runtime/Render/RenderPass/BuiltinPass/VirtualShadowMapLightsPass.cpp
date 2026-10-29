@@ -91,7 +91,7 @@ public:
             runtimeFloatSetting("pcfRadius", "PCF Radius (texels)", 1, 0, 8),
             runtimeIntSetting("smrtRayCount", "SMRT Rays", 8, 1, 32),
             runtimeIntSetting("smrtSamplesPerRay", "SMRT Samples per Ray", 8, 1, 32),
-            runtimeFloatSetting("smrtMaxRayLength", "SMRT Maximum Distance (m)", 10, 0.001f, 10000),
+            runtimeFloatSetting("smrtMaxRayLength", "SMRT Soft Search Distance (m)", 10, 0.001f, 10000),
             runtimeBoolSetting("receiverFootprint", "Match Receiver Footprint", true),
             runtimeIntSetting("tessellationFactor", "Shadow Displacement Subdivisions", 4, 1, 8),
             runtimeIntSetting("tessellationSubdivisionDepth", "Shadow Displacement Split Depth", 0, 0, 2),

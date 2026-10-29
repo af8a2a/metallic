@@ -49,7 +49,7 @@ struct VirtualShadowMapSettings
     float pcfRadius = 1.0f; // Radius in selected virtual texels.
     uint32_t smrtRayCount = 8;
     uint32_t smrtSamplesPerRay = 8;
-    float smrtMaxRayLength = 10.0f; // World meters; local rays also stop at the source.
+    float smrtMaxRayLength = 10.0f; // Soft search in meters; a terminal depth query retains farther blockers.
     bool receiverFootprint = true; // Filtered queries select a level from the receiver pixel footprint.
     bool enabled = true;
     bool cacheEnabled = false;

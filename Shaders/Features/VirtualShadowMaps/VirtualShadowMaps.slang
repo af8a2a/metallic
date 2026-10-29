@@ -271,7 +271,7 @@ float2 vsmDiskSample(uint ray, uint rayCount)
     return sqrt((float(ray) + 0.5) / float(rayCount)) * float2(cos(angle), sin(angle));
 }
 
-float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, uint ray)
+float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, uint ray, out bool truncated)
 {
     float3 toLight = push.lightType == 0u ? normalize(projection.rowZ.xyz) :
         normalize(projection.originNear.xyz - position);
@@ -280,10 +280,12 @@ float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush p
     float2 disk = vsmDiskSample(ray, push.rayCount);
     float3 offset = right * disk.x + up * disk.y;
     if (push.lightType == 0u) {
+        truncated = true;
         return position + normalize(toLight + offset * tan(push.angularRadius)) * push.rayLength;
     }
     float3 delta = projection.originNear.xyz + offset * push.sourceRadius - position;
     float distance = length(delta);
+    truncated = push.rayLength < distance;
     return position + delta * min(1.0, push.rayLength / distance);
 }
 
@@ -433,7 +435,8 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint,
     float sourceAngularDiameter = push.lightType == 0u ? 2.0 * tan(push.angularRadius) :
         2.0 * push.sourceRadius / length(projections[0].originNear.xyz - position);
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
-        float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray);
+        bool truncated;
+        float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, truncated);
         bool blocked = false;
         // Test each ray segment against the single stored depth layer. A depth
         // sample merely in front of a distant segment is not an intersection;
@@ -462,6 +465,19 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint,
             float correction = compare - sample.projected.z;
             if (sample.storedDepth > min(startDepth, endDepth) + correction &&
                 sample.storedDepth <= max(startDepth, endDepth) + correction) { blocked = true; break; }
+        }
+        if (!blocked && truncated) {
+            // The finite march caps penumbra growth, not shadow distance. Keep
+            // farther blockers with a depth comparison toward the central light
+            // from its endpoint. A local ray that reached its sampled emitter
+            // has no remaining tail and must not trace back toward the center.
+            float rayFootprint = length(endpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
+            ShadowLookup sample = vsmFilterLookup(endpoint, min(footprint, rayFootprint), push);
+            if (sample.valid && sample.storedDepth != 0.0) {
+                float compare = vsmComparisonDepth(endpoint, normal, sample.projected,
+                    sample.virtualTexel, sample.projection, push.pageSize);
+                blocked = sample.storedDepth > compare;
+            }
         }
         visibility += blocked ? 0.0 : 1.0;
     }
@@ -591,13 +607,18 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         float sourceAngularDiameter = push.lightType == 0u ? 2.0 * tan(push.angularRadius) :
             2.0 * push.sourceRadius / length(projections[0].originNear.xyz - position);
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
-            float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray);
+            bool truncated;
+            float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, truncated);
             for (uint step = 0u; step < push.samplesPerRay; ++step) {
                 float a = float(step) / float(push.samplesPerRay), b = float(step + 1u) / float(push.samplesPerRay);
                 a *= a; b *= b;
                 float3 midpoint = lerp(position, endpoint, (a + b) * 0.5);
                 float rayFootprint = length(midpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
                 vsmMarkPosition(midpoint, projections, pages, push, min(footprint, rayFootprint));
+            }
+            if (truncated) {
+                float rayFootprint = length(endpoint - position) * sourceAngularDiameter / sqrt(float(push.rayCount));
+                vsmMarkPosition(endpoint, projections, pages, push, min(footprint, rayFootprint));
             }
         }
     }
