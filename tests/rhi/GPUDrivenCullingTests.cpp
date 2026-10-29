@@ -358,14 +358,16 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addBufferOutput("data").buffer(32 * 16, 16).storageReadWrite();
+        reflection.addBufferOutput("data").buffer(64 * 16, 16).storageReadWrite();
         return reflection;
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
+        const char* searchPaths[] = {PROJECT_SOURCE_DIR "/Shaders/Features/GPUDriven"};
         auto result = render::compileSlangShaderToSpirv({.moduleName = "GPUDrivenConeProbe",
-            .entryPointName = "gpuDrivenConeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+            .entryPointName = "gpuDrivenConeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+            .additionalSearchPaths = searchPaths}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::GPUDrivenConeProbeResources, output)}};
         return program_.initialize(*context.device, {
@@ -409,7 +411,7 @@ public:
         const auto* data = static_cast<const std::array<float, 4>*>(buffer->map());
         if (data == nullptr) { return RHITestResult::fail("Cone probe readback failed"); }
         bool valid = true;
-        for (uint32_t index = 0; index < 16; ++index) {
+        for (uint32_t index = 0; index < 32; ++index) {
             const auto& axis = data[index * 2];
             const auto& expected = data[index * 2 + 1];
             for (uint32_t channel = 0; channel < 3; ++channel) {
@@ -419,7 +421,7 @@ public:
             spdlog::info("[Cone] case={} axis=({},{},{}) front={} back={}", index, axis[0], axis[1], axis[2], axis[3], expected[3]);
         }
         buffer->unmap();
-        return valid ? RHITestResult::pass("Normal cone front/back decisions survive uniform scales and rotation")
+        return valid ? RHITestResult::pass("Preview and streamed normal cones survive uniform scales and rotation")
             : RHITestResult::fail("Object scale changed the cone axis or rejected a front-facing meshlet");
     }
 };
@@ -653,6 +655,98 @@ public:
     }
 };
 
+class GPUDrivenSponzaVSMFloorTest final : public RHITest {
+public:
+    GPUDrivenSponzaVSMFloorTest() { type = RHITestType::Rendering; name = "gpu_driven_sponza_vsm_floor"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        scene::SceneDocument scene;
+        const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/SponzaVSM.metallic_scene.json";
+        if (!scene.load(path)) { return RHITestResult::fail(scene.lastLoadResult().error); }
+        render::RenderView view;
+        view.setTemporalJitter(false);
+        render::RenderGraphPreviewRenderer preview;
+        const auto initialized = preview.initialize(context.enableValidation, true);
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders"); }
+        if (!initialized) { return RHITestResult::fail("Sponza VSM preview initialization failed"); }
+        preview.bindRuntimeScene(&scene);
+        preview.setEnvironment(scene.environment());
+        if (!preview.setLighting(scene.lighting())) { return RHITestResult::fail("Invalid Sponza VSM lighting"); }
+        preview.bindRenderView(&view);
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample(render::kVSMSponzaSampleId, sample, log)) { return RHITestResult::fail(log); }
+        auto& graph = sample.graph;
+        const auto raster = graph.findNode("VBuffer")->id;
+        graph.setNodeRuntimeProperty(raster, "visualization", "triangle");
+        graph.clearOutputs();
+        graph.markOutput("VBuffer.color");
+        const std::array<const char*, 5> flags{
+            "instanceFrustumCull", "instanceHzbCull", "meshletFrustumCull", "meshletNormalConeCull", "meshletHzbCull"};
+        // Initial sample view and low, downward-facing views from the floor-disappearance recording.
+        const std::array<std::array<double, 6>, 3> cameras{{
+            {8.7, 1.65, 0.15, 7.700582, 1.629054, 0.123070},
+            {5.917828, 0.585971, -0.344645, 5.132805, -0.028311, -0.424636},
+            {6.790932, 1.210763, -0.288578, 5.978194, 0.629214, -0.340765}}};
+        bool valid = true;
+        for (uint32_t cameraIndex = 0; cameraIndex < cameras.size(); ++cameraIndex) {
+            const auto& c = cameras[cameraIndex];
+            if (!view.setCameraProperties({{"eye", {c[0], c[1], c[2]}}, {"center", {c[3], c[4], c[5]}},
+                    {"up", {-0.020938, 0.999781, -0.000564}}, {"fovDegrees", 60.0}, {"znear", 0.05}, {"zfar", 100.0}})) {
+                return RHITestResult::fail("Invalid Sponza VSM regression camera");
+            }
+            std::vector<uint32_t> reference;
+            // Keep all other stages enabled, isolating the production streamed normal-cone path.
+            for (bool coneCull : {false, true}) {
+                for (const char* flag : flags) { graph.setNodeRuntimeProperty(raster, flag, true); }
+                graph.setNodeRuntimeProperty(raster, "meshletNormalConeCull", coneCull);
+                // Let initial streaming uploads and all frame slots settle before the pixel oracle.
+                for (uint32_t frame = 0; frame < 8; ++frame) {
+                    if (!preview.render(graph, 960, 540, "VBuffer.color")) { return RHITestResult::fail(preview.lastLog()); }
+                }
+                for (uint32_t frame = 0; frame < 4; ++frame) {
+                    if (!preview.render(graph, 960, 540, "VBuffer.color")) { return RHITestResult::fail(preview.lastLog()); }
+                    if (!coneCull && frame == 0) {
+                        reference = preview.pixels();
+                        const auto covered = std::count_if(reference.begin(), reference.end(),
+                            [](uint32_t pixel) { return (pixel & 255u) >= 64u; });
+                        if (covered < 10000) { return RHITestResult::fail("Sponza VSM reference contains too little geometry"); }
+                    }
+                    size_t changed = 0;
+                    for (size_t pixel = 0; pixel < reference.size(); ++pixel) {
+                        changed += preview.pixels()[pixel] != reference[pixel];
+                    }
+                    valid = valid && changed == 0;
+                    spdlog::info("[Sponza VSM floor] camera={} cone={} frame={} changed={}", cameraIndex, coneCull, frame, changed);
+                }
+                if (!saveRgba8Png(context.outputDirectory / ("SponzaVSMFloor" + std::to_string(cameraIndex) +
+                        (coneCull ? "Culled.png" : "Reference.png")), reinterpret_cast<const uint8_t*>(preview.pixels().data()),
+                        preview.width(), preview.height(), log)) { return RHITestResult::fail(log); }
+            }
+        }
+        // Also exercise the full VSM/deferred graph at the recorded low views.
+        if (!render::loadBuiltInRenderSample(render::kVSMSponzaSampleId, sample, log)) { return RHITestResult::fail(log); }
+        sample.graph.markOutput(sample.desc.previewOutput);
+        for (uint32_t cameraIndex = 0; cameraIndex < cameras.size(); ++cameraIndex) {
+            const auto& c = cameras[cameraIndex];
+            if (!view.setCameraProperties({{"eye", {c[0], c[1], c[2]}}, {"center", {c[3], c[4], c[5]}},
+                    {"up", {-0.020938, 0.999781, -0.000564}}, {"fovDegrees", 60.0}, {"znear", 0.05}, {"zfar", 100.0}})) {
+                return RHITestResult::fail("Invalid Sponza VSM shaded camera");
+            }
+            for (uint32_t frame = 0; frame < 8; ++frame) {
+                if (!preview.render(sample.graph, 960, 540)) { return RHITestResult::fail(preview.lastLog()); }
+            }
+            if (!saveRgba8Png(context.outputDirectory / ("SponzaVSMFloor" + std::to_string(cameraIndex) + "Shaded.png"),
+                    reinterpret_cast<const uint8_t*>(preview.pixels().data()), preview.width(), preview.height(), log)) {
+                return RHITestResult::fail(log);
+            }
+        }
+        return valid ? RHITestResult::pass("Sponza VSM floor visibility matches with streamed cone culling on/off across low camera views and HZB history")
+            : RHITestResult::fail("Streamed normal-cone culling changed visible Sponza VSM floor geometry");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GPUDrivenSponzaVSMFloorTest);
 METALLIC_REGISTER_RHI_TEST(GPUDrivenConeScaleTest);
 METALLIC_REGISTER_RHI_TEST(GPUDrivenTwoPassOcclusionTest);
 METALLIC_REGISTER_RHI_TEST(GPUDrivenSponzaCullingTest);

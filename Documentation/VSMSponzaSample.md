@@ -51,3 +51,14 @@ Remove-Item Env:METALLIC_SMOKE_TEST_FRAMES
 使用 `METALLIC_DEBUG_VALIDATION=1` 可开启 Vulkan validation；结合 `metallicctl` 捕获 `FinalBlit.color`、`Shadows.debug` 和 `Shadows.statistics`，可以检查实际输出和页面统计。`Shadows.shadows` 为 R8 格式，当前 debug capture 不支持直接读取。截图、捕获和日志保存在本地 `.cache/`，不进入源码。
 
 2026-10-29 验证：Windows x64 / MSVC Release 构建通过，实际加载组合场景并检查画面。启用 Vulkan validation 连续观察至第 4509 次图执行，无 validation 事件；第 272 与 3902 次执行的最终输出逐字节相同。静态视图请求并分配 654 页，缓存命中 654 页，无页面分配失败、raster work overflow 或过滤粗级回退；debug 图包含 3 个 clipmap 层级。内部渲染为 1920×1080，截图是编辑器视口缩放后的 653×282 输出。本次未覆盖移动相机巡检或 Force Shadow Redraw A/B。
+
+地板误剔除回归：Sponza 的 0.008 缩放会使流式 normal-cone 的 cofactor 法线落入旧归一化函数的长度阈值，错误替换为 +Z，低机位下剔除上层地板并露出下层砖面。`transformStreamNormal` 现在先按最大分量缩放再归一化，保留有效方向和原有 winding 符号。
+
+在启用测试的构建目录中运行：
+
+```powershell
+cmake --build build-release --target MetallicRHITests --parallel 8
+.\build-release\tests\MetallicRHITests.exe --gtest_filter=*gpu_driven_cone_scale_invariance*:*gpu_driven_sponza_vsm_floor*:*gpu_driven_two_pass_occlusion*:*gpu_driven_temporal_occlusion_equivalence* --rhi-bindless --rhi-validation --output-dir .cache/sponza-floor/after
+```
+
+修复后上述 4 项 GPU 测试通过，无跳过：32 组法线探针覆盖普通和实际流式 helper；SponzaVSM 默认及两个录制低机位在预热后分别比较 4 帧，1920×1080 VBuffer 在 cone 开关两侧逐像素相同。完整 VSM 管线另渲染每个视点 8 帧并检查 960×540 最终截图，地板与阴影正常。移动／jitter／resize／透视及正交 HZB 回归覆盖 30 帧。本次回归未进行长时间显存压力测试。
