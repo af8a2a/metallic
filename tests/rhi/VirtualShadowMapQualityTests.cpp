@@ -1019,7 +1019,7 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapFilterDemand";
-        Json report{{"passed", false}, {"scope", "Filtered demand admission, not one-segment SMRT quality"},
+        Json report{{"passed", false}, {"scope", "Shared receiver LOD, demand admission and zero-size filter reductions"},
             {"virtualPagesPerAxis", 128}, {"physicalPagesPerFace", 256}, {"orthographicHeight", 4},
             {"frames", Json::array()}};
         bench::ValidationRecorder validation;
@@ -1050,21 +1050,31 @@ public:
                     require(graph.setNodeRuntimeProperty(id, "smrtRayCount", 4), "Set demand ray count");
                     require(graph.setNodeRuntimeProperty(id, "smrtSamplesPerRay", 1), "Set demand segment count");
                     require(graph.setNodeRuntimeProperty(id, "smrtMaxRayLength", 1), "Set demand ray length");
+                    require(graph.setNodeRuntimeProperty(graph.findNode(std::string(node) + "Evidence")->id,
+                        "captureDebug", true), "Capture demand receiver levels");
                 }
-                const auto render = [&](const std::string& suffix, bool expectCompleteDemand) {
+                const auto totalStatistics = [](const Snapshot& image) {
+                    std::array<uint64_t, 32> totals{};
+                    const auto& entry = activeEntry(image);
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        for (size_t index = 0; index < totals.size(); ++index) {
+                            totals[index] += image.statistics[entry.baseLayer + face][index];
+                        }
+                    }
+                    return totals;
+                };
+                const auto render = [&](const std::string& suffix, bool expectCompleteDemand, bool filtered = true,
+                    bool expectLastFineLevel = true) {
                     const auto name = kind + "-" + suffix;
                     validation.phase(name);
                     require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"), "Demand render: " + preview.lastLog());
-                    const auto cached = snapshot("Cached"), redraw = snapshot("Redraw");
-                    const auto& entry = activeEntry(cached);
-                    std::array<uint64_t, 32> totals{};
-                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
-                        const auto& counters = cached.statistics[entry.baseLayer + face];
-                        for (size_t index = 0; index < totals.size(); ++index) { totals[index] += counters[index]; }
-                    }
+                    const auto cached = snapshot("Cached", true), redraw = snapshot("Redraw", true), hard = snapshot("Hard", true);
+                    const auto totals = totalStatistics(cached), hardTotals = totalStatistics(hard);
                     const bool equal = cached.shadows == redraw.shadows && cached.depth == redraw.depth;
                     report["frames"].push_back({{"name", name}, {"cacheRedrawEqual", equal},
-                        {"statistics", cached.statistics}, {"totals", totals}, {"expectCompleteDemand", expectCompleteDemand}});
+                        {"statistics", cached.statistics}, {"totals", totals}, {"hardTotals", hardTotals},
+                        {"expectCompleteDemand", expectCompleteDemand}, {"filtered", filtered},
+                        {"expectLastFineLevel", expectLastFineLevel}});
                     save();
                     require(equal, name + ": cached and forced redraw differ");
                     require(totals[5] == 0 && totals[9] == 0, name + ": raster overflow or unresolved coarse page");
@@ -1074,8 +1084,44 @@ public:
                         // unconditional level-zero request fills it first instead.
                         require(totals[0] > 0 && totals[0] == totals[1] && totals[2] == 0,
                             name + ": useful filtered demand was not fully admitted");
-                        require(totals[30] > 0 && totals[31] == 0,
+                        require((!filtered || totals[30] > 0) && totals[31] == 0,
                             name + ": filtered queries unexpectedly fell back to the complete coarse map");
+                        require(hardTotals[0] > 0 && hardTotals[0] == hardTotals[1] && hardTotals[2] == 0,
+                            name + ": Hard ignored the receiver footprint and exhausted the useful page budget");
+                        require(hardTotals[5] == 0 && hardTotals[7] == 0 && hardTotals[9] == 0 && hardTotals[13] == 0,
+                            name + ": Hard did not query its admitted receiver level");
+                        // At 128 virtual pages per axis and 4 m / 129 pixels,
+                        // every visible receiver selects the
+                        // last of these four fine levels, including local-light
+                        // receivers. Fine debug pixels encode (level + 1) / 4 in
+                        // red. Kernel expansion can change requested page sets,
+                        // but must not change the receiver's base resolution.
+                        for (const auto* image : {&cached, &hard}) {
+                            const auto& entry = activeEntry(*image);
+                            uint32_t finePixels = 0, wrongLevelPixels = 0;
+                            for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                                const auto& debug = image->debug[entry.baseLayer + face];
+                                for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                    if (debug[pixel * 4 + 1] == 0) { continue; }
+                                    ++finePixels;
+                                    wrongLevelPixels += debug[pixel * 4] != 255;
+                                }
+                            }
+                            require(finePixels > 100 && (!expectLastFineLevel || wrongLevelPixels == 0),
+                                name + ": receiver resolution changed with the filter");
+                        }
+                    }
+                    if (!filtered) {
+                        require(totals[30] == 0 && cached.shadows == hard.shadows && cached.debug == hard.debug,
+                            name + ": zero-size filter changed Hard visibility or receiver levels");
+                        const auto& entry = activeEntry(cached);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            for (uint32_t index : {0u, 1u, 2u, 7u, 13u}) {
+                                require(cached.statistics[entry.baseLayer + face][index] ==
+                                    hard.statistics[activeEntry(hard).baseLayer + face][index],
+                                    name + ": zero-size filter changed Hard demand or fallback");
+                            }
+                        }
                     }
                     return cached;
                 };
@@ -1103,7 +1149,7 @@ public:
                 require(view.setCamera(camera), "Move demand camera across virtual page boundary");
                 (void)render("PCF-Move", true);
                 setProperty(graph, "pcfRadius", 0);
-                const auto zeroPCF = render("PCF-ZeroRadius", false);
+                const auto zeroPCF = render("PCF-ZeroRadius", true, false);
                 require(zeroPCF.shadows == snapshot("Hard").shadows, kind + ": zero-radius PCF differs from Hard");
                 const auto& zeroEntry = activeEntry(zeroPCF);
                 for (uint32_t face = 0; face < zeroEntry.faceCount; ++face) {
@@ -1129,11 +1175,63 @@ public:
                 publishSource(scene, preview, source);
                 setProperty(graph, "smrtSamplesPerRay", 16);
                 setProperty(graph, "smrtMaxRayLength", 10);
-                (void)render("SMRT-SmallSource", true);
+                const auto matchedSMRT = render("SMRT-SmallSource", true);
                 requireReused(render("SMRT-SmallSourceWarm", true), kind + " small-source cache reuse");
                 source.size = 0; publishSource(scene, preview, source);
-                const auto zeroSMRT = render("SMRT-ZeroSource", false);
+                const auto zeroSMRT = render("SMRT-ZeroSource", true, false);
                 require(zeroSMRT.shadows == snapshot("Hard").shadows, kind + ": zero-source SMRT differs from Hard");
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "receiverFootprint", false),
+                        "Select explicit finest receiver resolution");
+                }
+                source.size = kind == "Directional" ? .00465 : .02;
+                publishSource(scene, preview, source);
+                setProperty(graph, "filter", "pcf");
+                const auto finestPCF = render("Finest-PCF", false);
+                require(totalStatistics(finestPCF)[0] > totalStatistics(pcf)[0],
+                    kind + ": disabling footprint matching did not restore finest PCF demand");
+                setProperty(graph, "pcfRadius", 0);
+                (void)render("Finest-PCF-ZeroRadius", false, false);
+                require(totalStatistics(snapshot("Hard"))[0] > totalStatistics(zeroSMRT)[0],
+                    kind + ": Hard ignored the explicit finest-resolution setting");
+                setProperty(graph, "filter", "smrt");
+                const auto finestSMRT = render("Finest-SMRT", false);
+                require(totalStatistics(finestSMRT)[0] > totalStatistics(matchedSMRT)[0],
+                    kind + ": disabling footprint matching did not restore finest SMRT demand");
+                source.size = 0; publishSource(scene, preview, source);
+                (void)render("Finest-SMRT-ZeroSource", false, false);
+                // Reduce virtual resolution so this same footprint selects an
+                // intermediate level instead of clamping to the last fine mip.
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    const auto id = graph.findNode(node)->id;
+                    require(graph.setNodeRuntimeProperty(id, "virtualPagesPerAxis", 16), "Set intermediate mip resolution");
+                    require(graph.setNodeRuntimeProperty(id, "receiverFootprint", true), "Restore receiver footprint matching");
+                }
+                source.size = kind == "Directional" ? .00465 : .02;
+                publishSource(scene, preview, source);
+                setProperty(graph, "pcfRadius", 1.5);
+                for (const char* filter : {"pcf", "smrt"}) {
+                    setProperty(graph, "filter", filter);
+                    const auto image = render(std::string("Intermediate-") + filter, true, true, false);
+                    const auto hard = snapshot("Hard", true);
+                    const auto& entry = activeEntry(image);
+                    uint32_t compared = 0, intermediate = 0, mismatches = 0;
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        const auto& actual = image.debug[entry.baseLayer + face];
+                        const auto& expected = hard.debug[activeEntry(hard).baseLayer + face];
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            if (actual[pixel * 4 + 1] == 0 || expected[pixel * 4 + 1] == 0) { continue; }
+                            ++compared;
+                            intermediate += expected[pixel * 4] < 255;
+                            mismatches += actual[pixel * 4] != expected[pixel * 4];
+                        }
+                    }
+                    report["frames"].back()["receiverLevelComparison"] = {{"pixels", compared},
+                        {"nonLastLevelPixels", intermediate}, {"mismatches", mismatches}};
+                    save();
+                    require(compared > 100 && intermediate > 100 && mismatches == 0,
+                        kind + ": filtered receiver level differs from Hard away from the last-mip clamp");
+                }
             }
             report["validation"] = validation.snapshot();
             require(!validation.failed(), "Filtered demand validation error");

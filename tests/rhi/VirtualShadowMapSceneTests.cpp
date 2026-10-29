@@ -372,9 +372,11 @@ RenderGraph makeGraph(const std::filesystem::path& source, const std::filesystem
     graph.addNode("VSMDepthFixturePass", "Receiver", {{"standardDepth", test.standardDepth}});
     graph.addEdge("Raster.depth", "Receiver.depth");
     graph.addEdge("Raster.rasterInfo", "Receiver.rasterInfo");
+    // These page-boundary and cache-eviction fixtures require the finest cut.
+    // Receiver-matched resolution is covered by virtual_shadow_map_filter_demand.
     graph.addNode("VirtualShadowMapPass", "Shadows", {{"pageSize", kPageSize}, {"virtualPagesPerAxis", kPagesPerAxis},
         {"clipmapCount", kClipmapCount}, {"firstClipmapExtent", kFirstExtent}, {"physicalPageCount", test.pool},
-        {"maxWorkItems", test.maxWorkItems}, {"shadowBias", .002}, {"shadowDebug", true}});
+        {"maxWorkItems", test.maxWorkItems}, {"shadowBias", .002}, {"shadowDebug", true}, {"receiverFootprint", false}});
     graph.addEdge("Receiver.depth", "Shadows.depth");
     graph.addEdge("Receiver.rasterInfo", "Shadows.rasterInfo");
     graph.addNode("VSMEvidencePass", "Evidence");
@@ -1621,10 +1623,12 @@ RenderGraph makeLocalGraph(const LocalFixture& fixture, float nearPlane = .001f)
         {"autoLod",false},{"lodLevel",0},{"instanceHzbCull",false},{"meshletHzbCull",false},
         {"meshletNormalConeCull",false},{"hybridRaster",false},{"enableClas",false},{"enableClusterRtx",false}});
     for (const char* name : {"Cached", "Redraw"}) {
+        // Keep the fixed-resolution geometry/seam oracle and its edge margins.
+        // Filter-demand and quality tests exercise receiver-matched resolution.
         graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kLocalCapacity},{"physicalPageBudget",512},
             {"pageSize",kPageSize},{"virtualPagesPerAxis",kPagesPerAxis},{"clipmapCount",kClipmapCount},
             {"maxWorkItems",65535},{"shadowBias",.002},{"nearPlane",nearPlane},{"cacheEnabled",true},
-            {"forceRedraw",std::string_view(name) == "Redraw"}});
+            {"forceRedraw",std::string_view(name) == "Redraw"},{"receiverFootprint",false}});
         graph.addEdge("Raster.depth",std::string(name) + ".depth");
         graph.addEdge("Raster.rasterInfo",std::string(name) + ".rasterInfo");
         const std::string evidence = std::string(name) + "Evidence";

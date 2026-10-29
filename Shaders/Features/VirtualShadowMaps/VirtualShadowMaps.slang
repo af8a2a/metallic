@@ -373,7 +373,7 @@ float vsmPixelFootprint(float linearDepth, ViewConstants view, ShadowPush push)
         2.0 * linearDepth * tan(view.current.viewport.w * 0.5) / view.current.viewport.z;
 }
 
-uint vsmFilterLevel(float3 position, StructuredBuffer<ShadowProjection> projections,
+uint vsmReceiverLevel(float3 position, StructuredBuffer<ShadowProjection> projections,
     ShadowPush push, float footprint)
 {
     uint level = 0u;
@@ -424,7 +424,7 @@ struct ShadowLookup
     bool valid;
 };
 
-ShadowLookup vsmFilterLookup(float3 position, float footprint, ShadowPush push, uint minimumLevel = 0u)
+ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel)
 {
     ShadowLookup result;
     result.valid = false;
@@ -443,7 +443,6 @@ ShadowLookup vsmFilterLookup(float3 position, float footprint, ShadowPush push, 
     StructuredBuffer<uint> faceStatistics = resolveNonUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     uint physicalPage = 0xffffffffu;
-    uint firstLevel = max(minimumLevel, vsmFilterLevel(position, projections, push, footprint));
     result.level = push.clipmapCount;
     InterlockedAdd(statistics[30], 1u);
     if (faceStatistics[5] == 0u) {
@@ -500,16 +499,15 @@ float vsmRayDepth(float depth, ShadowLookup sample, float3 receiver, uint pageSi
     return (depth - scale) / (offset * length(texelRay));
 }
 
-float vsmFilterVisibility(float3 position, float3 normal, float footprint, uint2 pixel,
+float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, uint2 pixel,
     StructuredBuffer<ShadowProjection> projections, ShadowPush push)
 {
     if (push.filterMode == 1u) {
-        uint level = vsmFilterLevel(position, projections, push, footprint);
         float sum = 0.0;
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
-                float3 tap = vsmPCFPosition(position, normal, projections[level], push, int2(x, y));
-                ShadowLookup sample = vsmFilterLookup(tap, footprint, push);
+                float3 tap = vsmPCFPosition(position, normal, projections[receiverLevel], push, int2(x, y));
+                ShadowLookup sample = vsmFilterLookup(tap, push, receiverLevel);
                 float compare = sample.valid ? vsmComparisonDepth(tap, normal, sample.projected,
                     sample.virtualTexel, sample.projection, push.pageSize) : 1.0;
                 sum += !sample.valid || sample.storedDepth == 0.0 || compare >= sample.storedDepth ? 1.0 : 0.0;
@@ -521,7 +519,6 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint, uint2
     // A ray keeps its receiver's resolution. An angular footprint shrinks to
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
-    uint receiverLevel = vsmFilterLevel(position, projections, push, footprint);
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, pixel);
         float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, pixel);
@@ -537,7 +534,7 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint, uint2
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, pixel);
             float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
-            ShadowLookup sample = vsmFilterLookup(point + dither, 0.0, push, receiverLevel);
+            ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel);
             if (!sample.valid) { continue; }
             float compare = vsmComparisonDepth(point, normal, vsmProjectPosition(point, sample.projection),
                 sample.virtualTexel, sample.projection, push.pageSize);
@@ -571,12 +568,12 @@ float vsmFilterVisibility(float3 position, float3 normal, float footprint, uint2
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, float footprint, uint minimumLevel = 0u)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel)
 {
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
     // Match the query's first usable level. Requesting finer pages here spends
-    // the fine-first admission budget on pages the filter will never sample.
-    for (uint level = max(minimumLevel, vsmFilterLevel(position, projections, push, footprint)); level < push.clipmapCount; ++level) {
+    // the fine-first admission budget on pages the receiver will never sample.
+    for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ShadowProjection projection = projections[level];
         float3 projected = vsmProjectPosition(position, projection);
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
@@ -675,29 +672,28 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             max(delta.x, max(delta.y, delta.z)) <= projections[0].originNear.w) { return; }
     } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
+    // Resolution belongs to the receiver, independently of the filter kernel.
+    uint receiverLevel = vsmReceiverLevel(position, projections, push, vsmPixelFootprint(linearDepth, view, push));
     if (push.filterMode == 0u) {
-        vsmMarkPosition(position, projections, pages, push, 0.0);
+        vsmMarkPosition(position, projections, pages, push, receiverLevel);
         return;
     }
-    float footprint = vsmPixelFootprint(linearDepth, view, push);
     if (push.filterMode == 1u) {
-        uint level = vsmFilterLevel(position, projections, push, footprint);
         float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
-                vsmMarkPosition(vsmPCFPosition(position, normal, projections[level], push, int2(x, y)),
-                    projections, pages, push, footprint);
+                vsmMarkPosition(vsmPCFPosition(position, normal, projections[receiverLevel], push, int2(x, y)),
+                    projections, pages, push, receiverLevel);
             }
         }
     } else if (push.filterMode == 2u) {
-        uint receiverLevel = vsmFilterLevel(position, projections, push, footprint);
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
             float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, id.xy);
             float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, id.xy);
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
                 float time = vsmRaySampleTime(step, push, id.xy);
                 float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
-                vsmMarkPosition(point + dither, projections, pages, push, 0.0, receiverLevel);
+                vsmMarkPosition(point + dither, projections, pages, push, receiverLevel);
             }
         }
     }
@@ -1123,6 +1119,7 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         return;
     }
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    uint receiverLevel = vsmReceiverLevel(position, projections, push, vsmPixelFootprint(linearDepth, view, push));
     uint selectedLevel = push.clipmapCount;
     uint firstLevel = 0xffffffffu;
     uint physicalPage = 0xffffffffu;
@@ -1131,7 +1128,7 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     // Any fine-work overflow invalidates the entire partial fine atlas. The
     // independent coarse draw always traverses every caster slot.
     if (statistics[5] == 0u) {
-        for (uint level = 0u; level < push.clipmapCount; ++level) {
+        for (uint level = receiverLevel; level < push.clipmapCount; ++level) {
             ShadowProjection projection = projections[level];
             float3 p = vsmProjectPosition(position, projection);
             if (!vsmContains(p, projection, push.pageSize, true)) { continue; }
@@ -1167,7 +1164,7 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     ShadowProjection projection = projections[selectedLevel];
     float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
     if (push.filterMode != 0u) {
-        shadow[id.xy] = vsmFilterVisibility(position, normal, vsmPixelFootprint(linearDepth, view, push), id.xy, projections, push);
+        shadow[id.xy] = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, push);
         return;
     }
     float compareDepth;

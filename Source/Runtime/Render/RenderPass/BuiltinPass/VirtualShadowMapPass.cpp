@@ -24,6 +24,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.maxWorkItems = properties.value("maxWorkItems", settings.maxWorkItems);
     settings.firstClipmapExtent = properties.value("firstClipmapExtent", settings.firstClipmapExtent);
     settings.shadowBias = properties.value("shadowBias", settings.shadowBias);
+    settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
     settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", false);
     settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
     settings.enabled = boolProperty(&properties, "enabled", true) &&
@@ -87,6 +88,7 @@ public:
             runtimeIntSetting("maxWorkItems", "Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Clipmap Half-width (m)", 4.0f, 0.01f, 10000.0f),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0.0f, 1.0f),
+            runtimeBoolSetting("receiverFootprint", "Match Receiver Footprint", true),
             runtimeIntSetting("tessellationFactor", "Shadow Displacement Subdivisions", 4, 1, 8),
             runtimeIntSetting("tessellationSubdivisionDepth", "Shadow Displacement Split Depth", 0, 0, 2),
         };

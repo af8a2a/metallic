@@ -38,7 +38,7 @@ Deferred → AutoExposure → FinalBlit ← ColorGrading
 
 VSM 使用 128×128 texel 页、每轴 128 个虚拟页、2048 个物理页预算、6 层 clipmap、PCF 半径 1 texel，开启页缓存和 receiver footprint。第一层在灯光平面的半宽为 1 m，后续为 2/4/8/16/32 m；这些是灯光投影范围，并非相机深度分割距离。每层虚拟分辨率为 16384×16384，实际物理页按接收点需求分配。
 
-观察时先看前景地面上的阴影边缘，再沿重复柱列看向中远景。沿长廊前后移动，可检查细节与缓存更新。选择 Shadows 节点可切换 Hard / PCF / SMRT，也可使用 Force Shadow Redraw 对照缓存。`Shadows.debug` 的红色强度表示中心查询的 clipmap，蓝色表示 coarse fallback；它不代表 PCF 全部 tap 的层级。
+观察时先看前景地面上的阴影边缘，再沿重复柱列看向中远景。沿长廊前后移动，可检查细节与缓存更新。选择 Shadows 节点可切换 Hard / PCF / SMRT，也可使用 Force Shadow Redraw 对照缓存。三种模式共享接收点 footprint 起始级，零 PCF 半径或零光源尺寸退化到 Hard 时保持该分辨率策略。关闭 Match Receiver Footprint 可诊断最细级需求，可能增加页预算压力。`Shadows.debug` 的红色强度表示中心查询的 clipmap，蓝色表示 coarse fallback；它不代表全部过滤样本实际使用的层级。
 
 ## 验证方式
 

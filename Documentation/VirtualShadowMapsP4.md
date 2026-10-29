@@ -14,7 +14,7 @@ Sun/Moon 直接使用已有 `angularRadius`，单位弧度、含义为半径。�
 | smrtRayCount | 8 | 每 receiver 的圆盘光源样本数，1–32 |
 | smrtSamplesPerRay | 8 | 每条有界射线的步数，另含一次接收点查询 |
 | smrtMaxRayLength | 10 m | 米制软阴影搜索上限；局部光另受光源视角展开限制，超出搜索距离的遮挡仍有效 |
-| receiverFootprint | true | 过滤模式按相机像素世界足迹选择起始级 |
+| receiverFootprint | true | Hard / PCF / SMRT 均按相机像素世界足迹选择起始级；false 显式从最细级开始 |
 | tessellationFactor | 4 | 位移 caster 独立细分因子，1–8 |
 | tessellationSubdivisionDepth | 0 | 位移 caster 额外均匀四分层级，0–2；每级增加 4 倍微三角 |
 
@@ -28,7 +28,9 @@ SMRT 参考本机 Unreal 5.7.4 的反向深度历史算法：从远端向 receiv
 
 ## 页寻址、需求与缓存
 
-Hard 保留 P3 的查询规则。PCF 从 receiver 像素足迹选择细级；SMRT 在 receiver 处选定起始 clipmap/mip，并在整条射线上沿用该级或更粗映射。逐步趋零的光源采样足迹不能用于提升精细度，否则会请求大量不需要的细页、挤出有效 receiver 页面。每个 tap 独立重新投影、查页、定位物理 texel。细页未准入或 raster work 溢出时查询已完成的粗级。使用整数 texel load，不对物理 atlas 相邻页做无边界过滤。
+Hard / PCF / SMRT 共用 receiver 像素足迹选级：在原始接收点确定起始 clipmap/mip，Hard 中心查询、PCF 全部 tap 和 SMRT 整条射线均从该级开始，覆盖范围或驻留不足时再向更粗级查询。PCF 不再按偏移后的 tap 重新选级。标页和查询使用相同起始级；中心 debug 及回退计数也遵守该策略。PCF 半径为零、SMRT 光源尺寸为零时仍严格回到 Hard，且不改变基础分辨率。关闭 `receiverFootprint` 可显式恢复三种模式的最细级起点，单灯兼容 pass 也提供这个开关。
+
+逐步趋零的光源采样足迹不能用于提升精细度，否则会请求大量不需要的细页、挤出有效 receiver 页面。每个 tap 独立重新投影、查页、定位物理 texel。细页未准入或 raster work 溢出时查询已完成的粗级。使用整数 texel load，不对物理 atlas 相邻页做无边界过滤。
 
 Demand 覆盖同一 PCF tap / SMRT 反向采样位置，并共用像素种子、投影插值和 receiver 起始级。当前实现保守逐 tap 标记，尤其点光六面和高样本数时成本较高，不能由热缓存没有光栅工作推断过滤便宜。
 
@@ -156,3 +158,13 @@ python -B Tools/CheckShaderModules.py
 ```
 
 上述 5 项 GPU 回归均通过，无跳过；shader module 审计通过，Sample 已重新构建。本机输出在 `.cache/SMRTUE/` 下的 `BeforeRegression`、`DitherRegression`、`ResolvedQuality`、`FinalCoreRegression`、`SponzaSMRT8`、`SponzaNativeSMRT1`、`SponzaMotionSMRT8`。仅对单层几何质量及所列实景做验收；多层遮挡仍有单层深度近似误差，未进行独立斜面／掠射接收面质量门槛或长时间显存压力测试。1 条射线仍会有空间噪声，当前 Sample 没有时域降噪。
+
+## 三种过滤共享接收点选级（2026-10-29）
+
+`virtual_shadow_map_filter_demand` 增加 Hard 的有效需求准入、中心 debug 级别、零 PCF 半径和零 SMRT 光源尺寸的逐面需求／回退／输出对照，以及关闭 footprint 后恢复最细级需求的检查。旧实现首先在 `Directional-PCF-Cold` 的 Hard 页预算断言失败。原有 scene/cache/local-light 夹具显式使用 `receiverFootprint=false`：它们的页边界、驱逐压力和固定分辨率几何参考依赖最细级；未放宽其误差或覆盖断言。接收点匹配策略由过滤需求与质量矩阵单独检查。
+
+Sponza 使用同一普通 GPUDriven 图、原始相机／太阳、1920×1080、2048 页、关闭 jitter，三种模式各运行 32 帧。Hard 的稳定需求从 7756 页、准入 2047 页降为 653 页且全部准入，中心粗级查询从 1,195,569 降至零；PCF 和 SMRT 8×16 分别请求 654 / 697 页，均无丢页或中心／过滤粗级回退。检查实际 PNG 后确认 Hard 长廊投影不再出现粗图大块锯齿。Hard 另运行移动相机 64 帧，末帧 595 页全部准入；各静态第 31 帧和移动第 31/63 帧的阴影及 HDR 均与强制重绘逐字节一致，无 RT 能力或分配，Vulkan / synchronization validation 消息为零。这些为短程正确性检查，不代表性能提升计时或长时间显存验收。
+
+选级矩阵共 54 个状态通过，其中 6 个降低虚拟页轴后的 PCF / SMRT 状态覆盖非末级：每状态对照 24,897 个中心查询，均与 Hard 选级一致；方向光／聚光各有 24,897 个非末级像素，点光为 24,385 个。10 项 GPU 回归通过、无跳过：`scene`、`cache`、`local_lights`、`compact`、`filter_demand`、`smrt_distance`、`smrt_penumbra`、`quality`、`remap`、`content`（均带 `virtual_shadow_map_` 前缀）。Shader module 审计通过，`MetallicRHITests`、`MetallicVSMSample` 与 `Metallic` Release 构建通过。
+
+本机证据保留于 `.cache/VSMReceiverLevel/`；`BeforeRegression` 和 `BeforeHard` 保存旧实现失败及画面，`AfterRegression` 保存过滤／SMRT／质量／紧凑输出回归，`FinalRegression` 保存最终 54 状态及固定精度夹具回归；`HardRegression` 中另保留夹具迁移前的失败和已通过的 remap/content。`Afterhard`、`Afterpcf`、`Aftersmrt`、`AfterHardMotion` 保存实景对照。

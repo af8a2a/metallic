@@ -50,7 +50,7 @@ struct VirtualShadowMapSettings
     uint32_t smrtRayCount = 8;
     uint32_t smrtSamplesPerRay = 8;
     float smrtMaxRayLength = 10.0f; // Soft search in meters; the first reverse sample retains farther blockers.
-    bool receiverFootprint = true; // Filtered queries select a level from the receiver pixel footprint.
+    bool receiverFootprint = true; // All filters share receiver-selected resolution; false starts at the finest level.
     bool enabled = true;
     bool cacheEnabled = false;
     bool forceRedraw = false;
