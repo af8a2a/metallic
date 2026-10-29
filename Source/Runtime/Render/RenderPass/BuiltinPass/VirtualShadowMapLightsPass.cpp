@@ -235,6 +235,7 @@ public:
         settings.collectGPUWork = collectGPUWork_;
         settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
         settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
+        settings.clusterPageBitset = boolProperty(&properties, "benchmarkClusterPageBitset", false);
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
         const float nearPlane = properties.value("nearPlane", 0.001f);

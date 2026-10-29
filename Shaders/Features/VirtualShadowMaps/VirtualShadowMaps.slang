@@ -12,6 +12,16 @@ import VirtualShadowMapCommon;
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
 #endif
+#ifndef VSM_CLUSTER_CULL
+#define VSM_CLUSTER_CULL 1
+#endif
+#ifndef VSM_CLUSTER_PAGE_BITSET
+#define VSM_CLUSTER_PAGE_BITSET 0
+#endif
+#if !VSM_CLUSTER_CULL
+#undef VSM_CLUSTER_PAGE_BITSET
+#define VSM_CLUSTER_PAGE_BITSET 0
+#endif
 
 using Metallic;
 using Metallic.Material;
@@ -36,6 +46,14 @@ struct ShadowPush
     uint samplePhase, sampleReserved;
 };
 
+#if VSM_CLUSTER_PAGE_BITSET
+uint vsmClusterPageBitsetOffset(ShadowPush push)
+{
+    // Matches the tail appended to the owners allocation in VirtualShadowMaps.cpp.
+    return push.physicalPageCount * 2u + push.totalPages + (push.totalPages + 255u) / 256u;
+}
+#endif
+
 void vsmWorkAdd(ShadowPush push, uint counter, uint value)
 {
 #if VSM_WORKLOAD_DIAGNOSTICS
@@ -55,17 +73,24 @@ void vsmBuildDiagnosticAdd(ShadowPush push, uint counter, uint value)
     vsmWorkAdd(push, kVirtualShadowMapWorkCounterCount + counter, value);
 }
 
-void vsmRecordClusterLevel(ShadowPush push, uint pageTests, uint outcome)
+void vsmRecordClusterLevel(ShadowPush push, uint scanTests, uint outcome)
 {
     // Every completed predicate has one outcome and one scan observation.
-    // Count page-table loads locally, including the successful final load,
-    // rather than issuing a diagnostic atomic for each inspected page.
+    // The modes have separate units: actual uint4 page-table loads versus
+    // actual uint bitset loads. Neither reports the other's logical page area.
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterLevelTests, 1u);
-    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterPageTests, pageTests);
+#if VSM_CLUSTER_PAGE_BITSET
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBitsetLevelTests, 1u);
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBitsetWordTests, scanTests);
+    const uint histogram = kVSMBuildDiagnosticClusterBitsetScanHistogram;
+#else
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterPageTests, scanTests);
+    const uint histogram = kVSMBuildDiagnosticClusterPageScanHistogram;
+#endif
     vsmBuildDiagnosticAdd(push, outcome, 1u);
     uint bucket = 0u;
-    if (pageTests != 0u) { bucket = min(uint(firstbithigh(pageTests)) + 1u, kVirtualShadowMapBuildDiagnosticHistogramCount - 1u); }
-    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterPageScanHistogram + bucket, 1u);
+    if (scanTests != 0u) { bucket = min(uint(firstbithigh(scanTests)) + 1u, kVirtualShadowMapBuildDiagnosticHistogramCount - 1u); }
+    vsmBuildDiagnosticAdd(push, histogram + bucket, 1u);
 }
 #endif
 
@@ -786,6 +811,9 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     if (id.x < (kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize) / 4u) { statistics[32u + id.x] = 0u; }
 #endif
     if (id.x < push.physicalPageCount) { owners[id.x] = 0u; }
+#if VSM_CLUSTER_PAGE_BITSET
+    if (id.x < (push.totalPages + 31u) / 32u) { owners[vsmClusterPageBitsetOffset(push) + id.x] = 0u; }
+#endif
     if (id.x < (push.batchCount + push.coarseBatchCount) * 3u) {
         arguments[id.x] = id.x % 3u == 0u ? 0u : 1u;
     }
@@ -965,6 +993,13 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
             counts.x = entry.x == 0xffffffffu ? 1u : 0u;
             counts.y = entry.x != 0xffffffffu && (entry.w & 2u) != 0u ? 1u : 0u;
             counts.z = entry.x != 0xffffffffu && (entry.w & 3u) == 1u ? 1u : 0u;
+#if VSM_CLUSTER_PAGE_BITSET
+            // Resident admitted pages are pinned through Assign, so this exact
+            // dirty predicate cannot be invalidated by another page's eviction.
+            if (counts.y != 0u) {
+                InterlockedOr(owners[vsmClusterPageBitsetOffset(push) + (id.x >> 5u)], 1u << (id.x & 31u));
+            }
+#endif
         }
     }
     uint3 prefix = vsmAllocationPrefix(counts, lane);
@@ -1045,11 +1080,12 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
     entry.x = physical; entry.w = 2u;
     pages[id.x] = entry;
     owners[physical] = id.x + 1u;
-}
-
-#ifndef VSM_CLUSTER_CULL
-#define VSM_CLUSTER_CULL 1
+#if VSM_CLUSTER_PAGE_BITSET
+    // This path handles only admitted missing pages. The writes above make
+    // each one resident and dirty; no invocation reads another evicted page.
+    InterlockedOr(owners[vsmClusterPageBitsetOffset(push) + (id.x >> 5u)], 1u << (id.x & 31u));
 #endif
+}
 
 #if VSM_CLUSTER_CULL
 groupshared float3 g_vsmClusterMinimum, g_vsmClusterMaximum;
@@ -1057,7 +1093,7 @@ groupshared uint g_vsmClusterValid, g_vsmClusterLevelMask;
 
 bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection projection,
     StructuredBuffer<uint4> pages
-#if VSM_WORKLOAD_DIAGNOSTICS
+#if VSM_WORKLOAD_DIAGNOSTICS || VSM_CLUSTER_PAGE_BITSET
     , ShadowPush push
 #endif
 )
@@ -1091,6 +1127,42 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
     }
     int2 first = clamp(int2(floor(saturate(lo * 0.5 + 0.5) * float(axis))) - 1, int2(0), int2(axis - 1));
     int2 last = clamp(int2(floor(saturate(hi * 0.5 + 0.5) * float(axis))) + 1, int2(0), int2(axis - 1));
+#if VSM_CLUSTER_PAGE_BITSET
+    StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    uint offset = vsmClusterPageBitsetOffset(push);
+    uint cachedWord = 0xffffffffu, rawWord = 0u;
+#if VSM_WORKLOAD_DIAGNOSTICS
+    uint wordTests = 0u;
+#endif
+    for (int y = first.y; y <= last.y; ++y) {
+        uint firstPage = projection.page.x + uint(y * axis + first.x);
+        uint lastPage = projection.page.x + uint(y * axis + last.x);
+        uint firstWord = firstPage >> 5u, lastWord = lastPage >> 5u;
+        for (uint word = firstWord; word <= lastWord; ++word) {
+            // Row ranges advance monotonically. Keep the unmasked word when
+            // an unaligned next row shares it (for example a 127-page axis).
+            if (word != cachedWord) {
+                rawWord = bitset[offset + word];
+                cachedWord = word;
+#if VSM_WORKLOAD_DIAGNOSTICS
+                ++wordTests;
+#endif
+            }
+            uint bits = rawWord;
+            if (word == firstWord) { bits &= 0xffffffffu << (firstPage & 31u); }
+            if (word == lastWord) { bits &= 0xffffffffu >> (31u - (lastPage & 31u)); }
+            if (bits != 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+                vsmRecordClusterLevel(push, wordTests, kVSMBuildDiagnosticClusterPageHits);
+#endif
+                return true;
+            }
+        }
+    }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    vsmRecordClusterLevel(push, wordTests, kVSMBuildDiagnosticClusterEmptyLevels);
+#endif
+#else
 #if VSM_WORKLOAD_DIAGNOSTICS
     uint pageTests = 0u;
 #endif
@@ -1110,6 +1182,7 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
     }
 #if VSM_WORKLOAD_DIAGNOSTICS
     vsmRecordClusterLevel(push, pageTests, kVSMBuildDiagnosticClusterEmptyLevels);
+#endif
 #endif
     return false;
 }
@@ -1158,7 +1231,11 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     }
 #else
     if (lane < push.clipmapCount && g_vsmClusterValid != 0u &&
-        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages)) {
+        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages
+#if VSM_CLUSTER_PAGE_BITSET
+            , push
+#endif
+        )) {
         InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
     }
 #endif

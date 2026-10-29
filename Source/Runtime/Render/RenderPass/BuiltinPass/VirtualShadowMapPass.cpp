@@ -31,6 +31,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.collectGPUWork = boolProperty(&properties, "benchmarkGPUWork", false);
     settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
     settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
+    settings.clusterPageBitset = boolProperty(&properties, "benchmarkClusterPageBitset", false);
     settings.enabled = boolProperty(&properties, "enabled", true) &&
         !boolProperty(&properties, "debugDisableShadows", false);
     return settings;

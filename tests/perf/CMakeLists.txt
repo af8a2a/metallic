@@ -8,6 +8,9 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicVirtualShadowMapBitsetTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapBitset.py")
+    set_tests_properties(MetallicVirtualShadowMapBitsetTests PROPERTIES LABELS "tools;perf" TIMEOUT 60)
     add_test(NAME MetallicVirtualShadowMapOptimizationTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapOptimization.py")
     set_tests_properties(MetallicVirtualShadowMapOptimizationTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)

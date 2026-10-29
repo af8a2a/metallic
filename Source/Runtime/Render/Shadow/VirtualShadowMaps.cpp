@@ -253,6 +253,7 @@ struct VirtualShadowMaps::Programs
     bool collectGPUWork = false;
     bool optimizeMark = true;
     bool clusterCulling = true;
+    bool clusterPageBitset = false;
     std::array<std::unique_ptr<ShaderModule>, 14> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 10> compute;
     std::unique_ptr<GraphicsPipeline> raster;
@@ -458,6 +459,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     auto light = inputLight;
     const bool directional = light.type == VirtualShadowMapLightType::Directional;
     const bool enabled = settings.enabled && light.enabled;
+    const bool clusterPageBitset = settings.clusterCulling && settings.clusterPageBitset;
     const auto finite = [](const Vector& value) {
         return std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); });
     };
@@ -681,11 +683,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     }
     const uint32_t allocationBlocks = (push.totalPages + 255u) / 256u;
     const uint64_t allocationWords = uint64_t(push.physicalPageCount) * 2 + push.totalPages + allocationBlocks;
+    // Append after owner/rank/block/candidate scratch. No allocation reader
+    // aliases these words while Admit and Assign publish the dirty-page mask.
+    const uint32_t clusterPageBitsetWords = clusterPageBitset ? (push.totalPages + 31u) / 32u : 0u;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
-        pageChanges.size() * sizeof(pageChanges[0]), allocationWords * sizeof(uint32_t)};
+        pageChanges.size() * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords) * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
         pageChanges.data(), nullptr};
@@ -804,7 +809,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.next("Prepare VSM pipeline cache");
     const bool programMiss = !programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey() ||
         programs_->collectGPUWork != settings.collectGPUWork ||
-        programs_->optimizeMark != settings.optimizeMark || programs_->clusterCulling != settings.clusterCulling;
+        programs_->optimizeMark != settings.optimizeMark || programs_->clusterCulling != settings.clusterCulling ||
+        programs_->clusterPageBitset != clusterPageBitset;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
         std::filesystem::path generatedDirectory;
@@ -817,6 +823,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->collectGPUWork = settings.collectGPUWork;
         programs->optimizeMark = settings.optimizeMark;
         programs->clusterCulling = settings.clusterCulling;
+        programs->clusterPageBitset = clusterPageBitset;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain"};
@@ -826,7 +833,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE", coverage->coverageProgramCount() ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", settings.collectGPUWork ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_MARK", settings.optimizeMark ? "1" : "0"},
-            SlangMacroDefine{"VSM_CLUSTER_CULL", settings.clusterCulling ? "1" : "0"}};
+            SlangMacroDefine{"VSM_CLUSTER_CULL", settings.clusterCulling ? "1" : "0"},
+            SlangMacroDefine{"VSM_CLUSTER_PAGE_BITSET", clusterPageBitset ? "1" : "0"}};
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
             auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
                 .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = paths,
@@ -837,9 +845,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             programs->shaders[index] = std::move(*module);
             if (index == 1 || index == 3) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} work={}", entries[index],
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
-                    settings.clusterCulling, settings.collectGPUWork);
+                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork);
             }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},

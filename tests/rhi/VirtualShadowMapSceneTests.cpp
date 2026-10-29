@@ -2309,7 +2309,8 @@ ProfilingSnapshot profilingSnapshot(const std::string& name, const ProfilingRead
     return result;
 }
 
-void requireBuildDiagnosticInvariants(const ProfilingSnapshot& snapshot, bool clusterCulling, const std::string& label)
+void requireBuildDiagnosticInvariants(const ProfilingSnapshot& snapshot, bool clusterCulling, const std::string& label,
+    bool clusterPageBitset = false)
 {
     require(snapshot.buildDiagnostics.size() == snapshot.statistics.size(), label + ": missing build diagnostic faces");
     for (size_t face = 0; face < snapshot.statistics.size(); ++face) {
@@ -2328,22 +2329,33 @@ void requireBuildDiagnosticInvariants(const ProfilingSnapshot& snapshot, bool cl
         const uint64_t pages = counters[kVSMBuildDiagnosticClusterPageTests], hits = counters[kVSMBuildDiagnosticClusterPageHits];
         const uint64_t near = counters[kVSMBuildDiagnosticClusterNearPlaneKeeps];
         const uint64_t outside = counters[kVSMBuildDiagnosticClusterOutsideLevels], empty = counters[kVSMBuildDiagnosticClusterEmptyLevels];
+        const uint64_t bitsetLevels = counters[kVSMBuildDiagnosticClusterBitsetLevelTests];
+        const uint64_t words = counters[kVSMBuildDiagnosticClusterBitsetWordTests];
         require(valid <= groups && surviving <= valid, prefix + ": invalid cluster group counts");
         require(levels == valid * stats[11], prefix + ": bounds-valid groups did not test every face level");
         require(hits + near + outside + empty == levels, prefix + ": cluster level outcomes do not partition tests");
-        require(counters[kVSMBuildDiagnosticClusterPageScanHistogram] == near + outside,
+        require(bitsetLevels == (clusterPageBitset ? levels : 0), prefix + ": build scan method does not match its diagnostic control");
+        require(counters[kVSMBuildDiagnosticClusterPageScanHistogram] + counters[kVSMBuildDiagnosticClusterBitsetScanHistogram] == near + outside,
             prefix + ": zero-length scans differ from near/outside outcomes");
-        uint64_t histogramCount = 0, minimumPages = 0, maximumPages = 0;
-        for (uint32_t bin = 0; bin < kVirtualShadowMapBuildDiagnosticHistogramCount; ++bin) {
-            const uint64_t count = counters[kVSMBuildDiagnosticClusterPageScanHistogram + bin];
-            const uint64_t lower = bin == 0 ? 0 : uint64_t(1) << (bin - 1);
-            const uint64_t upper = bin == 0 ? 0 : bin == 15 ? 16384 : (uint64_t(1) << bin) - 1;
-            histogramCount += count;
-            minimumPages += count * lower;
-            maximumPages += count * upper;
+        for (bool bitset : {false, true}) {
+            const uint32_t base = bitset ? kVSMBuildDiagnosticClusterBitsetScanHistogram : kVSMBuildDiagnosticClusterPageScanHistogram;
+            const uint64_t maximumScan = bitset ? 512 : 16384;
+            uint64_t histogramCount = 0, minimumLoads = 0, maximumLoads = 0;
+            for (uint32_t bin = 0; bin < kVirtualShadowMapBuildDiagnosticHistogramCount; ++bin) {
+                const uint64_t count = counters[base + bin];
+                const uint64_t lower = bin == 0 ? 0 : uint64_t(1) << (bin - 1);
+                const uint64_t upper = bin == 0 ? 0 : std::min(maximumScan, (uint64_t(1) << bin) - 1);
+                require(lower <= maximumScan || count == 0, prefix + ": scan histogram exceeds the maximum rectangle");
+                histogramCount += count;
+                minimumLoads += count * lower;
+                maximumLoads += count * upper;
+            }
+            require(histogramCount == (bitset ? bitsetLevels : levels - bitsetLevels),
+                prefix + ": scan histogram does not cover its selected level tests");
+            const uint64_t actualLoads = bitset ? words : pages;
+            require(minimumLoads <= actualLoads && actualLoads <= maximumLoads,
+                prefix + ": actual page/word scans exceed histogram bounds");
         }
-        require(histogramCount == levels, prefix + ": scan histogram does not cover every level test");
-        require(minimumPages <= pages && pages <= maximumPages, prefix + ": actual page scans exceed histogram bounds");
         if (stats[10] > 0) { require(groups > 0, prefix + ": dirty face with casters did not enter cluster precheck"); }
     }
 }
@@ -2552,18 +2564,23 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-class VirtualShadowMapOptimizationEquivalenceTest final : public RHITest
+class VirtualShadowMapEquivalenceTest : public RHITest
 {
 public:
-    VirtualShadowMapOptimizationEquivalenceTest() { name = "virtual_shadow_map_optimization_equivalence"; type = RHITestType::Rendering; }
+    explicit VirtualShadowMapEquivalenceTest(bool bitsetComparison) : bitsetComparison_(bitsetComparison)
+    {
+        name = bitsetComparison ? "virtual_shadow_map_cluster_page_bitset_equivalence" : "virtual_shadow_map_optimization_equivalence";
+        type = RHITestType::Rendering;
+    }
 
     RHITestResult run(RHITestContext& context) override
     {
         bench::ValidationRecorder validation;
-        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapOptimizationEquivalence";
+        const std::string reportName = bitsetComparison_ ? "VirtualShadowMapClusterPageBitsetEquivalence" : "VirtualShadowMapOptimizationEquivalence";
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
         Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
             {"buildDiagnosticCounterNames", kVirtualShadowMapBuildDiagnosticCounterNames}};
-        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapOptimizationEquivalence.json") << report.dump(2) << '\n'; };
+        const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
         try {
             std::filesystem::create_directories(directory);
             registerProfilingEvidencePass();
@@ -2584,15 +2601,21 @@ public:
             require(scene::buildMeshletStreamAssetOffline({.sourcePath = offscreen.source, .outputPath = offscreen.cache,
                 .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
 
-            constexpr uint32_t capacity = 4, faces = capacity * 6;
-            constexpr std::array arms{"Legacy", "MarkOnly", "ClusterOnly", "Both"};
-            uint64_t markReducedStates = 0, clusterReducedStates = 0;
+            constexpr uint32_t capacity = 4;
+            const std::vector<const char*> arms = bitsetComparison_ ? std::vector<const char*>{"Baseline", "Bitset"} :
+                std::vector<const char*>{"Legacy", "MarkOnly", "ClusterOnly", "Both"};
+            uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0;
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
-                    const std::vector<std::string> filters = mainMatrix ? std::vector<std::string>{"pcf", "smrt"} :
+                    const std::vector<std::string> filters = mainMatrix ? (bitsetComparison_ ?
+                        std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33"} :
+                        std::vector<std::string>{"pcf", "smrt"}) :
                         std::vector<std::string>{nearCase ? "smrt" : roomCase ? "pcf" : "hard"};
                     for (const auto& filter : filters) {
+                        const bool single = filter.starts_with("single-hard");
+                        const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
+                        const uint32_t faces = single ? 1 : capacity * 6, layers = single ? 1 : capacity;
                         const std::string label = std::string(streamed ? "Stream-" : "Resident-") +
                             (mainMatrix ? "Floor-" : nearCase ? "Near-" : roomCase ? "Room-" : "Offscreen-") + filter;
                         scene::SceneDocument scene;
@@ -2626,18 +2649,21 @@ public:
                             {"meshletNormalConeCull", false}, {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
                         for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                             const std::string name = arms[arm], evidence = name + "Evidence";
-                            graph.addNode("VirtualShadowMapLightsPass", name,
-                                {{"lightCapacity", capacity}, {"compactOutputs", true}, {"physicalPageBudget", 512},
-                                 {"pageSize", kPageSize}, {"virtualPagesPerAxis", kPagesPerAxis}, {"clipmapCount", kClipmapCount},
+                            graph.addNode(single ? "VirtualShadowMapPass" : "VirtualShadowMapLightsPass", name,
+                                {{"lightCapacity", capacity}, {"compactOutputs", true}, {"physicalPageBudget", 512}, {"physicalPageCount", 512},
+                                 {"pageSize", kPageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", kClipmapCount},
                                  {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002},
-                                 {"cacheEnabled", true}, {"receiverFootprint", true}, {"filter", filter}, {"pcfRadius", 1.5},
+                                 {"cacheEnabled", true}, {"receiverFootprint", true}, {"filter", single ? "hard" : filter}, {"pcfRadius", 1.5},
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", 2}, {"smrtSamplesPerRay", 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
-                                 {"benchmarkLegacyMark", (arm & 1) == 0}, {"benchmarkDisableClusterCull", (arm & 2) == 0}});
+                                 {"benchmarkLegacyMark", bitsetComparison_ ? false : (arm & 1) == 0},
+                                 {"benchmarkDisableClusterCull", bitsetComparison_ ? false : (arm & 2) == 0},
+                                 {"benchmarkClusterPageBitset", bitsetComparison_ && arm == 1}});
                             graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
                             graph.addNode("VSMProfilingEvidencePass", evidence,
-                                {{"layers", capacity}, {"faces", faces}, {"collectWork", true}, {"evidenceName", name}});
-                            graph.addEdge(name + ".shadows", evidence + ".shadow"); graph.addEdge(name + ".debug", evidence + ".debug");
+                                {{"layers", layers}, {"faces", faces}, {"collectWork", true}, {"evidenceName", name}});
+                            graph.addEdge(name + (single ? ".shadow" : ".shadows"), evidence + ".shadow");
+                            graph.addEdge(name + ".debug", evidence + ".debug");
                             graph.addEdge("Raster.depth", evidence + ".depth");
                             graph.addEdge(name + ".statistics", evidence + ".statistics");
                             graph.addEdge(name + ".workload", evidence + ".workload");
@@ -2659,13 +2685,13 @@ public:
                                 }
                                 if (frame == 3) { require(scene.setNodeLocalMatrix(0, original), "Restore optimization caster"); }
                             }
-                            renderAndRequire(preview, graph, "LegacyEvidence.color");
-                            std::array<ProfilingSnapshot, 4> snapshots;
-                            std::array<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>, 4> work{};
+                            renderAndRequire(preview, graph, std::string(arms.front()) + "Evidence.color");
+                            std::vector<ProfilingSnapshot> snapshots(arms.size());
+                            std::vector<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>> work(arms.size());
                             report["frames"].push_back({{"variant", label}, {"phase", phase}, {"arms", Json::object()}});
                             auto& entry = report["frames"].back();
                             for (uint32_t arm = 0; arm < arms.size(); ++arm) {
-                                snapshots[arm] = profilingSnapshot(arms[arm], {capacity, faces, true}, true);
+                                snapshots[arm] = profilingSnapshot(arms[arm], {layers, faces, true}, true);
                                 const auto& snapshot = snapshots[arm];
                                 for (const auto& face : snapshot.workload) {
                                     for (uint32_t counter = 0; counter < work[arm].size(); ++counter) { work[arm][counter] += face[counter]; }
@@ -2676,22 +2702,41 @@ public:
                                     {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
-                                requireBuildDiagnosticInvariants(snapshot, (arm & 2) != 0, label + "-" + phase + "-" + arms[arm]);
+                                requireBuildDiagnosticInvariants(snapshot, bitsetComparison_ || (arm & 2) != 0,
+                                    label + "-" + phase + "-" + arms[arm], bitsetComparison_ && arm == 1);
                                 if (arm != 0) {
                                     require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
                                         snapshot.depth == snapshots[0].depth && snapshot.statistics == snapshots[0].statistics,
                                         label + "-" + phase + ": " + arms[arm] + " changed images/depth or the 32-word statistics ABI");
                                 }
                             }
-                            for (uint32_t arm = 1; arm < arms.size(); ++arm) {
-                                for (uint32_t counter : {kVSMWorkMarkLevelTests, kVSMWorkMarkPageRequests,
-                                     kVSMWorkBuildDecodedTriangles, kVSMWorkBuildLevelTests, kVSMWorkBuildPageTests}) {
-                                    require(work[arm][counter] <= work[0][counter], label + "-" + phase + ": optimized GPU work increased");
+                            if (bitsetComparison_) {
+                                for (uint32_t face = 0; face < faces; ++face) {
+                                    for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                                        // Both arms retain shared marking; hash collisions can reorder repeated ORs.
+                                        if (counter == kVSMWorkMarkPageRequests) { continue; }
+                                        require(snapshots[0].workload[face][counter] == snapshots[1].workload[face][counter],
+                                            label + "-" + phase + ": bitset changed deterministic GPU work");
+                                    }
+                                    for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                                        const auto& counts = snapshots[arm].workload[face];
+                                        require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
+                                            (snapshots[arm].statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
+                                            label + "-" + phase + ": invalid shared mark request count");
+                                    }
+                                    bitsetTestedLevels += snapshots[1].buildDiagnostics[face][kVSMBuildDiagnosticClusterBitsetLevelTests];
                                 }
+                            } else {
+                                for (uint32_t arm = 1; arm < arms.size(); ++arm) {
+                                    for (uint32_t counter : {kVSMWorkMarkLevelTests, kVSMWorkMarkPageRequests,
+                                         kVSMWorkBuildDecodedTriangles, kVSMWorkBuildLevelTests, kVSMWorkBuildPageTests}) {
+                                        require(work[arm][counter] <= work[0][counter], label + "-" + phase + ": optimized GPU work increased");
+                                    }
+                                }
+                                markReducedStates += work[1][kVSMWorkMarkLevelTests] < work[0][kVSMWorkMarkLevelTests] ||
+                                    work[1][kVSMWorkMarkPageRequests] < work[0][kVSMWorkMarkPageRequests];
+                                clusterReducedStates += work[2][kVSMWorkBuildDecodedTriangles] < work[0][kVSMWorkBuildDecodedTriangles];
                             }
-                            markReducedStates += work[1][kVSMWorkMarkLevelTests] < work[0][kVSMWorkMarkLevelTests] ||
-                                work[1][kVSMWorkMarkPageRequests] < work[0][kVSMWorkMarkPageRequests];
-                            clusterReducedStates += work[2][kVSMWorkBuildDecodedTriangles] < work[0][kVSMWorkBuildDecodedTriangles];
                             uint64_t dirty = 0, overflow = 0, nearRejected = 0;
                             for (const auto& stats : snapshots[0].statistics) { dirty += stats[16]; overflow += stats[5]; nearRejected += stats[29]; }
                             require(work[0][kVSMWorkProjectionReceivers] > 0 && work[0][kVSMWorkProjectionAtlasLoads] > 0,
@@ -2706,19 +2751,42 @@ public:
                     }
                 }
             }
-            report["markReducedStates"] = markReducedStates; report["clusterReducedStates"] = clusterReducedStates;
-            require(markReducedStates > 0, "Optimization matrix did not exercise reduced mark work");
-            require(clusterReducedStates > 0, "Optimization matrix did not exercise a rejected stream cluster");
+            if (bitsetComparison_) {
+                report["bitsetTestedLevels"] = bitsetTestedLevels;
+                require(bitsetTestedLevels > 0, "Bitset matrix did not exercise a bitset level test");
+            } else {
+                report["markReducedStates"] = markReducedStates; report["clusterReducedStates"] = clusterReducedStates;
+                require(markReducedStates > 0, "Optimization matrix did not exercise reduced mark work");
+                require(clusterReducedStates > 0, "Optimization matrix did not exercise a rejected stream cluster");
+            }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
-            return RHITestResult::pass("Four production VSM arms preserve images, receiver depth and statistics across resident/stream, PCF/SMRT, offscreen, near-plane, seam and cache/overflow states");
+            return RHITestResult::pass(bitsetComparison_ ?
+                "Dirty-page bitsets preserve images, receiver depth, statistics and deterministic work in single/multi-light production graphs" :
+                "Four production VSM arms preserve images, receiver depth and statistics across resident/stream, PCF/SMRT, offscreen, near-plane, seam and cache/overflow states");
         } catch (const std::exception& error) {
             activeEvidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());
         }
     }
+private:
+    const bool bitsetComparison_;
+};
+
+class VirtualShadowMapOptimizationEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapOptimizationEquivalenceTest() : VirtualShadowMapEquivalenceTest(false) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapOptimizationEquivalenceTest);
+
+class VirtualShadowMapClusterPageBitsetEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapClusterPageBitsetEquivalenceTest() : VirtualShadowMapEquivalenceTest(true) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapClusterPageBitsetEquivalenceTest);
 
 } // namespace
 } // namespace metallic::tests

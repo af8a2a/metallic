@@ -50,7 +50,9 @@ Allocator 沿用旧统计中的 requested/admitted/rejected fine pages、dirty/c
 
 诊断 shader macro `VSM_WORKLOAD_DIAGNOSTICS` 属于 ShaderRegistry 缓存身份。关闭时编译掉新增计数代码；208 B push layout 和现有直接 shader tests 的 128 B statistics 合同保持不变。缓存深度有效性不依赖诊断开关。新增 mesh 写入通过 compute→mesh、mesh→compute/transfer 和完整 buffer import 同步。
 
-## 独立 build 诊断
+## 独立 build 诊断（v1）
+
+以下 25 项与 200 B 布局描述 v1 证据。当前写入端采用 [dirty-page bitset 的 v2 扩展](VirtualShadowMapsDirtyPageBitset.md)：保留这些字段并追加 18 项，共 344 B；工具兼容两版。v2 的页扫描与 bitset word 扫描分别计数，两种 histogram 合计覆盖所有 level tests。
 
 `shadow.gpuBuildDiagnostics` 使用独立 version 1 JSON，字段为 `enabled`、`faces`、`totals`。每个 face 沿用 `lightIndex`、`face`、`counters`；不是 compact 屏幕输出层。它与 `shadow.gpuWork` 共用 `benchmarkGPUWork` 开关，但两个 JSON 对象和原 16 个 counter 的 ABI 相互独立。关闭时只发布 `version/enabled:false`，普通 shader 不执行这些新增计数原子。
 

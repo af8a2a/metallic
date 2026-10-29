@@ -161,7 +161,7 @@ public:
             {"physicalPageBudget", header.physicalPageBudget}, {"sceneIdentity", header.sceneIdentity}}},
             {"statistics", faces}, {"totals", totals}};
         result["gpuWork"] = {{"version", 1}, {"enabled", collectGPUWork}};
-        result["gpuBuildDiagnostics"] = {{"version", 1}, {"enabled", collectGPUWork}};
+        result["gpuBuildDiagnostics"] = {{"version", 2}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
             const auto rawWorkload = read("Shadows.workload");
             requireAcceptance(rawWorkload.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapWorkloadSize,

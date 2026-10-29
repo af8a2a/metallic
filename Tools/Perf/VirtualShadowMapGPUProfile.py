@@ -63,6 +63,9 @@ BUILD_HISTOGRAM_RANGES = ((0, 0), (1, 1), *[(1 << power, (1 << (power + 1)) - 1)
 BUILD_HISTOGRAM_COUNTERS = ("clusterPageScan0", "clusterPageScan1",
     *[f"clusterPageScan{low}To{high}" for low, high in BUILD_HISTOGRAM_RANGES[2:-1]], "clusterPageScan16384Plus")
 BUILD_COUNTERS = (*BUILD_COUNTER_DEFINITIONS, *BUILD_HISTOGRAM_COUNTERS)
+BITSET_HISTOGRAM_COUNTERS = tuple(name.replace("clusterPageScan", "clusterBitsetScan") for name in BUILD_HISTOGRAM_COUNTERS)
+BITSET_COUNTERS = ("clusterBitsetLevelTests", "clusterBitsetWordTests", *BITSET_HISTOGRAM_COUNTERS)
+ALL_BUILD_COUNTERS = (*BUILD_COUNTERS, *BITSET_COUNTERS)
 
 
 def duration(value, label):
@@ -187,7 +190,7 @@ def build_frame(frame, mode):
         return result
     diagnostic = shadow["gpuBuildDiagnostics"]
     if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
-            diagnostic["version"] != 1 or not isinstance(diagnostic.get("enabled"), bool)):
+            diagnostic["version"] not in (1, 2) or not isinstance(diagnostic.get("enabled"), bool)):
         raise ValueError("Unknown or malformed GPU build diagnostic schema")
     if not diagnostic["enabled"]:
         if "faces" in diagnostic or "totals" in diagnostic:
@@ -196,11 +199,12 @@ def build_frame(frame, mode):
         return result
     if mode != "diagnostic":
         raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
+    names = BUILD_COUNTERS if diagnostic["version"] == 1 else ALL_BUILD_COUNTERS
     faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
-    if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(BUILD_COUNTERS) or
+    if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(names) or
             not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
         raise ValueError("Missing GPU build diagnostic faces, counters or legacy face statistics")
-    identities, summed = set(), dict.fromkeys(BUILD_COUNTERS, 0)
+    identities, summed = set(), dict.fromkeys(names, 0)
     for face in faces:
         if not isinstance(face, dict):
             raise ValueError("Malformed GPU build diagnostic face")
@@ -208,13 +212,13 @@ def build_frame(frame, mode):
         side = integer_counter(face.get("face"), "face")
         index = light * 6 + side
         counters = face.get("counters")
-        if side >= 6 or index >= len(statistics_rows) or index in identities or not isinstance(counters, dict) or set(counters) != set(BUILD_COUNTERS):
+        if side >= 6 or index >= len(statistics_rows) or index in identities or not isinstance(counters, dict) or set(counters) != set(names):
             raise ValueError("Duplicated or malformed GPU build diagnostic face")
         identities.add(index)
         stats = statistics_rows[index]
         if not isinstance(stats, list) or len(stats) != 32 or any(type(value) is not int or not 0 <= value <= 0xffffffff for value in stats):
             raise ValueError("Invalid legacy face statistics for GPU build diagnostics")
-        for name in BUILD_COUNTERS:
+        for name in names:
             value = integer_counter(counters[name], name)
             summed[name] += value
             if summed[name] > 0xffffffffffffffff:
@@ -227,17 +231,23 @@ def build_frame(frame, mode):
             raise ValueError("GPU build level tests disagree with valid groups times clipmap count")
         outcomes = sum(counters[name] for name in ("clusterPageHits", "clusterNearPlaneKeeps", "clusterOutsideLevels", "clusterEmptyLevels"))
         histogram = [counters[name] for name in BUILD_HISTOGRAM_COUNTERS]
-        if outcomes != levels or sum(histogram) != levels:
+        bitset_levels = counters.get("clusterBitsetLevelTests", 0)
+        bitset_histogram = [counters.get(name, 0) for name in BITSET_HISTOGRAM_COUNTERS]
+        if outcomes != levels or sum(histogram) + bitset_levels != levels or sum(bitset_histogram) != bitset_levels:
             raise ValueError("GPU build level outcomes/histogram do not partition level tests")
-        if histogram[0] != counters["clusterNearPlaneKeeps"] + counters["clusterOutsideLevels"]:
+        if histogram[0] + bitset_histogram[0] != counters["clusterNearPlaneKeeps"] + counters["clusterOutsideLevels"]:
             raise ValueError("GPU build zero-scan histogram disagrees with near/outside exits")
         minimum = sum(count * bounds[0] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
         maximum = sum(count * bounds[1] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
         if not minimum <= counters["clusterPageTests"] <= maximum:
             raise ValueError("GPU build page tests fall outside histogram scan-length bounds (maximum 16384 per level)")
+        word_minimum = sum(count * bounds[0] for count, bounds in zip(bitset_histogram, BUILD_HISTOGRAM_RANGES))
+        word_maximum = sum(count * min(bounds[1], 512) for count, bounds in zip(bitset_histogram, BUILD_HISTOGRAM_RANGES))
+        if not word_minimum <= counters.get("clusterBitsetWordTests", 0) <= word_maximum:
+            raise ValueError("Bitset word tests fall outside histogram bounds (maximum 512 per level)")
         if (stats[10] == 0 or stats[14] != 0 or stats[16] == 0) and any(counters.values()):
             raise ValueError("Inactive or zero-dirty face published nonzero GPU build diagnostics")
-    for name in BUILD_COUNTERS:
+    for name in names:
         if summed[name] != integer_counter(totals[name], name):
             raise ValueError(f"GPU build diagnostic face totals disagree: {name}")
     result.update(gpuBuildDiagnosticsAvailable=True, gpuBuildDiagnosticsState="enabled", **totals)
@@ -286,8 +296,8 @@ def summarize_package(source):
             counter_names = list(WORK_COUNTERS) + list(PAGE_STATISTICS.values())
             counters = {name: describe([row[name] for row in work if not row["warmup"] and name in row])
                         for name in counter_names if any(not row["warmup"] and name in row for row in work)}
-            build_counters = {name: describe([row[name] for row in build if not row["warmup"] and row["gpuBuildDiagnosticsAvailable"]])
-                              for name in BUILD_COUNTERS if any(not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] for row in build)}
+            build_counters = {name: describe([row[name] for row in build if not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] and name in row])
+                              for name in ALL_BUILD_COUNTERS if any(not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] and name in row for row in build)}
             processes.append({"case": case["id"], "process": index, "mode": data["mode"],
                               "source": str(path), "metrics": metrics, "counters": counters,
                               "buildDiagnosticCounters": build_counters,
@@ -302,7 +312,7 @@ def summarize_package(source):
     cases = []
     for (case, mode), entries in grouped.items():
         counter_names = sorted(set().union(*(entry["counters"] for entry in entries)))
-        build_names = [name for name in BUILD_COUNTERS if any(name in entry["buildDiagnosticCounters"] for entry in entries)]
+        build_names = [name for name in ALL_BUILD_COUNTERS if any(name in entry["buildDiagnosticCounters"] for entry in entries)]
         cases.append({"case": case, "mode": mode, "independentProcesses": len(entries),
                       "processMedianSummary": {column: describe([entry["metrics"][column]["median"] for entry in entries])
                                                for column in entries[0]["metrics"]},
@@ -379,21 +389,24 @@ def plot_work(case, output, filename):
     return filename
 
 
-def plot_build_histogram(case, output, filename):
+def plot_build_histogram(case, output, filename, bitset=False):
     import matplotlib.pyplot as plt
 
     values = case["buildDiagnosticProcessMedianSummary"]
     if case["mode"] != "diagnostic" or not values:
         return None
+    names = BITSET_HISTOGRAM_COUNTERS if bitset else BUILD_HISTOGRAM_COUNTERS
+    if bitset and not any(values.get(name, {}).get("median", 0) for name in names):
+        return None
     labels = [str(low) if low == high else f"{low}–{high}" for low, high in BUILD_HISTOGRAM_RANGES]
     labels[-1] = "16384+"
     figure, axis = plt.subplots(figsize=(12, 6), constrained_layout=True)
-    axis.bar(range(len(labels)), [values[name]["median"] for name in BUILD_HISTOGRAM_COUNTERS], color="#65952d")
+    axis.bar(range(len(labels)), [values[name]["median"] for name in names], color="#65952d")
     axis.set_xticks(range(len(labels)), labels, rotation=45, ha="right")
     axis.set_yscale("symlog", linthresh=1)
-    axis.set(xlabel="Actual page-entry reads per cluster-level check (includes the first hit)",
+    axis.set(xlabel=("Actual bitset uint reads per cluster-level check" if bitset else "Actual page-entry reads per cluster-level check (includes the first hit)"),
              ylabel="Checks / frame (median of diagnostic process medians; symlog)",
-             title=f"{case['case']}: cluster scan length, not projected rectangle area")
+             title=f"{case['case']}: cluster {'bitset' if bitset else 'page'} scan length (diagnostic)")
     axis.grid(axis="y", alpha=.25)
     figure.savefig(output / filename, dpi=150)
     plt.close(figure)
@@ -464,6 +477,9 @@ def report(args):
             build_image = plot_build_histogram(case, output, f"{label}-{ordinal}-build-histogram.png")
             if build_image:
                 text.extend([f"![Diagnostic cluster page scan histogram]({build_image})", ""])
+            bitset_image = plot_build_histogram(case, output, f"{label}-{ordinal}-bitset-histogram.png", bitset=True)
+            if bitset_image:
+                text.extend([f"![Diagnostic bitset word scan histogram]({bitset_image})", ""])
     build_frames = [{"package": label, **row} for label, item in packages for row in item["buildDiagnosticFrames"] if row["mode"] == "diagnostic"]
     build_faces = [{"package": label, **row} for label, item in packages for row in item["buildDiagnosticFaces"]]
     acceptance.save(output / "BuildDiagnosticFrames.json", build_frames)

@@ -226,6 +226,26 @@ class GPUProfileTests(unittest.TestCase):
         self.assertEqual(result["gpuBuildDiagnosticsState"], "disabled")
         self.assertNotIn("clusterGroups", result)
 
+    def test_bitset_v2_keeps_page_reads_separate(self):
+        row = add_build(frame(1))
+        data = row["shadow"]["gpuBuildDiagnostics"]
+        data["version"] = 2
+        for face in data["faces"]:
+            counters = face["counters"]
+            counters.update(dict.fromkeys(profile.BITSET_COUNTERS, 0))
+            counters["clusterBitsetLevelTests"] = counters["clusterLevelTests"]
+            counters["clusterBitsetWordTests"] = counters["clusterPageTests"]
+            counters["clusterPageTests"] = 0
+            for old, new in zip(profile.BUILD_HISTOGRAM_COUNTERS, profile.BITSET_HISTOGRAM_COUNTERS):
+                counters[new], counters[old] = counters[old], 0
+        data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.ALL_BUILD_COUNTERS}
+        parsed = profile.build_frame(row, "diagnostic")
+        self.assertEqual(parsed["clusterPageTests"], 0)
+        self.assertGreater(parsed["clusterBitsetWordTests"], 0)
+        data["faces"][0]["counters"]["clusterBitsetWordTests"] = 100000
+        with self.assertRaisesRegex(ValueError, "Bitset word tests"):
+            profile.build_frame(row, "diagnostic")
+
     def test_old_packages_do_not_claim_zero_build_work(self):
         result = profile.summarize_package(self.package("diagnostic", scales=(1.,)))
         self.assertEqual(result["cases"][0]["buildDiagnosticProcessMedianSummary"], {})
@@ -254,7 +274,7 @@ class GPUProfileTests(unittest.TestCase):
         row["shadow"]["gpuBuildDiagnostics"]["enabled"] = False
         with self.assertRaisesRegex(ValueError, "stale"):
             profile.build_frame(row, "diagnostic")
-        for invalid in (None, {"version": True, "enabled": True}, {"version": 2, "enabled": True}):
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 3, "enabled": True}):
             row["shadow"]["gpuBuildDiagnostics"] = invalid
             with self.subTest(schema=invalid), self.assertRaisesRegex(ValueError, "schema"):
                 profile.build_frame(row, "diagnostic")
