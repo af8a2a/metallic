@@ -5,6 +5,7 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -42,15 +43,13 @@ std::string hashBytes(const std::vector<std::byte>& bytes)
     return debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
 }
 
-Json hdrReceipt(const RenderGraphPreviewRenderer& preview)
+Json hdrReceipt(Format format, uint32_t width, uint32_t height, std::span<const std::byte> bytes)
 {
-    const auto format = preview.readbackFormat();
     requireAcceptance(format == Format::RGBA32Sfloat || format == Format::RGBA16Sfloat,
         "HDR comparison requires a linear floating-point output");
-    const auto& bytes = preview.readbackBytes();
     const bool half = format == Format::RGBA16Sfloat;
     const uint32_t componentBytes = half ? 2 : 4;
-    requireAcceptance(bytes.size() == uint64_t(preview.width()) * preview.height() * 4 * componentBytes,
+    requireAcceptance(bytes.size() == uint64_t(width) * height * 4 * componentBytes,
         "HDR readback size differs from the actual output extent");
     uint64_t nonfinite = 0;
     for (size_t offset = 0; offset < bytes.size(); offset += componentBytes) {
@@ -65,8 +64,13 @@ Json hdrReceipt(const RenderGraphPreviewRenderer& preview)
         }
     }
     return {{"format", half ? "RGBA16Sfloat" : "RGBA32Sfloat"},
-        {"width", preview.width()}, {"height", preview.height()},
+        {"width", width}, {"height", height},
         {"components", bytes.size() / componentBytes}, {"nonfiniteComponents", nonfinite}};
+}
+
+Json hdrReceipt(const RenderGraphPreviewRenderer& preview)
+{
+    return hdrReceipt(preview.readbackFormat(), preview.width(), preview.height(), preview.readbackBytes());
 }
 
 // Readbacks run only in diagnostic mode. Ordinary timings use the same production
@@ -74,6 +78,9 @@ Json hdrReceipt(const RenderGraphPreviewRenderer& preview)
 class VSMAcceptanceReceipt final : public IRenderDebugObserver {
 public:
     bool captureImages = false;
+    bool captureHDR = false;
+    std::string hdrOutput, hdrPass;
+    bool collectGPUWork = false;
     bool completed = false;
     uint32_t actualRenderWidth = 0, actualRenderHeight = 0;
     std::string error;
@@ -94,15 +101,17 @@ public:
     void boundary(CommandBuffer& commands, std::string_view checkpoint, uint32_t,
         std::string_view pass, std::span<const DebugResourceBinding> resources, const debug::DebugValue&) override
     {
-        if (checkpoint != "AfterPass" || (pass != "VBuffer" && pass != "Shadows") || !error.empty()) { return; }
+        if (checkpoint != "AfterPass" || (pass != "VBuffer" && pass != "Shadows" && (!captureHDR || pass != hdrPass)) || !error.empty()) { return; }
         for (const auto& binding : resources) {
             if (binding.id == "VBuffer.depth" && binding.texture) {
                 actualRenderWidth = binding.texture->desc().width;
                 actualRenderHeight = binding.texture->desc().height;
             }
-            const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory";
-            const bool image = captureImages && (binding.id == "VBuffer.depth" ||
-                binding.id == "VBuffer.visibility" || binding.id == "Shadows.shadows");
+            const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory" ||
+                (collectGPUWork && binding.id == "Shadows.workload");
+            const bool image = (captureImages && (binding.id == "VBuffer.depth" ||
+                binding.id == "VBuffer.visibility" || binding.id == "Shadows.shadows")) ||
+                (captureHDR && pass == hdrPass && binding.id == hdrOutput);
             if (!stats && !image) { continue; }
             try {
                 copy(commands, binding, image);
@@ -151,6 +160,31 @@ public:
             {"budgetDroppedCount", header.budgetDroppedCount}, {"disabledCount", header.disabledCount},
             {"physicalPageBudget", header.physicalPageBudget}, {"sceneIdentity", header.sceneIdentity}}},
             {"statistics", faces}, {"totals", totals}};
+        result["gpuWork"] = {{"version", 1}, {"enabled", collectGPUWork}};
+        if (collectGPUWork) {
+            const auto rawWorkload = read("Shadows.workload");
+            requireAcceptance(rawWorkload.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapWorkloadSize,
+                "Unexpected VSM GPU workload layout");
+            Json workFaces = Json::array(), workTotals = Json::object();
+            std::array<uint64_t, kVirtualShadowMapWorkCounterCount> sums{};
+            for (size_t offset = 0; offset < rawWorkload.size(); offset += kVirtualShadowMapWorkloadSize) {
+                std::array<uint32_t, kVirtualShadowMapWorkCounterCount * 2> words;
+                std::memcpy(words.data(), rawWorkload.data() + offset, sizeof(words));
+                Json counters = Json::object();
+                for (size_t index = 0; index < sums.size(); ++index) {
+                    const uint64_t value = uint64_t(words[index * 2]) | (uint64_t(words[index * 2 + 1]) << 32);
+                    counters[std::string(kVirtualShadowMapWorkCounterNames[index])] = value;
+                    sums[index] += value;
+                }
+                const size_t layer = offset / kVirtualShadowMapWorkloadSize;
+                workFaces.push_back({{"lightIndex", layer / 6}, {"face", layer % 6}, {"counters", std::move(counters)}});
+            }
+            for (size_t index = 0; index < sums.size(); ++index) {
+                workTotals[std::string(kVirtualShadowMapWorkCounterNames[index])] = sums[index];
+            }
+            result["gpuWork"]["faces"] = std::move(workFaces);
+            result["gpuWork"]["totals"] = std::move(workTotals);
+        }
         if (captured.contains("Shadows.memory")) {
             const auto rawMemory = read("Shadows.memory");
             requireAcceptance(rawMemory.size() == 64, "Unexpected VSM memory telemetry layout");
@@ -160,12 +194,29 @@ public:
         }
         return result;
     }
+    Json hdr()
+    {
+        const auto bytes = read(hdrOutput);
+        auto result = hdrReceipt(hdrFormat_, hdrWidth_, hdrHeight_, bytes);
+        result["output"] = hdrOutput;
+        result["rawSha256"] = hashBytes(bytes);
+        return result;
+    }
 private:
     void copy(CommandBuffer& commands, const DebugResourceBinding& binding, bool image)
     {
         const auto* texture = binding.texture;
+        const bool hdr = image && binding.id == hdrOutput;
+        uint32_t pixelBytes = binding.id == "Shadows.shadows" ? 1 : 4;
+        if (hdr) {
+            requireAcceptance(texture && texture->desc().layerCount == 1 &&
+                (texture->desc().format == Format::RGBA16Sfloat || texture->desc().format == Format::RGBA32Sfloat),
+                "Diagnostic HDR capture requires a single floating-point RGBA layer");
+            hdrFormat_ = texture->desc().format; hdrWidth_ = texture->desc().width; hdrHeight_ = texture->desc().height;
+            pixelBytes = hdrFormat_ == Format::RGBA16Sfloat ? 8 : 16;
+        }
         uint64_t bytes = image ? uint64_t(texture->desc().width) * texture->desc().height *
-            texture->desc().layerCount * (binding.id == "Shadows.shadows" ? 1 : 4) :
+            texture->desc().layerCount * pixelBytes :
             (binding.size ? binding.size : binding.buffer->desc().size - binding.offset);
         uint64_t allocationBytes = bytes;
         if (image) {
@@ -185,7 +236,7 @@ private:
         }
         if (image) {
             const auto& desc = texture->desc();
-            requireAcceptance(desc.format == Format::R8Unorm || desc.format == Format::R32Uint ||
+            requireAcceptance(hdr || desc.format == Format::R8Unorm || desc.format == Format::R32Uint ||
                 desc.format == Format::D32Sfloat, "Unexpected diagnostic image format");
             TextureBarrierDesc barrier{.texture = binding.texture,
                 .oldLayout = textureLayoutForResourceState(binding.state), .newLayout = TextureLayout::TransferSource,
@@ -221,6 +272,8 @@ private:
         captured[binding.id] = bytes;
     }
     Device* device_ = nullptr;
+    Format hdrFormat_{};
+    uint32_t hdrWidth_ = 0, hdrHeight_ = 0;
 };
 
 Json memorySnapshot(const Device& device)
@@ -374,9 +427,22 @@ public:
                 auto* shadows = graph.findNode("Shadows");
                 requireAcceptance(shadows && shadows->type == "VirtualShadowMapLightsPass", "Acceptance requires a production VSM Lights pass named Shadows");
                 const bool cpuProfileDiagnostics = shadows->properties.value("benchmarkCPUProfile", false);
+                const bool gpuProfileDiagnostics = shadows->properties.value("benchmarkGPUProfile", false);
+                const bool gpuWorkDiagnostics = shadows->properties.value("benchmarkGPUWork", false);
                 requireAcceptance(!cpuProfileDiagnostics || diagnostic, "CPU profile attribution requires diagnostic mode");
+                requireAcceptance(!gpuWorkDiagnostics || diagnostic, "Timing mode forbids GPU workload counters");
+                requireAcceptance(!cpuProfileDiagnostics || !gpuProfileDiagnostics,
+                    "CPU attribution and detailed GPU profiling must run separately");
                 output["cpuProfileDiagnostics"] = cpuProfileDiagnostics;
                 report["cpuProfileDiagnostics"] = cpuProfileDiagnostics;
+                output["gpuProfileDiagnostics"] = gpuProfileDiagnostics;
+                report["gpuProfileDiagnostics"] = gpuProfileDiagnostics;
+                output["gpuWorkDiagnostics"] = gpuWorkDiagnostics;
+                report["gpuWorkDiagnostics"] = gpuWorkDiagnostics;
+                if (gpuWorkDiagnostics) {
+                    report["performanceEligible"] = false;
+                    report["gpuWorkScope"] = "Optional GPU diagnostic counters include shader atomic overhead; timings from this run are not ordinary performance evidence.";
+                }
                 if (cpuProfileDiagnostics) {
                     report["performanceEligible"] = false;
                     report["cpuProfileScope"] = "CPU attribution includes diagnostic clocks and counters; nested sections are inclusive and must not be summed with their children. This is not ordinary performance acceptance.";
@@ -395,12 +461,15 @@ public:
                 const std::string displayOutput = spec.value("output", std::string("FinalBlit.color"));
                 const std::string comparisonOutput = spec.value("comparisonOutput", std::string("Deferred.color"));
                 graph.markOutput(displayOutput);
-                if (!comparisons.empty()) { graph.markOutput(comparisonOutput); }
+                if (!comparisons.empty() || (diagnostic && !captures.empty())) { graph.markOutput(comparisonOutput); }
                 output["resolvedGraph"] = Json::parse(serializeRenderGraphToString(graph));
                 std::vector<std::unique_ptr<scene::SceneDocument>> documents;
                 RenderView view;
                 RenderGraphPreviewRenderer preview;
                 VSMAcceptanceReceipt receipt;
+                receipt.collectGPUWork = gpuWorkDiagnostics;
+                receipt.hdrOutput = comparisonOutput;
+                receipt.hdrPass = comparisonOutput.substr(0, comparisonOutput.rfind('.'));
                 struct ReceiptLifetimeScope
                 {
                     RenderGraphPreviewRenderer& preview;
@@ -493,8 +562,9 @@ public:
                         graph.setNodeRuntimeProperty(rasterId, "benchmarkFreezeStreaming", true);
                     }
                     validation.phase(id + "/" + std::to_string(frame));
-                    receipt.captureImages = false;
                     const bool capture = std::find(captures.begin(), captures.end(), frame) != captures.end();
+                    receipt.captureImages = diagnostic && capture;
+                    receipt.captureHDR = diagnostic && capture;
                     const bool extentSnapshot = !diagnostic;
                     preview.setExecutionCaptureEnabled(extentSnapshot);
                     const auto begin = std::chrono::steady_clock::now();
@@ -573,6 +643,13 @@ public:
                         requireAcceptance(saveRgba8Png(directory / filename, reinterpret_cast<const uint8_t*>(preview.pixels().data()),
                             width, height, log), log);
                         output["captures"].push_back({{"frame", frame}, {"file", filename}, {"rawSha256", hashBytes(preview.readbackBytes())}});
+                        if (diagnostic) {
+                            auto& captureReceipt = output["captures"].back();
+                            captureReceipt["linearHDR"] = receipt.hdr();
+                            captureReceipt["depthSha256"] = hashBytes(receipt.read("VBuffer.depth"));
+                            captureReceipt["shadowSha256"] = hashBytes(receipt.read("Shadows.shadows"));
+                            requireAcceptance(captureReceipt["linearHDR"]["nonfiniteComponents"] == 0, "Nonfinite diagnostic HDR capture");
+                        }
                     }
                     if (std::find(comparisons.begin(), comparisons.end(), frame) != comparisons.end()) {
                         receipt.captureImages = true;

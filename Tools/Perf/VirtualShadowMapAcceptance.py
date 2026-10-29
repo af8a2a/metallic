@@ -157,14 +157,9 @@ def run(args):
     print(output)
 
 
-def report(args):
-    import numpy as np
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    source = args.source.resolve()
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
+def verify_package(source):
+    """Apply the report's package and per-capture checks without generating output."""
+    source = Path(source).resolve()
     manifest = read(source / "Manifest.json")
     actual = {str(p.relative_to(source)): digest(p) for p in sorted(source.rglob("*"))
               if p.is_file() and p.name != "Manifest.json"}
@@ -175,11 +170,26 @@ def report(args):
             or len(processes) != integrity["requestedRuns"]
             or any(p["exitCode"] != 0 or not p.get("captureValid") for p in processes)):
         raise ValueError("Incomplete evidence cannot be reported as accepted measurements")
-    grouped = {}
+    captures = []
     for index in range(len(processes)):
         if runtime_errors(source / f"run-{index + 1}"):
             raise ValueError("Runtime/SDK errors invalidate this package; inspect the preserved process log")
         path, data = validate_capture(source / f"run-{index + 1}", spec)
+        captures.append((path, data))
+    return spec, captures
+
+
+def report(args):
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    source = args.source.resolve()
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    _, captures = verify_package(source)
+    grouped = {}
+    for path, data in captures:
         for case in data["cases"]:
             grouped.setdefault(case["id"], []).append((path, data, case))
     summary = {"source": str(source), "manifestSHA256": digest(source / "Manifest.json"),

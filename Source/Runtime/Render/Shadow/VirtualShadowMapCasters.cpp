@@ -26,9 +26,17 @@ struct GeometryParameters
     uint32_t streamed = 0, triangles = 0, candidates = 0, instances = 0;
     uint32_t pages = 0, pageTable = 0, pageWordCount = 0, triangleCapacity = 0;
     uint32_t normals = UINT32_MAX, tessellation = UINT32_MAX, tessellationFactor = 1, subdivisionDepth = 0;
+    uint32_t residentClusterBounds = UINT32_MAX, reserved0 = 0, reserved1 = 0, reserved2 = 0;
 };
-static_assert(sizeof(GeometryParameters) == 48);
+static_assert(sizeof(GeometryParameters) == 64);
 static_assert(offsetof(GeometryParameters, subdivisionDepth) == 44);
+static_assert(offsetof(GeometryParameters, residentClusterBounds) == 48);
+
+struct CasterClusterBounds
+{
+    std::array<float, 4> minimum, maximum;
+};
+static_assert(sizeof(CasterClusterBounds) == 32);
 
 struct CasterUploads
 {
@@ -151,7 +159,8 @@ Result<uint32_t> upload(Device& device, ResourceRegistry& registry, CasterUpload
 Result<> gatherResidentTriangles(const scene::Scene& scene,
     std::span<const uint64_t> materialKeys, std::vector<VirtualShadowMapPrototypeTriangle>& triangles,
     std::vector<std::array<float, 4>>& normals, std::vector<std::array<uint32_t, 2>>& candidates,
-    uint32_t patchTriangleCount, VirtualShadowMapCasterResources& resources, std::string& log)
+    std::vector<scene::Bounds>& clusterBounds, uint32_t patchTriangleCount,
+    VirtualShadowMapCasterResources& resources, std::string& log)
 {
     for (size_t nodeIndex = 0; nodeIndex < scene.renderNodes().size(); ++nodeIndex) {
         const auto& node = scene.renderNodes()[nodeIndex];
@@ -198,6 +207,7 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
         hash.append(count);
         for (size_t triangleIndex = 0; triangleIndex < count; triangleIndex += 3) {
             VirtualShadowMapPrototypeTriangle triangle;
+            scene::Bounds triangleBounds;
             triangle.materialIndex = static_cast<uint32_t>(std::max(node.materialIndex, 0));
             triangle.reserved[0] = reflected ? 1u : 0u;
             for (uint32_t vertex = 0; vertex < 3; ++vertex) {
@@ -213,6 +223,7 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
                     triangle.vertices[vertex].uv = {uv.x, uv.y, 0, 0};
                 }
                 state.bounds.include(position);
+                triangleBounds.include(position);
                 hash.append(triangle.vertices[vertex].position);
                 hash.append(triangle.vertices[vertex].uv);
                 if (resources.displacedGeometry) {
@@ -228,6 +239,15 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
                     if (displaced) { hash.append(normals.back()); }
                 }
             }
+            // Microtriangles stay inside the base triangle plus the maximum
+            // height excursion. Accumulate once per touched 64-slot group,
+            // without evaluating or storing displaced vertices on the CPU.
+            expandDisplacedBounds(triangleBounds, displaced ? displacementBound(material) : 0.0f);
+            const size_t firstSlot = resources.displacedGeometry ? candidates.size() : triangles.size();
+            const size_t firstCluster = firstSlot / kVirtualShadowMapCasterClusterSize;
+            const size_t lastCluster = (firstSlot + expandedCount - 1) / kVirtualShadowMapCasterClusterSize;
+            clusterBounds.resize(lastCluster + 1);
+            for (size_t cluster = firstCluster; cluster <= lastCluster; ++cluster) { clusterBounds[cluster].include(triangleBounds); }
             if (resources.displacedGeometry) {
                 for (uint32_t patchTriangle = 0; patchTriangle < expandedCount; ++patchTriangle) {
                     candidates.push_back({static_cast<uint32_t>(triangles.size()), patchTriangle});
@@ -399,8 +419,9 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
         std::vector<VirtualShadowMapPrototypeTriangle> triangles;
         std::vector<std::array<float, 4>> normals;
         std::vector<std::array<uint32_t, 2>> candidates;
+        std::vector<scene::Bounds> clusterBounds;
         if (auto result = gatherResidentTriangles(scene, *materialKeys, triangles, normals, candidates,
-            patchTriangleCount, resources, log); !result) {
+            clusterBounds, patchTriangleCount, resources, log); !result) {
             return std::unexpected(result.error());
         }
         auto triangleIndex = upload(device, **registry, *owner, resources.leases,
@@ -419,6 +440,16 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
             parameters.candidates = *candidateIndex;
             parameters.triangleCapacity = static_cast<uint32_t>(candidates.size());
         }
+        std::vector<CasterClusterBounds> packedBounds;
+        packedBounds.reserve(clusterBounds.size());
+        for (const auto& bounds : clusterBounds) {
+            packedBounds.push_back({{bounds.min.x, bounds.min.y, bounds.min.z, 0},
+                {bounds.max.x, bounds.max.y, bounds.max.z, 0}});
+        }
+        auto boundsIndex = upload(device, **registry, *owner, resources.leases,
+            packedBounds.data(), packedBounds.size() * sizeof(packedBounds[0]), sizeof(packedBounds[0]));
+        if (!boundsIndex) { return std::unexpected(boundsIndex.error()); }
+        parameters.residentClusterBounds = *boundsIndex;
     }
     if (settings.texturePublicationRevision != 0 || resources.displacedGeometry) {
         ContentHash dependency;

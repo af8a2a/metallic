@@ -1,11 +1,14 @@
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
+#include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Scene/scene.h"
 
 #include <algorithm>
@@ -17,6 +20,7 @@
 #include <limits>
 #include <unordered_set>
 #include <vector>
+#include <spdlog/spdlog.h>
 
 namespace metallic::render {
 namespace {
@@ -246,6 +250,9 @@ struct VirtualShadowMaps::Programs
 {
     Device* device = nullptr;
     uint64_t coverageKey = 0;
+    bool collectGPUWork = false;
+    bool optimizeMark = false;
+    bool clusterCulling = true;
     std::array<std::unique_ptr<ShaderModule>, 14> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 10> compute;
     std::unique_ptr<GraphicsPipeline> raster;
@@ -400,7 +407,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
-    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler)
+    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
 {
     CPUProfileScope total(profiler, "VSM sun record");
     VirtualShadowMapLight light;
@@ -408,14 +415,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow);
     if (light.enabled) { light.direction = {sun.direction[0], sun.direction[1], sun.direction[2]}; }
     light.angularRadius = sun.angularRadius;
-    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection, output, profiler);
+    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection, output, profiler, gpuProfiler);
 }
 
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
     TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& inputLight,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
-    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler)
+    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
 {
     CPUProfileScope total(profiler, "VSM face record");
     total.work("lightType", uint32_t(inputLight.type));
@@ -675,7 +682,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint32_t allocationBlocks = (push.totalPages + 255u) / 256u;
     const uint64_t allocationWords = uint64_t(push.physicalPageCount) * 2 + push.totalPages + allocationBlocks;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
-        coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128,
+        coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ? kVirtualShadowMapWorkloadSize : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
         pageChanges.size() * sizeof(pageChanges[0]), allocationWords * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
@@ -794,8 +801,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.work("textureEvictions", pool_->stats.textureEvictions - poolBefore.textureEvictions);
     phase.work("viewCreates", pool_->stats.viewCreates - poolBefore.viewCreates);
     phase.next("Prepare VSM pipeline cache");
-    phase.work("cacheMiss", !programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey());
-    if (!programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey()) {
+    const bool programMiss = !programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey() ||
+        programs_->collectGPUWork != settings.collectGPUWork ||
+        programs_->optimizeMark != settings.optimizeMark || programs_->clusterCulling != settings.clusterCulling;
+    phase.work("cacheMiss", programMiss);
+    if (programMiss) {
         std::filesystem::path generatedDirectory;
         if (!coverage->writeCoverageInclude(PROJECT_SOURCE_DIR "/.cache/materials", generatedDirectory, log)) {
             return makeError(Error::Failure);
@@ -803,13 +813,19 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         auto programs = std::make_shared<Programs>();
         programs->device = &device;
         programs->coverageKey = coverage->coverageKey();
+        programs->collectGPUWork = settings.collectGPUWork;
+        programs->optimizeMark = settings.optimizeMark;
+        programs->clusterCulling = settings.clusterCulling;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
-        const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE", coverage->coverageProgramCount() ? "1" : "0"}};
+        const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE", coverage->coverageProgramCount() ? "1" : "0"},
+            SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", settings.collectGPUWork ? "1" : "0"},
+            SlangMacroDefine{"VSM_OPTIMIZE_MARK", settings.optimizeMark ? "1" : "0"},
+            SlangMacroDefine{"VSM_CLUSTER_CULL", settings.clusterCulling ? "1" : "0"}};
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
             auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
                 .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = paths,
@@ -818,6 +834,12 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
             if (!module) { return std::unexpected(module.error()); }
             programs->shaders[index] = std::move(*module);
+            if (index == 1 || index == 3) {
+                const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} work={}", entries[index],
+                    debug::debugSha256(bytes), settings.optimizeMark,
+                    settings.clusterCulling, settings.collectGPUWork);
+            }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
                     .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
@@ -861,6 +883,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         return commands.synchronize({.buffers = barriers});
     };
     phase.next("Record VSM demand and build commands");
+    auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM reset") : RenderGraphExecutionContext::ProfileScope{};
     commands.hostWriteBarrier();
     std::array<BufferBarrierDesc, 5> recycledReady;
     constexpr std::array<size_t, 5> deviceSlots{1, 3, 4, 7, 9};
@@ -875,11 +898,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite}, .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
         if (auto r = commands.synchronize({.buffers = {&previousReady, 1}}); !r) { return std::unexpected(r.error()); }
     }
-    commands.beginDebugLabel({.name = "VSM: demand and cache allocation"});
+    if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: demand and cache allocation"}); }
     if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, 32u, (push.batchCount + push.coarseBatchCount) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
+    gpu.next("VSM mark");
     if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({1}); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier(settings.collectGPUWork ? std::initializer_list<size_t>{1, 4} : std::initializer_list<size_t>{1});
+        !r) { return std::unexpected(r.error()); }
+    gpu.next("VSM allocator");
     if (auto r = dispatch(6, allocationBlocks); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
     if (auto r = dispatch(2, 1); !r) { return std::unexpected(r.error()); }
@@ -890,6 +916,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
     if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
+    gpu.next("VSM build");
     if (push.triangleCount && enabled) {
         // Compute dispatch limit is 65535 workgroups; split immutable triangle ranges.
         for (uint32_t base = 0; base < push.triangleCount;) {
@@ -906,8 +933,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = dispatch(4, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63) / 64); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({3, 1, 9}, PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({7}, PipelineStageBits::DrawIndirect, AccessBits::IndirectRead); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({4}); !r) { return std::unexpected(r.error()); }
-    commands.endDebugLabel();
+    if (auto r = barrier({4}, settings.collectGPUWork ? PipelineStageBits::PreRasterization : PipelineStageBits::ComputeShader);
+        !r) { return std::unexpected(r.error()); }
+    if (!gpuProfiler) { commands.endDebugLabel(); }
+    gpu.next("VSM raster");
     phase.next("Record VSM raster commands");
     phase.work("coarseBatches", push.coarseBatchCount);
     phase.work("fineBatches", push.batchCount);
@@ -919,7 +948,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
     const RenderingAttachmentDesc attachment{.view = state->resources->views[0].get(), .layout = TextureLayout::DepthStencilAttachment,
         .loadOp = reuse ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
-    commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"});
+    if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"}); }
     if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment}); !r) { return std::unexpected(r.error()); }
     if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
     commands.setScissor(area);
@@ -945,12 +974,21 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
         }
     }
-    commands.endRendering(); commands.endDebugLabel();
+    commands.endRendering();
+    if (!gpuProfiler) { commands.endDebugLabel(); }
     const TextureBarrierDesc atlasReady{.texture = state->resources->textures[0].get(),
         .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
         .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
         .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
     if (auto r = commands.synchronize({.textures = {&atlasReady, 1}}); !r) { return std::unexpected(r.error()); }
+    if (settings.collectGPUWork) {
+        const BufferBarrierDesc workReady{.buffer = state->resources->buffers[4].get(),
+            .before = {PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::ComputeShader | PipelineStageBits::Transfer,
+                AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::TransferRead}};
+        if (auto r = commands.synchronize({.buffers = {&workReady, 1}}); !r) { return std::unexpected(r.error()); }
+    }
+    gpu.end();
     phase.next("Prepare VSM cache snapshot");
     if (settings.cacheEnabled) {
         auto next = std::make_shared<Cache>();
@@ -970,7 +1008,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     state_ = state;
     phase.next("Project VSM immediately");
     if (!deferProjection) {
-        if (auto r = project(commands, {}, log, profiler); !r) { return std::unexpected(r.error()); }
+        if (auto r = project(commands, {}, log, profiler, gpuProfiler); !r) { return std::unexpected(r.error()); }
     }
     phase.next("Finish VSM record");
     return VirtualShadowMapResult{state->outputTextures[0], state->resources->views[1].get(), state->outputTextures[1], state->resources->views[2].get(),
@@ -979,7 +1017,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
 }
 
 Result<> VirtualShadowMaps::project(CommandBuffer& commands,
-    std::span<const VirtualShadowMapResult> pointFaces, std::string& log, CPUProfileRecorder* profiler)
+    std::span<const VirtualShadowMapResult> pointFaces, std::string& log, CPUProfileRecorder* profiler,
+    RenderGraphExecutionContext* gpuProfiler)
 {
     CPUProfileScope total(profiler, "VSM face project");
     total.work("pointFaces", pointFaces.size());
@@ -1049,6 +1088,7 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
     total.work("leases", state.leases.size());
     if (auto r = state.registry->bind(commands, state.leases); !r) { return r; }
     phase.next("Record VSM projection barriers and dispatch");
+    auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM projection") : RenderGraphExecutionContext::ProfileScope{};
     if (state.externalOutput) {
         // Point faces share one layer. Canonical ownership makes their writes
         // disjoint, while the explicit dependency also satisfies whole-view

@@ -15,6 +15,7 @@ namespace metallic::render {
 
 struct VirtualShadowMapCasterResources;
 struct CPUProfileRecorder;
+class RenderGraphExecutionContext;
 
 enum class VirtualShadowMapLightType : uint32_t { Directional, Spot, PointFace };
 enum class VirtualShadowMapFilter : uint32_t { Hard, PCF, SMRT };
@@ -38,6 +39,9 @@ struct VirtualShadowMapLight
 // One projection view: directional clipmaps, a spot frustum or one point face.
 struct VirtualShadowMapSettings
 {
+    bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
+    bool optimizeMark = false;
+    bool clusterCulling = true;
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
     uint32_t clipmapCount = 4;
@@ -119,19 +123,21 @@ public:
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
-        const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr);
+        const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr,
+        RenderGraphExecutionContext* gpuProfiler = nullptr);
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
-        const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr);
+        const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr,
+        RenderGraphExecutionContext* gpuProfiler = nullptr);
 
     // A filtered point light records all six faces before projecting any face.
     // The ordered face results keep each tap's page table, projection and atlas
     // explicit; no tap may wrap into an unrelated physical atlas tile.
     Result<> project(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log,
-        CPUProfileRecorder* profiler = nullptr);
+        CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr);
 
     // Logical resource bytes currently owned by this cache, recording and pool.
     // Native padding and retired recordings outside this cache/pool are excluded;

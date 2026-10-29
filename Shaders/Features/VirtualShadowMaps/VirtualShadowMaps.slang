@@ -7,6 +7,12 @@ import MaterialProgram;
 import VirtualShadowMapGeometry;
 import VirtualShadowMapCommon;
 
+#include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+
+#ifndef VSM_WORKLOAD_DIAGNOSTICS
+#define VSM_WORKLOAD_DIAGNOSTICS 0
+#endif
+
 using Metallic;
 using Metallic.Material;
 using Metallic.Shadow;
@@ -29,6 +35,18 @@ struct ShadowPush
     float rayLengthScale, maxRayAngle;
     uint samplePhase, sampleReserved;
 };
+
+void vsmWorkAdd(ShadowPush push, uint counter, uint value)
+{
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (value == 0u) { return; }
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint word = 32u + counter * 2u;
+    uint previous;
+    InterlockedAdd(statistics[word], value, previous);
+    if (previous > 0xffffffffu - value) { InterlockedAdd(statistics[word + 1u], 1u); }
+#endif
+}
 
 struct ShadowProjection
 {
@@ -525,6 +543,7 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
     uint2 texel = physical * push.pageSize + result.virtualTexel % push.pageSize;
     Texture2D<float> atlas = resolveNonUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
     result.storedDepth = atlas.Load(int3(texel, 0));
+    vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
 }
@@ -568,6 +587,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
+        vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, pixel);
         float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, pixel);
         float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
@@ -615,24 +635,48 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     return visibility / float(push.rayCount);
 }
 
-void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel)
+#ifndef VSM_OPTIMIZE_MARK
+#define VSM_OPTIMIZE_MARK 0
+#endif
+
+#if VSM_OPTIMIZE_MARK
+groupshared uint gVsmMarkedPages[256];
+#endif
+
+void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCounts)
 {
+#if VSM_OPTIMIZE_MARK
+    // A cache hit reuses an inserting lane's eventual OR. Hash collisions only
+    // cause repeated requests; allocation observes this dispatch after all ORs.
+    uint previous;
+    InterlockedExchange(gVsmMarkedPages[(page * 2654435761u) >> 24u], page, previous);
+    if (previous == page) { return; }
+#endif
+    InterlockedOr(pages[page].y, 1u);
+    ++workCounts.z;
+}
+
+void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint3 workCounts)
+{
+    ++workCounts.x;
     // Hard and the nine-tap PCF kernel keep the short direct path. Cache setup
     // pays off for the longer SMRT traces handled by the overload below.
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
+        ++workCounts.y;
         ShadowProjection projection = projections[level];
         float3 projected = vsmProjectPosition(position, projection);
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
         uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
-        InterlockedOr(pages[page].y, 1u);
+        vsmMarkPage(pages, page, workCounts);
     }
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[12])
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[12], inout uint3 workCounts)
 {
+    ++workCounts.x;
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
     // Match the query's first usable level. Requesting finer pages here spends
     // the admission budget on pages the receiver will never sample.
@@ -641,13 +685,14 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     [unroll]
     for (uint level = 0u; level < 12u; ++level) {
         if (level < firstLevel || level >= push.clipmapCount) { continue; }
+        ++workCounts.y;
         ShadowProjection projection = projections[level];
         float3 projected = vsmProjectPosition(position, projection);
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
         uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
         if (lastPages[level] == page) { continue; }
         lastPages[level] = page;
-        InterlockedOr(pages[page].y, 1u);
+        vsmMarkPage(pages, page, workCounts);
     }
 }
 
@@ -716,16 +761,18 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             id.x == 28u ? push.cancelledCount : 0u;
         statistics[id.x] = value;
     }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (id.x < kVirtualShadowMapWorkloadSize / 4u) { statistics[32u + id.x] = 0u; }
+#endif
     if (id.x < push.physicalPageCount) { owners[id.x] = 0u; }
     if (id.x < (push.batchCount + push.coarseBatchCount) * 3u) {
         arguments[id.x] = id.x % 3u == 0u ? 0u : 1u;
     }
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
+void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
 {
+    workCounts = uint3(0u);
     if (push.enabled == 0u) { return; }
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
     ViewConstants view = views[0];
@@ -740,6 +787,7 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         if ((push.lightRange > 0.0 && length(delta) >= push.lightRange) ||
             max(delta.x, max(delta.y, delta.z)) <= projections[0].originNear.w) { return; }
     } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
+    vsmWorkAdd(push, kVSMWorkMarkReceiverDispatches, 1u);
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     // Resolution belongs to the receiver, independently of the filter kernel.
     float3 normal = float3(0.0);
@@ -749,14 +797,14 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
         vsmProjectedReceiverFootprint(position, normal, linearDepth, view, projections[0], push));
     if (push.filterMode == 0u) {
-        vsmMarkPosition(position, projections, pages, push, receiverLevel);
+        vsmMarkPosition(position, projections, pages, push, receiverLevel, workCounts);
         return;
     }
     if (push.filterMode == 1u) {
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
                 vsmMarkPosition(vsmPCFPosition(position, normal, projections[receiverLevel], push, int2(x, y)),
-                    projections, pages, push, receiverLevel);
+                    projections, pages, push, receiverLevel, workCounts);
             }
         }
     } else if (push.filterMode == 2u) {
@@ -771,10 +819,26 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
                 float time = vsmRaySampleTime(step, push, id.xy);
                 float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
-                vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages);
+                vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages, workCounts);
             }
         }
     }
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+{
+#if VSM_OPTIMIZE_MARK
+    // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
+    for (uint entry = lane; entry < 256u; entry += 64u) { gVsmMarkedPages[entry] = 0xffffffffu; }
+    GroupMemoryBarrierWithGroupSync();
+#endif
+    uint3 counts;
+    vsmMarkReceiver(id, push, counts);
+    vsmWorkAdd(push, kVSMWorkMarkSamplePositions, counts.x);
+    vsmWorkAdd(push, kVSMWorkMarkLevelTests, counts.y);
+    vsmWorkAdd(push, kVSMWorkMarkPageRequests, counts.z);
 }
 
 // Allocation scratch follows the physical owner table in the same buffer:
@@ -962,20 +1026,97 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
     owners[physical] = id.x + 1u;
 }
 
+#ifndef VSM_CLUSTER_CULL
+#define VSM_CLUSTER_CULL 1
+#endif
+
+#if VSM_CLUSTER_CULL
+groupshared float3 g_vsmClusterMinimum, g_vsmClusterMaximum;
+groupshared uint g_vsmClusterValid, g_vsmClusterLevelMask;
+
+bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection projection,
+    StructuredBuffer<uint4> pages)
+{
+    float2 lo = float2(1e30), hi = -lo;
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        float3 position = float3((corner & 1u) != 0u ? maximum.x : minimum.x,
+            (corner & 2u) != 0u ? maximum.y : minimum.y,
+            (corner & 4u) != 0u ? maximum.z : minimum.z);
+        float4 clip = vsmProjectClip(position, projection);
+        // A box crossing the perspective near plane cannot be bounded by
+        // dividing its corners. Retain this level for the exact triangle clip.
+        if (projection.metric.w > 0.5 && clip.w <= projection.originNear.w) { return true; }
+        float2 projected = projection.metric.w > 0.5 ? clip.xy / clip.w : clip.xy;
+        lo = min(lo, projected); hi = max(hi, projected);
+    }
+    int axis = int(projection.page.y);
+    // Expand independently of the world-space bound to cover projected float
+    // rounding and floor-to-page boundaries. Do not cull on projected depth.
+    float guard = 2.0 / float(axis);
+    if (any(hi < -1.0 - guard) || any(lo > 1.0 + guard)) { return false; }
+    int2 first = clamp(int2(floor(saturate(lo * 0.5 + 0.5) * float(axis))) - 1, int2(0), int2(axis - 1));
+    int2 last = clamp(int2(floor(saturate(hi * 0.5 + 0.5) * float(axis))) + 1, int2(0), int2(axis - 1));
+    for (int y = first.y; y <= last.y; ++y) {
+        for (int x = first.x; x <= last.x; ++x) {
+            uint4 entry = pages[projection.page.x + uint(y * axis + x)];
+            if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 2u) != 0u) { return true; }
+        }
+    }
+    return false;
+}
+#endif
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void vsmBuildMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
+void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
+    uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
     uint triangleIndex = push.workBase + id.x;
+#if VSM_CLUSTER_CULL
+    // Each CPU dispatch starts at a multiple of 64, including batched draws.
+    // Only uniform exits precede the two group barriers; tail lanes participate.
+    uint firstTriangle = push.workBase + group.x * 64u;
+    if (firstTriangle >= push.triangleCount || push.enabled == 0u) { return; }
+#else
     if (triangleIndex >= push.triangleCount || push.enabled == 0u) { return; }
+#endif
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     if (statistics[16] == 0u) { return; }
-    VirtualShadowMapTriangle triangle;
-    if (!loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) { return; }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+#if VSM_CLUSTER_CULL
+    if (lane == 0u) {
+        g_vsmClusterLevelMask = 0u;
+        float3 minimum, maximum;
+        g_vsmClusterValid = loadVirtualShadowMapClusterBounds(push.geometry, firstTriangle,
+            minimum, maximum) ? 1u : 0u;
+        g_vsmClusterMinimum = minimum;
+        g_vsmClusterMaximum = maximum;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < push.clipmapCount && g_vsmClusterValid != 0u &&
+        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages)) {
+        InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint levelMask = g_vsmClusterLevelMask;
+    if (triangleIndex >= push.triangleCount || levelMask == 0u) { return; }
+#endif
+    vsmWorkAdd(push, kVSMWorkBuildActiveTriangleSlots, 1u);
+    VirtualShadowMapTriangle triangle;
+    if (!loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) { return; }
+    vsmWorkAdd(push, kVSMWorkBuildDecodedTriangles, 1u);
+#if VSM_CLUSTER_CULL
+    vsmWorkAdd(push, kVSMWorkBuildLevelTests, countbits(levelMask));
+#else
+    vsmWorkAdd(push, kVSMWorkBuildLevelTests, push.clipmapCount);
+#endif
+    uint pageTests = 0u;
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
     for (uint level = 0u; level < push.clipmapCount; ++level) {
+#if VSM_CLUSTER_CULL
+        if ((levelMask & (1u << level)) == 0u) { continue; }
+#endif
         ShadowProjection projection = projections[level];
         float3 lo, hi;
         if (projection.metric.w > 0.5) {
@@ -1007,6 +1148,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         int2 last = min(int2(floor(saturate(hi.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
         for (int y = first.y; y <= last.y; ++y) {
             for (int x = first.x; x <= last.x; ++x) {
+                ++pageTests;
                 uint page = projection.page.x + uint(y * axis + x);
                 uint4 entry = pages[page];
                 if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 2u) == 0u) { continue; }
@@ -1017,6 +1159,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             }
         }
     }
+    vsmWorkAdd(push, kVSMWorkBuildPageTests, pageTests);
 }
 
 [shader("compute")]
@@ -1077,6 +1220,7 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     }
     SetMeshOutputCounts(clear ? 4u : 0u, clear ? 2u : 0u);
     if (!clear) { return; }
+    if (lane == 0u) { vsmWorkAdd(push, kVSMWorkRasterClearedPages, 1u); }
     if (lane < 4u) {
         float2 corner = float2(lane & 1u, lane >> 1u);
         vertices[lane].position = float4(vsmAtlasPosition(corner, group.x, push), 0.0, 1.0);
@@ -1097,6 +1241,7 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     out vertices ShadowRasterVertex vertices[9], out indices uint3 triangles[7], uniform ShadowPush push)
 {
     if (lane == 0u) {
+        vsmWorkAdd(push, push.rasterCoarse != 0u ? kVSMWorkRasterCoarseGroups : kVSMWorkRasterFineGroups, 1u);
         g_vsmVertexCount = 0u;
         StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
         StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
@@ -1110,6 +1255,7 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         }
         VirtualShadowMapTriangle triangle;
         if (loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
+            vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
             uint4 page = pages[virtualPage];
             ShadowProjection projection = projections[page.z];
             float4 bounds = vsmPageBounds(virtualPage, projection);
@@ -1142,6 +1288,7 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     GroupMemoryBarrierWithGroupSync();
     uint vertexCount = g_vsmVertexCount;
     uint triangleCount = vertexCount >= 3u ? vertexCount - 2u : 0u;
+    if (lane == 0u) { vsmWorkAdd(push, kVSMWorkRasterOutputPrimitives, triangleCount); }
     SetMeshOutputCounts(vertexCount, triangleCount);
     if (lane < vertexCount) {
         ShadowClipVertex vertex = g_vsmPolygon[lane];
@@ -1212,6 +1359,7 @@ void vsmProjectReceiver(uint3 id, ShadowPush push, out uint3 filterCounts)
         if (nearPlane) { InterlockedAdd(statistics[29], 1u); }
         return;
     }
+    vsmWorkAdd(push, kVSMWorkProjectionReceivers, 1u);
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
@@ -1284,6 +1432,7 @@ void vsmProjectReceiver(uint3 id, ShadowPush push, out uint3 filterCounts)
     uint2 texel = physical * push.pageSize + virtualTexel % push.pageSize;
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     float storedDepth = atlas.Load(int3(texel, 0));
+    vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     // The producer's scene-Z/far margin keeps real casters above zero. A receiver
     // plane extrapolated past the scene must not turn empty depth into a blocker.
     shadow[id.xy] = storedDepth == 0.0 || compareDepth >= storedDepth ? 1.0 : 0.0;

@@ -7,6 +7,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 namespace metallic::render::builtin_pass {
@@ -27,6 +28,9 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
     settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", false);
     settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
+    settings.collectGPUWork = boolProperty(&properties, "benchmarkGPUWork", false);
+    settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
+    settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
     settings.enabled = boolProperty(&properties, "enabled", true) &&
         !boolProperty(&properties, "debugDisableShadows", false);
     return settings;
@@ -71,6 +75,10 @@ public:
             .transferWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::RGBA8Unorm;
         reflection.addBufferOutput("statistics", "VSM demand, allocation, raster work and fallback counters")
             .buffer(kVirtualShadowMapStatisticsSize, sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+        if (properties().value("benchmarkGPUWork", false)) {
+            reflection.addBufferOutput("workload", "VSM GPU workload counters; sixteen low/high uint pairs")
+                .buffer(kVirtualShadowMapWorkloadSize, sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+        }
         return reflection;
     }
 
@@ -101,6 +109,11 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        collectGPUWork_ = properties().value("benchmarkGPUWork", false);
+        if (properties().value("benchmarkCPUProfile", false) && properties().value("benchmarkGPUProfile", false)) {
+            log = "VSM CPU and detailed GPU profiling must run separately";
+            return makeError(Error::InvalidArgument);
+        }
         if (properties().value("filter", std::string("hard")) != "hard") {
             log = "VirtualShadowMapPass publishes the legacy hard-shadow interface; use VirtualShadowMapLightsPass for PCF/SMRT";
             return makeError(Error::Unsupported);
@@ -121,6 +134,12 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        if ((context.properties().value("benchmarkCPUProfile", false) &&
+            context.properties().value("benchmarkGPUProfile", false)) ||
+            context.properties().value("benchmarkGPUWork", false) != collectGPUWork_) {
+            spdlog::error("VSM CPU and GPU profiling must run separately; changing benchmarkGPUWork requires graph recompilation");
+            return makeError(Error::InvalidArgument);
+        }
         CPUProfileRecorder cpuRecorder;
         auto* cpu = context.properties().value("benchmarkCPUProfile", false) ? &cpuRecorder : nullptr;
         cpuRecorder.threadDiagnostics = context.properties().value("benchmarkCPUThreadDiagnostics", false);
@@ -139,11 +158,14 @@ public:
         const auto debugOutput = context.outputTexture("debug");
         const auto parametersOutput = context.outputBuffer("parameters");
         const auto statisticsOutput = context.outputBuffer("statistics");
+        const auto workloadOutput = context.outputBuffer("workload");
+        auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
         const auto* scene = context.runtimeScene();
         const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
         if (!device_ || !context.streamer() || !scene || !gpuScene ||
             !depth.valid() || !depth.view() || !metadata.valid() || !output.valid() ||
             !debugOutput.valid() || !parametersOutput.valid() || !statisticsOutput.valid() ||
+            (collectGPUWork_ && !workloadOutput.valid()) ||
             metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
             depth.desc().width != context.width() || depth.desc().height != context.height()) {
@@ -227,7 +249,7 @@ public:
         profile.next("VSM demand, raster and resolve");
         cpuPhase.next("Record shadow face");
         auto shadow = shadows_.record(*device_, commands, *depth.view(), view, light, *casters,
-            scene->materials(), alphaTextures, settings, log, false, nullptr, cpu);
+            scene->materials(), alphaTextures, settings, log, false, nullptr, cpu, gpuProfiler);
         if (!shadow) {
             spdlog::error("VirtualShadowMapPass: {}", log);
             return makeError(shadow.error());
@@ -259,18 +281,30 @@ public:
         }
         auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapStatisticsSize});
         auto destinationStats = statisticsOutput.buffer()->slice({0, kVirtualShadowMapStatisticsSize});
-        if (!sourceStats || !destinationStats) {
+        auto importedStats = shadow->statistics->slice({0, kVirtualShadowMapStatisticsSize +
+            (collectGPUWork_ ? kVirtualShadowMapWorkloadSize : 0)});
+        if (!sourceStats || !destinationStats || !importedStats) {
             (void)context.streamer()->cancelCopyBatch(*copyBatch);
-            return makeError(!sourceStats ? sourceStats.error() : destinationStats.error());
+            return makeError(Error::InvalidArgument);
+        }
+        BufferSlice sourceWorkload, destinationWorkload;
+        if (collectGPUWork_) {
+            auto source = shadow->statistics->slice({kVirtualShadowMapStatisticsSize, kVirtualShadowMapWorkloadSize});
+            auto destination = workloadOutput.buffer()->slice({0, kVirtualShadowMapWorkloadSize});
+            if (!source || !destination) {
+                (void)context.streamer()->cancelCopyBatch(*copyBatch);
+                return makeError(Error::InvalidArgument);
+            }
+            sourceWorkload = *source; destinationWorkload = *destination;
         }
         const std::array textureImports{
             RenderGraphTextureImport{"privateShadow", shadow->texture, shadow->shadow,
                 ResourceState::ShaderRead, ResourceState::ShaderRead},
             RenderGraphTextureImport{"privateDebug", shadow->debugTexture, shadow->debug,
                 ResourceState::ShaderRead, ResourceState::ShaderRead}};
-        const std::array bufferImports{RenderGraphBufferImport{"privateStatistics", *sourceStats,
-            RenderGraphResourceAccess::BufferShaderRead}};
-        const std::array uses{
+        const std::array bufferImports{RenderGraphBufferImport{"privateStatistics", *importedStats,
+            RenderGraphResourceAccess::BufferStorageReadWrite}};
+        std::vector<RenderGraphStageUse> uses{
             RenderGraphStageUse{"privateShadow", RenderGraphResourceAccess::TextureTransferRead},
             RenderGraphStageUse{"privateDebug", RenderGraphResourceAccess::TextureTransferRead},
             RenderGraphStageUse{"privateStatistics", RenderGraphResourceAccess::BufferTransferRead},
@@ -278,6 +312,7 @@ public:
             RenderGraphStageUse{"debug", RenderGraphResourceAccess::TextureTransferWrite},
             RenderGraphStageUse{"parameters", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
+        if (collectGPUWork_) { uses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite}); }
         const std::array stages{RenderGraphStage{"Publish VSM outputs", uses,
             [&](CommandBuffer& stageCommands) -> Result<> {
                 auto copied = stageCommands.copyTexture({.source = shadow->texture, .destination = output.texture(),
@@ -288,6 +323,10 @@ public:
                 if (!copied) { return copied; }
                 copied = stageCommands.copyBuffer(*sourceStats, *destinationStats);
                 if (!copied) { return copied; }
+                if (collectGPUWork_) {
+                    copied = stageCommands.copyBuffer(sourceWorkload, destinationWorkload);
+                    if (!copied) { return copied; }
+                }
                 return context.streamer()->copyStreamedData(stageCommands, *copyBatch);
             }}};
         result = context.executeStages(stages, bufferImports, textureImports);
@@ -308,6 +347,7 @@ public:
     }
 
 private:
+    bool collectGPUWork_ = false;
     Device* device_ = nullptr;
     VirtualShadowMapCasterCache casterCache_;
     VirtualShadowMaps shadows_;

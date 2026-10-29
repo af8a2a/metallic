@@ -32,6 +32,7 @@ struct VirtualShadowMapGeometryParameters
     uint streamed, triangles, candidates, instances;
     uint pages, pageTable, pageWordCount, triangleCapacity;
     uint normals, tessellation, tessellationFactor, subdivisionDepth;
+    uint residentClusterBounds, reserved0, reserved1, reserved2;
 };
 
 void displaceVirtualShadowMapTriangle(VirtualShadowMapGeometryParameters parameters,
@@ -86,6 +87,79 @@ struct VirtualShadowMapStreamInstance
     float4 world0, world1, world2, world3;
     float4 boundsCenterRadius;
 };
+
+struct VirtualShadowMapCasterClusterBounds
+{
+    float4 minimum, maximum;
+};
+
+// firstTriangle is aligned to the 64-slot fine-work group. A streamed
+// candidate has 128 slots, so no group straddles two terminal clusters.
+public bool loadVirtualShadowMapClusterBounds(uint geometryResourceIndex, uint firstTriangle,
+    out float3 minimum, out float3 maximum)
+{
+    minimum = maximum = float3(0.0);
+    StructuredBuffer<VirtualShadowMapGeometryParameters> parameters =
+        resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapGeometryParameters>>(geometryResourceIndex));
+    VirtualShadowMapGeometryParameters p = parameters[0];
+    if (p.streamed == 0u) {
+        StructuredBuffer<VirtualShadowMapCasterClusterBounds> bounds =
+            resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapCasterClusterBounds>>(p.residentClusterBounds));
+        VirtualShadowMapCasterClusterBounds cluster = bounds[firstTriangle / 64u];
+        minimum = cluster.minimum.xyz;
+        maximum = cluster.maximum.xyz;
+    } else {
+        StructuredBuffer<uint4> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(p.candidates));
+        uint4 candidate = candidates[firstTriangle / 128u];
+        StructuredBuffer<VirtualShadowMapStreamInstance> instances =
+            resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapStreamInstance>>(p.instances));
+        VirtualShadowMapStreamInstance instance = instances[candidate.x];
+        if (instance.visible == 0u) { return false; }
+        StructuredBuffer<uint> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(p.pages));
+        StructuredBuffer<uint2> pageTable = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(p.pageTable));
+        uint pageCount, stride;
+        pageTable.GetDimensions(pageCount, stride);
+        if (candidate.y >= pageCount) { return false; }
+        uint entry = pageTable[candidate.y].x;
+        if ((entry & 7u) != 2u && (entry & 7u) != 3u) { return false; }
+        uint page = (entry & 0xfffffff8u) / 4u;
+        if (page > p.pageWordCount || p.pageWordCount - page < 28u) { return false; }
+        uint bytes = pages[page + 12u], clusters = pages[page + 9u];
+        if (bytes < 112u || bytes / 4u > p.pageWordCount - page || (clusters & 3u) != 0u ||
+            clusters > bytes || candidate.z >= pages[page + 2u] || candidate.z >= (bytes - clusters) / 96u) { return false; }
+        uint cluster = page + clusters / 4u + candidate.z * 24u;
+        if (firstTriangle % 128u >= pages[cluster + 3u]) { return false; }
+        // The stream cooker builds cluster bounds from the same reconstructed
+        // positions it stores: Reference quantizes before rebuilding meshlets.
+        // Device compaction only removes position padding, preserving XYZ bits.
+        float3 localCenter = asfloat(uint3(pages[cluster + 12u], pages[cluster + 13u], pages[cluster + 14u]));
+        float radius = asfloat(pages[cluster + 15u]);
+        float3 center = instance.world0.xyz * localCenter.x + instance.world1.xyz * localCenter.y +
+            instance.world2.xyz * localCenter.z + instance.world3.xyz;
+        // Transform the sphere's enclosing cube. Absolute columns retain a
+        // conservative AABB for nonuniform scale, reflection and shear.
+        float3 extent = radius * (abs(instance.world0.xyz) + abs(instance.world1.xyz) + abs(instance.world2.xyz));
+        // Center and vertex transforms can round differently before large
+        // local coordinates cancel against translation. Bound their arithmetic
+        // using absolute terms, independently of the small translated result.
+        float3 transformMagnitude = abs(instance.world0.xyz * localCenter.x) +
+            abs(instance.world1.xyz * localCenter.y) + abs(instance.world2.xyz * localCenter.z) + abs(instance.world3.xyz);
+        extent += (transformMagnitude + extent) * 1e-6;
+        if (p.tessellation != 0xffffffffu) {
+            StructuredBuffer<uint> data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(p.tessellation));
+            TessMaterial material = tessMaterial(data, instance.materialIndex);
+            if (material.enabled != 0u) { extent += abs(material.magnitude) * max(abs(material.centre), abs(1.0 - material.centre)); }
+        }
+        minimum = center - extent;
+        maximum = center + extent;
+    }
+    // Cover float rounding of final bound endpoints and displaced interpolation;
+    // the projected page guard below is separate from this world-space bound.
+    float3 rounding = max(max(abs(minimum), abs(maximum)), float3(1.0)) * 1e-6;
+    minimum -= rounding;
+    maximum += rounding;
+    return true;
+}
 
 public bool loadVirtualShadowMapTriangle(uint geometryResourceIndex, uint triangleIndex,
     out VirtualShadowMapTriangle triangle)

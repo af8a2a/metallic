@@ -5,6 +5,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -86,6 +87,11 @@ public:
         reflection.addBufferOutput("statistics", "Six 32-uint face blocks per light entry")
             .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapFaceStatisticsSize, sizeof(uint32_t))
             .bufferLayout("u32").transferWrite();
+        if (properties().value("benchmarkGPUWork", false)) {
+            reflection.addBufferOutput("workload", "Six GPU workload blocks per light entry; sixteen low/high uint pairs per face")
+                .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapWorkloadSize, sizeof(uint32_t))
+                .bufferLayout("u32").transferWrite();
+        }
         reflection.addBufferOutput("memory", "Logical owned bytes: atlas, private output, buffers, public output, faces, atlas pages, temporal history")
             .buffer(8 * sizeof(uint64_t), sizeof(uint64_t)).transferWrite();
         return reflection;
@@ -125,6 +131,11 @@ public:
     {
         capacity_ = properties().value("lightCapacity", 8u);
         compact_ = properties().value("compactOutputs", false);
+        collectGPUWork_ = properties().value("benchmarkGPUWork", false);
+        if (properties().value("benchmarkCPUProfile", false) && properties().value("benchmarkGPUProfile", false)) {
+            log = "VSM CPU and detailed GPU profiling must run separately";
+            return makeError(Error::InvalidArgument);
+        }
         if (capacity_ < 2 || capacity_ > 64 || !context.device || !context.preparedScene ||
             !context.preparedScene->snapshot || !context.preparedScene->snapshot->pathTraceResources) {
             log = "VirtualShadowMapLightsPass requires material resources and lightCapacity in [2,64]";
@@ -140,6 +151,12 @@ public:
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        if ((context.properties().value("benchmarkCPUProfile", false) &&
+            context.properties().value("benchmarkGPUProfile", false)) ||
+            context.properties().value("benchmarkGPUWork", false) != collectGPUWork_) {
+            spdlog::error("VSM CPU and GPU profiling must run separately; changing benchmarkGPUWork requires graph recompilation");
+            return makeError(Error::InvalidArgument);
+        }
         CPUProfileRecorder cpuRecorder;
         auto* cpu = context.properties().value("benchmarkCPUProfile", false) ? &cpuRecorder : nullptr;
         cpuRecorder.threadDiagnostics = context.properties().value("benchmarkCPUThreadDiagnostics", false);
@@ -158,13 +175,16 @@ public:
         const auto debug = context.outputTexture("debug");
         const auto table = context.outputBuffer("lights");
         const auto statistics = context.outputBuffer("statistics");
+        const auto workload = context.outputBuffer("workload");
+        auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
         const auto memory = context.outputBuffer("memory");
         const auto* scene = context.runtimeScene();
         const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
         if (!scene || !gpuScene || !context.streamer() || !depth.valid() || !depth.view() ||
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
-            !output.valid() || !debug.valid() || !table.valid() || !statistics.valid() || !memory.valid()) {
+            !output.valid() || !debug.valid() || !table.valid() || !statistics.valid() || !memory.valid() ||
+            (collectGPUWork_ && !workload.valid())) {
             return makeError(Error::InvalidArgument);
         }
         VisibilityBufferFrameInfo info;
@@ -208,6 +228,9 @@ public:
         settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
+        settings.collectGPUWork = collectGPUWork_;
+        settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
+        settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
         const float nearPlane = properties.value("nearPlane", 0.001f);
@@ -327,6 +350,9 @@ public:
             VirtualShadowMapResult shadow;
             BufferSlice sourceStats;
             BufferSlice destinationStats;
+            BufferSlice importedStats;
+            BufferSlice sourceWorkload;
+            BufferSlice destinationWorkload;
             uint32_t layer;
             std::array<std::string, 3> names;
         };
@@ -339,20 +365,26 @@ public:
                 &lights[index].entry, sizeof(VirtualShadowMapLightEntry));
         }
         std::vector<uint32_t> zeroStatistics(statistics.desc().size / sizeof(uint32_t), 0);
+        std::vector<uint32_t> zeroWorkload(collectGPUWork_ ? workload.desc().size / sizeof(uint32_t) : 0, 0);
         auto batch = context.streamer()->beginCopyBatch();
         if (!batch) { return makeError(batch.error()); }
-        const std::array<StreamDataChunk, 2> chunks{{{tableData.data(), tableData.size()},
-            {zeroStatistics.data(), zeroStatistics.size() * sizeof(uint32_t)}}};
-        const std::array<Buffer*, 2> destinations{table.buffer(), statistics.buffer()};
+        std::vector<StreamDataChunk> chunks{{tableData.data(), tableData.size()},
+            {zeroStatistics.data(), zeroStatistics.size() * sizeof(uint32_t)}};
+        std::vector<Buffer*> destinations{table.buffer(), statistics.buffer()};
+        if (collectGPUWork_) {
+            chunks.push_back({zeroWorkload.data(), zeroWorkload.size() * sizeof(uint32_t)});
+            destinations.push_back(workload.buffer());
+        }
         for (size_t index = 0; index < chunks.size(); ++index) {
             const auto upload = context.streamer()->streamBufferData({.dataChunks = {&chunks[index], 1},
                 .placementAlignment = 16, .dstBuffer = destinations[index], .copyBatch = *batch});
             if (!upload.valid()) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(Error::OutOfMemory); }
         }
-        const std::array initializeUses{RenderGraphStageUse{"shadows", RenderGraphResourceAccess::TextureTransferWrite},
+        std::vector<RenderGraphStageUse> initializeUses{RenderGraphStageUse{"shadows", RenderGraphResourceAccess::TextureTransferWrite},
             RenderGraphStageUse{"debug", RenderGraphResourceAccess::TextureTransferWrite},
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
+        if (collectGPUWork_) { initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite}); }
         struct ProjectionGroup
         {
             std::array<VirtualShadowMaps*, 6> faces{};
@@ -430,16 +462,27 @@ public:
                         settings.physicalPageCount = item.faceBudgets[face];
                         const VirtualShadowMapProjectionTarget target{output.texture(), debug.texture(), item.entry.baseLayer, item.entry.faceCount == 6};
                         auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
-                            scene->materials(), alphaTextures, settings, log, deferredProjection, compact_ ? &target : nullptr, cpu);
+                            scene->materials(), alphaTextures, settings, log, deferredProjection, compact_ ? &target : nullptr, cpu, gpuProfiler);
                         if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
                         pointResults[face] = *shadow;
                         const uint32_t layer = index * 6 + face;
                         auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize});
                         auto destinationStats = statistics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapFaceStatisticsSize,
                             kVirtualShadowMapFaceStatisticsSize});
-                        if (!sourceStats || !destinationStats) { return makeError(Error::InvalidArgument); }
+                        auto importedStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize +
+                            (collectGPUWork_ ? kVirtualShadowMapWorkloadSize : 0)});
+                        if (!sourceStats || !destinationStats || !importedStats) { return makeError(Error::InvalidArgument); }
+                        BufferSlice sourceWorkload, destinationWorkload;
+                        if (collectGPUWork_) {
+                            auto source = shadow->statistics->slice({kVirtualShadowMapFaceStatisticsSize, kVirtualShadowMapWorkloadSize});
+                            auto destination = workload.buffer()->slice({uint64_t(layer) * kVirtualShadowMapWorkloadSize,
+                                kVirtualShadowMapWorkloadSize});
+                            if (!source || !destination) { return makeError(Error::InvalidArgument); }
+                            sourceWorkload = *source; destinationWorkload = *destination;
+                        }
                         const auto suffix = std::to_string(layer);
-                        publications.push_back({*shadow, *sourceStats, *destinationStats, layer,
+                        publications.push_back({*shadow, *sourceStats, *destinationStats, *importedStats,
+                            sourceWorkload, destinationWorkload, layer,
                             {"faceShadow" + suffix, "faceDebug" + suffix, "faceStatistics" + suffix}});
                     }
                     if (compact_) {
@@ -451,7 +494,7 @@ public:
                         projections.push_back(group);
                     } else if (deferredProjection) {
                         for (auto& face : faces) {
-                            if (auto projected = face->project(commands, pointResults, log, cpu); !projected) {
+                            if (auto projected = face->project(commands, pointResults, log, cpu, gpuProfiler); !projected) {
                                 spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
                                 return projected;
                             }
@@ -475,6 +518,7 @@ public:
                 {"depth", RenderGraphResourceAccess::TextureSampleRead}};
         }
         std::vector<RenderGraphStageUse> publishUses{{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
+        if (collectGPUWork_) { publishUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite}); }
         if (!compact_) {
             publishUses.push_back({"shadows", RenderGraphResourceAccess::TextureTransferWrite});
             publishUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite});
@@ -493,7 +537,7 @@ public:
                 publishUses.push_back({names[0], RenderGraphResourceAccess::TextureTransferRead});
                 publishUses.push_back({names[1], RenderGraphResourceAccess::TextureTransferRead});
             }
-            bufferImports.push_back({names[2], publication.sourceStats, RenderGraphResourceAccess::BufferShaderRead});
+            bufferImports.push_back({names[2], publication.importedStats, RenderGraphResourceAccess::BufferStorageReadWrite});
             publishUses.push_back({names[2], RenderGraphResourceAccess::BufferTransferRead});
             if (compact_) { projectionUses.push_back({names[2], RenderGraphResourceAccess::BufferStorageReadWrite}); }
         }
@@ -522,7 +566,7 @@ public:
                     for (uint32_t face = 0; face < group.faceCount; ++face) {
                         const auto pointFaces = group.filteredPoint ? std::span<const VirtualShadowMapResult>(group.results) :
                             std::span<const VirtualShadowMapResult>{};
-                        if (auto r = group.faces[face]->project(cmd, pointFaces, log, cpu); !r) {
+                        if (auto r = group.faces[face]->project(cmd, pointFaces, log, cpu, gpuProfiler); !r) {
                             spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
                             return r;
                         }
@@ -556,6 +600,10 @@ public:
                     }
                     auto copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
                     if (!copied) { return copied; }
+                    if (collectGPUWork_) {
+                        copied = cmd.copyBuffer(publication.sourceWorkload, publication.destinationWorkload);
+                        if (!copied) { return copied; }
+                    }
                 }
                 return {};
             }}, RenderGraphStage{"Stabilize SMRT shadows", temporalUses,
@@ -601,6 +649,7 @@ private:
     VirtualShadowMapCasterCache casterCache_;
     uint32_t capacity_ = 8;
     bool compact_ = false;
+    bool collectGPUWork_ = false;
     uint64_t sceneIdentity_ = 0;
     std::unordered_map<uint64_t, std::array<std::unique_ptr<VirtualShadowMaps>, 6>> caches_;
     std::unordered_map<uint64_t, std::unique_ptr<VirtualShadowMapTemporal>> histories_;

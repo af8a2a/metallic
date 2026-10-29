@@ -1,4 +1,5 @@
 #include "RHITest.h"
+#include "Runtime/Debug/DebugHash.h"
 #include "harness/ValidationRecorder.h"
 #include "harness/VulkanDiagnostics.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -9,6 +10,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -2194,6 +2196,451 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapLocalLightsTest);
+
+struct ProfilingReadbackLayout
+{
+    uint32_t layers, faces;
+    uint64_t shadowStride = (kPixels + 3) & ~uint64_t(3);
+    uint64_t debug, depth, statistics, workload, size;
+
+    ProfilingReadbackLayout(uint32_t layerCount, uint32_t faceCount, bool collectWork)
+        : layers(layerCount), faces(faceCount), debug(shadowStride * layers),
+          depth(debug + kPixels * 4 * layers), statistics(depth + kPixels * 4),
+          workload((statistics + faces * kVirtualShadowMapFaceStatisticsSize + 7) & ~uint64_t(7)),
+          size(workload + (collectWork ? faces * kVirtualShadowMapWorkloadSize : 0)) {}
+};
+
+class VSMProfilingEvidencePass final : public UnsafePass
+{
+public:
+    explicit VSMProfilingEvidencePass(std::shared_ptr<EvidenceState> state) : state_(std::move(state)) {}
+
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        const bool collectWork = properties().value("collectWork", false);
+        const ProfilingReadbackLayout layout(properties().value("layers", 1u), properties().value("faces", 1u), collectWork);
+        RenderPassReflection reflection;
+        auto& shadow = reflection.addTextureInput("shadow").transferRead();
+        shadow.format = Format::R8Unorm; shadow.layerCount = layout.layers;
+        auto& debug = reflection.addTextureInput("debug").transferRead();
+        debug.format = Format::RGBA8Unorm; debug.layerCount = layout.layers;
+        reflection.addTextureInput("depth").transferRead().format = Format::D32Sfloat;
+        reflection.addBufferInput("statistics").buffer(layout.faces * kVirtualShadowMapFaceStatisticsSize).transferRead();
+        if (collectWork) {
+            reflection.addBufferInput("workload").buffer(layout.faces * kVirtualShadowMapWorkloadSize).transferRead();
+        }
+        reflection.addBufferOutput("data").buffer(layout.size).transferWrite().hostReadback();
+        reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
+        return reflection;
+    }
+
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        const bool collectWork = context.properties().value("collectWork", false);
+        const ProfilingReadbackLayout layout(context.properties().value("layers", 1u), context.properties().value("faces", 1u), collectWork);
+        auto& commands = context.commandBuffer();
+        auto* buffer = context.outputBuffer("data").buffer();
+        state_->namedReadbacks[context.properties().at("evidenceName").get<std::string>()] = buffer;
+        for (uint32_t layer = 0; layer < layout.layers; ++layer) {
+            for (bool debug : {false, true}) {
+                const uint64_t offset = debug ? layout.debug + layer * kPixels * 4 : layer * layout.shadowStride;
+                auto slice = buffer->slice({offset, kPixels * (debug ? 4 : 1)});
+                if (!slice) { return std::unexpected(slice.error()); }
+                if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture(debug ? "debug" : "shadow").texture(),
+                    .buffer = *slice, .width = kWidth, .height = kHeight, .baseLayer = layer}); !result) { return result; }
+            }
+        }
+        auto depth = buffer->slice({layout.depth, kPixels * 4});
+        if (!depth) { return std::unexpected(depth.error()); }
+        if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("depth").texture(),
+            .buffer = *depth, .width = kWidth, .height = kHeight}); !result) { return result; }
+        for (bool work : {false, true}) {
+            if (work && !collectWork) { continue; }
+            const uint64_t size = layout.faces * (work ? kVirtualShadowMapWorkloadSize : kVirtualShadowMapFaceStatisticsSize);
+            auto source = context.inputBuffer(work ? "workload" : "statistics").buffer()->slice({0, size});
+            auto destination = buffer->slice({work ? layout.workload : layout.statistics, size});
+            if (!source) { return std::unexpected(source.error()); }
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        }
+        return commands.copyTexture({.source = context.inputTexture("debug").texture(),
+            .destination = context.outputTexture("color").texture(), .width = kWidth, .height = kHeight});
+    }
+private:
+    std::shared_ptr<EvidenceState> state_;
+};
+
+struct ProfilingSnapshot
+{
+    std::vector<uint8_t> shadow;
+    std::vector<uint32_t> debug, depth;
+    std::vector<std::array<uint32_t, 32>> statistics;
+    std::vector<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>> workload;
+};
+
+ProfilingSnapshot profilingSnapshot(const std::string& name, const ProfilingReadbackLayout& layout, bool collectWork)
+{
+    ProfilingSnapshot result;
+    auto* buffer = activeEvidence->namedReadbacks.at(name);
+    buffer->invalidate();
+    const auto* bytes = static_cast<const std::byte*>(buffer->map());
+    require(bytes != nullptr, "Map VSM profiling evidence");
+    result.shadow.resize(kPixels * layout.layers); result.debug.resize(kPixels * layout.layers); result.depth.resize(kPixels);
+    result.statistics.resize(layout.faces);
+    for (uint32_t layer = 0; layer < layout.layers; ++layer) {
+        std::memcpy(result.shadow.data() + layer * kPixels, bytes + layer * layout.shadowStride, kPixels);
+    }
+    std::memcpy(result.debug.data(), bytes + layout.debug, result.debug.size() * 4);
+    std::memcpy(result.depth.data(), bytes + layout.depth, kPixels * 4);
+    std::memcpy(result.statistics.data(), bytes + layout.statistics, layout.faces * kVirtualShadowMapFaceStatisticsSize);
+    if (collectWork) {
+        result.workload.resize(layout.faces);
+        std::memcpy(result.workload.data(), bytes + layout.workload, layout.faces * kVirtualShadowMapWorkloadSize);
+    }
+    buffer->unmap();
+    return result;
+}
+
+void registerProfilingEvidencePass()
+{
+    static const bool registered = registerRenderGraphPassType("VSMProfilingEvidencePass", "Test-only VSM profiling readback",
+        [] { return std::make_unique<VSMProfilingEvidencePass>(activeEvidence); });
+    require(registered, "Register VSM profiling evidence pass");
+}
+
+class VirtualShadowMapProfilingTest final : public RHITest
+{
+public:
+    VirtualShadowMapProfilingTest() { name = "virtual_shadow_map_profiling"; type = RHITestType::Rendering; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        bench::ValidationRecorder validation;
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapProfiling";
+        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames}};
+        try {
+            std::filesystem::create_directories(directory);
+            registerProfilingEvidencePass();
+            const auto fixture = writeLocalFixture(directory / "Fixture", false);
+            constexpr std::array modes{"Off", "Timing", "Work", "Both"};
+            constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection"};
+            for (uint32_t variant = 0; variant < 4; ++variant) {
+                const bool local = variant == 1 || variant == 2, compact = variant == 2, streamed = variant == 3;
+                const std::string label = local ? (compact ? "CompactSMRT" : "LegacyPCF") : streamed ? "StreamSingleHard" : "SingleHard";
+                constexpr uint32_t capacity = 4;
+                const uint32_t faces = local ? capacity * 6 : 1, layers = local ? (compact ? capacity : faces) : 1;
+                scene::SceneDocument scene;
+                require(streamed ? scene.loadStreamMetadata(fixture.source) : scene.load(fixture.source), "Load profiling fixture");
+                require(scene.hasStreamGeometry() == streamed, "Profiling fixture selected the wrong caster source");
+                environment::WorldEnvironment world;
+                world.sun.enabled = true; world.sun.direction = float3(1, -1, 0); world.sun.angularRadius = .01f;
+                world.sun.illuminance = 3;
+                world.moon.enabled = false;
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configureCachePreview(preview, scene, view, context, validation, world);
+                scene::LightingSettings lighting; lighting.autoExposure.enabled = false;
+                lighting.lights = {localLight("Point", false, {-1, 4, 0}), localLight("Spot", true, {1, 4, 0})};
+                for (auto& light : lighting.lights) { light.properties.sourceRadius = .05f; }
+                require(scene.setLighting(lighting), "Publish profiling lights");
+                require(preview.setLighting(scene.lighting()), "Set profiling lights");
+                activeEvidence = std::make_shared<EvidenceState>();
+                RenderGraph graph;
+                graph.setViewProperties({{"temporalJitter", false},
+                    {"renderResolution", {{"width", kWidth}, {"height", kHeight}, {"adaptive", false}}}});
+                graph.addNode("VisibilityBufferPass", "Raster", {{"path", fixture.source.generic_string()}, {"streamAssetPath", fixture.cache.generic_string()},
+                    {"autoBuildStreamAsset", false}, {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
+                    {"maxActiveGroups", 256}, {"maxGpuPageRequests", 256}, {"maxTraversalWorkers", 64}, {"maxTraversalWorkItems", 512},
+                    {"autoLod", false}, {"lodLevel", 0}, {"instanceHzbCull", false}, {"meshletHzbCull", false},
+                    {"meshletNormalConeCull", false}, {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
+                for (uint32_t mode = 0; mode < modes.size(); ++mode) {
+                    const std::string name = modes[mode], evidence = name + "Evidence";
+                    const bool timing = (mode & 1) != 0, work = (mode & 2) != 0;
+                    graph.addNode(local ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass", name,
+                        {{"lightCapacity", capacity}, {"compactOutputs", compact}, {"physicalPageBudget", 512}, {"physicalPageCount", 512},
+                         {"pageSize", kPageSize}, {"virtualPagesPerAxis", kPagesPerAxis}, {"clipmapCount", kClipmapCount},
+                         {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002}, {"shadowDebug", true},
+                         {"cacheEnabled", true}, {"receiverFootprint", false}, {"filter", compact ? "smrt" : local ? "pcf" : "hard"},
+                         {"smrtRayCount", 2}, {"smrtSamplesPerRay", 2}, {"smrtTemporalEnabled", false},
+                         {"benchmarkGPUProfile", timing}, {"benchmarkGPUWork", work}});
+                    graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
+                    graph.addNode("VSMProfilingEvidencePass", evidence,
+                        {{"layers", layers}, {"faces", faces}, {"collectWork", work}, {"evidenceName", name}});
+                    graph.addEdge(name + (local ? ".shadows" : ".shadow"), evidence + ".shadow");
+                    graph.addEdge(name + ".debug", evidence + ".debug"); graph.addEdge("Raster.depth", evidence + ".depth");
+                    graph.addEdge(name + ".statistics", evidence + ".statistics");
+                    if (work) { graph.addEdge(name + ".workload", evidence + ".workload"); }
+                    graph.markOutput(evidence + ".color");
+                }
+                const auto originalMatrix = scene.nodes()[0].localMatrix;
+                for (uint32_t frame = 0; frame < 4; ++frame) {
+                    const std::string phase = std::array{"Cold", "Warm", "Dirty", "Overflow"}[frame];
+                    validation.phase(label + "-" + phase);
+                    if (frame == 2) {
+                        float4x4 translation; translation.SetupByTranslation(float3(.35f, 0, .2f));
+                        require(scene.setNodeLocalMatrix(0, translation * originalMatrix), "Move profiling caster");
+                    } else if (frame == 3) {
+                        for (const char* mode : modes) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(mode)->id, "maxWorkItems", 1), "Constrain profiling raster work");
+                        }
+                        require(scene.setNodeLocalMatrix(0, originalMatrix), "Restore profiling caster under overflow");
+                    }
+                    renderAndRequire(preview, graph, "OffEvidence.color");
+                    auto completed = preview.collectCompletedGpuExecutionStats();
+                    require(completed, "Read profiling timestamps");
+                    require(completed->size() == 1 && completed->front().gpuTimingAvailable && !completed->front().profilingOverflow,
+                        "Missing or overflowed profiling timestamp frame");
+                    const auto& timings = completed->front();
+                    std::array<ProfilingSnapshot, 4> snapshots;
+                    report["frames"].push_back({{"variant", label}, {"phase", phase}, {"timings", Json::object()}, {"arms", Json::object()}});
+                    auto& entry = report["frames"].back();
+                    for (uint32_t mode = 0; mode < modes.size(); ++mode) {
+                        const bool timing = (mode & 1) != 0, work = (mode & 2) != 0;
+                        snapshots[mode] = profilingSnapshot(modes[mode], {layers, faces, work}, work);
+                        entry["arms"][modes[mode]] = {{"statistics", snapshots[mode].statistics}, {"workload", snapshots[mode].workload},
+                            {"nonzeroDepthPixels", std::count_if(snapshots[mode].depth.begin(), snapshots[mode].depth.end(), [](uint32_t value) { return value != 0; })}};
+                        const auto node = std::ranges::find(timings.nodes, modes[mode], &RenderGraphNodeExecutionStat::name);
+                        require(node != timings.nodes.end(), "Missing profiling graph node");
+                        const size_t activeFaces = std::count_if(snapshots[mode].statistics.begin(), snapshots[mode].statistics.end(),
+                            [](const auto& stats) { return stats[11] != 0; });
+                        require(activeFaces == (local ? 8u : 1u), "Profiling fixture omitted an admitted face");
+                        Json durations = Json::object();
+                        for (const char* stage : stages) {
+                            size_t count = 0; double total = 0;
+                            for (const auto& section : node->sections) {
+                                if (section.name != stage) { continue; }
+                                ++count;
+                                require(!section.cpuOnly && section.gpuTimingAvailable && std::isfinite(section.gpuMilliseconds) && section.gpuMilliseconds >= 0,
+                                    std::string("Invalid GPU stage timing: ") + stage);
+                                require(section.parent == UINT32_MAX || section.parent < node->sections.size(), "Invalid GPU stage parent");
+                                total += section.gpuMilliseconds;
+                            }
+                            require(count == (timing ? activeFaces : 0), std::string("GPU stage toggle/count mismatch: ") + stage);
+                            durations[stage] = {{"count", count}, {"gpuMs", total}};
+                        }
+                        entry["timings"][modes[mode]] = std::move(durations);
+                        if (mode != 0) {
+                            require(snapshots[mode].shadow == snapshots[0].shadow && snapshots[mode].debug == snapshots[0].debug &&
+                                snapshots[mode].depth == snapshots[0].depth && snapshots[mode].statistics == snapshots[0].statistics,
+                                label + "-" + phase + ": instrumentation changed images or the 32-word statistics ABI");
+                        }
+                    }
+                    require(snapshots[2].workload == snapshots[3].workload, "GPU timing changed workload counters");
+                    std::array<uint64_t, kVirtualShadowMapWorkCounterCount> totals{};
+                    uint64_t dirtyPages = 0, overflow = 0;
+                    for (uint32_t face = 0; face < faces; ++face) {
+                        for (uint32_t index = 0; index < totals.size(); ++index) { totals[index] += snapshots[3].workload[face][index]; }
+                        dirtyPages += snapshots[3].statistics[face][16]; overflow += snapshots[3].statistics[face][5];
+                    }
+                    entry["statistics"] = snapshots[3].statistics; entry["workload"] = snapshots[3].workload; entry["totals"] = totals;
+                    std::ofstream(directory / "VirtualShadowMapProfiling.json") << report.dump(2) << '\n';
+                    for (uint32_t face = 0; face < faces; ++face) {
+                        const auto& counters = snapshots[3].workload[face];
+                        const auto& stats = snapshots[3].statistics[face];
+                        if (stats[11] == 0) {
+                            require(std::ranges::all_of(counters, [](uint64_t value) { return value == 0; }), "Inactive face published workload");
+                        }
+                        require(counters[kVSMWorkBuildDecodedTriangles] <= counters[kVSMWorkBuildActiveTriangleSlots], "Decoded more build triangles than active slots");
+                        require(counters[kVSMWorkRasterFineGroups] == stats[4], "Fine raster groups disagree with admitted work");
+                        if (frame == 1) {
+                            require(stats[16] == 0 && stats[21] == 0 && counters[kVSMWorkBuildActiveTriangleSlots] == 0 &&
+                                counters[kVSMWorkRasterCoarseGroups] == 0 && counters[kVSMWorkRasterFineGroups] == 0 &&
+                                counters[kVSMWorkRasterDecodedTriangles] == 0 && counters[kVSMWorkRasterOutputPrimitives] == 0 &&
+                                counters[kVSMWorkRasterClearedPages] == 0, "Warm cache reported depth rendering work");
+                        }
+                    }
+                    require(totals[kVSMWorkMarkReceiverDispatches] > 0 && totals[kVSMWorkProjectionReceivers] > 0 &&
+                        totals[kVSMWorkProjectionAtlasLoads] > 0, "Profiling fixture has no receiver/projection work");
+                    require((compact && totals[kVSMWorkProjectionRays] > 0) || (!compact && totals[kVSMWorkProjectionRays] == 0), "SMRT ray workload does not match filter");
+                    if (frame != 1) { require(dirtyPages > 0 && totals[kVSMWorkBuildDecodedTriangles] > 0, "Cold/dirty fixture did not build depth work"); }
+                    if (frame == 3) { require(overflow > 0, "Profiling overflow fixture did not overflow"); }
+                }
+                auto incompatible = graph.findNode("Off")->properties;
+                incompatible["benchmarkCPUProfile"] = true;
+                incompatible["benchmarkGPUProfile"] = true;
+                require(graph.setNodeProperties(graph.findNode("Off")->id, incompatible), "Set incompatible profiling controls");
+                const auto rejected = preview.render(graph, kWidth, kHeight, "OffEvidence.color");
+                require(!rejected && preview.lastLog().find("profiling must run separately") != std::string::npos,
+                    "Simultaneous CPU attribution and detailed GPU timing was not explicitly rejected");
+                report[label + "CPUProfileRejection"] = preview.lastLog();
+                requireValidPreview(validation.snapshot());
+            }
+            activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true;
+            std::ofstream(directory / "VirtualShadowMapProfiling.json") << report.dump(2) << '\n';
+            return RHITestResult::pass("Independent VSM timing/work toggles preserve images and statistics; six stages and cold/warm/dirty/overflow workloads verified for single/legacy/compact lights");
+        } catch (const std::exception& error) {
+            activeEvidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot();
+            std::ofstream(directory / "VirtualShadowMapProfiling.json") << report.dump(2) << '\n';
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
+
+class VirtualShadowMapOptimizationEquivalenceTest final : public RHITest
+{
+public:
+    VirtualShadowMapOptimizationEquivalenceTest() { name = "virtual_shadow_map_optimization_equivalence"; type = RHITestType::Rendering; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        bench::ValidationRecorder validation;
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapOptimizationEquivalence";
+        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames}};
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapOptimizationEquivalence.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerProfilingEvidencePass();
+            const auto floor = writeLocalFixture(directory / "Floor", false);
+            const auto near = writeLocalFixture(directory / "Near", false, true);
+            const auto room = writeLocalFixture(directory / "Room", true);
+            LocalFixture offscreen;
+            offscreen.source = writeFixture(directory / "Offscreen", true);
+            offscreen.cache = directory / "Offscreen/Scene.meshstream.bin";
+            // A distant independent instance exercises cluster rejection without
+            // replacing the off-camera caster that shadows the visible floor.
+            Json document;
+            { std::ifstream input(offscreen.source); input >> document; }
+            document["nodes"].push_back({{"name", "DistantCaster"}, {"mesh", 0}, {"translation", {128,0,128}}});
+            document["scenes"][0]["nodes"].push_back(2);
+            { std::ofstream output(offscreen.source); output << document.dump(2) << '\n'; }
+            std::string log;
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath = offscreen.source, .outputPath = offscreen.cache,
+                .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
+
+            constexpr uint32_t capacity = 4, faces = capacity * 6;
+            constexpr std::array arms{"Legacy", "MarkOnly", "ClusterOnly", "Both"};
+            uint64_t markReducedStates = 0, clusterReducedStates = 0;
+            for (bool streamed : {false, true}) {
+                for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
+                    const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
+                    const std::vector<std::string> filters = mainMatrix ? std::vector<std::string>{"pcf", "smrt"} :
+                        std::vector<std::string>{nearCase ? "smrt" : roomCase ? "pcf" : "hard"};
+                    for (const auto& filter : filters) {
+                        const std::string label = std::string(streamed ? "Stream-" : "Resident-") +
+                            (mainMatrix ? "Floor-" : nearCase ? "Near-" : roomCase ? "Room-" : "Offscreen-") + filter;
+                        scene::SceneDocument scene;
+                        require(streamed ? scene.loadStreamMetadata(fixture->source) : scene.load(fixture->source), "Load optimization fixture");
+                        require(scene.hasStreamGeometry() == streamed, "Optimization fixture selected wrong caster source");
+                        environment::WorldEnvironment world;
+                        world.sun.enabled = true; world.sun.direction = float3(1,-1,0); world.sun.angularRadius = .01f;
+                        world.sun.illuminance = 3; world.moon.enabled = false;
+                        RenderView view;
+                        RenderGraphPreviewRenderer preview;
+                        configureCachePreview(preview, scene, view, context, validation, world);
+                        if (roomCase) {
+                            require(view.setCamera({.eye = {0,0,3}, .center = {6,6,0}, .fovDegrees = 65,
+                                .nearPlane = .05f, .farPlane = 30}), "Set point seam optimization view");
+                        }
+                        scene::LightingSettings lighting; lighting.autoExposure.enabled = false;
+                        lighting.lights = {localLight("Point", false, roomCase ? Point{0,0,0} : nearCase ? Point{0,3,0} : Point{-1,4,0}),
+                            localLight("Spot", true, nearCase ? Point{0,3,0} : Point{1,4,0})};
+                        for (auto& light : lighting.lights) { light.properties.sourceRadius = .05f; }
+                        require(scene.setLighting(lighting), "Publish optimization lights");
+                        require(preview.setLighting(scene.lighting()), "Set optimization lights");
+                        activeEvidence = std::make_shared<EvidenceState>();
+                        RenderGraph graph;
+                        graph.setViewProperties({{"temporalJitter", false},
+                            {"renderResolution", {{"width", kWidth}, {"height", kHeight}, {"adaptive", false}}}});
+                        graph.addNode("VisibilityBufferPass", "Raster", {{"path", fixture->source.generic_string()},
+                            {"streamAssetPath", fixture->cache.generic_string()}, {"autoBuildStreamAsset", false},
+                            {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64}, {"maxActiveGroups", 256},
+                            {"maxGpuPageRequests", 256}, {"maxTraversalWorkers", 64}, {"maxTraversalWorkItems", 512},
+                            {"autoLod", false}, {"lodLevel", 0}, {"instanceHzbCull", false}, {"meshletHzbCull", false},
+                            {"meshletNormalConeCull", false}, {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
+                        for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                            const std::string name = arms[arm], evidence = name + "Evidence";
+                            graph.addNode("VirtualShadowMapLightsPass", name,
+                                {{"lightCapacity", capacity}, {"compactOutputs", true}, {"physicalPageBudget", 512},
+                                 {"pageSize", kPageSize}, {"virtualPagesPerAxis", kPagesPerAxis}, {"clipmapCount", kClipmapCount},
+                                 {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002},
+                                 {"cacheEnabled", true}, {"receiverFootprint", true}, {"filter", filter}, {"pcfRadius", 1.5},
+                                 {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", 2}, {"smrtSamplesPerRay", 8},
+                                 {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
+                                 {"benchmarkLegacyMark", (arm & 1) == 0}, {"benchmarkDisableClusterCull", (arm & 2) == 0}});
+                            graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
+                            graph.addNode("VSMProfilingEvidencePass", evidence,
+                                {{"layers", capacity}, {"faces", faces}, {"collectWork", true}, {"evidenceName", name}});
+                            graph.addEdge(name + ".shadows", evidence + ".shadow"); graph.addEdge(name + ".debug", evidence + ".debug");
+                            graph.addEdge("Raster.depth", evidence + ".depth");
+                            graph.addEdge(name + ".statistics", evidence + ".statistics");
+                            graph.addEdge(name + ".workload", evidence + ".workload");
+                            graph.markOutput(evidence + ".color");
+                        }
+                        const auto original = scene.nodes()[0].localMatrix;
+                        const uint32_t frameCount = mainMatrix ? 5 : 2;
+                        for (uint32_t frame = 0; frame < frameCount; ++frame) {
+                            const std::string phase = std::array{"Cold", "Warm", "Dirty", "Overflow", "Recover"}[frame];
+                            validation.phase(label + "-" + phase);
+                            if (frame == 2) {
+                                float4x4 translation; translation.SetupByTranslation(float3(.35f,0,.2f));
+                                require(scene.setNodeLocalMatrix(0, translation * original), "Move optimization caster");
+                            } else if (frame >= 3) {
+                                for (const char* arm : arms) {
+                                    require(graph.setNodeRuntimeProperty(graph.findNode(arm)->id, "maxWorkItems", frame == 3 ? 1 : 65535),
+                                        "Change optimization overflow limit");
+                                }
+                                if (frame == 3) { require(scene.setNodeLocalMatrix(0, original), "Restore optimization caster"); }
+                            }
+                            renderAndRequire(preview, graph, "LegacyEvidence.color");
+                            std::array<ProfilingSnapshot, 4> snapshots;
+                            std::array<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>, 4> work{};
+                            report["frames"].push_back({{"variant", label}, {"phase", phase}, {"arms", Json::object()}});
+                            auto& entry = report["frames"].back();
+                            for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                                snapshots[arm] = profilingSnapshot(arms[arm], {capacity, faces, true}, true);
+                                const auto& snapshot = snapshots[arm];
+                                for (const auto& face : snapshot.workload) {
+                                    for (uint32_t counter = 0; counter < work[arm].size(); ++counter) { work[arm][counter] += face[counter]; }
+                                }
+                                entry["arms"][arms[arm]] = {{"statistics", snapshot.statistics}, {"workload", snapshot.workload},
+                                    {"workTotals", work[arm]}, {"shadowSha256", debug::debugSha256(snapshot.shadow)},
+                                    {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
+                                    {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
+                                save();
+                                if (arm != 0) {
+                                    require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
+                                        snapshot.depth == snapshots[0].depth && snapshot.statistics == snapshots[0].statistics,
+                                        label + "-" + phase + ": " + arms[arm] + " changed images/depth or the 32-word statistics ABI");
+                                }
+                            }
+                            for (uint32_t arm = 1; arm < arms.size(); ++arm) {
+                                for (uint32_t counter : {kVSMWorkMarkLevelTests, kVSMWorkMarkPageRequests,
+                                     kVSMWorkBuildDecodedTriangles, kVSMWorkBuildLevelTests, kVSMWorkBuildPageTests}) {
+                                    require(work[arm][counter] <= work[0][counter], label + "-" + phase + ": optimized GPU work increased");
+                                }
+                            }
+                            markReducedStates += work[1][kVSMWorkMarkLevelTests] < work[0][kVSMWorkMarkLevelTests] ||
+                                work[1][kVSMWorkMarkPageRequests] < work[0][kVSMWorkMarkPageRequests];
+                            clusterReducedStates += work[2][kVSMWorkBuildDecodedTriangles] < work[0][kVSMWorkBuildDecodedTriangles];
+                            uint64_t dirty = 0, overflow = 0, nearRejected = 0;
+                            for (const auto& stats : snapshots[0].statistics) { dirty += stats[16]; overflow += stats[5]; nearRejected += stats[29]; }
+                            require(work[0][kVSMWorkProjectionReceivers] > 0 && work[0][kVSMWorkProjectionAtlasLoads] > 0,
+                                label + ": optimization fixture lacks actual projection work");
+                            if (frame == 1) { require(dirty == 0 && work[0][kVSMWorkBuildDecodedTriangles] == 0, label + ": warm cache rebuilt depth"); }
+                            if (frame == 3) { require(overflow > 0, label + ": overflow case did not overflow"); }
+                            if (nearCase) { require(nearRejected > 0, label + ": near-plane exclusion was not exercised"); }
+                            entry["equal"] = true;
+                            save();
+                        }
+                        requireValidPreview(validation.snapshot());
+                    }
+                }
+            }
+            report["markReducedStates"] = markReducedStates; report["clusterReducedStates"] = clusterReducedStates;
+            require(markReducedStates > 0, "Optimization matrix did not exercise reduced mark work");
+            require(clusterReducedStates > 0, "Optimization matrix did not exercise a rejected stream cluster");
+            activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
+            return RHITestResult::pass("Four production VSM arms preserve images, receiver depth and statistics across resident/stream, PCF/SMRT, offscreen, near-plane, seam and cache/overflow states");
+        } catch (const std::exception& error) {
+            activeEvidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapOptimizationEquivalenceTest);
 
 } // namespace
 } // namespace metallic::tests

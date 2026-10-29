@@ -7,6 +7,10 @@ namespace metallic::render {
 
 struct MeshletStreamShadowGeometryView;
 
+// Matches the fine-work compute group. Stream candidates retain their native
+// 128-triangle cluster; its bounds serve two adjacent groups.
+inline constexpr uint32_t kVirtualShadowMapCasterClusterSize = 64;
+
 struct VirtualShadowMapCasterSettings
 {
     bool tessellationEnabled = false; // Must match the receiver producer's explicit mode.
@@ -50,9 +54,10 @@ struct VirtualShadowMapCasterResources
 };
 
 // Captures the complete scene, independent of primary-view visibility. Resident
-// scenes upload world-space triangles; streamed scenes decode the complete
-// locked terminal cut through the shared page pool. Uploads are immutable and
-// retained by this recording. No shadow cache or stream traversal is performed.
+// scenes upload world-space triangles and conservative 64-slot cluster bounds;
+// streamed scenes decode the complete locked terminal cut through the shared
+// page pool. Uploads are immutable and retained by this recording. No shadow
+// cache or stream traversal is performed.
 Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
     const MeshletStreamShadowGeometryView* stream, std::string& log,
