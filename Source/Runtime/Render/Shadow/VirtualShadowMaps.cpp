@@ -682,7 +682,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint32_t allocationBlocks = (push.totalPages + 255u) / 256u;
     const uint64_t allocationWords = uint64_t(push.physicalPageCount) * 2 + push.totalPages + allocationBlocks;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
-        coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ? kVirtualShadowMapWorkloadSize : 0u),
+        coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
+            kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
         pageChanges.size() * sizeof(pageChanges[0]), allocationWords * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
@@ -899,7 +900,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (auto r = commands.synchronize({.buffers = {&previousReady, 1}}); !r) { return std::unexpected(r.error()); }
     }
     if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: demand and cache allocation"}); }
-    if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, 32u, (push.batchCount + push.coarseBatchCount) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
+    // Reset writes diagnostics at statistics[32 + id.x], independently of the public 32 words.
+    const uint32_t statisticsResetThreads = settings.collectGPUWork ?
+        (kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize) / sizeof(uint32_t) : 32u;
+    if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, statisticsResetThreads,
+        (push.batchCount + push.coarseBatchCount) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
     gpu.next("VSM mark");
     if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }

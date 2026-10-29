@@ -2201,13 +2201,14 @@ struct ProfilingReadbackLayout
 {
     uint32_t layers, faces;
     uint64_t shadowStride = (kPixels + 3) & ~uint64_t(3);
-    uint64_t debug, depth, statistics, workload, size;
+    uint64_t debug, depth, statistics, workload, buildDiagnostics, size;
 
     ProfilingReadbackLayout(uint32_t layerCount, uint32_t faceCount, bool collectWork)
         : layers(layerCount), faces(faceCount), debug(shadowStride * layers),
           depth(debug + kPixels * 4 * layers), statistics(depth + kPixels * 4),
           workload((statistics + faces * kVirtualShadowMapFaceStatisticsSize + 7) & ~uint64_t(7)),
-          size(workload + (collectWork ? faces * kVirtualShadowMapWorkloadSize : 0)) {}
+          buildDiagnostics(workload + (collectWork ? faces * kVirtualShadowMapWorkloadSize : 0)),
+          size(buildDiagnostics + (collectWork ? faces * kVirtualShadowMapBuildDiagnosticSize : 0)) {}
 };
 
 class VSMProfilingEvidencePass final : public UnsafePass
@@ -2228,6 +2229,7 @@ public:
         reflection.addBufferInput("statistics").buffer(layout.faces * kVirtualShadowMapFaceStatisticsSize).transferRead();
         if (collectWork) {
             reflection.addBufferInput("workload").buffer(layout.faces * kVirtualShadowMapWorkloadSize).transferRead();
+            reflection.addBufferInput("buildDiagnostics").buffer(layout.faces * kVirtualShadowMapBuildDiagnosticSize).transferRead();
         }
         reflection.addBufferOutput("data").buffer(layout.size).transferWrite().hostReadback();
         reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
@@ -2254,11 +2256,14 @@ public:
         if (!depth) { return std::unexpected(depth.error()); }
         if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("depth").texture(),
             .buffer = *depth, .width = kWidth, .height = kHeight}); !result) { return result; }
-        for (bool work : {false, true}) {
-            if (work && !collectWork) { continue; }
-            const uint64_t size = layout.faces * (work ? kVirtualShadowMapWorkloadSize : kVirtualShadowMapFaceStatisticsSize);
-            auto source = context.inputBuffer(work ? "workload" : "statistics").buffer()->slice({0, size});
-            auto destination = buffer->slice({work ? layout.workload : layout.statistics, size});
+        const std::array names{"statistics", "workload", "buildDiagnostics"};
+        const std::array strides{kVirtualShadowMapFaceStatisticsSize, kVirtualShadowMapWorkloadSize, kVirtualShadowMapBuildDiagnosticSize};
+        const std::array offsets{layout.statistics, layout.workload, layout.buildDiagnostics};
+        for (uint32_t index = 0; index < names.size(); ++index) {
+            if (index != 0 && !collectWork) { continue; }
+            const uint64_t size = uint64_t(layout.faces) * strides[index];
+            auto source = context.inputBuffer(names[index]).buffer()->slice({0, size});
+            auto destination = buffer->slice({offsets[index], size});
             if (!source) { return std::unexpected(source.error()); }
             if (!destination) { return std::unexpected(destination.error()); }
             if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
@@ -2276,6 +2281,7 @@ struct ProfilingSnapshot
     std::vector<uint32_t> debug, depth;
     std::vector<std::array<uint32_t, 32>> statistics;
     std::vector<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>> workload;
+    std::vector<std::array<uint64_t, kVirtualShadowMapBuildDiagnosticCounterCount>> buildDiagnostics;
 };
 
 ProfilingSnapshot profilingSnapshot(const std::string& name, const ProfilingReadbackLayout& layout, bool collectWork)
@@ -2296,9 +2302,50 @@ ProfilingSnapshot profilingSnapshot(const std::string& name, const ProfilingRead
     if (collectWork) {
         result.workload.resize(layout.faces);
         std::memcpy(result.workload.data(), bytes + layout.workload, layout.faces * kVirtualShadowMapWorkloadSize);
+        result.buildDiagnostics.resize(layout.faces);
+        std::memcpy(result.buildDiagnostics.data(), bytes + layout.buildDiagnostics, layout.faces * kVirtualShadowMapBuildDiagnosticSize);
     }
     buffer->unmap();
     return result;
+}
+
+void requireBuildDiagnosticInvariants(const ProfilingSnapshot& snapshot, bool clusterCulling, const std::string& label)
+{
+    require(snapshot.buildDiagnostics.size() == snapshot.statistics.size(), label + ": missing build diagnostic faces");
+    for (size_t face = 0; face < snapshot.statistics.size(); ++face) {
+        const auto& stats = snapshot.statistics[face];
+        const auto& counters = snapshot.buildDiagnostics[face];
+        const std::string prefix = label + "/face" + std::to_string(face);
+        if (!clusterCulling || stats[11] == 0 || stats[16] == 0) {
+            require(std::ranges::all_of(counters, [](uint64_t value) { return value == 0; }),
+                prefix + ": inactive, warm or cull-disabled face wrote build diagnostics");
+            continue;
+        }
+        const uint64_t groups = counters[kVSMBuildDiagnosticClusterGroups];
+        const uint64_t valid = counters[kVSMBuildDiagnosticClusterBoundsValidGroups];
+        const uint64_t surviving = counters[kVSMBuildDiagnosticClusterSurvivingGroups];
+        const uint64_t levels = counters[kVSMBuildDiagnosticClusterLevelTests];
+        const uint64_t pages = counters[kVSMBuildDiagnosticClusterPageTests], hits = counters[kVSMBuildDiagnosticClusterPageHits];
+        const uint64_t near = counters[kVSMBuildDiagnosticClusterNearPlaneKeeps];
+        const uint64_t outside = counters[kVSMBuildDiagnosticClusterOutsideLevels], empty = counters[kVSMBuildDiagnosticClusterEmptyLevels];
+        require(valid <= groups && surviving <= valid, prefix + ": invalid cluster group counts");
+        require(levels == valid * stats[11], prefix + ": bounds-valid groups did not test every face level");
+        require(hits + near + outside + empty == levels, prefix + ": cluster level outcomes do not partition tests");
+        require(counters[kVSMBuildDiagnosticClusterPageScanHistogram] == near + outside,
+            prefix + ": zero-length scans differ from near/outside outcomes");
+        uint64_t histogramCount = 0, minimumPages = 0, maximumPages = 0;
+        for (uint32_t bin = 0; bin < kVirtualShadowMapBuildDiagnosticHistogramCount; ++bin) {
+            const uint64_t count = counters[kVSMBuildDiagnosticClusterPageScanHistogram + bin];
+            const uint64_t lower = bin == 0 ? 0 : uint64_t(1) << (bin - 1);
+            const uint64_t upper = bin == 0 ? 0 : bin == 15 ? 16384 : (uint64_t(1) << bin) - 1;
+            histogramCount += count;
+            minimumPages += count * lower;
+            maximumPages += count * upper;
+        }
+        require(histogramCount == levels, prefix + ": scan histogram does not cover every level test");
+        require(minimumPages <= pages && pages <= maximumPages, prefix + ": actual page scans exceed histogram bounds");
+        if (stats[10] > 0) { require(groups > 0, prefix + ": dirty face with casters did not enter cluster precheck"); }
+    }
 }
 
 void registerProfilingEvidencePass()
@@ -2317,16 +2364,21 @@ public:
     {
         bench::ValidationRecorder validation;
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapProfiling";
-        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames}};
+        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
+            {"buildDiagnosticCounterNames", kVirtualShadowMapBuildDiagnosticCounterNames}};
         try {
             std::filesystem::create_directories(directory);
             registerProfilingEvidencePass();
             const auto fixture = writeLocalFixture(directory / "Fixture", false);
             constexpr std::array modes{"Off", "Timing", "Work", "Both"};
             constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection"};
-            for (uint32_t variant = 0; variant < 4; ++variant) {
-                const bool local = variant == 1 || variant == 2, compact = variant == 2, streamed = variant == 3;
-                const std::string label = local ? (compact ? "CompactSMRT" : "LegacyPCF") : streamed ? "StreamSingleHard" : "SingleHard";
+            for (uint32_t variant = 0; variant < 5; ++variant) {
+                const bool local = variant == 1 || variant == 2, compact = variant == 2, streamed = variant == 3, tiny = variant == 4;
+                const std::string label = local ? (compact ? "CompactSMRT" : "LegacyPCF") : streamed ? "StreamSingleHard" :
+                    tiny ? "TinySingleHard" : "SingleHard";
+                // Small allocations exercise reset's diagnostic-driven dispatch size.
+                // These short scans do not prove reuse of previously nonzero high histogram bins.
+                const uint32_t pagesPerAxis = tiny ? 2 : kPagesPerAxis;
                 constexpr uint32_t capacity = 4;
                 const uint32_t faces = local ? capacity * 6 : 1, layers = local ? (compact ? capacity : faces) : 1;
                 scene::SceneDocument scene;
@@ -2357,8 +2409,8 @@ public:
                     const std::string name = modes[mode], evidence = name + "Evidence";
                     const bool timing = (mode & 1) != 0, work = (mode & 2) != 0;
                     graph.addNode(local ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass", name,
-                        {{"lightCapacity", capacity}, {"compactOutputs", compact}, {"physicalPageBudget", 512}, {"physicalPageCount", 512},
-                         {"pageSize", kPageSize}, {"virtualPagesPerAxis", kPagesPerAxis}, {"clipmapCount", kClipmapCount},
+                        {{"lightCapacity", capacity}, {"compactOutputs", compact}, {"physicalPageBudget", 512}, {"physicalPageCount", tiny ? 4 : 512},
+                         {"pageSize", kPageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", kClipmapCount},
                          {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002}, {"shadowDebug", true},
                          {"cacheEnabled", true}, {"receiverFootprint", false}, {"filter", compact ? "smrt" : local ? "pcf" : "hard"},
                          {"smrtRayCount", 2}, {"smrtSamplesPerRay", 2}, {"smrtTemporalEnabled", false},
@@ -2369,7 +2421,10 @@ public:
                     graph.addEdge(name + (local ? ".shadows" : ".shadow"), evidence + ".shadow");
                     graph.addEdge(name + ".debug", evidence + ".debug"); graph.addEdge("Raster.depth", evidence + ".depth");
                     graph.addEdge(name + ".statistics", evidence + ".statistics");
-                    if (work) { graph.addEdge(name + ".workload", evidence + ".workload"); }
+                    if (work) {
+                        graph.addEdge(name + ".workload", evidence + ".workload");
+                        graph.addEdge(name + ".buildDiagnostics", evidence + ".buildDiagnostics");
+                    }
                     graph.markOutput(evidence + ".color");
                 }
                 const auto originalMatrix = scene.nodes()[0].localMatrix;
@@ -2398,6 +2453,7 @@ public:
                         const bool timing = (mode & 1) != 0, work = (mode & 2) != 0;
                         snapshots[mode] = profilingSnapshot(modes[mode], {layers, faces, work}, work);
                         entry["arms"][modes[mode]] = {{"statistics", snapshots[mode].statistics}, {"workload", snapshots[mode].workload},
+                            {"buildDiagnostics", snapshots[mode].buildDiagnostics},
                             {"nonzeroDepthPixels", std::count_if(snapshots[mode].depth.begin(), snapshots[mode].depth.end(), [](uint32_t value) { return value != 0; })}};
                         const auto node = std::ranges::find(timings.nodes, modes[mode], &RenderGraphNodeExecutionStat::name);
                         require(node != timings.nodes.end(), "Missing profiling graph node");
@@ -2424,8 +2480,25 @@ public:
                                 snapshots[mode].depth == snapshots[0].depth && snapshots[mode].statistics == snapshots[0].statistics,
                                 label + "-" + phase + ": instrumentation changed images or the 32-word statistics ABI");
                         }
+                        if (work) { requireBuildDiagnosticInvariants(snapshots[mode], true, label + "-" + phase + "-" + modes[mode]); }
                     }
-                    require(snapshots[2].workload == snapshots[3].workload, "GPU timing changed workload counters");
+                    for (uint32_t face = 0; face < faces; ++face) {
+                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                            // Shared mark-cache collisions can change repeated OR counts with execution order.
+                            if (counter == kVSMWorkMarkPageRequests) { continue; }
+                            require(snapshots[2].workload[face][counter] == snapshots[3].workload[face][counter],
+                                "GPU timing changed a deterministic workload counter");
+                        }
+                        for (uint32_t mode : {2u, 3u}) {
+                            const auto& work = snapshots[mode].workload[face];
+                            require(work[kVSMWorkMarkPageRequests] <= work[kVSMWorkMarkLevelTests],
+                                "Mark requests exceed one possible page write per tested level");
+                            if (snapshots[mode].statistics[face][0] > 0) {
+                                require(work[kVSMWorkMarkPageRequests] > 0, "Requested fine pages have no mark atomic writes");
+                            }
+                        }
+                    }
+                    require(snapshots[2].buildDiagnostics == snapshots[3].buildDiagnostics, "GPU timing changed build diagnostics");
                     std::array<uint64_t, kVirtualShadowMapWorkCounterCount> totals{};
                     uint64_t dirtyPages = 0, overflow = 0;
                     for (uint32_t face = 0; face < faces; ++face) {
@@ -2433,6 +2506,7 @@ public:
                         dirtyPages += snapshots[3].statistics[face][16]; overflow += snapshots[3].statistics[face][5];
                     }
                     entry["statistics"] = snapshots[3].statistics; entry["workload"] = snapshots[3].workload; entry["totals"] = totals;
+                    entry["buildDiagnostics"] = snapshots[3].buildDiagnostics;
                     std::ofstream(directory / "VirtualShadowMapProfiling.json") << report.dump(2) << '\n';
                     for (uint32_t face = 0; face < faces; ++face) {
                         const auto& counters = snapshots[3].workload[face];
@@ -2487,7 +2561,8 @@ public:
     {
         bench::ValidationRecorder validation;
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapOptimizationEquivalence";
-        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames}};
+        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
+            {"buildDiagnosticCounterNames", kVirtualShadowMapBuildDiagnosticCounterNames}};
         const auto save = [&] { std::ofstream(directory / "VirtualShadowMapOptimizationEquivalence.json") << report.dump(2) << '\n'; };
         try {
             std::filesystem::create_directories(directory);
@@ -2566,6 +2641,7 @@ public:
                             graph.addEdge("Raster.depth", evidence + ".depth");
                             graph.addEdge(name + ".statistics", evidence + ".statistics");
                             graph.addEdge(name + ".workload", evidence + ".workload");
+                            graph.addEdge(name + ".buildDiagnostics", evidence + ".buildDiagnostics");
                             graph.markOutput(evidence + ".color");
                         }
                         const auto original = scene.nodes()[0].localMatrix;
@@ -2595,10 +2671,12 @@ public:
                                     for (uint32_t counter = 0; counter < work[arm].size(); ++counter) { work[arm][counter] += face[counter]; }
                                 }
                                 entry["arms"][arms[arm]] = {{"statistics", snapshot.statistics}, {"workload", snapshot.workload},
+                                    {"buildDiagnostics", snapshot.buildDiagnostics},
                                     {"workTotals", work[arm]}, {"shadowSha256", debug::debugSha256(snapshot.shadow)},
                                     {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
+                                requireBuildDiagnosticInvariants(snapshot, (arm & 2) != 0, label + "-" + phase + "-" + arms[arm]);
                                 if (arm != 0) {
                                     require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
                                         snapshot.depth == snapshots[0].depth && snapshot.statistics == snapshots[0].statistics,

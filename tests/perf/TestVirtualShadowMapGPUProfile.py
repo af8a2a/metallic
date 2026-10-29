@@ -33,6 +33,28 @@ def add_work(row):
     return row
 
 
+def add_build(row):
+    counters = dict.fromkeys(profile.BUILD_COUNTERS, 0)
+    counters.update(clusterGroups=3, clusterBoundsValidGroups=2, clusterSurvivingGroups=1,
+        clusterLevelTests=6, clusterPageTests=15, clusterPageHits=1, clusterNearPlaneKeeps=1,
+        clusterOutsideLevels=1, clusterEmptyLevels=3,
+        clusterPageScan0=2, clusterPageScan1=1, clusterPageScan2To3=1, clusterPageScan4To7=1, clusterPageScan8To15=1)
+    stats = [0] * 32
+    stats[10], stats[11], stats[16] = 192, 3, 1
+    shadow = row.setdefault("shadow", {})
+    shadow.update(statistics=[stats.copy(), stats.copy()], totals=[value * 2 for value in stats])
+    shadow["gpuBuildDiagnostics"] = {"version": 1, "enabled": True,
+        "faces": [{"lightIndex": 0, "face": side, "counters": counters.copy()} for side in range(2)],
+        "totals": {name: value * 2 for name, value in counters.items()}}
+    return row
+
+
+def retotal_build(row):
+    diagnostic = row["shadow"]["gpuBuildDiagnostics"]
+    diagnostic["totals"] = {name: sum(face["counters"][name] for face in diagnostic["faces"]) for name in profile.BUILD_COUNTERS}
+    return row
+
+
 class GPUProfileTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -185,6 +207,161 @@ class GPUProfileTests(unittest.TestCase):
         self.mutate_capture(package, lambda data: data["cases"][0].update(gpuWorkDiagnostics=True))
         with self.assertRaisesRegex(ValueError, "missing frame readback"):
             profile.summarize_package(package)
+
+    def test_build_sidecar_is_independent_and_optional(self):
+        row = add_build(add_work(frame(1)))
+        before = profile.work_frame(row, "diagnostic")
+        result = profile.build_frame(row, "diagnostic")
+        self.assertTrue(result["gpuBuildDiagnosticsAvailable"])
+        self.assertEqual(result["clusterPageTests"], 30)
+        del row["shadow"]["gpuBuildDiagnostics"]
+        self.assertEqual(before, profile.work_frame(row, "diagnostic"))
+        result = profile.build_frame(row, "diagnostic")
+        self.assertFalse(result["gpuBuildDiagnosticsAvailable"])
+        self.assertEqual(result["gpuBuildDiagnosticsState"], "missing")
+        self.assertNotIn("clusterGroups", result)
+        row["shadow"]["gpuBuildDiagnostics"] = {"version": 1, "enabled": False}
+        result = profile.build_frame(row, "timing")
+        self.assertFalse(result["gpuBuildDiagnosticsAvailable"])
+        self.assertEqual(result["gpuBuildDiagnosticsState"], "disabled")
+        self.assertNotIn("clusterGroups", result)
+
+    def test_old_packages_do_not_claim_zero_build_work(self):
+        result = profile.summarize_package(self.package("diagnostic", scales=(1.,)))
+        self.assertEqual(result["cases"][0]["buildDiagnosticProcessMedianSummary"], {})
+        self.assertTrue(all(not row["gpuBuildDiagnosticsAvailable"] for row in result["buildDiagnosticFrames"]))
+        self.assertTrue(all("clusterGroups" not in row for row in result["buildDiagnosticFrames"]))
+
+    def test_enabled_build_requires_faces_statistics_and_all_counter_names(self):
+        for missing in ("faces", "totals"):
+            row = add_build(frame(1))
+            del row["shadow"]["gpuBuildDiagnostics"][missing]
+            with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "Missing"):
+                profile.build_frame(row, "diagnostic")
+        row = add_build(frame(1))
+        del row["shadow"]["statistics"]
+        with self.assertRaisesRegex(ValueError, "Missing"):
+            profile.build_frame(row, "diagnostic")
+        row = add_build(frame(1))
+        del row["shadow"]["gpuBuildDiagnostics"]["faces"][0]["counters"][profile.BUILD_COUNTERS[-1]]
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            profile.build_frame(row, "diagnostic")
+
+    def test_build_diagnostics_reject_timing_and_stale_disabled_data(self):
+        row = add_build(frame(1))
+        with self.assertRaisesRegex(ValueError, "ordinary timing"):
+            profile.build_frame(row, "timing")
+        row["shadow"]["gpuBuildDiagnostics"]["enabled"] = False
+        with self.assertRaisesRegex(ValueError, "stale"):
+            profile.build_frame(row, "diagnostic")
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 2, "enabled": True}):
+            row["shadow"]["gpuBuildDiagnostics"] = invalid
+            with self.subTest(schema=invalid), self.assertRaisesRegex(ValueError, "schema"):
+                profile.build_frame(row, "diagnostic")
+
+    def test_build_diagnostic_face_identity_and_totals(self):
+        for key, value in (("face", 0), ("face", 6), ("lightIndex", 1)):
+            row = add_build(frame(1))
+            row["shadow"]["gpuBuildDiagnostics"]["faces"][1][key] = value
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, "malformed"):
+                profile.build_frame(row, "diagnostic")
+        row = add_build(frame(1))
+        row["shadow"]["gpuBuildDiagnostics"]["totals"]["clusterGroups"] += 1
+        with self.assertRaisesRegex(ValueError, "totals disagree"):
+            profile.build_frame(row, "diagnostic")
+
+    def test_build_unsigned_u64_and_total_overflow(self):
+        for value in (-1, True, 1.5, 1 << 64):
+            row = add_build(frame(1))
+            row["shadow"]["gpuBuildDiagnostics"]["faces"][0]["counters"]["clusterGroups"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "unsigned GPU counter"):
+                profile.build_frame(row, "diagnostic")
+        row = add_build(frame(1))
+        for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
+            face["counters"]["clusterGroups"] = (1 << 32) + 7
+        self.assertEqual(profile.build_frame(retotal_build(row), "diagnostic")["clusterGroups"], (1 << 33) + 14)
+        for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
+            face["counters"]["clusterGroups"] = 1 << 63
+        with self.assertRaisesRegex(ValueError, "overflow uint64"):
+            profile.build_frame(retotal_build(row), "diagnostic")
+
+    def test_build_group_level_and_outcome_relations(self):
+        for field, value, error in (("clusterBoundsValidGroups", 4, "surviving <= valid"),
+                ("clusterSurvivingGroups", 3, "surviving <= valid"),
+                ("clusterLevelTests", 7, "clipmap count"), ("clusterPageHits", 2, "partition"),
+                ("clusterPageScan1", 2, "partition")):
+            row = add_build(frame(1))
+            row["shadow"]["gpuBuildDiagnostics"]["faces"][0]["counters"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, error):
+                profile.build_frame(retotal_build(row), "diagnostic")
+        row = add_build(frame(1))
+        counters = row["shadow"]["gpuBuildDiagnostics"]["faces"][0]["counters"]
+        counters["clusterPageScan0"] -= 1
+        counters["clusterPageScan1"] += 1
+        with self.assertRaisesRegex(ValueError, "zero-scan"):
+            profile.build_frame(retotal_build(row), "diagnostic")
+
+    def test_build_histogram_weighted_bounds_and_last_bin_cap(self):
+        for value in (14, 27):
+            row = add_build(frame(1))
+            row["shadow"]["gpuBuildDiagnostics"]["faces"][0]["counters"]["clusterPageTests"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "scan-length bounds"):
+                profile.build_frame(retotal_build(row), "diagnostic")
+        row = add_build(frame(1))
+        for stats, face in zip(row["shadow"]["statistics"], row["shadow"]["gpuBuildDiagnostics"]["faces"]):
+            stats[11] = 1
+            face["counters"] = dict.fromkeys(profile.BUILD_COUNTERS, 0)
+            face["counters"].update(clusterGroups=1, clusterBoundsValidGroups=1, clusterSurvivingGroups=1,
+                clusterLevelTests=1, clusterPageHits=1, clusterPageTests=16384, clusterPageScan16384Plus=1)
+        self.assertEqual(profile.build_frame(retotal_build(row), "diagnostic")["clusterPageTests"], 32768)
+        row["shadow"]["gpuBuildDiagnostics"]["faces"][0]["counters"]["clusterPageTests"] = 16385
+        with self.assertRaisesRegex(ValueError, "maximum 16384"):
+            profile.build_frame(retotal_build(row), "diagnostic")
+
+    def test_build_inactive_or_zero_dirty_faces_are_zero_but_disabled_culling_is_available(self):
+        for index, value in ((10, 0), (14, 1), (16, 0)):
+            row = add_build(frame(1))
+            row["shadow"]["statistics"][0][index] = value
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, "Inactive or zero-dirty"):
+                profile.build_frame(row, "diagnostic")
+        row = add_build(frame(1))
+        for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
+            face["counters"] = dict.fromkeys(profile.BUILD_COUNTERS, 0)
+        result = profile.build_frame(retotal_build(row), "diagnostic")
+        self.assertTrue(result["gpuBuildDiagnosticsAvailable"])
+        self.assertEqual(result["clusterGroups"], 0)
+
+    def test_partially_missing_build_readback_is_rejected(self):
+        package = self.package("diagnostic", scales=(1.,))
+        self.mutate_capture(package, lambda data: add_build(data["cases"][0]["frames"][0]))
+        with self.assertRaisesRegex(ValueError, "missing declared frame readback"):
+            profile.summarize_package(package)
+
+    def test_declared_build_readback_cannot_be_entirely_missing(self):
+        package = self.package("diagnostic", scales=(1.,))
+        self.mutate_capture(package, lambda data: data["cases"][0].update(gpuBuildDiagnostics=True))
+        with self.assertRaisesRegex(ValueError, "Declared GPU build diagnostics are missing"):
+            profile.summarize_package(package)
+
+    def test_build_report_exports_separate_diagnostic_rows_and_histogram(self):
+        package = self.package("diagnostic", scales=(1.,))
+        self.mutate_capture(package, lambda data: [add_build(row) for row in data["cases"][0]["frames"]])
+        timing = self.package("timing", scales=(1.,))
+        result = profile.summarize_package(package)
+        self.assertEqual(result["processes"][0]["buildDiagnosticFrames"], 3)
+        self.assertEqual(result["cases"][0]["buildDiagnosticProcessMedianSummary"]["clusterPageTests"]["median"], 30)
+        self.assertEqual(len(result["buildDiagnosticFaces"]), 8)
+        before = profile.acceptance.digest(package / "Manifest.json")
+        output = self.root / "report"
+        profile.report(SimpleNamespace(source=timing, output=output, diagnostic=package))
+        rows = profile.acceptance.read(output / "BuildDiagnosticFrames.json")
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(row["mode"] == "diagnostic" and row["package"] == "Diagnostic" for row in rows))
+        self.assertTrue((output / "BuildDiagnosticFrames.csv").exists())
+        self.assertTrue((output / "BuildDiagnosticFaces.csv").exists())
+        self.assertTrue((output / "Diagnostic-1-build-histogram.png").exists())
+        self.assertFalse((output / "Primary-1-build-histogram.png").exists())
+        self.assertEqual(before, profile.acceptance.digest(package / "Manifest.json"))
 
 
 if __name__ == "__main__":

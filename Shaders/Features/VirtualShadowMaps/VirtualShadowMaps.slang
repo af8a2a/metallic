@@ -48,6 +48,27 @@ void vsmWorkAdd(ShadowPush push, uint counter, uint value)
 #endif
 }
 
+#if VSM_WORKLOAD_DIAGNOSTICS
+void vsmBuildDiagnosticAdd(ShadowPush push, uint counter, uint value)
+{
+    // Reuse the workload's low/high carry contract, starting at uint word 64.
+    vsmWorkAdd(push, kVirtualShadowMapWorkCounterCount + counter, value);
+}
+
+void vsmRecordClusterLevel(ShadowPush push, uint pageTests, uint outcome)
+{
+    // Every completed predicate has one outcome and one scan observation.
+    // Count page-table loads locally, including the successful final load,
+    // rather than issuing a diagnostic atomic for each inspected page.
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterLevelTests, 1u);
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterPageTests, pageTests);
+    vsmBuildDiagnosticAdd(push, outcome, 1u);
+    uint bucket = 0u;
+    if (pageTests != 0u) { bucket = min(uint(firstbithigh(pageTests)) + 1u, kVirtualShadowMapBuildDiagnosticHistogramCount - 1u); }
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterPageScanHistogram + bucket, 1u);
+}
+#endif
+
 struct ShadowProjection
 {
     float4 rowX, rowY, rowZ, rowW, metric;
@@ -762,7 +783,7 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         statistics[id.x] = value;
     }
 #if VSM_WORKLOAD_DIAGNOSTICS
-    if (id.x < kVirtualShadowMapWorkloadSize / 4u) { statistics[32u + id.x] = 0u; }
+    if (id.x < (kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize) / 4u) { statistics[32u + id.x] = 0u; }
 #endif
     if (id.x < push.physicalPageCount) { owners[id.x] = 0u; }
     if (id.x < (push.batchCount + push.coarseBatchCount) * 3u) {
@@ -1035,7 +1056,11 @@ groupshared float3 g_vsmClusterMinimum, g_vsmClusterMaximum;
 groupshared uint g_vsmClusterValid, g_vsmClusterLevelMask;
 
 bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection projection,
-    StructuredBuffer<uint4> pages)
+    StructuredBuffer<uint4> pages
+#if VSM_WORKLOAD_DIAGNOSTICS
+    , ShadowPush push
+#endif
+)
 {
     float2 lo = float2(1e30), hi = -lo;
     for (uint corner = 0u; corner < 8u; ++corner) {
@@ -1045,7 +1070,12 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
         float4 clip = vsmProjectClip(position, projection);
         // A box crossing the perspective near plane cannot be bounded by
         // dividing its corners. Retain this level for the exact triangle clip.
-        if (projection.metric.w > 0.5 && clip.w <= projection.originNear.w) { return true; }
+        if (projection.metric.w > 0.5 && clip.w <= projection.originNear.w) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+            vsmRecordClusterLevel(push, 0u, kVSMBuildDiagnosticClusterNearPlaneKeeps);
+#endif
+            return true;
+        }
         float2 projected = projection.metric.w > 0.5 ? clip.xy / clip.w : clip.xy;
         lo = min(lo, projected); hi = max(hi, projected);
     }
@@ -1053,15 +1083,34 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
     // Expand independently of the world-space bound to cover projected float
     // rounding and floor-to-page boundaries. Do not cull on projected depth.
     float guard = 2.0 / float(axis);
-    if (any(hi < -1.0 - guard) || any(lo > 1.0 + guard)) { return false; }
+    if (any(hi < -1.0 - guard) || any(lo > 1.0 + guard)) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmRecordClusterLevel(push, 0u, kVSMBuildDiagnosticClusterOutsideLevels);
+#endif
+        return false;
+    }
     int2 first = clamp(int2(floor(saturate(lo * 0.5 + 0.5) * float(axis))) - 1, int2(0), int2(axis - 1));
     int2 last = clamp(int2(floor(saturate(hi * 0.5 + 0.5) * float(axis))) + 1, int2(0), int2(axis - 1));
+#if VSM_WORKLOAD_DIAGNOSTICS
+    uint pageTests = 0u;
+#endif
     for (int y = first.y; y <= last.y; ++y) {
         for (int x = first.x; x <= last.x; ++x) {
             uint4 entry = pages[projection.page.x + uint(y * axis + x)];
-            if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 2u) != 0u) { return true; }
+#if VSM_WORKLOAD_DIAGNOSTICS
+            ++pageTests;
+#endif
+            if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 2u) != 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+                vsmRecordClusterLevel(push, pageTests, kVSMBuildDiagnosticClusterPageHits);
+#endif
+                return true;
+            }
         }
     }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    vsmRecordClusterLevel(push, pageTests, kVSMBuildDiagnosticClusterEmptyLevels);
+#endif
     return false;
 }
 #endif
@@ -1086,20 +1135,38 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
 #if VSM_CLUSTER_CULL
     if (lane == 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterGroups, 1u);
+#endif
         g_vsmClusterLevelMask = 0u;
         float3 minimum, maximum;
         g_vsmClusterValid = loadVirtualShadowMapClusterBounds(push.geometry, firstTriangle,
             minimum, maximum) ? 1u : 0u;
         g_vsmClusterMinimum = minimum;
         g_vsmClusterMaximum = maximum;
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBoundsValidGroups, g_vsmClusterValid);
+#endif
     }
     GroupMemoryBarrierWithGroupSync();
+#if VSM_WORKLOAD_DIAGNOSTICS
+    // Keep the predicate's diagnostic side effects inside the lane/valid guard.
+    if (lane < push.clipmapCount && g_vsmClusterValid != 0u) {
+        if (vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
+            InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+        }
+    }
+#else
     if (lane < push.clipmapCount && g_vsmClusterValid != 0u &&
         vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages)) {
         InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
     }
+#endif
     GroupMemoryBarrierWithGroupSync();
     uint levelMask = g_vsmClusterLevelMask;
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (lane == 0u && levelMask != 0u) { vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterSurvivingGroups, 1u); }
+#endif
     if (triangleIndex >= push.triangleCount || levelMask == 0u) { return; }
 #endif
     vsmWorkAdd(push, kVSMWorkBuildActiveTriangleSlots, 1u);

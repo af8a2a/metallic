@@ -48,6 +48,21 @@ COUNTER_DEFINITIONS = {
 PAGE_STATISTICS = {0: "requestedFinePages", 1: "admittedFinePages", 2: "unadmittedFinePages",
                    16: "admittedDirtyFinePages", 17: "admittedCleanFinePages", 18: "invalidatedMappedPages",
                    19: "remappedPages", 20: "newlyAllocatedFinePages", 24: "validMappedFinePages"}
+BUILD_COUNTER_DEFINITIONS = {
+    "clusterGroups": "64-slot build groups passing enabled/range/nonzero-dirty exits; not triangle count.",
+    "clusterBoundsValidGroups": "Groups that successfully load conservative cluster bounds.",
+    "clusterSurvivingGroups": "Valid groups with a nonzero level mask after cluster screening.",
+    "clusterLevelTests": "Actual fine-level checks across groups with valid bounds.",
+    "clusterPageTests": "Actual page-entry reads in cluster screening, including the first successful hit.",
+    "clusterPageHits": "Level checks ending at the first dirty/admitted/physically mapped page.",
+    "clusterNearPlaneKeeps": "Level checks conservatively kept at the perspective near plane, before reading pages.",
+    "clusterOutsideLevels": "Level checks rejected outside the guarded projected bounds, before reading pages.",
+    "clusterEmptyLevels": "Level checks whose scanned pages contain no eligible page.",
+}
+BUILD_HISTOGRAM_RANGES = ((0, 0), (1, 1), *[(1 << power, (1 << (power + 1)) - 1) for power in range(1, 14)], (16384, 16384))
+BUILD_HISTOGRAM_COUNTERS = ("clusterPageScan0", "clusterPageScan1",
+    *[f"clusterPageScan{low}To{high}" for low, high in BUILD_HISTOGRAM_RANGES[2:-1]], "clusterPageScan16384Plus")
+BUILD_COUNTERS = (*BUILD_COUNTER_DEFINITIONS, *BUILD_HISTOGRAM_COUNTERS)
 
 
 def duration(value, label):
@@ -163,9 +178,75 @@ def work_frame(frame, mode):
     return result
 
 
+def build_frame(frame, mode):
+    """Parse the independent sidecar; old packages need not contain this field."""
+    shadow = frame.get("shadow", {})
+    result = {"frame": frame["frame"], "warmup": frame["warmup"],
+              "gpuBuildDiagnosticsAvailable": False, "gpuBuildDiagnosticsState": "missing"}
+    if "gpuBuildDiagnostics" not in shadow:
+        return result
+    diagnostic = shadow["gpuBuildDiagnostics"]
+    if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
+            diagnostic["version"] != 1 or not isinstance(diagnostic.get("enabled"), bool)):
+        raise ValueError("Unknown or malformed GPU build diagnostic schema")
+    if not diagnostic["enabled"]:
+        if "faces" in diagnostic or "totals" in diagnostic:
+            raise ValueError("Disabled GPU build diagnostics must not publish stale counters")
+        result["gpuBuildDiagnosticsState"] = "disabled"
+        return result
+    if mode != "diagnostic":
+        raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
+    faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
+    if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(BUILD_COUNTERS) or
+            not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
+        raise ValueError("Missing GPU build diagnostic faces, counters or legacy face statistics")
+    identities, summed = set(), dict.fromkeys(BUILD_COUNTERS, 0)
+    for face in faces:
+        if not isinstance(face, dict):
+            raise ValueError("Malformed GPU build diagnostic face")
+        light = integer_counter(face.get("lightIndex"), "lightIndex")
+        side = integer_counter(face.get("face"), "face")
+        index = light * 6 + side
+        counters = face.get("counters")
+        if side >= 6 or index >= len(statistics_rows) or index in identities or not isinstance(counters, dict) or set(counters) != set(BUILD_COUNTERS):
+            raise ValueError("Duplicated or malformed GPU build diagnostic face")
+        identities.add(index)
+        stats = statistics_rows[index]
+        if not isinstance(stats, list) or len(stats) != 32 or any(type(value) is not int or not 0 <= value <= 0xffffffff for value in stats):
+            raise ValueError("Invalid legacy face statistics for GPU build diagnostics")
+        for name in BUILD_COUNTERS:
+            value = integer_counter(counters[name], name)
+            summed[name] += value
+            if summed[name] > 0xffffffffffffffff:
+                raise ValueError("GPU build diagnostic face totals overflow uint64")
+        groups, valid, surviving = (counters[name] for name in ("clusterGroups", "clusterBoundsValidGroups", "clusterSurvivingGroups"))
+        if not surviving <= valid <= groups:
+            raise ValueError("GPU build group counts violate surviving <= valid <= groups")
+        levels = counters["clusterLevelTests"]
+        if levels != valid * stats[11]:
+            raise ValueError("GPU build level tests disagree with valid groups times clipmap count")
+        outcomes = sum(counters[name] for name in ("clusterPageHits", "clusterNearPlaneKeeps", "clusterOutsideLevels", "clusterEmptyLevels"))
+        histogram = [counters[name] for name in BUILD_HISTOGRAM_COUNTERS]
+        if outcomes != levels or sum(histogram) != levels:
+            raise ValueError("GPU build level outcomes/histogram do not partition level tests")
+        if histogram[0] != counters["clusterNearPlaneKeeps"] + counters["clusterOutsideLevels"]:
+            raise ValueError("GPU build zero-scan histogram disagrees with near/outside exits")
+        minimum = sum(count * bounds[0] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
+        maximum = sum(count * bounds[1] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
+        if not minimum <= counters["clusterPageTests"] <= maximum:
+            raise ValueError("GPU build page tests fall outside histogram scan-length bounds (maximum 16384 per level)")
+        if (stats[10] == 0 or stats[14] != 0 or stats[16] == 0) and any(counters.values()):
+            raise ValueError("Inactive or zero-dirty face published nonzero GPU build diagnostics")
+    for name in BUILD_COUNTERS:
+        if summed[name] != integer_counter(totals[name], name):
+            raise ValueError(f"GPU build diagnostic face totals disagree: {name}")
+    result.update(gpuBuildDiagnosticsAvailable=True, gpuBuildDiagnosticsState="enabled", **totals)
+    return result
+
+
 def summarize_package(source):
     source, captures = load_package(source)
-    rows, work_rows, work_faces, processes = [], [], [], []
+    rows, work_rows, work_faces, build_rows, build_faces, processes = [], [], [], [], [], []
     for index, path, data in captures:
         if data["mode"] == "timing" and data.get("gpuWorkDiagnostics", False):
             raise ValueError("GPU work instrumentation cannot enter ordinary timing evidence")
@@ -174,6 +255,18 @@ def summarize_package(source):
                 raise ValueError("GPU work instrumentation cannot enter ordinary timing evidence")
             frames = [profile_frame(frame) for frame in case["frames"]]
             work = [work_frame(frame, data["mode"]) for frame in case["frames"]]
+            build = [build_frame(frame, data["mode"]) for frame in case["frames"]]
+            present = ["gpuBuildDiagnostics" in frame.get("shadow", {}) for frame in case["frames"]]
+            if any(present) and not all(present):
+                raise ValueError("GPU build diagnostics are missing declared frame readback")
+            declared_build = case.get("gpuBuildDiagnostics", data.get("gpuBuildDiagnostics"))
+            if declared_build is not None:
+                if not isinstance(declared_build, bool):
+                    raise ValueError("Malformed GPU build diagnostic declaration")
+                if declared_build and (data["mode"] != "diagnostic" or not all(row["gpuBuildDiagnosticsAvailable"] for row in build)):
+                    raise ValueError("Declared GPU build diagnostics are missing frame readback or marked as ordinary timing")
+                if not declared_build and any(row["gpuBuildDiagnosticsAvailable"] for row in build):
+                    raise ValueError("Enabled GPU build diagnostics disagree with the disabled declaration")
             if case.get("gpuWorkDiagnostics", False) and not all(row["gpuWorkAvailable"] for row in work):
                 raise ValueError("Declared GPU work instrumentation is missing frame readback")
             for raw, row in zip(case["frames"], work):
@@ -182,30 +275,44 @@ def summarize_package(source):
                                        "warmup": raw["warmup"], "lightIndex": face["lightIndex"],
                                        "face": face["face"], **face["counters"]}
                                       for face in raw["shadow"]["gpuWork"]["faces"])
+            for raw, row in zip(case["frames"], build):
+                if row["gpuBuildDiagnosticsAvailable"]:
+                    build_faces.extend({"case": case["id"], "process": index, "frame": raw["frame"],
+                        "warmup": raw["warmup"], "lightIndex": face["lightIndex"], "face": face["face"], **face["counters"]}
+                        for face in raw["shadow"]["gpuBuildDiagnostics"]["faces"])
             valid = [frame for frame in frames if not frame["warmup"]]
             columns = ["graphMs", "shadowsMs", "stageSumMs", "otherShadowsMs", *[f"{stage}Ms" for stage in STAGES]]
             metrics = {column: describe([frame[column] for frame in valid]) for column in columns}
             counter_names = list(WORK_COUNTERS) + list(PAGE_STATISTICS.values())
             counters = {name: describe([row[name] for row in work if not row["warmup"] and name in row])
                         for name in counter_names if any(not row["warmup"] and name in row for row in work)}
+            build_counters = {name: describe([row[name] for row in build if not row["warmup"] and row["gpuBuildDiagnosticsAvailable"]])
+                              for name in BUILD_COUNTERS if any(not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] for row in build)}
             processes.append({"case": case["id"], "process": index, "mode": data["mode"],
                               "source": str(path), "metrics": metrics, "counters": counters,
+                              "buildDiagnosticCounters": build_counters,
+                              "buildDiagnosticFrames": sum(not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] for row in build),
                               "workCounterFrames": sum(not row["warmup"] and row["gpuWorkAvailable"] for row in work)})
             rows.extend({"case": case["id"], "process": index, "mode": data["mode"], **frame} for frame in frames)
             work_rows.extend({"case": case["id"], "process": index, "mode": data["mode"], **frame} for frame in work)
+            build_rows.extend({"case": case["id"], "process": index, "mode": data["mode"], **frame} for frame in build)
     grouped = collections.defaultdict(list)
     for process in processes:
         grouped[(process["case"], process["mode"])].append(process)
     cases = []
     for (case, mode), entries in grouped.items():
         counter_names = sorted(set().union(*(entry["counters"] for entry in entries)))
+        build_names = [name for name in BUILD_COUNTERS if any(name in entry["buildDiagnosticCounters"] for entry in entries)]
         cases.append({"case": case, "mode": mode, "independentProcesses": len(entries),
                       "processMedianSummary": {column: describe([entry["metrics"][column]["median"] for entry in entries])
                                                for column in entries[0]["metrics"]},
                       "counterProcessMedianSummary": {name: describe([entry["counters"][name]["median"] for entry in entries
-                                                                       if name in entry["counters"]]) for name in counter_names}})
+                                                                       if name in entry["counters"]]) for name in counter_names},
+                      "buildDiagnosticProcessMedianSummary": {name: describe([entry["buildDiagnosticCounters"][name]["median"]
+                          for entry in entries if name in entry["buildDiagnosticCounters"]]) for name in build_names}})
     return {"source": str(source), "manifestSHA256": acceptance.digest(source / "Manifest.json"),
-            "cases": cases, "processes": processes, "frames": rows, "workFrames": work_rows, "workFaces": work_faces}
+            "cases": cases, "processes": processes, "frames": rows, "workFrames": work_rows, "workFaces": work_faces,
+            "buildDiagnosticFrames": build_rows, "buildDiagnosticFaces": build_faces}
 
 
 def write_csv(path, rows):
@@ -272,6 +379,27 @@ def plot_work(case, output, filename):
     return filename
 
 
+def plot_build_histogram(case, output, filename):
+    import matplotlib.pyplot as plt
+
+    values = case["buildDiagnosticProcessMedianSummary"]
+    if case["mode"] != "diagnostic" or not values:
+        return None
+    labels = [str(low) if low == high else f"{low}–{high}" for low, high in BUILD_HISTOGRAM_RANGES]
+    labels[-1] = "16384+"
+    figure, axis = plt.subplots(figsize=(12, 6), constrained_layout=True)
+    axis.bar(range(len(labels)), [values[name]["median"] for name in BUILD_HISTOGRAM_COUNTERS], color="#65952d")
+    axis.set_xticks(range(len(labels)), labels, rotation=45, ha="right")
+    axis.set_yscale("symlog", linthresh=1)
+    axis.set(xlabel="Actual page-entry reads per cluster-level check (includes the first hit)",
+             ylabel="Checks / frame (median of diagnostic process medians; symlog)",
+             title=f"{case['case']}: cluster scan length, not projected rectangle area")
+    axis.grid(axis="y", alpha=.25)
+    figure.savefig(output / filename, dpi=150)
+    plt.close(figure)
+    return filename
+
+
 def report(args):
     package = summarize_package(args.source)
     diagnostic = summarize_package(args.diagnostic) if args.diagnostic else None
@@ -322,8 +450,33 @@ def report(args):
             work_image = plot_work(case, output, f"{label}-{ordinal}-work.png")
             if work_image:
                 text.extend([f"![Diagnostic GPU work]({work_image})", ""])
+            build_counters = case["buildDiagnosticProcessMedianSummary"]
+            if build_counters:
+                text.extend(["| Independent build diagnostic | Median of process medians | Processes with evidence |",
+                             "| --- | ---: | ---: |"])
+                for name in BUILD_COUNTER_DEFINITIONS:
+                    values = build_counters[name]
+                    text.append(f"| {name} | {values['median']:.1f} | {values['count']} |")
+                text.extend(["", "All 25 counters are retained independently in BuildDiagnosticFrames.csv/JSON and the per-face CSV.",
+                    "The histogram counts actual page reads, including early hits; zero represents near-plane keeps or outside rejection.", ""])
+            else:
+                text.extend(["Build diagnostics: **unavailable** (disabled or absent in older evidence); missing values are not zero.", ""])
+            build_image = plot_build_histogram(case, output, f"{label}-{ordinal}-build-histogram.png")
+            if build_image:
+                text.extend([f"![Diagnostic cluster page scan histogram]({build_image})", ""])
+    build_frames = [{"package": label, **row} for label, item in packages for row in item["buildDiagnosticFrames"] if row["mode"] == "diagnostic"]
+    build_faces = [{"package": label, **row} for label, item in packages for row in item["buildDiagnosticFaces"]]
+    acceptance.save(output / "BuildDiagnosticFrames.json", build_frames)
+    write_csv(output / "BuildDiagnosticFrames.csv", build_frames)
+    if build_faces:
+        write_csv(output / "BuildDiagnosticFaces.csv", build_faces)
     text.extend(["## GPU counter definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
     text.extend(f"| {name} | {definition} |" for name, definition in COUNTER_DEFINITIONS.items())
+    text.extend(["", "## Independent build diagnostic definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
+    text.extend(f"| {name} | {definition} |" for name, definition in BUILD_COUNTER_DEFINITIONS.items())
+    text.extend(["", "`clusterPageScan0/1/2To3/.../8192To16383/16384Plus` record one observation per level check, using actual reads before return.",
+                 "The current maximum is 16384 reads per level. Counts are checked per face against legacy clipmap/enabled/dirty statistics, outcome partitions, histogram totals and weighted scan bounds.",
+                 "Build diagnostic data is diagnostic-only and never enters ordinary timing or the four-arm performance policy. Cluster culling disabled can legitimately publish all-zero available diagnostics."])
     text.extend(["", "Legacy requested/admitted/dirty/clean/remapped/allocated/valid page statistics are separate state counters.",
                  "`validMappedFinePages` includes cached pages not requested this frame; `invalidatedMappedPages` may include coarse and unrequested pages.",
                  "No triangle capacity, dispatch upper bound, or allocation size is substituted for executed work.", ""])

@@ -108,7 +108,7 @@ public:
                 actualRenderHeight = binding.texture->desc().height;
             }
             const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory" ||
-                (collectGPUWork && binding.id == "Shadows.workload");
+                (collectGPUWork && (binding.id == "Shadows.workload" || binding.id == "Shadows.buildDiagnostics"));
             const bool image = (captureImages && (binding.id == "VBuffer.depth" ||
                 binding.id == "VBuffer.visibility" || binding.id == "Shadows.shadows")) ||
                 (captureHDR && pass == hdrPass && binding.id == hdrOutput);
@@ -161,6 +161,7 @@ public:
             {"physicalPageBudget", header.physicalPageBudget}, {"sceneIdentity", header.sceneIdentity}}},
             {"statistics", faces}, {"totals", totals}};
         result["gpuWork"] = {{"version", 1}, {"enabled", collectGPUWork}};
+        result["gpuBuildDiagnostics"] = {{"version", 1}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
             const auto rawWorkload = read("Shadows.workload");
             requireAcceptance(rawWorkload.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapWorkloadSize,
@@ -184,6 +185,29 @@ public:
             }
             result["gpuWork"]["faces"] = std::move(workFaces);
             result["gpuWork"]["totals"] = std::move(workTotals);
+
+            const auto rawBuild = read("Shadows.buildDiagnostics");
+            requireAcceptance(rawBuild.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapBuildDiagnosticSize,
+                "Unexpected VSM build diagnostic layout");
+            Json buildFaces = Json::array(), buildTotals = Json::object();
+            std::array<uint64_t, kVirtualShadowMapBuildDiagnosticCounterCount> buildSums{};
+            for (size_t offset = 0; offset < rawBuild.size(); offset += kVirtualShadowMapBuildDiagnosticSize) {
+                std::array<uint32_t, kVirtualShadowMapBuildDiagnosticCounterCount * 2> words;
+                std::memcpy(words.data(), rawBuild.data() + offset, sizeof(words));
+                Json counters = Json::object();
+                for (size_t index = 0; index < buildSums.size(); ++index) {
+                    const uint64_t value = uint64_t(words[index * 2]) | (uint64_t(words[index * 2 + 1]) << 32);
+                    counters[std::string(kVirtualShadowMapBuildDiagnosticCounterNames[index])] = value;
+                    buildSums[index] += value;
+                }
+                const size_t layer = offset / kVirtualShadowMapBuildDiagnosticSize;
+                buildFaces.push_back({{"lightIndex", layer / 6}, {"face", layer % 6}, {"counters", std::move(counters)}});
+            }
+            for (size_t index = 0; index < buildSums.size(); ++index) {
+                buildTotals[std::string(kVirtualShadowMapBuildDiagnosticCounterNames[index])] = buildSums[index];
+            }
+            result["gpuBuildDiagnostics"]["faces"] = std::move(buildFaces);
+            result["gpuBuildDiagnostics"]["totals"] = std::move(buildTotals);
         }
         if (captured.contains("Shadows.memory")) {
             const auto rawMemory = read("Shadows.memory");
@@ -439,9 +463,12 @@ public:
                 report["gpuProfileDiagnostics"] = gpuProfileDiagnostics;
                 output["gpuWorkDiagnostics"] = gpuWorkDiagnostics;
                 report["gpuWorkDiagnostics"] = gpuWorkDiagnostics;
+                output["gpuBuildDiagnostics"] = gpuWorkDiagnostics;
+                report["gpuBuildDiagnostics"] = gpuWorkDiagnostics;
                 if (gpuWorkDiagnostics) {
                     report["performanceEligible"] = false;
                     report["gpuWorkScope"] = "Optional GPU diagnostic counters include shader atomic overhead; timings from this run are not ordinary performance evidence.";
+                    report["gpuBuildDiagnosticScope"] = "Build precheck counters and scan-length histograms are diagnostic-only sidecars; they do not change the public statistics or workload layouts and are not ordinary timing evidence.";
                 }
                 if (cpuProfileDiagnostics) {
                     report["performanceEligible"] = false;

@@ -91,6 +91,9 @@ public:
             reflection.addBufferOutput("workload", "Six GPU workload blocks per light entry; sixteen low/high uint pairs per face")
                 .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapWorkloadSize, sizeof(uint32_t))
                 .bufferLayout("u32").transferWrite();
+            reflection.addBufferOutput("buildDiagnostics", "Six cluster build counter and page-scan histogram blocks per light entry")
+                .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapBuildDiagnosticSize, sizeof(uint32_t))
+                .bufferLayout("u32").transferWrite();
         }
         reflection.addBufferOutput("memory", "Logical owned bytes: atlas, private output, buffers, public output, faces, atlas pages, temporal history")
             .buffer(8 * sizeof(uint64_t), sizeof(uint64_t)).transferWrite();
@@ -176,6 +179,7 @@ public:
         const auto table = context.outputBuffer("lights");
         const auto statistics = context.outputBuffer("statistics");
         const auto workload = context.outputBuffer("workload");
+        const auto buildDiagnostics = context.outputBuffer("buildDiagnostics");
         auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
         const auto memory = context.outputBuffer("memory");
         const auto* scene = context.runtimeScene();
@@ -184,7 +188,7 @@ public:
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
             !output.valid() || !debug.valid() || !table.valid() || !statistics.valid() || !memory.valid() ||
-            (collectGPUWork_ && !workload.valid())) {
+            (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid()))) {
             return makeError(Error::InvalidArgument);
         }
         VisibilityBufferFrameInfo info;
@@ -353,6 +357,8 @@ public:
             BufferSlice importedStats;
             BufferSlice sourceWorkload;
             BufferSlice destinationWorkload;
+            BufferSlice sourceBuildDiagnostics;
+            BufferSlice destinationBuildDiagnostics;
             uint32_t layer;
             std::array<std::string, 3> names;
         };
@@ -366,6 +372,7 @@ public:
         }
         std::vector<uint32_t> zeroStatistics(statistics.desc().size / sizeof(uint32_t), 0);
         std::vector<uint32_t> zeroWorkload(collectGPUWork_ ? workload.desc().size / sizeof(uint32_t) : 0, 0);
+        std::vector<uint32_t> zeroBuildDiagnostics(collectGPUWork_ ? buildDiagnostics.desc().size / sizeof(uint32_t) : 0, 0);
         auto batch = context.streamer()->beginCopyBatch();
         if (!batch) { return makeError(batch.error()); }
         std::vector<StreamDataChunk> chunks{{tableData.data(), tableData.size()},
@@ -374,6 +381,8 @@ public:
         if (collectGPUWork_) {
             chunks.push_back({zeroWorkload.data(), zeroWorkload.size() * sizeof(uint32_t)});
             destinations.push_back(workload.buffer());
+            chunks.push_back({zeroBuildDiagnostics.data(), zeroBuildDiagnostics.size() * sizeof(uint32_t)});
+            destinations.push_back(buildDiagnostics.buffer());
         }
         for (size_t index = 0; index < chunks.size(); ++index) {
             const auto upload = context.streamer()->streamBufferData({.dataChunks = {&chunks[index], 1},
@@ -384,7 +393,10 @@ public:
             RenderGraphStageUse{"debug", RenderGraphResourceAccess::TextureTransferWrite},
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
-        if (collectGPUWork_) { initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite}); }
+        if (collectGPUWork_) {
+            initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
+            initializeUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
+        }
         struct ProjectionGroup
         {
             std::array<VirtualShadowMaps*, 6> faces{};
@@ -470,19 +482,26 @@ public:
                         auto destinationStats = statistics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapFaceStatisticsSize,
                             kVirtualShadowMapFaceStatisticsSize});
                         auto importedStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize +
-                            (collectGPUWork_ ? kVirtualShadowMapWorkloadSize : 0)});
+                            (collectGPUWork_ ? kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0)});
                         if (!sourceStats || !destinationStats || !importedStats) { return makeError(Error::InvalidArgument); }
                         BufferSlice sourceWorkload, destinationWorkload;
+                        BufferSlice sourceBuildDiagnostics, destinationBuildDiagnostics;
                         if (collectGPUWork_) {
                             auto source = shadow->statistics->slice({kVirtualShadowMapFaceStatisticsSize, kVirtualShadowMapWorkloadSize});
                             auto destination = workload.buffer()->slice({uint64_t(layer) * kVirtualShadowMapWorkloadSize,
                                 kVirtualShadowMapWorkloadSize});
                             if (!source || !destination) { return makeError(Error::InvalidArgument); }
                             sourceWorkload = *source; destinationWorkload = *destination;
+                            auto buildSource = shadow->statistics->slice({kVirtualShadowMapFaceStatisticsSize + kVirtualShadowMapWorkloadSize,
+                                kVirtualShadowMapBuildDiagnosticSize});
+                            auto buildDestination = buildDiagnostics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapBuildDiagnosticSize,
+                                kVirtualShadowMapBuildDiagnosticSize});
+                            if (!buildSource || !buildDestination) { return makeError(Error::InvalidArgument); }
+                            sourceBuildDiagnostics = *buildSource; destinationBuildDiagnostics = *buildDestination;
                         }
                         const auto suffix = std::to_string(layer);
                         publications.push_back({*shadow, *sourceStats, *destinationStats, *importedStats,
-                            sourceWorkload, destinationWorkload, layer,
+                            sourceWorkload, destinationWorkload, sourceBuildDiagnostics, destinationBuildDiagnostics, layer,
                             {"faceShadow" + suffix, "faceDebug" + suffix, "faceStatistics" + suffix}});
                     }
                     if (compact_) {
@@ -518,7 +537,10 @@ public:
                 {"depth", RenderGraphResourceAccess::TextureSampleRead}};
         }
         std::vector<RenderGraphStageUse> publishUses{{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
-        if (collectGPUWork_) { publishUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite}); }
+        if (collectGPUWork_) {
+            publishUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
+            publishUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
+        }
         if (!compact_) {
             publishUses.push_back({"shadows", RenderGraphResourceAccess::TextureTransferWrite});
             publishUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite});
@@ -602,6 +624,8 @@ public:
                     if (!copied) { return copied; }
                     if (collectGPUWork_) {
                         copied = cmd.copyBuffer(publication.sourceWorkload, publication.destinationWorkload);
+                        if (!copied) { return copied; }
+                        copied = cmd.copyBuffer(publication.sourceBuildDiagnostics, publication.destinationBuildDiagnostics);
                         if (!copied) { return copied; }
                     }
                 }
