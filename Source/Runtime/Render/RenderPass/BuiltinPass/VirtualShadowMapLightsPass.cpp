@@ -6,6 +6,7 @@
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <numeric>
@@ -22,6 +23,23 @@ struct ManagedLight
     VirtualShadowMapLightEntry entry{};
     std::array<uint32_t, 6> faceBudgets{};
 };
+
+uint64_t temporalContentKey(const VirtualShadowMapCasterResources& casters, const VisibilityBufferFrameInfo& raster)
+{
+    uint64_t hash = 14695981039346656037ull;
+    const auto append = [&hash](const auto& value) {
+        const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
+        for (size_t i = 0; i < sizeof(value); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
+    };
+    append(casters.sceneIdentity); append(casters.structuralRevision); append(casters.dependencyKey);
+    append(raster.sceneIdentity); append(raster.rasterSettingsRevision);
+    for (const auto& caster : casters.states) {
+        append(caster.id); append(caster.contentKey); append(caster.bounds.valid);
+        append(caster.bounds.min.x); append(caster.bounds.min.y); append(caster.bounds.min.z);
+        append(caster.bounds.max.x); append(caster.bounds.max.y); append(caster.bounds.max.z);
+    }
+    return hash;
+}
 
 class VirtualShadowMapLightsPass final : public UnsafePass {
 public:
@@ -54,7 +72,9 @@ public:
             .transferWrite().transient(RenderGraphInitialization::FullOverwrite);
         shadows.format = Format::R8Unorm;
         shadows.layerCount = compact ? capacity : capacity * 6;
-        if (compact) { shadows.stageAccess(RenderGraphResourceAccess::TextureStorageWrite, RenderGraphPassKind::Compute); }
+        // Temporal stabilization is a runtime toggle and reads/writes the
+        // published layer after every face has finished projection.
+        shadows.stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite, RenderGraphPassKind::Compute);
         auto& debug = reflection.addTextureOutput("debug", "Per-face page selection; magenta marks unavailable layers")
             .transferWrite().transient(RenderGraphInitialization::FullOverwrite);
         debug.format = Format::RGBA8Unorm;
@@ -66,7 +86,7 @@ public:
         reflection.addBufferOutput("statistics", "Six 32-uint face blocks per light entry")
             .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapFaceStatisticsSize, sizeof(uint32_t))
             .bufferLayout("u32").transferWrite();
-        reflection.addBufferOutput("memory", "Logical owned bytes: atlas, private output, buffers, public output, faces, atlas pages")
+        reflection.addBufferOutput("memory", "Logical owned bytes: atlas, private output, buffers, public output, faces, atlas pages, temporal history")
             .buffer(8 * sizeof(uint64_t), sizeof(uint64_t)).transferWrite();
         return reflection;
     }
@@ -92,6 +112,10 @@ public:
             runtimeIntSetting("smrtRayCount", "SMRT Rays", 8, 1, 32),
             runtimeIntSetting("smrtSamplesPerRay", "SMRT Samples per Ray", 8, 1, 32),
             runtimeFloatSetting("smrtMaxRayLength", "SMRT Soft Search Distance (m)", 10, 0.001f, 10000),
+            runtimeFloatSetting("smrtRayLengthScale", "SMRT View Distance Scale (0 = fixed)", 0, 0, 1000),
+            runtimeFloatSetting("smrtMaxRayAngle", "SMRT Local Max Angle (rad)", 0.03f, 0.001f, 0.35f),
+            runtimeBoolSetting("smrtTemporalEnabled", "SMRT Temporal Stabilization", false),
+            runtimeIntSetting("smrtTemporalMaxFrames", "SMRT History Frames", 32, 1, 64),
             runtimeBoolSetting("receiverFootprint", "Match Receiver Footprint", true),
             runtimeIntSetting("tessellationFactor", "Shadow Displacement Subdivisions", 4, 1, 8),
             runtimeIntSetting("tessellationSubdivisionDepth", "Shadow Displacement Split Depth", 0, 0, 2),
@@ -110,7 +134,7 @@ public:
             log = "VirtualShadowMapLightsPass requires mesh shaders and bindless descriptors";
             return makeError(Error::Unsupported);
         }
-        if (device_ != context.device) { casterCache_ = {}; }
+        if (device_ != context.device) { casterCache_ = {}; histories_.clear(); }
         device_ = context.device;
         return {};
     }
@@ -175,6 +199,12 @@ public:
         settings.smrtRayCount = properties.value("smrtRayCount", settings.smrtRayCount);
         settings.smrtSamplesPerRay = properties.value("smrtSamplesPerRay", settings.smrtSamplesPerRay);
         settings.smrtMaxRayLength = properties.value("smrtMaxRayLength", settings.smrtMaxRayLength);
+        settings.smrtRayLengthScale = properties.value("smrtRayLengthScale", settings.smrtRayLengthScale);
+        settings.smrtMaxRayAngle = properties.value("smrtMaxRayAngle", settings.smrtMaxRayAngle);
+        settings.smrtTemporalSampling = settings.filter == VirtualShadowMapFilter::SMRT &&
+            boolProperty(&properties, "smrtTemporalEnabled", false);
+        const uint32_t historyFrames = properties.value("smrtTemporalMaxFrames", 32u);
+        if (historyFrames == 0 || historyFrames > 64) { return makeError(Error::InvalidArgument); }
         settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
@@ -268,6 +298,7 @@ public:
         }
         if (sceneIdentity_ != info.sceneIdentity) {
             caches_.clear();
+            histories_.clear();
             casterCache_ = {};
             sceneIdentity_ = info.sceneIdentity;
         }
@@ -278,6 +309,14 @@ public:
         // Admission owns persistent pool memory. Disabled/rejected lights must
         // release their old pools when the global budget shrinks.
         std::erase_if(caches_, [&](const auto& cache) { return !identities.contains(cache.first); });
+        std::unordered_set<uint64_t> temporalIdentities;
+        if (settings.smrtTemporalSampling) {
+            for (const auto& item : lights) {
+                const float size = item.light.type == VirtualShadowMapLightType::Directional ? item.light.angularRadius : item.light.sourceRadius;
+                if (item.entry.status == kVirtualShadowMapLightAdmitted && size > 0.0f) { temporalIdentities.insert(item.stableId); }
+            }
+        }
+        std::erase_if(histories_, [&](const auto& history) { return !temporalIdentities.contains(history.first); });
         cpuTotal.work("sourceSlots", sources.size());
         cpuTotal.work("admittedLights", header.admittedCount);
         cpuTotal.work("admittedFaces", admittedFaces);
@@ -322,11 +361,12 @@ public:
             bool filteredPoint = false;
         };
         std::vector<ProjectionGroup> projections;
+        ViewConstants view{};
+        uint64_t contentKey = 0;
         auto recordFaces = [&](CommandBuffer&) -> Result<> {
             cpuPhase.next("Caster textures and geometry");
             auto profile = context.profileScope("VSM caster preparation");
             if (admittedFaces != 0) {
-                ViewConstants view{};
                 static_assert(offsetof(VisibilityBufferFrameInfo, width) == sizeof(ViewCameraConstants));
                 std::memcpy(&view.current, info.eye, sizeof(ViewCameraConstants));
                 view.current.eye[3] = view.current.center[3] = 0;
@@ -373,6 +413,7 @@ public:
                 auto casters = casterCache_.prepare(*device_, commands, *scene,
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
+                if (!temporalIdentities.empty()) { contentKey = temporalContentKey(*casters, info); }
                 profile.next("VSM page demand, cache and raster");
                 cpuPhase.next("Record all faces");
                 for (uint32_t index : order) {
@@ -433,9 +474,7 @@ public:
                 {"debug", RenderGraphResourceAccess::TextureStorageWrite},
                 {"depth", RenderGraphResourceAccess::TextureSampleRead}};
         }
-        std::vector<RenderGraphStageUse> publishUses{
-            {"statistics", RenderGraphResourceAccess::BufferTransferWrite},
-            {"memory", RenderGraphResourceAccess::BufferTransferWrite}};
+        std::vector<RenderGraphStageUse> publishUses{{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (!compact_) {
             publishUses.push_back({"shadows", RenderGraphResourceAccess::TextureTransferWrite});
             publishUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite});
@@ -461,6 +500,12 @@ public:
 
         auto memoryBatch = context.streamer()->beginCopyBatch();
         if (!memoryBatch) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(memoryBatch.error()); }
+        std::vector<RenderGraphStageUse> temporalUses{{"memory", RenderGraphResourceAccess::BufferTransferWrite}};
+        if (!temporalIdentities.empty()) {
+            temporalUses.push_back({"shadows", RenderGraphResourceAccess::TextureStorageReadWrite});
+            temporalUses.push_back({"depth", RenderGraphResourceAccess::TextureSampleRead});
+        }
+        std::array<uint64_t, 8> memoryData{};
         const std::array stages{RenderGraphStage{"Initialize VSM light publication", initializeUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Initialize publication commands");
@@ -487,7 +532,6 @@ public:
             }}, RenderGraphStage{"Publish VSM faces", publishUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Memory statistics and publication commands");
-                std::array<uint64_t, 8> memoryData{};
                 for (const auto& [identity, faces] : caches_) {
                     for (const auto& face : faces) {
                         if (!face) { continue; }
@@ -500,10 +544,6 @@ public:
                     }
                 }
                 memoryData[3] = uint64_t(context.width()) * context.height() * output.desc().layerCount * 5;
-                const StreamDataChunk memoryChunk{memoryData.data(), sizeof(memoryData)};
-                const auto memoryUpload = context.streamer()->streamBufferData({.dataChunks = {&memoryChunk, 1},
-                    .placementAlignment = 16, .dstBuffer = memory.buffer(), .copyBatch = *memoryBatch});
-                if (!memoryUpload.valid()) { (void)context.streamer()->cancelCopyBatch(*memoryBatch); return makeError(Error::OutOfMemory); }
                 for (const auto& publication : publications) {
                     const auto& shadow = publication.shadow;
                     if (!compact_) {
@@ -517,6 +557,34 @@ public:
                     auto copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
                     if (!copied) { return copied; }
                 }
+                return {};
+            }}, RenderGraphStage{"Stabilize SMRT shadows", temporalUses,
+            [&](CommandBuffer& cmd) -> Result<> {
+                const uint64_t revision = context.historyResources() ? context.historyResources()->geometryReprojectionInvalidationRevision() : 0;
+                std::string log;
+                for (uint32_t index : order) {
+                    const auto& item = lights[index];
+                    if (!temporalIdentities.contains(item.stableId)) { continue; }
+                    auto& history = histories_[item.stableId];
+                    if (!history) { history = std::make_unique<VirtualShadowMapTemporal>(); }
+                    auto temporalSettings = settings;
+                    temporalSettings.physicalPageCount = item.faceBudgets[0];
+                    uint64_t lightContentKey = contentKey;
+                    for (uint32_t faceBudget : item.faceBudgets) {
+                        lightContentKey = (lightContentKey ^ faceBudget) * 1099511628211ull;
+                    }
+                    if (auto r = history->record(*device_, cmd, *depth.view(), *output.view(), view, info.frameIndex,
+                        revision, lightContentKey, item.light, temporalSettings, historyFrames,
+                        item.entry.baseLayer, item.entry.faceCount, compact_, log); !r) {
+                        spdlog::error("VirtualShadowMapLightsPass temporal: {}", log);
+                        return r;
+                    }
+                    memoryData[6] += history->memoryBytes();
+                }
+                const StreamDataChunk memoryChunk{memoryData.data(), sizeof(memoryData)};
+                const auto memoryUpload = context.streamer()->streamBufferData({.dataChunks = {&memoryChunk, 1},
+                    .placementAlignment = 16, .dstBuffer = memory.buffer(), .copyBatch = *memoryBatch});
+                if (!memoryUpload.valid()) { return makeError(Error::OutOfMemory); }
                 return context.streamer()->copyStreamedData(cmd, *memoryBatch);
             }}};
         cpuPhase.next("Execute publication stages");
@@ -535,6 +603,7 @@ private:
     bool compact_ = false;
     uint64_t sceneIdentity_ = 0;
     std::unordered_map<uint64_t, std::array<std::unique_ptr<VirtualShadowMaps>, 6>> caches_;
+    std::unordered_map<uint64_t, std::unique_ptr<VirtualShadowMapTemporal>> histories_;
 };
 
 } // namespace

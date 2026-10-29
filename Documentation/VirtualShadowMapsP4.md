@@ -14,15 +14,19 @@ Sun/Moon 直接使用已有 `angularRadius`，单位弧度、含义为半径。�
 | smrtRayCount | 8 | 每 receiver 的圆盘光源样本数，1–32 |
 | smrtSamplesPerRay | 8 | 每条有界射线的步数，另含一次接收点查询 |
 | smrtMaxRayLength | 10 m | 米制软阴影搜索上限；局部光另受光源视角展开限制，超出搜索距离的遮挡仍有效 |
+| smrtRayLengthScale | 0 | 0 保留固定米制上限；大于 0 时，再以相机距离乘该比例限制搜索长度，范围 0–1000 |
+| smrtMaxRayAngle | 0.03 rad | 局部光的视角展开上限，范围 0.001–0.35，不改变光源尺寸 |
+| smrtTemporalEnabled | false | 多灯 pass 启用逐帧光源采样与独立可见度历史；Sponza Sample 显式开启 |
+| smrtTemporalMaxFrames | 32 | 每灯累积帧数上限，1–64；1 可观察同一采样相位的原始结果 |
 | receiverFootprint | true | Hard / PCF / SMRT 均按接收面像素投影到光空间的足迹选择起始级；false 显式从最细级开始 |
 | tessellationFactor | 4 | 位移 caster 独立细分因子，1–8 |
 | tessellationSubdivisionDepth | 0 | 位移 caster 额外均匀四分层级，0–2；每级增加 4 倍微三角 |
 
 SMRT 参考本机 Unreal 5.7.4 的反向深度历史算法：从远端向 receiver 走二次分布采样，最后显式查询 receiver。首个有效样本做普通深度比较，以保留有界搜索之外的遮挡；后续按相邻参考深度的间隔判断交点。遇到当前单层深度无法表示的遮挡间隙时，沿前一表面的深度历史作有界斜率外推。有效清空深度也参与历史，未映射样本才跳过。每个查询沿用 receiver plane 的 texel-center 修正和米制 bias；零光源尺寸严格回到 Hard。
 
-方向光在统一米制灯光深度中维护历史，外推斜率上限为 0.05 m。局部光限制光源视角展开（0.03 rad）并最多行进 receiver-light 距离的 0.75，避免接近发光面的透视奇点；采样按起始面投影深度参数化。点光跨面使用统一逆径向深度，外推斜率上限为射线逆径向深度变化的 0.05，不混用六个面的轴向深度。保留本项目的 `smrtMaxRayLength` 米制上限，因此搜索距离仍限制可表示的半影宽度。
+方向光在统一米制灯光深度中维护历史，外推斜率上限为 0.05 m。局部光限制光源视角展开（`smrtMaxRayAngle`，默认 0.03 rad）并最多行进 receiver-light 距离的 0.75，避免接近发光面的透视奇点；采样按起始面投影深度参数化。点光跨面使用统一逆径向深度，外推斜率上限为射线逆径向深度变化的 0.05，不混用六个面的轴向深度。保留本项目的 `smrtMaxRayLength` 米制上限，因此搜索距离仍限制可表示的半影宽度。
 
-光源圆盘采用逐像素扰动的低差异序列，步长也使用像素种子；不再让全屏共享同一个光源样本。另以独立随机维度在 receiver 选定的 texel 范围内抖动阴影图查询，接收平面修正仍锚定原射线点。固定世界偏移在点光跨面时连续。不使用逐帧随机种子，固定场景输出确定。1 条射线的原始可见度仍为二值，但空间平均能估计半影；当前无 TAA 的 Sample 不宣称具有 Unreal 时域累积后的低噪画质。P4 未引入独立 shadow history，也未把线性 VSM visibility 送入 SIGMA。
+光源圆盘采用逐像素扰动的低差异序列，步长也使用像素种子；不再让全屏共享同一个光源样本。另在 receiver 选定的 texel 范围内抖动阴影图查询，接收平面修正仍锚定原射线点。固定世界偏移在点光跨面时连续。关闭时域时保留固定种子和确定输出；开启时使用 64 帧循环的低差异相位，同时驱动标页、光源圆盘、步长和 texel 抖动。1 条射线的原始可见度仍为二值，多灯 pass 的独立历史负责累积；不依赖 TAA、NRD 或 SIGMA。
 
 单层深度不能恢复被第一层遮挡的其它几何。离散步长、遮挡层断点、极大光源和搜索距离限制仍会产生近似误差；SMRT 不是面积光几何射线的精确替代。
 
@@ -159,7 +163,7 @@ cmake --build build-release --target MetallicRHITests MetallicVSMSample --parall
 python -B Tools/CheckShaderModules.py
 ```
 
-上述 5 项 GPU 回归均通过，无跳过；shader module 审计通过，Sample 已重新构建。本机输出在 `.cache/SMRTUE/` 下的 `BeforeRegression`、`DitherRegression`、`ResolvedQuality`、`FinalCoreRegression`、`SponzaSMRT8`、`SponzaNativeSMRT1`、`SponzaMotionSMRT8`。仅对单层几何质量及所列实景做验收；多层遮挡仍有单层深度近似误差，未进行独立斜面／掠射接收面质量门槛或长时间显存压力测试。1 条射线仍会有空间噪声，当前 Sample 没有时域降噪。
+上述 5 项 GPU 回归均通过，无跳过；shader module 审计通过，Sample 已重新构建。本机输出在 `.cache/SMRTUE/` 下的 `BeforeRegression`、`DitherRegression`、`ResolvedQuality`、`FinalCoreRegression`、`SponzaSMRT8`、`SponzaNativeSMRT1`、`SponzaMotionSMRT8`。仅对单层几何质量及所列实景做验收；多层遮挡仍有单层深度近似误差，当次验收未进行独立斜面／掠射接收面质量门槛或长时间显存压力测试。1 条射线仍会有空间噪声，当次验收的 Sample 尚未引入时域降噪。
 
 ## 三种过滤共享接收点选级（2026-10-29）
 
@@ -231,4 +235,42 @@ SMRT 的 `VSM page demand, cache and raster` 从 24.855 降至 19.133 ms（−23
 ```powershell
 .\build-release\tests\MetallicRHITests.exe '--gtest_filter=*virtual_shadow_map_filter_demand:*virtual_shadow_map_demand_equivalence' --rhi-bindless --rhi-validation --output-dir .cache/vsm-demand-check
 python -B Tools/Perf/VirtualShadowMapAcceptance.py run --cases .cache/VSMDemandCost/smrtTiming.json --exe build-release/tests/MetallicRHITests.exe --output .cache/vsm-demand-repeat --runs 3
+```
+## 低射线时域与搜索范围（2026-10-29）
+
+多灯 pass 新增独立可见度历史。每盏稳定 ID 的灯只有一份屏幕空间历史，点光六面完成后只解析一次，支持 compact 和 legacy 输出。使用实际光栅相机和 jitter 重投影，四个历史 tap 分别经过深度重建法线与双向平面距离检查；显露或无效区域使用当前原始结果。历史保存半精度可见度、累积次数和原始 receiver depth，达到帧数上限后继续以 `1/maxFrames` 更新。不会用单条射线的二值邻域范围裁掉有效半影。
+
+普通相机移动、采样相位变化和 Force Redraw 保留历史；camera cut、断帧、分辨率/投影、相关设置、灯光几何和 caster 内容变化使历史失效。灯光排序变化由每灯签名处理，纯灯光失效原因不再推进几何重投影版本，原有辐射度历史失效版本保持原行为。相机属性从光栅设置版本的比较中排除，实际相机仍单独发布和检查。取消提交不提升历史，同帧重新执行使用相同前驱，不重复累积。
+
+历史使用三个受完成信号保护的 RG32Uint 纹理槽，不建立逐帧引用链。关闭时域、切出 SMRT、零光源尺寸、禁用或预算拒绝的灯会释放其历史所有权。`Shadows.memory` 的第 6 槽（从零计）报告历史池实际纹理分配字节；1080p 单灯逻辑容量为 47.46 MiB，本机 Vulkan 实际分配为 50.625 MiB。当前没有 caster motion vector，任意 caster 内容变化会保守清空所有灯的历史，持续动画不能依靠这份历史保持低射线收敛。
+
+`smrtRayLengthScale > 0` 时，方向光和局部光共同采用 `min(smrtMaxRayLength, smrtRayLengthScale * receiverCameraDistance)`；透视相机使用欧氏距离，正交相机使用轴向线性深度，使平移不改变搜索范围。局部光再应用 `smrtMaxRayAngle` 和原有光源距离约束。标页和过滤调用同一个长度函数。缩短搜索限制半影展开，不移除中心深度比较或搜索范围以外的本影；默认比例 0 与角度 0.03 保持旧搜索配置。
+
+新增 `virtual_shadow_map_smrt_temporal` 使用 193×129 透视视图、256 样本独立 CPU 几何参考，方向光/聚光/点光各覆盖 1/2 条射线。每例包含 32 帧静态、16 帧相机移动和 12 帧失效控制。Cached、Force Redraw 和原始相位对照在同帧的独立节点执行，缓存/重画可见度逐字节一致。结果如下（可见度范围 0–1）：
+
+| 光源 / 射线 | 静态半影 MAE | 静态帧差 RMS / 原始 RMS | 移动半影 MAE |
+| --- | ---: | ---: | ---: |
+| 方向光 / 1 | 0.03813 | 0.01879 / 0.71875 | 0.02545 |
+| 方向光 / 2 | 0.02886 | 0.01048 / 0.35614 | 0.02082 |
+| 聚光 / 1 | 0.05498 | 0.01749 / 0.66166 | 0.04331 |
+| 聚光 / 2 | 0.04835 | 0.01018 / 0.34363 | 0.04117 |
+| 点光 / 1 | 0.05593 | 0.01775 / 0.66737 | 0.04570 |
+| 点光 / 2 | 0.05041 | 0.01044 / 0.35045 | 0.04340 |
+
+六例各 480 个真实显露像素均在 1/255 内匹配当前原始值；点光双灯场景额外执行 33 帧，145 个 seam 半影样本中有 126 个形成软阴影。两个 source slot/base layer 实际交换后，5922 个已累积软像素无异常跳变，compact/legacy 全图一致。质量门槛为静态 receiver MAE ≤0.04、半影 MAE ≤0.14、半影误差至少降低 35%、帧差 RMS ≤原始 35%；移动半影 MAE ≤0.16、重投影帧差 RMS ≤原始 60%，全部通过。
+
+`virtual_shadow_map_smrt_search` 的 17 个状态通过：三类灯的视距比例/固定米制控制结果一致，世界上限生效；方向光短搜索请求 42 页，对照 106 页，半影没有越过独立几何上界；0.1 m 搜索仍保留 12 m 外遮挡物的本影。局部光角度范围的需求和重画对照也通过。`virtual_shadow_map_temporal_lifecycle` 覆盖同帧重复、未提交录制、取消、断帧、cut、设置/内容失效、尺寸变化、输出层变化、点光 canonical face 和资源池平台期。`history_invalidation_scopes` 覆盖灯光/几何/材质/显式失效及原版本合同。
+
+原有 14 项 VSM 回归和 6 项历史/灯光合同检查全部通过，无跳过；新增时域质量、搜索及生命周期共 3 项通过。原有 108 项斜面、掠射和曲面质量门槛未改动且全部通过。Release 编辑器、Sample、RHI 测试构建成功，Slang 审计通过（387 files / 275 modules / 112 implementation units）。复用 `build-release`，仅将原先关闭的 `METALLIC_BUILD_TESTS` 开启，未更换编译器或 SDK。
+
+Sponza 使用普通 GPUDriven、原生 1920×1080、2048 页、关闭 jitter：1/2 rays ×16 各静态 96 帧，2 rays 移动 96 帧；另有相同 2 rays、历史上限 1 的 96 帧控制。Vulkan/synchronization validation、未解析查询、全场景粗图查询和 raster work overflow 均为零，无 RT 能力或分配。已检查最终静态/移动截图。历史分配从一槽增长到三槽后固定为 50.625 MiB；这些短回放不是长期显存压力验收。
+
+2-ray 静态控制与 32 帧历史的全部 96 帧页需求/过滤统计相同。最终 sRGB 图像第 63/95 帧的 RGB 差 RMS 从 0.00471666 降至 0.00029788（两张相隔 32 帧的图像，不是逐帧运动质量指标）。旧 acceptance 的 `comparisonFrames` 会依次渲染不同帧，不适用于开启相位轮转后要求缓存/重画逐字节相同；该合同由上述同帧三节点测试验证。
+
+RTX 5060 的耗时控制固定同一 Sponza、2×16 采样和逐帧相位，只改变历史上限 1/32。每配置 3 个独立进程 ×256 帧，前 32 帧预热，关闭验证和回读、保留磁盘缓存，未锁频或独占 GPU。每进程后 224 帧中位数再取三次中位数：`Stabilize SMRT shadows` 为 0.132 → 0.848 ms，完整 Shadows pass 为 15.137 → 15.840 ms。前者包含当前帧写入和历史解析，增加约 0.716 ms；不是端到端帧率数据，也未把减少射线数计入时域收益。
+
+证据位于本机 `.cache/VSMTemporal/`：`Quality2`、`Quality1/VirtualShadowMapSMRTSearch`、`Regression`、`Sponza*Run`、`Timing2*Run`、`TimingSummary.json` 和 `SponzaStability.json`。`Quality1` 保留首次发现灯光重排全局失效的失败，修复后重排检查在 `Quality2` 通过；所有最终实景/耗时回放的源码、输入和二进制完整性检查通过。
+
+```powershell
+.\build-release\tests\MetallicRHITests.exe '--gtest_filter=*virtual_shadow_map_smrt_temporal:*virtual_shadow_map_smrt_search:*virtual_shadow_map_temporal_lifecycle:*history_invalidation_scopes' --rhi-bindless --rhi-validation --output-dir .cache/vsm-temporal-check
 ```

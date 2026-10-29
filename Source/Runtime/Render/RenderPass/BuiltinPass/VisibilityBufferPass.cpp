@@ -773,8 +773,12 @@ public:
         info.jitter[0] = previousParams_.renderEye[3];
         info.jitter[1] = previousParams_.renderCenter[3];
         info.frameIndex = context.frameIndex();
-        if (rasterSettingsRevision_ == 0 || rasterHistoryProperties_ != context.properties()) {
-            rasterHistoryProperties_ = context.properties();
+        auto rasterProperties = context.properties();
+        // The actual camera is published above. Normal camera motion must not
+        // masquerade as a change to geometry/LOD/displacement configuration.
+        rasterProperties.erase("camera");
+        if (rasterSettingsRevision_ == 0 || rasterHistoryProperties_ != rasterProperties) {
+            rasterHistoryProperties_ = std::move(rasterProperties);
             ++rasterSettingsRevision_;
         }
         info.rasterSettingsRevision = rasterSettingsRevision_;

@@ -502,6 +502,7 @@ add_executable(MetallicRHITests
     rhi/VirtualShadowMapTests.cpp
     rhi/VirtualShadowMapSceneTests.cpp
     rhi/VirtualShadowMapQualityTests.cpp
+    rhi/VirtualShadowMapTemporalTests.cpp
     rhi/VirtualShadowMapAllocatorTests.cpp
     rhi/VirtualShadowMapRemapTests.cpp
     rhi/VirtualShadowMapContentTests.cpp

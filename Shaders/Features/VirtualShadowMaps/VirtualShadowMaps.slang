@@ -26,6 +26,8 @@ struct ShadowPush
     uint projectionFace, filterMode, pointFaces;
     float pcfRadius, rayLength, sourceRadius, angularRadius;
     uint rayCount, samplesPerRay, receiverFootprint, filterReserved;
+    float rayLengthScale, maxRayAngle;
+    uint samplePhase, sampleReserved;
 };
 
 struct ShadowProjection
@@ -272,18 +274,20 @@ uint vsmSampleHash(uint value)
     return value ^ (value >> 16);
 }
 
-float vsmSampleRandom(uint2 pixel, uint dimension)
+float vsmSampleRandom(uint2 pixel, uint dimension, uint phase)
 {
-    return float(vsmSampleHash(pixel.x ^ vsmSampleHash(pixel.y + dimension * 0x9e3779b9u)) >> 8) / 16777216.0;
+    float spatial = float(vsmSampleHash(pixel.x ^ vsmSampleHash(pixel.y + dimension * 0x9e3779b9u)) >> 8) / 16777216.0;
+    // Preserve deterministic raw rendering. With history enabled, rotate both
+    // disk and texel/step dimensions with a bounded low-discrepancy sequence.
+    return phase == 0u ? spatial : frac(spatial + float(phase) * ((dimension & 1u) != 0u ? 0.569840291 : 0.754877666));
 }
 
-float2 vsmDiskSample(uint ray, uint rayCount, uint2 pixel)
+float2 vsmDiskSample(uint ray, uint rayCount, uint2 pixel, uint phase)
 {
     // Scramble the stratified disk per receiver. A common disk point at one ray
-    // shifts a hard shadow instead of estimating area-source visibility. Keep
-    // the seed spatial: this pass has no temporal reconstruction of its own.
+    // shifts a hard shadow instead of estimating area-source visibility.
     float2 sample = frac(float2(float(ray) / float(rayCount), float(ray) * 0.61803398875) +
-        float2(vsmSampleRandom(pixel, 0u), vsmSampleRandom(pixel, 1u)));
+        float2(vsmSampleRandom(pixel, 0u, phase), vsmSampleRandom(pixel, 1u, phase)));
     float angle = sample.y * 6.28318530718;
     return sqrt(sample.x) * float2(cos(angle), sin(angle));
 }
@@ -294,7 +298,7 @@ float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush p
         normalize(projection.originNear.xyz - position);
     float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
     float3 up = cross(toLight, right);
-    float2 disk = vsmDiskSample(ray, push.rayCount, pixel);
+    float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
     float3 offset = right * disk.x + up * disk.y;
     if (push.lightType == 0u) {
         return position + normalize(toLight + offset * tan(push.angularRadius)) * push.rayLength;
@@ -306,7 +310,7 @@ float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush p
     float cosTheta = dot(direction, toLight);
     // A single center-light depth layer becomes a poor proxy near the emitter.
     // Limit its angular span, and stay clear of the perspective singularity.
-    float distanceScale = 0.75 * saturate(1.5 / (cosTheta + sinTheta / tan(0.03)));
+    float distanceScale = 0.75 * saturate(1.5 / (cosTheta + sinTheta / tan(push.maxRayAngle)));
     float3 endpoint = position + direction * min(push.rayLength, distance * distanceScale);
     if (push.lightType == 1u) {
         float startW = dot(projection.rowW, float4(position, 1.0));
@@ -323,7 +327,7 @@ float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush p
 float vsmRaySampleTime(uint step, ShadowPush push, uint2 pixel)
 {
     if (step == push.samplesPerRay) { return 0.0; }
-    float t = 1.0 - (float(step + 1u) - vsmSampleRandom(pixel, 2u)) / float(push.samplesPerRay);
+    float t = 1.0 - (float(step + 1u) - vsmSampleRandom(pixel, 2u, push.samplePhase)) / float(push.samplesPerRay);
     return t * t;
 }
 
@@ -359,7 +363,8 @@ float3 vsmRayDither(float3 position, ShadowProjection projection, ShadowPush pus
         normalize(projection.originNear.xyz - position);
     float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
     float3 up = cross(toLight, right);
-    float2 offset = float2(vsmSampleRandom(pixel, 3u + 2u * ray), vsmSampleRandom(pixel, 4u + 2u * ray)) - 0.5;
+    float2 offset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
+        vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
     // Dither the shadow-map texel independently of the source sample. This
     // antialiases contact edges narrower than a receiver-selected texel. A
     // world-space offset remains continuous when a ray crosses a cube face.
@@ -371,6 +376,15 @@ float vsmPixelFootprint(float linearDepth, ViewConstants view, ShadowPush push)
     if (push.receiverFootprint == 0u) { return 0.0; }
     return view.current.upProjection.w > 0.5 ? view.current.clipOrtho.z / view.current.viewport.z :
         2.0 * linearDepth * tan(view.current.viewport.w * 0.5) / view.current.viewport.z;
+}
+
+float vsmSearchLength(float3 position, float linearDepth, ViewConstants view, ShadowPush push)
+{
+    if (push.rayLengthScale == 0.0) { return push.rayLength; }
+    // Perspective follows view-origin distance, as directional SMRT does in UE.
+    // Orthographic receivers use axial depth so panning cannot change the cap.
+    float distance = view.current.upProjection.w > 0.5 ? linearDepth : length(position - view.current.eye.xyz);
+    return min(push.rayLength, push.rayLengthScale * distance);
 }
 
 float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,
@@ -746,12 +760,14 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             }
         }
     } else if (push.filterMode == 2u) {
+        ShadowPush trace = push;
+        trace.rayLength = vsmSearchLength(position, linearDepth, view, push);
         uint lastPages[12];
         [unroll]
         for (uint level = 0u; level < 12u; ++level) { lastPages[level] = 0xffffffffu; }
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
-            float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, id.xy);
-            float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, id.xy);
+            float3 endpoint = vsmRayEndpoint(position, projections[0], trace, ray, id.xy);
+            float3 dither = vsmRayDither(position, projections[receiverLevel], trace, ray, id.xy);
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
                 float time = vsmRaySampleTime(step, push, id.xy);
                 float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
@@ -1243,7 +1259,9 @@ void vsmProjectReceiver(uint3 id, ShadowPush push, out uint3 filterCounts)
     }
     ShadowProjection projection = projections[selectedLevel];
     if (push.filterMode != 0u) {
-        shadow[id.xy] = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, push, filterCounts);
+        ShadowPush trace = push;
+        trace.rayLength = vsmSearchLength(position, linearDepth, view, push);
+        shadow[id.xy] = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, trace, filterCounts);
         return;
     }
     float compareDepth;

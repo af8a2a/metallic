@@ -6,7 +6,9 @@
 #include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/HistoryResources.h"
+#include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
+#include <array>
 #include <memory>
 #include <string>
 
@@ -528,6 +530,89 @@ public:
     }
 };
 
+class HistoryInvalidationScopesTest : public RHITest {
+public:
+    HistoryInvalidationScopesTest()
+    {
+        type = RHITestType::Validation;
+        name = "history_invalidation_scopes";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        HistoryResourceManager manager;
+        const auto revisions = [&]() {
+            return std::array{manager.invalidationRevision(), manager.reprojectionInvalidationRevision(),
+                manager.geometryReprojectionInvalidationRevision()};
+        };
+        auto before = revisions();
+        if (!manager.initialize(context.device) || revisions()[0] == before[0] ||
+            revisions()[1] == before[1] || revisions()[2] == before[2]) {
+            return RHITestResult::fail("Initialize must invalidate every history scope");
+        }
+        if (!manager.ensureBuffer("visibility", {.size = 64, .usage = BufferUsageBits::Storage})) {
+            return RHITestResult::fail("Could not create scoped history validity fixture");
+        }
+        uint64_t frameIndex = 0;
+        for (const auto reason : {HistoryInvalidationReason::CameraMotion, HistoryInvalidationReason::LightingChange,
+                HistoryInvalidationReason::Discontinuity}) {
+            manager.beginFrame(frameIndex++);
+            manager.markWritten("visibility");
+            manager.beginFrame(frameIndex++);
+            if (!manager.hasPrevious("visibility")) { return RHITestResult::fail("Scoped history fixture was not valid"); }
+            before = revisions();
+            manager.invalidateAll(reason);
+            const auto after = revisions();
+            if (after[0] == before[0] || manager.hasPrevious("visibility") ||
+                (after[1] != before[1]) != (reason != HistoryInvalidationReason::CameraMotion) ||
+                (after[2] != before[2]) != (reason == HistoryInvalidationReason::Discontinuity)) {
+                return RHITestResult::fail("Invalidation reason changed an unrelated reprojection scope or retained resource validity");
+            }
+        }
+
+        RenderWorld world;
+        RenderSubsystemHost host;
+        std::string log;
+        if (!host.initialize(context.device, 1, log)) { return RHITestResult::fail(log); }
+        host.setWorld(&world);
+        const auto lightingOnly = RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+        for (const auto changes : {lightingOnly, lightingOnly | RenderChangeBits::Geometry,
+                lightingOnly | RenderChangeBits::Material, lightingOnly | RenderChangeBits::Residency,
+                RenderChangeBits::InvalidateTemporalHistory}) {
+            before = revisions();
+            world.notifySceneChanged(changes);
+            if (!host.beginFrame(frameIndex++, 0, &manager, log)) { return RHITestResult::fail(log); }
+            host.endFrame();
+            const auto after = revisions();
+            if (after[0] == before[0] || after[1] == before[1] ||
+                (after[2] != before[2]) != (changes != lightingOnly)) {
+                return RHITestResult::fail("Subsystem host failed to distinguish pure lighting from mixed or explicit discontinuity");
+            }
+        }
+        before = revisions();
+        manager.invalidateAll();
+        world.notifySceneChanged(lightingOnly);
+        if (!host.beginFrame(frameIndex++, 0, &manager, log)) { return RHITestResult::fail(log); }
+        host.endFrame();
+        if (manager.geometryReprojectionInvalidationRevision() == before[2]) {
+            return RHITestResult::fail("A lighting publication must not mask an explicit history discontinuity in the same frame");
+        }
+        before = revisions();
+        manager.reset();
+        if (revisions()[0] == before[0] || revisions()[1] == before[1] || revisions()[2] == before[2]) {
+            return RHITestResult::fail("Reset must invalidate every history scope");
+        }
+        before = revisions();
+        if (!manager.initialize(context.device) || revisions()[0] == before[0] ||
+            revisions()[1] == before[1] || revisions()[2] == before[2]) {
+            return RHITestResult::fail("Reinitialize must invalidate every history scope");
+        }
+        return RHITestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(HistoryInvalidationScopesTest);
 METALLIC_REGISTER_RHI_TEST(HistoryTexturePlannedStateTest);
 METALLIC_REGISTER_RHI_TEST(HistoryTextureLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(HistoryBufferLifecycleTest);

@@ -36,11 +36,15 @@ Deferred → AutoExposure → FinalBlit ← ColorGrading
 
 使用固定 LOD 0、硬件光栅和实例/HZB/meshlet 裁剪，关闭 Hybrid Software Rasterization、CLAS 和 cluster ray tracing。阴影走 VSM；图中没有 RT shadow、NRD 或 DLSS pass。输出为原生 1920×1080，关闭 temporal jitter。
 
-VSM 使用 128×128 texel 页、每轴 128 个虚拟页、2048 个物理页预算、6 层 clipmap、PCF 半径 1 texel，开启页缓存和 receiver footprint。第一层在灯光平面的半宽为 1 m，后续为 2/4/8/16/32 m；这些是灯光投影范围，并非相机深度分割距离。每层虚拟分辨率为 16384×16384，实际物理页按接收点需求分配。
+VSM 使用 128×128 texel 页、每轴 128 个虚拟页、2048 个物理页预算、6 层 clipmap，开启页缓存和 receiver footprint。默认 SMRT 为 2 条射线 × 16 个搜索样本，并启用最多 32 帧的独立阴影历史；PCF 备选半径为 1 texel。第一层在灯光平面的半宽为 1 m，后续为 2/4/8/16/32 m；这些是灯光投影范围，并非相机深度分割距离。每层虚拟分辨率为 16384×16384，实际物理页按接收点需求分配。
 
 观察时先看前景地面上的阴影边缘，再沿重复柱列看向中远景。沿长廊前后移动，可检查细节与缓存更新。选择 Shadows 节点可切换 Hard / PCF / SMRT，也可使用 Force Shadow Redraw 对照缓存。三种模式共享接收点 footprint 起始级，零 PCF 半径或零光源尺寸退化到 Hard 时保持该分辨率策略。关闭 Match Receiver Footprint 可诊断最细级需求，可能增加页预算压力。`Shadows.debug` 的红色强度表示中心查询的 clipmap，蓝色表示 coarse fallback；它不代表全部过滤样本实际使用的层级。
 
 接收面足迹包含法线和光投影，掠射区域可能请求更细的页面。需求超过 2048 页时先保留较粗层覆盖，再分配细节页；丢弃部分细页不等于退回全场景粗图。斜面、掠射、凹凸曲面的独立质量门槛及当前实景结果见 [P4 接收面质量验收](VirtualShadowMapsP4.md#接收面质量门槛2026-10-29)。
+
+低射线配置应先停留约 32 帧观察收敛，再平移相机检查边缘与显露区域。`SMRT History Frames = 1` 显示同一逐帧采样序列的原始结果；关闭 `SMRT Temporal Stabilization` 则回到固定种子的单帧模式。切换相机、光源几何或 caster 内容会清空相关历史，连续变化的 caster 目前不能持续累积。这里的时域解析直接处理线性阴影可见度，不要求主视图开启 jitter 或 TAA。
+
+搜索默认保留 10 m 上限，`SMRT View Distance Scale (0 = fixed) = 0` 关闭视距比例限制。设为正数后，实际搜索长度为 `min(10 m, 相机距离 × 比例)`；它会限制半影展开，过小会使远处半影变窄。局部光还受 `SMRT Local Max Angle (rad)` 限制，默认 0.03 rad。具体合同、质量和生命周期验收见 [P4 低射线时域与搜索范围](VirtualShadowMapsP4.md#低射线时域与搜索范围2026-10-29)。
 
 ## 验证方式
 

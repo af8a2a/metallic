@@ -202,7 +202,7 @@ void addFixtureQuad(Fixture& fixture, Point center, Point u, Point v)
 }
 
 Fixture writeFixture(const std::filesystem::path& directory, bool room, double blockerHeight = 1.5,
-    double blockerHalfExtent = .8, const Fixture* authored = nullptr)
+    double blockerHalfExtent = .8, const Fixture* authored = nullptr, bool splitNodes = false)
 {
     std::filesystem::create_directories(directory);
     Fixture fixture;
@@ -277,7 +277,7 @@ Fixture writeFixture(const std::filesystem::path& directory, bool room, double b
         Json{{"bufferView",3},{"componentType",5125},{"count",indices.size()},{"type","SCALAR"}}});
     Json primitive{{"attributes",{{"POSITION",0},{"NORMAL",1},{"TEXCOORD_0",2}}},{"indices",3},{"material",0}};
     Json primitives=Json::array();
-    if (room || authored) {
+    if (room || authored || splitNodes) {
         // Keep each authored quad in its own primitive. The quality reference
         // requires the complete geometry even on the locked stream terminal
         // cut; combining all quads can introduce a simplified parent.
@@ -289,7 +289,15 @@ Fixture writeFixture(const std::filesystem::path& directory, bool room, double b
         }
     } else { primitives.push_back(primitive); }
     fixture.publishedPrimitives=static_cast<uint32_t>(primitives.size());
-    gltf["meshes"] = Json::array({Json{{"primitives",std::move(primitives)}}});
+    if (splitNodes) {
+        gltf["meshes"] = Json::array(); gltf["nodes"] = Json::array();
+        gltf["scenes"][0]["nodes"] = Json::array();
+        for (size_t index = 0; index < primitives.size(); ++index) {
+            gltf["meshes"].push_back({{"primitives", Json::array({primitives[index]})}});
+            gltf["nodes"].push_back({{"name", "AuthoredQuad" + std::to_string(index)}, {"mesh", index}});
+            gltf["scenes"][0]["nodes"].push_back(index);
+        }
+    } else { gltf["meshes"] = Json::array({Json{{"primitives",std::move(primitives)}}}); }
     Json material{{"name","LocalShadowOpaque"},{"doubleSided",true}};
     material["pbrMetallicRoughness"] = {{"baseColorFactor",{.7,.7,.7,1}},{"metallicFactor",0},{"roughnessFactor",1}};
     gltf["materials"] = Json::array({material});
@@ -2017,6 +2025,484 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapReceiverQualityTest);
+
+struct TemporalOracle
+{
+    std::vector<Hit> hits;
+    std::vector<double> area;
+    std::vector<uint8_t> mask;
+    uint32_t receivers = 0, penumbra = 0;
+};
+
+TemporalOracle temporalOracle(const Snapshot& image, const Fixture& fixture, const Source& source)
+{
+    TemporalOracle result;
+    result.hits.resize(kPixels); result.area.resize(kPixels, 1); result.mask.resize(kPixels);
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        auto& hit = result.hits[pixel]; hit = cameraHit(image.camera, x, y, fixture);
+        if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[0]) > 5 || std::abs(hit.position[2]) > 4) { continue; }
+        require(std::abs(image.depth[pixel] - hit.depth) <= 2e-5, "Temporal independent receiver depth mismatch");
+        result.mask[pixel] = 1; ++result.receivers;
+        result.area[pixel] = referenceVisibility(hit, fixture, source);
+        result.penumbra += result.area[pixel] > .05 && result.area[pixel] < .95;
+    }}
+    require(result.receivers > 500 && result.penumbra > 100, "Temporal fixture lacks receiver/penumbra coverage");
+    return result;
+}
+
+std::array<double, 2> temporalPixel(const VisibilityBufferFrameInfo& camera, Point position)
+{
+    const Point eye = point(camera.eye), forward = normalized(add(point(camera.center), scale(eye, -1)));
+    const Point right = normalized(cross(forward, point(camera.upProjection))), up = cross(right, forward);
+    const Point delta = add(position, scale(eye, -1));
+    const double halfHeight = camera.upProjection[3] > .5 ? camera.clipOrtho[2] * .5 :
+        dot(delta, forward) * std::tan(camera.viewport[3] * .5);
+    return {(dot(delta, right) / (halfHeight * camera.viewport[0]) + 1) * .5 * kWidth - .5 - camera.jitter[0],
+        (1 - dot(delta, up) / halfHeight) * .5 * kHeight - .5 - camera.jitter[1]};
+}
+
+std::map<uint64_t, std::vector<uint8_t>> temporalLightPixels(const Snapshot& image, const Fixture& fixture)
+{
+    std::map<uint64_t, std::vector<uint8_t>> result;
+    for (uint32_t index = 0; index < image.header.count; ++index) {
+        const auto& entry = image.entries[index];
+        if (entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+        auto& pixels = result[uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32)];
+        pixels.resize(kPixels,255);
+        for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+            const auto hit = cameraHit(image.camera,x,y,fixture);
+            if (!hit.valid) { continue; }
+            const uint32_t face = entry.kind == 2 && (image.header.reserved[0] & 1u) == 0 ?
+                pointFace(add(hit.position,scale(point(entry.positionRange),-1))) : 0;
+            pixels[size_t(y) * kWidth + x] = image.shadows[entry.baseLayer + face][size_t(y) * kWidth + x];
+        }}
+    }
+    return result;
+}
+
+class VirtualShadowMapSMRTTemporalTest final : public RHITest
+{
+public:
+    VirtualShadowMapSMRTTemporalTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_temporal"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTTemporal";
+        Json report{{"passed", false}, {"cpuAreaSamples", 256}, {"historyFrames", 32},
+            {"frames", Json::array()}, {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTTemporal.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                const double edge = kind == "Directional" ? .8 : 2.0;
+                Fixture authored;
+                addFixtureQuad(authored, {0,0,0}, {8,0,0}, {0,0,-8});
+                addFixtureQuad(authored, {0,12,0}, {.8,0,0}, {0,0,.8});
+                // This independent foreground object creates real depth disocclusion
+                // under perspective camera motion; the distant shadow caster is above the camera.
+                addFixtureQuad(authored, {edge + .9,1,0}, {.18,0,0}, {0,0,.6});
+                const auto fixture = writeFixture(directory / kind, false, 12, .8, &authored, true);
+                for (uint32_t rays : {1u, 2u}) {
+                    const std::string label = kind + "-Rays" + std::to_string(rays);
+                    scene::SceneDocument scene; require(scene.load(fixture.source), "Load temporal fixture");
+                    require(scene.nodes().size() == 3, "Temporal floor and casters must have independent nodes");
+                    Fixture oracleFixture = fixture;
+                    RenderView view; RenderGraphPreviewRenderer preview;
+                    configurePreview(preview, scene, view, context, validation);
+                    ViewCamera camera{.eye={float(edge),5,0}, .center={float(edge),0,0}, .up={0,0,-1},
+                        .fovDegrees=22.619865f, .nearPlane=.1f, .farPlane=100, .orthoHeight=2};
+                    require(view.setCamera(camera), "Set temporal perspective camera");
+                    Source source{kind, {0,20,0}, {0,-1,0}, kind == "Directional" ? .04 : .1};
+                    publishSource(scene, preview, source);
+                    evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture, "smrt", false, 128);
+                    const auto all = [&](const char* property, const Json& value) {
+                        for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, property, value),
+                                std::string("Set temporal property ") + property);
+                        }
+                    };
+                    all("filter", "smrt"); all("smrtTemporalEnabled", true); all("smrtTemporalMaxFrames", 32);
+                    all("smrtRayCount", rays); all("smrtSamplesPerRay", 32); all("smrtMaxRayLength", 32);
+                    all("smrtRayLengthScale", 0); all("smrtMaxRayAngle", .03);
+                    require(graph.setNodeRuntimeProperty(graph.findNode("Hard")->id, "smrtTemporalMaxFrames", 1), "Set raw same-phase control");
+                    Snapshot last, previous;
+                    std::vector<uint8_t> pixels, rawPixels, previousPixels, previousRaw;
+                    const auto render = [&](const std::string& phase, bool expectReset = false) {
+                        validation.phase(label + "-" + phase);
+                        require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"), "Temporal render: " + preview.lastLog());
+                        last = snapshot("Cached"); const auto redraw = snapshot("Redraw"), raw = snapshot("Hard");
+                        require(last.shadows == redraw.shadows && last.depth == redraw.depth, label + ": cache/redraw temporal histories diverged");
+                        pixels = visibility(last, oracleFixture, source); rawPixels = visibility(raw, oracleFixture, source);
+                        const auto& entry = activeEntry(last);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            require(last.statistics[entry.baseLayer + face][5] == 0 && last.statistics[entry.baseLayer + face][9] == 0,
+                                label + ": temporal raster overflow or unresolved query");
+                        }
+                        report["frames"].push_back({{"name", label + "-" + phase}, {"frameIndex", last.camera.frameIndex},
+                            {"reset", expectReset}, {"shadowSha256", debug::debugSha256(pixels)}, {"rawSha256", debug::debugSha256(rawPixels)}});
+                        save();
+                        if (expectReset) { require(pixels == rawPixels, label + "-" + phase + ": stale history survived invalidation"); }
+                    };
+                    TemporalOracle oracle;
+                    double error = 0, rawError = 0, penError = 0, rawPenError = 0, temporalDelta = 0, rawDelta = 0;
+                    uint64_t checked = 0, penChecked = 0, deltaChecked = 0;
+                    for (uint32_t frame = 0; frame < 32; ++frame) {
+                        render("Static-" + std::to_string(frame), frame == 0);
+                        if (frame == 0) { oracle = temporalOracle(last, oracleFixture, source); }
+                        if (frame >= 16) {
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (!oracle.mask[pixel]) { continue; }
+                                const double actualError = std::abs(pixels[pixel] / 255. - oracle.area[pixel]);
+                                const double controlError = std::abs(rawPixels[pixel] / 255. - oracle.area[pixel]);
+                                error += actualError; rawError += controlError; ++checked;
+                                if (oracle.area[pixel] <= .05 || oracle.area[pixel] >= .95) { continue; }
+                                penError += actualError; rawPenError += controlError; ++penChecked;
+                                temporalDelta += std::pow((double(pixels[pixel]) - previousPixels[pixel]) / 255., 2);
+                                rawDelta += std::pow((double(rawPixels[pixel]) - previousRaw[pixel]) / 255., 2); ++deltaChecked;
+                            }
+                        }
+                        previous = last; previousPixels = pixels; previousRaw = rawPixels;
+                    }
+                    const double mae = error / checked, penMae = penError / penChecked;
+                    const double noise = std::sqrt(temporalDelta / deltaChecked), rawNoise = std::sqrt(rawDelta / deltaChecked);
+                    Json metrics{{"name", label}, {"receiverSamples", checked}, {"penumbraSamples", penChecked},
+                        {"meanAbsoluteError", mae}, {"penumbraMeanAbsoluteError", penMae},
+                        {"rawMeanAbsoluteError", rawError / checked}, {"rawPenumbraMeanAbsoluteError", rawPenError / penChecked},
+                        {"frameDifferenceRMS", noise}, {"rawFrameDifferenceRMS", rawNoise}};
+                    if (mae > .04 || penMae > .14 || penError > .65 * rawPenError || noise > .35 * rawNoise || rawNoise < .05) {
+                        report["failures"].push_back({{"name", label}, {"error", "Static temporal accuracy/convergence/stability gate"}, {"metrics", metrics}});
+                    }
+                    saveGray(directory / (label + "-Stable.png"), pixels); saveGray(directory / (label + "-Raw.png"), rawPixels);
+                    std::vector<uint8_t> reference(kPixels,255);
+                    for (size_t pixel = 0; pixel < kPixels; ++pixel) { reference[pixel] = uint8_t(std::lround(oracle.area[pixel] * 255)); }
+                    saveGray(directory / (label + "-Reference.png"), reference);
+                    double motionError = 0, motionDelta = 0, motionRawDelta = 0;
+                    uint64_t motionPenumbra = 0, correspondences = 0;
+                    for (uint32_t frame = 0; frame < 16; ++frame) {
+                        const auto oldOracle = oracle;
+                        camera.eye[0] += .02f; camera.center[0] += .02f; require(view.setCamera(camera), "Move temporal camera");
+                        render("Motion-" + std::to_string(frame)); oracle = temporalOracle(last, oracleFixture, source);
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            if (!oracle.mask[pixel] || oracle.area[pixel] <= .05 || oracle.area[pixel] >= .95) { continue; }
+                            motionError += std::abs(pixels[pixel] / 255. - oracle.area[pixel]); ++motionPenumbra;
+                            const auto location = temporalPixel(previous.camera, oracle.hits[pixel].position);
+                            const int x = int(std::floor(location[0])), y = int(std::floor(location[1]));
+                            if (x < 0 || y < 0 || x + 1 >= int(kWidth) || y + 1 >= int(kHeight)) { continue; }
+                            double oldValue = 0, oldRaw = 0, oldExpected = 0;
+                            bool valid = true;
+                            for (int dy = 0; dy < 2; ++dy) { for (int dx = 0; dx < 2; ++dx) {
+                                const auto index = size_t(y + dy) * kWidth + x + dx;
+                                if (!oldOracle.mask[index]) { valid = false; continue; }
+                                const double weight = (dx ? location[0] - x : 1 - (location[0] - x)) *
+                                    (dy ? location[1] - y : 1 - (location[1] - y));
+                                oldValue += weight * previousPixels[index] / 255.; oldRaw += weight * previousRaw[index] / 255.;
+                                oldExpected += weight * oldOracle.area[index];
+                            }}
+                            if (!valid) { continue; }
+                            const double expectedChange = oracle.area[pixel] - oldExpected;
+                            motionDelta += std::pow(pixels[pixel] / 255. - oldValue - expectedChange, 2);
+                            motionRawDelta += std::pow(rawPixels[pixel] / 255. - oldRaw - expectedChange, 2); ++correspondences;
+                        }
+                        previous = last; previousPixels = pixels; previousRaw = rawPixels;
+                    }
+                    require(correspondences > 100 && motionPenumbra > 100, "Temporal motion lacks independent correspondence coverage");
+                    metrics["motionPenumbraMAE"] = motionError / motionPenumbra;
+                    metrics["motionReprojectedRMS"] = std::sqrt(motionDelta / correspondences);
+                    metrics["motionRawReprojectedRMS"] = std::sqrt(motionRawDelta / correspondences);
+                    metrics["motionCorrespondences"] = correspondences;
+                    if (motionError / motionPenumbra > .16 || motionDelta > .36 * motionRawDelta) {
+                        report["failures"].push_back({{"name", label}, {"error", "Motion temporal accuracy/reprojection gate"}, {"metrics", metrics}});
+                    }
+                    // A larger perspective translation uncovers a full four-tap
+                    // history footprint behind the foreground object, not just an edge pixel.
+                    const auto oldOracle = oracle;
+                    camera.eye[0] += .35f; camera.center[0] += .35f; require(view.setCamera(camera), "Reveal temporal receiver");
+                    render("Disocclusion"); oracle = temporalOracle(last, oracleFixture, source);
+                    uint32_t disoccluded = 0, ghosted = 0;
+                    for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                        if (!oracle.mask[pixel]) { continue; }
+                        const auto location = temporalPixel(previous.camera, oracle.hits[pixel].position);
+                        const int x = int(std::floor(location[0])), y = int(std::floor(location[1]));
+                        if (x < 0 || y < 0 || x + 1 >= int(kWidth) || y + 1 >= int(kHeight)) { continue; }
+                        bool hidden = true;
+                        for (int dy = 0; dy < 2; ++dy) { for (int dx = 0; dx < 2; ++dx) {
+                            const auto& hit = oldOracle.hits[size_t(y + dy) * kWidth + x + dx];
+                            hidden &= hit.valid && hit.position[1] > .5;
+                        }}
+                        if (!hidden) { continue; }
+                        ++disoccluded; ghosted += std::abs(int(pixels[pixel]) - int(rawPixels[pixel])) > 1;
+                    }
+                    metrics["disoccludedPixels"] = disoccluded; metrics["ghostedDisoccludedPixels"] = ghosted;
+                    require(disoccluded > 50 && ghosted == 0, label + ": disoccluded receivers reused foreground history");
+                    view.cameraCut(); render("CameraCut", true);
+                    source.size *= 1.25; publishSource(scene, preview, source); render("SourceSize", true);
+                    if (kind == "Directional") { source.direction = {.08,-1,0}; } else { source.position[0] += .3; }
+                    publishSource(scene, preview, source); render("LightMove", true);
+                    float4x4 shift; shift.SetupByTranslation(float3(.4f,0,0));
+                    require(scene.setNodeLocalMatrix(1, shift * scene.nodes()[1].localMatrix), "Move independent temporal shadow caster");
+                    for (size_t triangle = 2; triangle < 4; ++triangle) {
+                        auto& value = oracleFixture.triangles[triangle];
+                        value.a = add(value.a,{.4,0,0}); value.b = add(value.b,{.4,0,0}); value.c = add(value.c,{.4,0,0});
+                    }
+                    render("CasterMove", true);
+                    all("smrtSamplesPerRay", 1); render("OneSample", true);
+                    all("smrtSamplesPerRay", 32); render("RestoreSamples", true);
+                    all("smrtTemporalEnabled", false); render("Disabled", true);
+                    const auto disabled = pixels; render("DisabledStable", true);
+                    require(pixels == disabled, label + ": disabled temporal mode lost deterministic legacy sampling");
+                    all("smrtTemporalEnabled", true); render("Reenabled", true);
+                    const double sourceSize = source.size;
+                    source.size = 0; publishSource(scene, preview, source); render("ZeroSource", true);
+                    source.size = sourceSize; publishSource(scene, preview, source); render("RestoreSource", true);
+                    report["cases"].push_back(std::move(metrics)); save();
+                }
+            }
+            {
+                const auto room = writeFixture(directory / "PointRoom", true);
+                scene::SceneDocument scene; require(scene.load(room.source), "Load temporal point room");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                require(view.setCamera({.eye={0,0,3}, .center={6,6,0}, .up={0,0,1},
+                    .fovDegrees=65, .nearPlane=.05f, .farPlane=30}), "Set temporal cube seam view");
+                Source source{"Point", {0,0,0}, {0,-1,0}, .2}; publishSource(scene, preview, source);
+                auto lighting = scene.lighting(); auto second = lighting.lights.front();
+                second.stableId = scene::allocatePunctualLightIdentity(); second.position = float3(2,0,0);
+                second.name = "Temporal second point"; lighting.lights.push_back(second);
+                require(scene.setLighting(lighting), "Publish temporal identity controls"); (void)preview.setLighting(scene.lighting());
+                evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(room, "smrt", true, 128);
+                const Json pointControls{{"smrtTemporalEnabled",true},{"smrtTemporalMaxFrames",32},
+                    {"smrtRayCount",1},{"smrtSamplesPerRay",16},{"physicalPageBudget",4096}};
+                for (const char* node : {"Cached", "Compact"}) {
+                    const auto id = graph.findNode(node)->id;
+                    for (const auto& [key, value] : pointControls.items()) {
+                        require(graph.setNodeRuntimeProperty(id,key,value), "Set temporal point publication controls");
+                    }
+                }
+                std::map<uint64_t, std::vector<uint8_t>> previous;
+                std::map<uint64_t, std::pair<uint32_t, uint32_t>> previousSlots;
+                uint32_t seamSoft = 0, seamSamples = 0;
+                for (uint32_t frame = 0; frame <= 32; ++frame) {
+                    if (frame == 32) {
+                        std::swap(lighting.lights[0],lighting.lights[1]);
+                        require(scene.setLighting(lighting), "Reorder temporal light source slots"); (void)preview.setLighting(scene.lighting());
+                    }
+                    validation.phase("PointRoom-" + std::to_string(frame));
+                    require(preview.render(graph,kWidth,kHeight,"CachedEvidence.color"), "Temporal point publication: " + preview.lastLog());
+                    const auto legacy = snapshot("Cached"), compact = snapshot("Compact");
+                    auto current = temporalLightPixels(legacy,room);
+                    require(current.size() == 2 && current == temporalLightPixels(compact,room),
+                        "Temporal point compact/legacy visibility differs across cube faces");
+                    if (frame == 31) {
+                        previous = current;
+                        uint64_t originId = 0;
+                        for (uint32_t index = 0; index < legacy.header.count; ++index) {
+                            const auto& entry = legacy.entries[index];
+                            if (entry.status == kVirtualShadowMapLightAdmitted) {
+                                const uint64_t id = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                                previousSlots[id] = {entry.source, entry.baseLayer};
+                            }
+                            if (entry.status == kVirtualShadowMapLightAdmitted && entry.positionRange[0] == 0) {
+                                originId = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                            }
+                        }
+                        require(current.contains(originId), "Temporal seam light identity missing");
+                        for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                            const auto hit = cameraHit(legacy.camera,x,y,room); if (!hit.valid) { continue; }
+                            std::array<double,3> magnitude{std::abs(hit.position[0]),std::abs(hit.position[1]),std::abs(hit.position[2])};
+                            std::sort(magnitude.begin(),magnitude.end());
+                            if (magnitude[2] - magnitude[1] > .3) { continue; }
+                            const double expected = referenceVisibility(hit,room,source);
+                            if (expected <= .05 || expected >= .95) { continue; }
+                            ++seamSamples; const auto value = current.at(originId)[size_t(y) * kWidth + x];
+                            seamSoft += value > 12 && value < 243;
+                        }}
+                        require(seamSamples > 20 && seamSoft > 20, "Temporal point fixture did not accumulate cube-seam penumbra");
+                    }
+                    if (frame == 32) {
+                        uint32_t checked = 0, jumps = 0;
+                        uint32_t remappedLights = 0;
+                        Json mappingChanges = Json::array();
+                        for (uint32_t index = 0; index < legacy.header.count; ++index) {
+                            const auto& entry = legacy.entries[index];
+                            if (entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                            const uint64_t id = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                            require(previousSlots.contains(id), "Reordered light has no preceding publication identity");
+                            const auto before = previousSlots.at(id);
+                            remappedLights += before.first != entry.source || before.second != entry.baseLayer;
+                            mappingChanges.push_back({{"stableId",id},{"previousSourceSlot",before.first},
+                                {"sourceSlot",entry.source},{"previousBaseLayer",before.second},{"baseLayer",entry.baseLayer}});
+                        }
+                        for (const auto& [id, pixels] : current) {
+                            require(previous.contains(id), "Light source reorder changed stable identity");
+                            const auto& old = previous.at(id);
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (old[pixel] <= 16 || old[pixel] >= 239) { continue; }
+                                ++checked;
+                                // A 32-frame un-clamped history can move at most
+                                // 1/32 in one static frame, plus R8 quantization.
+                                jumps += std::abs(int(pixels[pixel]) - int(old[pixel])) > 13;
+                            }
+                        }
+                        report["publication"] = {{"seamPenumbraSamples",seamSamples},{"seamSoftPixels",seamSoft},
+                            {"reorderedSoftPixels",checked},{"historyJumps",jumps},{"compactLegacyEqual",true},
+                            {"remappedLights",remappedLights},{"mappingChanges",std::move(mappingChanges)}}; save();
+                        require(remappedLights > 0, "Temporal reorder fixture did not change a source slot or published layer");
+                        require(checked > 100 && jumps == 0, "Source-slot reorder reset or exchanged temporal light histories");
+                    }
+                }
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT temporal Vulkan validation error");
+            require(report["failures"].empty(), "SMRT temporal quality/stability gates failed; see report");
+            report["passed"] = true; save();
+            return RHITestResult::pass("One/two-ray SMRT converges against geometry, reprojects moving receivers and rejects stale history");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTTemporalTest);
+
+std::array<uint64_t, 32> searchStatistics(const Snapshot& image)
+{
+    std::array<uint64_t, 32> totals{};
+    for (const auto& face : image.statistics) {
+        for (size_t index = 0; index < totals.size(); ++index) { totals[index] += face[index]; }
+    }
+    return totals;
+}
+
+class VirtualShadowMapSMRTSearchTest final : public RHITest
+{
+public:
+    VirtualShadowMapSMRTSearchTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_search"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTSearch";
+        Json report{{"passed", false}, {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTSearch.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "FarBlocker", false, 12);
+            for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                scene::SceneDocument scene; require(scene.load(fixture.source), "Load SMRT search fixture");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                Source source{kind, {0,20,0}, {0,-1,0}, kind == "Directional" ? .08 : .5};
+                publishSource(scene, preview, source);
+                ViewCamera camera{.eye={kind == "Directional" ? .8f : 2.0f,5,0},
+                    .center={kind == "Directional" ? .8f : 2.0f,0,0}, .up={0,0,-1},
+                    .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=2, .orthographic=true};
+                require(view.setCamera(camera), "Set orthographic search control camera");
+                evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture, "smrt", false, 128);
+                setProperty(graph, "smrtTemporalEnabled", false); setProperty(graph, "smrtRayCount", 32);
+                setProperty(graph, "smrtSamplesPerRay", 32); setProperty(graph, "smrtMaxRayAngle", .35);
+                const auto property = [&](const char* node, const char* key, const Json& value) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, key, value), "Set search control property");
+                };
+                const auto capture = [&](const std::string& phase, bool equivalent) {
+                    const std::string label = kind + "-" + phase; validation.phase(label);
+                    require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"), "Search render: " + preview.lastLog());
+                    const auto cached = snapshot("Cached"), control = snapshot("Redraw");
+                    const auto a = searchStatistics(cached), b = searchStatistics(control);
+                    require(a[5] == 0 && a[9] == 0 && b[5] == 0 && b[9] == 0, label + ": overflow or unresolved query");
+                    if (equivalent) {
+                        require(cached.shadows == control.shadows && cached.depth == control.depth,
+                            label + ": scaled search disagrees with the equivalent explicit world limit");
+                        for (uint32_t index : {0u,1u,2u,7u,9u,13u,30u,31u}) {
+                            require(a[index] == b[index], label + ": demand/query range differs between equivalent controls");
+                        }
+                    }
+                    report["cases"].push_back({{"name", label}, {"equivalent", equivalent},
+                        {"statistics", a}, {"controlStatistics", b},
+                        {"shadowSha256", debug::debugSha256(visibility(cached, fixture, source))},
+                        {"controlSha256", debug::debugSha256(visibility(control, fixture, source))}});
+                    save(); return std::pair{cached, control};
+                };
+                for (const auto& [name, height, scale, maximum, effective] : {
+                    std::tuple{"Near",5.f,.2f,32.f,1.f}, std::tuple{"Far",10.f,.2f,32.f,2.f},
+                    std::tuple{"WorldCap",5.f,8.f,3.f,3.f}}) {
+                    camera.eye[1] = height; require(view.setCamera(camera), "Change search receiver distance");
+                    property("Cached", "smrtRayLengthScale", scale); property("Cached", "smrtMaxRayLength", maximum);
+                    property("Redraw", "smrtRayLengthScale", 0); property("Redraw", "smrtMaxRayLength", effective);
+                    (void)capture(name, true);
+                }
+                camera.eye[1] = 5; require(view.setCamera(camera), "Restore search camera");
+                setProperty(graph, "smrtRayLengthScale", 0);
+                if (kind == "Directional") {
+                    // This broad emitter has enough angular support to expose
+                    // the request cost and penumbra cap of the bounded search.
+                    property("Cached", "smrtMaxRayLength", 1); property("Redraw", "smrtMaxRayLength", 32);
+                    const auto [shortSearch, fullSearch] = capture("ShortVersusFull", false);
+                    const auto shortPixels = visibility(shortSearch, fixture, source), fullPixels = visibility(fullSearch, fixture, source);
+                    uint32_t shortSoft = 0, fullSoft = 0, outsideBound = 0, boundedReceivers = 0;
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const size_t pixel = size_t(y) * kWidth + x;
+                        const auto hit = cameraHit(shortSearch.camera, x, y, fixture);
+                        if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[2]) > .25) { continue; }
+                        shortSoft += shortPixels[pixel] > 12 && shortPixels[pixel] < 243;
+                        fullSoft += fullPixels[pixel] > 12 && fullPixels[pixel] < 243;
+                        // A one-metre ray cannot spread a straight shadow edge
+                        // farther than tan(angle), plus two screen pixels for
+                        // finite texels and the independent texel dither.
+                        const double margin = std::tan(source.size) + 2 * camera.orthoHeight / kHeight;
+                        if (std::abs(hit.position[0] - .8) > margin) {
+                            ++boundedReceivers;
+                            outsideBound += shortPixels[pixel] != (hit.position[0] < .8 ? 0 : 255);
+                        }
+                    }}
+                    const auto shortStats = searchStatistics(shortSearch), fullStats = searchStatistics(fullSearch);
+                    require(fullSoft > 100 && shortSoft < fullSoft / 2 && boundedReceivers > 100 && outsideBound == 0,
+                        "Directional bounded search lost its geometric penumbra-width limit");
+                    require(shortStats[0] * 10 < fullStats[0] * 9, "Broad search fixture did not reduce requested pages by at least ten percent");
+                    report["cases"].back()["widthControl"] = {{"shortSoftPixels",shortSoft},{"fullSoftPixels",fullSoft},
+                        {"boundedReceivers",boundedReceivers},{"outsideBoundErrors",outsideBound}};
+                    saveGray(directory / "Directional-Short.png", shortPixels); saveGray(directory / "Directional-Full.png", fullPixels);
+                } else {
+                    setProperty(graph, "smrtMaxRayLength", 32);
+                    property("Cached", "smrtMaxRayAngle", .001); property("Redraw", "smrtMaxRayAngle", .35);
+                    const auto [limited, broad] = capture("AngularLimit", false);
+                    require(searchStatistics(limited)[0] < searchStatistics(broad)[0],
+                        kind + ": local angular search limit did not reduce broad-source page demand");
+                    property("Redraw", "smrtMaxRayAngle", .001); (void)capture("AngularLimitRedraw", true);
+                }
+                // A cap changes the representable penumbra, never the existence
+                // of a distant occluder or a clearly lit geometric control.
+                source.size = kind == "Directional" ? .00465 : .05; publishSource(scene, preview, source);
+                camera.eye = {0,5,0}; camera.center = {0,0,0}; camera.orthoHeight = 7;
+                require(view.setCamera(camera), "Set distant-umbra search control view");
+                setProperty(graph, "smrtRayLengthScale", .02); setProperty(graph, "smrtMaxRayLength", 32);
+                setProperty(graph, "smrtMaxRayAngle", .001);
+                const auto [bounded, redraw] = capture("DistantUmbra", true);
+                const auto pixels = visibility(bounded, fixture, source);
+                uint32_t umbra = 0, lit = 0, errors = 0;
+                for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                    const auto hit = cameraHit(bounded.camera, x, y, fixture);
+                    if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[2]) > .35) { continue; }
+                    const bool shadowed = std::abs(hit.position[0]) < .35;
+                    const bool clear = std::abs(hit.position[0]) > 3 && std::abs(hit.position[0]) < 4;
+                    if (!shadowed && !clear) { continue; }
+                    require(referenceVisibility(hit, fixture, source) == (shadowed ? 0. : 1.), "Search interior geometry is ambiguous");
+                    umbra += shadowed; lit += clear;
+                    errors += pixels[size_t(y) * kWidth + x] != (shadowed ? 0 : 255);
+                }}
+                require(umbra > 20 && lit > 50 && errors == 0, kind + ": range/angle cap removed distant umbra or darkened a lit control");
+                report["cases"].back()["interiorControl"] = {{"umbraPixels",umbra},{"litPixels",lit},{"errors",errors}}; save();
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT search Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("SMRT view/world/angular search controls agree, bound demand and preserve distant shadow interiors");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTSearchTest);
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 

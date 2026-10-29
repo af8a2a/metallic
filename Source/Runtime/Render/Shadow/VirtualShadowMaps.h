@@ -50,6 +50,9 @@ struct VirtualShadowMapSettings
     uint32_t smrtRayCount = 8;
     uint32_t smrtSamplesPerRay = 8;
     float smrtMaxRayLength = 10.0f; // Soft search in meters; the first reverse sample retains farther blockers.
+    float smrtRayLengthScale = 0.0f; // Zero keeps fixed search; otherwise cap by camera distance times this scale.
+    float smrtMaxRayAngle = 0.03f; // Maximum local-light angular span, in radians.
+    bool smrtTemporalSampling = false; // Rotate raw samples; the lights pass owns the separate history resolve.
     bool receiverFootprint = true; // All filters share receiver-selected resolution; false starts at the finest level.
     bool enabled = true;
     bool cacheEnabled = false;

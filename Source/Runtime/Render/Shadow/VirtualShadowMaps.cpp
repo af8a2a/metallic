@@ -38,8 +38,10 @@ struct ShadowPush
     uint32_t projectionFace, filterMode, pointFaces;
     float pcfRadius, rayLength, sourceRadius, angularRadius;
     uint32_t rayCount, samplesPerRay, receiverFootprint, filterReserved;
+    float rayLengthScale, maxRayAngle;
+    uint32_t samplePhase, sampleReserved;
 };
-static_assert(sizeof(ShadowPush) == 192);
+static_assert(sizeof(ShadowPush) == 208);
 
 struct ShadowFace
 {
@@ -438,6 +440,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         settings.smrtRayCount == 0 || settings.smrtRayCount > 32 ||
         settings.smrtSamplesPerRay == 0 || settings.smrtSamplesPerRay > 64 ||
         !std::isfinite(settings.smrtMaxRayLength) || settings.smrtMaxRayLength <= 0 || settings.smrtMaxRayLength > 10000 ||
+        !std::isfinite(settings.smrtRayLengthScale) || settings.smrtRayLengthScale < 0 || settings.smrtRayLengthScale > 1000 ||
+        !std::isfinite(settings.smrtMaxRayAngle) || settings.smrtMaxRayAngle < 0.001f || settings.smrtMaxRayAngle > 0.35f ||
         (!alphaTextures.empty() && alphaTextures.size() != materials.size()) ||
         view.current.viewport[1] < 1 || view.current.viewport[2] < 1 ||
         (view.current.clipOrtho[3] != 0 && view.current.clipOrtho[3] != 1)) {
@@ -543,6 +547,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.pointFaces = UINT32_MAX;
     push.pcfRadius = settings.pcfRadius;
     push.rayLength = settings.smrtMaxRayLength;
+    push.rayLengthScale = settings.smrtRayLengthScale;
+    push.maxRayAngle = settings.smrtMaxRayAngle;
+    push.samplePhase = settings.smrtTemporalSampling && push.filterMode == 2u ? (view.frame[0] & 63u) + 1u : 0u;
     push.sourceRadius = light.sourceRadius;
     push.angularRadius = light.angularRadius;
     push.rayCount = settings.smrtRayCount;

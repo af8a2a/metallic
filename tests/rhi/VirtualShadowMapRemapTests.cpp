@@ -36,9 +36,9 @@ void requireRemap(const Result<T>& result, const std::string& message)
 
 struct RemapPush
 {
-    std::array<uint32_t, 48> words{};
+    std::array<uint32_t, 52> words{};
 };
-static_assert(sizeof(RemapPush) == 192);
+static_assert(sizeof(RemapPush) == 208);
 
 struct LevelChange
 {

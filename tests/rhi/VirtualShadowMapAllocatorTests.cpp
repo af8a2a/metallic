@@ -33,13 +33,13 @@ void requireAllocator(const Result<T>& result, const std::string& message)
     requireAllocator(bool(result), message + (result ? "" : ": " + std::string(resultToString(result))));
 }
 
-// The production inline ABI is 48 words. This probe binds only allocation
+// The production inline ABI is 52 words. This probe binds only allocation
 // fields; image, material and geometry indices are intentionally unavailable.
 struct AllocatorPush
 {
-    std::array<uint32_t, 48> words{};
+    std::array<uint32_t, 52> words{};
 };
-static_assert(sizeof(AllocatorPush) == 192);
+static_assert(sizeof(AllocatorPush) == 208);
 
 struct AllocationCase
 {
