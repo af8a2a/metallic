@@ -10,7 +10,6 @@ set(METALLIC_NSIGHT_AFTERMATH_RUNTIME_FILES "" CACHE INTERNAL "NVIDIA Nsight Aft
 function(metallic_set_aftermath_available value)
     set(METALLIC_HAS_NSIGHT_AFTERMATH ${value} CACHE INTERNAL "Whether Metallic found a usable NVIDIA Nsight Aftermath SDK")
     target_compile_definitions(metallic_aftermath INTERFACE METALLIC_HAS_NSIGHT_AFTERMATH=${value})
-    add_compile_definitions(METALLIC_HAS_NSIGHT_AFTERMATH=${value})
 endfunction()
 
 function(metallic_copy_aftermath_runtime target_name)

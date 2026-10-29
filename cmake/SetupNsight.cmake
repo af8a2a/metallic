@@ -33,7 +33,7 @@ if(METALLIC_ENABLE_NSIGHT_EVENTS)
     else()
         # NVTX v3 is vendored under External/NVTX, so reaching this branch means
         # the checkout is incomplete or METALLIC_NVTX_ROOT points somewhere wrong.
-        message(WARNING
+        message(STATUS
             "Nsight Events were enabled, but no NVTX v3 headers were found. "
             "Expected the vendored copy at External/NVTX/c/include/nvtx3/nvToolsExt.h "
             "or a valid METALLIC_NVTX_ROOT. Markers compile as no-ops.")

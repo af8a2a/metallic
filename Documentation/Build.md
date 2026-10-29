@@ -15,6 +15,17 @@ commits. Existing checkouts are preserved. Git and network access are required
 for the first download. Optional SDKs retain their own setup policies; licensed
 RTXCR reference assets are not downloaded by this bootstrap.
 
+NVIDIA SDK integrations are optional. Missing Streamline, Aftermath, NVTX,
+Nsight Graphics, NvPerf, NTC or RTXCR installations disable the corresponding
+integration with a configure status message, without blocking ordinary builds.
+To disable all of these integrations (including NRD and experimental DLSS-NR)
+regardless of installed SDKs, configure with `-DMETALLIC_ENABLE_NVIDIA_SDKS=OFF`.
+Individual `METALLIC_ENABLE_*` cache choices are preserved when this master
+switch is off; turning it back on restores them. RTXCR discovery can also be
+disabled independently with `-DMETALLIC_ENABLE_RTXCR=OFF`.
+Bundled shader sources such as SHaRC, RTXDI and RTXTF remain part of the renderer;
+this switch controls optional SDK integrations, not Vulkan device requirements.
+
 For pre-provisioned/offline builds, set `METALLIC_SLANG_AUTO_DOWNLOAD=OFF` and
 `METALLIC_SUBMODULE_AUTO_DOWNLOAD=OFF`. Streamline has a separate
 `METALLIC_STREAMLINE_AUTO_DOWNLOAD` option. Missing required dependencies then
@@ -35,6 +46,10 @@ All build presets enable parallel builds by default ("jobs": 0), equivalent to
 passing `-j` without a job count. Ninja chooses its default parallelism. To limit
 concurrency for a particular build, pass an explicit count, for example
 `cmake --build --preset metallic-dev -j 8`.
+
+MSVC/Ninja builds track the compiler binary in the configure dependencies and
+compile command fingerprint. Updating Visual Studio in place therefore rebuilds
+objects and precompiled headers, avoiding reuse of incompatible PCH files (C1853).
 
 ## Daily development
 

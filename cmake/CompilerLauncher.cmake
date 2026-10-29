@@ -26,8 +26,13 @@ foreach(language IN ITEMS C CXX)
         set(launcher "${METALLIC_SCCACHE_EXECUTABLE}")
     endif()
     if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
+        # Visual Studio can replace cl.exe in place. Ninja otherwise keeps old
+        # objects/PCH files because the compiler command still has the same path.
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_${language}_COMPILER}")
+        file(SHA256 "${CMAKE_${language}_COMPILER}" compilerFingerprint)
         # The wrapper accepts a complete command: optional cache, compiler, args.
-        list(PREPEND launcher "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_LIST_DIR}/RunMsvcCompiler.cmake" --)
+        list(PREPEND launcher "${CMAKE_COMMAND}" "-DMETALLIC_COMPILER_FINGERPRINT=${compilerFingerprint}"
+            -P "${CMAKE_CURRENT_LIST_DIR}/RunMsvcCompiler.cmake" --)
         set(CMAKE_${language}_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
         set(CMAKE_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")
     endif()
@@ -35,3 +40,4 @@ foreach(language IN ITEMS C CXX)
 endforeach()
 unset(launcher)
 unset(language)
+unset(compilerFingerprint)

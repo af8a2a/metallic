@@ -15,7 +15,6 @@ set(METALLIC_HAS_NV_LOW_LATENCY 0)
 function(metallic_set_streamline_available value)
     set(METALLIC_HAS_STREAMLINE ${value} CACHE INTERNAL "Whether Metallic found a usable NVIDIA Streamline SDK")
     target_compile_definitions(metallic_streamline INTERFACE METALLIC_HAS_STREAMLINE=${value})
-    add_compile_definitions(METALLIC_HAS_STREAMLINE=${value})
     target_compile_definitions(metallic_streamline INTERFACE
         METALLIC_HAS_NV_LOW_LATENCY=${METALLIC_HAS_NV_LOW_LATENCY})
 endfunction()
@@ -262,10 +261,6 @@ if(METALLIC_STREAMLINE_USABLE)
         message(STATUS "NVIDIA NvLowLatencyVk unavailable: Reflex/PCL SDK files are missing")
     endif()
     metallic_set_streamline_available(1)
-    add_compile_definitions(
-        STREAMLINE_FEATURE_DLSS_RR=1
-        "METALLIC_STREAMLINE_INTERPOSER_DLL=\"sl.interposer.dll\""
-    )
     target_include_directories(metallic_streamline INTERFACE "${METALLIC_STREAMLINE_INCLUDE_DIR}")
     target_link_libraries(metallic_streamline INTERFACE "${METALLIC_STREAMLINE_LIBRARY}")
     target_compile_definitions(metallic_streamline INTERFACE
