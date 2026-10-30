@@ -15,6 +15,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_OPTIMIZE_PROJECTION_STATISTICS
 #define VSM_OPTIMIZE_PROJECTION_STATISTICS 0
 #endif
+#ifndef VSM_ONE_PASS_PROJECTION
+#define VSM_ONE_PASS_PROJECTION 0
+#endif
 #ifndef VSM_OPTIMIZE_MARK_SAMPLES
 #define VSM_OPTIMIZE_MARK_SAMPLES 0
 #endif
@@ -1753,6 +1756,20 @@ void vsmDepthFragmentMain(ShadowRasterVertex input, bool frontFace : SV_IsFrontF
     if (!program.evaluateCoverage(context, instance).accepted) { discard; }
 }
 
+#if VSM_ONE_PASS_PROJECTION
+// Common filter settings stay in push constants. Only face-specific values
+// come from this table; its 80-byte layout matches ShadowProjectionJob in C++.
+struct ShadowProjectionJob
+{
+    uint pages, statistics, projections, atlas;
+    uint filterMode, shadow, debug, physicalPagesX;
+    uint clipmapCount, enabled, lightType, projectionFace;
+    uint pointFaces, filterReserved, samplePhase, view;
+    float lightRange, sourceRadius, angularRadius, padding;
+};
+
+#endif
+
 bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out float4 debugValue, out uint3 filterCounts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     , out uint projectionCounts
@@ -1923,6 +1940,7 @@ static const uint kVsmProjectionCounterCount = 8u;
 #else
 static const uint kVsmProjectionCounterCount = 3u;
 #endif
+#if !VSM_ONE_PASS_PROJECTION
 groupshared uint gVsmFilterCounts[kVsmProjectionCounterCount];
 
 [shader("compute")]
@@ -1980,3 +1998,59 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, u
         }
     }
 }
+#else
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush common)
+{
+    StructuredBuffer<ShadowProjectionJob> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjectionJob>>(common.geometry));
+    // Every active lane visits the same job. Resource indices stay uniform,
+    // while canonical point-face ownership remains in vsmProjectReceiver.
+    for (uint jobIndex = 0u; jobIndex < common.triangleCount; ++jobIndex) {
+        ShadowProjectionJob job = jobs[jobIndex];
+        ShadowPush push = common;
+        push.pages = job.pages; push.statistics = job.statistics;
+        push.projections = job.projections; push.atlas = job.atlas;
+        push.filterMode = job.filterMode; push.shadow = job.shadow;
+        push.debug = job.debug; push.physicalPagesX = job.physicalPagesX;
+        push.clipmapCount = job.clipmapCount; push.enabled = job.enabled;
+        push.lightType = job.lightType; push.projectionFace = job.projectionFace;
+        push.pointFaces = job.pointFaces; push.filterReserved = job.filterReserved;
+        push.samplePhase = job.samplePhase; push.view = job.view; push.lightRange = job.lightRange;
+        push.sourceRadius = job.sourceRadius; push.angularRadius = job.angularRadius;
+        uint3 counts;
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        uint projectionCounts;
+#endif
+        vsmProjectAndStore(id, push, counts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+            , projectionCounts
+#endif
+        );
+        if (push.filterMode == 0u) { continue; }
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        counts.z += (projectionCounts >> 3u) & 1u;
+#endif
+        // Integer subgroup reductions preserve the per-face totals without a
+        // workgroup barrier between jobs or shared storage for each face.
+        uint3 totals = WaveActiveSum(counts);
+        RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+        if (WaveIsFirstLane()) {
+            if (totals.x != 0u) { InterlockedAdd(statistics[30], totals.x); }
+            if (totals.y != 0u) { InterlockedAdd(statistics[31], totals.y); }
+            if (totals.z != 0u) { InterlockedAdd(statistics[9], totals.z); }
+        }
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        [unroll]
+        for (uint event = 0u; event < 5u; ++event) {
+            uint bit = event < 3u ? event : event + 1u;
+            uint total = WaveActiveSum((projectionCounts >> bit) & 1u);
+            if (WaveIsFirstLane() && total != 0u) {
+                uint index = event == 0u ? 8u : event == 1u ? 6u : event == 2u ? 29u : event == 3u ? 7u : 13u;
+                InterlockedAdd(statistics[index], total);
+            }
+        }
+#endif
+    }
+}
+#endif

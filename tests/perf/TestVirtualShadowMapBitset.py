@@ -16,15 +16,32 @@ import TestVirtualShadowMapOptimization as optimization_tests
 a = bitset.acceptance
 
 
-def graph(arm, mode, resolved=False, directional=False, compact=False, directional_mark=False):
+def one_pass_shader_log(arm, mode, role="primary"):
+    lines = []
+    for kind in ((0, 1, 2) if role == "primary" else (0,)):
+        for index, entry in enumerate(("vsmMarkMain", "vsmBuildMain", "vsmProjectMain")):
+            flags = {"optimizeMark": True, "clusterCull": True, "clusterPageBitset": True,
+                "trianglePageBitset": True, "compactBuild": False, "markSamples": kind != 0,
+                "directionalMark": index == 0 and kind == 0, "directionalBuild": index == 1 and kind == 0,
+                "work": mode == "diagnostic", "projectionStatistics": False}
+            lines.append(f"[VSMShader] entry={entry} lightType={kind} spirvSHA256={str(kind * 3 + index + 1) * 64} " +
+                " ".join(f"{key}={str(value).lower()}" for key, value in flags.items()))
+    if arm == "B" and role == "primary":
+        lines.append(f"[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={'f' * 64} work={str(mode == 'diagnostic').lower()} projectionStatistics=false")
+    return "\n".join(lines)
+
+
+def graph(arm, mode, resolved=False, directional=False, compact=False, directional_mark=False, one_pass=False):
     result = optimization_tests.graph("Both", mode)
-    result["nodes"][0]["properties"][bitset.DIRECTIONAL_MARK_SWITCH if directional_mark else bitset.COMPACT_SWITCH if compact else bitset.DIRECTIONAL_SWITCH if directional else bitset.SWITCH] = arm == "B"
+    result["nodes"][0]["properties"][bitset.ONE_PASS_SWITCH if one_pass else bitset.DIRECTIONAL_MARK_SWITCH if directional_mark else bitset.COMPACT_SWITCH if compact else bitset.DIRECTIONAL_SWITCH if directional else bitset.SWITCH] = arm == "B"
     if resolved:
         result["outputs"] = ["FinalBlit.color"] + (["Deferred.color"] if mode == "diagnostic" else [])
     return result
 
 
-def shader_log(arm, mode, directional=False, compact=False, directional_mark=False):
+def shader_log(arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary"):
+    if one_pass:
+        return one_pass_shader_log(arm, mode, role)
     result = optimization_tests.shader_log("Both", mode)
     if arm == "B":
         result = result.replace(("b" if directional_mark else "d") * 64, "e" * 64)
@@ -68,15 +85,15 @@ class BitsetTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def experiment(self, phase, gain=.2, name=None, frames=64, directional=False, compact=False, directional_mark=False):
+    def experiment(self, phase, gain=.2, name=None, frames=64, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary"):
         source = self.root / (name or phase)
         source.mkdir()
         mode = "diagnostic" if phase == "diagnostic" else "timing"
-        protocol = bitset.DIRECTIONAL_MARK_PROTOCOL if directional_mark else bitset.COMPACT_PROTOCOL if compact else bitset.DIRECTIONAL_PROTOCOL if directional else bitset.PROTOCOL
-        plan = {"protocol": protocol, "phase": phase, "mode": mode, "policy": bitset.experiment_policy(protocol),
+        protocol = bitset.ONE_PASS_PROTOCOL if one_pass else bitset.DIRECTIONAL_MARK_PROTOCOL if directional_mark else bitset.COMPACT_PROTOCOL if compact else bitset.DIRECTIONAL_PROTOCOL if directional else bitset.PROTOCOL
+        plan = {"protocol": protocol, "phase": phase, "mode": mode, "policy": bitset.experiment_policy(protocol, role),
             "processes": bitset.schedule(phase), "blocks": bitset.BLOCKS[phase], "runsPerPackage": 1,
             "timeoutSeconds": 600, "comparisonStartFrame": 16,
-            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode, directional=directional, compact=compact, directional_mark=directional_mark), "A", directional, compact, directional_mark),
+            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass), "A", directional, compact, directional_mark, one_pass),
             "inputs": {arm: {"cases": f"/{mode}-{arm}.json", "casesSHA256": arm,
                 "graph": f"/{arm}.json", "graphSHA256": arm} for arm in bitset.ARMS}}
         a.save(source / "Plan.json", plan)
@@ -87,10 +104,15 @@ class BitsetTests(unittest.TestCase):
             directory = package / "run-1"
             directory.mkdir(parents=True)
             arm = item["arm"]
-            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True, directional=directional, compact=compact, directional_mark=directional_mark),
+            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass),
                 "noRayTracingAllocations": True, "noRayQueryOrRTAS": True, "frames": []}
             for index in range(frames):
-                row = frame(index, scale=1000 if index < 32 else (1 if arm == "A" else 1 - gain))
+                row = frame(index, faces=(9 if role == "primary" else 1) if one_pass else 2, scale=1000 if index < 32 else (1 if arm == "A" else 1 - gain))
+                if one_pass and arm == "B" and role == "primary":
+                    sections = row["nodes"][0]["sections"]
+                    total = sum(section["gpuMs"] for section in sections if section["name"] == "VSM projection")
+                    row["nodes"][0]["sections"] = [section for section in sections if section["name"] != "VSM projection"]
+                    row["nodes"][0]["sections"].append({"name": "VSM one-pass projection", "parent": 0, "cpuOnly": False, "gpuMs": total})
                 row["warmup"] = index < 32
                 row["streaming"] = [{"passName": "VBuffer", "residentPages": 5, "geometryUsedBytes": 1024,
                     "originalTopologyHash": 3, "primitiveMetadataHash": 4,
@@ -101,7 +123,7 @@ class BitsetTests(unittest.TestCase):
                     add_work(row)
                     add_build(row)
                     # Build diagnostics are valid but deliberately differ; legacy/image receipts do not.
-                    if directional or compact or directional_mark:
+                    if directional or compact or directional_mark or one_pass:
                         diagnostic = row["shadow"]["gpuBuildDiagnostics"]
                         diagnostic["version"] = 3
                         for counters in [diagnostic["totals"], *[face["counters"] for face in diagnostic["faces"]]]:
@@ -110,6 +132,15 @@ class BitsetTests(unittest.TestCase):
                         for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
                             face["counters"]["clusterGroups"] += 1
                         row["shadow"]["gpuBuildDiagnostics"]["totals"]["clusterGroups"] += 2
+                    if one_pass:
+                        shadow = row["shadow"]
+                        count = 9 if role == "primary" else 1
+                        shadow["statistics"] = [shadow["statistics"][0].copy() for _ in range(count)]
+                        shadow["totals"] = [value * count for value in shadow["statistics"][0]]
+                        for name in ("gpuWork", "gpuBuildDiagnostics"):
+                            counters = shadow[name]["faces"][0]["counters"]
+                            shadow[name]["faces"] = [{"lightIndex": i // 6, "face": i % 6, "counters": counters.copy()} for i in range(count)]
+                            shadow[name]["totals"] = {key: value * count for key, value in counters.items()}
                 case["frames"].append(row)
             if mode == "diagnostic":
                 case["captures"] = [{"frame": index, "rawSha256": "a" * 64, "depthSha256": "b" * 64,
@@ -119,7 +150,7 @@ class BitsetTests(unittest.TestCase):
             data = {"protocol": "virtual-shadow-map-acceptance-v2", "status": "passed", "mode": mode,
                 "validation": mode == "diagnostic", "performanceEligible": mode == "timing", "cases": [case]}
             a.save(directory / "VirtualShadowMapAcceptance.json", data)
-            (directory / "Process.log").write_text(shader_log(arm, mode, directional, compact, directional_mark), encoding="utf-8")
+            (directory / "Process.log").write_text(shader_log(arm, mode, directional, compact, directional_mark, one_pass, role), encoding="utf-8")
             a.save(package / "Cases.json", spec(mode, arm, frames))
             paths = plan["inputs"][arm]
             a.save(package / "Identity.json", {"sources": {"source": "1" * 64}, "binaries": {"exe": "2" * 64},
@@ -175,6 +206,125 @@ class BitsetTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bitset.normalized_workload(spec("timing", arm), value, arm, directional_mark=True)
         self.assertEqual(*workloads)
+
+    def test_one_pass_switch_preserves_production_settings(self):
+        workloads = []
+        for arm in bitset.ARMS:
+            value = graph(arm, "timing", one_pass=True)
+            workloads.append(bitset.normalized_workload(spec("timing", arm), value, arm, one_pass=True))
+            for key, invalid in ((bitset.ONE_PASS_SWITCH, None), (bitset.ONE_PASS_SWITCH, 1),
+                    (bitset.DIRECTIONAL_MARK_SWITCH, False), ("benchmarkMarkSamples", False),
+                    (bitset.DIRECTIONAL_SWITCH, False), (bitset.COMPACT_SWITCH, True),
+                    ("benchmarkBuildSubstages", True), ("benchmarkProjectionStatistics", True),
+                    ("compactOutputs", False)):
+                value = graph(arm, "timing", one_pass=True)
+                value["nodes"][0]["properties"][key] = invalid
+                with self.assertRaises(ValueError):
+                    bitset.normalized_workload(spec("timing", arm), value, arm, one_pass=True)
+        self.assertEqual(*workloads)
+
+    def test_one_pass_shader_variants_and_single_face_identity(self):
+        for role in ("primary", "overhead"):
+            rows = [{"arm": arm, "shaders": bitset.shader_identity(one_pass_shader_log(arm, "timing", role),
+                arm, "timing", one_pass=True, role=role)} for arm in bitset.ARMS]
+            bitset.check_shaders(rows, one_pass=True, role=role)
+            self.assertEqual(len(rows[0]["shaders"]["facePrograms"]["vsmMarkMain"]), 3 if role == "primary" else 1)
+            rows[1]["shaders"]["facePrograms"]["vsmMarkMain"]["0"] = "a" * 64
+            with self.assertRaisesRegex(ValueError, "vsmMarkMain"):
+                bitset.check_shaders(rows, one_pass=True, role=role)
+        valid = one_pass_shader_log("B", "timing")
+        for invalid in (valid.replace("work=false", "work=true"),
+                valid.replace("projectionStatistics=false", "projectionStatistics=true"),
+                valid.replace("directionalMark=true", "directionalMark=false"),
+                "\n".join(valid.splitlines()[:-1]), valid.replace("f" * 64, "invalid")):
+            with self.assertRaises(ValueError):
+                bitset.shader_identity(invalid, "B", "timing", one_pass=True)
+        with self.assertRaisesRegex(ValueError, "only for the multi-face candidate"):
+            bitset.shader_identity(valid, "A", "timing", one_pass=True)
+
+    def test_one_pass_execution_scope_is_authoritative(self):
+        source = self.experiment("discovery", one_pass=True)
+        result = bitset.verify_experiment(source)
+        self.assertEqual(result["processes"][0]["faceCount"], 9)
+        self.assertEqual({row["projectionMode"] for row in result["frames"] if row["arm"] == "B"}, {"one-pass"})
+        def fake_scope(data):
+            for part in data["cases"][0]["frames"][16]["nodes"][0]["sections"]:
+                if part["name"] == "VSM one-pass projection":
+                    part["name"] = "VSM projection"
+        self.mutate(source, 1, "run-1/VirtualShadowMapAcceptance.json", fake_scope)
+        with self.assertRaisesRegex(ValueError, "per-face"):
+            bitset.verify_experiment(source)
+
+    def test_one_pass_exact_work_and_build_receipts(self):
+        source = self.experiment("diagnostic", one_pass=True)
+        result = bitset.verify_experiment(source)
+        self.assertEqual(len(result["diagnosticReceipts"]["exactBuildDiagnostics"][0]["diagnostics"]["totals"]), 45)
+        self.assertEqual(len(result["diagnosticReceipts"]["stableWorkCounters"][0]["faces"][0]["counters"]), 15)
+        def change(data):
+            work = data["cases"][0]["frames"][16]["shadow"]["gpuWork"]
+            work["faces"][0]["counters"]["projectionReceivers"] += 1
+            work["totals"]["projectionReceivers"] += 1
+        self.mutate(source, 1, "run-1/VirtualShadowMapAcceptance.json", change)
+        with self.assertRaisesRegex(ValueError, "mismatch after input verification"):
+            bitset.verify_experiment(source)
+
+    def test_one_pass_primary_and_guard_thresholds(self):
+        result = bitset.verify_experiment(self.experiment("confirmation", one_pass=True, role="overhead"))
+        primary = bitset.experiment_policy(bitset.ONE_PASS_PROTOCOL)
+        overhead = bitset.experiment_policy(bitset.ONE_PASS_PROTOCOL, "overhead")
+        for row in result["processes"]:
+            row["metrics"]["projectionMs"] = 1 if row["arm"] == "A" else 1.03
+            row["metrics"]["graphMs"] = 1
+        decision = bitset.comparisons(result["processes"], "confirmation", policy=overhead)
+        self.assertEqual(decision["effectAssessment"], "confirmed_overhead_guard")
+        self.assertEqual(decision["nextAction"], "require_primary_confirmation")
+        self.assertEqual(decision["gains"]["projectionMs"]["blocks"], 3)
+        self.assertEqual(bitset.comparisons(result["processes"], "confirmation", policy=primary)["decision"], "reject")
+        self.assertEqual(bitset.comparisons(result["processes"][:8], "discovery", policy=overhead)["nextAction"], "run_confirmation")
+        for row in result["processes"]:
+            row["metrics"]["projectionMs"] = 1 if row["arm"] == "A" else .9
+        self.assertEqual(bitset.comparisons(result["processes"], "confirmation", policy=primary)["nextAction"], "require_overhead_confirmation")
+        for row in result["processes"]:
+            if row["arm"] == "B":
+                row["metrics"]["graphMs"] = 1.03
+        self.assertEqual(bitset.comparisons(result["processes"], "confirmation", policy=overhead)["decision"], "reject")
+
+    def test_one_pass_stage_roles_and_face_counts_cannot_drift(self):
+        diagnostic = bitset.verify_experiment(self.experiment("diagnostic", one_pass=True))
+        discovery = bitset.verify_experiment(self.experiment("discovery", one_pass=True))
+        confirmation = bitset.verify_experiment(self.experiment("confirmation", one_pass=True))
+        bitset.check_diagnostic(discovery, diagnostic)
+        bitset.check_reference(confirmation, discovery)
+        discovery["processes"][0]["faceCount"] = 8
+        with self.assertRaisesRegex(ValueError, "face count"):
+            bitset.check_diagnostic(discovery, diagnostic)
+        discovery["processes"][0]["faceCount"] = 9
+        discovery["plan"]["policy"] = bitset.experiment_policy(bitset.ONE_PASS_PROTOCOL, "overhead")
+        with self.assertRaises(ValueError):
+            bitset.check_reference(confirmation, discovery)
+
+    def test_one_pass_report_and_plan(self):
+        source = self.experiment("diagnostic", one_pass=True, role="overhead")
+        timing = self.experiment("discovery", one_pass=True, role="overhead")
+        output = self.root / "projection-report"
+        with mock.patch("builtins.print"):
+            bitset.report(SimpleNamespace(source=timing, output=output, diagnostic=source))
+        text = (output / "report.md").read_text(encoding="utf-8")
+        self.assertIn("Role: **overhead**", text)
+        self.assertIn("No placeholder spans", text)
+        self.assertIn("requires both confirmations", text)
+        self.assertIn("Primary target: projectionMs", text)
+        cases = self.root / "cases"
+        cases.mkdir()
+        for arm in bitset.ARMS:
+            value = spec("diagnostic", arm)
+            value["cases"][0]["graph"] = f"{arm}.json"
+            a.save(cases / f"Diagnostic-{arm}Cases.json", value)
+            a.save(cases / f"{arm}.json", graph(arm, "diagnostic", one_pass=True))
+        plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="one-pass-projection", role="overhead",
+            cases_dir=cases, exe=self.root / "fake.exe"))
+        self.assertEqual(plan["protocol"], bitset.ONE_PASS_PROTOCOL)
+        self.assertEqual(plan["policy"]["role"], "overhead")
 
     def test_directional_mark_shader_scope_and_actual_hashes(self):
         rows = [{"arm": arm, "shaders": bitset.shader_identity(shader_log(arm, "timing", directional_mark=True),

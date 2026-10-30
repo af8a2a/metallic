@@ -20,6 +20,8 @@ import VirtualShadowMapAcceptance as acceptance
 
 STAGES = ("reset", "mark", "allocator", "build", "raster", "projection")
 SECTION_NAMES = {f"VSM {stage}": stage for stage in STAGES}
+ONE_PASS_PROJECTION_SECTION = "VSM one-pass projection"
+SECTION_NAMES[ONE_PASS_PROJECTION_SECTION] = "projection"
 BUILD_SUBSTAGES = {
     "VSM build direct": "directMs",
     "VSM build compact": "compactMs",
@@ -107,13 +109,14 @@ def describe(values):
             "p95": percentile(.95), "p99": percentile(.99), "minimum": ordered[0], "maximum": ordered[-1]}
 
 
-def profile_frame(frame):
+def profile_frame(frame, allow_disabled=False):
     nodes = [node for node in frame["nodes"] if node["name"] == "Shadows"]
     if len(nodes) != 1 or nodes[0]["type"] != "VirtualShadowMapLightsPass":
         raise ValueError("Expected exactly one production Shadows VSM Lights pass")
     node = nodes[0]
     sections = node["sections"]
     spans = {stage: [] for stage in STAGES}
+    one_pass_count = 0
     selected = set()
     for index, section in enumerate(sections):
         parent = section["parent"]
@@ -131,8 +134,21 @@ def profile_frame(frame):
             ancestor = sections[ancestor]["parent"]
         selected.add(index)
         spans[stage].append(duration(section["gpuMs"], section["name"]))
+        one_pass_count += section["name"] == ONE_PASS_PROJECTION_SECTION
     counts = {stage: len(values) for stage, values in spans.items()}
-    if not counts["reset"] or len(set(counts.values())) != 1:
+    face_counts = {value for stage, value in counts.items() if stage != "projection"}
+    if len(face_counts) != 1:
+        raise ValueError(f"Missing or inconsistent per-face VSM stage spans: {counts}")
+    face_count = counts["reset"]
+    if face_count == 0 and allow_disabled and counts["projection"] == 0:
+        projection_mode = "disabled"
+    elif one_pass_count:
+        if face_count <= 1 or one_pass_count != 1 or counts["projection"] != 1:
+            raise ValueError(f"Invalid one-pass projection spans: {counts}, onePass={one_pass_count}")
+        projection_mode = "one-pass"
+    elif face_count > 0 and counts["projection"] == face_count:
+        projection_mode = "per-face"
+    else:
         raise ValueError(f"Missing or inconsistent per-face VSM stage spans: {counts}")
     totals = {stage: sum(values) for stage, values in spans.items()}
     shadow_ms = duration(node["gpuMs"], "Shadows")
@@ -142,7 +158,8 @@ def profile_frame(frame):
         raise ValueError("Summed VSM stages exceed the owning Shadows GPU span")
     return {"frame": frame["frame"], "warmup": frame["warmup"], "graphMs": frame["graphMs"],
             "shadowsMs": shadow_ms, "stageSumMs": measured, "otherShadowsMs": max(0., shadow_ms - measured),
-            "faceCount": counts["reset"], **{f"{stage}Ms": value for stage, value in totals.items()}}
+            "faceCount": face_count, "projectionCount": counts["projection"], "projectionMode": projection_mode,
+            **{f"{stage}Ms": value for stage, value in totals.items()}}
 
 
 def load_package(source):

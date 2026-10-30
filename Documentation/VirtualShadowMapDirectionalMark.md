@@ -1,6 +1,6 @@
 # VSM 方向光 Mark 编译特化
 
-`VirtualShadowMapSettings::directionalMark` 默认关闭。两个 VSM Pass 支持 `directionalMark`，显式布尔 `benchmarkDirectionalMark` 优先。只有方向光生效；局部光保持原程序。此前已默认启用的局部光 `optimizeMarkSamples` 不变，方向光仍不使用那项循环不变量提取。
+`VirtualShadowMapSettings::directionalMark` 及两个 VSM Pass 默认启用方向光专用 Mark，已有图无需添加属性。`directionalMark: false` 可恢复通用 Mark；显式布尔 `benchmarkDirectionalMark` 优先。只有方向光生效；局部光保持原程序。此前已默认启用的局部光 `optimizeMarkSamples` 不变，方向光仍不使用那项循环不变量提取。
 
 ## 当前实现与契约
 
@@ -47,7 +47,7 @@ Discovery 的 Mark 收益点估计为 24.17%，95% 区间为 [−13.20%, 49.21%]
 | Build | 0.150200 | 0.151304 | −0.82% | [−1.09%, −0.56%] |
 | Projection | 1.017848 | 1.016592 | 0.07% | [−0.12%, 0.26%] |
 
-A/B 两列是各六个进程中位数的中位数；收益与区间使用独立区组 log ratio，不是这两列直接相除。确认阶段 B 的 Mark 进程间相对范围为 16.22%，保留全部样本。Allocator 约增加 0.0077 ms、Build 约增加 0.0011 ms，原因尚未单独归因；Shadows 与 graph 的整体收益已包含这些代价。结论限于当前 Sponza 配置和 GPU，不是全场景或端到端 FPS 承诺。未追加性能轮次，默认仍关闭。
+A/B 两列是各六个进程中位数的中位数；收益与区间使用独立区组 log ratio，不是这两列直接相除。确认阶段 B 的 Mark 进程间相对范围为 16.22%，保留全部样本。Allocator 约增加 0.0077 ms、Build 约增加 0.0011 ms，原因尚未单独归因；Shadows 与 graph 的整体收益已包含这些代价。结论限于当前 Sponza 配置和 GPU，不是全场景或端到端 FPS 承诺。该轮未追加性能轮次，测量时默认关闭；随后按用户要求启用默认路径。
 
 编译证据通过实际日志 SHA → 缓存原始 SPIR-V → FNV 字节指纹 → 原生 pipeline 统计关联：
 
@@ -72,6 +72,20 @@ A/B 两列是各六个进程中位数的中位数；收益与区间使用独立�
 - [最终身份检查](../build/vsm-directional-mark-v2/FinalIdentityCheck.json)。
 
 现有报告目录下的 `Reproduce.py NEW_REPORT_DIRECTORY` 可离线重验并重建报告。新实验使用 `Tools/Perf/VirtualShadowMapBitset.py run --experiment directional-mark`；主指标为 `markMs`，旧 build 实验协议不变。
+
+## 默认启用验证
+
+用户要求默认启用后，仅将 settings 默认值改为 `true`，两个 Pass 继承该默认值，无需修改现有图。显式生产属性 `directionalMark: false` 和 benchmark 覆盖优先级保留。Shader 源码未改动，本轮验证默认选择与正确性，不重新声明性能收益。
+
+证据位于 `build/vsm-directional-mark-default/`：
+
+- Release `MetallicRHITests` 与 `Metallic` 重新构建通过。
+- GPU 82 状态矩阵通过，validation 消息为零。10 组控制扩展为七个分支：Generic、Directional、Default、两个关闭 shared Mark 的分支、无 benchmark 覆盖的 ProductionOff/ProductionOn。Default 直接对照 Directional；覆盖两个 Pass、默认与显式开关、benchmark 优先级及局部光回退。
+- Sponza 三个独立 diagnostic 进程（各 64 帧）：省略两个 Mark 属性、仅生产属性开启、仅生产属性关闭。16–63 帧输入、stats32、45 build、15 稳定工作量完全一致；16/32/63 帧 PNG/HDR/depth/shadow 完全一致。
+- 省略属性和显式开启都执行诊断专用版 `0594c208…`；显式关闭恢复通用版 `1e6ccfc9…`。独立普通默认路径运行 96 帧，实际 Mark/Build/Projection SHA 三元组与此前确认接受的候选一致，Mark 为 `f60bda9f…`。点光和聚光的实际日志保持 `directionalMark=false`。
+- 739 个源码与 20 个二进制身份复核无差异。未新增性能 A/B；普通路径进程只验证编译选择，不将单次计时解释为新的收益。
+
+[默认路径验证报告](../build/vsm-directional-mark-default/report.md)包含实际编译身份及离线复核命令。
 
 ## 无效 receiver 的后续边界
 

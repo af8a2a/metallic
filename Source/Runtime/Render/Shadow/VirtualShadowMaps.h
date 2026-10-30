@@ -44,8 +44,10 @@ struct VirtualShadowMapSettings
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
     bool optimizeMark = true;
     bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.
+    // Experimental multi-face GPU projection; single faces and grouped projection statistics retain the original kernel.
+    bool onePassProjection = false;
     bool optimizeMarkSamples = true; // Reuse invariant Mark work for local lights; directional uses the original path.
-    bool directionalMark = false; // Experimental Mark-only orthographic specialization; preserves receiver/sample demands.
+    bool directionalMark = true; // Mark-only orthographic specialization; preserves receiver/sample demands.
     bool clusterCulling = true;
     bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.
     bool trianglePageBitset = true; // Enumerate dirty fine pages; requires the effective cluster-page bitset.
@@ -158,11 +160,12 @@ public:
     Result<> project(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log,
         CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr);
 
-    // Shares CPU point-table preparation and its resource dependencies, while
-    // retaining one push-constant projection dispatch per face. Empty input is
-    // valid; a single face delegates to project().
+    // Shares CPU point-table preparation and its resource dependencies. The
+    // optional GPU batch requires a common view/depth and filter settings, as
+    // supplied by LightsPass. Empty input is valid; one face uses project().
     static Result<> projectShared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
-        std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr);
+        std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
+        bool onePassProjection = false);
 
     // Logical resource bytes currently owned by this cache, recording and pool.
     // Native padding and retired recordings outside this cache/pool are excluded;
@@ -175,6 +178,8 @@ public:
 private:
     Result<> preparePointFaces(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
     Result<> projectPrepared(CommandBuffer& commands, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
+    static Result<> projectOnePassPrepared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
+        uint32_t faceCount, std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
     struct Programs;
     struct State;
     struct Cache;

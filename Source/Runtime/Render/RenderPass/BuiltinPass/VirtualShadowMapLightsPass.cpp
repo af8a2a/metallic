@@ -241,6 +241,8 @@ public:
         settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
         settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
+        settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
+            boolProperty(&properties, "onePassProjection", settings.onePassProjection));
         settings.optimizeMarkSamples = boolProperty(&properties, "benchmarkMarkSamples", settings.optimizeMarkSamples);
         settings.directionalMark = boolProperty(&properties, "benchmarkDirectionalMark",
             boolProperty(&properties, "directionalMark", settings.directionalMark));
@@ -569,7 +571,7 @@ public:
                 CPUProfileScope stageCPU(cpu, "Project all faces");
                 std::string log;
                 if (!properties.value("benchmarkLegacyProjection", false)) {
-                    auto result = VirtualShadowMaps::projectShared(cmd, projections, log, cpu, gpuProfiler);
+                    auto result = VirtualShadowMaps::projectShared(cmd, projections, log, cpu, gpuProfiler, settings.onePassProjection);
                     if (!result) { spdlog::error("VirtualShadowMapLightsPass projection: {}", log); }
                     return result;
                 }

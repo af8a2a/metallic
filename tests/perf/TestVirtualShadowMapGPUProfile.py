@@ -189,6 +189,38 @@ class GPUProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "double count"):
             profile.profile_frame(row)
 
+    def test_one_pass_projection_counts_real_scope_once(self):
+        row = frame(1, faces=9)
+        sections = row["nodes"][0]["sections"]
+        row["nodes"][0]["sections"] = [part for part in sections if part["name"] != "VSM projection"]
+        row["nodes"][0]["sections"].append({"name": "VSM one-pass projection", "parent": 0,
+            "cpuOnly": False, "gpuMs": 4.})
+        result = profile.profile_frame(row)
+        self.assertEqual(result["projectionMode"], "one-pass")
+        self.assertEqual(result["projectionCount"], 1)
+        self.assertEqual(result["faceCount"], 9)
+        self.assertEqual(result["projectionMs"], 4.)
+        self.assertEqual(result["stageSumMs"], 49.)
+        self.assertEqual(profile.profile_frame(frame(1, faces=1))["projectionMode"], "per-face")
+
+    def test_one_pass_projection_rejects_mixed_duplicate_and_single_face_scopes(self):
+        for faces, old_count, one_pass_count in ((2, 1, 1), (2, 0, 2), (1, 0, 1), (0, 0, 1)):
+            row = frame(1, faces=faces)
+            row["nodes"][0]["sections"] = [part for part in row["nodes"][0]["sections"] if part["name"] != "VSM projection"]
+            for name, count in (("VSM projection", old_count), ("VSM one-pass projection", one_pass_count)):
+                row["nodes"][0]["sections"].extend({"name": name, "parent": 0, "cpuOnly": False, "gpuMs": 1.} for _ in range(count))
+            with self.assertRaisesRegex(ValueError, "one-pass"):
+                profile.profile_frame(row)
+
+    def test_disabled_projection_requires_explicit_empty_work_contract(self):
+        row = frame(1, faces=0)
+        with self.assertRaisesRegex(ValueError, "per-face"):
+            profile.profile_frame(row)
+        result = profile.profile_frame(row, allow_disabled=True)
+        self.assertEqual(result["projectionCount"], 0)
+        self.assertEqual(result["projectionMode"], "disabled")
+        self.assertEqual(result["projectionMs"], 0.)
+
     def test_stage_sum_cannot_exceed_parent(self):
         row = frame(1)
         row["nodes"][0]["gpuMs"] = 5.

@@ -2774,9 +2774,12 @@ public:
                     {"Directional",{{"directionalMark",false},{"benchmarkDirectionalMark",true},{"benchmarkLegacyMark",false}}},
                     {"Default",{{"benchmarkLegacyMark",false}}},
                     {"GenericLegacyMark",{{"directionalMark",true},{"benchmarkDirectionalMark",false},{"benchmarkLegacyMark",true}}},
-                    {"DirectionalLegacyMark",{{"directionalMark",false},{"benchmarkDirectionalMark",true},{"benchmarkLegacyMark",true}}}};
+                    {"DirectionalLegacyMark",{{"directionalMark",false},{"benchmarkDirectionalMark",true},{"benchmarkLegacyMark",true}}},
+                    {"ProductionOff",{{"directionalMark",false},{"benchmarkLegacyMark",false}}},
+                    {"ProductionOn",{{"directionalMark",true},{"benchmarkLegacyMark",false}}}};
                 report["productionDefault"] = VirtualShadowMapSettings{}.directionalMark;
-                require(!VirtualShadowMapSettings{}.directionalMark, "Directional Mark specialization must remain opt-in until performance acceptance");
+                report["defaultReferenceArm"] = "Directional";
+                require(VirtualShadowMapSettings{}.directionalMark, "Production VSM settings must default to directional Mark specialization");
             }
             uint64_t triangleBitsetStates = 0, triangleBitsetControlStates = 0, triangleBitsetReducedStates = 0;
             std::array<uint64_t, 2> triangleBitsetWordsByPass{};
@@ -2844,7 +2847,7 @@ public:
                         if (compactBuildControls) { arms.insert(arms.end(), {"DirectPages", "CompactPages", "DirectNoCull", "CompactNoCull", "DirectGeneric", "CompactGeneric"}); }
                         if (directionalBuildControls) { arms.insert(arms.end(), {"GenericPages", "DirectionalPages", "GenericNoCull", "DirectionalNoCull"}); }
                         if (markSamplesControls) { arms.push_back("PreparedLegacyMark"); }
-                        if (directionalMarkControls) { arms.insert(arms.end(), {"Default", "GenericLegacyMark", "DirectionalLegacyMark"}); }
+                        if (directionalMarkControls) { arms.insert(arms.end(), {"Default", "GenericLegacyMark", "DirectionalLegacyMark", "ProductionOff", "ProductionOn"}); }
                         if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
                         if (triangleBitsetControls) { arms.insert(arms.end(), {"ProductionOff", "ClusterBitsetOff", "CullDisabled"}); }
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
@@ -2896,12 +2899,14 @@ public:
                             if (directionalMarkComparison) {
                                 // Conflicting production values exercise benchmark precedence;
                                 // the Default control omits both properties.
-                                if (arm != 2) {
+                                if (arm >= 5) {
+                                    settings["directionalMark"] = arm == 6;
+                                } else if (arm != 2) {
                                     const bool specialized = arm == 1 || arm == 4;
                                     settings["directionalMark"] = !specialized;
                                     settings["benchmarkDirectionalMark"] = specialized;
                                 }
-                                settings["benchmarkLegacyMark"] = arm >= 3;
+                                settings["benchmarkLegacyMark"] = arm == 3 || arm == 4;
                                 settings["benchmarkClusterPageBitset"] = true;
                                 settings["benchmarkTrianglePageBitset"] = true;
                             }
@@ -3013,8 +3018,9 @@ public:
                                     label + "-" + phase + "-" + arms[arm],
                                     compactBuildComparison ? arm < 2 || arm >= 6 : directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || directionalMarkComparison || (bitsetComparison && arm == 1));
                                 if (arm != 0) {
-                                    require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
-                                        snapshot.depth == snapshots[0].depth && snapshot.statistics == snapshots[0].statistics,
+                                    const auto& baseline = snapshots[directionalMarkComparison && arm == 2 ? 1 : 0];
+                                    require(snapshot.shadow == baseline.shadow && snapshot.debug == baseline.debug &&
+                                        snapshot.depth == baseline.depth && snapshot.statistics == baseline.statistics,
                                         label + "-" + phase + ": " + arms[arm] + " changed images/depth or the 32-word statistics ABI");
                                 }
                             }
@@ -3152,14 +3158,15 @@ public:
                                     markSamplesControlStates += markSamplesControls;
                                 }
                                 for (uint32_t arm = 1; arm < arms.size(); ++arm) {
-                                    require(snapshots[arm].buildDiagnostics == snapshots[0].buildDiagnostics,
+                                    const auto& baseline = snapshots[directionalMarkComparison && arm == 2 ? 1 : 0];
+                                    require(snapshots[arm].buildDiagnostics == baseline.buildDiagnostics,
                                         label + "-" + phase + ": Mark optimization changed build diagnostics");
                                     for (uint32_t face = 0; face < faces; ++face) {
                                         for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
                                             // Only the shared page cache's atomic issue count depends on scheduling.
                                             // Sample generation and per-level tests retain their original semantics.
                                             if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                            require(snapshots[0].workload[face][counter] == snapshots[arm].workload[face][counter],
+                                            require(baseline.workload[face][counter] == snapshots[arm].workload[face][counter],
                                                 label + "-" + phase + ": Mark optimization changed deterministic GPU work");
                                         }
                                     }

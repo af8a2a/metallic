@@ -48,6 +48,16 @@ struct ShadowPush
 };
 static_assert(sizeof(ShadowPush) == 208);
 
+struct ShadowProjectionJob
+{
+    uint32_t pages, statistics, projections, atlas;
+    uint32_t filterMode, shadow, debug, physicalPagesX;
+    uint32_t clipmapCount, enabled, lightType, projectionFace;
+    uint32_t pointFaces, filterReserved, samplePhase, view;
+    float lightRange, sourceRadius, angularRadius, padding;
+};
+static_assert(sizeof(ShadowProjectionJob) == 80);
+
 struct ShadowFace
 {
     uint32_t atlas, pages, projections, statistics;
@@ -263,6 +273,8 @@ struct VirtualShadowMaps::Programs
     bool compactBuild = false;
     std::array<std::unique_ptr<ShaderModule>, 15> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 11> compute;
+    std::unique_ptr<ShaderModule> onePassShader;
+    std::unique_ptr<ComputePipeline> onePassCompute;
     std::unique_ptr<GraphicsPipeline> raster;
     std::unique_ptr<GraphicsPipeline> clear;
 };
@@ -299,7 +311,7 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 11> buffers;
+    std::array<std::vector<BufferEntry>, 12> buffers;
     std::array<std::vector<TextureEntry>, 3> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     VirtualShadowMapResourcePoolStats stats;
@@ -392,6 +404,7 @@ struct VirtualShadowMaps::State
         // materials, page table, coverage, work, statistics, projections, view, indirect, reuse, owners.
         std::array<std::shared_ptr<Buffer>, 10> buffers;
         std::shared_ptr<Buffer> pointFaces;
+        std::shared_ptr<Buffer> projectionJobs;
         std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
         std::array<std::shared_ptr<TextureView>, 3> views;
     };
@@ -1241,7 +1254,7 @@ Result<> VirtualShadowMaps::projectPrepared(CommandBuffer& commands, CPUProfileR
 
 Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
     std::span<const VirtualShadowMapProjectionGroup> groups, std::string& log,
-    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
+    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler, bool onePassProjection)
 {
     CPUProfileScope total(profiler, "VSM shared projection");
     uint32_t faceCount = 0;
@@ -1260,9 +1273,18 @@ Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
     total.work("lights", groups.size());
     if (faceCount <= 1) {
         total.work("pointTables", 0);
+        total.work("onePass", 0);
+        total.work("dispatches", faceCount);
         return faceCount == 0 ? Result<>{} : groups.front().faces[0]->project(commands, {}, log, profiler, gpuProfiler);
     }
 
+    // Grouped projection statistics retain the original per-face kernel: the
+    // combined one-pass permutation does not preserve receiver ownership.
+    const auto& programs = *groups.front().faces[0]->state_->programs;
+    const bool onePass = onePassProjection && !programs.optimizeProjectionStatistics &&
+        programs.device->capabilities().computeSubgroupBallotArithmetic;
+    total.work("onePass", onePass);
+    total.work("dispatches", onePass ? 1u : faceCount);
     uint32_t pointTables = 0;
     for (const auto& group : groups) {
         if (group.filteredPoint) {
@@ -1279,14 +1301,148 @@ Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
                 group.faces[face]->state_->push.pointFaces = owner.state_->push.pointFaces;
             }
         }
-        // The first face owns and binds the table and all cross-face leases.
-        // Its recorded commands retain them through completion for later faces;
-        // every face still uses the original push-constant projection kernel.
-        for (uint32_t face = 0; face < group.faceCount; ++face) {
-            if (auto r = group.faces[face]->projectPrepared(commands, profiler, gpuProfiler); !r) { return r; }
+        // The first face owns the table and cross-face leases. The GPU batch
+        // retains/binds all states together; fallback keeps the original kernel.
+        if (!onePass) {
+            for (uint32_t face = 0; face < group.faceCount; ++face) {
+                if (auto r = group.faces[face]->projectPrepared(commands, profiler, gpuProfiler); !r) { return r; }
+            }
         }
     }
     total.work("pointTables", pointTables);
+    if (onePass) { return projectOnePassPrepared(commands, groups, faceCount, log, profiler, gpuProfiler); }
+    return {};
+}
+
+Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
+    std::span<const VirtualShadowMapProjectionGroup> groups, uint32_t faceCount, std::string& log,
+    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
+{
+    auto& first = *groups.front().faces[0]->state_;
+    auto& programs = *first.programs;
+    auto& device = *programs.device;
+    CPUProfileScope phase(profiler, "Prepare VSM one-pass pipeline");
+    if (!programs.onePassCompute) {
+        const std::array macros{SlangMacroDefine{"VSM_ONE_PASS_PROJECTION", "1"},
+            SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", programs.collectGPUWork ? "1" : "0"},
+            SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", programs.optimizeProjectionStatistics ? "1" : "0"}};
+        const std::array capabilities{"spvMeshShadingEXT"};
+        auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
+            .entryPointName = "vsmProjectOnePassMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+            .capabilities = capabilities, .macroDefines = macros}, log);
+        if (!shader) { return std::unexpected(shader.error()); }
+        auto module = ShaderRegistry::instance().getShaderModule(device,
+            {.spirv = shader->spirv, .debugName = "vsmProjectOnePassMain"});
+        if (!module) { return std::unexpected(module.error()); }
+        auto pipeline = ShaderRegistry::instance().getComputePipeline(device,
+            {.computeShader = {module->get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
+        if (!pipeline) { return std::unexpected(pipeline.error()); }
+        programs.onePassShader = std::move(*module);
+        programs.onePassCompute = std::move(*pipeline);
+        const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
+        spdlog::info("[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={} work={} projectionStatistics={}",
+            debug::debugSha256(bytes), programs.collectGPUWork, programs.optimizeProjectionStatistics);
+    }
+
+    phase.next("Upload VSM projection jobs");
+    std::vector<ShadowProjectionJob> jobs;
+    jobs.reserve(faceCount);
+    ShadowPush push = first.push;
+    const auto& outputDesc = first.outputTextures[0]->desc();
+    // LightsPass records every job with the same view/depth and filter settings.
+    // Effective filtering, ownership, phase and light-specific inputs remain in
+    // each job; all other projection inputs keep their push-constant storage.
+    for (const auto& group : groups) {
+        for (uint32_t face = 0; face < group.faceCount; ++face) {
+            const auto& state = *group.faces[face]->state_;
+            const auto& p = state.push;
+            assert(state.registry == first.registry && state.programs->device == &device);
+            assert(state.programs->collectGPUWork == programs.collectGPUWork &&
+                state.programs->optimizeProjectionStatistics == programs.optimizeProjectionStatistics);
+            assert(p.depth == push.depth && p.pageSize == push.pageSize && p.pcfRadius == push.pcfRadius &&
+                p.rayLength == push.rayLength && p.rayLengthScale == push.rayLengthScale && p.maxRayAngle == push.maxRayAngle &&
+                p.rayCount == push.rayCount && p.samplesPerRay == push.samplesPerRay && p.receiverFootprint == push.receiverFootprint);
+            assert(state.outputTextures[0]->desc().width == outputDesc.width &&
+                state.outputTextures[0]->desc().height == outputDesc.height);
+            jobs.push_back({p.pages, p.statistics, p.projections, p.atlas,
+                p.filterMode, p.shadow, p.debug, p.physicalPagesX,
+                p.clipmapCount, p.enabled, p.lightType, p.projectionFace,
+                p.pointFaces, p.filterReserved, p.samplePhase, p.view,
+                p.lightRange, p.sourceRadius, p.angularRadius, 0.f});
+        }
+    }
+    auto* frame = RenderFrameContext::from(commands);
+    auto table = first.pool->buffer(11, {.size = jobs.size() * sizeof(ShadowProjectionJob),
+        .structureStride = sizeof(ShadowProjectionJob), .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload},
+        frame && frame->recording() ? frame->completion() : GPUCompletionPoint{});
+    if (!table) { return std::unexpected(table.error()); }
+    first.resources->projectionJobs = std::move(*table);
+    void* mapped = first.resources->projectionJobs->map();
+    if (!mapped) { return makeError(Error::Failure); }
+    std::memcpy(mapped, jobs.data(), jobs.size() * sizeof(ShadowProjectionJob));
+    first.resources->projectionJobs->flush();
+    first.resources->projectionJobs->unmap();
+    auto lease = first.registry->storageBuffer(*first.resources->projectionJobs);
+    if (!lease) { return std::unexpected(lease.error()); }
+    first.leases.push_back(*lease);
+    // These fields are unused by the original projection helpers.
+    push.geometry = lease->shaderIndex();
+    push.triangleCount = faceCount;
+    commands.hostWriteBarrier();
+    phase.work("jobs", faceCount);
+    phase.work("jobBytes", jobs.size() * sizeof(ShadowProjectionJob));
+
+    phase.next("Bind VSM one-pass resources");
+    std::vector<ResourceLease> leases;
+    std::vector<TextureBarrierDesc> outputBegin, outputEnd;
+    std::vector<BufferBarrierDesc> statisticsBegin, statisticsEnd;
+    std::unordered_set<Texture*> outputs;
+    std::unordered_set<Buffer*> statistics;
+    for (const auto& group : groups) {
+        for (uint32_t face = 0; face < group.faceCount; ++face) {
+            const auto& stateOwner = group.faces[face]->state_;
+            const auto& state = *stateOwner;
+            if (auto r = commands.retainResource(stateOwner); !r) { return r; }
+            leases.insert(leases.end(), state.leases.begin(), state.leases.end());
+            for (auto* texture : state.outputTextures) {
+                if (!texture || !outputs.insert(texture).second) { continue; }
+                // Graph-owned output arrays are already wholly General. One
+                // dependency covers all face views, including compact aliases.
+                const TextureSubresourceRange range{0u, texture->desc().mipCount, 0u, texture->desc().layerCount};
+                outputBegin.push_back({.texture = texture,
+                    .oldLayout = state.externalOutput ? TextureLayout::General : TextureLayout::Undefined,
+                    .newLayout = TextureLayout::General,
+                    .before = state.externalOutput ? SyncScope{PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite} : SyncScope{},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = range});
+                if (!state.externalOutput) {
+                    outputEnd.push_back({.texture = texture, .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
+                        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}, .range = range});
+                }
+            }
+            auto* buffer = state.resources->buffers[4].get();
+            if (statistics.insert(buffer).second) {
+                statisticsBegin.push_back({.buffer = buffer,
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
+                statisticsEnd.push_back({.buffer = buffer,
+                    .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}});
+            }
+        }
+    }
+    if (auto r = first.registry->bind(commands, leases); !r) { return r; }
+    phase.next("Dispatch VSM one-pass projection");
+    auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM one-pass projection") : RenderGraphExecutionContext::ProfileScope{};
+    if (auto r = commands.synchronize({.textures = outputBegin, .buffers = statisticsBegin}); !r) { return r; }
+    commands.beginDebugLabel({.name = "VSM: one-pass receiver projection"});
+    if (auto r = commands.bindExecution(programs.onePassCompute->execution(), &push, sizeof(push)); !r) { return r; }
+    if (auto r = commands.dispatch((outputDesc.width + 7u) / 8u, (outputDesc.height + 7u) / 8u); !r) { return r; }
+    commands.endDebugLabel();
+    if (auto r = commands.synchronize({.textures = outputEnd, .buffers = statisticsEnd}); !r) { return r; }
+    for (const auto& group : groups) {
+        for (uint32_t face = 0; face < group.faceCount; ++face) { group.faces[face]->state_->projectionPending = false; }
+    }
     return {};
 }
 
@@ -1323,6 +1479,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
         }
         for (const auto& buffer : state_->resources->buffers) { addBuffer(buffer.get()); }
         addBuffer(state_->resources->pointFaces.get());
+        addBuffer(state_->resources->projectionJobs.get());
         addCache(state_->previous);
         addCache(state_->next);
     }
