@@ -253,6 +253,7 @@ struct VirtualShadowMaps::Programs
     uint64_t coverageKey = 0;
     bool collectGPUWork = false;
     bool optimizeMark = true;
+    bool optimizeProjectionStatistics = false;
     bool optimizeMarkSamples = false;
     bool clusterCulling = true;
     bool clusterPageBitset = false;
@@ -820,6 +821,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.next("Prepare VSM pipeline cache");
     const bool programMiss = !programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey() ||
         programs_->collectGPUWork != settings.collectGPUWork ||
+        programs_->optimizeProjectionStatistics != settings.optimizeProjectionStatistics ||
         programs_->optimizeMark != settings.optimizeMark || programs_->optimizeMarkSamples != optimizeMarkSamples ||
         programs_->clusterCulling != settings.clusterCulling ||
         programs_->clusterPageBitset != clusterPageBitset || programs_->trianglePageBitset != trianglePageBitset;
@@ -833,6 +835,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->device = &device;
         programs->coverageKey = coverage->coverageKey();
         programs->collectGPUWork = settings.collectGPUWork;
+        programs->optimizeProjectionStatistics = settings.optimizeProjectionStatistics;
         programs->optimizeMark = settings.optimizeMark;
         programs->optimizeMarkSamples = optimizeMarkSamples;
         programs->clusterCulling = settings.clusterCulling;
@@ -846,6 +849,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const std::array capabilities{"spvMeshShadingEXT"};
         const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE", coverage->coverageProgramCount() ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", settings.collectGPUWork ? "1" : "0"},
+            SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", settings.optimizeProjectionStatistics ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_MARK", settings.optimizeMark ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_MARK_SAMPLES", optimizeMarkSamples ? "1" : "0"},
             SlangMacroDefine{"VSM_CLUSTER_CULL", settings.clusterCulling ? "1" : "0"},
@@ -861,9 +865,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             programs->shaders[index] = std::move(*module);
             if (index == 1 || index == 3 || index == 5) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={}", entries[index],
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
-                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset);
+                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics);
             }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},

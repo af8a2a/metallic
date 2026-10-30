@@ -1079,9 +1079,10 @@ public:
             registerQualityEvidence();
             const auto floor = writeFixture(directory / "Floor", false);
             const auto room = writeFixture(directory / "Room", true);
-            constexpr std::array names{"Legacy", "Shared", "NoDebug"};
+            constexpr std::array names{"Legacy", "Shared", "NoDebug", "Statistics"};
+            report["projectionStatisticsArms"] = {{"Legacy",false},{"Shared",false},{"NoDebug",false},{"Statistics",true}};
             constexpr std::array phases{"Cold", "Warm", "Redraw", "JitterMotion", "TemporalContinue", "Reorder", "FiniteBudget",
-                "Disabled", "Overflow", "Recovered", "TwoPoints"};
+                "Disabled", "Overflow", "Recovered", "TwoPoints", "NearPlane"};
             for (const std::string filter : {"hard", "pcf", "smrt"}) {
                 for (bool compact : {false, true}) {
                     for (bool isRoom : {false, true}) {
@@ -1131,6 +1132,7 @@ public:
                                 // Temporal phases can legitimately request previously unseen pages.
                                 {"smrtTemporalEnabled",false},{"smrtTemporalMaxFrames",32},{"compactOutputs",compact},
                                 {"debugOutput",debug},{"benchmarkLegacyProjection",arm==0},
+                                {"benchmarkProjectionStatistics",arm==3},
                                 {"benchmarkCPUProfile",arm==1},{"benchmarkGPUProfile",false}};
                             auto pass = createRenderGraphPass("VirtualShadowMapLightsPass");
                             require(pass != nullptr, "Create projection reflection probe");
@@ -1197,8 +1199,15 @@ public:
                                     "Point conversion changed source identities or order");
                                 require(preview.setLighting(scene.lighting()), "Publish two point sources");
                             }
+                            if (frame == 11) {
+                                all("nearPlane", 1.0);
+                                for (auto& light : lighting.lights) { light.position.y = .25f; }
+                                require(scene.setLighting(lighting), "Move local lights near the receiver plane");
+                                require(preview.setLighting(scene.lighting()), "Publish near-plane projection sources");
+                            }
                             require(preview.render(graph, kWidth, kHeight, "LegacyEvidence.color"), "Projection equivalence render: " + preview.lastLog());
-                            const std::array images{snapshot("Legacy", true, true), snapshot("Shared", true, true), snapshot("NoDebug", false, true)};
+                            const std::array images{snapshot("Legacy", true, true), snapshot("Shared", true, true),
+                                snapshot("NoDebug", false, true), snapshot("Statistics", true, true)};
                             const auto& baseline = images[0];
                             report["frames"].push_back({{"name",phase},{"statistics",baseline.statistics},{"memory",Json::object()},
                                 {"admittedLights",baseline.header.admittedCount},{"budgetDroppedLights",baseline.header.budgetDroppedCount},
@@ -1224,7 +1233,7 @@ public:
                                 }
                                 save();
                                 require(image.depth == baseline.depth && image.shadows == baseline.shadows && image.statistics == baseline.statistics,
-                                    phase + ": projection scheduling/debug toggle changed shadow, depth or 32-word face statistics");
+                                    phase + ": projection scheduling/statistics/debug toggle changed shadow, depth or 32-word face statistics");
                                 require(std::memcmp(&image.header, &baseline.header, sizeof(image.header)) == 0 &&
                                     std::memcmp(image.entries.data(), baseline.entries.data(), sizeof(image.entries)) == 0,
                                     phase + ": projection scheduling changed the light publication table");
@@ -1257,7 +1266,7 @@ public:
                                 // The executor rejects a complete CPU metadata tree when it
                                 // exceeds 256 sections. Fourteen recorded faces exceed this
                                 // diagnostic budget; their output/face gates remain exact.
-                                require(frame == 10 && execution.profilingOverflow,
+                                require(frame >= 10 && execution.profilingOverflow,
                                     phase + ": shared projection CPU scope is unexpectedly missing");
                                 frameReport["sharedProjectionCPU"] = {{"available",false},{"pointTables",nullptr},
                                     {"expectedPointTables",expectedPointTables},{"sectionLimit",256},
@@ -1277,7 +1286,7 @@ public:
                                     phase + ": shared projection must prepare one point table per admitted filtered point light");
                             }
                             save();
-                            require(baseline.header.count == 4 && baseline.header.totalFaces == (frame == 10 ? 14u : 9u),
+                            require(baseline.header.count == 4 && baseline.header.totalFaces == (frame >= 10 ? 14u : 9u),
                                 phase + ": mixed-light fixture lost a source/face");
                             if (frame == 10) {
                                 require(baseline.header.admittedCount == 4 &&
@@ -1295,8 +1304,12 @@ public:
                             if (frame >= 3) {
                                 require(baseline.camera.jitter[0] != 0 || baseline.camera.jitter[1] != 0, phase + ": temporal jitter was not exercised");
                             }
-                            uint64_t overflow = 0, rasterWork = 0;
-                            for (const auto& statistics : baseline.statistics) { overflow += statistics[5]; rasterWork += statistics[16] + statistics[21]; }
+                            uint64_t overflow = 0, rasterWork = 0, nearPlanePixels = 0;
+                            for (const auto& statistics : baseline.statistics) {
+                                overflow += statistics[5]; rasterWork += statistics[16] + statistics[21]; nearPlanePixels += statistics[29];
+                            }
+                            frameReport["nearPlanePixels"] = nearPlanePixels;
+                            if (frame == 11) { require(nearPlanePixels > 0, phase + ": projection near-plane counter was not exercised"); }
                             if (frame == 1) { require(rasterWork == 0, phase + ": fixed-phase warm cache unexpectedly redrew depth"); }
                             if (frame == 2) { require(rasterWork > 0, phase + ": force redraw did no work"); }
                             if (frame == 6) { require(baseline.header.budgetDroppedCount > 0, phase + ": finite budget omitted whole-light rejection"); }
@@ -1323,8 +1336,9 @@ public:
                     }
                 }
             }
+            require(report["frames"].size() == 84, "Projection statistics matrix did not complete all 84 states");
             evidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
-            return RHITestResult::pass("Legacy/shared/no-debug same-frame shadows, statistics and Deferred HDR agree for mixed lights, temporal motion, point seams and resource limits");
+            return RHITestResult::pass("Legacy/shared/no-debug/grouped-statistics same-frame shadows, statistics and Deferred HDR agree for mixed lights, temporal motion, point seams and resource limits");
         } catch (const std::exception& error) {
             evidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());

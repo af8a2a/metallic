@@ -239,6 +239,7 @@ public:
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.collectGPUWork = collectGPUWork_;
         settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
+        settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
         settings.optimizeMarkSamples = boolProperty(&properties, "benchmarkMarkSamples", settings.optimizeMarkSamples);
         settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
         // An explicit benchmark override wins over the production property for A/B graphs.

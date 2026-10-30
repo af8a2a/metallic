@@ -12,6 +12,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
 #endif
+#ifndef VSM_OPTIMIZE_PROJECTION_STATISTICS
+#define VSM_OPTIMIZE_PROJECTION_STATISTICS 0
+#endif
 #ifndef VSM_OPTIMIZE_MARK_SAMPLES
 #define VSM_OPTIMIZE_MARK_SAMPLES 0
 #endif
@@ -1608,11 +1611,18 @@ void vsmDepthFragmentMain(ShadowRasterVertex input, bool frontFace : SV_IsFrontF
     if (!program.evaluateCoverage(context, instance).accepted) { discard; }
 }
 
-bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out float4 debugValue, out uint3 filterCounts)
+bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out float4 debugValue, out uint3 filterCounts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    , out uint projectionCounts
+#endif
+)
 {
     visibility = 1.0;
     debugValue = float4(0.0, 0.0, 0.0, 1.0);
     filterCounts = uint3(0u);
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    projectionCounts = 0u;
+#endif
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
     ViewConstants view = views[0];
     if (any(id.xy >= uint2(view.current.viewport.yz))) { return false; }
@@ -1622,16 +1632,30 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     float linearDepth;
     bool sharedPointLayer = push.filterReserved != 0u && push.lightType == 2u;
     if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) {
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        if (push.filterMode != 0u) { projectionCounts |= 1u << 0u; }
+        else
+#endif
         InterlockedAdd(statistics[8], 1u);
         return !sharedPointLayer || push.projectionFace == 0u;
     }
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    if (push.filterMode != 0u) { projectionCounts |= 1u << 1u; }
+    else
+#endif
     InterlockedAdd(statistics[6], 1u);
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     if (sharedPointLayer && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return false; }
     if (push.enabled == 0u) { return true; }
     bool nearPlane;
     if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) {
-        if (nearPlane) { InterlockedAdd(statistics[29], 1u); }
+        if (nearPlane) {
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+            if (push.filterMode != 0u) { projectionCounts |= 1u << 2u; }
+            else
+#endif
+            InterlockedAdd(statistics[29], 1u);
+        }
         return true;
     }
     vsmWorkAdd(push, kVSMWorkProjectionReceivers, 1u);
@@ -1669,15 +1693,29 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         if (!vsmContains(projected, coarse, push.pageSize, false)) {
             visibility = 0.0;
             debugValue = float4(1.0, 0.0, 1.0, 1.0);
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+            if (push.filterMode != 0u) { projectionCounts |= 1u << 3u; }
+            else
+#endif
             InterlockedAdd(statistics[9], 1u);
             return true;
         }
         physicalPage = 0u;
         virtualTexel = vsmVirtualTexel(projected, coarse, push.pageSize);
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        if (push.filterMode != 0u) { projectionCounts |= 1u << 4u; }
+        else
+#endif
         InterlockedAdd(statistics[7], 1u);
         debugValue = float4(0.0, 0.0, 1.0, 1.0);
     } else {
-        if (selectedLevel > firstLevel) { InterlockedAdd(statistics[13], 1u); }
+        if (selectedLevel > firstLevel) {
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+            if (push.filterMode != 0u) { projectionCounts |= 1u << 5u; }
+            else
+#endif
+            InterlockedAdd(statistics[13], 1u);
+        }
         debugValue = float4(float(selectedLevel + 1u) / float(push.clipmapCount), 0.5, 0.0, 1.0);
     }
     ShadowProjection projection = projections[selectedLevel];
@@ -1716,11 +1754,19 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
 
 // Ownership and filtering finish before either output is stored. Receiver
 // reconstruction remains local to the original projection/barrier sequence.
-void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts)
+void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    , out uint projectionCounts
+#endif
+)
 {
     float visibility;
     float4 debugValue;
-    if (!vsmProjectReceiver(id, push, visibility, debugValue, filterCounts)) { return; }
+    if (!vsmProjectReceiver(id, push, visibility, debugValue, filterCounts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        , projectionCounts
+#endif
+    )) { return; }
     RWTexture2D<float> shadow = resolveUniform(ResourceHandle<RWTexture2D<float>>(push.shadow));
     shadow[id.xy] = visibility;
     if (push.debug != 0xffffffffu) {
@@ -1729,33 +1775,65 @@ void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts)
     }
 }
 
-groupshared uint gVsmFilterCounts[3];
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+// Slots 0/1/2 retain filter 30/31/9; the other five combine one-bit receiver events.
+static const uint kVsmProjectionCounterCount = 8u;
+#else
+static const uint kVsmProjectionCounterCount = 3u;
+#endif
+groupshared uint gVsmFilterCounts[kVsmProjectionCounterCount];
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
     uint3 counts;
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    uint projectionCounts;
+#endif
     if (push.filterMode == 0u) {
-        vsmProjectAndStore(id, push, counts);
+        vsmProjectAndStore(id, push, counts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+            , projectionCounts
+#endif
+        );
         return;
     }
-    if (lane < 3u) { gVsmFilterCounts[lane] = 0u; }
+    if (lane < kVsmProjectionCounterCount) { gVsmFilterCounts[lane] = 0u; }
     GroupMemoryBarrierWithGroupSync();
     // Early returns, including viewport tails and point-face rejection, stay
     // inside the receiver helper so every lane reaches the group barriers.
-    vsmProjectAndStore(id, push, counts);
+    vsmProjectAndStore(id, push, counts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        , projectionCounts
+#endif
+    );
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    // All events were recorded at the original sites, including counts before
+    // compact point-face ownership and disabled-light rejection.
+    counts.z += (projectionCounts >> 3u) & 1u;
+    if ((projectionCounts & (1u << 0u)) != 0u) { InterlockedAdd(gVsmFilterCounts[3], 1u); }
+    if ((projectionCounts & (1u << 1u)) != 0u) { InterlockedAdd(gVsmFilterCounts[4], 1u); }
+    if ((projectionCounts & (1u << 2u)) != 0u) { InterlockedAdd(gVsmFilterCounts[5], 1u); }
+    if ((projectionCounts & (1u << 4u)) != 0u) { InterlockedAdd(gVsmFilterCounts[6], 1u); }
+    if ((projectionCounts & (1u << 5u)) != 0u) { InterlockedAdd(gVsmFilterCounts[7], 1u); }
+#endif
     if (counts.x != 0u) { InterlockedAdd(gVsmFilterCounts[0], counts.x); }
     if (counts.y != 0u) { InterlockedAdd(gVsmFilterCounts[1], counts.y); }
     if (counts.z != 0u) { InterlockedAdd(gVsmFilterCounts[2], counts.z); }
     GroupMemoryBarrierWithGroupSync();
-    if (lane < 3u) {
+    if (lane < kVsmProjectionCounterCount) {
         uint count = gVsmFilterCounts[lane];
         if (count != 0u) {
             // Attribute cross-face point queries to the receiver's dispatch,
             // just like the original per-lookup counters. Preserve all slots.
             RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
             uint index = lane == 0u ? 30u : lane == 1u ? 31u : 9u;
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+            if (lane >= 3u) {
+                index = lane == 3u ? 8u : lane == 4u ? 6u : lane == 5u ? 29u : lane == 6u ? 7u : 13u;
+            }
+#endif
             InterlockedAdd(statistics[index], count);
         }
     }
