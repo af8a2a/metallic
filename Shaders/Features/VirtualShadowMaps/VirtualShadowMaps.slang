@@ -21,6 +21,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_TRIANGLE_PAGE_BITSET
 #define VSM_TRIANGLE_PAGE_BITSET 0
 #endif
+#ifndef VSM_DIRECTIONAL_BUILD
+#define VSM_DIRECTIONAL_BUILD 0
+#endif
 #ifndef VSM_CLUSTER_CULL
 #define VSM_CLUSTER_CULL 1
 #endif
@@ -145,7 +148,12 @@ float4 vsmProjectClip(float3 position, ShadowProjection projection)
 float3 vsmProjectPosition(float3 position, ShadowProjection projection)
 {
     float4 clip = vsmProjectClip(position, projection);
+#if VSM_DIRECTIONAL_BUILD
+    // Selected only for directional build; makeProjections writes metric.w=0.
+    return clip.xyz;
+#else
     return projection.metric.w > 0.5 ? clip.xyz / clip.w : clip.xyz;
+#endif
 }
 
 // The selected face owns both demand and query. Receivers outside a punctual
@@ -1196,6 +1204,7 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
             (corner & 2u) != 0u ? maximum.y : minimum.y,
             (corner & 4u) != 0u ? maximum.z : minimum.z);
         float4 clip = vsmProjectClip(position, projection);
+#if !VSM_DIRECTIONAL_BUILD
         // A box crossing the perspective near plane cannot be bounded by
         // dividing its corners. Retain this level for the exact triangle clip.
         if (projection.metric.w > 0.5 && clip.w <= projection.originNear.w) {
@@ -1205,6 +1214,9 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
             return true;
         }
         float2 projected = projection.metric.w > 0.5 ? clip.xy / clip.w : clip.xy;
+#else
+        float2 projected = clip.xy;
+#endif
         lo = min(lo, projected); hi = max(hi, projected);
     }
     int axis = int(projection.page.y);
@@ -1362,6 +1374,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #endif
         ShadowProjection projection = projections[level];
         float3 lo, hi;
+#if !VSM_DIRECTIONAL_BUILD
         if (projection.metric.w > 0.5) {
             ShadowClipVertex polygon[9];
             for (uint vertex = 0u; vertex < 3u; ++vertex) {
@@ -1377,7 +1390,9 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                 float3 projected = polygon[vertex].position.xyz / polygon[vertex].position.w;
                 lo = min(lo, projected); hi = max(hi, projected);
             }
-        } else {
+        } else
+#endif
+        {
             float3 a = vsmProjectPosition(triangle.vertices[0].position.xyz, projection);
             float3 b = vsmProjectPosition(triangle.vertices[1].position.xyz, projection);
             float3 c = vsmProjectPosition(triangle.vertices[2].position.xyz, projection);

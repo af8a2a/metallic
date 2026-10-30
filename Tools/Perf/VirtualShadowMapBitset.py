@@ -6,6 +6,8 @@ report SOURCE NEW_REPORT [--diagnostic DIAGNOSTIC_SOURCE] [--reference DISCOVERY
 
 Cases are Diagnostic-ACases.json/Diagnostic-BCases.json or Timing-A/B counterparts.
 A disables benchmarkClusterPageBitset, B enables it; both use production mark/cluster.
+--experiment directional-build instead toggles only benchmarkDirectionalBuild,
+with exact build-diagnostic equivalence and unchanged mark/projection SPIR-V.
 Timing requires verified diagnostic evidence, and confirmation requires promising discovery.
 This protocol reuses acceptance receipts and ABBA mathematics, not the WorkRaster protocol.
 """
@@ -32,6 +34,8 @@ ARMS = ("A", "B")
 BLOCK = ("A", "B", "B", "A")
 BLOCKS = {"diagnostic": 0, "discovery": 2, "confirmation": 3}
 SWITCH = "benchmarkClusterPageBitset"
+DIRECTIONAL_PROTOCOL = "virtual-shadow-map-directional-build-v1"
+DIRECTIONAL_SWITCH = "benchmarkDirectionalBuild"
 METRICS = optimization.METRICS
 POLICY = {"minimumGain": .03, "maximumGraphRegression": .02, "confidence": .95,
           "primaryMetric": "buildMs", "statisticalUnit": "independent four-process ABBA block",
@@ -45,7 +49,7 @@ def schedule(phase):
              "arm": arm, "package": f"process-{index + 1:02d}-{arm}"} for index, arm in enumerate(order)]
 
 
-def normalized_workload(spec, graph, arm):
+def normalized_workload(spec, graph, arm, directional=False):
     mode = spec["mode"]
     if mode not in ("diagnostic", "timing") or len(spec["cases"]) != 1:
         raise ValueError("Expected one diagnostic or timing case")
@@ -64,10 +68,11 @@ def normalized_workload(spec, graph, arm):
           any(spec.get(key, False) or case.get(key, False) for key in ("validation", "synchronizationValidation"))):
         raise ValueError("Ordinary timing requires validation and capture/readback off")
     graph = copy.deepcopy(graph)
+    switch = DIRECTIONAL_SWITCH if directional else SWITCH
     nodes = [node for node in graph["nodes"] if node.get("name") == "Shadows"]
-    if len(nodes) != 1 or nodes[0].get("properties", {}).get(SWITCH) is not (arm == "B"):
-        raise ValueError(f"{arm}: {SWITCH} must explicitly be the boolean {arm == 'B'}")
-    nodes[0]["properties"].pop(SWITCH, None)
+    if len(nodes) != 1 or nodes[0].get("properties", {}).get(switch) is not (arm == "B"):
+        raise ValueError(f"{arm}: {switch} must explicitly be the boolean {arm == 'B'}")
+    nodes[0]["properties"].pop(switch, None)
     for node in graph["nodes"]:
         if mode == "timing" and node.get("properties", {}).get("benchmarkCaptureSemanticSource", False):
             raise ValueError("Ordinary timing cannot capture semantic texture identity")
@@ -90,6 +95,7 @@ def declared_output_workload(workload):
 
 def prepare_plan(args):
     mode = "diagnostic" if args.phase == "diagnostic" else "timing"
+    directional = getattr(args, "experiment", "cluster-bitset") == "directional-build"
     inputs, previous = {}, None
     for arm in ARMS:
         cases = args.cases_dir.resolve() / f"{mode.title()}-{arm}Cases.json"
@@ -97,13 +103,13 @@ def prepare_plan(args):
         if spec["mode"] != mode:
             raise ValueError("Case mode differs from the phase")
         graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
-        workload = normalized_workload(spec, acceptance.read(graph), arm)
+        workload = normalized_workload(spec, acceptance.read(graph), arm, directional)
         if previous is not None and workload != previous:
-            raise ValueError("Cases/graphs differ beyond the bitset switch")
+            raise ValueError("Cases/graphs differ beyond the declared experiment switch")
         previous = workload
         inputs[arm] = {"cases": str(cases), "casesSHA256": acceptance.digest(cases),
                        "graph": str(graph), "graphSHA256": acceptance.digest(graph)}
-    return {"protocol": PROTOCOL, "phase": args.phase, "mode": mode, "created": optimization.utc(),
+    return {"protocol": DIRECTIONAL_PROTOCOL if directional else PROTOCOL, "phase": args.phase, "mode": mode, "created": optimization.utc(),
             "policy": POLICY, "blocks": BLOCKS[args.phase], "timeoutSeconds": 600, "runsPerPackage": 1,
             "exe": str(args.exe.resolve()), "inputs": inputs, "comparisonStartFrame": 16,
             "processes": schedule(args.phase), "toolHashes": tool_hashes(),
@@ -111,35 +117,53 @@ def prepare_plan(args):
             "gpuExclusivity": "Not enforced; no applications are stopped", "workload": declared_output_workload(previous)}
 
 
-def shader_identity(log, arm, mode):
+def shader_identity(log, arm, mode, directional=False):
     result = optimization.shader_identity(log, "Both", mode)
+    projection = set()
     for line in log.splitlines():
         if "[VSMShader]" in line:
             fields = dict(re.findall(r"(\w+)=(\S+)", line.split("[VSMShader]", 1)[1]))
-            if fields.get("entry") in result and fields.get("clusterPageBitset") != str(arm == "B").lower():
+            entry = fields.get("entry")
+            if directional and entry in (*result, "vsmProjectMain"):
+                expected = arm == "B" and entry == "vsmBuildMain"
+                if fields.get("lightType") != "0" or fields.get("directionalBuild") != str(expected).lower():
+                    raise ValueError("Compiled directionalBuild flag or directional light type mismatch")
+                if entry == "vsmProjectMain":
+                    value = fields.get("spirvSHA256", "")
+                    if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+                        raise ValueError("Missing or invalid projection SPIR-V SHA256")
+                    projection.add(value.lower())
+            elif not directional and entry in result and fields.get("clusterPageBitset") != str(arm == "B").lower():
                 raise ValueError("Compiled shader clusterPageBitset flag mismatch or missing")
+    if directional:
+        if len(projection) != 1:
+            raise ValueError("Missing or unstable projection SPIR-V identity")
+        result["vsmProjectMain"] = next(iter(projection))
     return result
 
 
-def check_shaders(processes):
+def check_shaders(processes, directional=False):
     hashes = {}
     for row in processes:
         if row["arm"] in hashes and hashes[row["arm"]] != row["shaders"]:
             raise ValueError("Actual shader identity changed within an arm")
         hashes[row["arm"]] = row["shaders"]
     if hashes["A"]["vsmMarkMain"] != hashes["B"]["vsmMarkMain"]:
-        raise ValueError("Unrelated mark shader changed between bitset arms")
+        raise ValueError("Unrelated mark shader changed between experiment arms")
+    if directional and hashes["A"]["vsmProjectMain"] != hashes["B"]["vsmProjectMain"]:
+        raise ValueError("Unrelated projection shader changed between experiment arms")
     if hashes["A"]["vsmBuildMain"] == hashes["B"]["vsmBuildMain"]:
-        raise ValueError("Bitset did not change actual build SPIR-V")
+        raise ValueError("Candidate did not change actual build SPIR-V")
 
 
 def verify_experiment(source):
     source = Path(source).resolve()
     plan, receipts = acceptance.read(source / "Plan.json"), acceptance.read(source / "Processes.json")
     phase = plan["phase"]
+    directional = plan.get("protocol") == DIRECTIONAL_PROTOCOL
     expected = schedule(phase)
     mode = "diagnostic" if phase == "diagnostic" else "timing"
-    if (plan.get("protocol") != PROTOCOL or plan.get("policy") != POLICY or plan.get("mode") != mode or
+    if (plan.get("protocol") not in (PROTOCOL, DIRECTIONAL_PROTOCOL) or plan.get("policy") != POLICY or plan.get("mode") != mode or
             plan.get("processes") != expected or plan.get("blocks") != BLOCKS[phase] or
             plan.get("timeoutSeconds") != 600 or plan.get("runsPerPackage") != 1 or
             plan.get("comparisonStartFrame") != 16 or len(receipts) != len(expected)):
@@ -178,7 +202,7 @@ def verify_experiment(source):
                 (identity is not None and current != identity)):
             raise ValueError("Empty or changed source/binary identity")
         identity = current
-        current = normalized_workload(spec, case["resolvedGraph"], item["arm"])
+        current = normalized_workload(spec, case["resolvedGraph"], item["arm"], directional)
         if (workload is not None and current != workload) or current != planned_workload:
             raise ValueError("Cases/graphs differ beyond the bitset switch")
         workload = current
@@ -211,6 +235,14 @@ def verify_experiment(source):
                         name: face["counters"][name] for name in profile.WORK_COUNTERS if name != "markPageRequests"}}
                     for face in sorted(faces, key=lambda value: (value["lightIndex"], value["face"]))]})
             signature["stableWorkCounters"] = stable_work
+            if directional:
+                if not all(row["gpuBuildDiagnosticsAvailable"] for row in build_rows):
+                    raise ValueError("Directional build requires complete build diagnostic readbacks")
+                if any(raw["shadow"]["gpuBuildDiagnostics"]["version"] != 3 for raw in case["frames"]):
+                    raise ValueError("Directional build requires version 3 with all 45 build counters")
+                signature["exactBuildDiagnostics"] = [{"frame": raw["frame"],
+                    "diagnostics": raw["shadow"]["gpuBuildDiagnostics"]}
+                    for raw in case["frames"] if raw["frame"] >= 16]
             signatures.append(signature)
         elif data.get("gpuWorkDiagnostics", False) or case.get("gpuWorkDiagnostics", False):
             raise ValueError("Instrumented counters cannot enter ordinary timing")
@@ -223,10 +255,10 @@ def verify_experiment(source):
         medians = {metric: profile.describe([row[metric] for row in valid])["median"] for metric in METRICS}
         rows.append({**item, "started": receipt["started"], "ended": receipt["ended"], "capture": str(path),
             "manifestSHA256": receipt["manifestSHA256"], "postWarmupFrames": len(valid), "metrics": medians,
-            "shaders": shader_identity((path.parent / "Process.log").read_text(encoding="utf-8", errors="replace"), item["arm"], mode)})
+            "shaders": shader_identity((path.parent / "Process.log").read_text(encoding="utf-8", errors="replace"), item["arm"], mode, directional)})
         for output, values in ((frames, timings), (work, work_rows), (build, build_rows)):
             output.extend({"process": item["index"], "arm": item["arm"], "block": item["block"], **row} for row in values)
-    check_shaders(rows)
+    check_shaders(rows, directional)
     # All input identities are checked before attributing output differences to correctness.
     if signatures and any(value != signatures[0] for value in signatures[1:]):
         raise ValueError("Canonical PNG/HDR/depth/shadow, legacy 32-statistics or stable-workload mismatch after input verification")
@@ -270,6 +302,7 @@ def comparisons(rows, phase):
 
 def check_diagnostic(result, diagnostic):
     if (diagnostic["phase"] != "diagnostic" or not diagnostic["exactPNGLinearHDRDepthShadowAndLegacyStatistics"] or
+            result["plan"]["protocol"] != diagnostic["plan"]["protocol"] or
             result["identity"] != diagnostic["identity"] or
             optimization.scene_workload(result["workload"]) != optimization.scene_workload(diagnostic["workload"])):
         raise ValueError("Diagnostic reference differs in source, binary or scene workload")
@@ -289,6 +322,7 @@ def check_diagnostic(result, diagnostic):
 
 def check_reference(result, reference):
     if (result["phase"] != "confirmation" or reference["phase"] != "discovery" or
+            result["plan"]["protocol"] != reference["plan"]["protocol"] or
             result["identity"] != reference["identity"] or result["workload"] != reference["workload"] or
             result["canonicalInputSignatures"] != reference["canonicalInputSignatures"]):
         raise ValueError("Confirmation requires identical discovery source, binary and timing inputs")
@@ -337,6 +371,8 @@ def run(args):
     try:
         plan = prepare_plan(args)
         links = load_links(args, args.phase)
+        if any(plan["protocol"] != link["plan"]["protocol"] for link in links.values()):
+            raise ValueError("Linked evidence uses a different experiment protocol")
         plan["links"] = link_receipts(links)
         if links and optimization.scene_workload(plan["workload"]) != optimization.scene_workload(links["diagnostic"]["workload"]):
             raise ValueError("Planned scene differs from diagnostic reference")
@@ -392,8 +428,12 @@ def plots(result, output):
     import matplotlib.pyplot as plt
     if result["mode"] == "diagnostic":
         figure, axes = plt.subplots(1, 2, figsize=(11, 4), constrained_layout=True)
-        for axis, field, names in ((axes[0], "workFrames", ("buildPageTests",)),
-                (axes[1], "buildDiagnosticFrames", ("clusterPageTests", "clusterBitsetWordTests"))):
+        directional = result["plan"]["protocol"] == DIRECTIONAL_PROTOCOL
+        panels = ((axes[0], "buildDiagnosticFrames", ("clusterLevelTests", "clusterSurvivingGroups")),
+            (axes[1], "buildDiagnosticFrames", ("clusterBitsetWordTests", "triangleBitsetWordTests", "triangleBitsetPageHits"))) if directional else (
+            (axes[0], "workFrames", ("buildPageTests",)),
+            (axes[1], "buildDiagnosticFrames", ("clusterPageTests", "clusterBitsetWordTests")))
+        for axis, field, names in panels:
             for index, name in enumerate(names):
                 values = [[row[name] for row in result[field] if row["arm"] == arm and not row["warmup"] and name in row] for arm in ARMS]
                 if all(values):
@@ -402,7 +442,8 @@ def plots(result, output):
             axis.set_ylabel("Post-warmup per-frame median count")
             if axis.has_data():
                 axis.legend(fontsize=8)
-        figure.suptitle("Diagnostic work only; page reads and bitset word reads have different units")
+        figure.suptitle("Directional build: identical diagnostic work; counts are not timings" if directional else
+            "Diagnostic work only; page reads and bitset word reads have different units")
         figure.savefig(output / "DiagnosticWork.png", dpi=150)
         plt.close(figure)
         return
@@ -454,10 +495,16 @@ def report(args):
             for metric, value in gains.items() for block, gain in enumerate(value["values"])])
         acceptance.save(output / "BlockGains.json", gains)
         plots(result, output)
-        lines = [f"# VSM bitset {result['phase']}", "", "A: bitset disabled; B: enabled. Production mark and cluster culling remain enabled.", "",
+        directional = result["plan"]["protocol"] == DIRECTIONAL_PROTOCOL
+        title = "directional build" if directional else "bitset"
+        description = ("A: generic build; B: directional-only compiled build. All other graph settings are identical." if directional else
+            "A: bitset disabled; B: enabled. Production mark and cluster culling remain enabled.")
+        diagnostic_note = ("All 45 build diagnostic counters match exactly for every canonical frame and face. Actual mark/projection SPIR-V is unchanged; build SPIR-V differs." if directional else
+            "Build diagnostic counters describe different page/word scanning operations and are not an output-equivalence gate.")
+        lines = [f"# VSM {title} {result['phase']}", "", description, "",
             "Canonical comparison starts at frame 16 after same-frame streaming freeze and camera cut; warmup ends at 32. Startup evidence is retained but is not used for arm equivalence.", "",
             "Source, binary, sealed package, actual mark/build SPIR-V and case/graph identities were verified. Ordinary timing has validation and diagnostic readbacks off. Timing texture semantic hashes are unavailable; only published residency/input fields are compared. Diagnostic HDR/depth/shadow/PNG hashes and every canonical frame's legacy 32 statistics match exactly.", "",
-            "Build diagnostic counters describe different page/word scanning operations and are not an output-equivalence gate. Missing counters are unavailable, never zero. No clock control or global GPU exclusivity is certified.", ""]
+            diagnostic_note + " Missing counters are unavailable, never zero. No clock control or global GPU exclusivity is certified.", ""]
         lines.extend(["The 15 stable legacy workload counters match exactly for every canonical frame and face. Executed markPageRequests atomics are excluded because shared-cache scheduling can change duplicate suppression.", ""])
         if gains:
             lines.extend([f"n = {BLOCKS[result['phase']]} independent ABBA blocks; each process contributes one post-warmup median. Confirmation uses only its own blocks; discovery is not pooled.", "",
@@ -491,6 +538,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     execute = commands.add_parser("run")
     execute.add_argument("--phase", choices=tuple(BLOCKS), required=True)
+    execute.add_argument("--experiment", choices=("cluster-bitset", "directional-build"), default="cluster-bitset")
     execute.add_argument("--cases-dir", type=Path, required=True)
     execute.add_argument("--exe", type=Path, required=True)
     execute.add_argument("--output", type=Path, required=True)

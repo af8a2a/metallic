@@ -2651,14 +2651,15 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, TriangleBitset };
+enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, TriangleBitset, DirectionalBuild };
 
 class VirtualShadowMapEquivalenceTest : public RHITest
 {
 public:
     explicit VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode mode) : mode_(mode)
     {
-        name = mode == VirtualShadowMapEquivalenceMode::TriangleBitset ? "virtual_shadow_map_triangle_page_bitset_equivalence" :
+        name = mode == VirtualShadowMapEquivalenceMode::DirectionalBuild ? "virtual_shadow_map_directional_build_equivalence" :
+            mode == VirtualShadowMapEquivalenceMode::TriangleBitset ? "virtual_shadow_map_triangle_page_bitset_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::MarkSamples ? "virtual_shadow_map_mark_samples_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::ClusterBitset ? "virtual_shadow_map_cluster_page_bitset_equivalence" :
             "virtual_shadow_map_optimization_equivalence";
@@ -2671,7 +2672,9 @@ public:
         const bool bitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::ClusterBitset;
         const bool markSamplesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkSamples;
         const bool triangleBitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::TriangleBitset;
-        const std::string reportName = triangleBitsetComparison ? "VirtualShadowMapTrianglePageBitsetEquivalence" :
+        const bool directionalBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalBuild;
+        const std::string reportName = directionalBuildComparison ? "VirtualShadowMapDirectionalBuildEquivalence" :
+            triangleBitsetComparison ? "VirtualShadowMapTrianglePageBitsetEquivalence" :
             markSamplesComparison ? "VirtualShadowMapMarkSamplesEquivalence" :
             bitsetComparison ? "VirtualShadowMapClusterPageBitsetEquivalence" : "VirtualShadowMapOptimizationEquivalence";
         const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
@@ -2699,7 +2702,8 @@ public:
                 .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
 
             constexpr uint32_t capacity = 4;
-            const std::vector<const char*> baseArms = triangleBitsetComparison ? std::vector<const char*>{"Baseline", "TriangleBitset"} :
+            const std::vector<const char*> baseArms = directionalBuildComparison ? std::vector<const char*>{"Generic", "Directional"} :
+                triangleBitsetComparison ? std::vector<const char*>{"Baseline", "TriangleBitset"} :
                 markSamplesComparison ? std::vector<const char*>{"Baseline", "Prepared"} :
                 bitsetComparison ? std::vector<const char*>{"Baseline", "Bitset"} :
                 std::vector<const char*>{"Legacy", "MarkOnly", "ClusterOnly", "Both"};
@@ -2731,11 +2735,22 @@ public:
                     {"ClusterBitsetOff",{{"benchmarkTrianglePageBitset",true},{"benchmarkClusterPageBitset",false}}},
                     {"CullDisabled",{{"benchmarkTrianglePageBitset",true},{"benchmarkDisableClusterCull",true}}}};
             }
+            uint64_t directionalBuildStates = 0, directionalBuildControlStates = 0, localBuildTriangles = 0;
+            std::array<uint64_t, 2> directionalBuildTrianglesByPass{};
+            if (directionalBuildComparison) {
+                report["selectionControls"] = {
+                    {"Generic",{{"directionalBuild",true},{"benchmarkDirectionalBuild",false}}},
+                    {"Directional", nlohmann::json::object()},
+                    {"GenericPages",{{"directionalBuild",false},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
+                    {"DirectionalPages",{{"directionalBuild",false},{"benchmarkDirectionalBuild",true},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
+                    {"GenericNoCull",{{"directionalBuild",false},{"benchmarkDisableClusterCull",true}}},
+                    {"DirectionalNoCull",{{"benchmarkDisableClusterCull",true}}}};
+            }
             std::array<uint64_t, 2> defaultBitsetLevelsByPass{};
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
-                    const std::vector<std::string> filters = mainMatrix ? (triangleBitsetComparison ?
+                    const std::vector<std::string> filters = mainMatrix ? ((triangleBitsetComparison || directionalBuildComparison) ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-max"} : markSamplesComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} : bitsetComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33"} :
@@ -2749,7 +2764,10 @@ public:
                             (filter == "single-hard" || filter == "smrt");
                         const bool triangleBitsetControls = triangleBitsetComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
+                        const bool directionalBuildControls = directionalBuildComparison && mainMatrix && !streamed &&
+                            (filter == "single-hard" || filter == "smrt");
                         auto arms = baseArms;
+                        if (directionalBuildControls) { arms.insert(arms.end(), {"GenericPages", "DirectionalPages", "GenericNoCull", "DirectionalNoCull"}); }
                         if (markSamplesControls) { arms.push_back("PreparedLegacyMark"); }
                         if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
                         if (triangleBitsetControls) { arms.insert(arms.end(), {"ProductionOff", "ClusterBitsetOff", "CullDisabled"}); }
@@ -2796,9 +2814,25 @@ public:
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", filter == "smrt-one" ? 1 : 2},
                                  {"smrtSamplesPerRay", filter == "smrt-max" ? 32 : 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
-                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || triangleBitsetComparison) ? false : (arm & 1) == 0},
-                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || triangleBitsetComparison) ? false : (arm & 2) == 0},
+                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || triangleBitsetComparison || directionalBuildComparison) ? false : (arm & 1) == 0},
+                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || triangleBitsetComparison || directionalBuildComparison) ? false : (arm & 2) == 0},
                                  {"benchmarkClusterPageBitset", false}, {"benchmarkTrianglePageBitset", false}};
+                            if (directionalBuildComparison) {
+                                // Odd default arms omit both switches; controls also cover
+                                // production opt-out and benchmark precedence in both directions.
+                                if (arm == 0) {
+                                    settings["directionalBuild"] = true;
+                                    settings["benchmarkDirectionalBuild"] = false;
+                                } else if (arm == 2 || arm == 4) {
+                                    settings["directionalBuild"] = false;
+                                } else if (arm == 3) {
+                                    settings["directionalBuild"] = false;
+                                    settings["benchmarkDirectionalBuild"] = true;
+                                }
+                                settings["benchmarkClusterPageBitset"] = arm < 2 || arm >= 4;
+                                settings["benchmarkTrianglePageBitset"] = arm < 2 || arm >= 4;
+                                settings["benchmarkDisableClusterCull"] = arm >= 4;
+                            }
                             if (bitsetComparison) {
                                 // The baseline explicitly preserves legacy scanning. A conflicting
                                 // production value proves the benchmark override takes precedence.
@@ -2880,16 +2914,46 @@ public:
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
                                 requireBuildDiagnosticInvariants(snapshot,
-                                    triangleBitsetComparison ? arm != 4 : markSamplesComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
+                                    directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
                                     label + "-" + phase + "-" + arms[arm],
-                                    triangleBitsetComparison ? arm < 3 : markSamplesComparison || (bitsetComparison && arm == 1));
+                                    directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || (bitsetComparison && arm == 1));
                                 if (arm != 0) {
                                     require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
                                         snapshot.depth == snapshots[0].depth && snapshot.statistics == snapshots[0].statistics,
                                         label + "-" + phase + ": " + arms[arm] + " changed images/depth or the 32-word statistics ABI");
                                 }
                             }
-                            if (triangleBitsetComparison) {
+                            if (directionalBuildComparison) {
+                                ++directionalBuildStates;
+                                directionalBuildControlStates += directionalBuildControls;
+                                directionalBuildTrianglesByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkBuildDecodedTriangles];
+                                // Multi-light face blocks reserve six slots each: Sun, Moon, Point, Spot.
+                                if (!single) {
+                                    for (uint32_t face = 12; face < faces; ++face) {
+                                        localBuildTriangles += snapshots[1].workload[face][kVSMWorkBuildDecodedTriangles];
+                                    }
+                                }
+                                for (uint32_t arm = 1; arm < arms.size(); arm += 2) {
+                                    const auto& baseline = snapshots[arm - 1];
+                                    const auto& candidate = snapshots[arm];
+                                    require(candidate.buildDiagnostics == baseline.buildDiagnostics,
+                                        label + "-" + phase + ": directional specialization changed build diagnostics");
+                                    for (uint32_t face = 0; face < faces; ++face) {
+                                        for (const auto* snapshot : {&baseline, &candidate}) {
+                                            const auto& counts = snapshot->workload[face];
+                                            require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
+                                                (snapshot->statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
+                                                label + "-" + phase + ": invalid shared Mark request count");
+                                        }
+                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                                            // Shared Mark cache collisions affect atomic request counts only.
+                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
+                                            require(candidate.workload[face][counter] == baseline.workload[face][counter],
+                                                label + "-" + phase + ": directional specialization changed deterministic work");
+                                        }
+                                    }
+                                }
+                            } else if (triangleBitsetComparison) {
                                 ++triangleBitsetStates;
                                 triangleBitsetControlStates += triangleBitsetControls;
                                 triangleBitsetReducedStates += work[1][kVSMWorkBuildPageTests] < work[0][kVSMWorkBuildPageTests];
@@ -2997,7 +3061,15 @@ public:
                     }
                 }
             }
-            if (triangleBitsetComparison) {
+            if (directionalBuildComparison) {
+                report["directionalBuildStates"] = directionalBuildStates;
+                report["directionalBuildControlStates"] = directionalBuildControlStates;
+                report["directionalBuildTrianglesByPass"] = {{"single",directionalBuildTrianglesByPass[0]},{"lights",directionalBuildTrianglesByPass[1]}};
+                report["localBuildTriangles"] = localBuildTriangles;
+                require(directionalBuildStates == 72 && directionalBuildControlStates == 10 && localBuildTriangles > 0 &&
+                    directionalBuildTrianglesByPass[0] > 0 && directionalBuildTrianglesByPass[1] > 0,
+                    "Directional build matrix did not exercise both passes, local-light fallback and page/culling controls");
+            } else if (triangleBitsetComparison) {
                 report["triangleBitsetStates"] = triangleBitsetStates;
                 report["triangleBitsetControlStates"] = triangleBitsetControlStates;
                 report["triangleBitsetReducedStates"] = triangleBitsetReducedStates;
@@ -3023,7 +3095,8 @@ public:
                 require(clusterReducedStates > 0, "Optimization matrix did not exercise a rejected stream cluster");
             }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
-            return RHITestResult::pass(triangleBitsetComparison ?
+            return RHITestResult::pass(directionalBuildComparison ?
+                "Directional build specialization preserves images, statistics, diagnostics and deterministic work across both passes, local lights and page/culling modes" : triangleBitsetComparison ?
                 "Exact triangle bitsets preserve images, admission, emitted work and overflow recovery while eliminating per-page metadata reads" : markSamplesComparison ?
                 "Prepared Mark samples preserve images, depth, page admission, statistics and deterministic work across all filters, light types and cache states" : bitsetComparison ?
                 "Dirty-page bitsets preserve images, receiver depth, statistics and deterministic work in single/multi-light production graphs" :
@@ -3068,6 +3141,14 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapTrianglePageBitsetEquivalenceTest);
+
+class VirtualShadowMapDirectionalBuildEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapDirectionalBuildEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::DirectionalBuild) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalBuildEquivalenceTest);
 
 } // namespace
 } // namespace metallic::tests

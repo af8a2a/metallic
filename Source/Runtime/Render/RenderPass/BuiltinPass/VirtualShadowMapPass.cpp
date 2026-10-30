@@ -32,6 +32,8 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
     settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
     settings.optimizeMarkSamples = boolProperty(&properties, "benchmarkMarkSamples", settings.optimizeMarkSamples);
+    settings.directionalBuild = boolProperty(&properties, "benchmarkDirectionalBuild",
+        boolProperty(&properties, "directionalBuild", settings.directionalBuild));
     settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
     // An explicit benchmark override wins over the production property for A/B graphs.
     settings.clusterPageBitset = boolProperty(&properties, "benchmarkClusterPageBitset",

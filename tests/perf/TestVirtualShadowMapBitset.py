@@ -16,18 +16,22 @@ import TestVirtualShadowMapOptimization as optimization_tests
 a = bitset.acceptance
 
 
-def graph(arm, mode, resolved=False):
+def graph(arm, mode, resolved=False, directional=False):
     result = optimization_tests.graph("Both", mode)
-    result["nodes"][0]["properties"][bitset.SWITCH] = arm == "B"
+    result["nodes"][0]["properties"][bitset.DIRECTIONAL_SWITCH if directional else bitset.SWITCH] = arm == "B"
     if resolved:
         result["outputs"] = ["FinalBlit.color"] + (["Deferred.color"] if mode == "diagnostic" else [])
     return result
 
 
-def shader_log(arm, mode):
+def shader_log(arm, mode, directional=False):
     result = optimization_tests.shader_log("Both", mode)
     if arm == "B":
         result = result.replace("d" * 64, "e" * 64)
+    if directional:
+        result += f"\n[VSMShader] entry=vsmProjectMain spirvSHA256={'f' * 64}"
+        return "\n".join(line + f" lightType=0 directionalBuild={str(arm == 'B' and 'entry=vsmBuildMain ' in line).lower()}"
+            for line in result.splitlines())
     return "\n".join(line + f" clusterPageBitset={str(arm == 'B').lower()}" for line in result.splitlines())
 
 
@@ -48,14 +52,14 @@ class BitsetTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def experiment(self, phase, gain=.2, name=None, frames=64):
+    def experiment(self, phase, gain=.2, name=None, frames=64, directional=False):
         source = self.root / (name or phase)
         source.mkdir()
         mode = "diagnostic" if phase == "diagnostic" else "timing"
-        plan = {"protocol": bitset.PROTOCOL, "phase": phase, "mode": mode, "policy": bitset.POLICY,
+        plan = {"protocol": bitset.DIRECTIONAL_PROTOCOL if directional else bitset.PROTOCOL, "phase": phase, "mode": mode, "policy": bitset.POLICY,
             "processes": bitset.schedule(phase), "blocks": bitset.BLOCKS[phase], "runsPerPackage": 1,
             "timeoutSeconds": 600, "comparisonStartFrame": 16,
-            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode), "A"),
+            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode, directional=directional), "A", directional),
             "inputs": {arm: {"cases": f"/{mode}-{arm}.json", "casesSHA256": arm,
                 "graph": f"/{arm}.json", "graphSHA256": arm} for arm in bitset.ARMS}}
         a.save(source / "Plan.json", plan)
@@ -66,7 +70,7 @@ class BitsetTests(unittest.TestCase):
             directory = package / "run-1"
             directory.mkdir(parents=True)
             arm = item["arm"]
-            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True),
+            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True, directional=directional),
                 "noRayTracingAllocations": True, "noRayQueryOrRTAS": True, "frames": []}
             for index in range(frames):
                 row = frame(index, scale=1000 if index < 32 else (1 if arm == "A" else 1 - gain))
@@ -80,7 +84,12 @@ class BitsetTests(unittest.TestCase):
                     add_work(row)
                     add_build(row)
                     # Build diagnostics are valid but deliberately differ; legacy/image receipts do not.
-                    if arm == "B":
+                    if directional:
+                        diagnostic = row["shadow"]["gpuBuildDiagnostics"]
+                        diagnostic["version"] = 3
+                        for counters in [diagnostic["totals"], *[face["counters"] for face in diagnostic["faces"]]]:
+                            counters.update({name: 0 for name in bitset.profile.ALL_BUILD_COUNTERS if name not in counters})
+                    elif arm == "B":
                         for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
                             face["counters"]["clusterGroups"] += 1
                         row["shadow"]["gpuBuildDiagnostics"]["totals"]["clusterGroups"] += 2
@@ -93,7 +102,7 @@ class BitsetTests(unittest.TestCase):
             data = {"protocol": "virtual-shadow-map-acceptance-v2", "status": "passed", "mode": mode,
                 "validation": mode == "diagnostic", "performanceEligible": mode == "timing", "cases": [case]}
             a.save(directory / "VirtualShadowMapAcceptance.json", data)
-            (directory / "Process.log").write_text(shader_log(arm, mode), encoding="utf-8")
+            (directory / "Process.log").write_text(shader_log(arm, mode, directional), encoding="utf-8")
             a.save(package / "Cases.json", spec(mode, arm, frames))
             paths = plan["inputs"][arm]
             a.save(package / "Identity.json", {"sources": {"source": "1" * 64}, "binaries": {"exe": "2" * 64},
@@ -121,6 +130,76 @@ class BitsetTests(unittest.TestCase):
                 bitset.normalized_workload(spec("timing"), value, "A")
         with self.assertRaisesRegex(ValueError, bitset.SWITCH):
             bitset.normalized_workload(spec("timing"), graph("B", "timing"), "A")
+
+    def test_directional_switch_is_explicit_and_only_difference(self):
+        for arm in bitset.ARMS:
+            for invalid in (None, 0, 1, "false", "true"):
+                value = graph(arm, "timing", directional=True)
+                value["nodes"][0]["properties"][bitset.DIRECTIONAL_SWITCH] = invalid
+                with self.assertRaisesRegex(ValueError, bitset.DIRECTIONAL_SWITCH):
+                    bitset.normalized_workload(spec("timing", arm), value, arm, True)
+        left = bitset.normalized_workload(spec("timing"), graph("A", "timing", directional=True), "A", True)
+        right = bitset.normalized_workload(spec("timing", "B"), graph("B", "timing", directional=True), "B", True)
+        self.assertEqual(left, right)
+
+    def test_directional_shader_scope_and_identity(self):
+        rows = [{"arm": arm, "shaders": bitset.shader_identity(shader_log(arm, "timing", True), arm, "timing", True)}
+            for arm in bitset.ARMS]
+        bitset.check_shaders(rows, True)
+        rows[1]["shaders"]["vsmProjectMain"] = "a" * 64
+        with self.assertRaisesRegex(ValueError, "projection"):
+            bitset.check_shaders(rows, True)
+        for value in (shader_log("B", "timing", True).replace("lightType=0", "lightType=1"),
+                shader_log("B", "timing", True).replace("directionalBuild=true", "directionalBuild=false"),
+                shader_log("B", "timing", True).replace("directionalBuild=false", "directionalBuild=true"),
+                "\n".join(shader_log("B", "timing", True).splitlines()[:-1])):
+            with self.assertRaises(ValueError):
+                bitset.shader_identity(value, "B", "timing", True)
+
+    def test_directional_diagnostics_require_all_45_exact_counters(self):
+        source = self.experiment("diagnostic", directional=True)
+        result = bitset.verify_experiment(source)
+        self.assertEqual(len(result["diagnosticReceipts"]["exactBuildDiagnostics"][0]["diagnostics"]["totals"]), 45)
+        def change(data):
+            diagnostic = data["cases"][0]["frames"][16]["shadow"]["gpuBuildDiagnostics"]
+            diagnostic["faces"][0]["counters"]["clusterGroups"] += 1
+            diagnostic["totals"]["clusterGroups"] += 1
+        self.mutate(source, 1, "run-1/VirtualShadowMapAcceptance.json", change)
+        with self.assertRaisesRegex(ValueError, "mismatch after input verification"):
+            bitset.verify_experiment(source)
+
+    def test_directional_cross_phase_protocol_is_separate(self):
+        diagnostic = bitset.verify_experiment(self.experiment("diagnostic", directional=True))
+        discovery = bitset.verify_experiment(self.experiment("discovery", frames=96, directional=True))
+        confirmation = bitset.verify_experiment(self.experiment("confirmation", frames=96, directional=True))
+        bitset.check_diagnostic(discovery, diagnostic)
+        bitset.check_reference(confirmation, discovery)
+        self.assertEqual(bitset.comparisons(confirmation["processes"], "confirmation")["decision"], "accept")
+        discovery["plan"]["protocol"] = bitset.PROTOCOL
+        with self.assertRaises(ValueError):
+            bitset.check_diagnostic(discovery, diagnostic)
+        with self.assertRaises(ValueError):
+            bitset.check_reference(confirmation, discovery)
+
+    def test_directional_report_and_plan(self):
+        source = self.experiment("diagnostic", directional=True)
+        report = self.root / "directional-report"
+        with mock.patch("builtins.print"):
+            bitset.report(SimpleNamespace(source=source, output=report))
+        text = (report / "report.md").read_text(encoding="utf-8")
+        self.assertIn("directional build", text)
+        self.assertIn("All 45", text)
+        self.assertTrue((report / "DiagnosticWork.png").is_file())
+        cases = self.root / "cases"
+        cases.mkdir()
+        for arm in bitset.ARMS:
+            value = spec("diagnostic", arm)
+            value["cases"][0]["graph"] = f"{arm}.json"
+            a.save(cases / f"Diagnostic-{arm}Cases.json", value)
+            a.save(cases / f"{arm}.json", graph(arm, "diagnostic", directional=True))
+        plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="directional-build",
+            cases_dir=cases, exe=self.root / "fake.exe"))
+        self.assertEqual(plan["protocol"], bitset.DIRECTIONAL_PROTOCOL)
 
     def test_bitset_switch_must_be_explicit_in_both_arms(self):
         for arm in bitset.ARMS:

@@ -258,6 +258,7 @@ struct VirtualShadowMaps::Programs
     bool clusterCulling = true;
     bool clusterPageBitset = false;
     bool trianglePageBitset = false;
+    bool directionalBuild = false;
     std::array<std::unique_ptr<ShaderModule>, 14> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 10> compute;
     std::unique_ptr<GraphicsPipeline> raster;
@@ -465,6 +466,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool enabled = settings.enabled && light.enabled;
     const bool clusterPageBitset = settings.clusterCulling && settings.clusterPageBitset;
     const bool trianglePageBitset = clusterPageBitset && settings.trianglePageBitset;
+    const bool directionalBuild = directional && settings.directionalBuild;
     // The local-light permutation has confirmed gains; directional hoisting regressed Mark.
     const bool optimizeMarkSamples = settings.optimizeMarkSamples && !directional;
     const auto finite = [](const Vector& value) {
@@ -824,7 +826,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->optimizeProjectionStatistics != settings.optimizeProjectionStatistics ||
         programs_->optimizeMark != settings.optimizeMark || programs_->optimizeMarkSamples != optimizeMarkSamples ||
         programs_->clusterCulling != settings.clusterCulling ||
-        programs_->clusterPageBitset != clusterPageBitset || programs_->trianglePageBitset != trianglePageBitset;
+        programs_->clusterPageBitset != clusterPageBitset || programs_->trianglePageBitset != trianglePageBitset ||
+        programs_->directionalBuild != directionalBuild;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
         std::filesystem::path generatedDirectory;
@@ -841,6 +844,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->clusterCulling = settings.clusterCulling;
         programs->clusterPageBitset = clusterPageBitset;
         programs->trianglePageBitset = trianglePageBitset;
+        programs->directionalBuild = directionalBuild;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain"};
@@ -854,20 +858,24 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             SlangMacroDefine{"VSM_OPTIMIZE_MARK_SAMPLES", optimizeMarkSamples ? "1" : "0"},
             SlangMacroDefine{"VSM_CLUSTER_CULL", settings.clusterCulling ? "1" : "0"},
             SlangMacroDefine{"VSM_CLUSTER_PAGE_BITSET", clusterPageBitset ? "1" : "0"},
-            SlangMacroDefine{"VSM_TRIANGLE_PAGE_BITSET", trianglePageBitset ? "1" : "0"}};
+            SlangMacroDefine{"VSM_TRIANGLE_PAGE_BITSET", trianglePageBitset ? "1" : "0"},
+            SlangMacroDefine{"VSM_DIRECTIONAL_BUILD", directionalBuild ? "1" : "0"}};
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
+            // Only build consumes this permutation. Other entrypoints retain
+            // their original macro set and shader identity.
+            const auto entryMacros = std::span(macros).first(index == 3 ? macros.size() : macros.size() - 1);
             auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
                 .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = paths,
-                .capabilities = capabilities, .macroDefines = macros}, log);
+                .capabilities = capabilities, .macroDefines = entryMacros}, log);
             if (!shader) { return std::unexpected(shader.error()); }
             auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
             if (!module) { return std::unexpected(module.error()); }
             programs->shaders[index] = std::move(*module);
             if (index == 1 || index == 3 || index == 5) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={}", entries[index],
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
-                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics);
+                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics, index == 3 && directionalBuild);
             }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},

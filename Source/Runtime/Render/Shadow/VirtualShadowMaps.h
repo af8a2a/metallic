@@ -47,6 +47,7 @@ struct VirtualShadowMapSettings
     bool clusterCulling = true;
     bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.
     bool trianglePageBitset = true; // Enumerate dirty fine pages; requires the effective cluster-page bitset.
+    bool directionalBuild = true; // Build-only orthographic shader specialization; local lights stay generic.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
     uint32_t clipmapCount = 4;
