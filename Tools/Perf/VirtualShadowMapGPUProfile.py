@@ -20,6 +20,18 @@ import VirtualShadowMapAcceptance as acceptance
 
 STAGES = ("reset", "mark", "allocator", "build", "raster", "projection")
 SECTION_NAMES = {f"VSM {stage}": stage for stage in STAGES}
+BUILD_SUBSTAGES = {
+    "VSM build direct": "directMs",
+    "VSM build compact": "compactMs",
+    "VSM build compact sync": "compactSyncMs",
+    "VSM build indirect": "indirectMs",
+    "VSM build finalize sync": "finalizeSyncMs",
+    "VSM build finalize": "finalizeMs",
+}
+BUILD_SUBSTAGE_PATTERNS = {
+    "direct": ("directMs", "finalizeSyncMs", "finalizeMs"),
+    "compact": ("compactMs", "compactSyncMs", "indirectMs", "finalizeSyncMs", "finalizeMs"),
+}
 ROOT_PARENT = 0xffffffff
 WORK_COUNTERS = (
     "markReceiverDispatches", "markSamplePositions", "markLevelTests", "markPageRequests",
@@ -143,6 +155,45 @@ def load_package(source):
     if not captures or len(captures) != integrity["completedRuns"] or any(p.get("timedOut") for p in processes):
         raise ValueError("Incomplete evidence cannot be reported as accepted measurements")
     return source, [(index, path, data) for index, (path, data) in enumerate(captures, 1)]
+
+
+def build_substage_frame(frame, required=False):
+    """Read optional children without adding them to inclusive build/stage totals."""
+    aggregate = profile_frame(frame)
+    sections = next(node for node in frame["nodes"] if node["name"] == "Shadows")["sections"]
+    builds = {index: [] for index, section in enumerate(sections) if section["name"] == "VSM build"}
+    for section in sections:
+        name = section["name"]
+        if not name.startswith("VSM build "):
+            continue
+        if name not in BUILD_SUBSTAGES:
+            raise ValueError(f"Unknown build substage: {name}")
+        if section["parent"] not in builds:
+            raise ValueError("Build substages require an immediate VSM build parent")
+        if section.get("cpuOnly", False):
+            raise ValueError("CPU-only build substage cannot supply GPU timing")
+        builds[section["parent"]].append((BUILD_SUBSTAGES[name], duration(section.get("gpuMs"), name)))
+    result = {"frame": frame["frame"], "warmup": frame["warmup"], "buildSubstagesAvailable": False}
+    if not any(builds.values()):
+        if required:
+            raise ValueError("Required build substages are missing")
+        return result
+    faces, totals = [], {}
+    for index, children in builds.items():
+        names = tuple(name for name, _ in children)
+        branch = next((name for name, expected in BUILD_SUBSTAGE_PATTERNS.items() if names == expected), None)
+        if branch is None:
+            raise ValueError("Missing, duplicated, reordered or inconsistent per-face build substages")
+        parent_ms = duration(sections[index]["gpuMs"], "VSM build")
+        measured = sum(value for _, value in children)
+        if measured > parent_ms + max(1e-5, parent_ms * 1e-5):
+            raise ValueError("Build substage sum exceeds its owning build span")
+        values = dict(children, buildUnattributedMs=max(0., parent_ms - measured))
+        faces.append({"buildSection": index, "branch": branch, "buildMs": parent_ms, **values})
+        for name, value in values.items():
+            totals[name] = totals.get(name, 0.) + value
+    return {**result, "buildSubstagesAvailable": True, "faceCount": aggregate["faceCount"],
+            "buildMs": aggregate["buildMs"], "faces": faces, **totals}
 
 
 def integer_counter(value, label):

@@ -452,7 +452,10 @@ public:
                 requireAcceptance(shadows && shadows->type == "VirtualShadowMapLightsPass", "Acceptance requires a production VSM Lights pass named Shadows");
                 const bool cpuProfileDiagnostics = shadows->properties.value("benchmarkCPUProfile", false);
                 const bool gpuProfileDiagnostics = shadows->properties.value("benchmarkGPUProfile", false);
+                const bool buildSubstageDiagnostics = shadows->properties.value("benchmarkBuildSubstages", false);
                 const bool gpuWorkDiagnostics = shadows->properties.value("benchmarkGPUWork", false);
+                requireAcceptance(!buildSubstageDiagnostics || gpuProfileDiagnostics,
+                    "Build substage attribution requires detailed GPU profiling");
                 requireAcceptance(!cpuProfileDiagnostics || diagnostic, "CPU profile attribution requires diagnostic mode");
                 requireAcceptance(!gpuWorkDiagnostics || diagnostic, "Timing mode forbids GPU workload counters");
                 requireAcceptance(!cpuProfileDiagnostics || !gpuProfileDiagnostics,
@@ -461,6 +464,11 @@ public:
                 report["cpuProfileDiagnostics"] = cpuProfileDiagnostics;
                 output["gpuProfileDiagnostics"] = gpuProfileDiagnostics;
                 report["gpuProfileDiagnostics"] = gpuProfileDiagnostics;
+                output["buildSubstageDiagnostics"] = buildSubstageDiagnostics;
+                report["buildSubstageDiagnostics"] = buildSubstageDiagnostics;
+                if (buildSubstageDiagnostics) {
+                    report["buildSubstageScope"] = "Optional nested timestamps attribute build cost and can perturb scheduling; they must not enter ordinary optimization A/B acceptance. Finalize includes its trailing read/draw barriers.";
+                }
                 output["gpuWorkDiagnostics"] = gpuWorkDiagnostics;
                 report["gpuWorkDiagnostics"] = gpuWorkDiagnostics;
                 output["gpuBuildDiagnostics"] = gpuWorkDiagnostics;

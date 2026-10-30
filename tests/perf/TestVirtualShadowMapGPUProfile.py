@@ -33,6 +33,18 @@ def add_work(row):
     return row
 
 
+def add_substages(row, compact=False):
+    sections = row["nodes"][0]["sections"]
+    pattern = profile.BUILD_SUBSTAGE_PATTERNS["compact" if compact else "direct"]
+    names = {value: key for key, value in profile.BUILD_SUBSTAGES.items()}
+    for index, section in list(enumerate(sections)):
+        if section["name"] == "VSM build":
+            for key in pattern:
+                sections.append({"name": names[key], "parent": index, "cpuOnly": False,
+                                 "gpuMs": section["gpuMs"] / (len(pattern) + 1)})
+    return row
+
+
 def add_build(row):
     counters = dict.fromkeys(profile.BUILD_COUNTERS, 0)
     counters.update(clusterGroups=3, clusterBoundsValidGroups=2, clusterSurvivingGroups=1,
@@ -102,6 +114,59 @@ class GPUProfileTests(unittest.TestCase):
         self.assertEqual(result["stageSumMs"], 12.)
         self.assertEqual(result["otherShadowsMs"], 48.)
         self.assertEqual(result["faceCount"], 2)
+
+    def test_optional_build_substages_do_not_change_inclusive_totals(self):
+        for compact in (False, True):
+            row = frame(1)
+            before = profile.profile_frame(row)
+            add_substages(row, compact)
+            self.assertEqual(before, profile.profile_frame(row))
+            split = profile.build_substage_frame(row, required=True)
+            self.assertEqual(split["buildMs"], 2.)
+            self.assertEqual(split["faceCount"], 2)
+            self.assertEqual(len(split["faces"]), 2)
+            self.assertGreater(split["buildUnattributedMs"], 0.)
+            self.assertEqual("compactMs" in split, compact)
+            self.assertEqual("directMs" in split, not compact)
+            self.assertAlmostEqual(sum(value for key, value in split.items()
+                                       if key.endswith("Ms") and key != "buildMs"), 2.)
+
+    def test_missing_build_substages_are_unavailable_not_zero(self):
+        split = profile.build_substage_frame(frame(1))
+        self.assertFalse(split["buildSubstagesAvailable"])
+        self.assertNotIn("compactMs", split)
+        with self.assertRaisesRegex(ValueError, "Required.*missing"):
+            profile.build_substage_frame(frame(1), required=True)
+
+    def test_build_substages_require_immediate_parent_and_complete_each_face(self):
+        row = add_substages(frame(1), True)
+        row["nodes"][0]["sections"][-1]["parent"] = 0
+        with self.assertRaisesRegex(ValueError, "immediate"):
+            profile.build_substage_frame(row)
+        for mutation in (lambda sections: sections.pop(),
+                         lambda sections: sections.append(sections[-1].copy()),
+                         lambda sections: sections.__setitem__(-1, sections[-2].copy())):
+            row = add_substages(frame(1), True)
+            mutation(row["nodes"][0]["sections"])
+            with self.assertRaisesRegex(ValueError, "per-face"):
+                profile.build_substage_frame(row)
+
+    def test_build_substage_invalid_timestamps_and_parent_overlap_rejected(self):
+        for value in (None, float("nan"), -1., True, 10.):
+            row = add_substages(frame(1), True)
+            row["nodes"][0]["sections"][-1]["gpuMs"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                profile.build_substage_frame(row)
+        row = add_substages(frame(1), True)
+        row["nodes"][0]["sections"][-1]["cpuOnly"] = True
+        with self.assertRaisesRegex(ValueError, "CPU-only"):
+            profile.build_substage_frame(row)
+
+    def test_unknown_build_substage_is_not_silently_unattributed(self):
+        row = add_substages(frame(1), True)
+        row["nodes"][0]["sections"][-1]["name"] = "VSM build mystery"
+        with self.assertRaisesRegex(ValueError, "Unknown"):
+            profile.build_substage_frame(row)
 
     def test_missing_nonfinite_or_cpu_timestamps_are_not_zero(self):
         for value in (None, float("nan"), -1., True):

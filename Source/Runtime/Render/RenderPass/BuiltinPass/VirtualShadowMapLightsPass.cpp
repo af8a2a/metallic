@@ -238,11 +238,15 @@ public:
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.collectGPUWork = collectGPUWork_;
+        settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
         settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
         settings.optimizeMarkSamples = boolProperty(&properties, "benchmarkMarkSamples", settings.optimizeMarkSamples);
+        settings.directionalMark = boolProperty(&properties, "benchmarkDirectionalMark",
+            boolProperty(&properties, "directionalMark", settings.directionalMark));
         settings.directionalBuild = boolProperty(&properties, "benchmarkDirectionalBuild",
             boolProperty(&properties, "directionalBuild", settings.directionalBuild));
+        settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
         settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
         // An explicit benchmark override wins over the production property for A/B graphs.
         settings.clusterPageBitset = boolProperty(&properties, "benchmarkClusterPageBitset",

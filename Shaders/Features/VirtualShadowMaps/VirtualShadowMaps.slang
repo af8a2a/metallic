@@ -24,6 +24,12 @@ import VirtualShadowMapCommon;
 #ifndef VSM_DIRECTIONAL_BUILD
 #define VSM_DIRECTIONAL_BUILD 0
 #endif
+#ifndef VSM_DIRECTIONAL_MARK
+#define VSM_DIRECTIONAL_MARK 0
+#endif
+#ifndef VSM_COMPACT_BUILD
+#define VSM_COMPACT_BUILD 0
+#endif
 #ifndef VSM_CLUSTER_CULL
 #define VSM_CLUSTER_CULL 1
 #endif
@@ -33,6 +39,8 @@ import VirtualShadowMapCommon;
 #if !VSM_CLUSTER_CULL
 #undef VSM_CLUSTER_PAGE_BITSET
 #define VSM_CLUSTER_PAGE_BITSET 0
+#undef VSM_COMPACT_BUILD
+#define VSM_COMPACT_BUILD 0
 #endif
 
 using Metallic;
@@ -63,6 +71,23 @@ uint vsmClusterPageBitsetOffset(ShadowPush push)
 {
     // Matches the tail appended to the owners allocation in VirtualShadowMaps.cpp.
     return push.physicalPageCount * 2u + push.totalPages + (push.totalPages + 255u) / 256u;
+}
+#endif
+
+#if VSM_COMPACT_BUILD
+uint vsmCompactCandidateOffset(ShadowPush push)
+{
+    uint offset = push.physicalPageCount * 2u + push.totalPages + (push.totalPages + 255u) / 256u;
+#if VSM_CLUSTER_PAGE_BITSET
+    offset += (push.totalPages + 31u) / 32u;
+#endif
+    return offset;
+}
+
+uint vsmCompactBatchCount(ShadowPush push)
+{
+    uint clusters = push.triangleCount / 64u + (push.triangleCount % 64u != 0u ? 1u : 0u);
+    return (clusters + 65534u) / 65535u;
 }
 #endif
 
@@ -148,8 +173,8 @@ float4 vsmProjectClip(float3 position, ShadowProjection projection)
 float3 vsmProjectPosition(float3 position, ShadowProjection projection)
 {
     float4 clip = vsmProjectClip(position, projection);
-#if VSM_DIRECTIONAL_BUILD
-    // Selected only for directional build; makeProjections writes metric.w=0.
+#if VSM_DIRECTIONAL_BUILD || VSM_DIRECTIONAL_MARK
+    // Entry-specific directional permutations; makeProjections writes metric.w=0.
     return clip.xyz;
 #else
     return projection.metric.w > 0.5 ? clip.xyz / clip.w : clip.xyz;
@@ -162,6 +187,9 @@ float3 vsmProjectPosition(float3 position, ShadowProjection projection)
 bool vsmReceiverDomain(float3 position, ShadowProjection projection, ShadowPush push, out bool nearPlane)
 {
     nearPlane = false;
+#if VSM_DIRECTIONAL_MARK
+    return true;
+#else
     if (projection.metric.w < 0.5) { return true; }
     float3 delta = position - projection.originNear.xyz;
     float distance = length(delta);
@@ -175,15 +203,18 @@ bool vsmReceiverDomain(float3 position, ShadowProjection projection, ShadowPush 
     }
     nearPlane = axial <= projection.originNear.w;
     return !nearPlane;
+#endif
 }
 
 bool vsmContains(float3 position, ShadowProjection projection, uint pageSize, bool inset)
 {
+#if !VSM_DIRECTIONAL_MARK
     if (projection.metric.w > 0.5) {
         // A canonical point face includes its boundary. Insetting it would
         // reject receivers exactly on a cube edge without selecting a neighbor.
         return all(position.xy >= -1.0) && all(position.xy <= 1.0) && position.z >= 0.0 && position.z <= 1.0;
     }
+#endif
     float margin = inset ? 1.0 / float(projection.page.y * pageSize) : 0.0;
     return all(position.xy >= -1.0 + margin) && all(position.xy < 1.0 - margin) &&
         position.z >= 0.0 && position.z <= 1.0;
@@ -193,7 +224,11 @@ uint2 vsmVirtualTexel(float3 position, ShadowProjection projection, uint pageSiz
 {
     uint resolution = projection.page.y * pageSize;
     uint2 texel = uint2(floor((position.xy * 0.5 + 0.5) * float(resolution)));
+#if VSM_DIRECTIONAL_MARK
+    return texel;
+#else
     return projection.metric.w > 0.5 ? min(texel, uint2(resolution - 1u)) : texel;
+#endif
 }
 
 uint vsmVirtualPage(uint2 texel, ShadowProjection projection, uint pageSize)
@@ -872,7 +907,14 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 #if VSM_CLUSTER_PAGE_BITSET
     if (id.x < (push.totalPages + 31u) / 32u) { owners[vsmClusterPageBitsetOffset(push) + id.x] = 0u; }
 #endif
+#if VSM_COMPACT_BUILD
+    uint argumentBatches = push.batchCount + push.coarseBatchCount;
+    if (id.x == 0u) { owners[vsmCompactCandidateOffset(push)] = 0u; }
+    argumentBatches += vsmCompactBatchCount(push);
+    if (id.x < argumentBatches * 3u) {
+#else
     if (id.x < (push.batchCount + push.coarseBatchCount) * 3u) {
+#endif
         arguments[id.x] = id.x % 3u == 0u ? 0u : 1u;
     }
 }
@@ -1292,11 +1334,93 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
 }
 #endif
 
+#if VSM_COMPACT_BUILD
+uint vsmCullCluster(uint firstTriangle, uint lane, ShadowPush push,
+    StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages)
+{
+    if (lane == 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterGroups, 1u);
+#endif
+        g_vsmClusterLevelMask = 0u;
+        float3 minimum, maximum;
+        g_vsmClusterValid = loadVirtualShadowMapClusterBounds(push.geometry, firstTriangle,
+            minimum, maximum) ? 1u : 0u;
+        g_vsmClusterMinimum = minimum;
+        g_vsmClusterMaximum = maximum;
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBoundsValidGroups, g_vsmClusterValid);
+#endif
+    }
+    GroupMemoryBarrierWithGroupSync();
+#if VSM_WORKLOAD_DIAGNOSTICS
+    // Keep the predicate's diagnostic side effects inside the lane/valid guard.
+    if (lane < push.clipmapCount && g_vsmClusterValid != 0u) {
+        if (vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
+            InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+        }
+    }
+#else
+    if (lane < push.clipmapCount && g_vsmClusterValid != 0u &&
+        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages
+#if VSM_CLUSTER_PAGE_BITSET
+            , push
+#endif
+        )) {
+        InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+    }
+#endif
+    GroupMemoryBarrierWithGroupSync();
+    uint levelMask = g_vsmClusterLevelMask;
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (lane == 0u && levelMask != 0u) { vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterSurvivingGroups, 1u); }
+#endif
+    return levelMask;
+}
+#endif
+
+#if VSM_COMPACT_BUILD
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+{
+    // The source ranges are aligned to 64 triangles. Rounded tail lanes still
+    // participate in the identical group-cooperative cluster predicate.
+    uint firstTriangle = push.workBase + group.x * 64u;
+    if (firstTriangle >= push.triangleCount || push.enabled == 0u) { return; }
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    if (statistics[16] == 0u) { return; }
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    uint levelMask = vsmCullCluster(firstTriangle, lane, push, projections, pages);
+    if (lane == 0u && levelMask != 0u) {
+        RWStructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+        uint offset = vsmCompactCandidateOffset(push);
+        uint slot;
+        InterlockedAdd(candidates[offset], 1u, slot);
+        // At most one candidate per source group: the full source-cluster
+        // capacity bounds this append and every indirect bin to 65535 groups.
+        candidates[offset + 1u + slot * 2u] = firstTriangle;
+        candidates[offset + 2u + slot * 2u] = levelMask;
+        RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
+        uint argument = (push.batchCount + push.coarseBatchCount + slot / 65535u) * 3u;
+        InterlockedAdd(arguments[argument], 1u);
+    }
+}
+#endif
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
+#if VSM_COMPACT_BUILD
+    StructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    uint candidate = vsmCompactCandidateOffset(push) + 1u + (push.workBase + group.x) * 2u;
+    uint triangleIndex = candidates[candidate] + lane;
+    uint levelMask = candidates[candidate + 1u];
+    if (triangleIndex >= push.triangleCount) { return; }
+#else
     uint triangleIndex = push.workBase + id.x;
 #if VSM_CLUSTER_CULL
     // Each CPU dispatch starts at a multiple of 64, including batched draws.
@@ -1306,11 +1430,14 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #else
     if (triangleIndex >= push.triangleCount || push.enabled == 0u) { return; }
 #endif
+#endif
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+#if !VSM_COMPACT_BUILD
     if (statistics[16] == 0u) { return; }
+#endif
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-#if VSM_CLUSTER_CULL
+#if VSM_CLUSTER_CULL && !VSM_COMPACT_BUILD
     if (lane == 0u) {
 #if VSM_WORKLOAD_DIAGNOSTICS
         vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterGroups, 1u);

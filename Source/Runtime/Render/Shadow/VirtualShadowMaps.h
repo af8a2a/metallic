@@ -41,13 +41,16 @@ struct VirtualShadowMapLight
 struct VirtualShadowMapSettings
 {
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
+    bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
     bool optimizeMark = true;
     bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.
     bool optimizeMarkSamples = true; // Reuse invariant Mark work for local lights; directional uses the original path.
+    bool directionalMark = false; // Experimental Mark-only orthographic specialization; preserves receiver/sample demands.
     bool clusterCulling = true;
     bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.
     bool trianglePageBitset = true; // Enumerate dirty fine pages; requires the effective cluster-page bitset.
     bool directionalBuild = true; // Build-only orthographic shader specialization; local lights stay generic.
+    bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
     uint32_t clipmapCount = 4;

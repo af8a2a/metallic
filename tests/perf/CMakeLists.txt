@@ -17,6 +17,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicVirtualShadowMapGPUProfileTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapGPUProfile.py")
     set_tests_properties(MetallicVirtualShadowMapGPUProfileTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
+    add_test(NAME MetallicVirtualShadowMapBuildAttributionTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapBuildAttribution.py")
+    set_tests_properties(MetallicVirtualShadowMapBuildAttributionTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
     add_test(NAME MetallicSPIRVComplexityTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestSPIRVComplexity.py")
     set_tests_properties(MetallicSPIRVComplexityTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)

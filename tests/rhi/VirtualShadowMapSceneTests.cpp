@@ -2457,11 +2457,15 @@ public:
             registerProfilingEvidencePass();
             require(VirtualShadowMapSettings{}.clusterPageBitset, "Production VSM settings must default to dirty-page bitsets");
             require(VirtualShadowMapSettings{}.trianglePageBitset, "Production VSM settings must default to triangle dirty-page bitsets");
+            require(!VirtualShadowMapSettings{}.profileBuildSubstages, "Build substage attribution must default off");
             const auto fixture = writeLocalFixture(directory / "Fixture", false);
             constexpr std::array modes{"Off", "Timing", "Work", "Both"};
             constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection"};
+            constexpr std::array buildStages{"VSM build direct", "VSM build compact", "VSM build compact sync",
+                "VSM build indirect", "VSM build finalize sync", "VSM build finalize"};
             for (uint32_t variant = 0; variant < 5; ++variant) {
                 const bool local = variant == 1 || variant == 2, compact = variant == 2, streamed = variant == 3, tiny = variant == 4;
+                const bool compactBuild = variant == 2, splitBuild = !tiny;
                 const std::string label = local ? (compact ? "CompactSMRT" : "LegacyPCF") : streamed ? "StreamSingleHard" :
                     tiny ? "TinySingleHard" : "SingleHard";
                 // Small allocations exercise reset's diagnostic-driven dispatch size.
@@ -2502,7 +2506,8 @@ public:
                          {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002}, {"shadowDebug", true},
                          {"cacheEnabled", true}, {"receiverFootprint", false}, {"filter", compact ? "smrt" : local ? "pcf" : "hard"},
                          {"smrtRayCount", 2}, {"smrtSamplesPerRay", 2}, {"smrtTemporalEnabled", false},
-                         {"benchmarkGPUProfile", timing}, {"benchmarkGPUWork", work}});
+                         {"benchmarkGPUProfile", timing}, {"benchmarkGPUWork", work}, {"benchmarkCompactBuild", compactBuild},
+                         {"benchmarkBuildSubstages", timing && splitBuild}});
                     graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
                     graph.addNode("VSMProfilingEvidencePass", evidence,
                         {{"layers", layers}, {"faces", faces}, {"collectWork", work}, {"evidenceName", name}});
@@ -2561,6 +2566,36 @@ public:
                             }
                             require(count == (timing ? activeFaces : 0), std::string("GPU stage toggle/count mismatch: ") + stage);
                             durations[stage] = {{"count", count}, {"gpuMs", total}};
+                        }
+                        std::vector<double> childTimes(node->sections.size(), 0);
+                        std::vector<uint32_t> childCounts(node->sections.size(), 0);
+                        for (size_t stageIndex = 0; stageIndex < buildStages.size(); ++stageIndex) {
+                            const char* stage = buildStages[stageIndex];
+                            const bool branch = stageIndex >= 4 || (compactBuild ? stageIndex != 0 : stageIndex == 0);
+                            size_t count = 0; double total = 0;
+                            for (size_t index = 0; index < node->sections.size(); ++index) {
+                                const auto& section = node->sections[index];
+                                if (section.name != stage) { continue; }
+                                ++count;
+                                require(!section.cpuOnly && section.gpuTimingAvailable && std::isfinite(section.gpuMilliseconds) && section.gpuMilliseconds >= 0,
+                                    std::string("Invalid build substage timing: ") + stage);
+                                require(section.parent < index && node->sections[section.parent].name == "VSM build",
+                                    "Build substage is not a direct child of the aggregate build interval");
+                                childTimes[section.parent] += section.gpuMilliseconds;
+                                ++childCounts[section.parent];
+                                total += section.gpuMilliseconds;
+                            }
+                            require(count == (timing && splitBuild && branch ? activeFaces : 0),
+                                std::string("Build substage toggle/branch/count mismatch: ") + stage);
+                            durations[stage] = {{"count", count}, {"gpuMs", total}};
+                        }
+                        for (size_t index = 0; index < node->sections.size(); ++index) {
+                            const auto& section = node->sections[index];
+                            if (section.name != "VSM build") { continue; }
+                            require(childCounts[index] == (splitBuild ? (compactBuild ? 5u : 3u) : 0u),
+                                "Incomplete per-face build substage intervals");
+                            require(childTimes[index] <= section.gpuMilliseconds + std::max(1e-5, section.gpuMilliseconds * 1e-5),
+                                "Build substages exceed their aggregate interval");
                         }
                         entry["timings"][modes[mode]] = std::move(durations);
                         if (mode != 0) {
@@ -2651,14 +2686,16 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, TriangleBitset, DirectionalBuild };
+enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, DirectionalMark, TriangleBitset, DirectionalBuild, CompactBuild };
 
 class VirtualShadowMapEquivalenceTest : public RHITest
 {
 public:
     explicit VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode mode) : mode_(mode)
     {
-        name = mode == VirtualShadowMapEquivalenceMode::DirectionalBuild ? "virtual_shadow_map_directional_build_equivalence" :
+        name = mode == VirtualShadowMapEquivalenceMode::CompactBuild ? "virtual_shadow_map_compact_build_equivalence" :
+            mode == VirtualShadowMapEquivalenceMode::DirectionalMark ? "virtual_shadow_map_directional_mark_equivalence" :
+            mode == VirtualShadowMapEquivalenceMode::DirectionalBuild ? "virtual_shadow_map_directional_build_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::TriangleBitset ? "virtual_shadow_map_triangle_page_bitset_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::MarkSamples ? "virtual_shadow_map_mark_samples_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::ClusterBitset ? "virtual_shadow_map_cluster_page_bitset_equivalence" :
@@ -2671,9 +2708,13 @@ public:
         bench::ValidationRecorder validation;
         const bool bitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::ClusterBitset;
         const bool markSamplesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkSamples;
+        const bool directionalMarkComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalMark;
         const bool triangleBitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::TriangleBitset;
         const bool directionalBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalBuild;
-        const std::string reportName = directionalBuildComparison ? "VirtualShadowMapDirectionalBuildEquivalence" :
+        const bool compactBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::CompactBuild;
+        const std::string reportName = compactBuildComparison ? "VirtualShadowMapCompactBuildEquivalence" :
+            directionalMarkComparison ? "VirtualShadowMapDirectionalMarkEquivalence" :
+            directionalBuildComparison ? "VirtualShadowMapDirectionalBuildEquivalence" :
             triangleBitsetComparison ? "VirtualShadowMapTrianglePageBitsetEquivalence" :
             markSamplesComparison ? "VirtualShadowMapMarkSamplesEquivalence" :
             bitsetComparison ? "VirtualShadowMapClusterPageBitsetEquivalence" : "VirtualShadowMapOptimizationEquivalence";
@@ -2702,7 +2743,8 @@ public:
                 .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
 
             constexpr uint32_t capacity = 4;
-            const std::vector<const char*> baseArms = directionalBuildComparison ? std::vector<const char*>{"Generic", "Directional"} :
+            const std::vector<const char*> baseArms = compactBuildComparison ? std::vector<const char*>{"Direct", "Compact"} :
+                (directionalBuildComparison || directionalMarkComparison) ? std::vector<const char*>{"Generic", "Directional"} :
                 triangleBitsetComparison ? std::vector<const char*>{"Baseline", "TriangleBitset"} :
                 markSamplesComparison ? std::vector<const char*>{"Baseline", "Prepared"} :
                 bitsetComparison ? std::vector<const char*>{"Baseline", "Bitset"} :
@@ -2724,6 +2766,18 @@ public:
             }
             uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0, bitsetControlStates = 0;
             uint64_t markSamplesStates = 0, markSamplesControlStates = 0;
+            uint64_t directionalMarkStates = 0, directionalMarkControlStates = 0;
+            std::array<uint64_t, 2> directionalMarkReceiversByPass{}, localMarkReceiversByType{};
+            if (directionalMarkComparison) {
+                report["selectionControls"] = {
+                    {"Generic",{{"directionalMark",true},{"benchmarkDirectionalMark",false},{"benchmarkLegacyMark",false}}},
+                    {"Directional",{{"directionalMark",false},{"benchmarkDirectionalMark",true},{"benchmarkLegacyMark",false}}},
+                    {"Default",{{"benchmarkLegacyMark",false}}},
+                    {"GenericLegacyMark",{{"directionalMark",true},{"benchmarkDirectionalMark",false},{"benchmarkLegacyMark",true}}},
+                    {"DirectionalLegacyMark",{{"directionalMark",false},{"benchmarkDirectionalMark",true},{"benchmarkLegacyMark",true}}}};
+                report["productionDefault"] = VirtualShadowMapSettings{}.directionalMark;
+                require(!VirtualShadowMapSettings{}.directionalMark, "Directional Mark specialization must remain opt-in until performance acceptance");
+            }
             uint64_t triangleBitsetStates = 0, triangleBitsetControlStates = 0, triangleBitsetReducedStates = 0;
             std::array<uint64_t, 2> triangleBitsetWordsByPass{};
             if (triangleBitsetComparison) {
@@ -2746,11 +2800,27 @@ public:
                     {"GenericNoCull",{{"directionalBuild",false},{"benchmarkDisableClusterCull",true}}},
                     {"DirectionalNoCull",{{"benchmarkDisableClusterCull",true}}}};
             }
+            uint64_t compactBuildStates = 0, compactBuildControlStates = 0;
+            uint64_t compactAllSurviveFaces = 0, compactPartialSurviveFaces = 0, compactWarmFaces = 0;
+            std::array<uint64_t, 2> compactBuildTrianglesByPass{};
+            if (compactBuildComparison) {
+                report["selectionControls"] = {
+                    {"Direct",{{"benchmarkCompactBuild",false}}},
+                    {"Compact",{{"benchmarkCompactBuild",true}}},
+                    {"DirectPages",{{"benchmarkCompactBuild",false},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
+                    {"CompactPages",{{"benchmarkCompactBuild",true},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
+                    {"DirectNoCull",{{"benchmarkCompactBuild",false},{"benchmarkDisableClusterCull",true}}},
+                    {"CompactNoCull",{{"benchmarkCompactBuild",true},{"benchmarkDisableClusterCull",true}}},
+                    {"DirectGeneric",{{"benchmarkCompactBuild",false},{"benchmarkDirectionalBuild",false}}},
+                    {"CompactGeneric",{{"benchmarkCompactBuild",true},{"benchmarkDirectionalBuild",false}}}};
+            }
             std::array<uint64_t, 2> defaultBitsetLevelsByPass{};
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
-                    const std::vector<std::string> filters = mainMatrix ? ((triangleBitsetComparison || directionalBuildComparison) ?
+                    const std::vector<std::string> filters = mainMatrix ? (directionalMarkComparison ?
+                        std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} :
+                        (triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-max"} : markSamplesComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} : bitsetComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33"} :
@@ -2762,13 +2832,19 @@ public:
                             (filter == "single-hard" || filter == "smrt");
                         const bool markSamplesControls = markSamplesComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
+                        const bool directionalMarkControls = directionalMarkComparison && mainMatrix && !streamed &&
+                            (filter == "single-hard" || filter == "smrt");
                         const bool triangleBitsetControls = triangleBitsetComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
                         const bool directionalBuildControls = directionalBuildComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
+                        const bool compactBuildControls = compactBuildComparison && mainMatrix && !streamed &&
+                            (filter == "single-hard" || filter == "smrt");
                         auto arms = baseArms;
+                        if (compactBuildControls) { arms.insert(arms.end(), {"DirectPages", "CompactPages", "DirectNoCull", "CompactNoCull", "DirectGeneric", "CompactGeneric"}); }
                         if (directionalBuildControls) { arms.insert(arms.end(), {"GenericPages", "DirectionalPages", "GenericNoCull", "DirectionalNoCull"}); }
                         if (markSamplesControls) { arms.push_back("PreparedLegacyMark"); }
+                        if (directionalMarkControls) { arms.insert(arms.end(), {"Default", "GenericLegacyMark", "DirectionalLegacyMark"}); }
                         if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
                         if (triangleBitsetControls) { arms.insert(arms.end(), {"ProductionOff", "ClusterBitsetOff", "CullDisabled"}); }
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
@@ -2814,9 +2890,28 @@ public:
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", filter == "smrt-one" ? 1 : 2},
                                  {"smrtSamplesPerRay", filter == "smrt-max" ? 32 : 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
-                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || triangleBitsetComparison || directionalBuildComparison) ? false : (arm & 1) == 0},
-                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || triangleBitsetComparison || directionalBuildComparison) ? false : (arm & 2) == 0},
+                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || directionalMarkComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 1) == 0},
+                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || directionalMarkComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 2) == 0},
                                  {"benchmarkClusterPageBitset", false}, {"benchmarkTrianglePageBitset", false}};
+                            if (directionalMarkComparison) {
+                                // Conflicting production values exercise benchmark precedence;
+                                // the Default control omits both properties.
+                                if (arm != 2) {
+                                    const bool specialized = arm == 1 || arm == 4;
+                                    settings["directionalMark"] = !specialized;
+                                    settings["benchmarkDirectionalMark"] = specialized;
+                                }
+                                settings["benchmarkLegacyMark"] = arm >= 3;
+                                settings["benchmarkClusterPageBitset"] = true;
+                                settings["benchmarkTrianglePageBitset"] = true;
+                            }
+                            if (compactBuildComparison) {
+                                settings["benchmarkCompactBuild"] = (arm & 1u) != 0u;
+                                settings["benchmarkClusterPageBitset"] = arm < 2 || arm >= 4;
+                                settings["benchmarkTrianglePageBitset"] = arm < 2 || arm >= 4;
+                                settings["benchmarkDisableClusterCull"] = arm == 4 || arm == 5;
+                                if (arm >= 6) { settings["benchmarkDirectionalBuild"] = false; }
+                            }
                             if (directionalBuildComparison) {
                                 // Odd default arms omit both switches; controls also cover
                                 // production opt-out and benchmark precedence in both directions.
@@ -2914,16 +3009,53 @@ public:
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
                                 requireBuildDiagnosticInvariants(snapshot,
-                                    directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
+                                    compactBuildComparison ? arm != 4 && arm != 5 : directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || directionalMarkComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
                                     label + "-" + phase + "-" + arms[arm],
-                                    directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || (bitsetComparison && arm == 1));
+                                    compactBuildComparison ? arm < 2 || arm >= 6 : directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || directionalMarkComparison || (bitsetComparison && arm == 1));
                                 if (arm != 0) {
                                     require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
                                         snapshot.depth == snapshots[0].depth && snapshot.statistics == snapshots[0].statistics,
                                         label + "-" + phase + ": " + arms[arm] + " changed images/depth or the 32-word statistics ABI");
                                 }
                             }
-                            if (directionalBuildComparison) {
+                            if (compactBuildComparison) {
+                                ++compactBuildStates;
+                                compactBuildControlStates += compactBuildControls;
+                                compactBuildTrianglesByPass[single ? 0 : 1] += work[1][kVSMWorkBuildDecodedTriangles];
+                                for (uint32_t face = 0; face < faces; ++face) {
+                                    const auto& counters = snapshots[1].buildDiagnostics[face];
+                                    const auto& stats = snapshots[1].statistics[face];
+                                    const uint64_t groups = counters[kVSMBuildDiagnosticClusterGroups];
+                                    const uint64_t surviving = counters[kVSMBuildDiagnosticClusterSurvivingGroups];
+                                    compactAllSurviveFaces += groups > 0 && surviving == groups;
+                                    compactPartialSurviveFaces += surviving > 0 && surviving < groups;
+                                    if (frame == 1 && stats[11] > 0) {
+                                        require(groups == 0 && surviving == 0 &&
+                                            snapshots[1].workload[face][kVSMWorkBuildActiveTriangleSlots] == 0,
+                                            label + ": warm compact build retained candidate work");
+                                        ++compactWarmFaces;
+                                    }
+                                }
+                                for (uint32_t arm = 1; arm < arms.size(); arm += 2) {
+                                    const auto& baseline = snapshots[arm - 1];
+                                    const auto& candidate = snapshots[arm];
+                                    require(candidate.buildDiagnostics == baseline.buildDiagnostics,
+                                        label + "-" + phase + ": compact build changed precheck or triangle diagnostics");
+                                    for (uint32_t face = 0; face < faces; ++face) {
+                                        for (const auto* snapshot : {&baseline, &candidate}) {
+                                            const auto& counts = snapshot->workload[face];
+                                            require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
+                                                (snapshot->statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
+                                                label + "-" + phase + ": invalid shared Mark request count");
+                                        }
+                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
+                                            require(candidate.workload[face][counter] == baseline.workload[face][counter],
+                                                label + "-" + phase + ": compact build changed deterministic work");
+                                        }
+                                    }
+                                }
+                            } else if (directionalBuildComparison) {
                                 ++directionalBuildStates;
                                 directionalBuildControlStates += directionalBuildControls;
                                 directionalBuildTrianglesByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkBuildDecodedTriangles];
@@ -2996,19 +3128,39 @@ public:
                                         }
                                     }
                                 }
-                            } else if (markSamplesComparison) {
-                                ++markSamplesStates;
-                                markSamplesControlStates += markSamplesControls;
+                            } else if (markSamplesComparison || directionalMarkComparison) {
+                                if (directionalMarkComparison) {
+                                    ++directionalMarkStates;
+                                    directionalMarkControlStates += directionalMarkControls;
+                                    directionalMarkReceiversByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkMarkReceiverDispatches];
+                                    // Multi-light blocks reserve six faces each: Sun, Moon, Point, Spot.
+                                    if (!single) {
+                                        for (uint32_t face = 12; face < faces; ++face) {
+                                            localMarkReceiversByType[(face - 12) / 6] += snapshots[1].workload[face][kVSMWorkMarkReceiverDispatches];
+                                        }
+                                    }
+                                    for (const auto& snapshot : snapshots) {
+                                        for (uint32_t face = 0; face < faces; ++face) {
+                                            const auto& counts = snapshot.workload[face];
+                                            require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
+                                                (snapshot.statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
+                                                label + "-" + phase + ": invalid Mark request count");
+                                        }
+                                    }
+                                } else {
+                                    ++markSamplesStates;
+                                    markSamplesControlStates += markSamplesControls;
+                                }
                                 for (uint32_t arm = 1; arm < arms.size(); ++arm) {
                                     require(snapshots[arm].buildDiagnostics == snapshots[0].buildDiagnostics,
-                                        label + "-" + phase + ": sample preparation changed build diagnostics");
+                                        label + "-" + phase + ": Mark optimization changed build diagnostics");
                                     for (uint32_t face = 0; face < faces; ++face) {
                                         for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
                                             // Only the shared page cache's atomic issue count depends on scheduling.
                                             // Sample generation and per-level tests retain their original semantics.
                                             if (counter == kVSMWorkMarkPageRequests) { continue; }
                                             require(snapshots[0].workload[face][counter] == snapshots[arm].workload[face][counter],
-                                                label + "-" + phase + ": sample preparation changed deterministic GPU work");
+                                                label + "-" + phase + ": Mark optimization changed deterministic GPU work");
                                         }
                                     }
                                 }
@@ -3061,7 +3213,18 @@ public:
                     }
                 }
             }
-            if (directionalBuildComparison) {
+            if (compactBuildComparison) {
+                report["compactBuildStates"] = compactBuildStates;
+                report["compactBuildControlStates"] = compactBuildControlStates;
+                report["compactBuildTrianglesByPass"] = {{"single",compactBuildTrianglesByPass[0]},{"lights",compactBuildTrianglesByPass[1]}};
+                report["compactAllSurviveFaces"] = compactAllSurviveFaces;
+                report["compactPartialSurviveFaces"] = compactPartialSurviveFaces;
+                report["compactWarmFaces"] = compactWarmFaces;
+                require(compactBuildStates == 72 && compactBuildControlStates == 10 && compactAllSurviveFaces > 0 &&
+                    compactPartialSurviveFaces > 0 && compactWarmFaces > 0 &&
+                    compactBuildTrianglesByPass[0] > 0 && compactBuildTrianglesByPass[1] > 0,
+                    "Compact build matrix did not exercise both passes, surviving/empty work and explicit fallback controls");
+            } else if (directionalBuildComparison) {
                 report["directionalBuildStates"] = directionalBuildStates;
                 report["directionalBuildControlStates"] = directionalBuildControlStates;
                 report["directionalBuildTrianglesByPass"] = {{"single",directionalBuildTrianglesByPass[0]},{"lights",directionalBuildTrianglesByPass[1]}};
@@ -3077,6 +3240,15 @@ public:
                 require(triangleBitsetStates == 72 && triangleBitsetControlStates == 10 && triangleBitsetReducedStates > 0 &&
                     triangleBitsetWordsByPass[0] > 0 && triangleBitsetWordsByPass[1] > 0,
                     "Triangle bitset matrix did not exercise both pass types and all explicit fallback controls");
+            } else if (directionalMarkComparison) {
+                report["directionalMarkStates"] = directionalMarkStates;
+                report["directionalMarkControlStates"] = directionalMarkControlStates;
+                report["directionalMarkReceiversByPass"] = {{"single",directionalMarkReceiversByPass[0]},{"lights",directionalMarkReceiversByPass[1]}};
+                report["localMarkReceiversByType"] = {{"point",localMarkReceiversByType[0]},{"spot",localMarkReceiversByType[1]}};
+                require(directionalMarkStates == 82 && directionalMarkControlStates == 10 &&
+                    directionalMarkReceiversByPass[0] > 0 && directionalMarkReceiversByPass[1] > 0 &&
+                    localMarkReceiversByType[0] > 0 && localMarkReceiversByType[1] > 0,
+                    "Directional Mark matrix did not cover both passes, local-light fallbacks, default and shared-cache controls");
             } else if (markSamplesComparison) {
                 report["markSamplesStates"] = markSamplesStates;
                 report["markSamplesControlStates"] = markSamplesControlStates;
@@ -3095,7 +3267,9 @@ public:
                 require(clusterReducedStates > 0, "Optimization matrix did not exercise a rejected stream cluster");
             }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
-            return RHITestResult::pass(directionalBuildComparison ?
+            return RHITestResult::pass(compactBuildComparison ?
+                "Compacted indirect build preserves images, statistics, diagnostics and deterministic work across both passes, light types and cache/overflow states" : directionalMarkComparison ?
+                "Directional Mark specialization preserves images, statistics, diagnostics and deterministic work across both passes, all filters, local lights and cache/overflow states" : directionalBuildComparison ?
                 "Directional build specialization preserves images, statistics, diagnostics and deterministic work across both passes, local lights and page/culling modes" : triangleBitsetComparison ?
                 "Exact triangle bitsets preserve images, admission, emitted work and overflow recovery while eliminating per-page metadata reads" : markSamplesComparison ?
                 "Prepared Mark samples preserve images, depth, page admission, statistics and deterministic work across all filters, light types and cache states" : bitsetComparison ?
@@ -3134,6 +3308,14 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkSamplesEquivalenceTest);
 
+class VirtualShadowMapDirectionalMarkEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapDirectionalMarkEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::DirectionalMark) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalMarkEquivalenceTest);
+
 class VirtualShadowMapTrianglePageBitsetEquivalenceTest final : public VirtualShadowMapEquivalenceTest
 {
 public:
@@ -3149,6 +3331,14 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalBuildEquivalenceTest);
+
+class VirtualShadowMapCompactBuildEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapCompactBuildEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::CompactBuild) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCompactBuildEquivalenceTest);
 
 } // namespace
 } // namespace metallic::tests

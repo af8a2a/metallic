@@ -255,12 +255,14 @@ struct VirtualShadowMaps::Programs
     bool optimizeMark = true;
     bool optimizeProjectionStatistics = false;
     bool optimizeMarkSamples = false;
+    bool directionalMark = false;
     bool clusterCulling = true;
     bool clusterPageBitset = false;
     bool trianglePageBitset = false;
     bool directionalBuild = false;
-    std::array<std::unique_ptr<ShaderModule>, 14> shaders;
-    std::array<std::unique_ptr<ComputePipeline>, 10> compute;
+    bool compactBuild = false;
+    std::array<std::unique_ptr<ShaderModule>, 15> shaders;
+    std::array<std::unique_ptr<ComputePipeline>, 11> compute;
     std::unique_ptr<GraphicsPipeline> raster;
     std::unique_ptr<GraphicsPipeline> clear;
 };
@@ -467,6 +469,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool clusterPageBitset = settings.clusterCulling && settings.clusterPageBitset;
     const bool trianglePageBitset = clusterPageBitset && settings.trianglePageBitset;
     const bool directionalBuild = directional && settings.directionalBuild;
+    const bool directionalMark = directional && settings.directionalMark;
+    const bool compactBuild = settings.clusterCulling && settings.compactBuild;
     // The local-light permutation has confirmed gains; directional hoisting regressed Mark.
     const bool optimizeMarkSamples = settings.optimizeMarkSamples && !directional;
     const auto finite = [](const Vector& value) {
@@ -695,11 +699,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     // Append after owner/rank/block/candidate scratch. No allocation reader
     // aliases these words while Admit and Assign publish the dirty-page mask.
     const uint32_t clusterPageBitsetWords = clusterPageBitset ? (push.totalPages + 31u) / 32u : 0u;
+    const uint32_t clusterCapacity = push.triangleCount / 64u + (push.triangleCount % 64u != 0u ? 1u : 0u);
+    const uint32_t compactBatches = compactBuild ? (clusterCapacity + kDrawBatchSize - 1) / kDrawBatchSize : 0u;
+    const uint64_t compactWords = compactBuild ? 1u + uint64_t(clusterCapacity) * 2u : 0u;
+    const uint64_t compactArgumentOffset = uint64_t(push.batchCount + push.coarseBatchCount) * 12u;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u),
-        projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), uint64_t(push.batchCount + push.coarseBatchCount) * 12,
-        pageChanges.size() * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords) * sizeof(uint32_t)};
+        projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), compactArgumentOffset + uint64_t(compactBatches) * 12u,
+        pageChanges.size() * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + compactWords) * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
         pageChanges.data(), nullptr};
@@ -825,9 +833,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->collectGPUWork != settings.collectGPUWork ||
         programs_->optimizeProjectionStatistics != settings.optimizeProjectionStatistics ||
         programs_->optimizeMark != settings.optimizeMark || programs_->optimizeMarkSamples != optimizeMarkSamples ||
+        programs_->directionalMark != directionalMark ||
         programs_->clusterCulling != settings.clusterCulling ||
         programs_->clusterPageBitset != clusterPageBitset || programs_->trianglePageBitset != trianglePageBitset ||
-        programs_->directionalBuild != directionalBuild;
+        programs_->directionalBuild != directionalBuild || programs_->compactBuild != compactBuild;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
         std::filesystem::path generatedDirectory;
@@ -841,13 +850,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->optimizeProjectionStatistics = settings.optimizeProjectionStatistics;
         programs->optimizeMark = settings.optimizeMark;
         programs->optimizeMarkSamples = optimizeMarkSamples;
+        programs->directionalMark = directionalMark;
         programs->clusterCulling = settings.clusterCulling;
         programs->clusterPageBitset = clusterPageBitset;
         programs->trianglePageBitset = trianglePageBitset;
         programs->directionalBuild = directionalBuild;
+        programs->compactBuild = compactBuild;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
-            "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain"};
+            "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -858,12 +869,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             SlangMacroDefine{"VSM_OPTIMIZE_MARK_SAMPLES", optimizeMarkSamples ? "1" : "0"},
             SlangMacroDefine{"VSM_CLUSTER_CULL", settings.clusterCulling ? "1" : "0"},
             SlangMacroDefine{"VSM_CLUSTER_PAGE_BITSET", clusterPageBitset ? "1" : "0"},
-            SlangMacroDefine{"VSM_TRIANGLE_PAGE_BITSET", trianglePageBitset ? "1" : "0"},
-            SlangMacroDefine{"VSM_DIRECTIONAL_BUILD", directionalBuild ? "1" : "0"}};
+            SlangMacroDefine{"VSM_TRIANGLE_PAGE_BITSET", trianglePageBitset ? "1" : "0"}};
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
-            // Only build consumes this permutation. Other entrypoints retain
-            // their original macro set and shader identity.
-            const auto entryMacros = std::span(macros).first(index == 3 ? macros.size() : macros.size() - 1);
+            if (index == 14 && !compactBuild) { continue; }
+            const bool buildEntry = index == 3 || index == 14;
+            const bool compactEntry = index == 0 || buildEntry;
+            std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
+            if (index == 1) { entryMacros.push_back({"VSM_DIRECTIONAL_MARK", directionalMark ? "1" : "0"}); }
+            if (buildEntry) { entryMacros.push_back({"VSM_DIRECTIONAL_BUILD", directionalBuild ? "1" : "0"}); }
+            if (compactEntry) { entryMacros.push_back({"VSM_COMPACT_BUILD", compactBuild ? "1" : "0"}); }
             auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
                 .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = paths,
                 .capabilities = capabilities, .macroDefines = entryMacros}, log);
@@ -871,11 +885,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
             if (!module) { return std::unexpected(module.error()); }
             programs->shaders[index] = std::move(*module);
-            if (index == 1 || index == 3 || index == 5) {
+            if (index == 1 || index == 3 || index == 5 || index == 14) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={}", entries[index],
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
-                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics, index == 3 && directionalBuild);
+                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics, buildEntry && directionalBuild, compactEntry && compactBuild, index == 1 && directionalMark);
             }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
@@ -940,7 +954,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint32_t statisticsResetThreads = settings.collectGPUWork ?
         (kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize) / sizeof(uint32_t) : 32u;
     if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, statisticsResetThreads,
-        (push.batchCount + push.coarseBatchCount) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
+        (push.batchCount + push.coarseBatchCount + compactBatches) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
     gpu.next("VSM mark");
     if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
@@ -958,24 +972,58 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
     gpu.next("VSM build");
-    if (push.triangleCount && enabled) {
+    auto buildGpu = gpuProfiler && settings.profileBuildSubstages ?
+        gpuProfiler->profileScope(commands, compactBuild ? "VSM build compact" : "VSM build direct") :
+        RenderGraphExecutionContext::ProfileScope{};
+    const bool buildTriangles = push.triangleCount && enabled;
+    if (buildTriangles) {
         // Compute dispatch limit is 65535 workgroups; split immutable triangle ranges.
         for (uint32_t base = 0; base < push.triangleCount;) {
             push.workBase = base;
             const uint32_t count = std::min(push.triangleCount - base, kDrawBatchSize * 64);
-            if (auto r = dispatch(3, (count + 63) / 64); !r) { return std::unexpected(r.error()); }
+            if (auto r = dispatch(compactBuild ? 10 : 3, (count + 63) / 64); !r) { return std::unexpected(r.error()); }
             base += count;
             if (base < push.triangleCount) {
-                if (auto r = barrier({3, 4}); !r) { return std::unexpected(r.error()); }
+                if (auto r = barrier(compactBuild ? std::initializer_list<size_t>{4, 7, 9} : std::initializer_list<size_t>{3, 4});
+                    !r) { return std::unexpected(r.error()); }
             }
         }
     }
+    if (compactBuild) {
+        buildGpu.next("VSM build compact sync");
+        if (buildTriangles) {
+            // Both consumers share the compute-write source scope, so one
+            // publication dependency can cover shader and indirect reads.
+            if (auto r = barrier({9, 4, 7}, PipelineStageBits::ComputeShader | PipelineStageBits::DrawIndirect,
+                    AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::IndirectRead);
+                !r) { return std::unexpected(r.error()); }
+        }
+        buildGpu.next("VSM build indirect");
+        if (buildTriangles) {
+            for (uint32_t batch = 0; batch < compactBatches; ++batch) {
+                push.workBase = batch * kDrawBatchSize;
+                if (auto r = commands.bindExecution(state->programs->compute[3]->execution(), &push, sizeof(push));
+                    !r) { return std::unexpected(r.error()); }
+                auto arguments = state->resources->buffers[7]->slice({compactArgumentOffset + uint64_t(batch) * 12u, 12});
+                if (!arguments) { return std::unexpected(arguments.error()); }
+                if (auto r = commands.dispatchIndirect(*arguments); !r) { return std::unexpected(r.error()); }
+                if (batch + 1 < compactBatches) {
+                    if (auto r = barrier({3, 4}); !r) { return std::unexpected(r.error()); }
+                }
+            }
+            // Finalize writes the original draw-argument prefix only. The
+            // indirect reads above address the disjoint appended dispatch tail.
+        }
+    }
+    buildGpu.next("VSM build finalize sync");
     if (auto r = barrier({4}); !r) { return std::unexpected(r.error()); }
+    buildGpu.next("VSM build finalize");
     if (auto r = dispatch(4, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63) / 64); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({3, 1, 9}, PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({7}, PipelineStageBits::DrawIndirect, AccessBits::IndirectRead); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4}, settings.collectGPUWork ? PipelineStageBits::PreRasterization : PipelineStageBits::ComputeShader);
         !r) { return std::unexpected(r.error()); }
+    buildGpu.end();
     if (!gpuProfiler) { commands.endDebugLabel(); }
     gpu.next("VSM raster");
     phase.next("Record VSM raster commands");
