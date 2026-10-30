@@ -16,6 +16,7 @@ namespace metallic::render {
 struct VirtualShadowMapCasterResources;
 struct CPUProfileRecorder;
 class RenderGraphExecutionContext;
+class VirtualShadowMaps;
 
 enum class VirtualShadowMapLightType : uint32_t { Directional, Spot, PointFace };
 enum class VirtualShadowMapFilter : uint32_t { Hard, PCF, SMRT };
@@ -89,9 +90,19 @@ struct VirtualShadowMapResult
 struct VirtualShadowMapProjectionTarget
 {
     Texture* shadow = nullptr;
-    Texture* debug = nullptr;
+    Texture* debug = nullptr; // Optional: null omits the debug allocation, binding and writes.
     uint32_t layer = 0;
     bool sharedPointLayer = false;
+};
+
+// Ordered per-light projections. Point lights contain all six canonical faces;
+// filtered point groups share one prepared face table. Other lights have one face.
+struct VirtualShadowMapProjectionGroup
+{
+    std::array<VirtualShadowMaps*, 6> faces{};
+    std::array<VirtualShadowMapResult, 6> results{};
+    uint32_t faceCount = 0;
+    bool filteredPoint = false;
 };
 
 struct VirtualShadowMapMemoryUsage
@@ -140,6 +151,12 @@ public:
     Result<> project(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log,
         CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr);
 
+    // Shares CPU point-table preparation and its resource dependencies, while
+    // retaining one push-constant projection dispatch per face. Empty input is
+    // valid; a single face delegates to project().
+    static Result<> projectShared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
+        std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr);
+
     // Logical resource bytes currently owned by this cache, recording and pool.
     // Native padding and retired recordings outside this cache/pool are excluded;
     // use Device::memoryBudget() for whole-device live/peak allocation evidence.
@@ -149,6 +166,8 @@ public:
     VirtualShadowMapResourcePoolStats resourcePoolStats() const;
 
 private:
+    Result<> preparePointFaces(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
+    Result<> projectPrepared(CommandBuffer& commands, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
     struct Programs;
     struct State;
     struct Cache;

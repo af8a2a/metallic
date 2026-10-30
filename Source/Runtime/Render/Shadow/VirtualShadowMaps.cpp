@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cfloat>
+#include <cassert>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -765,6 +766,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         });
         if (index != 0 && output) {
             auto* target = index == 1 ? output->shadow : output->debug;
+            if (index == 2 && !target) {
+                pool_->externalViews[1].reset();
+                push.debug = UINT32_MAX;
+                continue;
+            }
             if (!target || target->desc().format != formats[index] || target->desc().width != width ||
                 target->desc().height != height || output->layer >= target->desc().layerCount ||
                 !hasFlag(target->desc().usage, TextureUsageBits::Storage)) {
@@ -843,7 +849,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
             if (!module) { return std::unexpected(module.error()); }
             programs->shaders[index] = std::move(*module);
-            if (index == 1 || index == 3) {
+            if (index == 1 || index == 3 || index == 5) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
                 spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
@@ -1029,30 +1035,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         state->resources};
 }
 
-Result<> VirtualShadowMaps::project(CommandBuffer& commands,
-    std::span<const VirtualShadowMapResult> pointFaces, std::string& log, CPUProfileRecorder* profiler,
-    RenderGraphExecutionContext* gpuProfiler)
+Result<> VirtualShadowMaps::preparePointFaces(CommandBuffer& commands,
+    std::span<const VirtualShadowMapResult> pointFaces, std::string& log)
 {
-    CPUProfileScope total(profiler, "VSM face project");
-    total.work("pointFaces", pointFaces.size());
-    if (!state_ || !state_->projectionPending) {
-        log += "VSM project requires a recorded, unresolved face.\n";
-        return makeError(Error::InvalidArgument);
-    }
     auto& state = *state_;
-    if (auto r = commands.retainResource(state_); !r) { return r; }
     auto& push = state.push;
-    total.work("lightType", push.lightType);
-    total.work("face", push.projectionFace);
-    total.work("triangles", push.triangleCount);
-    total.work("totalPages", push.totalPages);
-    if (push.lightType == uint32_t(VirtualShadowMapLightType::PointFace) &&
-        push.filterMode != uint32_t(VirtualShadowMapFilter::Hard) && pointFaces.size() != 6) {
-        log += "Filtered point VSM projection requires all six ordered faces.\n";
-        return makeError(Error::InvalidArgument);
-    }
-    CPUProfileScope phase(profiler, "Prepare VSM point face table");
-    const auto poolBefore = state.pool->stats;
     if (!pointFaces.empty()) {
         if (pointFaces.size() != 6) {
             log += "Point VSM projection requires all six ordered faces.\n";
@@ -1094,11 +1081,49 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
         push.pointFaces = lease->shaderIndex(); state.leases.push_back(*lease);
         commands.hostWriteBarrier();
     }
+    return {};
+}
+
+Result<> VirtualShadowMaps::project(CommandBuffer& commands,
+    std::span<const VirtualShadowMapResult> pointFaces, std::string& log, CPUProfileRecorder* profiler,
+    RenderGraphExecutionContext* gpuProfiler)
+{
+    CPUProfileScope total(profiler, "VSM face project");
+    total.work("pointFaces", pointFaces.size());
+    if (!state_ || !state_->projectionPending) {
+        log += "VSM project requires a recorded, unresolved face.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    auto& state = *state_;
+    auto& push = state.push;
+    total.work("lightType", push.lightType);
+    total.work("face", push.projectionFace);
+    total.work("triangles", push.triangleCount);
+    total.work("totalPages", push.totalPages);
+    if (push.lightType == uint32_t(VirtualShadowMapLightType::PointFace) &&
+        push.filterMode != uint32_t(VirtualShadowMapFilter::Hard) && pointFaces.size() != 6) {
+        log += "Filtered point VSM projection requires all six ordered faces.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    CPUProfileScope phase(profiler, "Prepare VSM point face table");
+    const auto poolBefore = state.pool->stats;
+    if (auto r = preparePointFaces(commands, pointFaces, log); !r) { return r; }
     phase.work("bufferCreates", state.pool->stats.bufferCreates - poolBefore.bufferCreates);
     phase.work("bufferReuses", state.pool->stats.bufferReuses - poolBefore.bufferReuses);
     phase.work("bufferEvictions", state.pool->stats.bufferEvictions - poolBefore.bufferEvictions);
-    phase.next("Bind VSM projection resources");
+    phase.end();
+    total.work("pointTables", pointFaces.empty() ? 0u : 1u);
     total.work("leases", state.leases.size());
+    return projectPrepared(commands, profiler, gpuProfiler);
+}
+
+Result<> VirtualShadowMaps::projectPrepared(CommandBuffer& commands, CPUProfileRecorder* profiler,
+    RenderGraphExecutionContext* gpuProfiler)
+{
+    auto& state = *state_;
+    auto& push = state.push;
+    if (auto r = commands.retainResource(state_); !r) { return r; }
+    CPUProfileScope phase(profiler, "Bind VSM projection resources");
     if (auto r = state.registry->bind(commands, state.leases); !r) { return r; }
     phase.next("Record VSM projection barriers and dispatch");
     auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM projection") : RenderGraphExecutionContext::ProfileScope{};
@@ -1106,13 +1131,13 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
         // Point faces share one layer. Canonical ownership makes their writes
         // disjoint, while the explicit dependency also satisfies whole-view
         // synchronization validation and orders any prior initialization.
-        const TextureBarrierDesc sharedReady[]{
-            {.texture = state.outputTextures[0], .oldLayout = TextureLayout::General, .newLayout = TextureLayout::General,
+        std::vector<TextureBarrierDesc> sharedReady;
+        for (size_t index = 0; index < state.outputTextures.size(); ++index) {
+            if (!state.outputTextures[index]) { continue; }
+            sharedReady.push_back({.texture = state.outputTextures[index], .oldLayout = TextureLayout::General, .newLayout = TextureLayout::General,
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.resources->views[1]->desc().range},
-            {.texture = state.outputTextures[1], .oldLayout = TextureLayout::General, .newLayout = TextureLayout::General,
-                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.resources->views[2]->desc().range}};
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .range = state.resources->views[index + 1]->desc().range});
+        }
         if (auto r = commands.synchronize({.textures = sharedReady}); !r) { return r; }
     }
     const TextureBarrierDesc outputBegin[]{
@@ -1141,6 +1166,57 @@ Result<> VirtualShadowMaps::project(CommandBuffer& commands,
     if (auto r = commands.synchronize({.textures = state.externalOutput ? std::span<const TextureBarrierDesc>{} : std::span<const TextureBarrierDesc>{outputEnd},
         .buffers = {&statisticsReady, 1}}); !r) { return r; }
     state.projectionPending = false;
+    return {};
+}
+
+Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
+    std::span<const VirtualShadowMapProjectionGroup> groups, std::string& log,
+    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
+{
+    CPUProfileScope total(profiler, "VSM shared projection");
+    uint32_t faceCount = 0;
+    for (const auto& group : groups) {
+        assert(group.faceCount == 1 || group.faceCount == 6);
+        faceCount += group.faceCount;
+        for (uint32_t face = 0; face < group.faceCount; ++face) {
+            const auto& state = group.faces[face]->state_;
+            if (!state || !state->projectionPending) {
+                log += "VSM shared projection requires recorded, unresolved faces.\n";
+                return makeError(Error::InvalidArgument);
+            }
+        }
+    }
+    total.work("faces", faceCount);
+    total.work("lights", groups.size());
+    if (faceCount <= 1) {
+        total.work("pointTables", 0);
+        return faceCount == 0 ? Result<>{} : groups.front().faces[0]->project(commands, {}, log, profiler, gpuProfiler);
+    }
+
+    uint32_t pointTables = 0;
+    for (const auto& group : groups) {
+        if (group.filteredPoint) {
+            CPUProfileScope phase(profiler, "Prepare VSM shared point table");
+            auto& owner = *group.faces[0];
+            const auto poolBefore = owner.state_->pool->stats;
+            if (auto r = owner.preparePointFaces(commands, {group.results.data(), group.faceCount}, log); !r) { return r; }
+            ++pointTables;
+            const auto& poolAfter = owner.state_->pool->stats;
+            phase.work("bufferCreates", poolAfter.bufferCreates - poolBefore.bufferCreates);
+            phase.work("bufferReuses", poolAfter.bufferReuses - poolBefore.bufferReuses);
+            phase.work("bufferEvictions", poolAfter.bufferEvictions - poolBefore.bufferEvictions);
+            for (uint32_t face = 1; face < group.faceCount; ++face) {
+                group.faces[face]->state_->push.pointFaces = owner.state_->push.pointFaces;
+            }
+        }
+        // The first face owns and binds the table and all cross-face leases.
+        // Its recorded commands retain them through completion for later faces;
+        // every face still uses the original push-constant projection kernel.
+        for (uint32_t face = 0; face < group.faceCount; ++face) {
+            if (auto r = group.faces[face]->projectPrepared(commands, profiler, gpuProfiler); !r) { return r; }
+        }
+    }
+    total.work("pointTables", pointTables);
     return {};
 }
 

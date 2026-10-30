@@ -1,4 +1,3 @@
-#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -63,6 +62,7 @@ public:
     {
         const uint32_t capacity = properties().value("lightCapacity", 8u);
         const bool compact = properties().value("compactOutputs", false);
+        const bool debugOutput = properties().value("debugOutput", true);
         RenderPassReflection reflection;
         reflection.addTextureInput("depth", "Receiver depth from the matching visibility raster")
             .sampledRead().format = Format::D32Sfloat;
@@ -76,11 +76,13 @@ public:
         // Temporal stabilization is a runtime toggle and reads/writes the
         // published layer after every face has finished projection.
         shadows.stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite, RenderGraphPassKind::Compute);
-        auto& debug = reflection.addTextureOutput("debug", "Per-face page selection; magenta marks unavailable layers")
-            .transferWrite().transient(RenderGraphInitialization::FullOverwrite);
-        debug.format = Format::RGBA8Unorm;
-        debug.layerCount = compact ? capacity : capacity * 6;
-        if (compact) { debug.stageAccess(RenderGraphResourceAccess::TextureStorageWrite, RenderGraphPassKind::Compute); }
+        if (debugOutput) {
+            auto& debug = reflection.addTextureOutput("debug", "Per-face page selection; magenta marks unavailable layers")
+                .transferWrite().transient(RenderGraphInitialization::FullOverwrite);
+            debug.format = Format::RGBA8Unorm;
+            debug.layerCount = compact ? capacity : capacity * 6;
+            debug.stageAccess(RenderGraphResourceAccess::TextureStorageWrite, RenderGraphPassKind::Compute);
+        }
         reflection.addBufferOutput("lights", "Current source-to-layer table and explicit light admission")
             .buffer(sizeof(VirtualShadowMapLightsHeader) + uint64_t(capacity) * sizeof(VirtualShadowMapLightEntry), 0)
             .transferWrite();
@@ -105,7 +107,9 @@ public:
         capacity.rebuildGraph = true;
         auto compact = runtimeBoolSetting("compactOutputs", "One Output Layer per Light", false);
         compact.rebuildGraph = true;
-        return {capacity, compact,
+        auto debugOutput = runtimeBoolSetting("debugOutput", "Publish Page Debug", true);
+        debugOutput.rebuildGraph = true;
+        return {capacity, compact, debugOutput,
             runtimeBoolSetting("enabled", "Virtual Shadows", true),
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", true),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
@@ -134,6 +138,7 @@ public:
     {
         capacity_ = properties().value("lightCapacity", 8u);
         compact_ = properties().value("compactOutputs", false);
+        debugOutput_ = properties().value("debugOutput", true);
         collectGPUWork_ = properties().value("benchmarkGPUWork", false);
         if (properties().value("benchmarkCPUProfile", false) && properties().value("benchmarkGPUProfile", false)) {
             log = "VSM CPU and detailed GPU profiling must run separately";
@@ -187,7 +192,7 @@ public:
         if (!scene || !gpuScene || !context.streamer() || !depth.valid() || !depth.view() ||
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
-            !output.valid() || !debug.valid() || !table.valid() || !statistics.valid() || !memory.valid() ||
+            !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !memory.valid() ||
             (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid()))) {
             return makeError(Error::InvalidArgument);
         }
@@ -352,7 +357,6 @@ public:
 
         struct FacePublication
         {
-            VirtualShadowMapResult shadow;
             BufferSlice sourceStats;
             BufferSlice destinationStats;
             BufferSlice importedStats;
@@ -360,8 +364,7 @@ public:
             BufferSlice destinationWorkload;
             BufferSlice sourceBuildDiagnostics;
             BufferSlice destinationBuildDiagnostics;
-            uint32_t layer;
-            std::array<std::string, 3> names;
+            std::string name;
         };
         std::vector<FacePublication> publications;
         publications.reserve(admittedFaces);
@@ -391,21 +394,15 @@ public:
             if (!upload.valid()) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(Error::OutOfMemory); }
         }
         std::vector<RenderGraphStageUse> initializeUses{RenderGraphStageUse{"shadows", RenderGraphResourceAccess::TextureTransferWrite},
-            RenderGraphStageUse{"debug", RenderGraphResourceAccess::TextureTransferWrite},
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
+        if (debugOutput_) { initializeUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite}); }
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             initializeUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
         }
-        struct ProjectionGroup
-        {
-            std::array<VirtualShadowMaps*, 6> faces{};
-            std::array<VirtualShadowMapResult, 6> results{};
-            uint32_t faceCount = 0;
-            bool filteredPoint = false;
-        };
-        std::vector<ProjectionGroup> projections;
+        std::vector<VirtualShadowMapProjectionGroup> projections;
+        projections.reserve(header.admittedCount);
         ViewConstants view{};
         uint64_t contentKey = 0;
         auto recordFaces = [&](CommandBuffer&) -> Result<> {
@@ -467,15 +464,15 @@ public:
                     auto& faces = caches_[item.stableId];
                     for (uint32_t face = item.entry.faceCount; face < faces.size(); ++face) { faces[face].reset(); }
                     const bool filteredPoint = item.entry.faceCount == 6 && settings.filter != VirtualShadowMapFilter::Hard;
-                    const bool deferredProjection = compact_ || filteredPoint;
                     std::array<VirtualShadowMapResult, 6> pointResults;
                     for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
                         if (!faces[face]) { faces[face] = std::make_unique<VirtualShadowMaps>(); }
                         item.light.face = face;
                         settings.physicalPageCount = item.faceBudgets[face];
-                        const VirtualShadowMapProjectionTarget target{output.texture(), debug.texture(), item.entry.baseLayer, item.entry.faceCount == 6};
+                        const VirtualShadowMapProjectionTarget target{output.texture(), debugOutput_ ? debug.texture() : nullptr,
+                            item.entry.baseLayer + (compact_ ? 0u : face), compact_ && item.entry.faceCount == 6};
                         auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
-                            scene->materials(), alphaTextures, settings, log, deferredProjection, compact_ ? &target : nullptr, cpu, gpuProfiler);
+                            scene->materials(), alphaTextures, settings, log, true, &target, cpu, gpuProfiler);
                         if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
                         pointResults[face] = *shadow;
                         const uint32_t layer = index * 6 + face;
@@ -500,26 +497,16 @@ public:
                             if (!buildSource || !buildDestination) { return makeError(Error::InvalidArgument); }
                             sourceBuildDiagnostics = *buildSource; destinationBuildDiagnostics = *buildDestination;
                         }
-                        const auto suffix = std::to_string(layer);
-                        publications.push_back({*shadow, *sourceStats, *destinationStats, *importedStats,
-                            sourceWorkload, destinationWorkload, sourceBuildDiagnostics, destinationBuildDiagnostics, layer,
-                            {"faceShadow" + suffix, "faceDebug" + suffix, "faceStatistics" + suffix}});
+                        publications.push_back({*sourceStats, *destinationStats, *importedStats,
+                            sourceWorkload, destinationWorkload, sourceBuildDiagnostics, destinationBuildDiagnostics,
+                            "faceStatistics" + std::to_string(layer)});
                     }
-                    if (compact_) {
-                        ProjectionGroup group;
-                        group.results = pointResults;
-                        group.faceCount = item.entry.faceCount;
-                        group.filteredPoint = filteredPoint;
-                        for (uint32_t face = 0; face < group.faceCount; ++face) { group.faces[face] = faces[face].get(); }
-                        projections.push_back(group);
-                    } else if (deferredProjection) {
-                        for (auto& face : faces) {
-                            if (auto projected = face->project(commands, pointResults, log, cpu, gpuProfiler); !projected) {
-                                spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
-                                return projected;
-                            }
-                        }
-                    }
+                    VirtualShadowMapProjectionGroup group;
+                    group.results = std::move(pointResults);
+                    group.faceCount = item.entry.faceCount;
+                    group.filteredPoint = filteredPoint;
+                    for (uint32_t face = 0; face < group.faceCount; ++face) { group.faces[face] = faces[face].get(); }
+                    projections.push_back(std::move(group));
                 }
             }
             return {};
@@ -527,42 +514,24 @@ public:
         if (auto r = recordFaces(context.commandBuffer()); !r) { (void)context.streamer()->cancelCopyBatch(*batch); return r; }
         cpuPhase.next("Publication stage setup");
         // Build views only after the owning names have reached their final
-        // addresses. Every face's private outputs remain ShaderRead until this
-        // single graph-stage sequence transitions them for publication.
-        std::vector<RenderGraphTextureImport> textureImports;
+        // addresses. Projection writes the public arrays directly; only face
+        // statistics require imports for projection and publication.
         std::vector<RenderGraphBufferImport> bufferImports;
-        std::vector<RenderGraphStageUse> projectionUses;
-        if (compact_) {
-            projectionUses = {{"shadows", RenderGraphResourceAccess::TextureStorageWrite},
-                {"debug", RenderGraphResourceAccess::TextureStorageWrite},
-                {"depth", RenderGraphResourceAccess::TextureSampleRead}};
-        }
+        std::vector<RenderGraphStageUse> projectionUses{{"shadows", RenderGraphResourceAccess::TextureStorageWrite},
+            {"depth", RenderGraphResourceAccess::TextureSampleRead}};
+        if (debugOutput_) { projectionUses.push_back({"debug", RenderGraphResourceAccess::TextureStorageWrite}); }
         std::vector<RenderGraphStageUse> publishUses{{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (collectGPUWork_) {
             publishUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             publishUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
         }
-        if (!compact_) {
-            publishUses.push_back({"shadows", RenderGraphResourceAccess::TextureTransferWrite});
-            publishUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite});
-        }
-        textureImports.reserve(publications.size() * 2);
         bufferImports.reserve(publications.size());
-        publishUses.reserve(3 + publications.size() * 3);
+        publishUses.reserve(3 + publications.size());
+        projectionUses.reserve(3 + publications.size());
         for (const auto& publication : publications) {
-            const auto& shadow = publication.shadow;
-            const auto& names = publication.names;
-            if (!compact_) {
-                textureImports.push_back({names[0], shadow.texture, shadow.shadow,
-                    ResourceState::ShaderRead, ResourceState::ShaderRead});
-                textureImports.push_back({names[1], shadow.debugTexture, shadow.debug,
-                    ResourceState::ShaderRead, ResourceState::ShaderRead});
-                publishUses.push_back({names[0], RenderGraphResourceAccess::TextureTransferRead});
-                publishUses.push_back({names[1], RenderGraphResourceAccess::TextureTransferRead});
-            }
-            bufferImports.push_back({names[2], publication.importedStats, RenderGraphResourceAccess::BufferStorageReadWrite});
-            publishUses.push_back({names[2], RenderGraphResourceAccess::BufferTransferRead});
-            if (compact_) { projectionUses.push_back({names[2], RenderGraphResourceAccess::BufferStorageReadWrite}); }
+            bufferImports.push_back({publication.name, publication.importedStats, RenderGraphResourceAccess::BufferStorageReadWrite});
+            publishUses.push_back({publication.name, RenderGraphResourceAccess::BufferTransferRead});
+            projectionUses.push_back({publication.name, RenderGraphResourceAccess::BufferStorageReadWrite});
         }
 
         auto memoryBatch = context.streamer()->beginCopyBatch();
@@ -578,13 +547,20 @@ public:
                 CPUProfileScope stageCPU(cpu, "Initialize publication commands");
                 auto cleared = cmd.clearColorTexture(*output.texture(), TextureLayout::TransferDestination, {1, 1, 1, 1});
                 if (!cleared) { return cleared; }
-                cleared = cmd.clearColorTexture(*debug.texture(), TextureLayout::TransferDestination, {1, 0, 1, 1});
-                if (!cleared) { return cleared; }
+                if (debugOutput_) {
+                    cleared = cmd.clearColorTexture(*debug.texture(), TextureLayout::TransferDestination, {1, 0, 1, 1});
+                    if (!cleared) { return cleared; }
+                }
                 return context.streamer()->copyStreamedData(cmd, *batch);
-            }}, RenderGraphStage{"Project compact VSM lights", projectionUses,
+            }}, RenderGraphStage{"Project VSM lights", projectionUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Project all faces");
                 std::string log;
+                if (!properties.value("benchmarkLegacyProjection", false)) {
+                    auto result = VirtualShadowMaps::projectShared(cmd, projections, log, cpu, gpuProfiler);
+                    if (!result) { spdlog::error("VirtualShadowMapLightsPass projection: {}", log); }
+                    return result;
+                }
                 for (const auto& group : projections) {
                     for (uint32_t face = 0; face < group.faceCount; ++face) {
                         const auto pointFaces = group.filteredPoint ? std::span<const VirtualShadowMapResult>(group.results) :
@@ -610,17 +586,12 @@ public:
                         memoryData[5] += usage.allocatedAtlasPages;
                     }
                 }
-                memoryData[3] = uint64_t(context.width()) * context.height() * output.desc().layerCount * 5;
+                // R8 visibility and optional RGBA8 page-debug arrays.
+                memoryData[3] = uint64_t(context.width()) * context.height() * output.desc().layerCount;
+                if (debugOutput_) {
+                    memoryData[3] += uint64_t(context.width()) * context.height() * debug.desc().layerCount * 4;
+                }
                 for (const auto& publication : publications) {
-                    const auto& shadow = publication.shadow;
-                    if (!compact_) {
-                        auto copied = cmd.copyTexture({.source = shadow.texture, .destination = output.texture(),
-                            .width = context.width(), .height = context.height(), .destinationBaseLayer = publication.layer});
-                        if (!copied) { return copied; }
-                        copied = cmd.copyTexture({.source = shadow.debugTexture, .destination = debug.texture(),
-                            .width = context.width(), .height = context.height(), .destinationBaseLayer = publication.layer});
-                        if (!copied) { return copied; }
-                    }
                     auto copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
                     if (!copied) { return copied; }
                     if (collectGPUWork_) {
@@ -661,7 +632,7 @@ public:
                 return context.streamer()->copyStreamedData(cmd, *memoryBatch);
             }}};
         cpuPhase.next("Execute publication stages");
-        auto result = context.executeStages(stages, bufferImports, textureImports);
+        auto result = context.executeStages(stages, bufferImports);
         if (!result) {
             (void)context.streamer()->cancelCopyBatch(*batch);
             (void)context.streamer()->cancelCopyBatch(*memoryBatch);
@@ -674,6 +645,7 @@ private:
     VirtualShadowMapCasterCache casterCache_;
     uint32_t capacity_ = 8;
     bool compact_ = false;
+    bool debugOutput_ = true;
     bool collectGPUWork_ = false;
     uint64_t sceneIdentity_ = 0;
     std::unordered_map<uint64_t, std::array<std::unique_ptr<VirtualShadowMaps>, 6>> caches_;

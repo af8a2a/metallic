@@ -72,6 +72,7 @@ struct EvidenceState {
     std::map<std::string, Buffer*> buffers;
     VisibilityBufferFrameInfo camera;
     std::map<std::string, uint32_t> layers;
+    std::map<std::string, Format> hdrFormats;
 };
 std::shared_ptr<EvidenceState> evidence;
 constexpr uint64_t kShadowStride = (kPixels + 3) & ~uint64_t(3);
@@ -82,6 +83,7 @@ constexpr uint64_t kTableSize = sizeof(VirtualShadowMapLightsHeader) + kCapacity
 constexpr uint64_t kMemoryOffset = kTableOffset + kTableSize;
 constexpr uint64_t kDebugOffset = kMemoryOffset + 8 * sizeof(uint64_t);
 constexpr uint64_t kReadbackSize = kDebugOffset + kPixels * 4 * kLayers;
+constexpr uint64_t kHDROffset = (kReadbackSize + 15) & ~uint64_t(15);
 
 class VSMQualityEvidencePass final : public UnsafePass {
 public:
@@ -91,15 +93,19 @@ public:
         RenderPassReflection reflection;
         auto& shadows = reflection.addTextureInput("shadows").transferRead();
         shadows.format = Format::R8Unorm; shadows.layerCount = 0;
-        auto& debug = reflection.addTextureInput("debug").transferRead();
-        debug.format = Format::RGBA8Unorm; debug.layerCount = 0;
+        if (properties().value("debugInput", true)) {
+            auto& debug = reflection.addTextureInput("debug").transferRead();
+            debug.format = Format::RGBA8Unorm; debug.layerCount = 0;
+        }
+        const bool captureHDR = properties().value("captureHDR", false);
+        if (captureHDR) { reflection.addTextureInput("hdr").transferRead().format = Format::Unknown; }
         reflection.addTextureInput("depth").transferRead().format = Format::D32Sfloat;
         reflection.addBufferInput("statistics").buffer(kLayers * kVirtualShadowMapFaceStatisticsSize).transferRead();
         reflection.addBufferInput("lights").buffer(kTableSize).transferRead();
         reflection.addBufferInput("memory").buffer(8 * sizeof(uint64_t)).transferRead();
         reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
             .shaderRead().memoryLocation = MemoryLocation::HostUpload;
-        reflection.addBufferOutput("data").buffer(kReadbackSize).transferWrite().hostReadback();
+        reflection.addBufferOutput("data").buffer(captureHDR ? kHDROffset + kPixels * 16 : kReadbackSize).transferWrite().hostReadback();
         reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
         return reflection;
     }
@@ -140,6 +146,19 @@ public:
         if (!mapped) { return makeError(Error::Failure); }
         std::memcpy(&state_->camera, mapped, sizeof(state_->camera));
         info->unmap();
+        if (context.properties().value("captureHDR", false)) {
+            const auto& hdr = context.inputTexture("hdr");
+            const Format format = hdr.desc().format;
+            require(format == Format::RGBA16Sfloat || format == Format::RGBA32Sfloat, "Quality HDR requires floating-point output");
+            state_->hdrFormats[name] = format;
+            auto destination = buffer->slice({kHDROffset, kPixels * (format == Format::RGBA16Sfloat ? 8 : 16)});
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyTextureToBuffer({.texture = hdr.texture(), .buffer = *destination,
+                .width = kWidth, .height = kHeight}); !result) { return result; }
+        }
+        if (!context.properties().value("debugInput", true)) {
+            return commands.clearColorTexture(*context.outputTexture("color").texture(), TextureLayout::TransferDestination, {0, 0, 0, 1});
+        }
         return commands.copyTexture({.source = context.inputTexture("debug").texture(),
             .destination = context.outputTexture("color").texture(), .width = kWidth, .height = kHeight});
     }
@@ -155,9 +174,11 @@ struct Snapshot {
     std::array<std::vector<uint8_t>, kLayers> debug;
     std::array<uint64_t, 8> memory{};
     std::vector<float> depth;
+    std::vector<uint8_t> hdr;
+    Format hdrFormat = Format::Unknown;
     VisibilityBufferFrameInfo camera;
 };
-Snapshot snapshot(const std::string& name, bool captureDebug = false)
+Snapshot snapshot(const std::string& name, bool captureDebug = false, bool captureHDR = false)
 {
     Snapshot result;
     auto* buffer = evidence->buffers.at(name);
@@ -180,7 +201,22 @@ Snapshot snapshot(const std::string& name, bool captureDebug = false)
     std::memcpy(&result.header, mapped + kTableOffset, sizeof(result.header));
     std::memcpy(result.memory.data(), mapped + kMemoryOffset, sizeof(result.memory));
     std::memcpy(result.entries.data(), mapped + kTableOffset + sizeof(result.header), sizeof(result.entries));
+    if (captureHDR) {
+        result.hdrFormat = evidence->hdrFormats.at(name);
+        const uint32_t componentBytes = result.hdrFormat == Format::RGBA16Sfloat ? 2 : 4;
+        result.hdr.resize(kPixels * 4 * componentBytes);
+        std::memcpy(result.hdr.data(), mapped + kHDROffset, result.hdr.size());
+    }
     buffer->unmap(); result.camera = evidence->camera;
+    for (size_t offset = 0; offset < result.hdr.size();) {
+        if (result.hdrFormat == Format::RGBA16Sfloat) {
+            uint16_t bits; std::memcpy(&bits, result.hdr.data() + offset, sizeof(bits)); offset += sizeof(bits);
+            require((bits & 0x7c00u) != 0x7c00u, "Quality consumer produced nonfinite half HDR");
+        } else {
+            float value; std::memcpy(&value, result.hdr.data() + offset, sizeof(value)); offset += sizeof(value);
+            require(std::isfinite(value), "Quality consumer produced nonfinite HDR");
+        }
+    }
     require(result.header.version == kVirtualShadowMapLightsVersion && result.header.capacity == kCapacity,
         "VSM quality publication ABI mismatch");
     return result;
@@ -937,8 +973,8 @@ public:
                 const auto legacy = snapshot("Cached", true), compact = snapshot("Compact", true);
                 require(legacy.depth == compact.depth, name + ": receiver depth mismatch");
                 require(legacy.header.reserved[0] == 0 && compact.header.reserved[0] == 1, name + ": layout flags");
-                require(legacy.memory[3] == compact.memory[3] * 6 && compact.memory[1] == 0,
-                    name + ": compact memory accounting did not remove face outputs");
+                require(legacy.memory[3] == compact.memory[3] * 6 && legacy.memory[1] == 0 && compact.memory[1] == 0,
+                    name + ": direct array projection retained private face outputs");
                 require(legacy.memory[0] == compact.memory[0] && legacy.memory[4] == compact.memory[4] &&
                     legacy.memory[5] == compact.memory[5], name + ": compact projection changed atlas allocation");
                 uint64_t visibilityMismatches = 0, debugMismatches = 0;
@@ -1024,6 +1060,278 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCompactTest);
+
+class VirtualShadowMapProjectionEquivalenceTest final : public RHITest {
+public:
+    VirtualShadowMapProjectionEquivalenceTest()
+    {
+        type = RHITestType::Rendering; name = "virtual_shadow_map_projection_equivalence";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapProjectionEquivalence";
+        Json report{{"passed", false}, {"frames", Json::array()}, {"extent", {kWidth, kHeight}}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapProjectionEquivalence.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto floor = writeFixture(directory / "Floor", false);
+            const auto room = writeFixture(directory / "Room", true);
+            constexpr std::array names{"Legacy", "Shared", "NoDebug"};
+            constexpr std::array phases{"Cold", "Warm", "Redraw", "JitterMotion", "TemporalContinue", "Reorder", "FiniteBudget",
+                "Disabled", "Overflow", "Recovered", "TwoPoints"};
+            for (const std::string filter : {"hard", "pcf", "smrt"}) {
+                for (bool compact : {false, true}) {
+                    for (bool isRoom : {false, true}) {
+                        const auto& fixture = isRoom ? room : floor;
+                        const std::string label = filter + (compact ? "-Compact" : "-LegacyLayout") + (isRoom ? "-Room" : "-Floor");
+                        scene::SceneDocument scene;
+                        require(isRoom ? scene.loadStreamMetadata(fixture.source) : scene.load(fixture.source), "Load projection equivalence fixture");
+                        RenderView view; RenderGraphPreviewRenderer preview;
+                        configurePreview(preview, scene, view, context, validation);
+                        ViewCamera camera{.eye={0,5,7}, .center={0,0,0}, .fovDegrees=52, .nearPlane=.1f, .farPlane=100};
+                        if (isRoom) {
+                            camera = {.eye={0,0,3}, .center={6,6,6}, .up={0,0,1}, .fovDegrees=65, .nearPlane=.05f, .farPlane=30};
+                        }
+                        require(view.setCamera(camera), "Set projection equivalence camera");
+                        environment::WorldEnvironment world;
+                        world.sun.enabled = world.moon.enabled = true;
+                        world.sun.direction = float3(1, -1, 0); world.moon.direction = float3(-.6f, -1, .2f);
+                        world.sun.illuminance = 3; world.moon.illuminance = 2;
+                        world.sun.angularRadius = world.moon.angularRadius = .06f;
+                        require(preview.setWorldEnvironment(world), "Set mixed celestial lights");
+                        scene::LightingSettings lighting; lighting.autoExposure.enabled = false;
+                        for (bool spot : {false, true}) {
+                            scene::PunctualLight light;
+                            light.name = spot ? "Spot" : "Point"; light.properties.type = spot ? "spot" : "point";
+                            light.position = spot ? float3(1, 4, 0) : isRoom ? float3(0, 0, 0) : float3(-1, 4, 0);
+                            light.direction = float3(0, -1, 0); light.properties.intensity = 80; light.properties.range = 20;
+                            light.properties.outerConeAngle = 1.; light.properties.innerConeAngle = .5; light.properties.sourceRadius = .2;
+                            lighting.lights.push_back(light);
+                        }
+                        require(scene.setLighting(lighting), "Publish projection equivalence lights");
+                        lighting = scene.lighting();
+                        require(preview.setLighting(lighting), "Set projection equivalence lights");
+                        evidence = std::make_shared<EvidenceState>();
+                        RenderGraph graph;
+                        graph.setViewProperties({{"temporalJitter",false},
+                            {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
+                        const auto raster = makeGraph(fixture, filter);
+                        graph.addNode("VisibilityBufferPass", "Raster", raster.findNode("Raster")->properties);
+                        for (uint32_t arm = 0; arm < names.size(); ++arm) {
+                            const std::string node = names[arm], capture = node + "Evidence", deferred = node + "Deferred";
+                            const bool debug = arm != 2;
+                            Json settings{{"lightCapacity",kCapacity},{"physicalPageBudget",512},{"pageSize",128},
+                                {"virtualPagesPerAxis",16},{"clipmapCount",4},{"firstClipmapExtent",4},{"maxWorkItems",131072},
+                                {"shadowBias",.002},{"nearPlane",.05},{"cacheEnabled",true},{"receiverFootprint",true},
+                                {"filter",filter},{"pcfRadius",1.5},{"smrtRayCount",2},{"smrtSamplesPerRay",8},{"smrtMaxRayLength",12},
+                                // Fixed ray phases are required for the strict warm-cache reuse gate.
+                                // Temporal phases can legitimately request previously unseen pages.
+                                {"smrtTemporalEnabled",false},{"smrtTemporalMaxFrames",32},{"compactOutputs",compact},
+                                {"debugOutput",debug},{"benchmarkLegacyProjection",arm==0},
+                                {"benchmarkCPUProfile",arm==1},{"benchmarkGPUProfile",false}};
+                            auto pass = createRenderGraphPass("VirtualShadowMapLightsPass");
+                            require(pass != nullptr, "Create projection reflection probe");
+                            pass->setProperties(settings);
+                            const auto reflection = pass->reflect({.width=kWidth, .height=kHeight});
+                            require((reflection.findField("debug", RenderGraphFieldVisibility::Output) != nullptr) == debug,
+                                label + ": optional debug output was still reflected or disappeared when enabled");
+                            graph.addNode("VirtualShadowMapLightsPass", node, settings);
+                            graph.addEdge("Raster.depth", node + ".depth"); graph.addEdge("Raster.rasterInfo", node + ".rasterInfo");
+                            graph.addNode("VisibilityBufferDeferredPass", deferred, {{"lightingMode","realtime"},{"debugView","final"},
+                                {"materialBinning",compact},{"shadow.enabled",false},{"accumulate",false},{"outputLinear",true}});
+                            for (const char* field : {"visibility","depth","rasterInfo"}) {
+                                graph.addEdge(std::string("Raster.") + field, deferred + "." + field);
+                            }
+                            graph.addEdge(node + ".shadows", deferred + ".virtualShadows");
+                            graph.addEdge(node + ".lights", deferred + ".virtualShadowLights");
+                            graph.addNode("VSMQualityEvidencePass", capture,
+                                {{"evidenceName",node},{"captureDebug",debug},{"debugInput",debug},{"captureHDR",true}});
+                            for (const char* field : {"shadows","lights","statistics","memory"}) {
+                                graph.addEdge(node + "." + field, capture + "." + field);
+                            }
+                            if (debug) { graph.addEdge(node + ".debug", capture + ".debug"); }
+                            graph.addEdge(deferred + ".color", capture + ".hdr");
+                            graph.addEdge("Raster.depth", capture + ".depth"); graph.addEdge("Raster.rasterInfo", capture + ".rasterInfo");
+                            graph.markOutput(capture + ".color");
+                        }
+                        const auto all = [&](const char* property, const Json& value) {
+                            for (const char* node : names) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, property, value),
+                                    std::string("Set projection equivalence ") + property);
+                            }
+                        };
+                        for (uint32_t frame = 0; frame < (isRoom ? 2u : uint32_t(phases.size())); ++frame) {
+                            const std::string phase = label + "-" + phases[frame];
+                            validation.phase(phase);
+                            if (frame == 2) { all("forceRedraw", true); }
+                            if (frame == 3) {
+                                all("forceRedraw", false);
+                                all("smrtTemporalEnabled", filter == "smrt");
+                                view.setTemporalJitter(true);
+                                camera.eye[0] += .1f; camera.center[0] += .1f;
+                                require(view.setCamera(camera), "Move jittered projection camera");
+                            }
+                            if (frame == 5) {
+                                std::reverse(lighting.lights.begin(), lighting.lights.end());
+                                require(scene.setLighting(lighting), "Reorder projection source slots");
+                                require(preview.setLighting(scene.lighting()), "Publish reordered projection source slots");
+                            }
+                            if (frame == 6) { all("physicalPageBudget", 7); }
+                            if (frame == 7) { all("enabled", false); }
+                            if (frame == 8) {
+                                all("enabled", true); all("physicalPageBudget", 512); all("maxWorkItems", 1); all("forceRedraw", true);
+                            }
+                            if (frame == 9) { all("maxWorkItems", 131072); all("forceRedraw", false); }
+                            if (frame == 10) {
+                                const std::array ids{lighting.lights[0].stableId, lighting.lights[1].stableId};
+                                const auto spot = std::find_if(lighting.lights.begin(), lighting.lights.end(),
+                                    [](const auto& light) { return light.properties.type == "spot"; });
+                                require(spot != lighting.lights.end(), "Two-point phase requires the existing spot source");
+                                spot->properties.type = "point";
+                                require(scene.setLighting(lighting), "Convert the existing spot to a second point");
+                                require(scene.lighting().lights.size() == ids.size() &&
+                                    scene.lighting().lights[0].stableId == ids[0] && scene.lighting().lights[1].stableId == ids[1],
+                                    "Point conversion changed source identities or order");
+                                require(preview.setLighting(scene.lighting()), "Publish two point sources");
+                            }
+                            require(preview.render(graph, kWidth, kHeight, "LegacyEvidence.color"), "Projection equivalence render: " + preview.lastLog());
+                            const std::array images{snapshot("Legacy", true, true), snapshot("Shared", true, true), snapshot("NoDebug", false, true)};
+                            const auto& baseline = images[0];
+                            report["frames"].push_back({{"name",phase},{"statistics",baseline.statistics},{"memory",Json::object()},
+                                {"admittedLights",baseline.header.admittedCount},{"budgetDroppedLights",baseline.header.budgetDroppedCount},
+                                {"totalFaces",baseline.header.totalFaces},
+                                {"smrtTemporalEnabled",filter=="smrt" && frame>=3}});
+                            auto& frameReport = report["frames"].back();
+                            save();
+                            for (uint32_t arm = 0; arm < images.size(); ++arm) {
+                                const auto& image = images[arm];
+                                frameReport["memory"][names[arm]] = image.memory;
+                                frameReport["matches"][names[arm]] = {{"shadow",image.shadows==baseline.shadows},
+                                    {"depth",image.depth==baseline.depth},{"statistics",image.statistics==baseline.statistics},
+                                    {"debug",arm==2 || image.debug==baseline.debug},{"hdr",image.hdr==baseline.hdr}};
+                                if (image.shadows != baseline.shadows) {
+                                    for (uint32_t layer = 0; layer < kLayers; ++layer) {
+                                        const auto mismatch = std::mismatch(image.shadows[layer].begin(), image.shadows[layer].end(), baseline.shadows[layer].begin());
+                                        if (mismatch.first == image.shadows[layer].end()) { continue; }
+                                        const size_t pixel = size_t(mismatch.first - image.shadows[layer].begin());
+                                        frameReport["firstShadowMismatch"][names[arm]] = {{"layer",layer},{"pixel",pixel},
+                                            {"actual",*mismatch.first},{"legacy",*mismatch.second}};
+                                        break;
+                                    }
+                                }
+                                save();
+                                require(image.depth == baseline.depth && image.shadows == baseline.shadows && image.statistics == baseline.statistics,
+                                    phase + ": projection scheduling/debug toggle changed shadow, depth or 32-word face statistics");
+                                require(std::memcmp(&image.header, &baseline.header, sizeof(image.header)) == 0 &&
+                                    std::memcmp(image.entries.data(), baseline.entries.data(), sizeof(image.entries)) == 0,
+                                    phase + ": projection scheduling changed the light publication table");
+                                require(image.hdrFormat == baseline.hdrFormat && image.hdr == baseline.hdr,
+                                    phase + ": same-frame projection/debug toggle changed actual Deferred HDR");
+                                if (arm != 2) { require(image.debug == baseline.debug, phase + ": shared projection changed debug pixels"); }
+                                else { require(std::ranges::all_of(image.debug, [](const auto& pixels) { return pixels.empty(); }), phase + ": no-debug captured debug data"); }
+                                require(image.memory[1] == 0, phase + ": legacy or compact layout retained private face outputs");
+                                const uint64_t layers = compact ? kCapacity : kLayers;
+                                require(image.memory[3] == layers * kPixels * (arm == 2 ? 1 : 5), phase + ": public output allocation disagrees with optional debug");
+                                require(image.memory[0] == baseline.memory[0] && image.memory[4] == baseline.memory[4] && image.memory[5] == baseline.memory[5],
+                                    phase + ": output/projection optimization changed atlas allocation");
+                                if (frame < 3) {
+                                    require(image.memory[6] == 0, phase + ": fixed-phase cache gate unexpectedly allocated temporal history");
+                                } else if (filter == "smrt" && frame <= 4) {
+                                    require(image.memory[6] > 0, phase + ": temporal progression did not allocate light histories");
+                                }
+                            }
+                            const auto& execution = preview.executionStats();
+                            const auto sharedNode = std::find_if(execution.nodes.begin(), execution.nodes.end(),
+                                [](const auto& node) { return node.name == "Shared"; });
+                            require(sharedNode != execution.nodes.end(), phase + ": shared CPU profiling node is missing");
+                            const auto sharedScope = std::find_if(sharedNode->sections.begin(), sharedNode->sections.end(),
+                                [](const auto& section) { return section.name == "VSM shared projection"; });
+                            const uint64_t expectedPointTables = filter == "hard" ? 0 : std::count_if(baseline.entries.begin(),
+                                baseline.entries.begin() + baseline.header.count, [](const auto& entry) {
+                                    return entry.kind == 2 && entry.status == kVirtualShadowMapLightAdmitted;
+                                });
+                            if (sharedScope == sharedNode->sections.end()) {
+                                // The executor rejects a complete CPU metadata tree when it
+                                // exceeds 256 sections. Fourteen recorded faces exceed this
+                                // diagnostic budget; their output/face gates remain exact.
+                                require(frame == 10 && execution.profilingOverflow,
+                                    phase + ": shared projection CPU scope is unexpectedly missing");
+                                frameReport["sharedProjectionCPU"] = {{"available",false},{"pointTables",nullptr},
+                                    {"expectedPointTables",expectedPointTables},{"sectionLimit",256},
+                                    {"reason","CPU profile tree exceeded the render graph section budget"}};
+                            } else {
+                                require(sharedScope->cpuOnly &&
+                                    std::count_if(sharedNode->sections.begin(), sharedNode->sections.end(),
+                                        [](const auto& section) { return section.name == "VSM shared projection"; }) == 1,
+                                    phase + ": shared projection must publish one CPU scope, including disabled frames");
+                                const auto pointTables = std::find_if(sharedScope->cpuWork.begin(), sharedScope->cpuWork.end(),
+                                    [](const auto& work) { return work.name == "pointTables"; });
+                                require(pointTables != sharedScope->cpuWork.end(), phase + ": shared point-table work counter is missing");
+                                frameReport["sharedProjectionCPU"] = {{"available",true},{"pointTables",pointTables->value},
+                                    {"expectedPointTables",expectedPointTables}};
+                                save();
+                                require(pointTables->value == expectedPointTables,
+                                    phase + ": shared projection must prepare one point table per admitted filtered point light");
+                            }
+                            save();
+                            require(baseline.header.count == 4 && baseline.header.totalFaces == (frame == 10 ? 14u : 9u),
+                                phase + ": mixed-light fixture lost a source/face");
+                            if (frame == 10) {
+                                require(baseline.header.admittedCount == 4 &&
+                                    std::count_if(baseline.statistics.begin(), baseline.statistics.end(),
+                                        [](const auto& statistics) { return statistics[11] != 0; }) == 14,
+                                    phase + ": two-point dispatch did not record all fourteen faces");
+                                for (uint32_t source = 0; source < 2; ++source) {
+                                    const auto& entry = baseline.entries[source + 2];
+                                    const uint64_t id = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                                    require(entry.source == source && id == lighting.lights[source].stableId &&
+                                        entry.kind == 2 && entry.faceCount == 6 && entry.status == kVirtualShadowMapLightAdmitted,
+                                        phase + ": both point groups must retain their source identity and be admitted");
+                                }
+                            }
+                            if (frame >= 3) {
+                                require(baseline.camera.jitter[0] != 0 || baseline.camera.jitter[1] != 0, phase + ": temporal jitter was not exercised");
+                            }
+                            uint64_t overflow = 0, rasterWork = 0;
+                            for (const auto& statistics : baseline.statistics) { overflow += statistics[5]; rasterWork += statistics[16] + statistics[21]; }
+                            if (frame == 1) { require(rasterWork == 0, phase + ": fixed-phase warm cache unexpectedly redrew depth"); }
+                            if (frame == 2) { require(rasterWork > 0, phase + ": force redraw did no work"); }
+                            if (frame == 6) { require(baseline.header.budgetDroppedCount > 0, phase + ": finite budget omitted whole-light rejection"); }
+                            if (frame == 7) { require(baseline.header.admittedCount == 0, phase + ": disabled shadows admitted a light"); }
+                            if (frame == 8) { require(overflow > 0, phase + ": bounded work did not overflow"); }
+                            if (frame == 9) { require(overflow == 0, phase + ": work overflow did not recover"); }
+                            if (isRoom && frame == 0) {
+                                std::array<uint32_t, 6> facePixels{}; uint32_t seamPixels = 0;
+                                for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                                    const auto hit = cameraHit(baseline.camera, x, y, fixture);
+                                    if (!hit.valid) { continue; }
+                                    ++facePixels[pointFace(hit.position)];
+                                    std::array magnitudes{std::abs(hit.position[0]), std::abs(hit.position[1]), std::abs(hit.position[2])};
+                                    std::sort(magnitudes.begin(), magnitudes.end());
+                                    seamPixels += magnitudes[1] > .95 * magnitudes[2];
+                                }}
+                                require(std::count_if(facePixels.begin(), facePixels.end(), [](uint32_t n) { return n > 50; }) >= 3 && seamPixels > 50,
+                                    phase + ": point fixture did not exercise three canonical faces and cube seams");
+                                report["roomCoverage"] = {{"facePixels",facePixels},{"seamPixels",seamPixels}};
+                            }
+                            save();
+                        }
+                        require(!validation.failed(), label + ": Vulkan validation error");
+                    }
+                }
+            }
+            evidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
+            return RHITestResult::pass("Legacy/shared/no-debug same-frame shadows, statistics and Deferred HDR agree for mixed lights, temporal motion, point seams and resource limits");
+        } catch (const std::exception& error) {
+            evidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionEquivalenceTest);
 
 class VirtualShadowMapFilterDemandTest final : public RHITest {
 public:

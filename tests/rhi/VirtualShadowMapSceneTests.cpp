@@ -4,6 +4,7 @@
 #include "harness/VulkanDiagnostics.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
@@ -1953,8 +1954,81 @@ Json verifyLocalConsumers(RenderGraphPreviewRenderer& preview, scene::SceneDocum
             require(changed>50 && lit>1000 && leaks==0,label+": per-light direct visibility was absent or applied to a different light");
         }
         report[label]={{"sumErrors",sumErrors},{"maximumSumError",maximumSumError},{"allShadowChangedPixels",allChanged},{"controls",controls}};
-        std::ofstream(directory/"Consumers.json") << report.dump(2) << '\n';
         require(sumErrors==0 && allChanged>100,label+": overlapping local-light contributions are not additive or shadows were not consumed");
+
+        auto reordered = authored;
+        std::reverse(reordered.lights.begin(), reordered.lights.end());
+        require(scene.setLighting(reordered), "Reorder consumer source slots");
+        (void)preview.setLighting(scene.lighting());
+        require(graph.setNodeRuntimeProperty(graph.findNode("Cached")->id, "physicalPageBudget", 512), "Restore reordered consumer budget");
+        require(graph.setNodeRuntimeProperty(graph.findNode("Cached")->id, "forceRedraw", false), "Restore reordered cache");
+        renderAndRequire(preview, graph, "Deferred.color");
+        const auto reorderedHDR = localHDR(preview);
+        const auto reorderedMasks = localSnapshot("Cached");
+        for (const auto& light : authored.lights) {
+            const auto& before = localEntry(masks, light.stableId);
+            const auto& after = localEntry(reorderedMasks, light.stableId);
+            require(before.source != after.source && before.faceCount == after.faceCount, label + ": reordered source identity was not exercised");
+            for (uint32_t face = 0; face < before.faceCount; ++face) {
+                require(masks.shadows[before.baseLayer + face] == reorderedMasks.shadows[after.baseLayer + face],
+                    label + ": source reordering changed a stable light's shadow mask");
+            }
+        }
+        // Reordering direct lights changes floating-point accumulation order.
+        // Keep the established HDR format tolerance; stable-ID visibility above
+        // remains exact, as does same-frame projection equivalence elsewhere.
+        for (size_t index = 0; index < reorderedHDR.size(); ++index) {
+            require(std::abs(reorderedHDR[index] - images[0][index]) <= tolerance * std::max(1., std::abs(double(images[0][index]))),
+                label + ": source reordering changed Deferred lighting");
+        }
+        report[label]["sourceReorder"] = "Stable-ID shadow masks exact; HDR uses the existing format-dependent accumulation tolerance";
+
+        // Keep all four source slots enabled while isolating each celestial's
+        // ordinary, measurable illumination. Tiny other contributions preserve
+        // table admission; they are not counted as lighting coverage.
+        for (auto& light : reordered.lights) { light.properties.intensity = 1e-10; }
+        require(scene.setLighting(reordered), "Isolate celestial consumer contributions");
+        (void)preview.setLighting(scene.lighting());
+        environment::WorldEnvironment world;
+        world.sun.enabled = world.moon.enabled = true;
+        world.sun.direction = float3(1, -1, 0); world.moon.direction = float3(-.6f, -1, .2f);
+        for (uint32_t celestial = 0; celestial < 2; ++celestial) {
+            world.sun.illuminance = celestial == 0 ? 3 : 1e-10f;
+            world.moon.illuminance = celestial == 1 ? 3 : 1e-10f;
+            (void)preview.setWorldEnvironment(world);
+            std::array<std::vector<float>, 2> hdr;
+            LocalSnapshot celestialMasks;
+            for (uint32_t unshadowed = 0; unshadowed < 2; ++unshadowed) {
+                require(graph.setNodeRuntimeProperty(graph.findNode("Cached")->id, "physicalPageBudget", unshadowed ? 0 : 512),
+                    "Set celestial consumer budget");
+                renderAndRequire(preview, graph, "Deferred.color");
+                hdr[unshadowed] = localHDR(preview);
+                if (!unshadowed) { celestialMasks = localSnapshot("Cached"); }
+            }
+            require(celestialMasks.header.count == 4 && celestialMasks.header.admittedCount == 4, label + ": mixed consumer omitted a source");
+            const auto entry = std::find_if(celestialMasks.entries.begin(), celestialMasks.entries.begin() + celestialMasks.header.count,
+                [&](const auto& value) { return value.source == (kCelestialLightSourceTag | celestial); });
+            require(entry != celestialMasks.entries.begin() + celestialMasks.header.count && entry->kind == 0,
+                label + ": celestial source lookup omitted Sun or Moon");
+            size_t lit = 0, changed = 0, leaks = 0;
+            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                if (celestialMasks.depth[pixel] == 0) { continue; }
+                bool different = false;
+                for (uint32_t channel = 0; channel < 3; ++channel) {
+                    const size_t index = pixel * 4 + channel;
+                    different |= std::abs(hdr[0][index] - hdr[1][index]) > tolerance * std::max(1., std::abs(double(hdr[1][index])));
+                }
+                if (celestialMasks.shadows[entry->baseLayer][pixel] == 255) { ++lit; leaks += different; }
+                else { changed += different; }
+            }
+            report[label]["celestials"].push_back({{"source",celestial},{"changedShadowedPixels",changed},{"litPixels",lit},{"changedLitPixels",leaks}});
+            std::ofstream(directory/"Consumers.json") << report.dump(2) << '\n';
+            require(changed > 50 && lit > 1000 && leaks == 0, label + ": celestial visibility was absent or applied to another source");
+        }
+        world.sun.enabled = world.moon.enabled = false;
+        (void)preview.setWorldEnvironment(world);
+        (void)scene.setLighting(authored); (void)preview.setLighting(scene.lighting());
+        std::ofstream(directory/"Consumers.json") << report.dump(2) << '\n';
     }
     (void)scene.setLighting(authored); (void)preview.setLighting(scene.lighting());
     preview.setRawReadbackEnabled(false);

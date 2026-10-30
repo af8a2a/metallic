@@ -84,6 +84,7 @@
                 "cacheEnabled": true,
                 "lightCapacity": 8,
                 "compactOutputs": true,
+                "debugOutput": false,
                 "physicalPageBudget": 2048,
                 "nearPlane": 0.001,
                 "filter": "pcf",

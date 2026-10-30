@@ -143,19 +143,18 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
         if (tableHandle.index != 0xffffffffu) {
             let table = resolveUniform(tableHandle);
             VirtualShadowMapLightsHeader header = table.Load<VirtualShadowMapLightsHeader>(0);
-            for (uint index = 0u; index < header.count; ++index) {
-                VirtualShadowMapLightEntry entry = table.Load<VirtualShadowMapLightEntry>(64u + index * 64u);
-                if (entry.source != light.source) { continue; }
-                if (entry.status != 1u) { return float3(1); }
-                uint face = entry.kind == 2u && (header.reserved[0] & 1u) == 0u ? Metallic.Shadow::virtualShadowMapPointFace(
-                    position - float3(entry.positionRange[0], entry.positionRange[1], entry.positionRange[2])) : 0u;
-                let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
-                    ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
-                return float3(shadows.Load(int4(uint2(pixel), entry.baseLayer + face, 0)));
-            }
             // A connected multi-light publication owns this domain, including
             // explicit disabled/budget-rejected entries; legacy pins are ignored.
-            return float3(1);
+            uint index = (light.source & kCelestialSourceBit) != 0u
+                ? light.source & ~kCelestialSourceBit : light.source + kCelestialLightCount;
+            if (index >= header.count) { return float3(1); }
+            VirtualShadowMapLightEntry entry = table.Load<VirtualShadowMapLightEntry>(64u + index * 64u);
+            if (entry.status != 1u) { return float3(1); }
+            uint face = entry.kind == 2u && (header.reserved[0] & 1u) == 0u ? Metallic.Shadow::virtualShadowMapPointFace(
+                position - float3(entry.positionRange[0], entry.positionRange[1], entry.positionRange[2])) : 0u;
+            let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
+                ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
+            return float3(shadows.Load(int4(uint2(pixel), entry.baseLayer + face, 0)));
         }
         ShadowParameters shadow = gRealtimeShadowParameters[0];
         if (shadow.control.x != 0u && light.source == shadow.control.z) {

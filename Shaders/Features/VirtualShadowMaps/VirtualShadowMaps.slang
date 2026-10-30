@@ -1471,37 +1471,31 @@ void vsmDepthFragmentMain(ShadowRasterVertex input, bool frontFace : SV_IsFrontF
     if (!program.evaluateCoverage(context, instance).accepted) { discard; }
 }
 
-void vsmProjectReceiver(uint3 id, ShadowPush push, out uint3 filterCounts)
+bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out float4 debugValue, out uint3 filterCounts)
 {
+    visibility = 1.0;
+    debugValue = float4(0.0, 0.0, 0.0, 1.0);
     filterCounts = uint3(0u);
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
     ViewConstants view = views[0];
-    if (any(id.xy >= uint2(view.current.viewport.yz))) { return; }
-    RWTexture2D<float> shadow = resolveUniform(ResourceHandle<RWTexture2D<float>>(push.shadow));
-    RWTexture2D<float4> debug = resolveUniform(ResourceHandle<RWTexture2D<float4>>(push.debug));
+    if (any(id.xy >= uint2(view.current.viewport.yz))) { return false; }
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
     float3 position;
     float linearDepth;
     bool sharedPointLayer = push.filterReserved != 0u && push.lightType == 2u;
     if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) {
-        if (!sharedPointLayer || push.projectionFace == 0u) {
-            shadow[id.xy] = 1.0;
-            debug[id.xy] = float4(0.0, 0.0, 0.0, 1.0);
-        }
         InterlockedAdd(statistics[8], 1u);
-        return;
+        return !sharedPointLayer || push.projectionFace == 0u;
     }
     InterlockedAdd(statistics[6], 1u);
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-    if (sharedPointLayer && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
-    shadow[id.xy] = 1.0;
-    debug[id.xy] = float4(0.0, 0.0, 0.0, 1.0);
-    if (push.enabled == 0u) { return; }
+    if (sharedPointLayer && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return false; }
+    if (push.enabled == 0u) { return true; }
     bool nearPlane;
     if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) {
         if (nearPlane) { InterlockedAdd(statistics[29], 1u); }
-        return;
+        return true;
     }
     vsmWorkAdd(push, kVSMWorkProjectionReceivers, 1u);
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
@@ -1536,25 +1530,25 @@ void vsmProjectReceiver(uint3 id, ShadowPush push, out uint3 filterCounts)
         ShadowProjection coarse = projections[push.clipmapCount];
         projected = vsmProjectPosition(position, coarse);
         if (!vsmContains(projected, coarse, push.pageSize, false)) {
-            shadow[id.xy] = 0.0;
-            debug[id.xy] = float4(1.0, 0.0, 1.0, 1.0);
+            visibility = 0.0;
+            debugValue = float4(1.0, 0.0, 1.0, 1.0);
             InterlockedAdd(statistics[9], 1u);
-            return;
+            return true;
         }
         physicalPage = 0u;
         virtualTexel = vsmVirtualTexel(projected, coarse, push.pageSize);
         InterlockedAdd(statistics[7], 1u);
-        debug[id.xy] = float4(0.0, 0.0, 1.0, 1.0);
+        debugValue = float4(0.0, 0.0, 1.0, 1.0);
     } else {
         if (selectedLevel > firstLevel) { InterlockedAdd(statistics[13], 1u); }
-        debug[id.xy] = float4(float(selectedLevel + 1u) / float(push.clipmapCount), 0.5, 0.0, 1.0);
+        debugValue = float4(float(selectedLevel + 1u) / float(push.clipmapCount), 0.5, 0.0, 1.0);
     }
     ShadowProjection projection = projections[selectedLevel];
     if (push.filterMode != 0u) {
         ShadowPush trace = push;
         trace.rayLength = vsmSearchLength(position, linearDepth, view, push);
-        shadow[id.xy] = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, trace, filterCounts);
-        return;
+        visibility = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, trace, filterCounts);
+        return true;
     }
     float compareDepth;
     if (projection.metric.w > 0.5) {
@@ -1579,7 +1573,23 @@ void vsmProjectReceiver(uint3 id, ShadowPush push, out uint3 filterCounts)
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     // The producer's scene-Z/far margin keeps real casters above zero. A receiver
     // plane extrapolated past the scene must not turn empty depth into a blocker.
-    shadow[id.xy] = storedDepth == 0.0 || compareDepth >= storedDepth ? 1.0 : 0.0;
+    visibility = storedDepth == 0.0 || compareDepth >= storedDepth ? 1.0 : 0.0;
+    return true;
+}
+
+// Ownership and filtering finish before either output is stored. Receiver
+// reconstruction remains local to the original projection/barrier sequence.
+void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts)
+{
+    float visibility;
+    float4 debugValue;
+    if (!vsmProjectReceiver(id, push, visibility, debugValue, filterCounts)) { return; }
+    RWTexture2D<float> shadow = resolveUniform(ResourceHandle<RWTexture2D<float>>(push.shadow));
+    shadow[id.xy] = visibility;
+    if (push.debug != 0xffffffffu) {
+        RWTexture2D<float4> debug = resolveUniform(ResourceHandle<RWTexture2D<float4>>(push.debug));
+        debug[id.xy] = debugValue;
+    }
 }
 
 groupshared uint gVsmFilterCounts[3];
@@ -1590,14 +1600,14 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, u
 {
     uint3 counts;
     if (push.filterMode == 0u) {
-        vsmProjectReceiver(id, push, counts);
+        vsmProjectAndStore(id, push, counts);
         return;
     }
     if (lane < 3u) { gVsmFilterCounts[lane] = 0u; }
     GroupMemoryBarrierWithGroupSync();
     // Early returns, including viewport tails and point-face rejection, stay
     // inside the receiver helper so every lane reaches the group barriers.
-    vsmProjectReceiver(id, push, counts);
+    vsmProjectAndStore(id, push, counts);
     if (counts.x != 0u) { InterlockedAdd(gVsmFilterCounts[0], counts.x); }
     if (counts.y != 0u) { InterlockedAdd(gVsmFilterCounts[1], counts.y); }
     if (counts.z != 0u) { InterlockedAdd(gVsmFilterCounts[2], counts.z); }

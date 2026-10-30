@@ -2,6 +2,8 @@
 
 对应 [实施方案](VirtualShadowMapsResearch.md) 的 P4，基于 [P3](VirtualShadowMapsP3.md) 的多灯、稳定身份与提交后页缓存。实现 Hard / PCF / SMRT、receiver footprint 选级，以及完整场景位移 caster。默认实时图切换和代表性大场景长期验收仍属于 P5。
 
+屏幕输出与多灯投影的后续实现、内存边界和对照证据见 [VSM 屏幕输出与多灯投影](VirtualShadowMapsScreenProjection.md)。
+
 ## 光源与过滤合同
 
 `VirtualShadowMapLightsPass.filter` 接受 `hard`、`pcf`、`smrt`，缺省为 `hard`。旧 `VirtualShadowMapPass` 继续发布兼容 SIGMA sqrt 解码的硬阴影；其非 hard 配置明确拒绝，软阴影使用多灯线性可见度接口。

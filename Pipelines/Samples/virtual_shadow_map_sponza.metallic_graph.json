@@ -57,7 +57,8 @@
                 "receiverFootprint": true,
                 "tessellationFactor": 4,
                 "tessellationSubdivisionDepth": 0,
-                "compactOutputs": true
+                "compactOutputs": true,
+                "debugOutput": false
             }
         },
         {

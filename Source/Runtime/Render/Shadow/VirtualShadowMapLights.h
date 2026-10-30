@@ -2,6 +2,9 @@
 
 // Shared CPU/Slang publication ABI. Entries use current lighting source slots;
 // stable identities are independent of those slots and survive list reordering.
+// Entries 0/1 are Sun/Moon; entry 2 + local source slot is that local light.
+// Disabled and budget-rejected sources retain their entries, so count is the
+// local sourceSlotCount + 2. Admission/cache sorting never reorders this table.
 #ifdef __cplusplus
 #include <cstdint>
 namespace metallic::render {
