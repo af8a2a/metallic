@@ -12,6 +12,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
 #endif
+#ifndef VSM_OPTIMIZE_MARK_SAMPLES
+#define VSM_OPTIMIZE_MARK_SAMPLES 0
+#endif
 #ifndef VSM_CLUSTER_CULL
 #define VSM_CLUSTER_CULL 1
 #endif
@@ -346,24 +349,24 @@ float vsmSampleRandom(uint2 pixel, uint dimension, uint phase)
     return phase == 0u ? spatial : frac(spatial + float(phase) * ((dimension & 1u) != 0u ? 0.569840291 : 0.754877666));
 }
 
-float2 vsmDiskSample(uint ray, uint rayCount, uint2 pixel, uint phase)
+float2 vsmDiskSample(uint ray, uint rayCount, float2 scramble)
 {
     // Scramble the stratified disk per receiver. A common disk point at one ray
     // shifts a hard shadow instead of estimating area-source visibility.
     float2 sample = frac(float2(float(ray) / float(rayCount), float(ray) * 0.61803398875) +
-        float2(vsmSampleRandom(pixel, 0u, phase), vsmSampleRandom(pixel, 1u, phase)));
+        scramble);
     float angle = sample.y * 6.28318530718;
     return sqrt(sample.x) * float2(cos(angle), sin(angle));
 }
 
-float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, uint ray, uint2 pixel)
+float2 vsmDiskSample(uint ray, uint rayCount, uint2 pixel, uint phase)
 {
-    float3 toLight = push.lightType == 0u ? normalize(projection.rowZ.xyz) :
-        normalize(projection.originNear.xyz - position);
-    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
-    float3 up = cross(toLight, right);
-    float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
-    float3 offset = right * disk.x + up * disk.y;
+    return vsmDiskSample(ray, rayCount,
+        float2(vsmSampleRandom(pixel, 0u, phase), vsmSampleRandom(pixel, 1u, phase)));
+}
+
+float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, float3 toLight, float3 offset)
+{
     if (push.lightType == 0u) {
         return position + normalize(toLight + offset * tan(push.angularRadius)) * push.rayLength;
     }
@@ -386,6 +389,16 @@ float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush p
         }
     }
     return endpoint;
+}
+
+float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, uint ray, uint2 pixel)
+{
+    float3 toLight = push.lightType == 0u ? normalize(projection.rowZ.xyz) :
+        normalize(projection.originNear.xyz - position);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
+    return vsmRayEndpoint(position, projection, push, toLight, right * disk.x + up * disk.y);
 }
 
 float vsmRaySampleTime(uint step, ShadowPush push, uint2 pixel)
@@ -709,10 +722,27 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // Hard and the nine-tap PCF kernel keep the short direct path. Cache setup
     // pays off for the longer SMRT traces handled by the overload below.
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
+#if VSM_OPTIMIZE_MARK_SAMPLES
+    // makeLocalProjections repeats all four rows across mips; makeProjections
+    // repeats rowZ across directional clipmaps. Keep the original dot products
+    // (no endpoint interpolation or reassociation at page boundaries).
+    ShadowProjection sharedProjection = projections[firstLevel];
+    float3 sharedProjected = push.lightType == 0u ?
+        float3(0.0, 0.0, dot(sharedProjection.rowZ, float4(position, 1.0))) :
+        vsmProjectPosition(position, sharedProjection);
+#endif
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
         ShadowProjection projection = projections[level];
+#if VSM_OPTIMIZE_MARK_SAMPLES
+        float3 projected = sharedProjected;
+        if (push.lightType == 0u) {
+            float4 p = float4(position, 1.0);
+            projected.xy = float2(dot(projection.rowX, p), dot(projection.rowY, p));
+        }
+#else
         float3 projected = vsmProjectPosition(position, projection);
+#endif
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
         uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
         vsmMarkPage(pages, page, workCounts);
@@ -728,12 +758,26 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // the admission budget on pages the receiver will never sample.
     // The producer bounds clipmapCount by 12. Constant indices keep the small
     // per-receiver cache in registers across all SMRT rays.
+#if VSM_OPTIMIZE_MARK_SAMPLES
+    ShadowProjection sharedProjection = projections[firstLevel];
+    float3 sharedProjected = push.lightType == 0u ?
+        float3(0.0, 0.0, dot(sharedProjection.rowZ, float4(position, 1.0))) :
+        vsmProjectPosition(position, sharedProjection);
+#endif
     [unroll]
     for (uint level = 0u; level < 12u; ++level) {
         if (level < firstLevel || level >= push.clipmapCount) { continue; }
         ++workCounts.y;
         ShadowProjection projection = projections[level];
+#if VSM_OPTIMIZE_MARK_SAMPLES
+        float3 projected = sharedProjected;
+        if (push.lightType == 0u) {
+            float4 p = float4(position, 1.0);
+            projected.xy = float2(dot(projection.rowX, p), dot(projection.rowY, p));
+        }
+#else
         float3 projected = vsmProjectPosition(position, projection);
+#endif
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
         uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
         if (lastPages[level] == page) { continue; }
@@ -862,12 +906,54 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         uint lastPages[12];
         [unroll]
         for (uint level = 0u; level < 12u; ++level) { lastPages[level] = 0xffffffffu; }
+#if VSM_OPTIMIZE_MARK_SAMPLES
+        ShadowProjection originProjection = projections[0], receiverProjection = projections[receiverLevel];
+        float3 toLight = push.lightType == 0u ? normalize(originProjection.rowZ.xyz) :
+            normalize(originProjection.originNear.xyz - position);
+        float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+        float3 up = cross(toLight, right);
+        // Directional normalization must retain the receiver level's rowZ;
+        // do not infer bitwise equality from scaled directions.
+        float3 ditherToLight = push.lightType == 0u ? normalize(receiverProjection.rowZ.xyz) :
+            normalize(receiverProjection.originNear.xyz - position);
+        float3 ditherRight = normalize(cross(abs(ditherToLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), ditherToLight));
+        float3 ditherUp = cross(ditherToLight, ditherRight);
+        float texelSize = vsmWorldTexelSize(position, receiverProjection, push.pageSize, push.lightType);
+        float2 scramble = float2(vsmSampleRandom(id.xy, 0u, push.samplePhase), vsmSampleRandom(id.xy, 1u, push.samplePhase));
+        float stepRandom = vsmSampleRandom(id.xy, 2u, push.samplePhase);
+        float3 forward = float3(0.0);
+        float startW = 0.0;
+        if (push.lightType != 0u) {
+            forward = normalize(originProjection.rowW.xyz);
+            if (push.lightType == 2u) {
+                float3 faceRight, faceUp;
+                virtualShadowMapPointBasis(virtualShadowMapPointFace(position - originProjection.originNear.xyz), faceRight, faceUp, forward);
+            }
+            startW = dot(position - originProjection.originNear.xyz, forward);
+        }
+#endif
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
+#if VSM_OPTIMIZE_MARK_SAMPLES
+            float2 disk = vsmDiskSample(ray, push.rayCount, scramble);
+            float3 endpoint = vsmRayEndpoint(position, originProjection, trace, toLight, right * disk.x + up * disk.y);
+            float2 offset = float2(vsmSampleRandom(id.xy, 3u + 2u * ray, push.samplePhase),
+                vsmSampleRandom(id.xy, 4u + 2u * ray, push.samplePhase)) - 0.5;
+            float3 dither = (ditherRight * offset.x + ditherUp * offset.y) * texelSize;
+            float endW = push.lightType != 0u ? dot(endpoint - originProjection.originNear.xyz, forward) : 0.0;
+#else
             float3 endpoint = vsmRayEndpoint(position, projections[0], trace, ray, id.xy);
             float3 dither = vsmRayDither(position, projections[receiverLevel], trace, ray, id.xy);
+#endif
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
+#if VSM_OPTIMIZE_MARK_SAMPLES
+                float t = 1.0 - (float(step + 1u) - stepRandom) / float(push.samplesPerRay);
+                float time = step == push.samplesPerRay ? 0.0 : t * t;
+                if (push.lightType != 0u) { time = time * startW / lerp(endW, startW, time); }
+                float3 point = lerp(position, endpoint, time);
+#else
                 float time = vsmRaySampleTime(step, push, id.xy);
                 float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
+#endif
                 vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages, workCounts);
             }
         }

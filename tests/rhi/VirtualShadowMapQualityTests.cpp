@@ -447,7 +447,7 @@ RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt"
     for (const char* name : names) {
         graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kCapacity},{"physicalPageBudget",2048},
             {"pageSize",128},{"virtualPagesPerAxis",virtualPagesPerAxis},{"clipmapCount",4},{"firstClipmapExtent",4},
-            {"maxWorkItems",131072},{"shadowBias",.002},{"cacheEnabled",true},
+            {"maxWorkItems",131072},{"shadowBias",.002},{"cacheEnabled",true},{"benchmarkMarkSamples",true},
             {"forceRedraw",std::string_view(name)=="Redraw"},{"filter",std::string_view(name)=="Hard" ? "hard" : filter},
             {"pcfRadius",1.5},{"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},
             {"receiverFootprint",true},{"compactOutputs",std::string_view(name)=="Compact"}});

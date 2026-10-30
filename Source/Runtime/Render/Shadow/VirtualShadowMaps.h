@@ -42,6 +42,7 @@ struct VirtualShadowMapSettings
 {
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool optimizeMark = true;
+    bool optimizeMarkSamples = true; // Reuse invariant Mark work for local lights; directional uses the original path.
     bool clusterCulling = true;
     bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.
     uint32_t pageSize = 128;

@@ -253,6 +253,7 @@ struct VirtualShadowMaps::Programs
     uint64_t coverageKey = 0;
     bool collectGPUWork = false;
     bool optimizeMark = true;
+    bool optimizeMarkSamples = false;
     bool clusterCulling = true;
     bool clusterPageBitset = false;
     std::array<std::unique_ptr<ShaderModule>, 14> shaders;
@@ -461,6 +462,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool directional = light.type == VirtualShadowMapLightType::Directional;
     const bool enabled = settings.enabled && light.enabled;
     const bool clusterPageBitset = settings.clusterCulling && settings.clusterPageBitset;
+    // The local-light permutation has confirmed gains; directional hoisting regressed Mark.
+    const bool optimizeMarkSamples = settings.optimizeMarkSamples && !directional;
     const auto finite = [](const Vector& value) {
         return std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); });
     };
@@ -815,7 +818,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.next("Prepare VSM pipeline cache");
     const bool programMiss = !programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey() ||
         programs_->collectGPUWork != settings.collectGPUWork ||
-        programs_->optimizeMark != settings.optimizeMark || programs_->clusterCulling != settings.clusterCulling ||
+        programs_->optimizeMark != settings.optimizeMark || programs_->optimizeMarkSamples != optimizeMarkSamples ||
+        programs_->clusterCulling != settings.clusterCulling ||
         programs_->clusterPageBitset != clusterPageBitset;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
@@ -828,6 +832,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->coverageKey = coverage->coverageKey();
         programs->collectGPUWork = settings.collectGPUWork;
         programs->optimizeMark = settings.optimizeMark;
+        programs->optimizeMarkSamples = optimizeMarkSamples;
         programs->clusterCulling = settings.clusterCulling;
         programs->clusterPageBitset = clusterPageBitset;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
@@ -839,6 +844,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE", coverage->coverageProgramCount() ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", settings.collectGPUWork ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_MARK", settings.optimizeMark ? "1" : "0"},
+            SlangMacroDefine{"VSM_OPTIMIZE_MARK_SAMPLES", optimizeMarkSamples ? "1" : "0"},
             SlangMacroDefine{"VSM_CLUSTER_CULL", settings.clusterCulling ? "1" : "0"},
             SlangMacroDefine{"VSM_CLUSTER_PAGE_BITSET", clusterPageBitset ? "1" : "0"}};
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
@@ -851,9 +857,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             programs->shaders[index] = std::move(*module);
             if (index == 1 || index == 3 || index == 5) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={}", entries[index],
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
-                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork);
+                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type));
             }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
