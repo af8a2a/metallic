@@ -2455,6 +2455,7 @@ public:
         try {
             std::filesystem::create_directories(directory);
             registerProfilingEvidencePass();
+            require(VirtualShadowMapSettings{}.clusterPageBitset, "Production VSM settings must default to dirty-page bitsets");
             const auto fixture = writeLocalFixture(directory / "Fixture", false);
             constexpr std::array modes{"Off", "Timing", "Work", "Both"};
             constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection"};
@@ -2566,7 +2567,7 @@ public:
                                 snapshots[mode].depth == snapshots[0].depth && snapshots[mode].statistics == snapshots[0].statistics,
                                 label + "-" + phase + ": instrumentation changed images or the 32-word statistics ABI");
                         }
-                        if (work) { requireBuildDiagnosticInvariants(snapshots[mode], true, label + "-" + phase + "-" + modes[mode]); }
+                        if (work) { requireBuildDiagnosticInvariants(snapshots[mode], true, label + "-" + phase + "-" + modes[mode], true); }
                     }
                     for (uint32_t face = 0; face < faces; ++face) {
                         for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
@@ -2586,13 +2587,15 @@ public:
                     }
                     require(snapshots[2].buildDiagnostics == snapshots[3].buildDiagnostics, "GPU timing changed build diagnostics");
                     std::array<uint64_t, kVirtualShadowMapWorkCounterCount> totals{};
-                    uint64_t dirtyPages = 0, overflow = 0;
+                    uint64_t dirtyPages = 0, overflow = 0, defaultBitsetLevels = 0;
                     for (uint32_t face = 0; face < faces; ++face) {
                         for (uint32_t index = 0; index < totals.size(); ++index) { totals[index] += snapshots[3].workload[face][index]; }
                         dirtyPages += snapshots[3].statistics[face][16]; overflow += snapshots[3].statistics[face][5];
+                        defaultBitsetLevels += snapshots[3].buildDiagnostics[face][kVSMBuildDiagnosticClusterBitsetLevelTests];
                     }
                     entry["statistics"] = snapshots[3].statistics; entry["workload"] = snapshots[3].workload; entry["totals"] = totals;
                     entry["buildDiagnostics"] = snapshots[3].buildDiagnostics;
+                    entry["defaultBitsetTestedLevels"] = defaultBitsetLevels;
                     std::ofstream(directory / "VirtualShadowMapProfiling.json") << report.dump(2) << '\n';
                     for (uint32_t face = 0; face < faces; ++face) {
                         const auto& counters = snapshots[3].workload[face];
@@ -2613,6 +2616,8 @@ public:
                         totals[kVSMWorkProjectionAtlasLoads] > 0, "Profiling fixture has no receiver/projection work");
                     require((compact && totals[kVSMWorkProjectionRays] > 0) || (!compact && totals[kVSMWorkProjectionRays] == 0), "SMRT ray workload does not match filter");
                     if (frame != 1) { require(dirtyPages > 0 && totals[kVSMWorkBuildDecodedTriangles] > 0, "Cold/dirty fixture did not build depth work"); }
+                    require(frame == 1 ? defaultBitsetLevels == 0 : defaultBitsetLevels > 0,
+                        label + "-" + phase + ": production default did not select the actual bitset build path");
                     if (frame == 3) { require(overflow > 0, "Profiling overflow fixture did not overflow"); }
                 }
                 auto incompatible = graph.findNode("Off")->properties;
@@ -2676,9 +2681,17 @@ public:
                 .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
 
             constexpr uint32_t capacity = 4;
-            const std::vector<const char*> arms = bitsetComparison_ ? std::vector<const char*>{"Baseline", "Bitset"} :
+            const std::vector<const char*> baseArms = bitsetComparison_ ? std::vector<const char*>{"Baseline", "Bitset"} :
                 std::vector<const char*>{"Legacy", "MarkOnly", "ClusterOnly", "Both"};
-            uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0;
+            if (bitsetComparison_) {
+                report["selectionControls"] = {
+                    {"Baseline",{{"clusterPageBitset",true},{"benchmarkClusterPageBitset",false}}},
+                    {"Bitset",Json::object()},
+                    {"ProductionOff",{{"clusterPageBitset",false}}},
+                    {"CullDisabled",{{"clusterPageBitset",true},{"benchmarkClusterPageBitset",true},{"benchmarkDisableClusterCull",true}}}};
+            }
+            uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0, bitsetControlStates = 0;
+            std::array<uint64_t, 2> defaultBitsetLevelsByPass{};
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
@@ -2688,6 +2701,10 @@ public:
                         std::vector<std::string>{nearCase ? "smrt" : roomCase ? "pcf" : "hard"};
                     for (const auto& filter : filters) {
                         const bool single = filter.starts_with("single-hard");
+                        const bool bitsetControls = bitsetComparison_ && mainMatrix && !streamed &&
+                            (filter == "single-hard" || filter == "smrt");
+                        auto arms = baseArms;
+                        if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
                         const uint32_t faces = single ? 1 : capacity * 6, layers = single ? 1 : capacity;
                         const std::string label = std::string(streamed ? "Stream-" : "Resident-") +
@@ -2723,8 +2740,7 @@ public:
                             {"meshletNormalConeCull", false}, {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
                         for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                             const std::string name = arms[arm], evidence = name + "Evidence";
-                            graph.addNode(single ? "VirtualShadowMapPass" : "VirtualShadowMapLightsPass", name,
-                                {{"lightCapacity", capacity}, {"compactOutputs", true}, {"physicalPageBudget", 512}, {"physicalPageCount", 512},
+                            Json settings{{"lightCapacity", capacity}, {"compactOutputs", true}, {"physicalPageBudget", 512}, {"physicalPageCount", 512},
                                  {"pageSize", kPageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", kClipmapCount},
                                  {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002},
                                  {"cacheEnabled", true}, {"receiverFootprint", true}, {"filter", single ? "hard" : filter}, {"pcfRadius", 1.5},
@@ -2732,7 +2748,24 @@ public:
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
                                  {"benchmarkLegacyMark", bitsetComparison_ ? false : (arm & 1) == 0},
                                  {"benchmarkDisableClusterCull", bitsetComparison_ ? false : (arm & 2) == 0},
-                                 {"benchmarkClusterPageBitset", bitsetComparison_ && arm == 1}});
+                                 {"benchmarkClusterPageBitset", false}};
+                            if (bitsetComparison_) {
+                                // The baseline explicitly preserves legacy scanning. A conflicting
+                                // production value proves the benchmark override takes precedence.
+                                // The Bitset arm deliberately omits both values to test the default.
+                                settings.erase("benchmarkClusterPageBitset");
+                                if (arm == 0) {
+                                    settings["clusterPageBitset"] = true;
+                                    settings["benchmarkClusterPageBitset"] = false;
+                                } else if (arm == 2) {
+                                    settings["clusterPageBitset"] = false;
+                                } else if (arm == 3) {
+                                    settings["clusterPageBitset"] = true;
+                                    settings["benchmarkClusterPageBitset"] = true;
+                                    settings["benchmarkDisableClusterCull"] = true;
+                                }
+                            }
+                            graph.addNode(single ? "VirtualShadowMapPass" : "VirtualShadowMapLightsPass", name, settings);
                             graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
                             graph.addNode("VSMProfilingEvidencePass", evidence,
                                 {{"layers", layers}, {"faces", faces}, {"collectWork", true}, {"evidenceName", name}});
@@ -2776,7 +2809,7 @@ public:
                                     {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
-                                requireBuildDiagnosticInvariants(snapshot, bitsetComparison_ || (arm & 2) != 0,
+                                requireBuildDiagnosticInvariants(snapshot, bitsetComparison_ ? arm != 3 : (arm & 2) != 0,
                                     label + "-" + phase + "-" + arms[arm], bitsetComparison_ && arm == 1);
                                 if (arm != 0) {
                                     require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
@@ -2785,12 +2818,18 @@ public:
                                 }
                             }
                             if (bitsetComparison_) {
+                                bitsetControlStates += bitsetControls;
                                 for (uint32_t face = 0; face < faces; ++face) {
-                                    for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                        // Both arms retain shared marking; hash collisions can reorder repeated ORs.
-                                        if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                        require(snapshots[0].workload[face][counter] == snapshots[1].workload[face][counter],
-                                            label + "-" + phase + ": bitset changed deterministic GPU work");
+                                    for (uint32_t arm = 1; arm < arms.size(); ++arm) {
+                                        // Disabling cluster culling intentionally restores rejected
+                                        // build work; its image/statistics checks above remain exact.
+                                        if (arm == 3) { continue; }
+                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                                            // Shared mark hash collisions can reorder repeated ORs.
+                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
+                                            require(snapshots[0].workload[face][counter] == snapshots[arm].workload[face][counter],
+                                                label + "-" + phase + ": bitset selection changed deterministic GPU work");
+                                        }
                                     }
                                     for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                                         const auto& counts = snapshots[arm].workload[face];
@@ -2799,6 +2838,8 @@ public:
                                             label + "-" + phase + ": invalid shared mark request count");
                                     }
                                     bitsetTestedLevels += snapshots[1].buildDiagnostics[face][kVSMBuildDiagnosticClusterBitsetLevelTests];
+                                    defaultBitsetLevelsByPass[single ? 0 : 1] +=
+                                        snapshots[1].buildDiagnostics[face][kVSMBuildDiagnosticClusterBitsetLevelTests];
                                 }
                             } else {
                                 for (uint32_t arm = 1; arm < arms.size(); ++arm) {
@@ -2827,7 +2868,11 @@ public:
             }
             if (bitsetComparison_) {
                 report["bitsetTestedLevels"] = bitsetTestedLevels;
+                report["defaultBitsetLevelsByPass"] = {{"single",defaultBitsetLevelsByPass[0]},{"lights",defaultBitsetLevelsByPass[1]}};
+                report["bitsetControlStates"] = bitsetControlStates;
                 require(bitsetTestedLevels > 0, "Bitset matrix did not exercise a bitset level test");
+                require(defaultBitsetLevelsByPass[0] > 0 && defaultBitsetLevelsByPass[1] > 0 && bitsetControlStates == 10,
+                    "Bitset production defaults or explicit fallback controls were not exercised for both pass types");
             } else {
                 report["markReducedStates"] = markReducedStates; report["clusterReducedStates"] = clusterReducedStates;
                 require(markReducedStates > 0, "Optimization matrix did not exercise reduced mark work");

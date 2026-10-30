@@ -65,8 +65,8 @@ def normalized_workload(spec, graph, arm):
         raise ValueError("Ordinary timing requires validation and capture/readback off")
     graph = copy.deepcopy(graph)
     nodes = [node for node in graph["nodes"] if node.get("name") == "Shadows"]
-    if len(nodes) != 1 or nodes[0].get("properties", {}).get(SWITCH, False) is not (arm == "B"):
-        raise ValueError(f"{arm}: {SWITCH} must be {arm == 'B'}")
+    if len(nodes) != 1 or nodes[0].get("properties", {}).get(SWITCH) is not (arm == "B"):
+        raise ValueError(f"{arm}: {SWITCH} must explicitly be the boolean {arm == 'B'}")
     nodes[0]["properties"].pop(SWITCH, None)
     for node in graph["nodes"]:
         if mode == "timing" and node.get("properties", {}).get("benchmarkCaptureSemanticSource", False):

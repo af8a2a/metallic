@@ -43,7 +43,7 @@ struct VirtualShadowMapSettings
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool optimizeMark = true;
     bool clusterCulling = true;
-    bool clusterPageBitset = false; // Candidate cluster-page query; effective only with clusterCulling.
+    bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
     uint32_t clipmapCount = 4;

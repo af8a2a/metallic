@@ -122,6 +122,23 @@ class BitsetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, bitset.SWITCH):
             bitset.normalized_workload(spec("timing"), graph("B", "timing"), "A")
 
+    def test_bitset_switch_must_be_explicit_in_both_arms(self):
+        for arm in bitset.ARMS:
+            with self.subTest(arm=arm):
+                value = graph(arm, "timing")
+                value["nodes"][0]["properties"].pop(bitset.SWITCH)
+                with self.assertRaisesRegex(ValueError, bitset.SWITCH):
+                    bitset.normalized_workload(spec("timing", arm), value, arm)
+
+    def test_bitset_switch_rejects_non_booleans_in_both_arms(self):
+        for arm in bitset.ARMS:
+            for invalid in (None, 0, 1, 0.0, 1.0, "false", "true", [], {}):
+                with self.subTest(arm=arm, value=invalid):
+                    value = graph(arm, "timing")
+                    value["nodes"][0]["properties"][bitset.SWITCH] = invalid
+                    with self.assertRaisesRegex(ValueError, bitset.SWITCH):
+                        bitset.normalized_workload(spec("timing", arm), value, arm)
+
     def test_fixed_cases_reject_budget_reset_and_extra_renders(self):
         for change in (lambda value: value.update(frames=128), lambda value: value.update(warmupFrames=16),
                 lambda value: value["cases"][0].update(freezeStreamingFrame=15),

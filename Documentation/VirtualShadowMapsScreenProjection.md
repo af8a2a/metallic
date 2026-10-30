@@ -1,5 +1,7 @@
 # VSM 屏幕输出与点光准备共享
 
+本记录对应 `0227e2cc`，当时 cluster dirty-page bitset 尚未默认开启；后续生产默认及独立测量见 [dirty-page bitset](VirtualShadowMapsDirtyPageBitset.md)。
+
 本次减少公开屏幕输出、Legacy 中间拷贝、点光六面表准备和 Deferred 的灯表查找。普通 GPUDriven 光栅、页请求/分配/光栅、过滤数学和 SMRT 时域历史保持原有路径；GPU 投影继续每面一次 dispatch。
 
 ## 输出与消费
