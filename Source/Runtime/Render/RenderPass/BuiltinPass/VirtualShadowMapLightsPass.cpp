@@ -244,6 +244,8 @@ public:
         // An explicit benchmark override wins over the production property for A/B graphs.
         settings.clusterPageBitset = boolProperty(&properties, "benchmarkClusterPageBitset",
             boolProperty(&properties, "clusterPageBitset", settings.clusterPageBitset));
+        settings.trianglePageBitset = boolProperty(&properties, "benchmarkTrianglePageBitset",
+            boolProperty(&properties, "trianglePageBitset", settings.trianglePageBitset));
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
         const float nearPlane = properties.value("nearPlane", 0.001f);

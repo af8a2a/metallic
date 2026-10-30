@@ -65,7 +65,13 @@ BUILD_HISTOGRAM_COUNTERS = ("clusterPageScan0", "clusterPageScan1",
 BUILD_COUNTERS = (*BUILD_COUNTER_DEFINITIONS, *BUILD_HISTOGRAM_COUNTERS)
 BITSET_HISTOGRAM_COUNTERS = tuple(name.replace("clusterPageScan", "clusterBitsetScan") for name in BUILD_HISTOGRAM_COUNTERS)
 BITSET_COUNTERS = ("clusterBitsetLevelTests", "clusterBitsetWordTests", *BITSET_HISTOGRAM_COUNTERS)
-ALL_BUILD_COUNTERS = (*BUILD_COUNTERS, *BITSET_COUNTERS)
+V2_BUILD_COUNTERS = (*BUILD_COUNTERS, *BITSET_COUNTERS)
+TRIANGLE_BITSET_COUNTER_DEFINITIONS = {
+    "triangleBitsetWordTests": "Actual uint dirty-page word loads during exact triangle page enumeration.",
+    "triangleBitsetPageHits": "Set bits enumerated for exact triangle/page work emission; not page metadata loads.",
+}
+TRIANGLE_BITSET_COUNTERS = tuple(TRIANGLE_BITSET_COUNTER_DEFINITIONS)
+ALL_BUILD_COUNTERS = (*V2_BUILD_COUNTERS, *TRIANGLE_BITSET_COUNTERS)
 
 
 def duration(value, label):
@@ -190,7 +196,7 @@ def build_frame(frame, mode):
         return result
     diagnostic = shadow["gpuBuildDiagnostics"]
     if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
-            diagnostic["version"] not in (1, 2) or not isinstance(diagnostic.get("enabled"), bool)):
+            diagnostic["version"] not in (1, 2, 3) or not isinstance(diagnostic.get("enabled"), bool)):
         raise ValueError("Unknown or malformed GPU build diagnostic schema")
     if not diagnostic["enabled"]:
         if "faces" in diagnostic or "totals" in diagnostic:
@@ -199,7 +205,7 @@ def build_frame(frame, mode):
         return result
     if mode != "diagnostic":
         raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
-    names = BUILD_COUNTERS if diagnostic["version"] == 1 else ALL_BUILD_COUNTERS
+    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: ALL_BUILD_COUNTERS}[diagnostic["version"]]
     faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
     if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(names) or
             not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
@@ -467,10 +473,12 @@ def report(args):
             if build_counters:
                 text.extend(["| Independent build diagnostic | Median of process medians | Processes with evidence |",
                              "| --- | ---: | ---: |"])
-                for name in BUILD_COUNTER_DEFINITIONS:
+                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS):
+                    if name not in build_counters:
+                        continue
                     values = build_counters[name]
                     text.append(f"| {name} | {values['median']:.1f} | {values['count']} |")
-                text.extend(["", "All 25 counters are retained independently in BuildDiagnosticFrames.csv/JSON and the per-face CSV.",
+                text.extend(["", "All counters present in the recorded schema are retained independently in BuildDiagnosticFrames.csv/JSON and the per-face CSV.",
                     "The histogram counts actual page reads, including early hits; zero represents near-plane keeps or outside rejection.", ""])
             else:
                 text.extend(["Build diagnostics: **unavailable** (disabled or absent in older evidence); missing values are not zero.", ""])
@@ -489,7 +497,7 @@ def report(args):
     text.extend(["## GPU counter definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
     text.extend(f"| {name} | {definition} |" for name, definition in COUNTER_DEFINITIONS.items())
     text.extend(["", "## Independent build diagnostic definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
-    text.extend(f"| {name} | {definition} |" for name, definition in BUILD_COUNTER_DEFINITIONS.items())
+    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items()))
     text.extend(["", "`clusterPageScan0/1/2To3/.../8192To16383/16384Plus` record one observation per level check, using actual reads before return.",
                  "The current maximum is 16384 reads per level. Counts are checked per face against legacy clipmap/enabled/dirty statistics, outcome partitions, histogram totals and weighted scan bounds.",
                  "Build diagnostic data is diagnostic-only and never enters ordinary timing or the four-arm performance policy. Cluster culling disabled can legitimately publish all-zero available diagnostics."])

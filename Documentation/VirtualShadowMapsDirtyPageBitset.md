@@ -1,5 +1,7 @@
 # VSM dirty-page bitset
 
+精确三角形阶段的后续复用见 [三角形页枚举](VirtualShadowMapTriangleBitset.md)；本文以下保留 cluster 粗筛的实现与历史测量范围。
+
 `VirtualShadowMapSettings::clusterPageBitset` 及两个 VSM Pass 的生产配置现在默认开启，无需修改已有 RenderGraph。图属性 `clusterPageBitset: false` 可恢复逐页扫描。显式布尔属性 `benchmarkClusterPageBitset` 优先于生产属性，保留历史 A/B 图的 false/true 覆盖能力；关闭 cluster culling 时，bitset 的有效值始终为 false。
 
 本次仅切换生产默认与配置读取，不改变 bitset 算法、页选择、精确三角裁剪或光照。Runtime 按有效值同时配置 owners scratch、shader 宏和程序缓存排列。独立 shader 入口的缺省宏仍为 0，兼容自行分配旧 owners 布局的 allocator/remap 测试；正常生产录制始终显式传入宏值。

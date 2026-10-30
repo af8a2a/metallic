@@ -2456,6 +2456,7 @@ public:
             std::filesystem::create_directories(directory);
             registerProfilingEvidencePass();
             require(VirtualShadowMapSettings{}.clusterPageBitset, "Production VSM settings must default to dirty-page bitsets");
+            require(VirtualShadowMapSettings{}.trianglePageBitset, "Production VSM settings must default to triangle dirty-page bitsets");
             const auto fixture = writeLocalFixture(directory / "Fixture", false);
             constexpr std::array modes{"Off", "Timing", "Work", "Both"};
             constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection"};
@@ -2587,15 +2588,17 @@ public:
                     }
                     require(snapshots[2].buildDiagnostics == snapshots[3].buildDiagnostics, "GPU timing changed build diagnostics");
                     std::array<uint64_t, kVirtualShadowMapWorkCounterCount> totals{};
-                    uint64_t dirtyPages = 0, overflow = 0, defaultBitsetLevels = 0;
+                    uint64_t dirtyPages = 0, overflow = 0, defaultBitsetLevels = 0, triangleBitsetWords = 0;
                     for (uint32_t face = 0; face < faces; ++face) {
                         for (uint32_t index = 0; index < totals.size(); ++index) { totals[index] += snapshots[3].workload[face][index]; }
                         dirtyPages += snapshots[3].statistics[face][16]; overflow += snapshots[3].statistics[face][5];
                         defaultBitsetLevels += snapshots[3].buildDiagnostics[face][kVSMBuildDiagnosticClusterBitsetLevelTests];
+                        triangleBitsetWords += snapshots[3].buildDiagnostics[face][kVSMBuildDiagnosticTriangleBitsetWordTests];
                     }
                     entry["statistics"] = snapshots[3].statistics; entry["workload"] = snapshots[3].workload; entry["totals"] = totals;
                     entry["buildDiagnostics"] = snapshots[3].buildDiagnostics;
                     entry["defaultBitsetTestedLevels"] = defaultBitsetLevels;
+                    entry["defaultTriangleBitsetWordTests"] = triangleBitsetWords;
                     std::ofstream(directory / "VirtualShadowMapProfiling.json") << report.dump(2) << '\n';
                     for (uint32_t face = 0; face < faces; ++face) {
                         const auto& counters = snapshots[3].workload[face];
@@ -2605,6 +2608,9 @@ public:
                         }
                         require(counters[kVSMWorkBuildDecodedTriangles] <= counters[kVSMWorkBuildActiveTriangleSlots], "Decoded more build triangles than active slots");
                         require(counters[kVSMWorkRasterFineGroups] == stats[4], "Fine raster groups disagree with admitted work");
+                        require(counters[kVSMWorkBuildPageTests] == 0 &&
+                            snapshots[3].buildDiagnostics[face][kVSMBuildDiagnosticTriangleBitsetPageHits] == stats[3],
+                            "Production triangle bitset did not replace metadata reads with exact emitted page hits");
                         if (frame == 1) {
                             require(stats[16] == 0 && stats[21] == 0 && counters[kVSMWorkBuildActiveTriangleSlots] == 0 &&
                                 counters[kVSMWorkRasterCoarseGroups] == 0 && counters[kVSMWorkRasterFineGroups] == 0 &&
@@ -2618,6 +2624,8 @@ public:
                     if (frame != 1) { require(dirtyPages > 0 && totals[kVSMWorkBuildDecodedTriangles] > 0, "Cold/dirty fixture did not build depth work"); }
                     require(frame == 1 ? defaultBitsetLevels == 0 : defaultBitsetLevels > 0,
                         label + "-" + phase + ": production default did not select the actual bitset build path");
+                    require(frame == 1 ? triangleBitsetWords == 0 : triangleBitsetWords > 0,
+                        label + "-" + phase + ": production default did not enumerate triangle bitsets");
                     if (frame == 3) { require(overflow > 0, "Profiling overflow fixture did not overflow"); }
                 }
                 auto incompatible = graph.findNode("Off")->properties;
@@ -2643,14 +2651,15 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples };
+enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, TriangleBitset };
 
 class VirtualShadowMapEquivalenceTest : public RHITest
 {
 public:
     explicit VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode mode) : mode_(mode)
     {
-        name = mode == VirtualShadowMapEquivalenceMode::MarkSamples ? "virtual_shadow_map_mark_samples_equivalence" :
+        name = mode == VirtualShadowMapEquivalenceMode::TriangleBitset ? "virtual_shadow_map_triangle_page_bitset_equivalence" :
+            mode == VirtualShadowMapEquivalenceMode::MarkSamples ? "virtual_shadow_map_mark_samples_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::ClusterBitset ? "virtual_shadow_map_cluster_page_bitset_equivalence" :
             "virtual_shadow_map_optimization_equivalence";
         type = RHITestType::Rendering;
@@ -2661,7 +2670,9 @@ public:
         bench::ValidationRecorder validation;
         const bool bitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::ClusterBitset;
         const bool markSamplesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkSamples;
-        const std::string reportName = markSamplesComparison ? "VirtualShadowMapMarkSamplesEquivalence" :
+        const bool triangleBitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::TriangleBitset;
+        const std::string reportName = triangleBitsetComparison ? "VirtualShadowMapTrianglePageBitsetEquivalence" :
+            markSamplesComparison ? "VirtualShadowMapMarkSamplesEquivalence" :
             bitsetComparison ? "VirtualShadowMapClusterPageBitsetEquivalence" : "VirtualShadowMapOptimizationEquivalence";
         const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
         Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
@@ -2688,7 +2699,8 @@ public:
                 .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
 
             constexpr uint32_t capacity = 4;
-            const std::vector<const char*> baseArms = markSamplesComparison ? std::vector<const char*>{"Baseline", "Prepared"} :
+            const std::vector<const char*> baseArms = triangleBitsetComparison ? std::vector<const char*>{"Baseline", "TriangleBitset"} :
+                markSamplesComparison ? std::vector<const char*>{"Baseline", "Prepared"} :
                 bitsetComparison ? std::vector<const char*>{"Baseline", "Bitset"} :
                 std::vector<const char*>{"Legacy", "MarkOnly", "ClusterOnly", "Both"};
             if (bitsetComparison) {
@@ -2708,11 +2720,23 @@ public:
             }
             uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0, bitsetControlStates = 0;
             uint64_t markSamplesStates = 0, markSamplesControlStates = 0;
+            uint64_t triangleBitsetStates = 0, triangleBitsetControlStates = 0, triangleBitsetReducedStates = 0;
+            std::array<uint64_t, 2> triangleBitsetWordsByPass{};
+            if (triangleBitsetComparison) {
+                require(VirtualShadowMapSettings{}.trianglePageBitset, "Production VSM settings must default to triangle dirty-page bitsets");
+                report["selectionControls"] = {
+                    {"Baseline",{{"trianglePageBitset",true},{"benchmarkTrianglePageBitset",false}}},
+                    {"TriangleBitset",Json::object()},
+                    {"ProductionOff",{{"trianglePageBitset",false}}},
+                    {"ClusterBitsetOff",{{"benchmarkTrianglePageBitset",true},{"benchmarkClusterPageBitset",false}}},
+                    {"CullDisabled",{{"benchmarkTrianglePageBitset",true},{"benchmarkDisableClusterCull",true}}}};
+            }
             std::array<uint64_t, 2> defaultBitsetLevelsByPass{};
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
-                    const std::vector<std::string> filters = mainMatrix ? (markSamplesComparison ?
+                    const std::vector<std::string> filters = mainMatrix ? (triangleBitsetComparison ?
+                        std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-max"} : markSamplesComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} : bitsetComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33"} :
                         std::vector<std::string>{"pcf", "smrt"}) :
@@ -2723,9 +2747,12 @@ public:
                             (filter == "single-hard" || filter == "smrt");
                         const bool markSamplesControls = markSamplesComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
+                        const bool triangleBitsetControls = triangleBitsetComparison && mainMatrix && !streamed &&
+                            (filter == "single-hard" || filter == "smrt");
                         auto arms = baseArms;
                         if (markSamplesControls) { arms.push_back("PreparedLegacyMark"); }
                         if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
+                        if (triangleBitsetControls) { arms.insert(arms.end(), {"ProductionOff", "ClusterBitsetOff", "CullDisabled"}); }
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
                         const uint32_t faces = single ? 1 : capacity * 6, layers = single ? 1 : capacity;
                         const std::string label = std::string(streamed ? "Stream-" : "Resident-") +
@@ -2769,9 +2796,9 @@ public:
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", filter == "smrt-one" ? 1 : 2},
                                  {"smrtSamplesPerRay", filter == "smrt-max" ? 32 : 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
-                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison) ? false : (arm & 1) == 0},
-                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison) ? false : (arm & 2) == 0},
-                                 {"benchmarkClusterPageBitset", false}};
+                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || triangleBitsetComparison) ? false : (arm & 1) == 0},
+                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || triangleBitsetComparison) ? false : (arm & 2) == 0},
+                                 {"benchmarkClusterPageBitset", false}, {"benchmarkTrianglePageBitset", false}};
                             if (bitsetComparison) {
                                 // The baseline explicitly preserves legacy scanning. A conflicting
                                 // production value proves the benchmark override takes precedence.
@@ -2794,6 +2821,19 @@ public:
                                 if (arm != 1) { settings["benchmarkMarkSamples"] = arm != 0; }
                                 settings["benchmarkLegacyMark"] = arm == 2;
                                 settings["benchmarkClusterPageBitset"] = true;
+                            }
+                            if (triangleBitsetComparison) {
+                                settings.erase("benchmarkTrianglePageBitset");
+                                settings["benchmarkClusterPageBitset"] = arm != 3;
+                                if (arm == 0) {
+                                    settings["trianglePageBitset"] = true;
+                                    settings["benchmarkTrianglePageBitset"] = false;
+                                } else if (arm == 2) {
+                                    settings["trianglePageBitset"] = false;
+                                } else if (arm >= 3) {
+                                    settings["benchmarkTrianglePageBitset"] = true;
+                                    settings["benchmarkDisableClusterCull"] = arm == 4;
+                                }
                             }
                             graph.addNode(single ? "VirtualShadowMapPass" : "VirtualShadowMapLightsPass", name, settings);
                             graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
@@ -2839,15 +2879,60 @@ public:
                                     {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
-                                requireBuildDiagnosticInvariants(snapshot, markSamplesComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
-                                    label + "-" + phase + "-" + arms[arm], markSamplesComparison || (bitsetComparison && arm == 1));
+                                requireBuildDiagnosticInvariants(snapshot,
+                                    triangleBitsetComparison ? arm != 4 : markSamplesComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
+                                    label + "-" + phase + "-" + arms[arm],
+                                    triangleBitsetComparison ? arm < 3 : markSamplesComparison || (bitsetComparison && arm == 1));
                                 if (arm != 0) {
                                     require(snapshot.shadow == snapshots[0].shadow && snapshot.debug == snapshots[0].debug &&
                                         snapshot.depth == snapshots[0].depth && snapshot.statistics == snapshots[0].statistics,
                                         label + "-" + phase + ": " + arms[arm] + " changed images/depth or the 32-word statistics ABI");
                                 }
                             }
-                            if (markSamplesComparison) {
+                            if (triangleBitsetComparison) {
+                                ++triangleBitsetStates;
+                                triangleBitsetControlStates += triangleBitsetControls;
+                                triangleBitsetReducedStates += work[1][kVSMWorkBuildPageTests] < work[0][kVSMWorkBuildPageTests];
+                                for (uint32_t face = 0; face < faces; ++face) {
+                                    for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                                        const auto& counters = snapshots[arm].buildDiagnostics[face];
+                                        const auto& stats = snapshots[arm].statistics[face];
+                                        const bool enumerate = arm == 1;
+                                        require(counters[kVSMBuildDiagnosticTriangleBitsetPageHits] == (enumerate ? stats[3] : 0),
+                                            label + "-" + phase + ": bitset hits disagree with emitted triangle/page work");
+                                        require(enumerate || counters[kVSMBuildDiagnosticTriangleBitsetWordTests] == 0,
+                                            label + "-" + phase + ": disabled triangle bitset loaded words");
+                                        if (enumerate) {
+                                            require(snapshots[arm].workload[face][kVSMWorkBuildPageTests] == 0,
+                                                label + "-" + phase + ": bitset path still read per-page metadata");
+                                            triangleBitsetWordsByPass[single ? 0 : 1] += counters[kVSMBuildDiagnosticTriangleBitsetWordTests];
+                                        } else {
+                                            require(snapshots[arm].workload[face][kVSMWorkBuildPageTests] >= stats[3],
+                                                label + "-" + phase + ": baseline emitted more work than tested pages");
+                                        }
+                                        // Global append order is unspecified, but all partial fine pages
+                                        // are invalidated on overflow; consumers use the coarse fallback.
+                                        require(stats[4] == std::min(stats[3], frame == 3 ? 1u : 65535u) && stats[5] == stats[3] - stats[4],
+                                            label + "-" + phase + ": work capacity/overflow accounting mismatch");
+                                        if (arm < 3) {
+                                            for (uint32_t counter = 0; counter < kVSMBuildDiagnosticTriangleBitsetWordTests; ++counter) {
+                                                require(counters[counter] == snapshots[0].buildDiagnostics[face][counter],
+                                                    label + "-" + phase + ": triangle enumeration changed cluster diagnostics");
+                                            }
+                                        }
+                                        if (arm == 0 || arm == 4) { continue; }
+                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                                            if (counter == kVSMWorkMarkPageRequests || counter == kVSMWorkBuildPageTests) { continue; }
+                                            require(snapshots[arm].workload[face][counter] == snapshots[0].workload[face][counter],
+                                                label + "-" + phase + ": triangle enumeration changed deterministic work");
+                                        }
+                                        if (!enumerate) {
+                                            require(snapshots[arm].workload[face][kVSMWorkBuildPageTests] == snapshots[0].workload[face][kVSMWorkBuildPageTests],
+                                                label + "-" + phase + ": fallback did not restore metadata scanning");
+                                        }
+                                    }
+                                }
+                            } else if (markSamplesComparison) {
                                 ++markSamplesStates;
                                 markSamplesControlStates += markSamplesControls;
                                 for (uint32_t arm = 1; arm < arms.size(); ++arm) {
@@ -2912,7 +2997,15 @@ public:
                     }
                 }
             }
-            if (markSamplesComparison) {
+            if (triangleBitsetComparison) {
+                report["triangleBitsetStates"] = triangleBitsetStates;
+                report["triangleBitsetControlStates"] = triangleBitsetControlStates;
+                report["triangleBitsetReducedStates"] = triangleBitsetReducedStates;
+                report["triangleBitsetWordsByPass"] = {{"single",triangleBitsetWordsByPass[0]},{"lights",triangleBitsetWordsByPass[1]}};
+                require(triangleBitsetStates == 72 && triangleBitsetControlStates == 10 && triangleBitsetReducedStates > 0 &&
+                    triangleBitsetWordsByPass[0] > 0 && triangleBitsetWordsByPass[1] > 0,
+                    "Triangle bitset matrix did not exercise both pass types and all explicit fallback controls");
+            } else if (markSamplesComparison) {
                 report["markSamplesStates"] = markSamplesStates;
                 report["markSamplesControlStates"] = markSamplesControlStates;
                 require(markSamplesStates == 82 && markSamplesControlStates == 10,
@@ -2930,7 +3023,8 @@ public:
                 require(clusterReducedStates > 0, "Optimization matrix did not exercise a rejected stream cluster");
             }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
-            return RHITestResult::pass(markSamplesComparison ?
+            return RHITestResult::pass(triangleBitsetComparison ?
+                "Exact triangle bitsets preserve images, admission, emitted work and overflow recovery while eliminating per-page metadata reads" : markSamplesComparison ?
                 "Prepared Mark samples preserve images, depth, page admission, statistics and deterministic work across all filters, light types and cache states" : bitsetComparison ?
                 "Dirty-page bitsets preserve images, receiver depth, statistics and deterministic work in single/multi-light production graphs" :
                 "Four production VSM arms preserve images, receiver depth and statistics across resident/stream, PCF/SMRT, offscreen, near-plane, seam and cache/overflow states");
@@ -2966,6 +3060,14 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkSamplesEquivalenceTest);
+
+class VirtualShadowMapTrianglePageBitsetEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapTrianglePageBitsetEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::TriangleBitset) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapTrianglePageBitsetEquivalenceTest);
 
 } // namespace
 } // namespace metallic::tests

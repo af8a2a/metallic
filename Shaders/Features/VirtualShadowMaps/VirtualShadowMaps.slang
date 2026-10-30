@@ -15,6 +15,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_OPTIMIZE_MARK_SAMPLES
 #define VSM_OPTIMIZE_MARK_SAMPLES 0
 #endif
+#ifndef VSM_TRIANGLE_PAGE_BITSET
+#define VSM_TRIANGLE_PAGE_BITSET 0
+#endif
 #ifndef VSM_CLUSTER_CULL
 #define VSM_CLUSTER_CULL 1
 #endif
@@ -1342,6 +1345,13 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     vsmWorkAdd(push, kVSMWorkBuildLevelTests, push.clipmapCount);
 #endif
     uint pageTests = 0u;
+#if VSM_TRIANGLE_PAGE_BITSET
+    StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    uint bitsetOffset = vsmClusterPageBitsetOffset(push);
+#if VSM_WORKLOAD_DIAGNOSTICS
+    uint wordTests = 0u, pageHits = 0u;
+#endif
+#endif
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
     for (uint level = 0u; level < push.clipmapCount; ++level) {
 #if VSM_CLUSTER_CULL
@@ -1376,6 +1386,42 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
         // world coordinates need not fit the page-index integer range.
         int2 first = min(int2(floor(saturate(lo.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
         int2 last = min(int2(floor(saturate(hi.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
+#if VSM_TRIANGLE_PAGE_BITSET
+        uint cachedWord = 0xffffffffu, rawWord = 0u;
+        for (int y = first.y; y <= last.y; ++y) {
+            uint firstPage = projection.page.x + uint(y * axis + first.x);
+            uint lastPage = projection.page.x + uint(y * axis + last.x);
+            uint firstWord = firstPage >> 5u, lastWord = lastPage >> 5u;
+            for (uint word = firstWord; word <= lastWord; ++word) {
+                // Keep the raw word: adjacent non-aligned rows can share it,
+                // but their masks must not consume one another's set bits.
+                if (word != cachedWord) {
+                    rawWord = bitset[bitsetOffset + word];
+                    cachedWord = word;
+#if VSM_WORKLOAD_DIAGNOSTICS
+                    ++wordTests;
+#endif
+                }
+                uint bits = rawWord;
+                if (word == firstWord) { bits &= 0xffffffffu << (firstPage & 31u); }
+                if (word == lastWord) { bits &= 0xffffffffu >> (31u - (lastPage & 31u)); }
+                while (bits != 0u) {
+                    uint page = (word << 5u) + uint(firstbitlow(bits));
+                    bits &= bits - 1u;
+                    // Admit/Assign set exactly resident, admitted, dirty fine
+                    // pages. Physical pins admitted owners through this build.
+                    // Increasing set bits preserve this triangle's row order.
+#if VSM_WORKLOAD_DIAGNOSTICS
+                    ++pageHits;
+#endif
+                    uint index;
+                    InterlockedAdd(statistics[3], 1u, index);
+                    if (index < push.workCapacity) { work[index] = uint2(triangleIndex, page); }
+                    else { InterlockedAdd(statistics[5], 1u); }
+                }
+            }
+        }
+#else
         for (int y = first.y; y <= last.y; ++y) {
             for (int x = first.x; x <= last.x; ++x) {
                 ++pageTests;
@@ -1388,8 +1434,13 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                 else { InterlockedAdd(statistics[5], 1u); }
             }
         }
+#endif
     }
     vsmWorkAdd(push, kVSMWorkBuildPageTests, pageTests);
+#if VSM_TRIANGLE_PAGE_BITSET && VSM_WORKLOAD_DIAGNOSTICS
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetWordTests, wordTests);
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetPageHits, pageHits);
+#endif
 }
 
 [shader("compute")]

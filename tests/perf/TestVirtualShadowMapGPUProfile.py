@@ -238,12 +238,32 @@ class GPUProfileTests(unittest.TestCase):
             counters["clusterPageTests"] = 0
             for old, new in zip(profile.BUILD_HISTOGRAM_COUNTERS, profile.BITSET_HISTOGRAM_COUNTERS):
                 counters[new], counters[old] = counters[old], 0
-        data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.ALL_BUILD_COUNTERS}
+        data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.V2_BUILD_COUNTERS}
         parsed = profile.build_frame(row, "diagnostic")
         self.assertEqual(parsed["clusterPageTests"], 0)
         self.assertGreater(parsed["clusterBitsetWordTests"], 0)
         data["faces"][0]["counters"]["clusterBitsetWordTests"] = 100000
         with self.assertRaisesRegex(ValueError, "Bitset word tests"):
+            profile.build_frame(row, "diagnostic")
+
+    def test_triangle_bitset_v3_preserves_older_missing_counters(self):
+        row = add_build(frame(1))
+        self.assertNotIn("triangleBitsetWordTests", profile.build_frame(row, "diagnostic"))
+        data = row["shadow"]["gpuBuildDiagnostics"]
+        data["version"] = 2
+        for face in data["faces"]:
+            face["counters"].update(dict.fromkeys(profile.BITSET_COUNTERS, 0))
+        data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.V2_BUILD_COUNTERS}
+        self.assertNotIn("triangleBitsetPageHits", profile.build_frame(row, "diagnostic"))
+        data["version"] = 3
+        for face in data["faces"]:
+            face["counters"].update(triangleBitsetWordTests=3, triangleBitsetPageHits=5)
+        data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.ALL_BUILD_COUNTERS}
+        parsed = profile.build_frame(row, "diagnostic")
+        self.assertEqual(parsed["triangleBitsetWordTests"], 3 * len(data["faces"]))
+        self.assertEqual(parsed["triangleBitsetPageHits"], 5 * len(data["faces"]))
+        del data["faces"][0]["counters"]["triangleBitsetPageHits"]
+        with self.assertRaisesRegex(ValueError, "malformed"):
             profile.build_frame(row, "diagnostic")
 
     def test_old_packages_do_not_claim_zero_build_work(self):
@@ -274,7 +294,7 @@ class GPUProfileTests(unittest.TestCase):
         row["shadow"]["gpuBuildDiagnostics"]["enabled"] = False
         with self.assertRaisesRegex(ValueError, "stale"):
             profile.build_frame(row, "diagnostic")
-        for invalid in (None, {"version": True, "enabled": True}, {"version": 3, "enabled": True}):
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 4, "enabled": True}):
             row["shadow"]["gpuBuildDiagnostics"] = invalid
             with self.subTest(schema=invalid), self.assertRaisesRegex(ValueError, "schema"):
                 profile.build_frame(row, "diagnostic")
