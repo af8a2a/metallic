@@ -121,6 +121,9 @@ public:
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
             runtimeBoolSetting("shadowLODHierarchy", "Adaptive Shadow LOD Hierarchy", true),
+            runtimeBoolSetting("shadowLODDepthGuard", "Preserve Shadow LOD Depth Agreement", true),
+            runtimeBoolSetting("shadowLODSmartBias", "Shadow LOD Screen Depth Bias", false),
+            runtimeFloatSetting("shadowLODScreenRayLength", "Shadow LOD Screen Ray Length", .015f, 0, 1),
             runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
@@ -252,6 +255,8 @@ public:
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
         settings.shadowLODHierarchy = boolProperty(&properties, "shadowLODHierarchy", settings.shadowLODHierarchy);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
+        settings.shadowLODSmartBias = boolProperty(&properties, "shadowLODSmartBias", settings.shadowLODSmartBias);
+        settings.shadowLODScreenRayLength = properties.value("shadowLODScreenRayLength", settings.shadowLODScreenRayLength);
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.collectGPUWork = collectGPUWork_;
         settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
@@ -518,7 +523,9 @@ public:
                     lodStatistics[2] = uint32_t(lodProjections.size());
                     casters = prepareVirtualShadowMapShadowLOD(*device_, commands, *scene,
                         scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
-                        lodProjections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy);
+                        lodProjections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy,
+                        boolProperty(&properties, "shadowLODDepthGuard", true) ?
+                            0.5f * settings.shadowBias : std::numeric_limits<float>::max());
                     if (!casters) { spdlog::error("VirtualShadowMapLightsPass shadow LOD: {}", log); return makeError(casters.error()); }
                 }
                 const auto& lod = casters->shadowLOD;

@@ -32,7 +32,8 @@ bool sameSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSetti
         return std::tuple{s.pageSize, s.virtualPagesPerAxis, s.clipmapCount, s.physicalPageCount,
             s.maxWorkItems, s.firstClipmapExtent, s.shadowBias, s.filter, s.pcfRadius,
             s.smrtRayCount, s.smrtSamplesPerRay, s.smrtMaxRayLength, s.smrtRayLengthScale,
-            s.smrtMaxRayAngle, s.receiverFootprint, s.enabled};
+            s.smrtMaxRayAngle, s.receiverFootprint, s.enabled,
+            s.shadowLOD, s.shadowLODSmartBias, s.shadowLODScreenRayLength};
     };
     // Cache redraw and sampling phase do not change the underlying visibility.
     return key(a) == key(b);

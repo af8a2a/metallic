@@ -2,6 +2,8 @@
 
 #include "Runtime/Render/MeshletLOD.h"
 
+#include <limits>
+
 namespace metallic::render {
 
 // The actual shadow projection's homogeneous X, Y and W rows. Resolution is
@@ -34,7 +36,8 @@ float virtualShadowMapLodPixelError(const MeshletLODGroupRecord& group,
 VirtualShadowMapLODRequirements buildVirtualShadowMapLodRequirements(
     std::span<const MeshletLODGroupRecord> groups,
     const GPUSceneGPUInstanceRecord& instance,
-    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold);
+    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold,
+    float maxWorldError = std::numeric_limits<float>::max());
 
 // Immutable primitive topology, built at geometry publication rather than per
 // instance/frame. Metric leaves exclude terminal stop sentinels; terminal roots
@@ -70,9 +73,12 @@ struct VirtualShadowMapLODSelection
 // The flat path is retained as an independent cut/reference and A/B control.
 // Dense activeGroups remains part of the result ABI; only demanded topology and
 // active cluster ranges are traversed by the hierarchical path.
+// The additional world-space replacement budget preserves depth agreement with
+// full-detail receivers. It refines geometry without increasing comparison bias;
+// missing streamed pages still use the complete resident ancestor cut.
 VirtualShadowMapLODSelection selectVirtualShadowMapLOD(const VirtualShadowMapLODHierarchy& hierarchy,
     std::span<const uint8_t> drawableGroups, const GPUSceneGPUInstanceRecord& instance,
     std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold,
-    bool hierarchical = true);
+    bool hierarchical = true, float maxWorldError = std::numeric_limits<float>::max());
 
 } // namespace metallic::render

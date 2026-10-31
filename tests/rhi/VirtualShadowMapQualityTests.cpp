@@ -2525,6 +2525,161 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapReceiverQualityTest);
 
+class VirtualShadowMapShadowLODSmartBiasQualityTest final : public RHITest
+{
+public:
+    VirtualShadowMapShadowLODSmartBiasQualityTest()
+    {
+        type = RHITestType::Rendering;
+        name = "virtual_shadow_map_shadow_lod_smart_bias_quality";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapShadowLODSmartBiasQuality";
+        Json report{{"passed", false}, {"frames", Json::array()}, {"cases", Json::array()}, {"qualityFailures", Json::array()},
+            {"scope", "Directional smart-bias near-contact leak diagnostics on exact zero-thickness blocker geometry; not LOD performance evidence"},
+            {"contract", {{"shadowLOD", true}, {"shadowLODDepthGuard", false}, {"filter", "hard"},
+                {"shadowBiasMetres", .002}, {"gapMetres", {.005, .01, .02, .04}},
+                {"nominalScreenRayLength", .015}, {"stressScreenRayLengthMetres", .12},
+                {"blockerThicknessMetres", 0}, {"oracleOriginOffsetMetres", 0}, {"triangleEpsilonMetres", 1e-7},
+                {"separateInteriorErrorFraction", .01}, {"edgeDisplacement95Pixels", 2},
+                {"geometry", "Independent authored receiver and blocker quads retain exact terminal geometry in every arm"}}}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() {
+            std::ofstream(directory / "VirtualShadowMapShadowLODSmartBiasQuality.json") << report.dump(2) << '\n';
+        };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            for (double gap : {.005, .01, .02, .04}) {
+                const std::string name = "Directional-ThinBlocker-" + std::to_string(int(std::lround(gap * 1000))) + "mm";
+                auto fixture = writeReceiverFixture(directory / name, "Tilted", gap);
+                // The normal-facing camera exposes the narrow strip between the
+                // real shadow edge and the blocker silhouette. Keep even 5 mm
+                // contact resolvable, while the stress trace remains 120 mm long.
+                fixture.viewHeight = std::max(4 * gap, .12);
+                const Point center = scale(fixture.tangent, -kReceiverBlockerHalfExtent);
+                const Point eye = add(center, scale(fixture.normal, 2));
+                scene::SceneDocument scene;
+                require(scene.load(fixture.geometry.source), "Load smart-bias contact geometry");
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                require(view.setCamera({.eye={float(eye[0]), float(eye[1]), float(eye[2])},
+                    .center={float(center[0]), float(center[1]), float(center[2])}, .up={0, 0, -1},
+                    .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=float(fixture.viewHeight), .orthographic=true}),
+                    "Set smart-bias near-contact close-up camera");
+                // receiverReference also checks its analytic area-source edge;
+                // every GPU arm and the leak gates below use the hard source.
+                Source source{"Directional", scale(fixture.toLight, 8), scale(fixture.toLight, -1), .04};
+                publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>();
+                auto graph = makeGraph(fixture.geometry, "hard", false, 128);
+                const Json fixtureSettings{{"physicalPageBudget", 1024}, {"firstClipmapExtent", .25},
+                    {"shadowLOD", true}, {"shadowLODDepthGuard", false}, {"shadowLODErrorTexels", 1}};
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    const uint32_t id = graph.findNode(node)->id;
+                    for (const auto& [key, value] : fixtureSettings.items()) {
+                        require(graph.setNodeRuntimeProperty(id, key, value), "Set smart-bias fixture " + key);
+                    }
+                }
+                Json item{{"name", name}, {"blockerDistanceMetres", gap}, {"viewHeightMetres", fixture.viewHeight},
+                    {"receiverTriangles", fixture.receiverTriangles}, {"blockerTriangles", fixture.geometry.triangles.size() - fixture.receiverTriangles},
+                    {"cameraEye", eye}, {"cameraCenter", center}, {"sourceDirection", source.direction}, {"arms", Json::array()}};
+                const size_t caseIndex = report["cases"].size();
+                report["cases"].push_back(item);
+                ReceiverReference reference;
+                Snapshot baseline;
+                std::vector<uint8_t> baselinePixels;
+                for (const std::string arm : {"Baseline", "Nominal", "Stress", "ZeroLength"}) {
+                    const bool smart = arm != "Baseline";
+                    const double screenLengthScale = arm == "ZeroLength" ? 0 : arm == "Stress" ? .12 / fixture.viewHeight : .015;
+                    const std::string phase = name + "-" + arm;
+                    validation.phase(phase);
+                    for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                        const uint32_t id = graph.findNode(node)->id;
+                        require(graph.setNodeRuntimeProperty(id, "shadowLODSmartBias", smart), "Set smart-bias diagnostic arm");
+                        require(graph.setNodeRuntimeProperty(id, "shadowLODScreenRayLength", screenLengthScale), "Set smart-bias diagnostic length");
+                    }
+                    const auto first = compareFrame(preview, graph, directory, phase + "-Cold", report);
+                    const auto warm = compareFrame(preview, graph, directory, phase + "-Warm", report);
+                    requireReused(warm, phase);
+                    require(first.shadows == warm.shadows && first.depth == warm.depth, phase + ": stable cached visibility changed");
+                    const auto& entry = activeEntry(first);
+                    const auto& stats = first.statistics[entry.baseLayer];
+                    require(stats[2] == 0 && stats[5] == 0 && stats[7] == 0 && stats[9] == 0 && stats[31] == 0,
+                        phase + ": fixture has dropped pages, unresolved depth or coarse fallback");
+                    const auto pixels = visibility(first, fixture.geometry, source);
+                    if (arm == "Baseline") {
+                        baseline = first;
+                        baselinePixels = pixels;
+                        reference = receiverReference(first, fixture, source);
+                        require(reference.depthSamples > 500 && reference.depthErrors == 0, name + ": independent receiver depth mismatch");
+                        item["depthSamples"] = reference.depthSamples;
+                        item["depthErrors"] = reference.depthErrors;
+                        item["analyticEdgeValidation"] = reference.analyticEdgeValidation;
+                        std::vector<uint8_t> cpu(kPixels, 255);
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            if (reference.mask[pixel]) { cpu[pixel] = uint8_t(std::lround(reference.hard[pixel] * 255)); }
+                        }
+                        saveGray(directory / (name + "-CPU.png"), cpu);
+                        const auto litControl = receiverMetrics(std::vector<uint8_t>(kPixels, 255), reference, "Hard", true, false);
+                        const auto darkControl = receiverMetrics(std::vector<uint8_t>(kPixels, 0), reference, "Hard", true, false);
+                        require(litControl["lightLeakSamples"].get<uint32_t>() > 0 && !litControl["qualityPassed"].get<bool>() &&
+                            darkControl["falseShadowSamples"].get<uint32_t>() > 0 && !darkControl["qualityPassed"].get<bool>(),
+                            name + ": independent oracle did not reject missing or false contact shadows");
+                        item["negativeControls"] = {{"allLitRejected", true}, {"allDarkRejected", true}};
+                    } else {
+                        require(first.depth == baseline.depth, phase + ": smart bias changed primary receiver depth");
+                    }
+                    if (arm == "ZeroLength") {
+                        require(first.shadows == baseline.shadows, phase + ": zero-length smart bias changed baseline visibility");
+                    }
+                    auto metrics = receiverMetrics(pixels, reference, "Hard", true, false);
+                    uint32_t addedLeaks = 0, addedFalseShadows = 0, repairedFalseShadows = 0;
+                    std::vector<uint8_t> errors(kPixels, 0);
+                    for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                        if (!reference.mask[pixel]) { continue; }
+                        const bool oldLit = baselinePixels[pixel] >= 128, lit = pixels[pixel] >= 128;
+                        addedLeaks += reference.hard[pixel] == 0 && !oldLit && lit;
+                        addedFalseShadows += reference.hard[pixel] == 1 && oldLit && !lit;
+                        repairedFalseShadows += reference.hard[pixel] == 1 && !oldLit && lit;
+                        errors[pixel] = uint8_t(std::lround(std::abs(pixels[pixel] / 255. - reference.hard[pixel]) * 255));
+                    }
+                    metrics["addedLeakPixelsVsBaseline"] = addedLeaks;
+                    metrics["addedFalseShadowPixelsVsBaseline"] = addedFalseShadows;
+                    metrics["repairedFalseShadowPixelsVsBaseline"] = repairedFalseShadows;
+                    saveGray(directory / (phase + "-GPU.png"), pixels);
+                    saveGray(directory / (phase + "-Error.png"), errors);
+                    item["arms"].push_back({{"name", arm}, {"shadowLODSmartBias", smart}, {"shadowLODScreenRayLength", screenLengthScale},
+                        {"screenRayLengthMetres", screenLengthScale * fixture.viewHeight},
+                        {"rayLongerThanBlockerGap", screenLengthScale * fixture.viewHeight > gap},
+                        {"cacheMatchesRedraw", true}, {"warmVisibilityStable", true}, {"metrics", metrics}});
+                    if (!metrics["qualityPassed"].get<bool>()) {
+                        report["qualityFailures"].push_back({{"case", name}, {"arm", arm}, {"failures", metrics["qualityFailures"]}});
+                    }
+                    report["cases"][caseIndex] = item;
+                    save();
+                }
+            }
+            report["validation"] = validation.snapshot();
+            save();
+            require(!validation.failed(), "Smart-bias contact Vulkan validation error");
+            require(report["qualityFailures"].empty(), "Smart-bias near-contact leak gates failed; see per-arm diagnostics");
+            report["passed"] = true;
+            save();
+            return RHITestResult::pass("Directional smart bias preserves independently predicted thin-blocker contact at 5/10/20/40 mm");
+        } catch (const std::exception& error) {
+            report["error"] = error.what();
+            report["validation"] = validation.snapshot();
+            save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapShadowLODSmartBiasQualityTest);
+
 struct TemporalOracle
 {
     std::vector<Hit> hits;
@@ -3133,14 +3288,24 @@ public:
                 {"instanceHzbCull", false}, {"meshletHzbCull", false}, {"meshletNormalConeCull", false},
                 {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
             for (bool lights : {false, true}) {
-                for (const std::string mode : {"Off", "Zero", "Flat", "Adaptive"}) {
+                const std::string type = lights ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass";
+                const auto pass = createRenderGraphPass(type);
+                require(pass != nullptr, "Create shadow LOD pass for default contract");
+                const auto settings = pass->runtimeSettings();
+                const auto guard = std::find_if(settings.begin(), settings.end(), [](const auto& setting) {
+                    return setting.key == "shadowLODDepthGuard";
+                });
+                require(guard != settings.end() && guard->defaultValue == true,
+                    type + ": shadow LOD depth guard is not enabled by default");
+                for (const std::string mode : {"Off", "Zero", "Flat", "Adaptive", "Legacy", "Guarded"}) {
                     const std::string name = std::string(lights ? "Lights" : "Single") + mode;
-                    graph.addNode(lights ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass", name,
-                        {{"lightCapacity", kCapacity}, {"physicalPageBudget", 256}, {"physicalPageCount", 128},
+                    Json properties{{"lightCapacity", kCapacity}, {"physicalPageBudget", 256}, {"physicalPageCount", 128},
                             {"pageSize", 32}, {"virtualPagesPerAxis", 4}, {"clipmapCount", 4}, {"firstClipmapExtent", 4},
                             {"maxWorkItems", 131072}, {"shadowBias", .002}, {"cacheEnabled", true}, {"cacheLayering", true},
                             {"filter", "hard"}, {"receiverFootprint", true}, {"shadowLOD", mode != "Off"}, {"shadowLODErrorTexels", mode == "Zero" ? 0 : 1},
-                            {"shadowLODHierarchy", mode != "Flat"}});
+                            {"shadowLODHierarchy", mode != "Flat"}};
+                    if (mode == "Legacy" || mode == "Guarded") { properties["shadowLODDepthGuard"] = mode == "Guarded"; }
+                    graph.addNode(type, name, std::move(properties));
                     graph.addEdge("Raster.depth", name + ".depth");
                     graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
                     const std::string readback = name + "Evidence";
@@ -3162,6 +3327,14 @@ public:
                     const std::string prefix = lights ? "Lights" : "Single";
                     const auto off = readLODPass(prefix + "Off", lights), zero = readLODPass(prefix + "Zero", lights);
                     const auto flat = readLODPass(prefix + "Flat", lights), adaptive = readLODPass(prefix + "Adaptive", lights);
+                    const auto legacy = readLODPass(prefix + "Legacy", lights), guarded = readLODPass(prefix + "Guarded", lights);
+                    require(guarded.shadows == adaptive.shadows && guarded.lod == adaptive.lod,
+                        prefix + ": default depth guard differs from explicit enabled path");
+                    // This fixture has no nonzero-error replacement. Explicit
+                    // legacy mode must preserve the same exact geometry here;
+                    // the real Bunny test exercises budget-dependent cuts.
+                    require(legacy.shadows == adaptive.shadows && legacy.lod[4] == adaptive.lod[4] && legacy.lod[5] == adaptive.lod[5],
+                        prefix + ": depth guard changed zero-error terminal geometry");
                     require(flat.shadows == adaptive.shadows, prefix + ": adaptive traversal changed flat reference visibility");
                     require(flat.lod[4] == adaptive.lod[4] && flat.lod[5] == adaptive.lod[5] &&
                         flat.lod[6] == adaptive.lod[6] && flat.lod[7] == adaptive.lod[7],
@@ -3197,7 +3370,9 @@ public:
                         require(zero.header.version == kVirtualShadowMapLightsVersion && faces == expectedFaces &&
                             zero.header.admittedCount == (expectedFaces == 7 ? 2 : 1), "LOD multi-light admission evidence differs");
                     }
-                    frame[prefix] = {{"exactVisibility", true}, {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"flatLOD", flat.lod}, {"adaptiveLOD", adaptive.lod}, {"shadowedPixels", shadowed}};
+                    frame[prefix] = {{"exactVisibility", true}, {"defaultDepthGuardMatchesExplicit", true},
+                        {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"flatLOD", flat.lod}, {"adaptiveLOD", adaptive.lod},
+                        {"legacyLOD", legacy.lod}, {"guardedLOD", guarded.lod}, {"shadowedPixels", shadowed}};
                 }
                 report["frames"].push_back(std::move(frame));
                 save();

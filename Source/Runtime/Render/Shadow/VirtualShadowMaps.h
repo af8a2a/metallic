@@ -57,6 +57,8 @@ struct VirtualShadowMapSettings
     bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
     bool shadowLODHierarchy = true; // Cached adaptive traversal; false retains the flat reference for A/B.
     float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.
+    bool shadowLODSmartBias = false; // Hard directional shadows: screen-depth constrained receiver bias.
+    float shadowLODScreenRayLength = 0.015f; // Fraction of vertical view extent at the receiver.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
     uint32_t clipmapCount = 4;

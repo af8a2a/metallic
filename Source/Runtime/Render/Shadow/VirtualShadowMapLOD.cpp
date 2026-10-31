@@ -147,15 +147,12 @@ double hierarchyPixelError(const MeshletLODBVHNode& node,
     return maximum;
 }
 
-} // namespace
-
-float virtualShadowMapLodPixelError(const MeshletLODGroupRecord& group,
+float groupPixelError(const MeshletLODGroupRecord& group,
     const GPUSceneGPUInstanceRecord& instance,
-    std::span<const VirtualShadowMapLODProjection> projections)
+    std::span<const VirtualShadowMapLODProjection> projections, double scale)
 {
     if ((group.flags & kMeshletLODTerminalGroup) != 0 || group.error == 0) { return 0; }
     const auto& m = instance.worldMatrix;
-    const double scale = worldScale(instance);
     const double error = group.error * scale;
     const double radius = (double(group.sphere[3]) + group.error) * scale;
     Vector center{};
@@ -170,17 +167,28 @@ float virtualShadowMapLodPixelError(const MeshletLODGroupRecord& group,
     return static_cast<float>(std::min(maximum, double(std::numeric_limits<float>::max())));
 }
 
+} // namespace
+
+float virtualShadowMapLodPixelError(const MeshletLODGroupRecord& group,
+    const GPUSceneGPUInstanceRecord& instance,
+    std::span<const VirtualShadowMapLODProjection> projections)
+{
+    return groupPixelError(group, instance, projections, worldScale(instance));
+}
+
 VirtualShadowMapLODRequirements buildVirtualShadowMapLodRequirements(
     std::span<const MeshletLODGroupRecord> groups,
     const GPUSceneGPUInstanceRecord& instance,
-    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold)
+    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold, float maxWorldError)
 {
     VirtualShadowMapLODRequirements result;
     result.needsFine.reserve(groups.size());
+    const double scale = worldScale(instance);
     for (const auto& group : groups) {
-        const float error = virtualShadowMapLodPixelError(group, instance, projections);
+        const float error = groupPixelError(group, instance, projections, scale);
         result.maxProjectedError = std::max(result.maxProjectedError, error);
-        result.needsFine.push_back((group.flags & kMeshletLODTerminalGroup) != 0 || error > pixelThreshold);
+        result.needsFine.push_back((group.flags & kMeshletLODTerminalGroup) != 0 || error > pixelThreshold ||
+            (error > 0 && group.error * scale > maxWorldError));
     }
     return result;
 }
@@ -238,7 +246,8 @@ bool buildVirtualShadowMapLODHierarchy(std::span<const MeshletLODGroupRecord> gr
 
 VirtualShadowMapLODSelection selectVirtualShadowMapLOD(const VirtualShadowMapLODHierarchy& hierarchy,
     std::span<const uint8_t> drawableGroups, const GPUSceneGPUInstanceRecord& instance,
-    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold, bool hierarchical)
+    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold, bool hierarchical,
+    float maxWorldError)
 {
     VirtualShadowMapLODSelection result;
     const auto& groups = hierarchy.groups;
@@ -248,7 +257,7 @@ VirtualShadowMapLODSelection selectVirtualShadowMapLOD(const VirtualShadowMapLOD
         return result;
     }
     if (!hierarchical) {
-        auto requirements = buildVirtualShadowMapLodRequirements(groups, instance, projections, pixelThreshold);
+        auto requirements = buildVirtualShadowMapLodRequirements(groups, instance, projections, pixelThreshold, maxWorldError);
         result.metricGroups = uint32_t(hierarchy.metricGroupIDs.size());
         if (pixelThreshold == 0) { std::fill(requirements.needsFine.begin(), requirements.needsFine.end(), uint8_t(1)); }
         // Keep the original full closure and selector as the A/B oracle.
@@ -290,14 +299,19 @@ VirtualShadowMapLODSelection selectVirtualShadowMapLOD(const VirtualShadowMapLOD
         while (index < hierarchy.bvh.size()) {
             const auto& node = hierarchy.bvh[index];
             ++result.hierarchyNodes;
-            if (hierarchyPixelError(node, instance, scale, projections) < pruneThreshold) {
+            const double error = hierarchyPixelError(node, instance, scale, projections);
+            // A zero projected bound is outside every admitted shadow view (or
+            // has no replacement error). Otherwise both budgets must permit
+            // pruning: a small XY footprint alone cannot preserve receiver Z.
+            if (error < pruneThreshold && (error == 0 || node.maxError * scale <= maxWorldError)) {
                 index = node.escapeIndex;
                 continue;
             }
             for (uint32_t local = 0; local < node.groupCount; ++local) {
                 const uint32_t group = hierarchy.metricGroupIDs[node.groupOffset + local];
                 ++result.metricGroups;
-                if (virtualShadowMapLodPixelError(groups[group], instance, projections) > pixelThreshold) { add(group); }
+                const float projected = groupPixelError(groups[group], instance, projections, scale);
+                if (projected > pixelThreshold || (projected > 0 && groups[group].error * scale > maxWorldError)) { add(group); }
             }
             ++index;
         }

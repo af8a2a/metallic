@@ -182,7 +182,7 @@ def stream_input(case, phase):
 
 def diagnose(case, arm):
     expected = dict(enabled=ARMS[arm][0], hierarchy=ARMS[arm][1], errorTexels=1.0)
-    if case.get("shadowLODSettings") != expected:
+    if any(case.get("shadowLODSettings", {}).get(key) != value for key, value in expected.items()):
         raise ValueError("Actual LOD properties differ from declared arm")
     captures = case.get("captures", [])
     if [c["frame"] for c in captures] != [32, 47]:
@@ -305,7 +305,7 @@ def verify(source, diagnostic=None):
         shaders = current_shaders
         frames = [profile_fixture_frame(frame) for frame in case["frames"] if not frame["warmup"]]
         expected_lod = dict(enabled=ARMS[arm][0], hierarchy=ARMS[arm][1], errorTexels=1.0)
-        if case.get("shadowLODSettings") != expected_lod:
+        if any(case.get("shadowLODSettings", {}).get(key) != value for key, value in expected_lod.items()):
             raise ValueError("Actual shadow LOD settings mismatch")
         results.append({**scheduled, "medians": {m: statistics.median(f[m] for f in frames) for m in METRICS},
                         "means": {m: statistics.mean(f[m] for f in frames) for m in METRICS}})

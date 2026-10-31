@@ -315,6 +315,16 @@ public:
             check(steadyBytes != 0, "Temporal pool did not own history memory");
             report["steadyHistoryBytes"] = steadyBytes;
 
+            settings.shadowLOD = true;
+            (void)uniform("ShadowLODChange", 49, 255, 1, 0);
+            (void)uniform("AfterShadowLOD", 50, 0, .5);
+            settings.shadowLODSmartBias = true;
+            (void)uniform("SmartBiasChange", 51, 255, 1, 0);
+            (void)uniform("AfterSmartBias", 52, 0, .5);
+            settings.shadowLODScreenRayLength = .01f;
+            (void)uniform("ScreenRayLengthChange", 53, 255, 1, 0);
+            (void)uniform("AfterScreenRayLength", 54, 0, .5);
+
             // Point visibility is one signal per light, even when six public
             // layers are used. Distinct face inputs expose accidental wrapping.
             check(camera.setCamera({.eye = {0, 0, 4}, .center = {0, 0, 0}, .nearPlane = .01f,

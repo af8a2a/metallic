@@ -68,6 +68,7 @@ struct ShadowPush
     uint rayCount, samplesPerRay, receiverFootprint, filterReserved;
     float rayLengthScale, maxRayAngle;
     uint samplePhase, sampleReserved;
+    float lodScreenRayLength;
 };
 
 // sampleReserved names a 32-word diagnostic prefix followed by immutable layer metadata.
@@ -370,6 +371,53 @@ float3 vsmReceiverNormal(int2 pixel, ViewConstants view, Texture2D<float> depth,
     float3 normal = cross(dy, dx);
     float lengthSquared = dot(normal, normal);
     return lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
+}
+
+// Screen depth limits the uncertain segment near a simplified shadow receiver.
+// As in UE's screen-ray bias, this changes only the comparison depth, never the
+// receiver's page/clipmap choice. Point samples are a bounded heuristic, not a
+// visibility oracle for hidden or subpixel geometry.
+float vsmLODScreenRayOffset(float3 position, float3 normal, float linearDepth, float3 toLight,
+    ViewConstants view, Texture2D<float> depth, float screenLength, float blockerDistance, float bias)
+{
+    if (screenLength == 0.0) { return 0.0; }
+    bool orthographic = view.current.upProjection.w > 0.5;
+    float tangent = tan(view.current.viewport.w * 0.5);
+    float viewHeight = orthographic ? view.current.clipOrtho.z : 2.0 * linearDepth * tangent;
+    float maximumLength = screenLength * viewHeight;
+    if (blockerDistance - bias > maximumLength) { return 0.0; }
+    float normalLight = dot(normal, toLight);
+    if (normalLight <= 1e-5) { return 0.0; }
+    // Concentrate samples around the depth conflict. A fixed camera-scaled
+    // stride can jump completely over a nearby thin blocker before its first
+    // sample, even when that blocker is present in the primary depth buffer.
+    float rayLength = min(maximumLength, max(0.0, blockerDistance) + bias);
+    float3 forward = normalize(view.current.center.xyz - view.current.eye.xyz);
+    float3 right = normalize(cross(forward, view.current.upProjection.xyz));
+    float3 up = cross(right, forward);
+    float2 jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
+    for (uint step = 1u; step <= 4u; ++step) {
+        float time = float(step) * 0.25;
+        float3 delta = position + toLight * (time * rayLength) - view.current.eye.xyz;
+        float rayDepth = dot(delta, forward);
+        float safeLength = rayLength * max(0.0, time - 0.375);
+        if (rayDepth <= view.current.clipOrtho.x || rayDepth >= view.current.clipOrtho.y) { return 0.0; }
+        float halfHeight = orthographic ? viewHeight * 0.5 : rayDepth * tangent;
+        float2 ndc = float2(dot(delta, right) / view.current.viewport.x, dot(delta, up)) / halfHeight;
+        float2 screen = float2(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * view.current.viewport.yz - jitter;
+        if (any(screen < 0.0) || any(screen >= view.current.viewport.yz)) { return 0.0; }
+        float3 samplePosition;
+        float sampleDepth;
+        if (vsmReceiver(int2(screen), view, depth, samplePosition, sampleDepth)) {
+            // A thin surface may already be behind the sampled ray point. Its
+            // height above the receiver plane still indicates a possible near
+            // blocker; keep the original shadow instead of stepping over it.
+            float planeDistance = dot(normal, samplePosition - position) / normalLight;
+            if (planeDistance > bias && planeDistance <= rayLength + bias) { return 0.0; }
+            if (rayDepth > sampleDepth) { return safeLength; }
+        }
+    }
+    return rayLength;
 }
 
 float vsmPerspectiveReceiverDepth(float3 position, float3 normal, uint2 virtualTexel,
@@ -1824,7 +1872,7 @@ struct ShadowProjectionJob
     uint filterMode, shadow, debug, physicalPagesX;
     uint clipmapCount, enabled, lightType, projectionFace;
     uint pointFaces, filterReserved, samplePhase, view;
-    float lightRange, sourceRadius, angularRadius, padding;
+    float lightRange, sourceRadius, angularRadius, lodScreenRayLength;
 };
 
 #endif
@@ -1964,6 +2012,14 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     float storedDepth = atlas.Load(int3(texel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
+    if (push.lodScreenRayLength > 0.0 && storedDepth != 0.0 && storedDepth > compareDepth) {
+        float depthScale = length(projection.rowZ.xyz);
+        float bias = projection.metric.z / depthScale;
+        float blockerDistance = (storedDepth - compareDepth) / depthScale + bias;
+        float offset = vsmLODScreenRayOffset(position, normal, linearDepth, normalize(projection.rowZ.xyz),
+            view, depth, push.lodScreenRayLength, blockerDistance, bias);
+        compareDepth += offset * depthScale;
+    }
     // The producer's scene-Z/far margin keeps real casters above zero. A receiver
     // plane extrapolated past the scene must not turn empty depth into a blocker.
     visibility = storedDepth == 0.0 || compareDepth >= storedDepth ? 1.0 : 0.0;
@@ -2075,6 +2131,7 @@ void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush co
         push.clipmapCount = job.clipmapCount; push.enabled = job.enabled;
         push.lightType = job.lightType; push.projectionFace = job.projectionFace;
         push.pointFaces = job.pointFaces; push.filterReserved = job.filterReserved;
+        push.lodScreenRayLength = job.lodScreenRayLength;
         push.samplePhase = job.samplePhase; push.view = job.view; push.lightRange = job.lightRange;
         push.sourceRadius = job.sourceRadius; push.angularRadius = job.angularRadius;
         uint3 counts;

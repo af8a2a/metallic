@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -233,7 +234,53 @@ public:
         result["rawSha256"] = hashBytes(bytes);
         return result;
     }
+    Json saveImage(const std::filesystem::path& directory, const std::string& resource, const std::string& stem)
+    {
+        // read() removes inter-layer transfer alignment. Files contain the same
+        // diagnostic bytes already used by the hashes, without another GPU copy.
+        const auto bytes = read(resource);
+        const auto& image = imageDescriptions_.at(resource);
+        const uint64_t rowBytes = uint64_t(image.width) * image.pixelBytes;
+        const uint64_t layerBytes = rowBytes * image.height;
+        const std::string filename = stem + ".bin";
+        std::ofstream file(directory / filename, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+        file.close();
+        requireAcceptance(file.good(), "Write diagnostic image: " + filename);
+        const char* format = image.format == Format::R8Unorm ? "R8Unorm" :
+            image.format == Format::R32Uint ? "R32Uint" : image.format == Format::D32Sfloat ? "D32Sfloat" :
+            image.format == Format::RGBA16Sfloat ? "RGBA16Sfloat" : "RGBA32Sfloat";
+        Json result{{"file", filename}, {"format", format}, {"width", image.width}, {"height", image.height},
+            {"layerCount", image.layers}, {"bytesPerPixel", image.pixelBytes}, {"byteLength", bytes.size()},
+            {"rowStrideBytes", rowBytes}, {"layerStrideBytes", layerBytes},
+            {"readbackLayerStrideBytes", imageLayouts.at(resource)[1]},
+            {"texelOrder", "layer,y,x,component"},
+            {"byteOrder", std::endian::native == std::endian::little ? "little" : "big"},
+            {"rawSha256", hashBytes(bytes)}};
+        if (image.format == Format::R8Unorm) {
+            std::vector<uint8_t> pixels(size_t(image.width) * image.height * 4);
+            result["previews"] = Json::array();
+            for (uint32_t layer = 0; layer < image.layers; ++layer) {
+                for (uint64_t pixel = 0; pixel < layerBytes; ++pixel) {
+                    const auto value = std::to_integer<uint8_t>(bytes[layer * layerBytes + pixel]);
+                    for (uint32_t component = 0; component < 3; ++component) { pixels[pixel * 4 + component] = value; }
+                    pixels[pixel * 4 + 3] = 255;
+                }
+                const std::string preview = stem + "-layer" + std::to_string(layer) + ".png";
+                std::string message;
+                requireAcceptance(saveRgba8Png(directory / preview, pixels.data(), image.width, image.height, message),
+                    "Write diagnostic shadow preview: " + message);
+                result["previews"].push_back({{"layer", layer}, {"file", preview}});
+            }
+        }
+        return result;
+    }
 private:
+    struct ImageDescription {
+        Format format;
+        uint32_t width, height, layers, pixelBytes;
+    };
+    std::map<std::string, ImageDescription> imageDescriptions_;
     void copy(CommandBuffer& commands, const DebugResourceBinding& binding, bool image)
     {
         const auto* texture = binding.texture;
@@ -269,6 +316,7 @@ private:
             const auto& desc = texture->desc();
             requireAcceptance(hdr || desc.format == Format::R8Unorm || desc.format == Format::R32Uint ||
                 desc.format == Format::D32Sfloat, "Unexpected diagnostic image format");
+            imageDescriptions_[binding.id] = {desc.format, desc.width, desc.height, desc.layerCount, pixelBytes};
             TextureBarrierDesc barrier{.texture = binding.texture,
                 .oldLayout = textureLayoutForResourceState(binding.state), .newLayout = TextureLayout::TransferSource,
                 .before = resourceSyncScope(binding.state, PipelineStageBits::AllCommands),
@@ -493,6 +541,9 @@ public:
                 output["shadowLODSettings"] = {
                     {"enabled", shadows->properties.value("shadowLOD", false)},
                     {"hierarchy", shadows->properties.value("shadowLODHierarchy", true)},
+                    {"depthGuard", shadows->properties.value("shadowLODDepthGuard", true)},
+                    {"smartBias", shadows->properties.value("shadowLODSmartBias", false)},
+                    {"screenRayLength", shadows->properties.value("shadowLODScreenRayLength", 0.015f)},
                     {"errorTexels", shadows->properties.value("shadowLODErrorTexels", 1.0f)}};
                 auto* raster = graph.findNode("VBuffer");
                 requireAcceptance(raster && raster->type == "VisibilityBufferPass", "Acceptance requires production VBuffer");
@@ -695,6 +746,12 @@ public:
                             captureReceipt["depthSha256"] = hashBytes(receipt.read("VBuffer.depth"));
                             captureReceipt["shadowSha256"] = hashBytes(receipt.read("Shadows.shadows"));
                             requireAcceptance(captureReceipt["linearHDR"]["nonfiniteComponents"] == 0, "Nonfinite diagnostic HDR capture");
+                            const auto stem = id + "-" + std::to_string(frame);
+                            auto& images = captureReceipt["rawImages"];
+                            images["Shadows.shadows"] = receipt.saveImage(directory, "Shadows.shadows", stem + "-shadow");
+                            images["VBuffer.depth"] = receipt.saveImage(directory, "VBuffer.depth", stem + "-depth");
+                            images["VBuffer.visibility"] = receipt.saveImage(directory, "VBuffer.visibility", stem + "-visibility");
+                            images[comparisonOutput] = receipt.saveImage(directory, comparisonOutput, stem + "-hdr");
                         }
                     }
                     if (std::find(comparisons.begin(), comparisons.end(), frame) != comparisons.end()) {

@@ -564,10 +564,10 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
     std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
-    bool hierarchical)
+    bool hierarchical, float maxWorldError)
 {
-    if (!std::isfinite(maxErrorTexels) || maxErrorTexels < 0) {
-        log = "VSM shadow LOD error must be finite and nonnegative";
+    if (!std::isfinite(maxErrorTexels) || maxErrorTexels < 0 || !std::isfinite(maxWorldError) || maxWorldError < 0) {
+        log = "VSM shadow LOD errors must be finite and nonnegative";
         return makeError(Error::InvalidArgument);
     }
     if (stream) {
@@ -597,7 +597,7 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
         GPUSceneGPUInstanceRecord instance;
         std::copy_n(node.worldMatrix.a, 16, instance.worldMatrix.begin());
         instance.identity[3] = GPUSceneGPUInstanceVisible;
-        auto selected = selectVirtualShadowMapLOD(hierarchy, drawable, instance, projections, maxErrorTexels, hierarchical);
+        auto selected = selectVirtualShadowMapLOD(hierarchy, drawable, instance, projections, maxErrorTexels, hierarchical, maxWorldError);
         diagnostics.metricGroups += selected.metricGroups;
         diagnostics.hierarchyNodes += selected.hierarchyNodes;
         diagnostics.prunedGroups += selected.prunedGroups;

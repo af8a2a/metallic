@@ -106,12 +106,14 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
 // source snapshot owns immutable authored keys and complete caster bounds.
 // Zero error forces finest available geometry; streaming can retain a complete
 // resident ancestor cut while requesting refinement for later frames.
+// maxWorldError limits replacement error independently of projected XY size.
+// Runtime passes reserve half the existing shadow bias for this geometry budget.
 Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
     std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
-    bool hierarchical = true);
+    bool hierarchical = true, float maxWorldError = std::numeric_limits<float>::max());
 
 // Selects one layer from a complete producer snapshot. IDs are sorted and use
 // the source structural revision. Geometry slot IDs/capacity and complete scene

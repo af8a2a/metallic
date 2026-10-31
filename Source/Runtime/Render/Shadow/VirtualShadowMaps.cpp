@@ -46,8 +46,9 @@ struct ShadowPush
     uint32_t rayCount, samplesPerRay, receiverFootprint, filterReserved;
     float rayLengthScale, maxRayAngle;
     uint32_t samplePhase, sampleReserved;
+    float lodScreenRayLength;
 };
-static_assert(sizeof(ShadowPush) == 208);
+static_assert(sizeof(ShadowPush) == 212);
 
 struct ShadowProjectionJob
 {
@@ -55,7 +56,7 @@ struct ShadowProjectionJob
     uint32_t filterMode, shadow, debug, physicalPagesX;
     uint32_t clipmapCount, enabled, lightType, projectionFace;
     uint32_t pointFaces, filterReserved, samplePhase, view;
-    float lightRange, sourceRadius, angularRadius, padding;
+    float lightRange, sourceRadius, angularRadius, lodScreenRayLength;
 };
 static_assert(sizeof(ShadowProjectionJob) == 80);
 
@@ -105,7 +106,9 @@ bool validProjectionSettings(const VirtualShadowMapSettings& settings)
         settings.clipmapCount != 0 && settings.clipmapCount <= 12 &&
         std::isfinite(settings.firstClipmapExtent) && settings.firstClipmapExtent > 0 &&
         std::isfinite(settings.shadowBias) && settings.shadowBias >= 0 &&
-        std::isfinite(settings.shadowLODErrorTexels) && settings.shadowLODErrorTexels >= 0;
+        std::isfinite(settings.shadowLODErrorTexels) && settings.shadowLODErrorTexels >= 0 &&
+        std::isfinite(settings.shadowLODScreenRayLength) && settings.shadowLODScreenRayLength >= 0 &&
+        settings.shadowLODScreenRayLength <= 1;
 }
 
 Result<> validateProjectionLight(const VirtualShadowMapLight& light, std::string& log)
@@ -646,6 +649,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.rayCount = settings.smrtRayCount;
     push.samplesPerRay = settings.smrtSamplesPerRay;
     push.receiverFootprint = settings.receiverFootprint;
+    push.lodScreenRayLength = settings.shadowLOD && settings.shadowLODSmartBias && directional && push.filterMode == 0u ?
+        settings.shadowLODScreenRayLength : 0.f;
     push.enabled = enabled;
     push.totalPages = settings.clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1;
     total.work("totalPages", push.totalPages);
@@ -1563,7 +1568,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
                 p.filterMode, p.shadow, p.debug, p.physicalPagesX,
                 p.clipmapCount, p.enabled, p.lightType, p.projectionFace,
                 p.pointFaces, p.filterReserved, p.samplePhase, p.view,
-                p.lightRange, p.sourceRadius, p.angularRadius, 0.f});
+                p.lightRange, p.sourceRadius, p.angularRadius, p.lodScreenRayLength});
         }
     }
     auto* frame = RenderFrameContext::from(commands);

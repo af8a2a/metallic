@@ -164,15 +164,17 @@ void verifyMetricAndCoverage()
             instance.worldMatrix[4] = transform & 2 ? 1.5f : 0.f;
             instance.worldMatrix[14] = transform & 4 ? -4.9f : 0.f;
             for (const float threshold : {0.f, .01f, .1f, 1.f, 4.f, 1e9f}) {
-                const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, instance, views, threshold, false);
-                const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, views, threshold, true);
-                compareLODSelection(adaptive, flat);
-                uint32_t covered = 0;
-                for (uint32_t cluster : adaptive.cut.selectedClusters) {
-                    check((covered & coverage[cluster]) == 0, "Adaptive DAG duplicated surface coverage");
-                    covered |= coverage[cluster];
+                for (float budget : {std::numeric_limits<float>::max(), 0.f, .05f}) {
+                    const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, instance, views, threshold, false, budget);
+                    const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, views, threshold, true, budget);
+                    compareLODSelection(adaptive, flat);
+                    uint32_t covered = 0;
+                    for (uint32_t cluster : adaptive.cut.selectedClusters) {
+                        check((covered & coverage[cluster]) == 0, "Adaptive DAG duplicated surface coverage");
+                        covered |= coverage[cluster];
+                    }
+                    check(covered == 31, "Adaptive DAG lost a terminal branch");
                 }
-                check(covered == 31, "Adaptive DAG lost a terminal branch");
             }
         }
     }
@@ -193,6 +195,62 @@ void verifyMetricAndCoverage()
         }
     }
 
+}
+
+uint32_t verifyDepthGuardMetricAndCoverage()
+{
+    GPUSceneGPUInstanceRecord instance;
+    instance.worldMatrix = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    instance.identity[3] = GPUSceneGPUInstanceVisible;
+    VirtualShadowMapLODProjection projection{.rowX = {.5f,0,0,0}, .rowY = {0,.5f,0,0}, .resolution = 256};
+    std::array<MeshletLODGroupRecord, 2> groups{{
+        {.sphere = {0,0,5,.2f}, .error = .01f},
+        {.sphere = {0,0,5,.2f}, .error = std::numeric_limits<float>::max(), .level = 1, .flags = kMeshletLODTerminalGroup}}};
+    const std::array<MeshletLODGroupRange, 2> ranges{{{0,2},{2,1}}};
+    const std::array<uint32_t, 3> refined{UINT32_MAX,UINT32_MAX,0};
+    const std::array<uint8_t, 2> resident{1,1}, missingFine{0,1};
+    uint32_t cases = 0;
+    const auto verify = [&](float budget, std::span<const uint8_t> drawable, bool expectFine, bool expectRequest) {
+        VirtualShadowMapLODHierarchy hierarchy;
+        std::string reason;
+        check(buildVirtualShadowMapLODHierarchy(groups, ranges, refined, hierarchy, reason), "Depth guard metadata: " + reason);
+        // Deliberately allow the XY error. Only depth safety, near-plane
+        // saturation, or residency may decide this fixture's refinement.
+        const auto requirements = buildVirtualShadowMapLodRequirements(groups, instance, {&projection,1}, 1e9f, budget);
+        const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, instance, {&projection,1}, 1e9f, false, budget);
+        const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, {&projection,1}, 1e9f, true, budget);
+        compareLODSelection(adaptive, flat);
+        check(requirements.needsFine == std::vector<uint8_t>{uint8_t(expectFine || expectRequest),1},
+            "Depth guard requirement differs from the expected world-error boundary");
+        check(adaptive.cut.selectedClusters == (expectFine ? std::vector<uint32_t>{0,1} : std::vector<uint32_t>{2}),
+            "Depth guard chose the wrong complete cut");
+        check(adaptive.cut.requestedGroups == (expectRequest ? std::vector<uint32_t>{0} : std::vector<uint32_t>{}),
+            "Depth guard lost a missing fine-page request or requested an available group");
+        ++cases;
+    };
+    verify(std::numeric_limits<float>::max(), resident, false, false);
+    verify(.01f, resident, false, false);
+    verify(std::nextafter(.01f, 0.f), resident, true, false);
+    verify(0, resident, true, false);
+    verify(0, missingFine, false, true);
+    verify(0, resident, true, false); // Normal publication replaces the ancestor without holes.
+    instance.worldMatrix[10] = -4;
+    verify(.02f, resident, true, false); // Reflection and nonuniform scale affect depth error.
+    instance.worldMatrix[10] = 1; instance.worldMatrix[4] = 2;
+    verify(.02f, resident, true, false); // Shear must use a conservative affine norm.
+    instance.worldMatrix[4] = 0;
+    groups[0].error = 0;
+    verify(0, resident, false, false); // Exact replacements do not consume the depth budget.
+    groups[0].error = .01f; groups[0].sphere[0] = 100;
+    verify(0, resident, false, false); // A view outside the group contributes no demand.
+    groups[0].sphere[0] = 0;
+    projection.rowX = {1,0,0,0}; projection.rowY = {0,1,0,0};
+    projection.rowW = {0,0,1,0}; projection.nearPlane = .1f;
+    groups[0].sphere[2] = .2f;
+    verify(std::numeric_limits<float>::max(), resident, true, false);
+    groups[0].sphere[2] = -5;
+    verify(0, resident, false, false);
+    return cases;
 }
 
 std::filesystem::path writeBunnyFixture(const std::filesystem::path& directory)
@@ -302,7 +360,7 @@ Json verifyAndBenchmarkHierarchy(const scene::MeshletStreamAsset& asset)
         {"SpotFar",{far}}, {"MultipleLights",{ortho,near,opposite}}, {"Finest",{ortho},0}}};
     Json report{{"scope","CPU selector only; prebuilt metadata, resident snapshot, no geometry upload or GPU work"},
         {"blocks",12},{"iterationsPerArm",128},{"equivalenceCases",0},{"workloads",Json::array()}};
-    uint32_t cases = 0;
+    uint32_t cases = 0, guardedCases = 0;
     uint64_t randomState = 0x72ac4513u;
     const auto random = [&] {
         randomState = randomState * 6364136223846793005ull + 1442695040888963407ull;
@@ -325,8 +383,14 @@ Json verifyAndBenchmarkHierarchy(const scene::MeshletStreamAsset& asset)
         const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, false);
         const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, true);
         compareLODSelection(adaptive, flat); ++cases;
+        for (float budget : {0.f, .0005f, .001f, .01f}) {
+            compareLODSelection(selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, true, budget),
+                selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, false, budget));
+            ++guardedCases;
+        }
     }
     report["equivalenceCases"] = cases;
+    report["depthGuardEquivalenceCases"] = guardedCases;
     std::ranges::fill(drawable, uint8_t(1));
     uint64_t checksum = 0;
     for (const auto& work : workloads) {
@@ -510,7 +574,9 @@ public:
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / "VirtualShadowMapLOD.json") << report.dump(2); };
         try {
-            verifyMetricAndCoverage(); report["metricAndDAG"] = "passed"; report["largeTranslationCases"] = 32; save();
+            verifyMetricAndCoverage(); report["metricAndDAG"] = "passed"; report["largeTranslationCases"] = 32;
+            report["depthGuardDAGCases"] = 1536;
+            report["depthGuardMetricCases"] = verifyDepthGuardMetricAndCoverage(); save();
             const auto path = writeBunnyFixture(directory / "Fixture");
             const auto streamPath = directory / "Bunny.meshstream.bin";
             std::string log;
@@ -606,7 +672,7 @@ public:
                         {"metricGroups",d.metricGroups},{"hierarchyNodes",d.hierarchyNodes},
                         {"prunedGroups",d.prunedGroups},{"topologyGroups",d.topologyGroups}};
                 };
-                const auto prepare = [&](float threshold, bool freeze, bool pump, bool hierarchical, auto&& consume) {
+                const auto prepare = [&](float threshold, bool freeze, bool pump, bool hierarchical, float maxWorldError, auto&& consume) {
                     gpu.begin();
                     if (runtime) {
                         check(runtime->syncRuntimeScene(scene, log), "LOD synchronize stream: " + log);
@@ -637,14 +703,14 @@ public:
                     const auto projections = VirtualShadowMaps::makeShadowLODProjections(base->bounds, view, light, settings, log);
                     check(projections, "LOD light projections: " + log);
                     auto selected = prepareVirtualShadowMapShadowLOD(device, *gpu.commands, scene,
-                        runtime ? &stream : nullptr, *base, casterSettings, *projections, threshold, log, hierarchical);
+                        runtime ? &stream : nullptr, *base, casterSettings, *projections, threshold, log, hierarchical, maxWorldError);
                     check(selected, "Select shadow LOD: " + log);
                     auto result = consume(*base, *selected, view);
                     if (runtime && pump) { streamer->endFrame(); runtime->prepareMaintenance(); }
                     return result;
                 };
                 const auto probe = [&](float threshold, bool freeze) {
-                    return prepare(threshold, freeze, true, true, [&](const auto&, const auto& selected, const auto&) {
+                    return prepare(threshold, freeze, true, true, std::numeric_limits<float>::max(), [&](const auto&, const auto& selected, const auto&) {
                         const auto result = selectionJSON(selected); gpu.finish(); return result;
                     });
                 };
@@ -678,8 +744,9 @@ public:
                 check(nearSelection.at("selectedClusters").get<uint32_t>() > farSelection.at("selectedClusters").get<uint32_t>(),
                     "Light near/far distance did not change actual Bunny cluster selection");
                 light = directional;
-                const auto record = [&](uint32_t arm, float threshold, bool cancel = false, bool baseReference = false) {
-                    return prepare(threshold, false, false, arm != 4, [&](const auto& base, const auto& selected, const auto& view) {
+                const auto record = [&](uint32_t arm, float threshold, bool cancel = false, bool baseReference = false,
+                    float maxWorldError = std::numeric_limits<float>::max()) {
+                    return prepare(threshold, false, false, arm != 4, maxWorldError, [&](const auto& base, const auto& selected, const auto& view) {
                         auto options = settings; options.cacheLayering = arm == 0; options.forceRedraw = arm >= 2;
                         auto result = maps[arm].record(device, *gpu.commands, *depthView, view, light,
                             baseReference ? base : selected, scene.materials(), {}, options, log);
@@ -689,9 +756,11 @@ public:
                         return capture;
                     });
                 };
-                const auto compare = [&](const std::string& state, float threshold, const LODCapture* reference) {
+                const auto compare = [&](const std::string& state, float threshold, const LODCapture* reference,
+                    float maxWorldError = std::numeric_limits<float>::max()) {
                     report["activeState"] = label + "-" + state; validation.phase(label + "-" + state);
-                    const auto layered = record(0, threshold), single = record(1, threshold), forced = record(2, threshold), flat = record(4, threshold);
+                    const auto layered = record(0, threshold, false, false, maxWorldError), single = record(1, threshold, false, false, maxWorldError),
+                        forced = record(2, threshold, false, false, maxWorldError), flat = record(4, threshold, false, false, maxWorldError);
                     const auto snapshot = [](const LODCapture& capture) {
                         return Json{{"pages",capture.pages},{"statistics",capture.statistics},{"diagnostics",capture.diagnostics},
                             {"selection",capture.selection},{"visibilitySHA256",debug::debugSha256(capture.visibility)}};
@@ -714,7 +783,7 @@ public:
                         layered.diagnostics[kVSMCacheChangedCasters] == 0,
                         "LOD-only change promoted an authored static caster into dynamic cache");
                     auto quality = saveQuality(directory, label + "-" + state, layered, reference ? *reference : layered);
-                    report["states"].push_back({{"name",label + "-" + state},{"threshold",threshold},
+                    report["states"].push_back({{"name",label + "-" + state},{"threshold",threshold},{"maxWorldError",maxWorldError},
                         {"selection",layered.selection},{"layeredDiagnostics",layered.diagnostics},
                         {"layeredStatistics",layered.statistics},{"forcedStatistics",forced.statistics},{"quality",quality}}); save();
                     check(quality.at("shadowedPixels").get<uint64_t>() > 0, "LOD fixture did not produce a visible shadow");
@@ -731,7 +800,13 @@ public:
                 check(terminal.selection.at("selectedClusters").get<uint32_t>() < finest.selection.at("selectedClusters").get<uint32_t>(),
                     "Real Bunny did not reduce selected clusters for the coarse shadow cut");
                 if (streamed) { compareSameCut(terminal, record(3, 1e9f, false, true), settings.pageSize); }
-                (void)compare("TexelBudget", 1, &finest);
+                const auto texelBudget = compare("TexelBudget", 1, &finest);
+                const auto guarded = compare("DepthGuard", 1, &finest, settings.shadowBias * .5f);
+                check(guarded.selection.at("triangleSlots").get<uint32_t>() >= texelBudget.selection.at("triangleSlots").get<uint32_t>(),
+                    "Depth guard reduced rather than preserved or refined the Bunny geometry");
+                const auto guardedWarm = compare("DepthGuardWarm", 1, &finest, settings.shadowBias * .5f);
+                check(guardedWarm.diagnostics[kVSMCacheStaticDirtyFinePages] == 0 && guardedWarm.diagnostics[kVSMCacheStaticDirtyCoarsePages] == 0,
+                    "Unchanged depth-guarded cut redrew static depth");
                 (void)record(0, 1e9f, true);
                 (void)compare("CancelledCutRollback", 1, &finest);
                 (void)compare("ThresholdBackToFinest", 0, &finest);
