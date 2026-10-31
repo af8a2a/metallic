@@ -1,6 +1,6 @@
 # VSM 多灯需求预算
 
-`VirtualShadowMapLightsPass` 增加可选运行时属性 `demandDrivenBudget`，默认 `false` 保留均分策略。设为 `true` 后，使用已完成 GPU 帧的真实细页请求分配各面的物理容量。整灯粗页准入顺序、公开灯表布局、光源槽与稳定 ID 的关系保持原契约。
+`VirtualShadowMapLightsPass` 的运行时属性 `demandDrivenBudget` 默认 `true`，未写该字段的 graph 使用需求驱动预算，显式 `false` 保留均分策略。该策略使用已完成 GPU 帧的真实细页请求分配各面的物理容量。整灯粗页准入顺序、公开灯表布局、光源槽与稳定 ID 的关系保持原契约。
 
 ## 分配与反馈
 
@@ -72,8 +72,16 @@ RTX 5070 Ti / driver 621.01，24 个独立普通进程（每组 3 个 ABBA），
 | 2048 页 | +0.37% [-2.51%, +3.33%] | +0.81% [-4.42%, +6.32%] | +0.48% [-2.83%, +3.90%] |
 | 256 页 | -1.03% [-2.51%, +0.47%] | -0.12% [-2.86%, +2.70%] | -3.09% [-3.84%, -2.34%] |
 
-候选反馈 scope 的进程中位数汇总为 5.376 μs；完整 Shadows 和 RenderGraph 区间跨零，不宣称整体 GPU 加速。收益定位是受压预算的有效页利用和参考画质改善，默认仍为 `false`。
+候选反馈 scope 的进程中位数汇总为 5.376 μs；完整 Shadows 和 RenderGraph 区间跨零，不宣称整体 GPU 加速。收益定位是受压预算的有效页利用和参考画质改善。该轮 A/B 时默认为 `false`；后续按用户要求改为默认启用，单独验证缺省属性路径，不将旧数据当作新性能测量。
 
 旧 v1 主动缩小宽裕预算 atlas 的诊断因 6 个点光阴影像素、4 个 HDR 像素变化而失败，保留于 `Diagnostic/`。v2 通过源策略保留充足布局消除该组差异，未放宽字节一致门槛，也未修改 shader 的深度或阴影公式。
 
 本机完整结果：[汇总](../build/vsm-demand-budget/Report.md)、[诊断](../build/vsm-demand-budget/Diagnostic2Report/Report.md)、[普通 GPU A/B](../build/vsm-demand-budget/TimingReport/Report.md)。原始包、图表和日志均为本地构建输出，不纳入源码。
+
+## 默认启用与缺省属性验证
+
+随后按用户要求，将注册的 runtime setting 和执行时的属性缺省值同时改为 `true`。仓库七个 VSM graph 均未显式填写该字段，无需迁移即可采用新默认；显式 `false` 仍选择均分。需求反馈需要绑定正在录制的 `RenderFrameContext`，即使 `cacheEnabled=false` 也需要；无跟踪帧的外部调用方可显式关闭需求预算。
+
+新增第六个 `Default` 测试臂，从 authored/runtime properties 均省略该属性，检查注册默认值为 true，并在原有 254 帧序列中与显式 Demand 比较。阴影字节、完整配额/反馈/缓存统计、内存统计和灯表逐帧相同，27 组独立几何 oracle 保留。需求预算、反馈取消、compact 和固定配额局部灯四项 GPU 回归全部通过，validation 为零。固定配额局部灯测试显式关闭该功能，以保留“某灯改变不触发另一灯缓存重建”的原前提；它不作为默认路径证据。
+
+另运行五个 OpenPBR/P4 诊断进程：2048/256 页各比较缺省属性与显式 true，256 页增加显式 false 对照。Default/On 在 32、63 帧的原生 shadow、HDR、depth、visibility 字节一致，后 32 帧完整分配/缓存统计一致；实际反馈 scope 和九面已知状态均验证。256 页 Default/On 准入 235 个细页，Off 准入 164 个。所有进程 validation 为零。本轮只验证默认行为，不作新的性能结论；详见[默认路径报告](../build/vsm-demand-budget-default/Report.md)。

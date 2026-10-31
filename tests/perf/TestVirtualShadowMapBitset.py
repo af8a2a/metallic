@@ -31,24 +31,26 @@ def one_pass_shader_log(arm, mode, role="primary"):
     return "\n".join(lines)
 
 
-def graph(arm, mode, resolved=False, directional=False, compact=False, directional_mark=False, one_pass=False):
+def graph(arm, mode, resolved=False, directional=False, compact=False, directional_mark=False, one_pass=False, mark_clipmaps=False):
     result = optimization_tests.graph("Both", mode)
-    result["nodes"][0]["properties"][bitset.ONE_PASS_SWITCH if one_pass else bitset.DIRECTIONAL_MARK_SWITCH if directional_mark else bitset.COMPACT_SWITCH if compact else bitset.DIRECTIONAL_SWITCH if directional else bitset.SWITCH] = arm == "B"
+    result["nodes"][0]["properties"][bitset.MARK_CLIPMAPS_SWITCH if mark_clipmaps else bitset.ONE_PASS_SWITCH if one_pass else bitset.DIRECTIONAL_MARK_SWITCH if directional_mark else bitset.COMPACT_SWITCH if compact else bitset.DIRECTIONAL_SWITCH if directional else bitset.SWITCH] = arm == "B"
+    if mark_clipmaps:
+        result["nodes"][0]["properties"].update(benchmarkDirectionalMark=True, clipmapCount=6)
     if resolved:
         result["outputs"] = ["FinalBlit.color"] + (["Deferred.color"] if mode == "diagnostic" else [])
     return result
 
 
-def shader_log(arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary"):
+def shader_log(arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False):
     if one_pass:
         return one_pass_shader_log(arm, mode, role)
     result = optimization_tests.shader_log("Both", mode)
     if arm == "B":
-        result = result.replace(("b" if directional_mark else "d") * 64, "e" * 64)
-    if directional_mark:
+        result = result.replace(("b" if directional_mark or mark_clipmaps else "d") * 64, "e" * 64)
+    if directional_mark or mark_clipmaps:
         result += f"\n[VSMShader] entry=vsmProjectMain spirvSHA256={'f' * 64} work={str(mode == 'diagnostic').lower()}"
-        return "\n".join(line + f" lightType=0 compactBuild=false directionalBuild={str('entry=vsmBuildMain ' in line).lower()} directionalMark={str(arm == 'B' and 'entry=vsmMarkMain ' in line).lower()}"
-            for line in result.splitlines())
+        return "\n".join(line + f" lightType=0 compactBuild=false directionalBuild={str('entry=vsmBuildMain ' in line).lower()} directionalMark={str((mark_clipmaps or arm == 'B') and 'entry=vsmMarkMain ' in line).lower()}" +
+            (f" markCacheLevels={6 if arm == 'B' and 'entry=vsmMarkMain ' in line else 12}" if mark_clipmaps else "") for line in result.splitlines())
     if compact:
         result += f"\n[VSMShader] entry=vsmProjectMain spirvSHA256={'f' * 64} work={str(mode == 'diagnostic').lower()}"
         if arm == "B":
@@ -85,15 +87,15 @@ class BitsetTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def experiment(self, phase, gain=.2, name=None, frames=64, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary"):
+    def experiment(self, phase, gain=.2, name=None, frames=64, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False):
         source = self.root / (name or phase)
         source.mkdir()
         mode = "diagnostic" if phase == "diagnostic" else "timing"
-        protocol = bitset.ONE_PASS_PROTOCOL if one_pass else bitset.DIRECTIONAL_MARK_PROTOCOL if directional_mark else bitset.COMPACT_PROTOCOL if compact else bitset.DIRECTIONAL_PROTOCOL if directional else bitset.PROTOCOL
+        protocol = bitset.MARK_CLIPMAPS_PROTOCOL if mark_clipmaps else bitset.ONE_PASS_PROTOCOL if one_pass else bitset.DIRECTIONAL_MARK_PROTOCOL if directional_mark else bitset.COMPACT_PROTOCOL if compact else bitset.DIRECTIONAL_PROTOCOL if directional else bitset.PROTOCOL
         plan = {"protocol": protocol, "phase": phase, "mode": mode, "policy": bitset.experiment_policy(protocol, role),
             "processes": bitset.schedule(phase), "blocks": bitset.BLOCKS[phase], "runsPerPackage": 1,
             "timeoutSeconds": 600, "comparisonStartFrame": 16,
-            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass), "A", directional, compact, directional_mark, one_pass),
+            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass, mark_clipmaps=mark_clipmaps), "A", directional, compact, directional_mark, one_pass, mark_clipmaps),
             "inputs": {arm: {"cases": f"/{mode}-{arm}.json", "casesSHA256": arm,
                 "graph": f"/{arm}.json", "graphSHA256": arm} for arm in bitset.ARMS}}
         a.save(source / "Plan.json", plan)
@@ -104,10 +106,10 @@ class BitsetTests(unittest.TestCase):
             directory = package / "run-1"
             directory.mkdir(parents=True)
             arm = item["arm"]
-            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass),
+            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass, mark_clipmaps=mark_clipmaps),
                 "noRayTracingAllocations": True, "noRayQueryOrRTAS": True, "frames": []}
             for index in range(frames):
-                row = frame(index, faces=(9 if role == "primary" else 1) if one_pass else 2, scale=1000 if index < 32 else (1 if arm == "A" else 1 - gain))
+                row = frame(index, faces=(9 if role == "primary" else 1) if one_pass else 1 if mark_clipmaps else 2, scale=1000 if index < 32 else (1 if arm == "A" else 1 - gain))
                 if one_pass and arm == "B" and role == "primary":
                     sections = row["nodes"][0]["sections"]
                     total = sum(section["gpuMs"] for section in sections if section["name"] == "VSM projection")
@@ -123,7 +125,7 @@ class BitsetTests(unittest.TestCase):
                     add_work(row)
                     add_build(row)
                     # Build diagnostics are valid but deliberately differ; legacy/image receipts do not.
-                    if directional or compact or directional_mark or one_pass:
+                    if directional or compact or directional_mark or mark_clipmaps or one_pass:
                         diagnostic = row["shadow"]["gpuBuildDiagnostics"]
                         diagnostic["version"] = 3
                         for counters in [diagnostic["totals"], *[face["counters"] for face in diagnostic["faces"]]]:
@@ -132,9 +134,9 @@ class BitsetTests(unittest.TestCase):
                         for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
                             face["counters"]["clusterGroups"] += 1
                         row["shadow"]["gpuBuildDiagnostics"]["totals"]["clusterGroups"] += 2
-                    if one_pass:
+                    if one_pass or mark_clipmaps:
                         shadow = row["shadow"]
-                        count = 9 if role == "primary" else 1
+                        count = 9 if one_pass and role == "primary" else 1
                         shadow["statistics"] = [shadow["statistics"][0].copy() for _ in range(count)]
                         shadow["totals"] = [value * count for value in shadow["statistics"][0]]
                         for name in ("gpuWork", "gpuBuildDiagnostics"):
@@ -150,7 +152,7 @@ class BitsetTests(unittest.TestCase):
             data = {"protocol": "virtual-shadow-map-acceptance-v2", "status": "passed", "mode": mode,
                 "validation": mode == "diagnostic", "performanceEligible": mode == "timing", "cases": [case]}
             a.save(directory / "VirtualShadowMapAcceptance.json", data)
-            (directory / "Process.log").write_text(shader_log(arm, mode, directional, compact, directional_mark, one_pass, role), encoding="utf-8")
+            (directory / "Process.log").write_text(shader_log(arm, mode, directional, compact, directional_mark, one_pass, role, mark_clipmaps), encoding="utf-8")
             a.save(package / "Cases.json", spec(mode, arm, frames))
             paths = plan["inputs"][arm]
             a.save(package / "Identity.json", {"sources": {"source": "1" * 64}, "binaries": {"exe": "2" * 64},
@@ -206,6 +208,148 @@ class BitsetTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bitset.normalized_workload(spec("timing", arm), value, arm, directional_mark=True)
         self.assertEqual(*workloads)
+
+    def test_mark_clipmaps_switch_and_same_directional_workload(self):
+        workloads = [bitset.normalized_workload(spec("timing", arm), graph(arm, "timing", mark_clipmaps=True),
+            arm, mark_clipmaps=True) for arm in bitset.ARMS]
+        self.assertEqual(*workloads)
+        for arm in bitset.ARMS:
+            for key, setting in ([(bitset.MARK_CLIPMAPS_SWITCH, value) for value in (None, 0, 1, "false", "true")] +
+                    [("clipmapCount", value) for value in (None, True, 0, 12, 6.0, "6")] +
+                    [(bitset.DIRECTIONAL_MARK_SWITCH, False), (bitset.DIRECTIONAL_SWITCH, False),
+                     (bitset.COMPACT_SWITCH, True), ("benchmarkBuildSubstages", True)]):
+                value = graph(arm, "timing", mark_clipmaps=True)
+                value["nodes"][0]["properties"][key] = setting
+                with self.subTest(arm=arm, key=key, setting=setting), self.assertRaises(ValueError):
+                    bitset.normalized_workload(spec("timing", arm), value, arm, mark_clipmaps=True)
+        with self.assertRaises(ValueError):
+            bitset.experiment_policy(bitset.MARK_CLIPMAPS_PROTOCOL, "overhead")
+
+    def test_mark_clipmaps_actual_levels_and_unrelated_shader_identity(self):
+        rows = [{"arm": arm, "shaders": bitset.shader_identity(shader_log(arm, "timing", mark_clipmaps=True),
+            arm, "timing", mark_clipmaps=True, mark_cache_levels=6)} for arm in bitset.ARMS]
+        bitset.check_shaders(rows, mark_clipmaps=True)
+        for entry, value in (("vsmMarkMain", rows[0]["shaders"]["vsmMarkMain"]),
+                             ("vsmBuildMain", "8" * 64), ("vsmProjectMain", "8" * 64)):
+            prior = rows[1]["shaders"][entry]
+            rows[1]["shaders"][entry] = value
+            with self.assertRaises(ValueError):
+                bitset.check_shaders(rows, mark_clipmaps=True)
+            rows[1]["shaders"][entry] = prior
+        for arm in bitset.ARMS:
+            valid = shader_log(arm, "timing", mark_clipmaps=True)
+            for invalid in (valid.replace("lightType=0", "lightType=1"),
+                    valid.replace("directionalMark=true", "directionalMark=false"),
+                    valid.replace("directionalBuild=true", "directionalBuild=false"),
+                    valid.replace("compactBuild=false", "compactBuild=true"),
+                    valid.replace("work=false", "work=true"), valid.replace("markCacheLevels=", "wrongLevels="),
+                    valid.replace("markCacheLevels=12", "markCacheLevels=6"),
+                    valid.replace("markCacheLevels=6", "markCacheLevels=12") if arm == "B" else valid.replace("markCacheLevels=12", "markCacheLevels=11", 1),
+                    "\n".join(valid.splitlines()[:-1]), shader_log(arm, "timing", directional_mark=True)):
+                with self.subTest(arm=arm, log=invalid), self.assertRaises(ValueError):
+                    bitset.shader_identity(invalid, arm, "timing", mark_clipmaps=True, mark_cache_levels=6)
+        valid = shader_log("B", "timing", mark_clipmaps=True).replace("markCacheLevels=6", "markCacheLevels=4")
+        bitset.shader_identity(valid, "B", "timing", mark_clipmaps=True, mark_cache_levels=4)
+        with self.assertRaisesRegex(ValueError, "markCacheLevels"):
+            bitset.shader_identity(valid, "B", "timing", mark_clipmaps=True, mark_cache_levels=6)
+
+    def test_mark_clipmaps_exact_diagnostic_gates(self):
+        source = self.experiment("diagnostic", mark_clipmaps=True)
+        result = bitset.verify_experiment(source)
+        self.assertEqual(result["processes"][0]["faceCount"], 1)
+        receipt = result["diagnosticReceipts"]
+        self.assertEqual(len(receipt["exactBuildDiagnostics"][0]["diagnostics"]["totals"]), 45)
+        self.assertEqual(len(receipt["stableWorkCounters"][0]["faces"][0]["counters"]), 15)
+        def change_counter(data, field, name):
+            counters = data["cases"][0]["frames"][16]["shadow"][field]
+            counters["faces"][0]["counters"][name] += 1
+            counters["totals"][name] += 1
+        self.mutate(source, 1, "run-1/VirtualShadowMapAcceptance.json",
+            lambda data: change_counter(data, "gpuWork", "markPageRequests"))
+        bitset.verify_experiment(source)
+        mutations = [lambda data: change_counter(data, "gpuWork", "markLevelTests"),
+            lambda data: change_counter(data, "gpuBuildDiagnostics", "clusterGroups"),
+            lambda data: data["cases"][0]["captures"][0]["linearHDR"].update(rawSha256="9" * 64)]
+        mutations.extend(lambda data, key=key: data["cases"][0]["captures"][0].update({key: "9" * 64})
+            for key in ("rawSha256", "depthSha256", "shadowSha256"))
+        def change_page_demand(data):
+            shadow = data["cases"][0]["frames"][16]["shadow"]
+            shadow["statistics"][0][0] += 1
+            shadow["totals"][0] += 1
+        mutations.append(change_page_demand)
+        for index, mutation in enumerate(mutations):
+            source = self.experiment("diagnostic", name=f"bad-clipmap-output-{index}", mark_clipmaps=True)
+            self.mutate(source, 1, "run-1/VirtualShadowMapAcceptance.json", mutation)
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, "mismatch after input verification"):
+                bitset.verify_experiment(source)
+
+    def test_mark_clipmaps_phases_and_primary_are_distinct(self):
+        diagnostic = bitset.verify_experiment(self.experiment("diagnostic", mark_clipmaps=True))
+        discovery = bitset.verify_experiment(self.experiment("discovery", frames=96, mark_clipmaps=True))
+        confirmation = bitset.verify_experiment(self.experiment("confirmation", frames=96, mark_clipmaps=True))
+        for result in (discovery, confirmation):
+            for row in result["processes"]:
+                row["metrics"]["buildMs"] = 1
+            bitset.check_diagnostic(result, diagnostic)
+            decision = bitset.comparisons(result["processes"], result["phase"], policy=result["plan"]["policy"])
+            self.assertEqual(decision["primaryMetric"], "markMs")
+            self.assertEqual(decision["gains"]["markMs"]["blocks"], bitset.BLOCKS[result["phase"]])
+        bitset.check_reference(confirmation, discovery)
+        self.assertEqual(bitset.comparisons(confirmation["processes"], "confirmation", policy=confirmation["plan"]["policy"])["decision"], "accept")
+        for row in confirmation["processes"]:
+            row["metrics"]["markMs"] = 1 if row["arm"] == "A" else 1.1
+        self.assertEqual(bitset.comparisons(confirmation["processes"], "confirmation", policy=confirmation["plan"]["policy"])["effectAssessment"], "confirmed_regression")
+        discovery["plan"]["protocol"] = bitset.DIRECTIONAL_MARK_PROTOCOL
+        with self.assertRaises(ValueError):
+            bitset.check_diagnostic(discovery, diagnostic)
+        with self.assertRaises(ValueError):
+            bitset.check_reference(confirmation, discovery)
+
+    def test_mark_clipmaps_rejects_changed_identity_or_execution(self):
+        for field in ("sources", "binaries"):
+            source = self.experiment("diagnostic", name=field, mark_clipmaps=True)
+            self.mutate(source, 1, "Identity.json", lambda data: data[field].update(changed="9" * 64))
+            with self.assertRaisesRegex(ValueError, "source/binary identity"):
+                bitset.verify_experiment(source)
+        source = self.experiment("diagnostic", name="wrong-levels", mark_clipmaps=True)
+        package = source / a.read(source / "Processes.json")[1]["package"]
+        path = package / "run-1/Process.log"
+        path.write_text(path.read_text(encoding="utf-8").replace("markCacheLevels=6", "markCacheLevels=12"), encoding="utf-8")
+        self.seal(source, 1)
+        with self.assertRaisesRegex(ValueError, "markCacheLevels"):
+            bitset.verify_experiment(source)
+        source = self.experiment("diagnostic", name="wrong-faces", mark_clipmaps=True)
+        def change_scope(data):
+            row = data["cases"][0]["frames"][16]
+            row["nodes"] = frame(16, faces=2)["nodes"]
+        self.mutate(source, 1, "run-1/VirtualShadowMapAcceptance.json", change_scope)
+        with self.assertRaisesRegex(ValueError, "one directional face"):
+            bitset.verify_experiment(source)
+
+    def test_mark_clipmaps_report_and_plan(self):
+        source = self.experiment("diagnostic", mark_clipmaps=True)
+        timing = self.experiment("discovery", mark_clipmaps=True)
+        output = self.root / "clipmaps-report"
+        with mock.patch("builtins.print"):
+            bitset.report(SimpleNamespace(source=timing, output=output, diagnostic=source))
+        report = (output / "report.md").read_text(encoding="utf-8")
+        self.assertIn("mark clipmaps", report)
+        self.assertIn("12 compiled cache levels", report)
+        self.assertIn("markCacheLevels", report)
+        self.assertIn("All 45", report)
+        self.assertIn("Primary target: markMs", report)
+        cases = self.root / "cases"
+        cases.mkdir()
+        for arm in bitset.ARMS:
+            value = spec("diagnostic", arm)
+            value["cases"][0]["graph"] = f"{arm}.json"
+            a.save(cases / f"Diagnostic-{arm}Cases.json", value)
+            a.save(cases / f"{arm}.json", graph(arm, "diagnostic", mark_clipmaps=True))
+        plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="mark-clipmaps",
+            cases_dir=cases, exe=self.root / "fake.exe"))
+        self.assertEqual(plan["protocol"], bitset.MARK_CLIPMAPS_PROTOCOL)
+        self.assertEqual(plan["policy"]["primaryMetric"], "markMs")
+        self.assertNotEqual(plan["protocol"], bitset.DIRECTIONAL_MARK_PROTOCOL)
 
     def test_one_pass_switch_preserves_production_settings(self):
         workloads = []

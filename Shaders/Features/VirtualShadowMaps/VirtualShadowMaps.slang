@@ -35,6 +35,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_DIRECTIONAL_MARK
 #define VSM_DIRECTIONAL_MARK 0
 #endif
+#ifndef VSM_MARK_CACHE_LEVELS
+#define VSM_MARK_CACHE_LEVELS 12
+#endif
 #ifndef VSM_COMPACT_BUILD
 #define VSM_COMPACT_BUILD 0
 #endif
@@ -1008,14 +1011,14 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[12], inout uint3 workCounts)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts)
 {
     ++workCounts.x;
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
     // Match the query's first usable level. Requesting finer pages here spends
     // the admission budget on pages the receiver will never sample.
-    // The producer bounds clipmapCount by 12. Constant indices keep the small
-    // per-receiver cache in registers across all SMRT rays.
+    // The selected Mark permutation bounds clipmapCount by its cache size.
+    // Constant indices keep the small per-receiver cache in registers across all SMRT rays.
 #if VSM_OPTIMIZE_MARK_SAMPLES
     ShadowProjection sharedProjection = projections[firstLevel];
     float3 sharedProjected = push.lightType == 0u ?
@@ -1023,7 +1026,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
         vsmProjectPosition(position, sharedProjection);
 #endif
     [unroll]
-    for (uint level = 0u; level < 12u; ++level) {
+    for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
         if (level < firstLevel || level >= push.clipmapCount) { continue; }
         ++workCounts.y;
         ShadowProjection projection = projections[level];
@@ -1182,9 +1185,9 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
     } else if (push.filterMode == 2u) {
         ShadowPush trace = push;
         trace.rayLength = vsmSearchLength(position, linearDepth, view, push);
-        uint lastPages[12];
+        uint lastPages[VSM_MARK_CACHE_LEVELS];
         [unroll]
-        for (uint level = 0u; level < 12u; ++level) { lastPages[level] = 0xffffffffu; }
+        for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) { lastPages[level] = 0xffffffffu; }
 #if VSM_OPTIMIZE_MARK_SAMPLES
         ShadowProjection originProjection = projections[0], receiverProjection = projections[receiverLevel];
         float3 toLight = push.lightType == 0u ? normalize(originProjection.rowZ.xyz) :

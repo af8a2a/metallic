@@ -6,6 +6,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
@@ -1653,7 +1654,10 @@ RenderGraph makeLocalGraph(const LocalFixture& fixture, float nearPlane = .001f)
     for (const char* name : {"Cached", "Redraw"}) {
         // Keep the fixed-resolution geometry/seam oracle and its edge margins.
         // Filter-demand and quality tests exercise receiver-matched resolution.
+        // Cache invalidation and consumer additivity require fixed face quotas;
+        // the demand-budget test separately exercises the omitted default.
         graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kLocalCapacity},{"physicalPageBudget",512},
+            {"demandDrivenBudget",false},
             {"pageSize",kPageSize},{"virtualPagesPerAxis",kPagesPerAxis},{"clipmapCount",kClipmapCount},
             {"maxWorkItems",65535},{"shadowBias",.002},{"nearPlane",nearPlane},{"cacheEnabled",true},
             {"forceRedraw",std::string_view(name) == "Redraw"},{"receiverFootprint",false}});
@@ -2307,6 +2311,7 @@ public:
         Json report{{"passed", false}, {"width", kWidth}, {"height", kHeight}, {"settlingFrames", 16}, {"slackFeedbackFrames", 10},
             {"scope", "Completed-frame demand feedback, per-face allocation, independent geometry and cache correctness; diagnostic only"},
             {"limits", "Resident floor fixture; point-face/seam and stream regressions remain in virtual_shadow_map_local_lights. Submission cancellation is covered separately by virtual_shadow_map_demand_feedback_lifecycle."},
+            {"defaultPropertyOmitted", false}, {"defaultEquivalentFrames", 0},
             {"frames", Json::array()}, {"oracles", Json::array()}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / "VirtualShadowMapDemandBudget.json") << report.dump(2) << '\n'; };
@@ -2316,6 +2321,14 @@ public:
                 "Test-only demand budget, memory and local shadow readback",
                 [] { return std::make_unique<VSMLocalEvidencePass>(activeEvidence); });
             require(registered, "Register demand-budget evidence pass");
+            const auto defaultPass = createRenderGraphPass("VirtualShadowMapLightsPass");
+            require(defaultPass != nullptr, "Create default VSM lights pass");
+            const auto runtimeSettings = defaultPass->runtimeSettings();
+            const auto defaultSetting = std::find_if(runtimeSettings.begin(), runtimeSettings.end(),
+                [](const auto& setting) { return setting.key == "demandDrivenBudget"; });
+            require(defaultSetting != runtimeSettings.end() && defaultSetting->defaultValue == true,
+                "Demand-driven budget is not enabled in the registered runtime setting");
+            report["defaultRuntimeSetting"] = defaultSetting->defaultValue;
             const auto fixture = writeLocalFixture(directory / "Floor", false);
             scene::SceneDocument scene;
             require(scene.load(fixture.source), "Load demand-budget fixture");
@@ -2344,13 +2357,14 @@ public:
             graph.setViewProperties({{"temporalJitter",false},
                 {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
             graph.addNode("VisibilityBufferPass", "Raster", templateGraph.findNode("Raster")->properties);
-            constexpr std::array arms{"Equal", "EqualRedraw", "Demand", "DemandRedraw", "Reference"};
+            constexpr std::array arms{"Equal", "EqualRedraw", "Demand", "DemandRedraw", "Reference", "Default"};
             constexpr uint32_t pressureBudget = 64, referenceBudget = 4096;
             for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                 const std::string name = arms[arm], evidenceName = name + "Evidence";
                 auto settings = templateGraph.findNode("Cached")->properties;
                 settings["physicalPageBudget"] = referenceBudget;
-                settings["demandDrivenBudget"] = arm == 2 || arm == 3;
+                if (arm == 5) { settings.erase("demandDrivenBudget"); }
+                else { settings["demandDrivenBudget"] = arm == 2 || arm == 3; }
                 settings["forceRedraw"] = arm == 1 || arm == 3;
                 settings["filter"] = "hard";
                 settings["smrtTemporalEnabled"] = false;
@@ -2369,6 +2383,12 @@ public:
                 graph.addEdge("Raster.rasterInfo", evidenceName + ".rasterInfo");
                 graph.markOutput(evidenceName + ".color");
             }
+            const auto omittedDefault = [&] {
+                const auto* node = graph.findNode("Default");
+                return !node->properties.contains("demandDrivenBudget") && !node->runtimeProperties.contains("demandDrivenBudget");
+            };
+            report["defaultPropertyOmitted"] = omittedDefault();
+            require(omittedDefault(), "Default arm explicitly authors the demand budget property");
             uint32_t totalBudget = referenceBudget, frameIndex = 0;
             bool enabled = true;
             std::string filter = "hard";
@@ -2401,12 +2421,14 @@ public:
             };
             const auto budget = [&](uint32_t value) {
                 totalBudget = value;
-                for (uint32_t arm = 0; arm < 4; ++arm) {
+                for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                    if (arm == 4) { continue; }
                     require(graph.setNodeRuntimeProperty(graph.findNode(arms[arm])->id, "physicalPageBudget", value),
                         "Set demand-budget pressure");
                 }
             };
             const auto capture = [&](const std::string& phase) {
+                require(omittedDefault(), phase + ": default arm acquired an explicit demand budget property");
                 validation.phase(phase);
                 renderAndRequire(preview, graph, "DemandEvidence.color");
                 Images images;
@@ -2436,7 +2458,7 @@ public:
                 for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                     const auto& image = images[arm];
                     const uint32_t limit = arm == 4 ? referenceBudget : totalBudget;
-                    require(image.budgetHeader[0] == 1 && image.budgetHeader[1] == uint32_t(arm == 2 || arm == 3),
+                    require(image.budgetHeader[0] == 1 && image.budgetHeader[1] == uint32_t(arm == 2 || arm == 3 || arm == 5),
                         phase + ": invalid demand diagnostic version or mode");
                     uint32_t assigned = 0, admittedFaces = 0;
                     for (uint32_t index = 0; index < image.header.count; ++index) {
@@ -2465,6 +2487,18 @@ public:
                         phase + ": global physical budget accounting");
                     require(image.depth == images[0].depth, phase + ": allocation policy changed primary depth");
                 }
+                const auto& defaultImage = images[5];
+                const auto& explicitDemand = images[2];
+                const bool defaultShadowExact = defaultImage.shadows == explicitDemand.shadows;
+                const bool defaultStateExact = defaultImage.budgetHeader == explicitDemand.budgetHeader &&
+                    defaultImage.budgetFaces == explicitDemand.budgetFaces && defaultImage.statistics == explicitDemand.statistics &&
+                    defaultImage.memory == explicitDemand.memory &&
+                    std::memcmp(&defaultImage.header, &explicitDemand.header, sizeof(defaultImage.header)) == 0 &&
+                    std::memcmp(defaultImage.entries.data(), explicitDemand.entries.data(), sizeof(defaultImage.entries)) == 0;
+                recorded["defaultShadowByteExact"] = defaultShadowExact;
+                recorded["defaultStateExact"] = defaultStateExact;
+                require(defaultShadowExact && defaultStateExact, phase + ": omitted default differs from explicit demand budgets");
+                report["defaultEquivalentFrames"] = frameIndex;
                 for (uint32_t cached : {0u, 2u}) {
                     const auto& image = images[cached];
                     const auto& redrawn = images[cached + 1];
@@ -2474,7 +2508,7 @@ public:
                             phase + ": paired feedback schedulers selected different quotas");
                     }
                 }
-                for (uint32_t arm : {0u, 2u}) {
+                for (uint32_t arm : {0u, 2u, 5u}) {
                     uint64_t differences = 0;
                     for (uint32_t layer = 0; layer < kLocalLayers; ++layer) {
                         for (size_t pixel = 0; pixel < kPixels; ++pixel) {
@@ -2500,7 +2534,10 @@ public:
                 for (uint32_t frame = 0; frame < 16; ++frame) { images = capture(phase + "-Settle" + std::to_string(frame)); }
                 const auto stable = faceState(images[2]);
                 const auto atlasBytes = images[2].memory[0], atlasPages = images[2].memory[5];
-                require(images[2].budgetHeader[3] == images[2].budgetHeader[2], phase + ": admitted faces did not receive completed GPU demand");
+                for (uint32_t arm : {2u, 5u}) {
+                    require(images[arm].budgetHeader[3] == images[arm].budgetHeader[2],
+                        phase + "-" + arms[arm] + ": admitted faces did not receive completed GPU demand");
+                }
                 for (uint32_t frame = 0; frame < 3; ++frame) {
                     images = capture(phase + "-Stable" + std::to_string(frame));
                     require(faceState(images[2]) == stable, phase + ": stable quotas or cache epochs oscillate");
@@ -2508,7 +2545,7 @@ public:
                         phase + ": stable demand recreated quotas or feedback buffers");
                     require(images[2].memory[0] == atlasBytes && images[2].memory[5] == atlasPages,
                         phase + ": stable demand changed retained atlas memory");
-                    for (uint32_t arm : {0u, 2u, 4u}) {
+                    for (uint32_t arm : {0u, 2u, 4u, 5u}) {
                         for (uint32_t index = 0; index < images[arm].header.count; ++index) {
                             const auto& entry = images[arm].entries[index];
                             if (entry.status == kVirtualShadowMapLightAdmitted) {
@@ -2677,7 +2714,7 @@ public:
             report["passed"] = true;
             save();
             activeEvidence.reset();
-            return RHITestResult::pass("Demand/equal cached-redraw pairs, ample-budget byte equality, completed GPU feedback, hot/empty lights, six point faces, stable quotas, budget changes, source identity and Hard/PCF/SMRT verified");
+            return RHITestResult::pass("Omitted-default/explicit-demand equivalence, demand/equal cached-redraw pairs, ample-budget byte equality, completed GPU feedback, hot/empty lights, six point faces, stable quotas, budget changes, source identity and Hard/PCF/SMRT verified");
         } catch (const std::exception& error) {
             report["error"] = error.what();
             report["validation"] = validation.snapshot();
@@ -3266,7 +3303,7 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, DirectionalMark, TriangleBitset, DirectionalBuild, CompactBuild };
+enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, DirectionalMark, MarkClipmapSpecialization, TriangleBitset, DirectionalBuild, CompactBuild };
 
 class VirtualShadowMapEquivalenceTest : public RHITest
 {
@@ -3274,6 +3311,7 @@ public:
     explicit VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode mode) : mode_(mode)
     {
         name = mode == VirtualShadowMapEquivalenceMode::CompactBuild ? "virtual_shadow_map_compact_build_equivalence" :
+            mode == VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization ? "virtual_shadow_map_mark_clipmap_specialization_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::DirectionalMark ? "virtual_shadow_map_directional_mark_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::DirectionalBuild ? "virtual_shadow_map_directional_build_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::TriangleBitset ? "virtual_shadow_map_triangle_page_bitset_equivalence" :
@@ -3289,10 +3327,12 @@ public:
         const bool bitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::ClusterBitset;
         const bool markSamplesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkSamples;
         const bool directionalMarkComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalMark;
+        const bool markClipmapComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization;
         const bool triangleBitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::TriangleBitset;
         const bool directionalBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalBuild;
         const bool compactBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::CompactBuild;
         const std::string reportName = compactBuildComparison ? "VirtualShadowMapCompactBuildEquivalence" :
+            markClipmapComparison ? "VirtualShadowMapMarkClipmapSpecializationEquivalence" :
             directionalMarkComparison ? "VirtualShadowMapDirectionalMarkEquivalence" :
             directionalBuildComparison ? "VirtualShadowMapDirectionalBuildEquivalence" :
             triangleBitsetComparison ? "VirtualShadowMapTrianglePageBitsetEquivalence" :
@@ -3324,6 +3364,7 @@ public:
 
             constexpr uint32_t capacity = 4;
             const std::vector<const char*> baseArms = compactBuildComparison ? std::vector<const char*>{"Direct", "Compact"} :
+                markClipmapComparison ? std::vector<const char*>{"Baseline", "Specialized"} :
                 (directionalBuildComparison || directionalMarkComparison) ? std::vector<const char*>{"Generic", "Directional"} :
                 triangleBitsetComparison ? std::vector<const char*>{"Baseline", "TriangleBitset"} :
                 markSamplesComparison ? std::vector<const char*>{"Baseline", "Prepared"} :
@@ -3347,7 +3388,26 @@ public:
             uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0, bitsetControlStates = 0;
             uint64_t markSamplesStates = 0, markSamplesControlStates = 0;
             uint64_t directionalMarkStates = 0, directionalMarkControlStates = 0;
+            uint64_t markClipmapStates = 0, markClipmapControlStates = 0;
+            std::array<uint32_t, 12> markClipmapSweepStates{};
             std::array<uint64_t, 2> directionalMarkReceiversByPass{}, localMarkReceiversByType{};
+            if (markClipmapComparison) {
+                report["selectionControls"] = {
+                    {"Baseline",{{"markClipmapSpecialization",true},{"benchmarkMarkClipmapSpecialization",false},{"benchmarkLegacyMark",false}}},
+                    {"Specialized",{{"markClipmapSpecialization",false},{"benchmarkMarkClipmapSpecialization",true},{"benchmarkLegacyMark",false}}},
+                    {"Default",{{"benchmarkLegacyMark",false}}},
+                    {"BaselineLegacyMark",{{"markClipmapSpecialization",true},{"benchmarkMarkClipmapSpecialization",false},{"benchmarkLegacyMark",true}}},
+                    {"SpecializedLegacyMark",{{"markClipmapSpecialization",false},{"benchmarkMarkClipmapSpecialization",true},{"benchmarkLegacyMark",true}}},
+                    {"ProductionOff",{{"markClipmapSpecialization",false},{"benchmarkLegacyMark",false}}},
+                    {"ProductionOn",{{"markClipmapSpecialization",true},{"benchmarkLegacyMark",false}}}};
+                report["productionDefault"] = VirtualShadowMapSettings{}.specializeMarkClipmaps;
+                report["defaultReferenceArm"] = "Baseline";
+                report["directionalMark"] = true;
+                report["demandDrivenBudget"] = false;
+                report["clipmapSweep"] = "Resident floor LightsPass SMRT, counts 1 through 12, Cold/Warm; single pass retains its supported Hard filter";
+                require(!VirtualShadowMapSettings{}.specializeMarkClipmaps,
+                    "Mark clipmap specialization must remain disabled by default during validation");
+            }
             if (directionalMarkComparison) {
                 report["selectionControls"] = {
                     {"Generic",{{"directionalMark",true},{"benchmarkDirectionalMark",false},{"benchmarkLegacyMark",false}}},
@@ -3401,7 +3461,7 @@ public:
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
-                    const std::vector<std::string> filters = mainMatrix ? (directionalMarkComparison ?
+                    std::vector<std::string> filters = mainMatrix ? (directionalMarkComparison || markClipmapComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} :
                         (triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-max"} : markSamplesComparison ?
@@ -3409,13 +3469,21 @@ public:
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33"} :
                         std::vector<std::string>{"pcf", "smrt"}) :
                         std::vector<std::string>{nearCase ? "smrt" : roomCase ? "pcf" : "hard"};
+                    if (markClipmapComparison && mainMatrix && !streamed) {
+                        for (uint32_t count = 1; count <= 12; ++count) { filters.push_back("smrt-level-" + std::to_string(count)); }
+                    }
                     for (const auto& filter : filters) {
                         const bool single = filter.starts_with("single-");
+                        const bool markClipmapSweep = markClipmapComparison && filter.starts_with("smrt-level-");
+                        const uint32_t clipmapCount = markClipmapSweep ? uint32_t(std::stoul(filter.substr(11))) :
+                            filter == "smrt-max" ? 12u : kClipmapCount;
                         const bool bitsetControls = bitsetComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
                         const bool markSamplesControls = markSamplesComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
                         const bool directionalMarkControls = directionalMarkComparison && mainMatrix && !streamed &&
+                            (filter == "single-hard" || filter == "smrt");
+                        const bool markClipmapControls = markClipmapComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
                         const bool triangleBitsetControls = triangleBitsetComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
@@ -3428,6 +3496,7 @@ public:
                         if (directionalBuildControls) { arms.insert(arms.end(), {"GenericPages", "DirectionalPages", "GenericNoCull", "DirectionalNoCull"}); }
                         if (markSamplesControls) { arms.push_back("PreparedLegacyMark"); }
                         if (directionalMarkControls) { arms.insert(arms.end(), {"Default", "GenericLegacyMark", "DirectionalLegacyMark", "ProductionOff", "ProductionOn"}); }
+                        if (markClipmapControls) { arms.insert(arms.end(), {"Default", "BaselineLegacyMark", "SpecializedLegacyMark", "ProductionOff", "ProductionOn"}); }
                         if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
                         if (triangleBitsetControls) { arms.insert(arms.end(), {"ProductionOff", "ClusterBitsetOff", "CullDisabled"}); }
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
@@ -3466,16 +3535,32 @@ public:
                         for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                             const std::string name = arms[arm], evidence = name + "Evidence";
                             Json settings{{"lightCapacity", capacity}, {"compactOutputs", true}, {"physicalPageBudget", 512}, {"physicalPageCount", 512},
-                                 {"pageSize", kPageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", filter == "smrt-max" ? 12u : kClipmapCount},
+                                 {"pageSize", kPageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", clipmapCount},
                                  {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002},
                                  {"cacheEnabled", true}, {"receiverFootprint", true},
-                                 {"filter", filter == "smrt-max" || filter == "smrt-one" ? "smrt" : single ? "hard" : filter}, {"pcfRadius", 1.5},
+                                 {"filter", filter == "smrt-max" || filter == "smrt-one" || markClipmapSweep ? "smrt" : single ? "hard" : filter}, {"pcfRadius", 1.5},
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", filter == "smrt-one" ? 1 : 2},
                                  {"smrtSamplesPerRay", filter == "smrt-max" ? 32 : 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
-                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || directionalMarkComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 1) == 0},
-                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || directionalMarkComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 2) == 0},
+                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 1) == 0},
+                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 2) == 0},
                                  {"benchmarkClusterPageBitset", false}, {"benchmarkTrianglePageBitset", false}};
+                            if (markClipmapComparison) {
+                                settings["directionalMark"] = true;
+                                // Isolate shader equivalence from adaptive quota changes,
+                                // which can legitimately rebuild the first warm frame.
+                                settings["demandDrivenBudget"] = false;
+                                if (arm >= 5) {
+                                    settings["markClipmapSpecialization"] = arm == 6;
+                                } else if (arm != 2) {
+                                    const bool specialized = arm == 1 || arm == 4;
+                                    settings["markClipmapSpecialization"] = !specialized;
+                                    settings["benchmarkMarkClipmapSpecialization"] = specialized;
+                                }
+                                settings["benchmarkLegacyMark"] = arm == 3 || arm == 4;
+                                settings["benchmarkClusterPageBitset"] = true;
+                                settings["benchmarkTrianglePageBitset"] = true;
+                            }
                             if (directionalMarkComparison) {
                                 // Conflicting production values exercise benchmark precedence;
                                 // the Default control omits both properties.
@@ -3562,7 +3647,7 @@ public:
                             graph.markOutput(evidence + ".color");
                         }
                         const auto original = scene.nodes()[0].localMatrix;
-                        const uint32_t frameCount = mainMatrix ? 5 : 2;
+                        const uint32_t frameCount = mainMatrix && !markClipmapSweep ? 5 : 2;
                         for (uint32_t frame = 0; frame < frameCount; ++frame) {
                             const std::string phase = std::array{"Cold", "Warm", "Dirty", "Overflow", "Recover"}[frame];
                             validation.phase(label + "-" + phase);
@@ -3579,7 +3664,7 @@ public:
                             renderAndRequire(preview, graph, std::string(arms.front()) + "Evidence.color");
                             std::vector<ProfilingSnapshot> snapshots(arms.size());
                             std::vector<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>> work(arms.size());
-                            report["frames"].push_back({{"variant", label}, {"phase", phase}, {"arms", Json::object()}});
+                            report["frames"].push_back({{"variant", label}, {"phase", phase}, {"clipmapCount", clipmapCount}, {"arms", Json::object()}});
                             auto& entry = report["frames"].back();
                             for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                                 snapshots[arm] = profilingSnapshot(arms[arm], {layers, faces, true}, true);
@@ -3593,10 +3678,14 @@ public:
                                     {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
+                                if (markClipmapComparison) {
+                                    require(snapshot.statistics[0][11] == clipmapCount,
+                                        label + "-" + phase + ": GPU directional clipmap count differs from the compiled-bound case");
+                                }
                                 requireBuildDiagnosticInvariants(snapshot,
-                                    compactBuildComparison ? arm != 4 && arm != 5 : directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || directionalMarkComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
+                                    compactBuildComparison ? arm != 4 && arm != 5 : directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
                                     label + "-" + phase + "-" + arms[arm],
-                                    compactBuildComparison ? arm < 2 || arm >= 6 : directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || directionalMarkComparison || (bitsetComparison && arm == 1));
+                                    compactBuildComparison ? arm < 2 || arm >= 6 : directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || (bitsetComparison && arm == 1));
                                 if (arm != 0) {
                                     const auto& baseline = snapshots[directionalMarkComparison && arm == 2 ? 1 : 0];
                                     require(snapshot.shadow == baseline.shadow && snapshot.debug == baseline.debug &&
@@ -3714,10 +3803,16 @@ public:
                                         }
                                     }
                                 }
-                            } else if (markSamplesComparison || directionalMarkComparison) {
-                                if (directionalMarkComparison) {
-                                    ++directionalMarkStates;
-                                    directionalMarkControlStates += directionalMarkControls;
+                            } else if (markSamplesComparison || directionalMarkComparison || markClipmapComparison) {
+                                if (directionalMarkComparison || markClipmapComparison) {
+                                    if (markClipmapComparison) {
+                                        if (markClipmapSweep) { ++markClipmapSweepStates[clipmapCount - 1]; }
+                                        else { ++markClipmapStates; }
+                                        markClipmapControlStates += markClipmapControls;
+                                    } else {
+                                        ++directionalMarkStates;
+                                        directionalMarkControlStates += directionalMarkControls;
+                                    }
                                     directionalMarkReceiversByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkMarkReceiverDispatches];
                                     // Multi-light blocks reserve six faces each: Sun, Moon, Point, Spot.
                                     if (!single) {
@@ -3827,6 +3922,17 @@ public:
                 require(triangleBitsetStates == 72 && triangleBitsetControlStates == 10 && triangleBitsetReducedStates > 0 &&
                     triangleBitsetWordsByPass[0] > 0 && triangleBitsetWordsByPass[1] > 0,
                     "Triangle bitset matrix did not exercise both pass types and all explicit fallback controls");
+            } else if (markClipmapComparison) {
+                report["markClipmapStates"] = markClipmapStates;
+                report["markClipmapControlStates"] = markClipmapControlStates;
+                report["markClipmapSweepStatesByCount"] = markClipmapSweepStates;
+                report["markClipmapReceiversByPass"] = {{"single",directionalMarkReceiversByPass[0]},{"lights",directionalMarkReceiversByPass[1]}};
+                report["localMarkReceiversByType"] = {{"point",localMarkReceiversByType[0]},{"spot",localMarkReceiversByType[1]}};
+                require(markClipmapStates == 82 && markClipmapControlStates == 10 &&
+                    std::all_of(markClipmapSweepStates.begin(), markClipmapSweepStates.end(), [](uint32_t count) { return count == 2; }) &&
+                    directionalMarkReceiversByPass[0] > 0 && directionalMarkReceiversByPass[1] > 0 &&
+                    localMarkReceiversByType[0] > 0 && localMarkReceiversByType[1] > 0,
+                    "Mark clipmap matrix did not cover both passes, local-light fallback, controls and all twelve SMRT bounds");
             } else if (directionalMarkComparison) {
                 report["directionalMarkStates"] = directionalMarkStates;
                 report["directionalMarkControlStates"] = directionalMarkControlStates;
@@ -3855,7 +3961,8 @@ public:
             }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
             return RHITestResult::pass(compactBuildComparison ?
-                "Compacted indirect build preserves images, statistics, diagnostics and deterministic work across both passes, light types and cache/overflow states" : directionalMarkComparison ?
+                "Compacted indirect build preserves images, statistics, diagnostics and deterministic work across both passes, light types and cache/overflow states" : markClipmapComparison ?
+                "Mark clipmap specialization preserves images, statistics, diagnostics and deterministic work across 82 matrix states and twelve Cold/Warm SMRT bounds" : directionalMarkComparison ?
                 "Directional Mark specialization preserves images, statistics, diagnostics and deterministic work across both passes, all filters, local lights and cache/overflow states" : directionalBuildComparison ?
                 "Directional build specialization preserves images, statistics, diagnostics and deterministic work across both passes, local lights and page/culling modes" : triangleBitsetComparison ?
                 "Exact triangle bitsets preserve images, admission, emitted work and overflow recovery while eliminating per-page metadata reads" : markSamplesComparison ?
@@ -3902,6 +4009,207 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalMarkEquivalenceTest);
+
+class VirtualShadowMapMarkClipmapSpecializationEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapMarkClipmapSpecializationEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkClipmapSpecializationEquivalenceTest);
+
+class VirtualShadowMapMarkClipmapMutationTest final : public RHITest
+{
+public:
+    VirtualShadowMapMarkClipmapMutationTest()
+    {
+        type = RHITestType::Rendering;
+        name = "virtual_shadow_map_mark_clipmap_mutation";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapMarkClipmapMutation";
+        Json report{{"passed",false}, {"counts",{1,12,6,1}}, {"frames",Json::array()},
+            {"scope","Two persistent VirtualShadowMaps objects; direct SMRT record calls with real raster receivers and explicit Programs cache-miss evidence"}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapMarkClipmapMutation.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerFixturePasses();
+            const auto fixture = writeLocalFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load clipmap mutation fixture");
+            environment::WorldEnvironment world;
+            world.sun.enabled = true; world.moon.enabled = false;
+            world.sun.direction = float3(1,-1,0); world.sun.illuminance = 3;
+            RenderView camera;
+            RenderGraphPreviewRenderer preview;
+            configureCachePreview(preview, scene, camera, context, validation, world);
+            activeEvidence = std::make_shared<EvidenceState>();
+            auto graph = makeGraph(fixture.source, fixture.cache, Case{});
+            renderAndRequire(preview, graph, "Evidence.color");
+            const auto receiver = snapshot(*activeEvidence);
+            require(std::count_if(receiver.rasterDepth.begin(), receiver.rasterDepth.end(), [](float value) { return value > 0; }) > 10000,
+                "Clipmap mutation fixture lacks real raster receivers");
+            auto& device = *preview.subsystemHost()->device();
+
+            std::unique_ptr<Texture> depth;
+            std::unique_ptr<TextureView> depthView;
+            require(device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
+                .format = Format::D32Sfloat, .width = kWidth, .height = kHeight})
+                .transform([&](auto value) { depth = std::move(value); }), "Create mutation receiver depth");
+            require(device.createTextureView(*depth, {.format = Format::D32Sfloat})
+                .transform([&](auto value) { depthView = std::move(value); }), "Create mutation receiver view");
+            auto upload = device.createBuffer({.size = kPixels * sizeof(float), .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload});
+            require(upload, "Create mutation depth upload");
+            auto* mapped = (*upload)->map();
+            require(mapped != nullptr, "Map mutation depth upload");
+            std::memcpy(mapped, receiver.rasterDepth.data(), kPixels * sizeof(float));
+            (*upload)->flush(); (*upload)->unmap();
+            const ProfilingReadbackLayout layout(1, 1, true);
+            auto readback = device.createBuffer({.size = layout.size, .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback});
+            require(readback, "Create mutation readback");
+            activeEvidence->namedReadbacks["MutationReadback"] = readback->get();
+
+            // These objects remain alive for the complete sequence. Only the
+            // first receiver render uses a graph; no graph is executed below.
+            VirtualShadowMaps baseline, specialized;
+            CacheCommands gpu(device);
+            gpu.begin();
+            const TextureBarrierDesc uploadBegin{.texture = depth.get(), .oldLayout = TextureLayout::Undefined,
+                .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+            require(gpu.commands->synchronize({.textures = {&uploadBegin, 1}}), "Prepare mutation depth upload");
+            require((*upload)->slice().and_then([&](const auto& slice) {
+                return gpu.commands->copyBufferToTexture({.texture = depth.get(), .buffer = slice, .width = kWidth, .height = kHeight});
+            }), "Upload actual mutation receiver depth");
+            const TextureBarrierDesc uploadEnd{.texture = depth.get(), .oldLayout = TextureLayout::TransferDestination,
+                .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+            require(gpu.commands->synchronize({.textures = {&uploadEnd, 1}}), "Publish mutation receiver depth");
+            gpu.finish();
+
+            GPUCelestialLight light;
+            light.direction[0] = std::sqrt(.5f); light.direction[1] = -std::sqrt(.5f);
+            light.angularRadius = .01f;
+            light.flags = kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow;
+            light.irradiance[0] = light.irradiance[1] = light.irradiance[2] = 3;
+            VirtualShadowMapSettings settings;
+            settings.physicalPageCount = 512;
+            settings.firstClipmapExtent = kFirstExtent;
+            settings.cacheEnabled = true;
+            settings.collectGPUWork = true;
+            settings.directionalMark = true;
+            settings.filter = VirtualShadowMapFilter::SMRT;
+            settings.smrtRayCount = 2; settings.smrtSamplesPerRay = 8;
+            std::string log;
+            const auto record = [&](VirtualShadowMaps& renderer, bool specialize, uint32_t frameIndex) {
+                gpu.begin();
+                auto view = receiver.parameters.view;
+                view.frame[0] = frameIndex;
+                auto casters = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, nullptr, log);
+                require(casters, "Prepare mutation casters: " + log);
+                settings.specializeMarkClipmaps = specialize;
+                CPUProfileRecorder cpu;
+                auto result = renderer.record(device, *gpu.commands, *depthView, view, light, *casters,
+                    scene.materials(), {}, settings, log, false, nullptr, &cpu);
+                require(result, "Record persistent clipmap mutation: " + log);
+                uint32_t cacheCounters = 0;
+                uint64_t cacheMiss = 0;
+                for (const auto& section : cpu.sections) {
+                    if (section.name != "Prepare VSM pipeline cache") { continue; }
+                    for (const auto& work : section.cpuWork) {
+                        if (work.name == "cacheMiss") { ++cacheCounters; cacheMiss = work.value; }
+                    }
+                }
+                require(cacheCounters == 1, "Missing unique Programs cache-miss counter");
+                const std::array textures{result->texture, result->debugTexture, depth.get()};
+                std::array<TextureBarrierDesc, 3> textureReads;
+                for (uint32_t index = 0; index < textures.size(); ++index) {
+                    textureReads[index] = {.texture = textures[index], .oldLayout = TextureLayout::ShaderRead,
+                        .newLayout = TextureLayout::TransferSource, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                }
+                const BufferBarrierDesc statsRead{.buffer = result->statistics,
+                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                require(gpu.commands->synchronize({.textures = textureReads, .buffers = {&statsRead, 1}}), "Prepare mutation readback");
+                const std::array textureOffsets{uint64_t(0), layout.debug, layout.depth};
+                for (uint32_t index = 0; index < textures.size(); ++index) {
+                    const uint64_t size = kPixels * (index == 0 ? 1 : 4);
+                    require((*readback)->slice({textureOffsets[index], size}).and_then([&](const auto& slice) {
+                        return gpu.commands->copyTextureToBuffer({.texture = textures[index], .buffer = slice, .width = kWidth, .height = kHeight});
+                    }), "Read mutation GPU image");
+                }
+                const std::array sizes{kVirtualShadowMapFaceStatisticsSize, kVirtualShadowMapWorkloadSize, kVirtualShadowMapBuildDiagnosticSize};
+                const std::array offsets{layout.statistics, layout.workload, layout.buildDiagnostics};
+                uint64_t sourceOffset = 0;
+                for (uint32_t index = 0; index < sizes.size(); ++index) {
+                    auto source = result->statistics->slice({sourceOffset, sizes[index]});
+                    auto destination = (*readback)->slice({offsets[index], sizes[index]});
+                    require(source, "Mutation counter source"); require(destination, "Mutation counter destination");
+                    require(gpu.commands->copyBuffer(*source, *destination), "Read mutation GPU counters");
+                    sourceOffset += sizes[index];
+                }
+                for (auto& barrier : textureReads) {
+                    barrier.oldLayout = TextureLayout::TransferSource; barrier.newLayout = TextureLayout::ShaderRead;
+                    barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferRead};
+                    barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
+                }
+                const BufferBarrierDesc statsRestore{.buffer = result->statistics,
+                    .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+                require(gpu.commands->synchronize({.textures = textureReads, .buffers = {&statsRestore, 1}}), "Restore mutation resource states");
+                gpu.finish();
+                return std::pair{profilingSnapshot("MutationReadback", layout, true), cacheMiss};
+            };
+            uint32_t stage = 0;
+            for (uint32_t count : {1u,12u,6u,1u}) {
+                settings.clipmapCount = count;
+                for (uint32_t frame = 0; frame < 2; ++frame) {
+                    const std::string label = "Step" + std::to_string(stage) + "-" + (frame == 0 ? "Transition" : "Warm");
+                    validation.phase(label);
+                    const auto [a, baselineMiss] = record(baseline, false, stage * 2 + frame);
+                    const auto [b, specializedMiss] = record(specialized, true, stage * 2 + frame);
+                    const bool exact = a.shadow == b.shadow && a.debug == b.debug && a.depth == b.depth &&
+                        a.statistics == b.statistics && a.buildDiagnostics == b.buildDiagnostics;
+                    report["frames"].push_back({{"phase",label}, {"clipmapCount",count}, {"baselineProgramCacheMiss",baselineMiss},
+                        {"specializedProgramCacheMiss",specializedMiss}, {"exact",exact}, {"baselineStatistics",a.statistics},
+                        {"specializedStatistics",b.statistics}, {"baselineWork",a.workload}, {"specializedWork",b.workload},
+                        {"baselineShadowSHA256",debug::debugSha256(a.shadow)}, {"specializedShadowSHA256",debug::debugSha256(b.shadow)}});
+                    save();
+                    require(baselineMiss == uint64_t(stage == 0 && frame == 0) && specializedMiss == uint64_t(frame == 0),
+                        label + ": persistent Programs did not distinguish fixed baseline and changing specialized bounds");
+                    require(exact && a.statistics[0][11] == count, label + ": clipmap mutation changed GPU results or used a stale level count");
+                    require(a.workload[0][kVSMWorkMarkReceiverDispatches] > 0 && a.workload[0][kVSMWorkProjectionRays] > 0,
+                        label + ": mutation did not execute real SMRT receiver work");
+                    for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                        if (counter == kVSMWorkMarkPageRequests) { continue; }
+                        require(a.workload[0][counter] == b.workload[0][counter], label + ": mutation changed deterministic GPU work");
+                    }
+                    if (frame != 0) {
+                        require(a.statistics[0][16] == 0 && a.statistics[0][21] == 0,
+                            label + ": unchanged count did not reuse shadow depth");
+                    }
+                }
+                ++stage;
+            }
+            report["validation"] = validation.snapshot();
+            requireValidPreview(report["validation"]);
+            report["passed"] = true;
+            save();
+            activeEvidence.reset();
+            return RHITestResult::pass("Persistent baseline and specialized VSM objects preserve SMRT outputs and select Programs across clipmap counts 1,12,6,1");
+        } catch (const std::exception& error) {
+            activeEvidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkClipmapMutationTest);
 
 class VirtualShadowMapTrianglePageBitsetEquivalenceTest final : public VirtualShadowMapEquivalenceTest
 {

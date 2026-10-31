@@ -60,6 +60,7 @@ struct VirtualShadowMapSettings
     bool onePassProjection = true;
     bool optimizeMarkSamples = true; // Reuse invariant Mark work for local lights; directional uses the original path.
     bool directionalMark = true; // Mark-only orthographic specialization; preserves receiver/sample demands.
+    bool specializeMarkClipmaps = false; // Experimental directional Mark cache/loop bound specialization.
     bool clusterCulling = true;
     bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.
     bool trianglePageBitset = true; // Enumerate dirty fine pages; requires the effective cluster-page bitset.

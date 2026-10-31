@@ -12,6 +12,8 @@ with exact build-diagnostic equivalence and unchanged mark/projection SPIR-V.
 compaction, barriers and indirect build in the primary build timestamp.
 --experiment directional-mark toggles benchmarkDirectionalMark, targets markMs
 and requires different Mark but unchanged build/projection SPIR-V.
+--experiment mark-clipmaps toggles benchmarkMarkClipmapSpecialization, retaining
+directional Mark in both arms; verifies Mark cache levels 12 versus clipmapCount.
 --experiment one-pass-projection targets projectionMs with unchanged Mark/Build.
 --role primary requires multi-face one-pass execution; overhead verifies the
 unchanged single-face kernel with at most 5% projection and 2% graph regression.
@@ -47,6 +49,8 @@ COMPACT_PROTOCOL = "virtual-shadow-map-compact-build-v1"
 COMPACT_SWITCH = "benchmarkCompactBuild"
 DIRECTIONAL_MARK_PROTOCOL = "virtual-shadow-map-directional-mark-v1"
 DIRECTIONAL_MARK_SWITCH = "benchmarkDirectionalMark"
+MARK_CLIPMAPS_PROTOCOL = "virtual-shadow-map-mark-clipmaps-v1"
+MARK_CLIPMAPS_SWITCH = "benchmarkMarkClipmapSpecialization"
 ONE_PASS_PROTOCOL = "virtual-shadow-map-one-pass-projection-v1"
 ONE_PASS_SWITCH = "benchmarkOnePassProjection"
 METRICS = optimization.METRICS
@@ -65,13 +69,13 @@ def schedule(phase):
 def experiment_policy(protocol, role="primary"):
     if role not in ("primary", "overhead") or (role != "primary" and protocol != ONE_PASS_PROTOCOL):
         raise ValueError("Only one-pass-projection supports the overhead role")
-    policy = {**POLICY, "primaryMetric": "markMs" if protocol == DIRECTIONAL_MARK_PROTOCOL else "buildMs"}
+    policy = {**POLICY, "primaryMetric": "markMs" if protocol in (DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL) else "buildMs"}
     if protocol == ONE_PASS_PROTOCOL:
         policy.update(primaryMetric="projectionMs", role=role, minimumGain=-.05 if role == "overhead" else .03)
     return policy
 
 
-def normalized_workload(spec, graph, arm, directional=False, compact=False, directional_mark=False, one_pass=False):
+def normalized_workload(spec, graph, arm, directional=False, compact=False, directional_mark=False, one_pass=False, mark_clipmaps=False):
     mode = spec["mode"]
     if mode not in ("diagnostic", "timing") or len(spec["cases"]) != 1:
         raise ValueError("Expected one diagnostic or timing case")
@@ -90,14 +94,21 @@ def normalized_workload(spec, graph, arm, directional=False, compact=False, dire
           any(spec.get(key, False) or case.get(key, False) for key in ("validation", "synchronizationValidation"))):
         raise ValueError("Ordinary timing requires validation and capture/readback off")
     graph = copy.deepcopy(graph)
-    switch = ONE_PASS_SWITCH if one_pass else DIRECTIONAL_MARK_SWITCH if directional_mark else COMPACT_SWITCH if compact else DIRECTIONAL_SWITCH if directional else SWITCH
+    switch = MARK_CLIPMAPS_SWITCH if mark_clipmaps else ONE_PASS_SWITCH if one_pass else DIRECTIONAL_MARK_SWITCH if directional_mark else COMPACT_SWITCH if compact else DIRECTIONAL_SWITCH if directional else SWITCH
     nodes = [node for node in graph["nodes"] if node.get("name") == "Shadows"]
     if len(nodes) != 1 or nodes[0].get("properties", {}).get(switch) is not (arm == "B"):
         raise ValueError(f"{arm}: {switch} must explicitly be the boolean {arm == 'B'}")
-    if directional_mark:
+    if directional_mark or mark_clipmaps:
         properties = nodes[0]["properties"]
         if properties.get(COMPACT_SWITCH, False) is not False or properties.get(DIRECTIONAL_SWITCH, True) is not True:
             raise ValueError("Directional Mark requires production direct build with directionalBuild enabled")
+    if mark_clipmaps:
+        properties = nodes[0]["properties"]
+        if properties.get(DIRECTIONAL_MARK_SWITCH, True) is not True:
+            raise ValueError("Mark clipmap specialization requires directionalMark enabled in both arms")
+        levels = properties.get("clipmapCount")
+        if type(levels) is not int or not 1 <= levels < 12:
+            raise ValueError("Mark clipmap specialization requires explicit clipmapCount in [1,11]")
     if one_pass:
         properties = nodes[0]["properties"]
         expected = {DIRECTIONAL_MARK_SWITCH: True, DIRECTIONAL_SWITCH: True, COMPACT_SWITCH: False,
@@ -134,8 +145,9 @@ def prepare_plan(args):
     directional = getattr(args, "experiment", "cluster-bitset") == "directional-build"
     compact = getattr(args, "experiment", "cluster-bitset") == "compact-build"
     directional_mark = getattr(args, "experiment", "cluster-bitset") == "directional-mark"
+    mark_clipmaps = getattr(args, "experiment", "cluster-bitset") == "mark-clipmaps"
     one_pass = getattr(args, "experiment", "cluster-bitset") == "one-pass-projection"
-    protocol = ONE_PASS_PROTOCOL if one_pass else DIRECTIONAL_MARK_PROTOCOL if directional_mark else COMPACT_PROTOCOL if compact else DIRECTIONAL_PROTOCOL if directional else PROTOCOL
+    protocol = MARK_CLIPMAPS_PROTOCOL if mark_clipmaps else ONE_PASS_PROTOCOL if one_pass else DIRECTIONAL_MARK_PROTOCOL if directional_mark else COMPACT_PROTOCOL if compact else DIRECTIONAL_PROTOCOL if directional else PROTOCOL
     inputs, previous = {}, None
     for arm in ARMS:
         cases = args.cases_dir.resolve() / f"{mode.title()}-{arm}Cases.json"
@@ -143,7 +155,7 @@ def prepare_plan(args):
         if spec["mode"] != mode:
             raise ValueError("Case mode differs from the phase")
         graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
-        workload = normalized_workload(spec, acceptance.read(graph), arm, directional, compact, directional_mark, one_pass)
+        workload = normalized_workload(spec, acceptance.read(graph), arm, directional, compact, directional_mark, one_pass, mark_clipmaps)
         if previous is not None and workload != previous:
             raise ValueError("Cases/graphs differ beyond the declared experiment switch")
         previous = workload
@@ -157,26 +169,32 @@ def prepare_plan(args):
             "gpuExclusivity": "Not enforced; no applications are stopped", "workload": declared_output_workload(previous)}
 
 
-def shader_identity(log, arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary"):
+def shader_identity(log, arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, mark_cache_levels=None):
     if one_pass:
         return one_pass_shader_identity(log, arm, mode, role)
     result = optimization.shader_identity(log, "Both", mode)
+    if mark_clipmaps and (type(mark_cache_levels) is not int or not 1 <= mark_cache_levels < 12):
+        raise ValueError("Expected the declared directional Mark clipmap count in [1,11]")
     projection = set()
     compact_program = set()
     for line in log.splitlines():
         if "[VSMShader]" in line:
             fields = dict(re.findall(r"(\w+)=(\S+)", line.split("[VSMShader]", 1)[1]))
             entry = fields.get("entry")
-            if directional_mark and entry == "vsmCompactMain":
+            if (directional_mark or mark_clipmaps) and entry == "vsmCompactMain":
                 raise ValueError("Directional Mark must use production direct build without compaction")
-            if directional_mark and entry in (*result, "vsmProjectMain"):
-                expected = arm == "B" and entry == "vsmMarkMain"
+            if (directional_mark or mark_clipmaps) and entry in (*result, "vsmProjectMain"):
+                expected = (mark_clipmaps or arm == "B") and entry == "vsmMarkMain"
                 if fields.get("lightType") != "0" or fields.get("directionalMark") != str(expected).lower():
                     raise ValueError("Compiled directionalMark flag or directional light type mismatch")
                 if fields.get("work") != str(mode == "diagnostic").lower():
                     raise ValueError("Directional Mark diagnostic mode mismatch")
                 if fields.get("compactBuild") != "false" or fields.get("directionalBuild") != str(entry == "vsmBuildMain").lower():
                     raise ValueError("Directional Mark requires production direct directional build flags")
+                if mark_clipmaps:
+                    expected_levels = mark_cache_levels if arm == "B" and entry == "vsmMarkMain" else 12
+                    if fields.get("markCacheLevels") != str(expected_levels):
+                        raise ValueError("Actual markCacheLevels differs from baseline 12 / declared clipmapCount")
                 if entry == "vsmProjectMain":
                     value = fields.get("spirvSHA256", "")
                     if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
@@ -204,9 +222,9 @@ def shader_identity(log, arm, mode, directional=False, compact=False, directiona
                     if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
                         raise ValueError("Missing or invalid projection SPIR-V SHA256")
                     projection.add(value.lower())
-            elif not directional and not compact and not directional_mark and entry in result and fields.get("clusterPageBitset") != str(arm == "B").lower():
+            elif not directional and not compact and not directional_mark and not mark_clipmaps and entry in result and fields.get("clusterPageBitset") != str(arm == "B").lower():
                 raise ValueError("Compiled shader clusterPageBitset flag mismatch or missing")
-    if directional or compact or directional_mark or one_pass:
+    if directional or compact or directional_mark or mark_clipmaps or one_pass:
         if len(projection) != 1:
             raise ValueError("Missing or unstable projection SPIR-V identity")
         result["vsmProjectMain"] = next(iter(projection))
@@ -217,7 +235,7 @@ def shader_identity(log, arm, mode, directional=False, compact=False, directiona
     return result
 
 
-def check_shaders(processes, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary"):
+def check_shaders(processes, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False):
     if one_pass:
         return check_one_pass_shaders(processes, role)
     hashes = {}
@@ -225,18 +243,18 @@ def check_shaders(processes, directional=False, compact=False, directional_mark=
         if row["arm"] in hashes and hashes[row["arm"]] != row["shaders"]:
             raise ValueError("Actual shader identity changed within an arm")
         hashes[row["arm"]] = row["shaders"]
-    if directional_mark:
+    if directional_mark or mark_clipmaps:
         if hashes["A"]["vsmMarkMain"] == hashes["B"]["vsmMarkMain"]:
             raise ValueError("Candidate did not change actual mark SPIR-V")
         if hashes["A"]["vsmBuildMain"] != hashes["B"]["vsmBuildMain"]:
             raise ValueError("Unrelated build shader changed between experiment arms")
     elif hashes["A"]["vsmMarkMain"] != hashes["B"]["vsmMarkMain"]:
         raise ValueError("Unrelated mark shader changed between experiment arms")
-    if (directional or compact or directional_mark) and hashes["A"]["vsmProjectMain"] != hashes["B"]["vsmProjectMain"]:
+    if (directional or compact or directional_mark or mark_clipmaps) and hashes["A"]["vsmProjectMain"] != hashes["B"]["vsmProjectMain"]:
         raise ValueError("Unrelated projection shader changed between experiment arms")
     if compact and ("vsmCompactMain" in hashes["A"] or "vsmCompactMain" not in hashes["B"]):
         raise ValueError("Compaction shader identity must be present only for the candidate")
-    if not directional_mark and hashes["A"]["vsmBuildMain"] == hashes["B"]["vsmBuildMain"]:
+    if not directional_mark and not mark_clipmaps and hashes["A"]["vsmBuildMain"] == hashes["B"]["vsmBuildMain"]:
         raise ValueError("Candidate did not change actual build SPIR-V")
 
 
@@ -330,10 +348,11 @@ def verify_experiment(source):
     directional = plan.get("protocol") == DIRECTIONAL_PROTOCOL
     compact = plan.get("protocol") == COMPACT_PROTOCOL
     directional_mark = plan.get("protocol") == DIRECTIONAL_MARK_PROTOCOL
+    mark_clipmaps = plan.get("protocol") == MARK_CLIPMAPS_PROTOCOL
     one_pass = plan.get("protocol") == ONE_PASS_PROTOCOL
     expected = schedule(phase)
     mode = "diagnostic" if phase == "diagnostic" else "timing"
-    if (plan.get("protocol") not in (PROTOCOL, DIRECTIONAL_PROTOCOL, COMPACT_PROTOCOL, DIRECTIONAL_MARK_PROTOCOL, ONE_PASS_PROTOCOL) or plan.get("policy") != experiment_policy(plan.get("protocol"), plan.get("policy", {}).get("role", "primary")) or plan.get("mode") != mode or
+    if (plan.get("protocol") not in (PROTOCOL, DIRECTIONAL_PROTOCOL, COMPACT_PROTOCOL, DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL, ONE_PASS_PROTOCOL) or plan.get("policy") != experiment_policy(plan.get("protocol"), plan.get("policy", {}).get("role", "primary")) or plan.get("mode") != mode or
             plan.get("processes") != expected or plan.get("blocks") != BLOCKS[phase] or
             plan.get("timeoutSeconds") != 600 or plan.get("runsPerPackage") != 1 or
             plan.get("comparisonStartFrame") != 16 or len(receipts) != len(expected)):
@@ -372,7 +391,7 @@ def verify_experiment(source):
                 (identity is not None and current != identity)):
             raise ValueError("Empty or changed source/binary identity")
         identity = current
-        current = normalized_workload(spec, case["resolvedGraph"], item["arm"], directional, compact, directional_mark, one_pass)
+        current = normalized_workload(spec, case["resolvedGraph"], item["arm"], directional, compact, directional_mark, one_pass, mark_clipmaps)
         if (workload is not None and current != workload) or current != planned_workload:
             raise ValueError("Cases/graphs differ beyond the bitset switch")
         workload = current
@@ -391,6 +410,8 @@ def verify_experiment(source):
             check_projection_execution(timings, item["arm"], plan["policy"]["role"])
         elif any(row["projectionMode"] != "per-face" for row in timings):
             raise ValueError("One-pass projection execution cannot enter an older experiment protocol")
+        if mark_clipmaps and any(row["faceCount"] != 1 for row in timings):
+            raise ValueError("Mark clipmap specialization requires one directional face")
         work_rows = [profile.work_frame(frame, mode) for frame in case["frames"]]
         build_rows = [profile.build_frame(frame, mode) for frame in case["frames"]]
         if mode == "diagnostic":
@@ -409,7 +430,7 @@ def verify_experiment(source):
                         name: face["counters"][name] for name in profile.WORK_COUNTERS if name != "markPageRequests"}}
                     for face in sorted(faces, key=lambda value: (value["lightIndex"], value["face"]))]})
             signature["stableWorkCounters"] = stable_work
-            if directional or compact or directional_mark or one_pass:
+            if directional or compact or directional_mark or mark_clipmaps or one_pass:
                 if not all(row["gpuBuildDiagnosticsAvailable"] for row in build_rows):
                     raise ValueError("Specialization requires complete build diagnostic readbacks")
                 if any(raw["shadow"]["gpuBuildDiagnostics"]["version"] != 3 for raw in case["frames"]):
@@ -427,13 +448,15 @@ def verify_experiment(source):
             raise ValueError("Build diagnostic declaration contradicts enabled readback")
         valid = [row for row in timings if not row["warmup"]]
         medians = {metric: profile.describe([row[metric] for row in valid])["median"] for metric in METRICS}
+        mark_cache_levels = next(node["properties"]["clipmapCount"] for node in case["resolvedGraph"]["nodes"]
+            if node.get("name") == "Shadows") if mark_clipmaps else None
         rows.append({**item, "started": receipt["started"], "ended": receipt["ended"], "capture": str(path),
             "manifestSHA256": receipt["manifestSHA256"], "postWarmupFrames": len(valid), "metrics": medians,
             "faceCount": valid[0]["faceCount"],
-            "shaders": shader_identity((path.parent / "Process.log").read_text(encoding="utf-8", errors="replace"), item["arm"], mode, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"))})
+            "shaders": shader_identity((path.parent / "Process.log").read_text(encoding="utf-8", errors="replace"), item["arm"], mode, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"), mark_clipmaps, mark_cache_levels)})
         for output, values in ((frames, timings), (work, work_rows), (build, build_rows)):
             output.extend({"process": item["index"], "arm": item["arm"], "block": item["block"], **row} for row in values)
-    check_shaders(rows, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"))
+    check_shaders(rows, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"), mark_clipmaps)
     if one_pass and len({row["faceCount"] for row in rows}) != 1:
         raise ValueError("Admitted face count differs between projection experiment processes")
     # All input identities are checked before attributing output differences to correctness.
@@ -625,12 +648,13 @@ def plots(result, output):
         directional = result["plan"]["protocol"] == DIRECTIONAL_PROTOCOL
         compact = result["plan"]["protocol"] == COMPACT_PROTOCOL
         directional_mark = result["plan"]["protocol"] == DIRECTIONAL_MARK_PROTOCOL
+        mark_clipmaps = result["plan"]["protocol"] == MARK_CLIPMAPS_PROTOCOL
         one_pass = result["plan"]["protocol"] == ONE_PASS_PROTOCOL
         panels = ((axes[0], "buildDiagnosticFrames", ("clusterLevelTests", "clusterSurvivingGroups")),
             (axes[1], "buildDiagnosticFrames", ("clusterBitsetWordTests", "triangleBitsetWordTests", "triangleBitsetPageHits"))) if directional or compact else (
             (axes[0], "workFrames", ("buildPageTests",)),
             (axes[1], "buildDiagnosticFrames", ("clusterPageTests", "clusterBitsetWordTests")))
-        if directional_mark:
+        if directional_mark or mark_clipmaps:
             panels = ((axes[0], "workFrames", ("markReceiverDispatches", "markSamplePositions", "markLevelTests")),
                       (axes[1], "workFrames", ("markPageRequests",)))
         if one_pass:
@@ -646,6 +670,7 @@ def plots(result, output):
             if axis.has_data():
                 axis.legend(fontsize=8)
         figure.suptitle("One-pass projection: exact logical work; counts are not timings" if one_pass else
+            "Mark clipmaps: logical work unchanged; request atomics may vary; counts are not timings" if mark_clipmaps else
             "Directional Mark: logical work unchanged; request atomics may vary; counts are not timings" if directional_mark else
             "Build specialization: identical diagnostic work; counts are not timings" if directional or compact else
             "Diagnostic work only; page reads and bitset word reads have different units")
@@ -703,15 +728,17 @@ def report(args):
         directional = result["plan"]["protocol"] == DIRECTIONAL_PROTOCOL
         compact = result["plan"]["protocol"] == COMPACT_PROTOCOL
         directional_mark = result["plan"]["protocol"] == DIRECTIONAL_MARK_PROTOCOL
+        mark_clipmaps = result["plan"]["protocol"] == MARK_CLIPMAPS_PROTOCOL
         one_pass = result["plan"]["protocol"] == ONE_PASS_PROTOCOL
-        title = "one-pass projection" if one_pass else "directional mark" if directional_mark else "compact build" if compact else "directional build" if directional else "bitset"
-        description = ("A: per-face projection; B: one dispatch for admitted multi-face projection, retaining the original single-face kernel. Other settings are identical." if one_pass else
+        title = "mark clipmaps" if mark_clipmaps else "one-pass projection" if one_pass else "directional mark" if directional_mark else "compact build" if compact else "directional build" if directional else "bitset"
+        description = ("A: directional Mark with 12 compiled cache levels; B: directional Mark specialized to the declared clipmapCount. Actual markCacheLevels is verified in shader logs; non-Mark entries retain 12. All other graph settings are identical." if mark_clipmaps else
+            "A: per-face projection; B: one dispatch for admitted multi-face projection, retaining the original single-face kernel. Other settings are identical." if one_pass else
             "A: generic Mark; B: directional-only compiled Mark. All other graph settings are identical." if directional_mark else
             "A: direct cluster build; B: compact candidates and indirect build. All other graph settings are identical." if compact else
             "A: generic build; B: directional-only compiled build. All other graph settings are identical." if directional else
             "A: bitset disabled; B: enabled. Production mark and cluster culling remain enabled.")
         diagnostic_note = ("All 45 build diagnostic counters and per-face projection workload counters match exactly. Actual Mark/Build shader variants remain unchanged. Execution scope names verify the selected projection path." if one_pass else
-            "All 45 build diagnostic counters match exactly for every canonical frame and face. Actual build/projection SPIR-V is unchanged; Mark SPIR-V differs." if directional_mark else
+            "All 45 build diagnostic counters match exactly for every canonical frame and face. Actual build/projection SPIR-V is unchanged; Mark SPIR-V differs." if directional_mark or mark_clipmaps else
             "All 45 build diagnostic counters match exactly for every canonical frame and face. Actual mark/projection SPIR-V is unchanged; build SPIR-V differs." if directional or compact else
             "Build diagnostic counters describe different page/word scanning operations and are not an output-equivalence gate.")
         lines = [f"# VSM {title} {result['phase']}", "", description, "",
@@ -758,7 +785,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     execute = commands.add_parser("run")
     execute.add_argument("--phase", choices=tuple(BLOCKS), required=True)
-    execute.add_argument("--experiment", choices=("cluster-bitset", "directional-build", "compact-build", "directional-mark", "one-pass-projection"), default="cluster-bitset")
+    execute.add_argument("--experiment", choices=("cluster-bitset", "directional-build", "compact-build", "directional-mark", "mark-clipmaps", "one-pass-projection"), default="cluster-bitset")
     execute.add_argument("--role", choices=("primary", "overhead"), default="primary", help="one-pass projection workload role")
     execute.add_argument("--cases-dir", type=Path, required=True)
     execute.add_argument("--exe", type=Path, required=True)

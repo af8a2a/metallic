@@ -181,7 +181,7 @@ public:
             runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
-            runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", false),
+            runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", true),
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
@@ -340,6 +340,8 @@ public:
         settings.optimizeMarkSamples = boolProperty(&properties, "benchmarkMarkSamples", settings.optimizeMarkSamples);
         settings.directionalMark = boolProperty(&properties, "benchmarkDirectionalMark",
             boolProperty(&properties, "directionalMark", settings.directionalMark));
+        settings.specializeMarkClipmaps = boolProperty(&properties, "benchmarkMarkClipmapSpecialization",
+            boolProperty(&properties, "markClipmapSpecialization", settings.specializeMarkClipmaps));
         settings.directionalBuild = boolProperty(&properties, "benchmarkDirectionalBuild",
             boolProperty(&properties, "directionalBuild", settings.directionalBuild));
         settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
@@ -351,7 +353,7 @@ public:
             boolProperty(&properties, "trianglePageBitset", settings.trianglePageBitset));
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
-        const bool demandDriven = boolProperty(&properties, "demandDrivenBudget", false);
+        const bool demandDriven = boolProperty(&properties, "demandDrivenBudget", true);
         const float nearPlane = properties.value("nearPlane", 0.001f);
         if (budget > 262144 || !std::isfinite(nearPlane) || nearPlane <= 0) { return makeError(Error::InvalidArgument); }
         const auto celestials = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()));
