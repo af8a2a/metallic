@@ -36,4 +36,43 @@ VirtualShadowMapLODRequirements buildVirtualShadowMapLodRequirements(
     const GPUSceneGPUInstanceRecord& instance,
     std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold);
 
+// Immutable primitive topology, built at geometry publication rather than per
+// instance/frame. Metric leaves exclude terminal stop sentinels; terminal roots
+// are always demanded separately. Cluster indices retain the original order.
+struct VirtualShadowMapLODHierarchy
+{
+    std::vector<MeshletLODGroupRecord> groups;
+    std::vector<MeshletLODGroupRange> ranges;
+    std::vector<uint32_t> refinedGroups;
+    std::vector<std::vector<uint32_t>> parents;
+    std::vector<uint32_t> clusterGroups;
+    std::vector<uint32_t> terminalGroups;
+    std::vector<uint32_t> metricGroupIDs;
+    std::vector<MeshletLODBVHNode> bvh;
+};
+
+bool buildVirtualShadowMapLODHierarchy(std::span<const MeshletLODGroupRecord> groups,
+    std::span<const MeshletLODGroupRange> ranges, std::span<const uint32_t> refinedGroups,
+    VirtualShadowMapLODHierarchy& hierarchy, std::string& reason);
+
+struct VirtualShadowMapLODSelection
+{
+    StreamMeshletLODReference cut;
+    uint32_t metricGroups = 0;
+    uint32_t hierarchyNodes = 0;
+    uint32_t prunedGroups = 0;
+    uint32_t topologyGroups = 0;
+    uint32_t topologyEdges = 0;
+    uint32_t clusterTests = 0;
+};
+
+// Hierarchical and flat paths use the same group metric and residency rules.
+// The flat path is retained as an independent cut/reference and A/B control.
+// Dense activeGroups remains part of the result ABI; only demanded topology and
+// active cluster ranges are traversed by the hierarchical path.
+VirtualShadowMapLODSelection selectVirtualShadowMapLOD(const VirtualShadowMapLODHierarchy& hierarchy,
+    std::span<const uint8_t> drawableGroups, const GPUSceneGPUInstanceRecord& instance,
+    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold,
+    bool hierarchical = true);
+
 } // namespace metallic::render

@@ -3133,13 +3133,14 @@ public:
                 {"instanceHzbCull", false}, {"meshletHzbCull", false}, {"meshletNormalConeCull", false},
                 {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
             for (bool lights : {false, true}) {
-                for (bool enabled : {false, true}) {
-                    const std::string name = std::string(lights ? "Lights" : "Single") + (enabled ? "Zero" : "Off");
+                for (const std::string mode : {"Off", "Zero", "Flat", "Adaptive"}) {
+                    const std::string name = std::string(lights ? "Lights" : "Single") + mode;
                     graph.addNode(lights ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass", name,
                         {{"lightCapacity", kCapacity}, {"physicalPageBudget", 256}, {"physicalPageCount", 128},
                             {"pageSize", 32}, {"virtualPagesPerAxis", 4}, {"clipmapCount", 4}, {"firstClipmapExtent", 4},
                             {"maxWorkItems", 131072}, {"shadowBias", .002}, {"cacheEnabled", true}, {"cacheLayering", true},
-                            {"filter", "hard"}, {"receiverFootprint", true}, {"shadowLOD", enabled}, {"shadowLODErrorTexels", 0}});
+                            {"filter", "hard"}, {"receiverFootprint", true}, {"shadowLOD", mode != "Off"}, {"shadowLODErrorTexels", mode == "Zero" ? 0 : 1},
+                            {"shadowLODHierarchy", mode != "Flat"}});
                     graph.addEdge("Raster.depth", name + ".depth");
                     graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
                     const std::string readback = name + "Evidence";
@@ -3160,10 +3161,20 @@ public:
                 for (bool lights : {false, true}) {
                     const std::string prefix = lights ? "Lights" : "Single";
                     const auto off = readLODPass(prefix + "Off", lights), zero = readLODPass(prefix + "Zero", lights);
+                    const auto flat = readLODPass(prefix + "Flat", lights), adaptive = readLODPass(prefix + "Adaptive", lights);
+                    require(flat.shadows == adaptive.shadows, prefix + ": adaptive traversal changed flat reference visibility");
+                    require(flat.lod[4] == adaptive.lod[4] && flat.lod[5] == adaptive.lod[5] &&
+                        flat.lod[6] == adaptive.lod[6] && flat.lod[7] == adaptive.lod[7],
+                        prefix + ": adaptive traversal changed selection or requests");
+                    require(flat.lod[12] == 0 && flat.lod[13] == 0, prefix + ": flat reference used hierarchical pruning");
+                    if (!report["frames"].empty()) {
+                        require(adaptive.lod[14] == 0 && adaptive.lod[15] > 0,
+                            prefix + ": unchanged shadow hierarchy was rebuilt instead of reused");
+                    }
                     require(off.shadows == zero.shadows, prefix + ": zero-error LOD changed exact final visibility");
-                    require(off.lod[0] == 1 && off.lod[1] == 0 && off.lod[2] == 0,
+                    require(off.lod[0] == 2 && off.lod[1] == 0 && off.lod[2] == 0,
                         prefix + ": disabled LOD readback ABI or activation differs");
-                    require(zero.lod[0] == 1 && zero.lod[1] == 1 && zero.lod[2] == (lights ? expectedFaces : 1) * 5,
+                    require(zero.lod[0] == 2 && zero.lod[1] == 1 && zero.lod[2] == (lights ? expectedFaces : 1) * 5,
                         prefix + ": LOD projections do not match every admitted face and level");
                     require(zero.lod[3] > 0 && zero.lod[4] > 0 && zero.lod[5] == off.lod[5] && zero.lod[5] == zero.lod[10],
                         prefix + ": zero-error complete terminal fixture has wrong selection or slot accounting");
@@ -3186,7 +3197,7 @@ public:
                         require(zero.header.version == kVirtualShadowMapLightsVersion && faces == expectedFaces &&
                             zero.header.admittedCount == (expectedFaces == 7 ? 2 : 1), "LOD multi-light admission evidence differs");
                     }
-                    frame[prefix] = {{"exactVisibility", true}, {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"shadowedPixels", shadowed}};
+                    frame[prefix] = {{"exactVisibility", true}, {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"flatLOD", flat.lod}, {"adaptiveLOD", adaptive.lod}, {"shadowedPixels", shadowed}};
                 }
                 report["frames"].push_back(std::move(frame));
                 save();

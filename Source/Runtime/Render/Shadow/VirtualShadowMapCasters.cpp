@@ -13,6 +13,16 @@
 #include <cmath>
 
 namespace metallic::render {
+
+struct VirtualShadowMapLODMetadataCache
+{
+    uint64_t sceneIdentity = 0;
+    uint64_t structuralRevision = 0;
+    uint64_t geometryRevision = 0;
+    bool streamed = false;
+    std::vector<std::unique_ptr<VirtualShadowMapLODHierarchy>> primitives;
+};
+
 namespace {
 
 constexpr uint32_t kStreamTrianglesPerCluster = 128;
@@ -55,6 +65,17 @@ struct ShadowCasterSelection
     std::vector<std::array<uint32_t, 2>> streamClusters; // Global group, local cluster.
     uint64_t lodKey = 0;
 };
+
+std::shared_ptr<VirtualShadowMapLODMetadataCache> makeLODMetadataCache(
+    const scene::Scene& scene, const MeshletStreamShadowGeometryView* stream)
+{
+    auto cache = std::make_shared<VirtualShadowMapLODMetadataCache>();
+    cache->sceneIdentity = scene.resourceIdentity();
+    cache->structuralRevision = scene.sceneGraph().structuralRevision();
+    cache->geometryRevision = stream ? stream->geometryRevision : 0;
+    cache->streamed = stream != nullptr;
+    return cache;
+}
 
 struct ContentHash
 {
@@ -291,7 +312,8 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
 static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
     const MeshletStreamShadowGeometryView* stream, std::string& log,
-    const VirtualShadowMapCasterSettings& settings, std::span<const ShadowCasterSelection> selections = {})
+    const VirtualShadowMapCasterSettings& settings, std::span<const ShadowCasterSelection> selections = {},
+    std::shared_ptr<VirtualShadowMapLODMetadataCache> lodMetadata = {})
 {
     if (settings.tessellationFactor == 0 || settings.tessellationFactor > kTessellationMaxFactor || settings.subdivisionDepth > 2 ||
         (!settings.displacementTextures.empty() && settings.displacementTextures.size() != scene.materials().size())) {
@@ -521,6 +543,7 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
     if (!parameterIndex) { return std::unexpected(parameterIndex.error()); }
     resources.parameters = owner->buffers.back().get();
     resources.triangleCapacity = parameters.triangleCapacity;
+    resources.lodMetadata = lodMetadata ? std::move(lodMetadata) : makeLODMetadataCache(scene, stream);
     if (auto result = commands.retainResource(owner); !result) { return std::unexpected(result.error()); }
     for (const auto& lease : resources.leases) {
         if (auto result = (*registry)->retain(commands, lease); !result) { return std::unexpected(result.error()); }
@@ -540,7 +563,8 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
-    std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log)
+    std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
+    bool hierarchical)
 {
     if (!std::isfinite(maxErrorTexels) || maxErrorTexels < 0) {
         log = "VSM shadow LOD error must be finite and nonnegative";
@@ -553,6 +577,11 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
             return std::unexpected(prepared.error());
         }
     }
+    // Base preparation owns the scene/stream validation and metadata identity.
+    // Allocate primitive slots only when this snapshot first consumes LOD.
+    if (base.lodMetadata->primitives.empty()) {
+        base.lodMetadata->primitives.resize(stream ? stream->asset->primitives().size() : scene.renderPrimitives().size());
+    }
     std::vector<ShadowCasterSelection> selections(scene.renderNodes().size());
     VirtualShadowMapShadowLODDiagnostics diagnostics;
     std::vector<uint32_t> pages;
@@ -563,26 +592,17 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
         diagnostics.selectedLevels.resize(std::max<size_t>(diagnostics.selectedLevels.size(), size_t(level) + 1));
         ++diagnostics.selectedLevels[level];
     };
-    const auto select = [&](const std::vector<MeshletLODGroupRecord>& groups,
-        const std::vector<MeshletLODGroupRange>& ranges, const std::vector<uint32_t>& refined,
+    const auto select = [&](const VirtualShadowMapLODHierarchy& hierarchy,
         const std::vector<uint8_t>& drawable, const auto& node) {
         GPUSceneGPUInstanceRecord instance;
         std::copy_n(node.worldMatrix.a, 16, instance.worldMatrix.begin());
         instance.identity[3] = GPUSceneGPUInstanceVisible;
-        auto requirements = buildVirtualShadowMapLodRequirements(groups, instance, projections, maxErrorTexels);
-        // Zero is an explicit finest request, including zero-error replacements.
-        if (maxErrorTexels == 0) { std::ranges::fill(requirements.needsFine, uint8_t(1)); }
-        // Light-space demand can differ between overlapping replacement
-        // spheres. A desired child requires every ancestor owner to activate.
-        for (uint32_t owner = 0; owner < ranges.size(); ++owner) {
-            const auto& range = ranges[owner];
-            for (uint32_t cluster = range.clusterOffset; cluster < range.clusterOffset + range.clusterCount; ++cluster) {
-                const uint32_t child = refined[cluster];
-                if (child != UINT32_MAX) { requirements.needsFine[owner] |= requirements.needsFine[child]; }
-            }
-        }
-        return selectStreamMeshletLodReference(groups, ranges, refined, drawable, instance,
-            MeshletLODView{}, UINT32_MAX, UINT32_MAX, {}, {}, requirements.needsFine);
+        auto selected = selectVirtualShadowMapLOD(hierarchy, drawable, instance, projections, maxErrorTexels, hierarchical);
+        diagnostics.metricGroups += selected.metricGroups;
+        diagnostics.hierarchyNodes += selected.hierarchyNodes;
+        diagnostics.prunedGroups += selected.prunedGroups;
+        diagnostics.topologyGroups += selected.topologyGroups;
+        return std::move(selected.cut);
     };
     if (stream) {
         const auto& asset = *stream->asset;
@@ -606,26 +626,41 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
                 }
                 continue;
             }
-            std::vector<MeshletLODGroupRecord> groups;
-            std::vector<MeshletLODGroupRange> ranges;
-            std::vector<uint32_t> refined;
-            std::vector<uint8_t> drawable;
-            for (uint32_t local = 0; local < primitive.groupCount; ++local) {
-                const auto& source = asset.groups()[primitive.groupOffset + local];
-                MeshletLODGroupRecord group;
-                std::copy_n(source.boundsCenterRadius, 4, group.sphere.begin());
-                group.error = source.maxQuadricError;
-                group.level = source.lodLevel;
-                group.flags = source.flags;
-                groups.push_back(group);
-                ranges.push_back({static_cast<uint32_t>(refined.size()), source.clusterCount});
-                for (uint32_t cluster = 0; cluster < source.clusterCount; ++cluster) {
-                    const uint32_t child = asset.refinedGroups()[source.clusterRefinedOffset + cluster];
-                    refined.push_back(child == UINT32_MAX ? child : child - primitive.groupOffset);
+            auto& metadata = base.lodMetadata->primitives[sourceInstance.primitiveIndex];
+            if (!metadata) {
+                std::vector<MeshletLODGroupRecord> groups;
+                std::vector<MeshletLODGroupRange> ranges;
+                std::vector<uint32_t> refined;
+                for (uint32_t local = 0; local < primitive.groupCount; ++local) {
+                    const auto& source = asset.groups()[primitive.groupOffset + local];
+                    MeshletLODGroupRecord group;
+                    std::copy_n(source.boundsCenterRadius, 4, group.sphere.begin());
+                    group.error = source.maxQuadricError;
+                    group.level = source.lodLevel;
+                    group.flags = source.flags;
+                    groups.push_back(group);
+                    ranges.push_back({static_cast<uint32_t>(refined.size()), source.clusterCount});
+                    for (uint32_t cluster = 0; cluster < source.clusterCount; ++cluster) {
+                        const uint32_t child = asset.refinedGroups()[source.clusterRefinedOffset + cluster];
+                        refined.push_back(child == UINT32_MAX ? child : child - primitive.groupOffset);
+                    }
                 }
-                drawable.push_back(stream->owner->residency().pageResident(source.pageIndex) ? 1u : 0u);
+                auto built = std::make_unique<VirtualShadowMapLODHierarchy>();
+                if (!buildVirtualShadowMapLODHierarchy(groups, ranges, refined, *built, log)) {
+                    log = "VSM shadow LOD stream metadata: " + log;
+                    return makeError(Error::InvalidArgument);
+                }
+                metadata = std::move(built);
+                ++diagnostics.metadataBuilds;
+            } else {
+                ++diagnostics.metadataCacheHits;
             }
-            const auto cut = select(groups, ranges, refined, drawable, node);
+            std::vector<uint8_t> drawable;
+            drawable.reserve(primitive.groupCount);
+            for (uint32_t group = 0; group < primitive.groupCount; ++group) {
+                drawable.push_back(stream->owner->residency().pageResident(asset.groups()[primitive.groupOffset + group].pageIndex) ? 1u : 0u);
+            }
+            const auto cut = select(*metadata, drawable, node);
             if (!cut.valid) {
                 log = "VSM shadow LOD stream cut: " + cut.reason;
                 return makeError(Error::InvalidArgument);
@@ -633,20 +668,19 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
             diagnostics.testedGroups += cut.testedGroups;
             diagnostics.fallbackCasters += cut.requestedGroups.empty() ? 0u : 1u;
             for (uint32_t group : cut.requestedGroups) { pages.push_back(asset.groups()[primitive.groupOffset + group].pageIndex); }
-            std::vector<uint8_t> selected(refined.size(), 0);
-            for (uint32_t cluster : cut.selectedClusters) { selected[cluster] = 1; }
             ContentHash hash;
             bool terminalOnly = true;
-            for (uint32_t group = 0; group < groups.size(); ++group) {
-                for (uint32_t cluster = 0; cluster < ranges[group].clusterCount; ++cluster) {
-                    if (!selected[ranges[group].clusterOffset + cluster]) { continue; }
-                    selection.streamClusters.push_back({primitive.groupOffset + group, cluster});
-                    pages.push_back(asset.groups()[primitive.groupOffset + group].pageIndex);
-                    addSelected(nodeIndex, group, cluster, groups[group].level);
-                    hash.append(group);
-                    hash.append(cluster);
-                    terminalOnly &= (groups[group].flags & kMeshletLODTerminalGroup) != 0;
-                }
+            // Selector output is sorted in immutable cluster order, matching
+            // the original group-major packing and persistent cut identity.
+            for (const uint32_t clusterIndex : cut.selectedClusters) {
+                const uint32_t group = metadata->clusterGroups[clusterIndex];
+                const uint32_t cluster = clusterIndex - metadata->ranges[group].clusterOffset;
+                selection.streamClusters.push_back({primitive.groupOffset + group, cluster});
+                pages.push_back(asset.groups()[primitive.groupOffset + group].pageIndex);
+                addSelected(nodeIndex, group, cluster, metadata->groups[group].level);
+                hash.append(group);
+                hash.append(cluster);
+                terminalOnly &= (metadata->groups[group].flags & kMeshletLODTerminalGroup) != 0;
             }
             // An unrefined complete terminal cut is the original producer ABI.
             selection.replaceStream = !terminalOnly;
@@ -673,19 +707,31 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
                 ++diagnostics.fallbackCasters;
                 continue;
             }
-            std::vector<MeshletLODGroupRecord> groups;
-            if (!buildMeshletLodMetadata(primitive, groups, log)) {
-                log = "VSM shadow LOD resident metadata: " + log;
-                return makeError(Error::InvalidArgument);
+            auto& metadata = base.lodMetadata->primitives[node.renderPrimitiveIndex];
+            if (!metadata) {
+                std::vector<MeshletLODGroupRecord> groups;
+                if (!buildMeshletLodMetadata(primitive, groups, log)) {
+                    log = "VSM shadow LOD resident metadata: " + log;
+                    return makeError(Error::InvalidArgument);
+                }
+                std::vector<MeshletLODGroupRange> ranges;
+                std::vector<uint32_t> refined;
+                for (const auto& group : primitive.meshletLodGroups) { ranges.push_back({group.clusterOffset, group.clusterCount}); }
+                for (const auto& cluster : primitive.meshletLodClusters) {
+                    refined.push_back(cluster.refinedGroupIndex < 0 ? UINT32_MAX : uint32_t(cluster.refinedGroupIndex));
+                }
+                auto built = std::make_unique<VirtualShadowMapLODHierarchy>();
+                if (!buildVirtualShadowMapLODHierarchy(groups, ranges, refined, *built, log)) {
+                    log = "VSM shadow LOD resident hierarchy: " + log;
+                    return makeError(Error::InvalidArgument);
+                }
+                metadata = std::move(built);
+                ++diagnostics.metadataBuilds;
+            } else {
+                ++diagnostics.metadataCacheHits;
             }
-            std::vector<MeshletLODGroupRange> ranges;
-            std::vector<uint32_t> refined;
-            for (const auto& group : primitive.meshletLodGroups) { ranges.push_back({group.clusterOffset, group.clusterCount}); }
-            for (const auto& cluster : primitive.meshletLodClusters) {
-                refined.push_back(cluster.refinedGroupIndex < 0 ? UINT32_MAX : uint32_t(cluster.refinedGroupIndex));
-            }
-            const std::vector<uint8_t> drawable(groups.size(), 1);
-            const auto cut = select(groups, ranges, refined, drawable, node);
+            const std::vector<uint8_t> drawable(metadata->groups.size(), 1);
+            const auto cut = select(*metadata, drawable, node);
             if (!cut.valid) {
                 log = "VSM shadow LOD resident cut: " + cut.reason;
                 return makeError(Error::InvalidArgument);
@@ -699,18 +745,23 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
                 addSelected(nodeIndex, uint32_t(cluster.lodGroupIndex), cluster.lodGroupChildIndex, cluster.lodLevel);
                 finest &= cluster.lodLevel == 0;
                 hash.append(clusterIndex);
-                for (uint32_t vertex = 0; vertex < cluster.triangleCount * 3u; ++vertex) {
-                    const uint32_t local = primitive.meshletLodTriangles[cluster.triangleOffset + vertex];
-                    selection.vertices.push_back(primitive.meshletLodVertices[cluster.vertexOffset + local]);
-                }
             }
             // Preserve authored triangle ordering for exact finest/base A/Bs.
             selection.replaceResident = !finest && maxErrorTexels != 0;
+            if (selection.replaceResident) {
+                for (const uint32_t clusterIndex : cut.selectedClusters) {
+                    const auto& cluster = primitive.meshletLodClusters[clusterIndex];
+                    for (uint32_t vertex = 0; vertex < cluster.triangleCount * 3u; ++vertex) {
+                        const uint32_t local = primitive.meshletLodTriangles[cluster.triangleOffset + vertex];
+                        selection.vertices.push_back(primitive.meshletLodVertices[cluster.vertexOffset + local]);
+                    }
+                }
+            }
             selection.lodKey = selection.replaceResident ? hash.value : 0;
             replacement |= selection.replaceResident;
         }
     }
-    auto result = replacement ? prepareCasterGeometry(device, commands, scene, stream, log, settings, selections) :
+    auto result = replacement ? prepareCasterGeometry(device, commands, scene, stream, log, settings, selections, base.lodMetadata) :
         Result<VirtualShadowMapCasterResources>(base);
     if (!result) { return std::unexpected(result.error()); }
     if (!replacement) {
@@ -723,6 +774,7 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     }
     // These identities and bounds describe the full authored scene, never the
     // selected approximation. Only the contiguous slot ranges follow the cut.
+    result->lodMetadata = base.lodMetadata;
     result->bounds = base.bounds;
     result->dependencyKey = base.dependencyKey;
     result->geometryRevision = base.geometryRevision;
@@ -814,9 +866,20 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
     const MeshletStreamShadowGeometryView* stream, std::string& log,
     const VirtualShadowMapCasterSettings& settings)
 {
+    // SceneLoader finalizes deferred meshlet jobs before takeResult publishes
+    // the scene. Primitive geometry then stays read-only. Scene load and
+    // composition replace resourceIdentity; graph edits change structuralRevision.
+    // Transform/material changes do not alter these object-space hierarchies.
+    const uint64_t geometryRevision = stream ? stream->geometryRevision : 0;
+    if (!lodMetadata_ || lodMetadata_->sceneIdentity != scene.resourceIdentity() ||
+        lodMetadata_->structuralRevision != scene.sceneGraph().structuralRevision() ||
+        lodMetadata_->geometryRevision != geometryRevision || lodMetadata_->streamed != (stream != nullptr)) {
+        lodMetadata_ = makeLODMetadataCache(scene, stream);
+    }
     if (stream) {
         resident_.reset();
-        return prepareVirtualShadowMapCasters(device, commands, scene, stream, log, settings);
+        auto resources = prepareCasterGeometry(device, commands, scene, stream, log, settings, {}, lodMetadata_);
+        return resources;
     }
 
     // Scene exposes resident geometry/materials read-only. Its mutation APIs
@@ -844,7 +907,7 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
         return resources;
     }
 
-    auto resources = prepareVirtualShadowMapCasters(device, commands, scene, nullptr, log, settings);
+    auto resources = prepareCasterGeometry(device, commands, scene, nullptr, log, settings, {}, lodMetadata_);
     if (!resources) { return std::unexpected(resources.error()); }
     // Keep the original shadow-specific hashes. A material RGB edit rebuilds
     // this upload snapshot without invalidating otherwise unchanged shadow pages.

@@ -120,6 +120,7 @@ public:
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", true),
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
+            runtimeBoolSetting("shadowLODHierarchy", "Adaptive Shadow LOD Hierarchy", true),
             runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
@@ -249,6 +250,7 @@ public:
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
+        settings.shadowLODHierarchy = boolProperty(&properties, "shadowLODHierarchy", settings.shadowLODHierarchy);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.collectGPUWork = collectGPUWork_;
@@ -441,7 +443,7 @@ public:
         ViewConstants view{};
         uint64_t contentKey = 0;
         std::array<uint32_t, 32> lodStatistics{};
-        lodStatistics[0] = 1;
+        lodStatistics[0] = 2;
         lodStatistics[1] = settings.shadowLOD;
         auto recordFaces = [&](CommandBuffer&) -> Result<> {
             cpuPhase.next("Caster textures and geometry");
@@ -516,7 +518,7 @@ public:
                     lodStatistics[2] = uint32_t(lodProjections.size());
                     casters = prepareVirtualShadowMapShadowLOD(*device_, commands, *scene,
                         scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
-                        lodProjections, settings.shadowLODErrorTexels, log);
+                        lodProjections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy);
                     if (!casters) { spdlog::error("VirtualShadowMapLightsPass shadow LOD: {}", log); return makeError(casters.error()); }
                 }
                 const auto& lod = casters->shadowLOD;
@@ -527,6 +529,11 @@ public:
                 lodStatistics[7] = lod.blockedPages;
                 lodStatistics[8] = lod.fallbackCasters;
                 lodStatistics[9] = lod.protectedCasters;
+                lodStatistics[11] = lod.metricGroups;
+                lodStatistics[12] = lod.hierarchyNodes;
+                lodStatistics[13] = lod.prunedGroups;
+                lodStatistics[14] = lod.metadataBuilds;
+                lodStatistics[15] = lod.metadataCacheHits;
                 for (size_t level = 0; level < lod.selectedLevels.size(); ++level) {
                     lodStatistics[16 + std::min(level, size_t(15))] += lod.selectedLevels[level];
                 }

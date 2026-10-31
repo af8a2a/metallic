@@ -30,6 +30,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", false);
     settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
     settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
+    settings.shadowLODHierarchy = boolProperty(&properties, "shadowLODHierarchy", settings.shadowLODHierarchy);
     settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
     settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
     settings.collectGPUWork = boolProperty(&properties, "benchmarkGPUWork", false);
@@ -113,6 +114,7 @@ public:
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", false),
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
+            runtimeBoolSetting("shadowLODHierarchy", "Adaptive Shadow LOD Hierarchy", true),
             runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("pageSize", "Page Size (px, power of two)", 128, 16, 128),
@@ -276,7 +278,7 @@ public:
         const auto light = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[lightIndex];
         const auto settings = shadowSettings(context.properties());
         std::array<uint32_t, 32> lodStatistics{};
-        lodStatistics[0] = 1;
+        lodStatistics[0] = 2;
         lodStatistics[1] = settings.shadowLOD;
         lodStatistics[10] = casters->triangleCapacity;
         if (settings.shadowLOD && settings.enabled &&
@@ -293,7 +295,7 @@ public:
             lodStatistics[2] = uint32_t(projections->size());
             casters = prepareVirtualShadowMapShadowLOD(*device_, commands, *scene,
                 scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
-                *projections, settings.shadowLODErrorTexels, log);
+                *projections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy);
             if (!casters) {
                 spdlog::error("VirtualShadowMapPass shadow LOD: {}", log);
                 return makeError(casters.error());
@@ -307,6 +309,11 @@ public:
         lodStatistics[7] = lod.blockedPages;
         lodStatistics[8] = lod.fallbackCasters;
         lodStatistics[9] = lod.protectedCasters;
+        lodStatistics[11] = lod.metricGroups;
+        lodStatistics[12] = lod.hierarchyNodes;
+        lodStatistics[13] = lod.prunedGroups;
+        lodStatistics[14] = lod.metadataBuilds;
+        lodStatistics[15] = lod.metadataCacheHits;
         for (size_t level = 0; level < lod.selectedLevels.size(); ++level) {
             lodStatistics[16 + std::min(level, size_t(15))] += lod.selectedLevels[level];
         }

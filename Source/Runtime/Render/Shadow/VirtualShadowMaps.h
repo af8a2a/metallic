@@ -55,6 +55,7 @@ struct VirtualShadowMapSettings
     bool directionalBuild = true; // Build-only orthographic shader specialization; local lights stay generic.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
+    bool shadowLODHierarchy = true; // Cached adaptive traversal; false retains the flat reference for A/B.
     float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;

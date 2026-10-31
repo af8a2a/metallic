@@ -7,6 +7,7 @@
 namespace metallic::render {
 
 struct MeshletStreamShadowGeometryView;
+struct VirtualShadowMapLODMetadataCache;
 
 // Matches the fine-work compute group. Stream candidates retain their native
 // 128-triangle cluster; its bounds serve two adjacent groups.
@@ -54,6 +55,12 @@ struct VirtualShadowMapShadowLODDiagnostics
     uint32_t fallbackCasters = 0;
     uint32_t protectedCasters = 0; // MASK and displaced retain their base geometry.
     uint32_t testedGroups = 0;
+    uint32_t metricGroups = 0;
+    uint32_t hierarchyNodes = 0;
+    uint32_t prunedGroups = 0;
+    uint32_t metadataBuilds = 0;
+    uint32_t metadataCacheHits = 0;
+    uint32_t topologyGroups = 0;
     std::vector<uint32_t> selectedLevels;
     // (render node, primitive-local group, local cluster), including base cuts.
     std::vector<std::array<uint32_t, 3>> selectedClusterIDs;
@@ -78,6 +85,8 @@ struct VirtualShadowMapCasterResources
     // This layer variant's mask and parameters; excludes retained source uploads.
     uint64_t layerBufferBytes = 0;
     VirtualShadowMapShadowLODDiagnostics shadowLOD;
+    // CPU-only immutable primitive topology, shared across base upload snapshots.
+    std::shared_ptr<VirtualShadowMapLODMetadataCache> lodMetadata;
     // Sorted by id. Hidden/deleted casters are absent so the cache can invalidate
     // their previous bounds when comparing committed snapshots.
     std::vector<VirtualShadowMapCasterState> states;
@@ -101,7 +110,8 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
-    std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log);
+    std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
+    bool hierarchical = true);
 
 // Selects one layer from a complete producer snapshot. IDs are sorted and use
 // the source structural revision. Geometry slot IDs/capacity and complete scene
@@ -125,6 +135,7 @@ public:
 private:
     struct Resident;
     std::shared_ptr<const Resident> resident_;
+    std::shared_ptr<VirtualShadowMapLODMetadataCache> lodMetadata_;
 };
 
 } // namespace metallic::render

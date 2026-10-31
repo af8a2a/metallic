@@ -2,6 +2,8 @@
 
 `VirtualShadowMap` 与 `VirtualShadowMapLights` 提供运行时属性 `shadowLOD`，默认 `false`；`shadowLODErrorTexels` 默认 `1.0`，界面范围为 0–16。误差单位为阴影虚拟纹理 texel，不是主相机屏幕像素。`0` 请求最细几何：resident 保留原始完整三角与顺序，stream 请求最细层级并在页到达前使用完整驻留回退 cut。
 
+开启 `shadowLOD` 后默认使用 `shadowLODHierarchy=true` 的自适应层级遍历；设置 `shadowLODHierarchy=false` 可使用原平铺选择作为 A/B 对照。两个路径的误差预算、稳定 cluster ID 和缺页回退契约相同。
+
 本次加入独立的阴影几何选择，不改变现有 one-pass projection 的默认开启状态，也不改变静态/动态深度分层的默认关闭状态。入口见 [VirtualShadowMapCasters.h](../Source/Runtime/Render/Shadow/VirtualShadowMapCasters.h)，误差计算见 [VirtualShadowMapLOD.h](../Source/Runtime/Render/Shadow/VirtualShadowMapLOD.h)。
 
 ## 选择范围与误差
@@ -12,7 +14,17 @@
 
 该需求独立于主相机的 visible/active cut，不以主相机屏幕外为由删除投影 caster。某个球位于一个阴影视图以外时，仅该视图的细化需求为零。最终遍历仍覆盖全部 terminal 分支；需要细化的 group 会把需求向所有 DAG 祖先传播，替换仅在所有 parent owner 生效时发生，以保留多父关系的完整覆盖。
 
-当前实现为 CPU 元数据选择与 CPU 打包上传。resident 利用已有 `meshletLodGroups/Clusters/Vertices/Triangles`，stream 使用资产完整 group/refinement 元数据，不复用主视图压缩列表。尚未加入 GPU LOD 遍历或 cut hysteresis。
+当前实现为 CPU 自适应层级选择与 CPU 打包上传。resident 利用已有 `meshletLodGroups/Clusters/Vertices/Triangles`，stream 使用资产完整 group/refinement 元数据，不复用主视图压缩列表。尚未加入 GPU LOD 遍历或 cut hysteresis。
+
+## 自适应层级遍历
+
+每个 primitive 在首次需要 LOD 时创建不可变元数据：原始 group/range/refinement、去重父关系、cluster→group 映射以及非 terminal group 的 BVH4。Pass 持有缓存，scene identity、结构版本或 stream geometry publication 变化时更换；transform/material 改变不重建 object-space 元数据。SceneLoader 完成 deferred meshlet 构建及 finalize 后才发布场景；旧录制通过 resource snapshot 保留自己的缓存生命期。
+
+遍历先用所有准入光源的最大投影误差上界判断子树，再对未剪枝的叶 group 使用原误差函数。透视 group 度量在合并球上并不单调，因此节点上界分别约束 error、球半径、最小 W、clipXY 和原 Jacobian 的各项，而非直接把合并球代入 group 公式。近面穿越保守下降，大坐标计算使用向外余量，阈值边界只允许增加遍历。Terminal stop sentinel 不进入 BVH，所有 terminal 分支始终单独纳入需求。
+
+命中的需求沿缓存父链求闭包，再按 group ID 降序进行 all-parent 驻留激活；缺页请求不受父页是否就绪限制。仅遍历实际 active 的 cluster range，并以原升序输出稳定 cut。零误差直接请求所有 group，跳过误差计算。Stream 打包通过缓存的 cluster→group 映射访问选中 cluster，不再完整扫描所有 cluster；resident 最细路径也不生成最终不会上传的替换顶点数组。
+
+仍然保留 dense active/wanted 数组，stream 每个实例仍需读取全部 group 的 drawable residency。因此减少的是昂贵误差计算、拓扑边遍历、元数据重建及完整 cluster 重扫，不能称为消除了全部线性工作。本版不包含 GPU 层级遍历、LOD hysteresis 或逐页独立 cut。
 
 ## 材质与 streaming
 
@@ -34,10 +46,10 @@ Stream 只从 `pageResident()` 为真的 group 选 drawable cut，缺页会保�
 
 | 字段 | 内容 |
 |---|---|
-| 0 | 格式版本，目前为 1 |
+| 0 | 格式版本，目前为 2；字段 11–15 新增层级统计 |
 | 1 | `shadowLOD` 配置是否启用 |
 | 2 | 汇总的 shadow projection 数 |
-| 3 | CPU selector 测试的 group 数 |
+| 3 | CPU selector 实际访问的拓扑 group 数；平铺为全部 group，层级为需求闭包 |
 | 4 | 已选择的可简化层级 cluster 数；stream 受保护 caster 的 terminal cluster 也计入 |
 | 5 | 最终 geometry triangle slot capacity |
 | 6 | 本次缺页需求中已分配/排队的页数，不等于新驻留页数 |
@@ -45,14 +57,29 @@ Stream 只从 `pageResident()` 为真的 group 选 drawable cut，缺页会保�
 | 8 | 无 resident hierarchy 或 stream 缺细化页的 caster 数 |
 | 9 | MASK/displacement 受保护 caster 数 |
 | 10 | 原始 base geometry triangle slot capacity |
-| 11–15 | 保留，零 |
+| 11 | 执行原始 group 误差测试的非 terminal group 数 |
+| 12 | 层级 BVH 节点访问数；平铺为零 |
+| 13 | 子树剪枝跳过的 group 误差测试数；零误差 fast path 不计入 |
+| 14 | 本次新建的 primitive 元数据数量 |
+| 15 | 本次复用的 primitive 元数据次数，按实例消费计数 |
 | 16–31 | 所选 cluster 的 LOD 0–15 直方图，15 包含更高层级 |
 
 CPU resources 还保留 `(render node, primitive-local group, local cluster)` 列表以核查 cut。没有可选 hierarchy 的 resident caster 或材质保护的 resident caster 不生成伪造 cluster ID，因此 cluster/histogram 不能直接等同于所有 caster 的完整三角工作量。Stream triangle slots 按 cluster 的 128 槽 padding 计数；base producer 还可保留隐藏 instance 的候选，不能把 slot capacity 当成真正光栅化三角数。
 
 `cacheDiagnostics[29]` 为 `lodChangedCasters`，只在兼容缓存的 caster 差分中累计。整缓存重建仍由全局原因位解释；该字段为零不保证没有发生 LOD 配置或投影变化。参见 [缓存分层说明](VirtualShadowMapCacheLayers.md)。
 
-## 验证与限制
+## 层级版本验证
+
+2026-10-31 最终 Release 构建与 `git diff --check` 通过。本次没有修改 shader 或 GPU 资源布局。`build/vsm-shadow-hierarchy/Run2/` 下两个测试通过，Vulkan validation count 均为 0：
+
+- `virtual_shadow_map_shadow_lod`：768 个多父 DAG/缺页/变换/阈值组合、256 个真实 Bunny 确定性案例及 32 个大平移消减案例，与平铺参考的 selected/requested/active 集合一致。resident/stream 共 14 状态，每状态四路（layered、single、forced hierarchy、forced flat）比较，cut 身份、可查询 D32 和最终 visibility 精确一致；仍覆盖独立屏外 streaming、冻结/解冻、LOD 失效与取消。
+- `virtual_shadow_map_shadow_lod_pass`：真实 Single/Lights graph 的 Off、Zero、Flat、Adaptive 八分支 × 三帧，验证默认层级路径、平铺开关、v2 统计、重复帧 metadata hit，以及点光移除后准入投影数变化。
+
+固定 Bunny 输入、预建 metadata 的 CPU selector 微基准每 workload 为 12 个 ABBA 区组、每臂 128 次调用，32 次预热；所有区组保留。正交 1 texel 的单次调用中位数为平铺 8.019 μs、层级 1.208 μs，group 误差测试 52 → 7，拓扑访问 53 → 8。五种 workload 的 paired ratio 中位数为 0.095–0.400；冷 metadata 构建另计，中位数 14.5 μs。数值仅覆盖该 CPU selector，不含打包、上传、Pass 或 GPU；没有整帧性能结论，也没有跨进程置信区间。
+
+图表、IQR、完整原始数据与脚本位于 `build/vsm-shadow-hierarchy/Summary/report.md`、`CPUTraversal.png`、`WorkCounts.png` 和 `Summarize.py`。初轮 Run1 也保留；最终 Run2 包含数值余量及大平移回归。不同 LOD 的质量仍沿用下方初版边界，层级优化本身不改变选中 cut。
+
+## 初版验证与限制
 
 2026-10-31 本机 Release 验证通过：`Metallic`、`MetallicRHITests` 构建完成，shader module audit 为 387 files / 275 modules / 112 implementation units，`git diff --check` 通过。复用 build-release，仅启用该树的测试目标，没有更换编译器或 SDK。
 
