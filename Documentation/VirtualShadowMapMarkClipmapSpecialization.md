@@ -1,5 +1,7 @@
 # 方向光 Mark 按 clipmap 数编译裁剪
 
+> 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
+
 2026-10-31。按当前 VSMSample-Sponza 完整图先采集分阶段 GPU 时间与工作量，再实现方向光 Mark 的编译级数裁剪。独立确认得到 **Mark 收益 22.96%，Shadows 总 GPU 收益 5.32%**；RenderGraph 收益区间跨零，不声明整图或端到端 FPS 提升。
 
 方向光 Mark 的 clipmap 编译裁剪现已 **默认开启**，两个 VSM Pass 和已有图均继承该默认值。生产属性 `markClipmapSpecialization: false` 可恢复 12 槽路径，显式布尔 `benchmarkMarkClipmapSpecialization` 优先。已有方向光 Mark 特化仍默认开启。局部光保持 12 槽路径，不改变样本数、页预算、过滤质量或 LOD 设置。

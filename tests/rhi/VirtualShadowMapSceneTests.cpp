@@ -2998,17 +2998,16 @@ ProfilingSnapshot profilingSnapshot(const std::string& name, const ProfilingRead
     return result;
 }
 
-void requireBuildDiagnosticInvariants(const ProfilingSnapshot& snapshot, bool clusterCulling, const std::string& label,
-    bool clusterPageBitset = false)
+void requireBuildDiagnosticInvariants(const ProfilingSnapshot& snapshot, const std::string& label)
 {
     require(snapshot.buildDiagnostics.size() == snapshot.statistics.size(), label + ": missing build diagnostic faces");
     for (size_t face = 0; face < snapshot.statistics.size(); ++face) {
         const auto& stats = snapshot.statistics[face];
         const auto& counters = snapshot.buildDiagnostics[face];
         const std::string prefix = label + "/face" + std::to_string(face);
-        if (!clusterCulling || stats[11] == 0 || stats[16] == 0) {
+        if (stats[11] == 0 || stats[16] == 0) {
             require(std::ranges::all_of(counters, [](uint64_t value) { return value == 0; }),
-                prefix + ": inactive, warm or cull-disabled face wrote build diagnostics");
+                prefix + ": inactive or warm face wrote build diagnostics");
             continue;
         }
         const uint64_t groups = counters[kVSMBuildDiagnosticClusterGroups];
@@ -3023,7 +3022,7 @@ void requireBuildDiagnosticInvariants(const ProfilingSnapshot& snapshot, bool cl
         require(valid <= groups && surviving <= valid, prefix + ": invalid cluster group counts");
         require(levels == valid * stats[11], prefix + ": bounds-valid groups did not test every face level");
         require(hits + near + outside + empty == levels, prefix + ": cluster level outcomes do not partition tests");
-        require(bitsetLevels == (clusterPageBitset ? levels : 0), prefix + ": build scan method does not match its diagnostic control");
+        require(bitsetLevels == levels, prefix + ": production build did not use the cluster bitset");
         require(counters[kVSMBuildDiagnosticClusterPageScanHistogram] + counters[kVSMBuildDiagnosticClusterBitsetScanHistogram] == near + outside,
             prefix + ": zero-length scans differ from near/outside outcomes");
         for (bool bitset : {false, true}) {
@@ -3070,8 +3069,6 @@ public:
         try {
             std::filesystem::create_directories(directory);
             registerProfilingEvidencePass();
-            require(VirtualShadowMapSettings{}.clusterPageBitset, "Production VSM settings must default to dirty-page bitsets");
-            require(VirtualShadowMapSettings{}.trianglePageBitset, "Production VSM settings must default to triangle dirty-page bitsets");
             require(!VirtualShadowMapSettings{}.profileBuildSubstages, "Build substage attribution must default off");
             const auto fixture = writeLocalFixture(directory / "Fixture", false);
             constexpr std::array modes{"Off", "Timing", "Work", "Both"};
@@ -3115,8 +3112,11 @@ public:
                 for (uint32_t mode = 0; mode < modes.size(); ++mode) {
                     const std::string name = modes[mode], evidence = name + "Evidence";
                     const bool timing = (mode & 1) != 0, work = (mode & 2) != 0;
+                    // Isolate instrumentation from demand feedback reallocations:
+                    // the second frame must reuse the same per-face physical pools.
                     graph.addNode(local ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass", name,
                         {{"lightCapacity", capacity}, {"compactOutputs", compact}, {"physicalPageBudget", 512}, {"physicalPageCount", tiny ? 4 : 512},
+                         {"demandDrivenBudget", false},
                          {"pageSize", kPageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", kClipmapCount},
                          {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002}, {"shadowDebug", true},
                          {"cacheEnabled", true}, {"receiverFootprint", false}, {"filter", compact ? "smrt" : local ? "pcf" : "hard"},
@@ -3220,7 +3220,7 @@ public:
                                 snapshots[mode].depth == snapshots[0].depth && snapshots[mode].statistics == snapshots[0].statistics,
                                 label + "-" + phase + ": instrumentation changed images or the 32-word statistics ABI");
                         }
-                        if (work) { requireBuildDiagnosticInvariants(snapshots[mode], true, label + "-" + phase + "-" + modes[mode], true); }
+                        if (work) { requireBuildDiagnosticInvariants(snapshots[mode], label + "-" + phase + "-" + modes[mode]); }
                     }
                     for (uint32_t face = 0; face < faces; ++face) {
                         for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
@@ -3303,50 +3303,30 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, DirectionalMark, MarkClipmapSpecialization, MarkRayPages, MarkPageSizeSpecialization, DirectionalProjection, TriangleBitset, DirectionalBuild, CompactBuild };
+enum class VirtualShadowMapEquivalenceMode { Production, MarkRayPages, DirectionalProjection, CompactBuild };
 
 class VirtualShadowMapEquivalenceTest : public RHITest
 {
 public:
     explicit VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode mode) : mode_(mode)
     {
-        name = mode == VirtualShadowMapEquivalenceMode::CompactBuild ? "virtual_shadow_map_compact_build_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::MarkPageSizeSpecialization ? "virtual_shadow_map_mark_page_size_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::DirectionalProjection ? "virtual_shadow_map_directional_projection_equivalence" :
+        name = mode == VirtualShadowMapEquivalenceMode::Production ? "virtual_shadow_map_production_coverage" :
             mode == VirtualShadowMapEquivalenceMode::MarkRayPages ? "virtual_shadow_map_mark_ray_pages_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization ? "virtual_shadow_map_mark_clipmap_specialization_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::DirectionalMark ? "virtual_shadow_map_directional_mark_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::DirectionalBuild ? "virtual_shadow_map_directional_build_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::TriangleBitset ? "virtual_shadow_map_triangle_page_bitset_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::MarkSamples ? "virtual_shadow_map_mark_samples_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::ClusterBitset ? "virtual_shadow_map_cluster_page_bitset_equivalence" :
-            "virtual_shadow_map_optimization_equivalence";
+            mode == VirtualShadowMapEquivalenceMode::DirectionalProjection ? "virtual_shadow_map_directional_projection_equivalence" :
+            "virtual_shadow_map_compact_build_equivalence";
         type = RHITestType::Rendering;
     }
 
     RHITestResult run(RHITestContext& context) override
     {
         bench::ValidationRecorder validation;
-        const bool bitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::ClusterBitset;
-        const bool markSamplesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkSamples;
-        const bool directionalMarkComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalMark;
-        const bool markClipmapComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization;
+        const bool production = mode_ == VirtualShadowMapEquivalenceMode::Production;
         const bool markRayPagesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkRayPages;
         const bool directionalProjectionComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalProjection;
-        const bool markPageSizeComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkPageSizeSpecialization;
-        const bool triangleBitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::TriangleBitset;
-        const bool directionalBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalBuild;
         const bool compactBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::CompactBuild;
-        const std::string reportName = compactBuildComparison ? "VirtualShadowMapCompactBuildEquivalence" :
-            markPageSizeComparison ? "VirtualShadowMapMarkPageSizeEquivalence" :
-            directionalProjectionComparison ? "VirtualShadowMapDirectionalProjectionEquivalence" :
-            markClipmapComparison ? "VirtualShadowMapMarkClipmapSpecializationEquivalence" :
+        const std::string reportName = production ? "VirtualShadowMapProductionCoverage" :
             markRayPagesComparison ? "VirtualShadowMapMarkRayPagesEquivalence" :
-            directionalMarkComparison ? "VirtualShadowMapDirectionalMarkEquivalence" :
-            directionalBuildComparison ? "VirtualShadowMapDirectionalBuildEquivalence" :
-            triangleBitsetComparison ? "VirtualShadowMapTrianglePageBitsetEquivalence" :
-            markSamplesComparison ? "VirtualShadowMapMarkSamplesEquivalence" :
-            bitsetComparison ? "VirtualShadowMapClusterPageBitsetEquivalence" : "VirtualShadowMapOptimizationEquivalence";
+            directionalProjectionComparison ? "VirtualShadowMapDirectionalProjectionEquivalence" : "VirtualShadowMapCompactBuildEquivalence";
         const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
         Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
             {"buildDiagnosticCounterNames", kVirtualShadowMapBuildDiagnosticCounterNames}};
@@ -3371,205 +3351,50 @@ public:
             require(scene::buildMeshletStreamAssetOffline({.sourcePath = offscreen.source, .outputPath = offscreen.cache,
                 .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
 
+            if (directionalProjectionComparison || markRayPagesComparison) {
+                const char* property = directionalProjectionComparison ? "directionalProjection" : "markRayPages";
+                const char* benchmark = directionalProjectionComparison ? "benchmarkDirectionalProjection" : "benchmarkMarkRayPages";
+                report["selectionControls"] = {
+                    {"Baseline",{{property,true},{benchmark,false}}}, {"Candidate",{{property,false},{benchmark,true}}},
+                    {"Default",Json::object()}, {"ProductionOff",{{property,false}}}, {"ProductionOn",{{property,true}}},
+                    {"Toggle",{{property,"frame % 2 != 0"}}}};
+                const bool defaultValue = directionalProjectionComparison ? VirtualShadowMapSettings{}.directionalProjection : VirtualShadowMapSettings{}.markRayPages;
+                report["productionDefault"] = defaultValue;
+                require(defaultValue == markRayPagesComparison, "Unexpected default for the retained experimental path");
+            }
             constexpr uint32_t capacity = 4;
-            const std::vector<const char*> baseArms = compactBuildComparison ? std::vector<const char*>{"Direct", "Compact"} :
-                (markClipmapComparison || markPageSizeComparison) ? std::vector<const char*>{"Baseline", "Specialized"} :
-                markRayPagesComparison ? std::vector<const char*>{"Baseline", "RayPages"} :
-                (directionalBuildComparison || directionalMarkComparison || directionalProjectionComparison) ? std::vector<const char*>{"Generic", "Directional"} :
-                triangleBitsetComparison ? std::vector<const char*>{"Baseline", "TriangleBitset"} :
-                markSamplesComparison ? std::vector<const char*>{"Baseline", "Prepared"} :
-                bitsetComparison ? std::vector<const char*>{"Baseline", "Bitset"} :
-                std::vector<const char*>{"Legacy", "MarkOnly", "ClusterOnly", "Both"};
-            if (bitsetComparison) {
-                report["selectionControls"] = {
-                    {"Baseline",{{"clusterPageBitset",true},{"benchmarkClusterPageBitset",false}}},
-                    {"Bitset",Json::object()},
-                    {"ProductionOff",{{"clusterPageBitset",false}}},
-                    {"CullDisabled",{{"clusterPageBitset",true},{"benchmarkClusterPageBitset",true},{"benchmarkDisableClusterCull",true}}}};
-            }
-            if (markSamplesComparison) {
-                report["selectionControls"] = {
-                    {"Baseline",{{"benchmarkMarkSamples",false},{"benchmarkLegacyMark",false}}},
-                    {"Prepared",{{"benchmarkLegacyMark",false}}},
-                    {"PreparedLegacyMark",{{"benchmarkMarkSamples",true},{"benchmarkLegacyMark",true}}}};
-                report["productionDefault"] = VirtualShadowMapSettings{}.optimizeMarkSamples;
-                require(VirtualShadowMapSettings{}.optimizeMarkSamples, "Production VSM settings must default to prepared local-light Mark samples");
-            }
-            uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0, bitsetControlStates = 0;
-            uint64_t markSamplesStates = 0, markSamplesControlStates = 0;
-            uint64_t directionalMarkStates = 0, directionalMarkControlStates = 0;
-            uint64_t markPageSizeStates = 0, markPageSizeControlStates = 0;
-            std::array<uint32_t, 8> markPageSizeSweepStates{};
-            if (markPageSizeComparison) {
-                report["selectionControls"] = {
-                    {"Baseline",{{"markPageSizeSpecialization",true},{"benchmarkMarkPageSizeSpecialization",false}}},
-                    {"Specialized",{{"markPageSizeSpecialization",false},{"benchmarkMarkPageSizeSpecialization",true}}},
-                    {"Default",Json::object()},
-                    {"ProductionOff",{{"markPageSizeSpecialization",false}}},
-                    {"ProductionOn",{{"markPageSizeSpecialization",true}}},
-                    {"Toggle",{{"markPageSizeSpecialization","frame % 2 != 0"}}}};
-                report["productionDefault"] = VirtualShadowMapSettings{}.specializeMarkPageSize;
-                report["defaultReferenceArm"] = "Baseline";
-                require(!VirtualShadowMapSettings{}.specializeMarkPageSize, "Unqualified Mark page-size specialization must default off");
-            }
-            uint64_t directionalProjectionStates = 0, directionalProjectionControlStates = 0, mixedProjectionStates = 0;
-            std::array<uint64_t, 2> directionalProjectionReceiversByPass{}, localProjectionReceiversByType{};
-            if (directionalProjectionComparison) {
-                report["selectionControls"] = {
-                    {"Generic",{{"directionalProjection",true},{"benchmarkDirectionalProjection",false}}},
-                    {"Directional",{{"directionalProjection",false},{"benchmarkDirectionalProjection",true}}},
-                    {"Default",Json::object()},
-                    {"ProductionOff",{{"directionalProjection",false}}},
-                    {"ProductionOn",{{"directionalProjection",true}}},
-                    {"Toggle",{{"directionalProjection","frame % 2 != 0"}}}};
-                report["productionDefault"] = VirtualShadowMapSettings{}.directionalProjection;
-                report["defaultReferenceArm"] = "Generic";
-                report["onePassProjection"] = "Disabled except mixed-onepass controls; the per-face directional shader handles the main matrix";
-                require(!VirtualShadowMapSettings{}.directionalProjection,
-                    "Unqualified directional Projection specialization must default off");
-            }
-            uint64_t markClipmapStates = 0, markClipmapControlStates = 0;
-            std::array<uint32_t, 12> markClipmapSweepStates{};
-            std::array<uint64_t, 2> directionalMarkReceiversByPass{}, localMarkReceiversByType{};
-            if (markClipmapComparison) {
-                report["selectionControls"] = {
-                    {"Baseline",{{"markClipmapSpecialization",true},{"benchmarkMarkClipmapSpecialization",false},{"benchmarkLegacyMark",false}}},
-                    {"Specialized",{{"markClipmapSpecialization",false},{"benchmarkMarkClipmapSpecialization",true},{"benchmarkLegacyMark",false}}},
-                    {"Default",{{"benchmarkLegacyMark",false}}},
-                    {"BaselineLegacyMark",{{"markClipmapSpecialization",true},{"benchmarkMarkClipmapSpecialization",false},{"benchmarkLegacyMark",true}}},
-                    {"SpecializedLegacyMark",{{"markClipmapSpecialization",false},{"benchmarkMarkClipmapSpecialization",true},{"benchmarkLegacyMark",true}}},
-                    {"ProductionOff",{{"markClipmapSpecialization",false},{"benchmarkLegacyMark",false}}},
-                    {"ProductionOn",{{"markClipmapSpecialization",true},{"benchmarkLegacyMark",false}}}};
-                report["productionDefault"] = VirtualShadowMapSettings{}.specializeMarkClipmaps;
-                report["defaultReferenceArm"] = "Specialized";
-                report["directionalMark"] = true;
-                report["demandDrivenBudget"] = false;
-                report["clipmapSweep"] = "Resident floor LightsPass SMRT, counts 1 through 12, Cold/Warm; single pass retains its supported Hard filter";
-                require(VirtualShadowMapSettings{}.specializeMarkClipmaps,
-                    "Production VSM settings must default to Mark clipmap specialization");
-            }
-            uint64_t markRayPagesStates = 0, markRayPagesControlStates = 0, markRayPagesReducedStates = 0, markRayPagesSweepStates = 0;
-            if (markRayPagesComparison) {
-                report["selectionControls"] = {
-                    {"Baseline",{{"markRayPages",true},{"benchmarkMarkRayPages",false},{"benchmarkLegacyMark",false}}},
-                    {"RayPages",{{"markRayPages",false},{"benchmarkMarkRayPages",true},{"benchmarkLegacyMark",false}}},
-                    {"Default",{{"benchmarkLegacyMark",false}}},
-                    {"RayPagesLegacyMark",{{"markRayPages",false},{"benchmarkMarkRayPages",true},{"benchmarkLegacyMark",true}}},
-                    {"ProductionOn",{{"markRayPages",true},{"benchmarkLegacyMark",false}}}};
-                report["productionDefault"] = VirtualShadowMapSettings{}.markRayPages;
-                report["defaultReferenceArm"] = "RayPages";
-                report["directionalMark"] = true;
-                report["demandDrivenBudget"] = false;
-                require(VirtualShadowMapSettings{}.markRayPages, "Production VSM settings must default to Mark ray pages");
-            }
-            if (directionalMarkComparison) {
-                report["selectionControls"] = {
-                    {"Generic",{{"directionalMark",true},{"benchmarkDirectionalMark",false},{"benchmarkLegacyMark",false}}},
-                    {"Directional",{{"directionalMark",false},{"benchmarkDirectionalMark",true},{"benchmarkLegacyMark",false}}},
-                    {"Default",{{"benchmarkLegacyMark",false}}},
-                    {"GenericLegacyMark",{{"directionalMark",true},{"benchmarkDirectionalMark",false},{"benchmarkLegacyMark",true}}},
-                    {"DirectionalLegacyMark",{{"directionalMark",false},{"benchmarkDirectionalMark",true},{"benchmarkLegacyMark",true}}},
-                    {"ProductionOff",{{"directionalMark",false},{"benchmarkLegacyMark",false}}},
-                    {"ProductionOn",{{"directionalMark",true},{"benchmarkLegacyMark",false}}}};
-                report["productionDefault"] = VirtualShadowMapSettings{}.directionalMark;
-                report["defaultReferenceArm"] = "Directional";
-                require(VirtualShadowMapSettings{}.directionalMark, "Production VSM settings must default to directional Mark specialization");
-            }
-            uint64_t triangleBitsetStates = 0, triangleBitsetControlStates = 0, triangleBitsetReducedStates = 0;
-            std::array<uint64_t, 2> triangleBitsetWordsByPass{};
-            if (triangleBitsetComparison) {
-                require(VirtualShadowMapSettings{}.trianglePageBitset, "Production VSM settings must default to triangle dirty-page bitsets");
-                report["selectionControls"] = {
-                    {"Baseline",{{"trianglePageBitset",true},{"benchmarkTrianglePageBitset",false}}},
-                    {"TriangleBitset",Json::object()},
-                    {"ProductionOff",{{"trianglePageBitset",false}}},
-                    {"ClusterBitsetOff",{{"benchmarkTrianglePageBitset",true},{"benchmarkClusterPageBitset",false}}},
-                    {"CullDisabled",{{"benchmarkTrianglePageBitset",true},{"benchmarkDisableClusterCull",true}}}};
-            }
-            uint64_t directionalBuildStates = 0, directionalBuildControlStates = 0, localBuildTriangles = 0;
-            std::array<uint64_t, 2> directionalBuildTrianglesByPass{};
-            if (directionalBuildComparison) {
-                report["selectionControls"] = {
-                    {"Generic",{{"directionalBuild",true},{"benchmarkDirectionalBuild",false}}},
-                    {"Directional", nlohmann::json::object()},
-                    {"GenericPages",{{"directionalBuild",false},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
-                    {"DirectionalPages",{{"directionalBuild",false},{"benchmarkDirectionalBuild",true},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
-                    {"GenericNoCull",{{"directionalBuild",false},{"benchmarkDisableClusterCull",true}}},
-                    {"DirectionalNoCull",{{"benchmarkDisableClusterCull",true}}}};
-            }
-            uint64_t compactBuildStates = 0, compactBuildControlStates = 0;
-            uint64_t compactAllSurviveFaces = 0, compactPartialSurviveFaces = 0, compactWarmFaces = 0;
-            std::array<uint64_t, 2> compactBuildTrianglesByPass{};
-            if (compactBuildComparison) {
-                report["selectionControls"] = {
-                    {"Direct",{{"benchmarkCompactBuild",false}}},
-                    {"Compact",{{"benchmarkCompactBuild",true}}},
-                    {"DirectPages",{{"benchmarkCompactBuild",false},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
-                    {"CompactPages",{{"benchmarkCompactBuild",true},{"benchmarkClusterPageBitset",false},{"benchmarkTrianglePageBitset",false}}},
-                    {"DirectNoCull",{{"benchmarkCompactBuild",false},{"benchmarkDisableClusterCull",true}}},
-                    {"CompactNoCull",{{"benchmarkCompactBuild",true},{"benchmarkDisableClusterCull",true}}},
-                    {"DirectGeneric",{{"benchmarkCompactBuild",false},{"benchmarkDirectionalBuild",false}}},
-                    {"CompactGeneric",{{"benchmarkCompactBuild",true},{"benchmarkDirectionalBuild",false}}}};
-            }
-            std::array<uint64_t, 2> defaultBitsetLevelsByPass{};
+            uint32_t states = 0, controlStates = 0, mixedStates = 0, reducedStates = 0, sweptStates = 0, compactAll = 0, compactPartial = 0, compactWarm = 0;
+            std::array<uint32_t, 12> clipmapStates{};
+            std::array<uint32_t, 8> pageSizeStates{};
+            std::array<uint64_t, 2> directionalReceivers{}, localReceivers{}, bitsetWords{};
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
-                    std::vector<std::string> filters = mainMatrix ? (directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || markPageSizeComparison ?
+                    std::vector<std::string> filters = mainMatrix ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} :
-                        (triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ?
-                        std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-max"} : markSamplesComparison ?
-                        std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} : bitsetComparison ?
-                        std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33"} :
-                        std::vector<std::string>{"pcf", "smrt"}) :
                         std::vector<std::string>{nearCase ? "smrt" : roomCase ? "pcf" : "hard"};
-                    if ((markClipmapComparison || markRayPagesComparison || directionalProjectionComparison) && mainMatrix && !streamed) {
+                    if (!compactBuildComparison && mainMatrix && !streamed) {
                         for (uint32_t count = 1; count <= 12; ++count) { filters.push_back("smrt-level-" + std::to_string(count)); }
                     }
                     if (directionalProjectionComparison && mainMatrix) { filters.push_back("smrt-onepass"); }
-                    if (markPageSizeComparison && mainMatrix && !streamed) {
+                    if (production && mainMatrix && !streamed) {
                         for (uint32_t shift = 0; shift < 8; ++shift) { filters.push_back("smrt-page-" + std::to_string(shift)); }
                     }
                     for (const auto& filter : filters) {
                         const bool single = filter.starts_with("single-");
                         const bool mixedProjection = directionalProjectionComparison && filter == "smrt-onepass";
-                        const bool markClipmapSweep = (markClipmapComparison || markRayPagesComparison || directionalProjectionComparison) && filter.starts_with("smrt-level-");
-                        const bool markPageSizeSweep = markPageSizeComparison && filter.starts_with("smrt-page-");
+                        const bool markClipmapSweep = filter.starts_with("smrt-level-");
+                        const bool markPageSizeSweep = filter.starts_with("smrt-page-");
                         const uint32_t pageShift = markPageSizeSweep ? uint32_t(std::stoul(filter.substr(10))) : 7u;
                         const uint32_t pageSize = markPageSizeSweep ? 1u << pageShift : kPageSize;
                         const uint32_t clipmapCount = markClipmapSweep ? uint32_t(std::stoul(filter.substr(11))) :
                             filter == "smrt-max" ? 12u : kClipmapCount;
-                        const bool bitsetControls = bitsetComparison && mainMatrix && !streamed &&
+                        const bool controls = !production && !compactBuildComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
-                        const bool markSamplesControls = markSamplesComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool directionalMarkControls = directionalMarkComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool markClipmapControls = markClipmapComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool markRayPagesControls = markRayPagesComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool directionalProjectionControls = directionalProjectionComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool markPageSizeControls = markPageSizeComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool triangleBitsetControls = triangleBitsetComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool directionalBuildControls = directionalBuildComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        const bool compactBuildControls = compactBuildComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        auto arms = baseArms;
-                        if (compactBuildControls) { arms.insert(arms.end(), {"DirectPages", "CompactPages", "DirectNoCull", "CompactNoCull", "DirectGeneric", "CompactGeneric"}); }
-                        if (directionalBuildControls) { arms.insert(arms.end(), {"GenericPages", "DirectionalPages", "GenericNoCull", "DirectionalNoCull"}); }
-                        if (markSamplesControls) { arms.push_back("PreparedLegacyMark"); }
-                        if (directionalMarkControls) { arms.insert(arms.end(), {"Default", "GenericLegacyMark", "DirectionalLegacyMark", "ProductionOff", "ProductionOn"}); }
-                        if (markClipmapControls) { arms.insert(arms.end(), {"Default", "BaselineLegacyMark", "SpecializedLegacyMark", "ProductionOff", "ProductionOn"}); }
-                        if (markRayPagesControls) { arms.insert(arms.end(), {"Default", "RayPagesLegacyMark", "ProductionOn"}); }
-                        if (directionalProjectionControls) { arms.insert(arms.end(), {"Default", "ProductionOff", "ProductionOn", "Toggle"}); }
-                        if (markPageSizeControls) { arms.insert(arms.end(), {"Default", "ProductionOff", "ProductionOn", "Toggle"}); }
-                        if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
-                        if (triangleBitsetControls) { arms.insert(arms.end(), {"ProductionOff", "ClusterBitsetOff", "CullDisabled"}); }
+                        std::vector<const char*> arms = production ? std::vector<const char*>{"Production"} :
+                            compactBuildComparison ? std::vector<const char*>{"Direct", "Compact"} :
+                            markRayPagesComparison ? std::vector<const char*>{"Baseline", "RayPages"} : std::vector<const char*>{"Generic", "Directional"};
+                        if (controls) { arms.insert(arms.end(), {"Default", "ProductionOff", "ProductionOn", "Toggle"}); }
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
                         const uint32_t faces = single ? 1 : capacity * 6, layers = single ? 1 : capacity;
                         const std::string label = std::string(streamed ? "Stream-" : "Resident-") +
@@ -3613,137 +3438,17 @@ public:
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", filter == "smrt-one" ? 1 : 2},
                                  {"smrtSamplesPerRay", filter == "smrt-max" ? 32 : 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
-                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 1) == 0},
-                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 2) == 0},
-                                 {"benchmarkClusterPageBitset", false}, {"benchmarkTrianglePageBitset", false}};
-                            if (markPageSizeComparison) {
-                                settings["demandDrivenBudget"] = false;
-                                settings["benchmarkLegacyMark"] = false;
-                                settings["benchmarkDisableClusterCull"] = false;
-                                settings["benchmarkClusterPageBitset"] = true;
-                                settings["benchmarkTrianglePageBitset"] = true;
+                                 {"demandDrivenBudget", false}};
+                            if (directionalProjectionComparison || markRayPagesComparison) {
+                                const char* property = directionalProjectionComparison ? "directionalProjection" : "markRayPages";
+                                const char* benchmark = directionalProjectionComparison ? "benchmarkDirectionalProjection" : "benchmarkMarkRayPages";
                                 if (arm < 2) {
-                                    settings["markPageSizeSpecialization"] = arm == 0;
-                                    settings["benchmarkMarkPageSizeSpecialization"] = arm == 1;
-                                } else if (arm != 2) {
-                                    settings["markPageSizeSpecialization"] = arm == 4;
-                                }
+                                    settings[property] = arm == 0;
+                                    settings[benchmark] = arm == 1;
+                                } else if (arm != 2) { settings[property] = arm == 4; }
                             }
-                            if (directionalProjectionComparison) {
-                                settings["demandDrivenBudget"] = false;
-                                settings["onePassProjection"] = mixedProjection;
-                                settings["benchmarkClusterPageBitset"] = true;
-                                settings["benchmarkTrianglePageBitset"] = true;
-                                if (arm < 2) {
-                                    settings["directionalProjection"] = arm == 0;
-                                    settings["benchmarkDirectionalProjection"] = arm == 1;
-                                } else if (arm != 2) {
-                                    settings["directionalProjection"] = arm == 4;
-                                }
-                            }
-                            if (markClipmapComparison) {
-                                settings["directionalMark"] = true;
-                                // Isolate shader equivalence from adaptive quota changes,
-                                // which can legitimately rebuild the first warm frame.
-                                settings["demandDrivenBudget"] = false;
-                                if (arm >= 5) {
-                                    settings["markClipmapSpecialization"] = arm == 6;
-                                } else if (arm != 2) {
-                                    const bool specialized = arm == 1 || arm == 4;
-                                    settings["markClipmapSpecialization"] = !specialized;
-                                    settings["benchmarkMarkClipmapSpecialization"] = specialized;
-                                }
-                                settings["benchmarkLegacyMark"] = arm == 3 || arm == 4;
-                                settings["benchmarkClusterPageBitset"] = true;
-                                settings["benchmarkTrianglePageBitset"] = true;
-                            }
-                            if (markRayPagesComparison) {
-                                settings["directionalMark"] = true;
-                                settings["demandDrivenBudget"] = false;
-                                if (arm == 4) {
-                                    settings["markRayPages"] = true;
-                                } else if (arm != 2) {
-                                    const bool rayPages = arm == 1 || arm == 3;
-                                    settings["markRayPages"] = !rayPages;
-                                    settings["benchmarkMarkRayPages"] = rayPages;
-                                }
-                                settings["benchmarkLegacyMark"] = arm == 3;
-                                settings["benchmarkClusterPageBitset"] = true;
-                                settings["benchmarkTrianglePageBitset"] = true;
-                            }
-                            if (directionalMarkComparison) {
-                                // Conflicting production values exercise benchmark precedence;
-                                // the Default control omits both properties.
-                                if (arm >= 5) {
-                                    settings["directionalMark"] = arm == 6;
-                                } else if (arm != 2) {
-                                    const bool specialized = arm == 1 || arm == 4;
-                                    settings["directionalMark"] = !specialized;
-                                    settings["benchmarkDirectionalMark"] = specialized;
-                                }
-                                settings["benchmarkLegacyMark"] = arm == 3 || arm == 4;
-                                settings["benchmarkClusterPageBitset"] = true;
-                                settings["benchmarkTrianglePageBitset"] = true;
-                            }
-                            if (compactBuildComparison) {
-                                settings["benchmarkCompactBuild"] = (arm & 1u) != 0u;
-                                settings["benchmarkClusterPageBitset"] = arm < 2 || arm >= 4;
-                                settings["benchmarkTrianglePageBitset"] = arm < 2 || arm >= 4;
-                                settings["benchmarkDisableClusterCull"] = arm == 4 || arm == 5;
-                                if (arm >= 6) { settings["benchmarkDirectionalBuild"] = false; }
-                            }
-                            if (directionalBuildComparison) {
-                                // Odd default arms omit both switches; controls also cover
-                                // production opt-out and benchmark precedence in both directions.
-                                if (arm == 0) {
-                                    settings["directionalBuild"] = true;
-                                    settings["benchmarkDirectionalBuild"] = false;
-                                } else if (arm == 2 || arm == 4) {
-                                    settings["directionalBuild"] = false;
-                                } else if (arm == 3) {
-                                    settings["directionalBuild"] = false;
-                                    settings["benchmarkDirectionalBuild"] = true;
-                                }
-                                settings["benchmarkClusterPageBitset"] = arm < 2 || arm >= 4;
-                                settings["benchmarkTrianglePageBitset"] = arm < 2 || arm >= 4;
-                                settings["benchmarkDisableClusterCull"] = arm >= 4;
-                            }
-                            if (bitsetComparison) {
-                                // The baseline explicitly preserves legacy scanning. A conflicting
-                                // production value proves the benchmark override takes precedence.
-                                // The Bitset arm deliberately omits both values to test the default.
-                                settings.erase("benchmarkClusterPageBitset");
-                                if (arm == 0) {
-                                    settings["clusterPageBitset"] = true;
-                                    settings["benchmarkClusterPageBitset"] = false;
-                                } else if (arm == 2) {
-                                    settings["clusterPageBitset"] = false;
-                                } else if (arm == 3) {
-                                    settings["clusterPageBitset"] = true;
-                                    settings["benchmarkClusterPageBitset"] = true;
-                                    settings["benchmarkDisableClusterCull"] = true;
-                                }
-                            }
-                            if (markSamplesComparison) {
-                                // Baseline explicitly disables preparation; Prepared omits the
-                                // override to exercise the production default (local lights only).
-                                if (arm != 1) { settings["benchmarkMarkSamples"] = arm != 0; }
-                                settings["benchmarkLegacyMark"] = arm == 2;
-                                settings["benchmarkClusterPageBitset"] = true;
-                            }
-                            if (triangleBitsetComparison) {
-                                settings.erase("benchmarkTrianglePageBitset");
-                                settings["benchmarkClusterPageBitset"] = arm != 3;
-                                if (arm == 0) {
-                                    settings["trianglePageBitset"] = true;
-                                    settings["benchmarkTrianglePageBitset"] = false;
-                                } else if (arm == 2) {
-                                    settings["trianglePageBitset"] = false;
-                                } else if (arm >= 3) {
-                                    settings["benchmarkTrianglePageBitset"] = true;
-                                    settings["benchmarkDisableClusterCull"] = arm == 4;
-                                }
-                            }
+                            if (directionalProjectionComparison) { settings["onePassProjection"] = mixedProjection; }
+                            if (compactBuildComparison) { settings["benchmarkCompactBuild"] = arm == 1; }
                             graph.addNode(single ? "VirtualShadowMapPass" : "VirtualShadowMapLightsPass", name, settings);
                             graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
                             graph.addNode("VSMProfilingEvidencePass", evidence,
@@ -3761,13 +3466,10 @@ public:
                         for (uint32_t frame = 0; frame < frameCount; ++frame) {
                             const std::string phase = std::array{"Cold", "Warm", "Dirty", "Overflow", "Recover"}[frame];
                             validation.phase(label + "-" + phase);
-                            if (directionalProjectionControls) {
-                                require(graph.setNodeRuntimeProperty(graph.findNode("Toggle")->id, "directionalProjection", (frame & 1u) != 0),
-                                    "Toggle directional Projection compilation on a persistent pass");
-                            }
-                            if (markPageSizeControls) {
-                                require(graph.setNodeRuntimeProperty(graph.findNode("Toggle")->id, "markPageSizeSpecialization", (frame & 1u) != 0),
-                                    "Toggle Mark page-size compilation on a persistent pass");
+                            if (controls) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode("Toggle")->id,
+                                    directionalProjectionComparison ? "directionalProjection" : "markRayPages", (frame & 1u) != 0),
+                                    "Toggle retained experimental path on a persistent pass");
                             }
                             if (frame == 2) {
                                 float4x4 translation; translation.SetupByTranslation(float3(.35f,0,.2f));
@@ -3796,260 +3498,76 @@ public:
                                     {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
-                                if (markClipmapComparison || markRayPagesComparison || directionalProjectionComparison) {
-                                    require(snapshot.statistics[0][11] == clipmapCount,
-                                        label + "-" + phase + ": GPU directional clipmap count differs from the compiled-bound case");
+                                require(snapshot.statistics[0][11] == clipmapCount,
+                                    label + "-" + phase + ": GPU directional clipmap count differs from its compiled bound");
+                                requireBuildDiagnosticInvariants(snapshot, label + "-" + phase + "-" + arms[arm]);
+                                for (uint32_t face = 0; face < faces; ++face) {
+                                    const auto& counts = snapshot.workload[face];
+                                    const auto& stats = snapshot.statistics[face];
+                                    require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
+                                        (stats[0] == 0 || counts[kVSMWorkMarkPageRequests] > 0), label + ": invalid Mark request count");
+                                    require(counts[kVSMWorkBuildPageTests] == 0 &&
+                                        snapshot.buildDiagnostics[face][kVSMBuildDiagnosticTriangleBitsetPageHits] == stats[3],
+                                        label + ": production triangle enumeration did not use the dirty-page bitset");
+                                    require(stats[4] == std::min(stats[3], frame == 3 ? 1u : 65535u) && stats[5] == stats[3] - stats[4],
+                                        label + ": work capacity/overflow accounting mismatch");
                                 }
-                                requireBuildDiagnosticInvariants(snapshot,
-                                    compactBuildComparison ? arm != 4 && arm != 5 : directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || markPageSizeComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
-                                    label + "-" + phase + "-" + arms[arm],
-                                    compactBuildComparison ? arm < 2 || arm >= 6 : directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || markPageSizeComparison || (bitsetComparison && arm == 1));
                                 if (arm != 0) {
-                                    const auto& baseline = snapshots[(directionalMarkComparison || markClipmapComparison || markRayPagesComparison) && arm == 2 ? 1 : 0];
+                                    const auto& baseline = snapshots[0];
+                                    const bool candidateControl = arm == 2 ? markRayPagesComparison :
+                                        arm == 4 || (arm == 5 && (frame & 1u) != 0);
+                                    const uint32_t referenceArm = arm >= 2 && candidateControl ? 1u : 0u;
+                                    const auto& workReference = snapshots[referenceArm];
+                                    entry["arms"][arms[arm]]["workReferenceArm"] = arms[referenceArm];
                                     require(snapshot.shadow == baseline.shadow && snapshot.debug == baseline.debug &&
-                                        snapshot.depth == baseline.depth && snapshot.statistics == baseline.statistics,
-                                        label + "-" + phase + ": " + arms[arm] + " changed images/depth or the 32-word statistics ABI");
-                                }
-                            }
-                            if (compactBuildComparison) {
-                                ++compactBuildStates;
-                                compactBuildControlStates += compactBuildControls;
-                                compactBuildTrianglesByPass[single ? 0 : 1] += work[1][kVSMWorkBuildDecodedTriangles];
-                                for (uint32_t face = 0; face < faces; ++face) {
-                                    const auto& counters = snapshots[1].buildDiagnostics[face];
-                                    const auto& stats = snapshots[1].statistics[face];
-                                    const uint64_t groups = counters[kVSMBuildDiagnosticClusterGroups];
-                                    const uint64_t surviving = counters[kVSMBuildDiagnosticClusterSurvivingGroups];
-                                    compactAllSurviveFaces += groups > 0 && surviving == groups;
-                                    compactPartialSurviveFaces += surviving > 0 && surviving < groups;
-                                    if (frame == 1 && stats[11] > 0) {
-                                        require(groups == 0 && surviving == 0 &&
-                                            snapshots[1].workload[face][kVSMWorkBuildActiveTriangleSlots] == 0,
-                                            label + ": warm compact build retained candidate work");
-                                        ++compactWarmFaces;
-                                    }
-                                }
-                                for (uint32_t arm = 1; arm < arms.size(); arm += 2) {
-                                    const auto& baseline = snapshots[arm - 1];
-                                    const auto& candidate = snapshots[arm];
-                                    require(candidate.buildDiagnostics == baseline.buildDiagnostics,
-                                        label + "-" + phase + ": compact build changed precheck or triangle diagnostics");
-                                    for (uint32_t face = 0; face < faces; ++face) {
-                                        for (const auto* snapshot : {&baseline, &candidate}) {
-                                            const auto& counts = snapshot->workload[face];
-                                            require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
-                                                (snapshot->statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
-                                                label + "-" + phase + ": invalid shared Mark request count");
-                                        }
-                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                            require(candidate.workload[face][counter] == baseline.workload[face][counter],
-                                                label + "-" + phase + ": compact build changed deterministic work");
-                                        }
-                                    }
-                                }
-                            } else if (directionalBuildComparison) {
-                                ++directionalBuildStates;
-                                directionalBuildControlStates += directionalBuildControls;
-                                directionalBuildTrianglesByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkBuildDecodedTriangles];
-                                // Multi-light face blocks reserve six slots each: Sun, Moon, Point, Spot.
-                                if (!single) {
-                                    for (uint32_t face = 12; face < faces; ++face) {
-                                        localBuildTriangles += snapshots[1].workload[face][kVSMWorkBuildDecodedTriangles];
-                                    }
-                                }
-                                for (uint32_t arm = 1; arm < arms.size(); arm += 2) {
-                                    const auto& baseline = snapshots[arm - 1];
-                                    const auto& candidate = snapshots[arm];
-                                    require(candidate.buildDiagnostics == baseline.buildDiagnostics,
-                                        label + "-" + phase + ": directional specialization changed build diagnostics");
-                                    for (uint32_t face = 0; face < faces; ++face) {
-                                        for (const auto* snapshot : {&baseline, &candidate}) {
-                                            const auto& counts = snapshot->workload[face];
-                                            require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
-                                                (snapshot->statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
-                                                label + "-" + phase + ": invalid shared Mark request count");
-                                        }
-                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                            // Shared Mark cache collisions affect atomic request counts only.
-                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                            require(candidate.workload[face][counter] == baseline.workload[face][counter],
-                                                label + "-" + phase + ": directional specialization changed deterministic work");
-                                        }
-                                    }
-                                }
-                            } else if (triangleBitsetComparison) {
-                                ++triangleBitsetStates;
-                                triangleBitsetControlStates += triangleBitsetControls;
-                                triangleBitsetReducedStates += work[1][kVSMWorkBuildPageTests] < work[0][kVSMWorkBuildPageTests];
-                                for (uint32_t face = 0; face < faces; ++face) {
-                                    for (uint32_t arm = 0; arm < arms.size(); ++arm) {
-                                        const auto& counters = snapshots[arm].buildDiagnostics[face];
-                                        const auto& stats = snapshots[arm].statistics[face];
-                                        const bool enumerate = arm == 1;
-                                        require(counters[kVSMBuildDiagnosticTriangleBitsetPageHits] == (enumerate ? stats[3] : 0),
-                                            label + "-" + phase + ": bitset hits disagree with emitted triangle/page work");
-                                        require(enumerate || counters[kVSMBuildDiagnosticTriangleBitsetWordTests] == 0,
-                                            label + "-" + phase + ": disabled triangle bitset loaded words");
-                                        if (enumerate) {
-                                            require(snapshots[arm].workload[face][kVSMWorkBuildPageTests] == 0,
-                                                label + "-" + phase + ": bitset path still read per-page metadata");
-                                            triangleBitsetWordsByPass[single ? 0 : 1] += counters[kVSMBuildDiagnosticTriangleBitsetWordTests];
-                                        } else {
-                                            require(snapshots[arm].workload[face][kVSMWorkBuildPageTests] >= stats[3],
-                                                label + "-" + phase + ": baseline emitted more work than tested pages");
-                                        }
-                                        // Global append order is unspecified, but all partial fine pages
-                                        // are invalidated on overflow; consumers use the coarse fallback.
-                                        require(stats[4] == std::min(stats[3], frame == 3 ? 1u : 65535u) && stats[5] == stats[3] - stats[4],
-                                            label + "-" + phase + ": work capacity/overflow accounting mismatch");
-                                        if (arm < 3) {
-                                            for (uint32_t counter = 0; counter < kVSMBuildDiagnosticTriangleBitsetWordTests; ++counter) {
-                                                require(counters[counter] == snapshots[0].buildDiagnostics[face][counter],
-                                                    label + "-" + phase + ": triangle enumeration changed cluster diagnostics");
-                                            }
-                                        }
-                                        if (arm == 0 || arm == 4) { continue; }
-                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                            if (counter == kVSMWorkMarkPageRequests || counter == kVSMWorkBuildPageTests) { continue; }
-                                            require(snapshots[arm].workload[face][counter] == snapshots[0].workload[face][counter],
-                                                label + "-" + phase + ": triangle enumeration changed deterministic work");
-                                        }
-                                        if (!enumerate) {
-                                            require(snapshots[arm].workload[face][kVSMWorkBuildPageTests] == snapshots[0].workload[face][kVSMWorkBuildPageTests],
-                                                label + "-" + phase + ": fallback did not restore metadata scanning");
-                                        }
-                                    }
-                                }
-                            } else if (directionalProjectionComparison || markPageSizeComparison) {
-                                if (markPageSizeComparison) {
-                                    if (markPageSizeSweep) { ++markPageSizeSweepStates[pageShift]; }
-                                    else { ++markPageSizeStates; }
-                                    markPageSizeControlStates += markPageSizeControls;
-                                    directionalMarkReceiversByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkMarkReceiverDispatches];
-                                    if (!single) {
-                                        for (uint32_t face = 12; face < faces; ++face) {
-                                            localMarkReceiversByType[(face - 12) / 6] += snapshots[1].workload[face][kVSMWorkMarkReceiverDispatches];
-                                        }
-                                    }
-                                } else if (markClipmapSweep) { ++markClipmapSweepStates[clipmapCount - 1]; }
-                                else if (mixedProjection) { ++mixedProjectionStates; }
-                                else { ++directionalProjectionStates; }
-                                directionalProjectionControlStates += directionalProjectionControls;
-                                if (!mixedProjection) {
-                                    directionalProjectionReceiversByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkProjectionReceivers];
-                                    if (!single) {
-                                        for (uint32_t face = 12; face < faces; ++face) {
-                                            localProjectionReceiversByType[(face - 12) / 6] += snapshots[1].workload[face][kVSMWorkProjectionReceivers];
-                                        }
-                                    }
-                                }
-                                for (uint32_t arm = 1; arm < arms.size(); ++arm) {
-                                    require(snapshots[arm].buildDiagnostics == snapshots[0].buildDiagnostics,
-                                        label + "-" + phase + ": specialization changed build diagnostics");
+                                        snapshot.depth == baseline.depth && snapshot.statistics == baseline.statistics &&
+                                        snapshot.buildDiagnostics == baseline.buildDiagnostics,
+                                        label + "-" + phase + ": experimental path changed GPU results");
                                     for (uint32_t face = 0; face < faces; ++face) {
                                         for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                            // Mark's shared cache atomic issue count can vary with scheduling.
                                             if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                            require(snapshots[arm].workload[face][counter] == snapshots[0].workload[face][counter],
-                                                label + "-" + phase + ": specialization changed deterministic GPU work");
-                                        }
-                                    }
-                                }
-                            } else if (markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison) {
-                                if (directionalMarkComparison || markClipmapComparison || markRayPagesComparison) {
-                                    if (markClipmapComparison) {
-                                        if (markClipmapSweep) { ++markClipmapSweepStates[clipmapCount - 1]; }
-                                        else { ++markClipmapStates; }
-                                        markClipmapControlStates += markClipmapControls;
-                                    } else if (markRayPagesComparison) {
-                                        if (markClipmapSweep) { ++markClipmapSweepStates[clipmapCount - 1]; }
-                                        else { ++markRayPagesStates; }
-                                        markRayPagesControlStates += markRayPagesControls;
-                                        const auto& counts = snapshots[1].workload[0];
-                                        const uint64_t baselineSamples = snapshots[0].workload[0][kVSMWorkMarkSamplePositions];
-                                        markRayPagesReducedStates += counts[kVSMWorkMarkSamplePositions] < baselineSamples;
-                                        // Each ray has one probe, so more positions means a level kept its sweep.
-                                        markRayPagesSweepStates += !single && counts[kVSMWorkMarkSamplePositions] > counts[kVSMWorkMarkReceiverDispatches] * (filter == "smrt-one" ? 1u : 2u);
-                                    } else {
-                                        ++directionalMarkStates;
-                                        directionalMarkControlStates += directionalMarkControls;
-                                    }
-                                    directionalMarkReceiversByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkMarkReceiverDispatches];
-                                    // Multi-light blocks reserve six faces each: Sun, Moon, Point, Spot.
-                                    if (!single) {
-                                        for (uint32_t face = 12; face < faces; ++face) {
-                                            localMarkReceiversByType[(face - 12) / 6] += snapshots[1].workload[face][kVSMWorkMarkReceiverDispatches];
-                                        }
-                                    }
-                                    for (const auto& snapshot : snapshots) {
-                                        for (uint32_t face = 0; face < faces; ++face) {
-                                            const auto& counts = snapshot.workload[face];
-                                            require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
-                                                (snapshot.statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
-                                                label + "-" + phase + ": invalid Mark request count");
-                                        }
-                                    }
-                                } else {
-                                    ++markSamplesStates;
-                                    markSamplesControlStates += markSamplesControls;
-                                }
-                                for (uint32_t arm = 1; arm < arms.size(); ++arm) {
-                                    const auto& baseline = snapshots[(directionalMarkComparison || markClipmapComparison || markRayPagesComparison) && arm == 2 ? 1 : 0];
-                                    require(snapshots[arm].buildDiagnostics == baseline.buildDiagnostics,
-                                        label + "-" + phase + ": Mark optimization changed build diagnostics");
-                                    for (uint32_t face = 0; face < faces; ++face) {
-                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                            // Only the shared page cache's atomic issue count depends on scheduling.
-                                            // Sample generation and per-level tests retain their original semantics.
-                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                            // Only directional faces skip logical samples and may not add any.
-                                            if (markRayPagesComparison && arm != 2 && face < 12 &&
+                                            if (markRayPagesComparison && arm == 1 && face < 12 &&
                                                 (counter == kVSMWorkMarkSamplePositions || counter == kVSMWorkMarkLevelTests)) {
-                                                require(snapshots[arm].workload[face][counter] <= baseline.workload[face][counter] + baseline.workload[face][kVSMWorkMarkReceiverDispatches] * 2 * clipmapCount,
-                                                    label + "-" + phase + ": Mark ray pages increased logical samples");
+                                                require(snapshot.workload[face][counter] <= baseline.workload[face][counter] +
+                                                    baseline.workload[face][kVSMWorkMarkReceiverDispatches] * 2 * clipmapCount,
+                                                    label + ": Mark ray pages increased logical samples");
                                                 continue;
                                             }
-                                            require(baseline.workload[face][counter] == snapshots[arm].workload[face][counter],
-                                                label + "-" + phase + ": Mark optimization changed deterministic GPU work");
+                                            require(snapshot.workload[face][counter] == workReference.workload[face][counter],
+                                                label + ": experimental path or control selected unexpected deterministic work");
                                         }
                                     }
                                 }
-                            } else if (bitsetComparison) {
-                                bitsetControlStates += bitsetControls;
-                                for (uint32_t face = 0; face < faces; ++face) {
-                                    for (uint32_t arm = 1; arm < arms.size(); ++arm) {
-                                        // Disabling cluster culling intentionally restores rejected
-                                        // build work; its image/statistics checks above remain exact.
-                                        if (arm == 3) { continue; }
-                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                            // Shared mark hash collisions can reorder repeated ORs.
-                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                            require(snapshots[0].workload[face][counter] == snapshots[arm].workload[face][counter],
-                                                label + "-" + phase + ": bitset selection changed deterministic GPU work");
-                                        }
-                                    }
-                                    for (uint32_t arm = 0; arm < arms.size(); ++arm) {
-                                        const auto& counts = snapshots[arm].workload[face];
-                                        require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests] &&
-                                            (snapshots[arm].statistics[face][0] == 0 || counts[kVSMWorkMarkPageRequests] > 0),
-                                            label + "-" + phase + ": invalid shared mark request count");
-                                    }
-                                    bitsetTestedLevels += snapshots[1].buildDiagnostics[face][kVSMBuildDiagnosticClusterBitsetLevelTests];
-                                    defaultBitsetLevelsByPass[single ? 0 : 1] +=
-                                        snapshots[1].buildDiagnostics[face][kVSMBuildDiagnosticClusterBitsetLevelTests];
-                                }
-                            } else {
-                                for (uint32_t arm = 1; arm < arms.size(); ++arm) {
-                                    for (uint32_t counter : {kVSMWorkMarkLevelTests, kVSMWorkMarkPageRequests,
-                                         kVSMWorkBuildDecodedTriangles, kVSMWorkBuildLevelTests, kVSMWorkBuildPageTests}) {
-                                        require(work[arm][counter] <= work[0][counter], label + "-" + phase + ": optimized GPU work increased");
-                                    }
-                                }
-                                markReducedStates += work[1][kVSMWorkMarkLevelTests] < work[0][kVSMWorkMarkLevelTests] ||
-                                    work[1][kVSMWorkMarkPageRequests] < work[0][kVSMWorkMarkPageRequests];
-                                clusterReducedStates += work[2][kVSMWorkBuildDecodedTriangles] < work[0][kVSMWorkBuildDecodedTriangles];
                             }
+                            const auto& candidate = snapshots[production ? 0 : 1];
+                            directionalReceivers[single ? 0 : 1] += candidate.workload[0][kVSMWorkMarkReceiverDispatches];
+                            if (!single) {
+                                for (uint32_t face = 12; face < faces; ++face) {
+                                    localReceivers[(face - 12) / 6] += candidate.workload[face][kVSMWorkMarkReceiverDispatches];
+                                }
+                            }
+                            for (uint32_t face = 0; face < faces; ++face) {
+                                const auto& diagnostics = candidate.buildDiagnostics[face];
+                                bitsetWords[single ? 0 : 1] += diagnostics[kVSMBuildDiagnosticTriangleBitsetWordTests];
+                                const uint64_t groups = diagnostics[kVSMBuildDiagnosticClusterGroups];
+                                const uint64_t surviving = diagnostics[kVSMBuildDiagnosticClusterSurvivingGroups];
+                                compactAll += groups > 0 && surviving == groups;
+                                compactPartial += surviving > 0 && surviving < groups;
+                                if (compactBuildComparison && frame == 1 && candidate.statistics[face][11] > 0) {
+                                    require(groups == 0 && surviving == 0 && candidate.workload[face][kVSMWorkBuildActiveTriangleSlots] == 0,
+                                        label + ": warm compact build retained candidate work");
+                                    ++compactWarm;
+                                }
+                            }
+                            if (markRayPagesComparison) {
+                                const auto& counts = candidate.workload[0];
+                                reducedStates += counts[kVSMWorkMarkSamplePositions] < snapshots[0].workload[0][kVSMWorkMarkSamplePositions];
+                                sweptStates += !single && counts[kVSMWorkMarkSamplePositions] > counts[kVSMWorkMarkReceiverDispatches] * (filter == "smrt-one" ? 1u : 2u);
+                            }
+                            ++states;
+                            controlStates += controls; mixedStates += mixedProjection;
+                            if (markClipmapSweep) { ++clipmapStates[clipmapCount - 1]; }
+                            if (markPageSizeSweep) { ++pageSizeStates[pageShift]; }
                             uint64_t dirty = 0, overflow = 0, nearRejected = 0;
                             for (const auto& stats : snapshots[0].statistics) { dirty += stats[16]; overflow += stats[5]; nearRejected += stats[29]; }
                             require(work[0][kVSMWorkProjectionReceivers] > 0 && work[0][kVSMWorkProjectionAtlasLoads] > 0,
@@ -4068,127 +3586,44 @@ public:
                             }
                             if (frame == 3) { require(overflow > 0, label + ": overflow case did not overflow"); }
                             if (nearCase) { require(nearRejected > 0, label + ": near-plane exclusion was not exercised"); }
-                            entry["equal"] = true;
+                            entry[production ? "invariantsPassed" : "equal"] = true;
                             save();
                         }
                         requireValidPreview(validation.snapshot());
                     }
                 }
             }
+            report["completedStates"] = states;
+            report["controlStates"] = controlStates; report["mixedOnePassStates"] = mixedStates;
+            require(controlStates == (production || compactBuildComparison ? 0u : 10u) &&
+                mixedStates == (directionalProjectionComparison ? 10u : 0u), "Incomplete retained switch or mixed-onepass controls");
+            report["clipmapSweepStatesByCount"] = clipmapStates;
+            report["pageSizeSweepStatesByShift"] = pageSizeStates;
+            report["directionalReceiversByPass"] = directionalReceivers;
+            report["localReceiversByType"] = localReceivers;
+            report["triangleBitsetWordsByPass"] = bitsetWords;
+            require(states == (production ? 122u : directionalProjectionComparison ? 116u : markRayPagesComparison ? 106u : 82u),
+                "Incomplete production/experimental workload matrix");
+            require(directionalReceivers[0] > 0 && directionalReceivers[1] > 0 && localReceivers[0] > 0 && localReceivers[1] > 0 &&
+                bitsetWords[0] > 0 && bitsetWords[1] > 0, "Matrix missed a production pass, local-light fallback or bitset enumeration");
+            if (!compactBuildComparison) {
+                require(std::ranges::all_of(clipmapStates, [](uint32_t count) { return count == 2; }), "Incomplete clipmap bound sweep");
+            }
+            if (production) {
+                require(std::ranges::all_of(pageSizeStates, [](uint32_t count) { return count == 2; }), "Incomplete page-size bound sweep");
+            }
+            if (markRayPagesComparison) {
+                report["reducedStates"] = reducedStates; report["sweptStates"] = sweptStates;
+                require(reducedStates > 0 && sweptStates > 0, "Mark ray pages did not exercise skipped and swept levels");
+            }
             if (compactBuildComparison) {
-                report["compactBuildStates"] = compactBuildStates;
-                report["compactBuildControlStates"] = compactBuildControlStates;
-                report["compactBuildTrianglesByPass"] = {{"single",compactBuildTrianglesByPass[0]},{"lights",compactBuildTrianglesByPass[1]}};
-                report["compactAllSurviveFaces"] = compactAllSurviveFaces;
-                report["compactPartialSurviveFaces"] = compactPartialSurviveFaces;
-                report["compactWarmFaces"] = compactWarmFaces;
-                require(compactBuildStates == 72 && compactBuildControlStates == 10 && compactAllSurviveFaces > 0 &&
-                    compactPartialSurviveFaces > 0 && compactWarmFaces > 0 &&
-                    compactBuildTrianglesByPass[0] > 0 && compactBuildTrianglesByPass[1] > 0,
-                    "Compact build matrix did not exercise both passes, surviving/empty work and explicit fallback controls");
-            } else if (directionalBuildComparison) {
-                report["directionalBuildStates"] = directionalBuildStates;
-                report["directionalBuildControlStates"] = directionalBuildControlStates;
-                report["directionalBuildTrianglesByPass"] = {{"single",directionalBuildTrianglesByPass[0]},{"lights",directionalBuildTrianglesByPass[1]}};
-                report["localBuildTriangles"] = localBuildTriangles;
-                require(directionalBuildStates == 72 && directionalBuildControlStates == 10 && localBuildTriangles > 0 &&
-                    directionalBuildTrianglesByPass[0] > 0 && directionalBuildTrianglesByPass[1] > 0,
-                    "Directional build matrix did not exercise both passes, local-light fallback and page/culling controls");
-            } else if (triangleBitsetComparison) {
-                report["triangleBitsetStates"] = triangleBitsetStates;
-                report["triangleBitsetControlStates"] = triangleBitsetControlStates;
-                report["triangleBitsetReducedStates"] = triangleBitsetReducedStates;
-                report["triangleBitsetWordsByPass"] = {{"single",triangleBitsetWordsByPass[0]},{"lights",triangleBitsetWordsByPass[1]}};
-                require(triangleBitsetStates == 72 && triangleBitsetControlStates == 10 && triangleBitsetReducedStates > 0 &&
-                    triangleBitsetWordsByPass[0] > 0 && triangleBitsetWordsByPass[1] > 0,
-                    "Triangle bitset matrix did not exercise both pass types and all explicit fallback controls");
-            } else if (markClipmapComparison) {
-                report["markClipmapStates"] = markClipmapStates;
-                report["markClipmapControlStates"] = markClipmapControlStates;
-                report["markClipmapSweepStatesByCount"] = markClipmapSweepStates;
-                report["markClipmapReceiversByPass"] = {{"single",directionalMarkReceiversByPass[0]},{"lights",directionalMarkReceiversByPass[1]}};
-                report["localMarkReceiversByType"] = {{"point",localMarkReceiversByType[0]},{"spot",localMarkReceiversByType[1]}};
-                require(markClipmapStates == 82 && markClipmapControlStates == 10 &&
-                    std::all_of(markClipmapSweepStates.begin(), markClipmapSweepStates.end(), [](uint32_t count) { return count == 2; }) &&
-                    directionalMarkReceiversByPass[0] > 0 && directionalMarkReceiversByPass[1] > 0 &&
-                    localMarkReceiversByType[0] > 0 && localMarkReceiversByType[1] > 0,
-                    "Mark clipmap matrix did not cover both passes, local-light fallback, controls and all twelve SMRT bounds");
-            } else if (markRayPagesComparison) {
-                report["markRayPagesStates"] = markRayPagesStates;
-                report["markRayPagesControlStates"] = markRayPagesControlStates;
-                report["markRayPagesReducedStates"] = markRayPagesReducedStates;
-                report["markRayPagesSweepStates"] = markRayPagesSweepStates;
-                report["markClipmapSweepStatesByCount"] = markClipmapSweepStates;
-                report["localMarkReceiversByType"] = {{"point",localMarkReceiversByType[0]},{"spot",localMarkReceiversByType[1]}};
-                require(markRayPagesStates == 82 && markRayPagesControlStates == 10 && markRayPagesReducedStates > 0 && markRayPagesSweepStates > 0 &&
-                    std::all_of(markClipmapSweepStates.begin(), markClipmapSweepStates.end(), [](uint32_t count) { return count == 2; }) &&
-                    directionalMarkReceiversByPass[0] > 0 && directionalMarkReceiversByPass[1] > 0 &&
-                    localMarkReceiversByType[0] > 0 && localMarkReceiversByType[1] > 0,
-                    "Mark ray page matrix did not cover skipped and swept levels, both passes, local lights and all twelve SMRT bounds");
-            } else if (markPageSizeComparison) {
-                report["markPageSizeStates"] = markPageSizeStates;
-                report["markPageSizeControlStates"] = markPageSizeControlStates;
-                report["pageSizeSweepStatesByShift"] = markPageSizeSweepStates;
-                report["markReceiversByPass"] = {{"single",directionalMarkReceiversByPass[0]}, {"lights",directionalMarkReceiversByPass[1]}};
-                report["localMarkReceiversByType"] = {{"point",localMarkReceiversByType[0]}, {"spot",localMarkReceiversByType[1]}};
-                require(markPageSizeStates == 82 && markPageSizeControlStates == 10 &&
-                    std::all_of(markPageSizeSweepStates.begin(), markPageSizeSweepStates.end(), [](uint32_t count) { return count == 2; }) &&
-                    directionalMarkReceiversByPass[0] > 0 && directionalMarkReceiversByPass[1] > 0 &&
-                    localMarkReceiversByType[0] > 0 && localMarkReceiversByType[1] > 0,
-                    "Mark page-size matrix did not cover both passes, local-light fallback, switch controls and all eight page sizes");
-            } else if (directionalProjectionComparison) {
-                report["directionalProjectionStates"] = directionalProjectionStates;
-                report["directionalProjectionControlStates"] = directionalProjectionControlStates;
-                report["mixedOnePassStates"] = mixedProjectionStates;
-                report["clipmapSweepStatesByCount"] = markClipmapSweepStates;
-                report["directionalProjectionReceiversByPass"] = {{"single",directionalProjectionReceiversByPass[0]},
-                    {"lights",directionalProjectionReceiversByPass[1]}};
-                report["localProjectionReceiversByType"] = {{"point",localProjectionReceiversByType[0]},
-                    {"spot",localProjectionReceiversByType[1]}};
-                require(directionalProjectionStates == 82 && directionalProjectionControlStates == 10 && mixedProjectionStates == 10 &&
-                    std::all_of(markClipmapSweepStates.begin(), markClipmapSweepStates.end(), [](uint32_t count) { return count == 2; }) &&
-                    directionalProjectionReceiversByPass[0] > 0 && directionalProjectionReceiversByPass[1] > 0 &&
-                    localProjectionReceiversByType[0] > 0 && localProjectionReceiversByType[1] > 0,
-                    "Directional Projection matrix did not cover both passes, all clipmap counts, local/mixed fallbacks and switch controls");
-            } else if (directionalMarkComparison) {
-                report["directionalMarkStates"] = directionalMarkStates;
-                report["directionalMarkControlStates"] = directionalMarkControlStates;
-                report["directionalMarkReceiversByPass"] = {{"single",directionalMarkReceiversByPass[0]},{"lights",directionalMarkReceiversByPass[1]}};
-                report["localMarkReceiversByType"] = {{"point",localMarkReceiversByType[0]},{"spot",localMarkReceiversByType[1]}};
-                require(directionalMarkStates == 82 && directionalMarkControlStates == 10 &&
-                    directionalMarkReceiversByPass[0] > 0 && directionalMarkReceiversByPass[1] > 0 &&
-                    localMarkReceiversByType[0] > 0 && localMarkReceiversByType[1] > 0,
-                    "Directional Mark matrix did not cover both passes, local-light fallbacks, default and shared-cache controls");
-            } else if (markSamplesComparison) {
-                report["markSamplesStates"] = markSamplesStates;
-                report["markSamplesControlStates"] = markSamplesControlStates;
-                require(markSamplesStates == 82 && markSamplesControlStates == 10,
-                    "Mark sample matrix did not cover both pass types and explicit shared-cache controls");
-            } else if (bitsetComparison) {
-                report["bitsetTestedLevels"] = bitsetTestedLevels;
-                report["defaultBitsetLevelsByPass"] = {{"single",defaultBitsetLevelsByPass[0]},{"lights",defaultBitsetLevelsByPass[1]}};
-                report["bitsetControlStates"] = bitsetControlStates;
-                require(bitsetTestedLevels > 0, "Bitset matrix did not exercise a bitset level test");
-                require(defaultBitsetLevelsByPass[0] > 0 && defaultBitsetLevelsByPass[1] > 0 && bitsetControlStates == 10,
-                    "Bitset production defaults or explicit fallback controls were not exercised for both pass types");
-            } else {
-                report["markReducedStates"] = markReducedStates; report["clusterReducedStates"] = clusterReducedStates;
-                require(markReducedStates > 0, "Optimization matrix did not exercise reduced mark work");
-                require(clusterReducedStates > 0, "Optimization matrix did not exercise a rejected stream cluster");
+                report["allSurviveFaces"] = compactAll; report["partialSurviveFaces"] = compactPartial; report["warmFaces"] = compactWarm;
+                require(compactAll > 0 && compactPartial > 0 && compactWarm > 0, "Compact build missed surviving or empty work");
             }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
-            return RHITestResult::pass(compactBuildComparison ?
-                "Compacted indirect build preserves images, statistics, diagnostics and deterministic work across both passes, light types and cache/overflow states" : markPageSizeComparison ?
-                "Mark page-size specialization preserves images, statistics and deterministic work across 82 matrix states and eight Cold/Warm page sizes" : directionalProjectionComparison ?
-                "Directional Projection preserves images, statistics and deterministic work across 82 matrix states, twelve Cold/Warm clipmap bounds and ten mixed one-pass states" : markRayPagesComparison ?
-                "Mark ray pages preserve images, statistics, diagnostics and non-Mark work across 82 matrix states and twelve Cold/Warm SMRT bounds" : markClipmapComparison ?
-                "Mark clipmap specialization preserves images, statistics, diagnostics and deterministic work across 82 matrix states and twelve Cold/Warm SMRT bounds" : directionalMarkComparison ?
-                "Directional Mark specialization preserves images, statistics, diagnostics and deterministic work across both passes, all filters, local lights and cache/overflow states" : directionalBuildComparison ?
-                "Directional build specialization preserves images, statistics, diagnostics and deterministic work across both passes, local lights and page/culling modes" : triangleBitsetComparison ?
-                "Exact triangle bitsets preserve images, admission, emitted work and overflow recovery while eliminating per-page metadata reads" : markSamplesComparison ?
-                "Prepared Mark samples preserve images, depth, page admission, statistics and deterministic work across all filters, light types and cache states" : bitsetComparison ?
-                "Dirty-page bitsets preserve images, receiver depth, statistics and deterministic work in single/multi-light production graphs" :
-                "Four production VSM arms preserve images, receiver depth and statistics across resident/stream, PCF/SMRT, offscreen, near-plane, seam and cache/overflow states");
+            return RHITestResult::pass(production ?
+                "Production VSM covers both passes, local lights, clipmap/page bounds, resident/stream geometry and cache/overflow transitions" :
+                "Experimental VSM path preserves production GPU results and deterministic work across the workload matrix");
         } catch (const std::exception& error) {
             activeEvidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());
@@ -4198,37 +3633,13 @@ private:
     const VirtualShadowMapEquivalenceMode mode_;
 };
 
-class VirtualShadowMapOptimizationEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+class VirtualShadowMapProductionCoverageTest final : public VirtualShadowMapEquivalenceTest
 {
 public:
-    VirtualShadowMapOptimizationEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::MarkCluster) {}
+    VirtualShadowMapProductionCoverageTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::Production) {}
 };
 
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapOptimizationEquivalenceTest);
-
-class VirtualShadowMapClusterPageBitsetEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapClusterPageBitsetEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::ClusterBitset) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapClusterPageBitsetEquivalenceTest);
-
-class VirtualShadowMapMarkSamplesEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapMarkSamplesEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::MarkSamples) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkSamplesEquivalenceTest);
-
-class VirtualShadowMapDirectionalMarkEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapDirectionalMarkEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::DirectionalMark) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalMarkEquivalenceTest);
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProductionCoverageTest);
 
 class VirtualShadowMapDirectionalProjectionEquivalenceTest final : public VirtualShadowMapEquivalenceTest
 {
@@ -4238,14 +3649,6 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalProjectionEquivalenceTest);
 
-class VirtualShadowMapMarkClipmapSpecializationEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapMarkClipmapSpecializationEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkClipmapSpecializationEquivalenceTest);
-
 class VirtualShadowMapMarkRayPagesEquivalenceTest final : public VirtualShadowMapEquivalenceTest
 {
 public:
@@ -4253,14 +3656,6 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkRayPagesEquivalenceTest);
-
-class VirtualShadowMapMarkPageSizeEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapMarkPageSizeEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::MarkPageSizeSpecialization) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkPageSizeEquivalenceTest);
 
 class VirtualShadowMapMarkClipmapMutationTest : public RHITest
 {
@@ -4277,7 +3672,7 @@ public:
         const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
         const std::array<uint32_t, 4> values = pageSizeMutation_ ? std::array{1u,128u,16u,1u} : std::array{1u,12u,6u,1u};
         Json report{{"passed",false}, {pageSizeMutation_ ? "pageSizes" : "counts",values}, {"frames",Json::array()},
-            {"scope","Two persistent VirtualShadowMaps objects; direct SMRT record calls with real raster receivers and explicit Programs cache-miss evidence"}};
+            {"scope","Persistent production renderer versus a fresh renderer at each configuration; direct SMRT calls with real raster receivers and Programs cache-miss evidence"}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
         try {
@@ -4320,9 +3715,9 @@ public:
             require(readback, "Create mutation readback");
             activeEvidence->namedReadbacks["MutationReadback"] = readback->get();
 
-            // These objects remain alive for the complete sequence. Only the
-            // first receiver render uses a graph; no graph is executed below.
-            VirtualShadowMaps baseline, specialized;
+            // Keep production state across all mutations. A fresh renderer at
+            // each step independently checks resource and program invalidation.
+            VirtualShadowMaps persistent;
             CacheCommands gpu(device);
             gpu.begin();
             const TextureBarrierDesc uploadBegin{.texture = depth.get(), .oldLayout = TextureLayout::Undefined,
@@ -4347,18 +3742,15 @@ public:
             settings.firstClipmapExtent = kFirstExtent;
             settings.cacheEnabled = true;
             settings.collectGPUWork = true;
-            settings.directionalMark = true;
             settings.filter = VirtualShadowMapFilter::SMRT;
             settings.smrtRayCount = 2; settings.smrtSamplesPerRay = 8;
             std::string log;
-            const auto record = [&](VirtualShadowMaps& renderer, bool specialize, uint32_t frameIndex) {
+            const auto record = [&](VirtualShadowMaps& renderer, uint32_t frameIndex) {
                 gpu.begin();
                 auto view = receiver.parameters.view;
                 view.frame[0] = frameIndex;
                 auto casters = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, nullptr, log);
                 require(casters, "Prepare mutation casters: " + log);
-                if (pageSizeMutation_) { settings.specializeMarkPageSize = specialize; }
-                else { settings.specializeMarkClipmaps = specialize; }
                 CPUProfileRecorder cpu;
                 auto result = renderer.record(device, *gpu.commands, *depthView, view, light, *casters,
                     scene.materials(), {}, settings, log, false, nullptr, &cpu);
@@ -4412,24 +3804,35 @@ public:
                 gpu.finish();
                 return std::pair{profilingSnapshot("MutationReadback", layout, true), cacheMiss};
             };
-            uint32_t stage = 0;
+            uint32_t stage = 0, previousEpoch = 0;
             for (uint32_t value : values) {
+                VirtualShadowMaps fresh;
                 if (pageSizeMutation_) { settings.pageSize = value; }
                 else { settings.clipmapCount = value; }
                 for (uint32_t frame = 0; frame < 2; ++frame) {
                     const std::string label = "Step" + std::to_string(stage) + "-" + (frame == 0 ? "Transition" : "Warm");
                     validation.phase(label);
-                    const auto [a, baselineMiss] = record(baseline, false, stage * 2 + frame);
-                    const auto [b, specializedMiss] = record(specialized, true, stage * 2 + frame);
+                    const auto [a, persistentMiss] = record(persistent, stage * 2 + frame);
+                    const auto [b, freshMiss] = record(fresh, stage * 2 + frame);
+                    auto persistentStatistics = a.statistics;
+                    auto freshStatistics = b.statistics;
+                    // A new renderer starts a new epoch history; compare all other
+                    // statistics and assert each epoch's lifecycle separately.
+                    require(a.statistics[0][23] == previousEpoch + (a.statistics[0][22] != 0 ? 1u : 0u),
+                        label + ": persistent cache epoch did not follow actual invalidation");
+                    require(b.statistics[0][23] == (frame == 0 || b.statistics[0][22] == 0 ? 1u : 2u),
+                        label + ": fresh reference cache epoch did not follow actual invalidation");
+                    previousEpoch = a.statistics[0][23];
+                    persistentStatistics[0][23] = freshStatistics[0][23] = 0;
                     const bool exact = a.shadow == b.shadow && a.debug == b.debug && a.depth == b.depth &&
-                        a.statistics == b.statistics && a.buildDiagnostics == b.buildDiagnostics;
-                    report["frames"].push_back({{"phase",label}, {"clipmapCount",settings.clipmapCount}, {"pageSize",settings.pageSize}, {"baselineProgramCacheMiss",baselineMiss},
-                        {"specializedProgramCacheMiss",specializedMiss}, {"exact",exact}, {"baselineStatistics",a.statistics},
-                        {"specializedStatistics",b.statistics}, {"baselineWork",a.workload}, {"specializedWork",b.workload},
-                        {"baselineShadowSHA256",debug::debugSha256(a.shadow)}, {"specializedShadowSHA256",debug::debugSha256(b.shadow)}});
+                        persistentStatistics == freshStatistics && a.buildDiagnostics == b.buildDiagnostics;
+                    report["frames"].push_back({{"phase",label}, {"clipmapCount",settings.clipmapCount}, {"pageSize",settings.pageSize}, {"persistentProgramCacheMiss",persistentMiss},
+                        {"freshProgramCacheMiss",freshMiss}, {"exact",exact}, {"persistentStatistics",a.statistics},
+                        {"freshStatistics",b.statistics}, {"persistentWork",a.workload}, {"freshWork",b.workload},
+                        {"persistentShadowSHA256",debug::debugSha256(a.shadow)}, {"freshShadowSHA256",debug::debugSha256(b.shadow)}});
                     save();
-                    require(baselineMiss == uint64_t(stage == 0 && frame == 0) && specializedMiss == uint64_t(frame == 0),
-                        label + ": persistent Programs did not distinguish fixed baseline and changing specialized bounds");
+                    require(persistentMiss == uint64_t(frame == 0) && freshMiss == uint64_t(frame == 0),
+                        label + ": production Programs did not invalidate on mutation or reuse the unchanged specialization");
                     require(exact && a.statistics[0][11] == settings.clipmapCount,
                         label + ": Mark specialization mutation changed GPU results or used a stale level count");
                     require(a.workload[0][kVSMWorkMarkReceiverDispatches] > 0 && a.workload[0][kVSMWorkProjectionRays] > 0,
@@ -4459,8 +3862,8 @@ public:
             save();
             activeEvidence.reset();
             return RHITestResult::pass(pageSizeMutation_ ?
-                "Persistent baseline and specialized VSM objects preserve SMRT outputs and select Programs across page sizes 1,128,16,1" :
-                "Persistent baseline and specialized VSM objects preserve SMRT outputs and select Programs across clipmap counts 1,12,6,1");
+                "Persistent and fresh production VSM objects preserve SMRT outputs and select Programs across page sizes 1,128,16,1" :
+                "Persistent and fresh production VSM objects preserve SMRT outputs and select Programs across clipmap counts 1,12,6,1");
         } catch (const std::exception& error) {
             activeEvidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());
@@ -4479,22 +3882,6 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkPageSizeMutationTest);
-
-class VirtualShadowMapTrianglePageBitsetEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapTrianglePageBitsetEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::TriangleBitset) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapTrianglePageBitsetEquivalenceTest);
-
-class VirtualShadowMapDirectionalBuildEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapDirectionalBuildEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::DirectionalBuild) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalBuildEquivalenceTest);
 
 class VirtualShadowMapCompactBuildEquivalenceTest final : public VirtualShadowMapEquivalenceTest
 {

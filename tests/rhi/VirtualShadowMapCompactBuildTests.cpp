@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -31,7 +32,12 @@ void requireCompact(const Result<T>& result, const std::string& message)
 
 // Production inline/resource ABIs. This probe invokes the production entrypoints,
 // rather than copying the append, batch split or indirect consumer into a probe shader.
-struct CompactProbePush { std::array<uint32_t, 52> words{}; };
+struct CompactProbePush
+{
+    std::array<uint32_t, 52> words{};
+    float lodScreenRayLength = 0.f;
+    uint32_t receiverGeometry = UINT32_MAX;
+};
 struct CompactProbeProjection
 {
     std::array<float, 4> rowX{1,0,0,0}, rowY{0,1,0,0}, rowZ{0,0,1,0}, rowW{0,0,0,1}, metric{};
@@ -43,7 +49,8 @@ struct CompactProbeTriangle
     std::array<std::array<float, 8>, 3> vertices{};
     std::array<uint32_t, 4> material{};
 };
-static_assert(sizeof(CompactProbePush) == 208 && sizeof(CompactProbeProjection) == 112 && sizeof(CompactProbeTriangle) == 112);
+static_assert(sizeof(CompactProbePush) == 216 && sizeof(CompactProbeProjection) == 112 && sizeof(CompactProbeTriangle) == 112);
+static_assert(offsetof(CompactProbePush, lodScreenRayLength) == 208 && offsetof(CompactProbePush, receiverGeometry) == 212);
 
 class VirtualShadowMapCompactBuildArgumentsTest final : public RHITest
 {
@@ -85,11 +92,10 @@ public:
             const std::array paths{generated.c_str()};
             const std::array capabilities{"spvMeshShadingEXT"};
             const std::array entries{"vsmResetMain", "vsmCompactMain", "vsmBuildMain"};
-            for (bool bitset : {false, true}) {
+            {
                 const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE","0"},
-                    SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS","1"}, SlangMacroDefine{"VSM_CLUSTER_CULL","1"},
-                    SlangMacroDefine{"VSM_CLUSTER_PAGE_BITSET",bitset ? "1" : "0"},
-                    SlangMacroDefine{"VSM_TRIANGLE_PAGE_BITSET",bitset ? "1" : "0"},
+                    SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS","1"},
+                    SlangMacroDefine{"VSM_CLUSTER_PAGE_BITSET","1"},
                     SlangMacroDefine{"VSM_DIRECTIONAL_BUILD","1"}, SlangMacroDefine{"VSM_COMPACT_BUILD","1"}};
                 std::array<std::unique_ptr<ShaderModule>, 3> modules;
                 std::array<std::unique_ptr<ComputePipeline>, 3> pipelines;
@@ -106,7 +112,7 @@ public:
                 }
                 for (uint32_t mode = 0; mode < 5; ++mode) {
                     const bool sparse = mode == 1, outside = mode == 2, warm = mode == 3, boundary = mode == 4;
-                    const std::string label = std::string(bitset ? "Bitset-" : "Pages-") +
+                    const std::string label = std::string("Bitset-") +
                         std::array{"AllTail", "Sparse", "NoCandidates", "Warm", "Batch65535"}[mode];
                     validation.phase(label);
                     constexpr uint32_t totalPages = 9, physicalPages = 2, sentinel = 0xcdcdcdcdu;
@@ -116,7 +122,7 @@ public:
                     const uint32_t batches = (capacity + 65534u) / 65535u;
                     constexpr uint32_t rasterBatches = 2, argumentOffset = rasterBatches * 3;
                     const uint32_t bitsetOffset = physicalPages * 2 + totalPages + 1;
-                    const uint32_t candidateOffset = bitsetOffset + (bitset ? 1u : 0u);
+                    const uint32_t candidateOffset = bitsetOffset + 1u;
                     std::vector<std::array<float, 8>> bounds(groups);
                     for (uint32_t group = 0; group < groups; ++group) {
                         const float center = outside || (sparse && (group & 1u)) ? 10.f : 0.f;
@@ -194,7 +200,7 @@ public:
                     reset();
                     const uint32_t seed = boundary ? 65534u : 0u;
                     owners[candidateOffset] = seed;
-                    if (bitset && !warm) { owners[bitsetOffset] = 0xffu; }
+                    if (!warm) { owners[bitsetOffset] = 0xffu; }
                     arguments[argumentOffset] = seed;
                     statistics[16] = warm ? 0u : 8u;
                     for (uint32_t page = 0; page < totalPages; ++page) { pages[page] = {0,2,page/4,2}; }

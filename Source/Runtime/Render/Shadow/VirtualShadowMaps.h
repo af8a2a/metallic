@@ -54,20 +54,11 @@ struct VirtualShadowMapSettings
 {
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
-    bool optimizeMark = true;
     bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.
     // Multi-face GPU projection; single faces and grouped projection statistics retain the original kernel.
     bool onePassProjection = true;
-    bool optimizeMarkSamples = true; // Reuse invariant Mark work for local lights; directional uses the original path.
-    bool directionalMark = true; // Mark-only orthographic specialization; preserves receiver/sample demands.
     bool directionalProjection = false; // Per-face Projection orthographic calculations; one-pass stays generic.
-    bool specializeMarkClipmaps = true; // Compile directional Mark cache/loop bounds for the active clipmap count.
-    bool specializeMarkPageSize = false; // Compile directional Mark page addressing for its power-of-two page size.
     bool markRayPages = true; // Directional SMRT Mark skips samples of rays that stay inside one page.
-    bool clusterCulling = true;
-    bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.
-    bool trianglePageBitset = true; // Enumerate dirty fine pages; requires the effective cluster-page bitset.
-    bool directionalBuild = true; // Build-only orthographic shader specialization; local lights stay generic.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
     bool shadowLODHierarchy = true; // Cached adaptive traversal; false retains the flat reference for A/B.

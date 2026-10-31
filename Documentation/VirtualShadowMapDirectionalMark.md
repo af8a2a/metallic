@@ -1,5 +1,7 @@
 # VSM 方向光 Mark 编译特化
 
+> 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
+
 `VirtualShadowMapSettings::directionalMark` 及两个 VSM Pass 默认启用方向光专用 Mark，已有图无需添加属性。`directionalMark: false` 可恢复通用 Mark；显式布尔 `benchmarkDirectionalMark` 优先。只有方向光生效；局部光保持原程序。此前已默认启用的局部光 `optimizeMarkSamples` 不变，方向光仍不使用那项循环不变量提取。
 
 ## 当前实现与契约

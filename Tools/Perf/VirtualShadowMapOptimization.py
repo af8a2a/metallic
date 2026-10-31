@@ -1,8 +1,9 @@
-"""Bounded four-arm VSM experiments; this is not the WorkRaster experiment protocol.
+"""Historical four-arm VSM evidence reader; live four-arm experiments are retired.
 
 run --phase diagnostic|discovery|confirmation --cases-dir CASES --exe EXE --output NEW_DIR
 report SOURCE NEW_REPORT [--diagnostic DIAGNOSTIC_SOURCE] [--reference DISCOVERY_SOURCE]
-Reports verify sealed acceptance packages offline. No command prepares or edits graphs.
+Reports verify sealed acceptance packages offline. The optimized Mark and cluster
+paths are unconditional; prepare_plan/run reject new four-arm experiments.
 """
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ from pathlib import Path
 import re
 import statistics
 import sys
-from types import SimpleNamespace
 
 import ExperimentRunner as experiment
 import VirtualShadowMapAcceptance as acceptance
@@ -125,70 +125,12 @@ def stream_signature(frame, mode, canonical):
 
 
 def prepare_plan(args):
-    mode = "diagnostic" if args.phase == "diagnostic" else "timing"
-    inputs, normalized = {}, None
-    for arm in ARMS:
-        cases = args.cases_dir.resolve() / f"{mode.title()}-{arm}Cases.json"
-        spec = acceptance.read(cases)
-        if spec["mode"] != mode or len(spec["cases"]) != 1:
-            raise ValueError(f"Wrong mode or case count: {cases}")
-        comparison_start(spec)
-        graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
-        workload = normalized_workload(spec, acceptance.read(graph), arm)
-        if normalized is not None and workload != normalized:
-            raise ValueError("Cases/graphs differ beyond the two optimization switches")
-        normalized = workload
-        inputs[arm] = {"cases": str(cases), "casesSHA256": acceptance.digest(cases),
-                       "graph": str(graph), "graphSHA256": acceptance.digest(graph)}
-    return {"protocol": PROTOCOL, "phase": args.phase, "mode": mode, "created": utc(),
-            "policy": POLICY, "blocks": BLOCKS[args.phase], "timeoutSeconds": 600,
-            "runsPerPackage": 1, "exe": str(args.exe.resolve()), "inputs": inputs,
-            "comparisonStartFrame": comparison_start(spec),
-            "processes": schedule(args.phase), "toolSHA256": acceptance.digest(Path(__file__)),
-            "cache": "Existing disk caches retained; fresh process per sample",
-            "gpuExclusivity": "Not enforced; no user applications are stopped"}
+    raise ValueError("Retired VSM four-arm experiment: optimized Mark and cluster culling are unconditional; use report to verify historical evidence")
 
 
 def run(args):
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    rows = []
-    try:
-        plan = prepare_plan(args)
-        acceptance.save(output / "Plan.json", plan)
-        identity = None
-        for item in plan["processes"]:
-            row = {**item, "started": utc(), "status": "running"}
-            rows.append(row)
-            acceptance.save(output / "Processes.json", rows)
-            try:
-                for paths in plan["inputs"].values():
-                    for key in ("cases", "graph"):
-                        if acceptance.digest(paths[key]) != paths[key + "SHA256"]:
-                            raise ValueError("Declared experiment input changed after planning")
-                package = output / item["package"]
-                acceptance.run(SimpleNamespace(cases=Path(plan["inputs"][item["arm"]]["cases"]),
-                    exe=args.exe, output=package, runs=1, timeout=600))
-                acceptance.verify_package(package)
-                current = acceptance.read(package / "Identity.json")
-                current = {key: current[key] for key in ("sources", "binaries")}
-                if identity is not None and current != identity:
-                    raise ValueError("Source or binary identity changed between processes")
-                identity = current
-                row["status"] = "passed"
-                row["manifestSHA256"] = acceptance.digest(package / "Manifest.json")
-            except BaseException as error:
-                row.update(status="failed", error=f"{type(error).__name__}: {error}")
-                raise
-            finally:
-                row["ended"] = utc()
-                acceptance.save(output / "Processes.json", rows)
-        acceptance.save(output / "Completion.json", {"status": "passed", "ended": utc(), "processes": len(rows)})
-    except BaseException as error:
-        acceptance.save(output / "Failure.json", {"status": "failed", "ended": utc(),
-                        "error": f"{type(error).__name__}: {error}", "completedProcesses": len(rows)})
-        raise
-    print(output)
+    # Reject before creating an output directory or launching any process.
+    prepare_plan(args)
 
 
 def shader_identity(log, arm, mode):

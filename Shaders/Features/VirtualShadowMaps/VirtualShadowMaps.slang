@@ -23,11 +23,8 @@ import VirtualShadowMapCommon;
 #ifndef VSM_REFINED_RECEIVER
 #define VSM_REFINED_RECEIVER 0
 #endif
-#ifndef VSM_OPTIMIZE_MARK_SAMPLES
-#define VSM_OPTIMIZE_MARK_SAMPLES 0
-#endif
-#ifndef VSM_TRIANGLE_PAGE_BITSET
-#define VSM_TRIANGLE_PAGE_BITSET 0
+#ifndef VSM_LOCAL_MARK
+#define VSM_LOCAL_MARK 0
 #endif
 #ifndef VSM_DIRECTIONAL_BUILD
 #define VSM_DIRECTIONAL_BUILD 0
@@ -50,17 +47,11 @@ import VirtualShadowMapCommon;
 #ifndef VSM_COMPACT_BUILD
 #define VSM_COMPACT_BUILD 0
 #endif
-#ifndef VSM_CLUSTER_CULL
-#define VSM_CLUSTER_CULL 1
-#endif
+
+// Allocator/remap-only probes may supply owners without the dirty-page tail.
+// Production always enables this storage; build always consumes the bitset.
 #ifndef VSM_CLUSTER_PAGE_BITSET
 #define VSM_CLUSTER_PAGE_BITSET 0
-#endif
-#if !VSM_CLUSTER_CULL
-#undef VSM_CLUSTER_PAGE_BITSET
-#define VSM_CLUSTER_PAGE_BITSET 0
-#undef VSM_COMPACT_BUILD
-#define VSM_COMPACT_BUILD 0
 #endif
 
 using Metallic;
@@ -102,21 +93,17 @@ void vsmCacheAdd(ShadowPush push, uint counter, uint value)
     InterlockedAdd(data[counter], value);
 }
 
-#if VSM_CLUSTER_PAGE_BITSET
 uint vsmClusterPageBitsetOffset(ShadowPush push)
 {
     // Matches the tail appended to the owners allocation in VirtualShadowMaps.cpp.
     return push.physicalPageCount * 2u + push.totalPages + (push.totalPages + 255u) / 256u;
 }
-#endif
 
 #if VSM_COMPACT_BUILD
 uint vsmCompactCandidateOffset(ShadowPush push)
 {
     uint offset = push.physicalPageCount * 2u + push.totalPages + (push.totalPages + 255u) / 256u;
-#if VSM_CLUSTER_PAGE_BITSET
     offset += (push.totalPages + 31u) / 32u;
-#endif
     return offset;
 }
 
@@ -149,17 +136,11 @@ void vsmBuildDiagnosticAdd(ShadowPush push, uint counter, uint value)
 void vsmRecordClusterLevel(ShadowPush push, uint scanTests, uint outcome)
 {
     // Every completed predicate has one outcome and one scan observation.
-    // The modes have separate units: actual uint4 page-table loads versus
-    // actual uint bitset loads. Neither reports the other's logical page area.
+    // Count actual bitset loads, not the rectangle's logical page area.
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterLevelTests, 1u);
-#if VSM_CLUSTER_PAGE_BITSET
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBitsetLevelTests, 1u);
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBitsetWordTests, scanTests);
     const uint histogram = kVSMBuildDiagnosticClusterBitsetScanHistogram;
-#else
-    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterPageTests, scanTests);
-    const uint histogram = kVSMBuildDiagnosticClusterPageScanHistogram;
-#endif
     vsmBuildDiagnosticAdd(push, outcome, 1u);
     uint bucket = 0u;
     if (scanTests != 0u) { bucket = min(uint(firstbithigh(scanTests)) + 1u, kVirtualShadowMapBuildDiagnosticHistogramCount - 1u); }
@@ -974,23 +955,15 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     return visibility / float(push.rayCount);
 }
 
-#ifndef VSM_OPTIMIZE_MARK
-#define VSM_OPTIMIZE_MARK 1
-#endif
-
-#if VSM_OPTIMIZE_MARK
 groupshared uint gVsmMarkedPages[256];
-#endif
 
 void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCounts)
 {
-#if VSM_OPTIMIZE_MARK
     // A cache hit reuses an inserting lane's eventual OR. Hash collisions only
     // cause repeated requests; allocation observes this dispatch after all ORs.
     uint previous;
     InterlockedExchange(gVsmMarkedPages[(page * 2654435761u) >> 24u], page, previous);
     if (previous == page) { return; }
-#endif
     InterlockedOr(pages[page].y, 1u);
     ++workCounts.z;
 }
@@ -1002,7 +975,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // Hard and the nine-tap PCF kernel keep the short direct path. Cache setup
     // pays off for the longer SMRT traces handled by the overload below.
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
-#if VSM_OPTIMIZE_MARK_SAMPLES
+#if VSM_LOCAL_MARK
     // makeLocalProjections repeats all four rows across mips; makeProjections
     // repeats rowZ across directional clipmaps. Keep the original dot products
     // (no endpoint interpolation or reassociation at page boundaries).
@@ -1014,7 +987,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
         ShadowProjection projection = projections[level];
-#if VSM_OPTIMIZE_MARK_SAMPLES
+#if VSM_LOCAL_MARK
         float3 projected = sharedProjected;
         if (push.lightType == 0u) {
             float4 p = float4(position, 1.0);
@@ -1042,7 +1015,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // the admission budget on pages the receiver will never sample.
     // The selected Mark permutation bounds clipmapCount by its cache size.
     // Constant indices keep the small per-receiver cache in registers across all SMRT rays.
-#if VSM_OPTIMIZE_MARK_SAMPLES
+#if VSM_LOCAL_MARK
     ShadowProjection sharedProjection = projections[firstLevel];
     float3 sharedProjected = push.lightType == 0u ?
         float3(0.0, 0.0, dot(sharedProjection.rowZ, float4(position, 1.0))) :
@@ -1056,7 +1029,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 #endif
         ++workCounts.y;
         ShadowProjection projection = projections[level];
-#if VSM_OPTIMIZE_MARK_SAMPLES
+#if VSM_LOCAL_MARK
         float3 projected = sharedProjected;
         if (push.lightType == 0u) {
             float4 p = float4(position, 1.0);
@@ -1249,7 +1222,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         uint lastPages[VSM_MARK_CACHE_LEVELS];
         [unroll]
         for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) { lastPages[level] = 0xffffffffu; }
-#if VSM_OPTIMIZE_MARK_SAMPLES
+#if VSM_LOCAL_MARK
         ShadowProjection originProjection = projections[0], receiverProjection = projections[receiverLevel];
         float3 toLight = push.lightType == 0u ? normalize(originProjection.rowZ.xyz) :
             normalize(originProjection.originNear.xyz - position);
@@ -1276,7 +1249,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         }
 #endif
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
-#if VSM_OPTIMIZE_MARK_SAMPLES
+#if VSM_LOCAL_MARK
             float2 disk = vsmDiskSample(ray, push.rayCount, scramble);
             float3 endpoint = vsmRayEndpoint(position, originProjection, trace, toLight, right * disk.x + up * disk.y);
             float2 offset = float2(vsmSampleRandom(id.xy, 3u + 2u * ray, push.samplePhase),
@@ -1292,7 +1265,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
             if (sweepLevels == 0u) { continue; }
 #endif
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
-#if VSM_OPTIMIZE_MARK_SAMPLES
+#if VSM_LOCAL_MARK
                 float t = 1.0 - (float(step + 1u) - stepRandom) / float(push.samplesPerRay);
                 float time = step == push.samplesPerRay ? 0.0 : t * t;
                 if (push.lightType != 0u) { time = time * startW / lerp(endW, startW, time); }
@@ -1315,11 +1288,9 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
 [numthreads(8, 8, 1)]
 void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
-#if VSM_OPTIMIZE_MARK
     // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
     for (uint entry = lane; entry < 256u; entry += 64u) { gVsmMarkedPages[entry] = 0xffffffffu; }
     GroupMemoryBarrierWithGroupSync();
-#endif
     uint3 counts;
     vsmMarkReceiver(id, push, counts);
     vsmWorkAdd(push, kVSMWorkMarkSamplePositions, counts.x);
@@ -1524,16 +1495,11 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
 #endif
 }
 
-#if VSM_CLUSTER_CULL
 groupshared float3 g_vsmClusterMinimum, g_vsmClusterMaximum;
 groupshared uint g_vsmClusterValid, g_vsmClusterLevelMask;
 
 bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection projection,
-    StructuredBuffer<uint4> pages
-#if VSM_WORKLOAD_DIAGNOSTICS || VSM_CLUSTER_PAGE_BITSET
-    , ShadowPush push
-#endif
-)
+    StructuredBuffer<uint4> pages, ShadowPush push)
 {
     float2 lo = float2(1e30), hi = -lo;
     for (uint corner = 0u; corner < 8u; ++corner) {
@@ -1568,7 +1534,6 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
     }
     int2 first = clamp(int2(floor(saturate(lo * 0.5 + 0.5) * float(axis))) - 1, int2(0), int2(axis - 1));
     int2 last = clamp(int2(floor(saturate(hi * 0.5 + 0.5) * float(axis))) + 1, int2(0), int2(axis - 1));
-#if VSM_CLUSTER_PAGE_BITSET
     StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     uint offset = vsmClusterPageBitsetOffset(push);
     uint cachedWord = 0xffffffffu, rawWord = 0u;
@@ -1603,31 +1568,8 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
 #if VSM_WORKLOAD_DIAGNOSTICS
     vsmRecordClusterLevel(push, wordTests, kVSMBuildDiagnosticClusterEmptyLevels);
 #endif
-#else
-#if VSM_WORKLOAD_DIAGNOSTICS
-    uint pageTests = 0u;
-#endif
-    for (int y = first.y; y <= last.y; ++y) {
-        for (int x = first.x; x <= last.x; ++x) {
-            uint4 entry = pages[projection.page.x + uint(y * axis + x)];
-#if VSM_WORKLOAD_DIAGNOSTICS
-            ++pageTests;
-#endif
-            if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 2u) != 0u) {
-#if VSM_WORKLOAD_DIAGNOSTICS
-                vsmRecordClusterLevel(push, pageTests, kVSMBuildDiagnosticClusterPageHits);
-#endif
-                return true;
-            }
-        }
-    }
-#if VSM_WORKLOAD_DIAGNOSTICS
-    vsmRecordClusterLevel(push, pageTests, kVSMBuildDiagnosticClusterEmptyLevels);
-#endif
-#endif
     return false;
 }
-#endif
 
 #if VSM_COMPACT_BUILD
 uint vsmCullCluster(uint firstTriangle, uint lane, ShadowPush push,
@@ -1657,11 +1599,7 @@ uint vsmCullCluster(uint firstTriangle, uint lane, ShadowPush push,
     }
 #else
     if (lane < push.clipmapCount && g_vsmClusterValid != 0u &&
-        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages
-#if VSM_CLUSTER_PAGE_BITSET
-            , push
-#endif
-        )) {
+        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
         InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
     }
 #endif
@@ -1717,14 +1655,10 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     if (triangleIndex >= push.triangleCount) { return; }
 #else
     uint triangleIndex = push.workBase + id.x;
-#if VSM_CLUSTER_CULL
     // Each CPU dispatch starts at a multiple of 64, including batched draws.
     // Only uniform exits precede the two group barriers; tail lanes participate.
     uint firstTriangle = push.workBase + group.x * 64u;
     if (firstTriangle >= push.triangleCount || push.enabled == 0u) { return; }
-#else
-    if (triangleIndex >= push.triangleCount || push.enabled == 0u) { return; }
-#endif
 #endif
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
 #if !VSM_COMPACT_BUILD
@@ -1732,7 +1666,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #endif
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-#if VSM_CLUSTER_CULL && !VSM_COMPACT_BUILD
+#if !VSM_COMPACT_BUILD
     if (lane == 0u) {
 #if VSM_WORKLOAD_DIAGNOSTICS
         vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterGroups, 1u);
@@ -1757,11 +1691,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     }
 #else
     if (lane < push.clipmapCount && g_vsmClusterValid != 0u &&
-        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages
-#if VSM_CLUSTER_PAGE_BITSET
-            , push
-#endif
-        )) {
+        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
         InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
     }
 #endif
@@ -1776,24 +1706,15 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     VirtualShadowMapTriangle triangle;
     if (!loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) { return; }
     vsmWorkAdd(push, kVSMWorkBuildDecodedTriangles, 1u);
-#if VSM_CLUSTER_CULL
     vsmWorkAdd(push, kVSMWorkBuildLevelTests, countbits(levelMask));
-#else
-    vsmWorkAdd(push, kVSMWorkBuildLevelTests, push.clipmapCount);
-#endif
-    uint pageTests = 0u;
-#if VSM_TRIANGLE_PAGE_BITSET
     StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     uint bitsetOffset = vsmClusterPageBitsetOffset(push);
 #if VSM_WORKLOAD_DIAGNOSTICS
     uint wordTests = 0u, pageHits = 0u;
 #endif
-#endif
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
     for (uint level = 0u; level < push.clipmapCount; ++level) {
-#if VSM_CLUSTER_CULL
         if ((levelMask & (1u << level)) == 0u) { continue; }
-#endif
         ShadowProjection projection = projections[level];
         float3 lo, hi;
 #if !VSM_DIRECTIONAL_BUILD
@@ -1826,7 +1747,6 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
         // world coordinates need not fit the page-index integer range.
         int2 first = min(int2(floor(saturate(lo.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
         int2 last = min(int2(floor(saturate(hi.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
-#if VSM_TRIANGLE_PAGE_BITSET
         uint cachedWord = 0xffffffffu, rawWord = 0u;
         for (int y = first.y; y <= last.y; ++y) {
             uint firstPage = projection.page.x + uint(y * axis + first.x);
@@ -1861,23 +1781,8 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                 }
             }
         }
-#else
-        for (int y = first.y; y <= last.y; ++y) {
-            for (int x = first.x; x <= last.x; ++x) {
-                ++pageTests;
-                uint page = projection.page.x + uint(y * axis + x);
-                uint4 entry = pages[page];
-                if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 2u) == 0u) { continue; }
-                uint index;
-                InterlockedAdd(statistics[3], 1u, index);
-                if (index < push.workCapacity) { work[index] = uint2(triangleIndex, page); }
-                else { InterlockedAdd(statistics[5], 1u); }
-            }
-        }
-#endif
     }
-    vsmWorkAdd(push, kVSMWorkBuildPageTests, pageTests);
-#if VSM_TRIANGLE_PAGE_BITSET && VSM_WORKLOAD_DIAGNOSTICS
+#if VSM_WORKLOAD_DIAGNOSTICS
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetWordTests, wordTests);
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetPageHits, pageHits);
 #endif

@@ -1,8 +1,8 @@
 # VSM 方向光 Mark 射线同页快路径
 
-**状态（2026-10-31）：候选默认关闭。GPU 等价通过；Sponza 确认 Mark 收益 8.84%、Shadows 收益 4.81%，RenderGraph 区间跨过 −2% 回退门槛，工具判定为 `inconclusive / retain_candidate`。**
+**状态（2026-10-31）：已按用户决定默认启用；性能确认结论仍为不确定。GPU 等价通过；Sponza 确认 Mark 收益 8.84%、Shadows 收益 4.81%，RenderGraph 区间跨过 −2% 回退门槛，工具判定为 `inconclusive / retain_candidate`。**
 
-`VirtualShadowMapSettings::markRayPages` 默认 `false`。两个 VSM Pass 的 `markRayPages` 生产属性控制该路径，显式布尔 `benchmarkMarkRayPages` 优先。只有方向光编译 `VSM_MARK_RAY_PAGES=1`，局部光及 Hard/PCF 路径不变。有效值进入 `Programs` 缓存键和 `[VSMShader] markRayPages` 日志。
+`VirtualShadowMapSettings::markRayPages` 默认 `true`。两个 VSM Pass 的 `markRayPages` 生产属性控制该路径，显式布尔 `benchmarkMarkRayPages` 优先。只有方向光编译 `VSM_MARK_RAY_PAGES=1`，局部光及 Hard/PCF 路径不变。有效值进入 `Programs` 缓存键和 `[VSMShader] markRayPages` 日志。
 
 ## 实现与数值契约
 

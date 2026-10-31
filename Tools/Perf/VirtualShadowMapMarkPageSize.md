@@ -1,5 +1,13 @@
 # Mark page-size specialization experiment
 
+**Historical protocol only.** Page-size specialization is now unconditional for
+directional Mark. Live `run --experiment mark-page-size` and `prepare_plan` reject
+new experiments; the production and benchmark switches below have been removed.
+Existing sealed packages can still be verified and reported without modification.
+See [retired VSM experiments](VirtualShadowMapRetiredExperiments.md). The remaining
+description and capture commands document the historical protocol, not a supported
+current capture workflow.
+
 `VirtualShadowMapBitset.py --experiment mark-page-size` uses independent protocol
 `virtual-shadow-map-mark-page-size-v1`. It compares dynamic integer page-size
 division against a constant shift in directional Mark. The runtime setting is

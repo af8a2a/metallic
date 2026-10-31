@@ -4,6 +4,10 @@ run --phase diagnostic|discovery|confirmation --cases-dir DIR --exe EXE --output
     [--diagnostic DIAGNOSTIC_SOURCE] [--reference DISCOVERY_SOURCE]
 report SOURCE NEW_REPORT [--diagnostic DIAGNOSTIC_SOURCE] [--reference DISCOVERY_SOURCE]
 
+Live experiments: compact-build, mark-ray-pages, directional-projection, one-pass-projection.
+Retired live experiments: cluster-bitset, directional-build, directional-mark,
+mark-clipmaps, mark-page-size. Historical report/verification remains supported.
+The switch descriptions below document historical evidence as well as live candidates.
 Cases are Diagnostic-ACases.json/Diagnostic-BCases.json or Timing-A/B counterparts.
 A disables benchmarkClusterPageBitset, B enables it; both use production mark/cluster.
 --experiment directional-build instead toggles only benchmarkDirectionalBuild,
@@ -65,6 +69,13 @@ DIRECTIONAL_PROJECTION_PROTOCOL = "virtual-shadow-map-directional-projection-v1"
 DIRECTIONAL_PROJECTION_SWITCH = "benchmarkDirectionalProjection"
 ONE_PASS_PROTOCOL = "virtual-shadow-map-one-pass-projection-v1"
 ONE_PASS_SWITCH = "benchmarkOnePassProjection"
+RETIRED_EXPERIMENTS = frozenset(("cluster-bitset", "directional-build", "directional-mark", "mark-clipmaps", "mark-page-size"))
+LIVE_EXPERIMENTS = frozenset(("compact-build", "mark-ray-pages", "directional-projection", "one-pass-projection"))
+RETIRED_PROPERTIES = frozenset(("benchmarkLegacyMark", "benchmarkMarkSamples",
+    "benchmarkDirectionalMark", "directionalMark", "benchmarkMarkClipmapSpecialization", "markClipmapSpecialization",
+    "benchmarkMarkPageSizeSpecialization", "markPageSizeSpecialization", "benchmarkDisableClusterCull",
+    "benchmarkClusterPageBitset", "clusterPageBitset", "benchmarkTrianglePageBitset", "trianglePageBitset",
+    "benchmarkDirectionalBuild", "directionalBuild"))
 METRICS = optimization.METRICS
 POLICY = {"minimumGain": .03, "maximumGraphRegression": .02, "confidence": .95,
           "primaryMetric": "buildMs", "statisticalUnit": "independent four-process ABBA block",
@@ -173,7 +184,25 @@ def declared_output_workload(workload):
     return result
 
 
+def require_live_experiment(args):
+    name = getattr(args, "experiment", "cluster-bitset")
+    if name in RETIRED_EXPERIMENTS:
+        raise ValueError(f"Retired VSM experiment {name}: its optimized path is unconditional; use report to verify historical evidence")
+    if name not in LIVE_EXPERIMENTS:
+        raise ValueError(f"Unknown live VSM experiment: {name}")
+
+
+def reject_retired_properties(graph):
+    for node in graph["nodes"]:
+        if node.get("type") not in ("VirtualShadowMapPass", "VirtualShadowMapLightsPass"):
+            continue
+        retired = RETIRED_PROPERTIES.intersection(node.get("properties", {}))
+        if retired:
+            raise ValueError(f"Retired VSM graph properties on {node.get('name')}: {', '.join(sorted(retired))}; remove them because these paths are unconditional")
+
+
 def prepare_plan(args):
+    require_live_experiment(args)
     mode = "diagnostic" if args.phase == "diagnostic" else "timing"
     directional = getattr(args, "experiment", "cluster-bitset") == "directional-build"
     compact = getattr(args, "experiment", "cluster-bitset") == "compact-build"
@@ -192,7 +221,9 @@ def prepare_plan(args):
         if spec["mode"] != mode:
             raise ValueError("Case mode differs from the phase")
         graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
-        workload = normalized_workload(spec, acceptance.read(graph), arm, directional, compact, directional_mark, one_pass, mark_clipmaps, mark_ray_pages, directional_projection, mark_page_size)
+        graph_data = acceptance.read(graph)
+        reject_retired_properties(graph_data)
+        workload = normalized_workload(spec, graph_data, arm, directional, compact, directional_mark, one_pass, mark_clipmaps, mark_ray_pages, directional_projection, mark_page_size)
         if previous is not None and workload != previous:
             raise ValueError("Cases/graphs differ beyond the declared experiment switch")
         previous = workload
@@ -690,6 +721,7 @@ def link_receipts(links):
 
 
 def run(args):
+    require_live_experiment(args)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     rows = []

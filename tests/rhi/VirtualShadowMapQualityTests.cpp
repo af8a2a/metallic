@@ -492,7 +492,7 @@ RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt"
     for (const char* name : names) {
         graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kCapacity},{"physicalPageBudget",2048},
             {"pageSize",128},{"virtualPagesPerAxis",virtualPagesPerAxis},{"clipmapCount",4},{"firstClipmapExtent",4},
-            {"maxWorkItems",131072},{"shadowBias",.002},{"cacheEnabled",true},{"benchmarkMarkSamples",true},
+            {"maxWorkItems",131072},{"shadowBias",.002},{"cacheEnabled",true},
             {"forceRedraw",std::string_view(name)=="Redraw"},{"filter",std::string_view(name)=="Hard" ? "hard" : filter},
             {"pcfRadius",1.5},{"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},
             {"receiverFootprint",true},{"compactOutputs",std::string_view(name)=="Compact"}});
@@ -1199,6 +1199,8 @@ public:
                             const std::string node = names[arm], capture = node + "Evidence", deferred = node + "Deferred";
                             const bool debug = arm != 3;
                             Json settings{{"lightCapacity",kCapacity},{"physicalPageBudget",512},{"pageSize",128},
+                                // Keep face pools fixed across the strict Cold/Warm projection comparison.
+                                {"demandDrivenBudget",false},
                                 {"virtualPagesPerAxis",16},{"clipmapCount",4},{"firstClipmapExtent",4},{"maxWorkItems",131072},
                                 {"shadowBias",.002},{"nearPlane",.05},{"cacheEnabled",true},{"receiverFootprint",true},
                                 {"filter",filter},{"pcfRadius",1.5},{"smrtRayCount",2},{"smrtSamplesPerRay",8},{"smrtMaxRayLength",12},

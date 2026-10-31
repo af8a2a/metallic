@@ -1,5 +1,7 @@
 # VSM Mark 样本生成与投影复用
 
+> 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
+
 本次在已有共享 Mark 请求去重和生产 cluster dirty-page bitset 之上，减少局部光 Mark 的重复计算。`VirtualShadowMapSettings::optimizeMarkSamples` 现在默认 **true**，但 CPU 侧有效值为 `settings.optimizeMarkSamples && light.type != Directional`。方向光始终选择原有 shader 排列，Spot/Point 默认复用不变量；两个 VSM Pass 的显式布尔属性 `benchmarkMarkSamples` 可关闭或开启这一局部光策略，不能强制方向光进入已拒绝的排列。
 
 有效值统一进入程序缓存比较、Programs 状态、shader 宏和日志。日志同时记录 `lightType`（0 directional、1 spot、2 point）；这是 CPU 选择独立排列，不是在同一 shader 内加分支掩盖方向光代价。最终生产策略已完成独立回归与 A/B 验证；初轮试验与最终结果分开保留。

@@ -4,10 +4,12 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Scene/scene.h"
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <random>
@@ -34,11 +36,15 @@ void requireRemap(const Result<T>& result, const std::string& message)
     requireRemap(bool(result), message + (result ? "" : ": " + std::string(resultToString(result))));
 }
 
+// Match production ShadowPush even when this entrypoint only uses its prefix.
 struct RemapPush
 {
     std::array<uint32_t, 52> words{};
+    float lodScreenRayLength = 0.f;
+    uint32_t receiverGeometry = UINT32_MAX;
 };
-static_assert(sizeof(RemapPush) == 208);
+static_assert(sizeof(RemapPush) == 216);
+static_assert(offsetof(RemapPush, lodScreenRayLength) == 208 && offsetof(RemapPush, receiverGeometry) == 212);
 
 struct LevelChange
 {
@@ -239,12 +245,15 @@ public:
                 std::array<uint32_t, 9> arguments;
                 arguments.fill(0xcdcdcdcdu);
                 std::vector<uint32_t> owners(kPool * 2 + count + blocks, 0xcdcdcdcdu);
-                const std::array<uint64_t, 6> bytes{initial.size() * sizeof(Page), previous.size() * sizeof(Page),
-                    compact.size() * sizeof(Page), sizeof(statistics), sizeof(arguments), owners.size() * sizeof(uint32_t)};
-                const std::array<const void*, 6> data{initial.data(), previous.data(), compact.data(), statistics.data(), arguments.data(), owners.data()};
-                const std::array<uint32_t, 6> stride{16,16,16,4,4,4};
-                std::array<std::unique_ptr<Buffer>, 6> buffers;
-                std::array<ResourceLease, 6> leases;
+                // Reset writes invalidated resident-page counters even without
+                // layered caching. Production binds 32 diagnostic + 16 metadata words.
+                std::array<uint32_t, 48> cacheDiagnostics{};
+                const std::array<uint64_t, 7> bytes{initial.size() * sizeof(Page), previous.size() * sizeof(Page),
+                    compact.size() * sizeof(Page), sizeof(statistics), sizeof(arguments), owners.size() * sizeof(uint32_t), sizeof(cacheDiagnostics)};
+                const std::array<const void*, 7> data{initial.data(), previous.data(), compact.data(), statistics.data(), arguments.data(), owners.data(), cacheDiagnostics.data()};
+                const std::array<uint32_t, 7> stride{16,16,16,4,4,4,4};
+                std::array<std::unique_ptr<Buffer>, 7> buffers;
+                std::array<ResourceLease, 7> leases;
                 for (size_t index = 0; index < buffers.size(); ++index) {
                     auto buffer = device->createBuffer({.size = bytes[index], .structureStride = stride[index],
                         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource, .memoryLocation = MemoryLocation::HostUpload});
@@ -263,6 +272,7 @@ public:
                 push.words[21] = 2; push.words[25] = input.enabled; push.words[26] = count; push.words[27] = input.lightType;
                 push.words[28] = leases[1].shaderIndex(); push.words[29] = leases[2].shaderIndex(); push.words[30] = leases[5].shaderIndex();
                 push.words[31] = mode; push.words[32] = 1; push.words[33] = 3; push.words[34] = 7; push.words[35] = input.dirtyBounds;
+                push.words[51] = leases[6].shaderIndex(); // sampleReserved: cache diagnostics and layer metadata
                 bench::GPUCommands gpu(*queue);
                 requireRemap(gpu.initialize(*device), "Begin remap commands");
                 requireRemap(registry->bind(*gpu.commands, leases), "Bind remap resources");
@@ -295,6 +305,8 @@ public:
                     {.buffer = buffers[3].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
                         .after = {PipelineStageBits::Host, AccessBits::HostRead}},
                     {.buffer = flagReadback->get(), .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                        .after = {PipelineStageBits::Host, AccessBits::HostRead}},
+                    {.buffer = buffers[6].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
                         .after = {PipelineStageBits::Host, AccessBits::HostRead}}};
                 requireRemap(gpu.commands->synchronize({.buffers = readbackReady}), "Remap host readback visibility");
                 requireRemap(gpu.submitAndWait(), "Complete remap commands");
@@ -304,9 +316,11 @@ public:
                 expectedStatistics[22] = !input.reuse; expectedStatistics[23] = 7; expectedStatistics[25] = input.dirtyBounds;
                 expectedStatistics[26] = input.force; expectedStatistics[27] = 1; expectedStatistics[28] = 3;
                 const std::array<uint32_t, 9> expectedArguments{0,1,1,0,1,1,0,1,1};
-                const std::array<Buffer*, 4> actual{buffers[0].get(), buffers[3].get(), buffers[4].get(), flagReadback->get()};
-                const std::array<const void*, 4> expectedData{expected.data(), expectedStatistics.data(), expectedArguments.data(), expectedFlags.data()};
-                const std::array<uint64_t, 4> expectedBytes{bytes[0], sizeof(expectedStatistics), sizeof(expectedArguments), expectedFlags.size() * sizeof(uint32_t)};
+                std::array<uint32_t, 48> expectedCacheDiagnostics{};
+                expectedCacheDiagnostics[kVSMCacheCompositeInvalidatedResidentPages] = invalidated;
+                const std::array<Buffer*, 5> actual{buffers[0].get(), buffers[3].get(), buffers[4].get(), flagReadback->get(), buffers[6].get()};
+                const std::array<const void*, 5> expectedData{expected.data(), expectedStatistics.data(), expectedArguments.data(), expectedFlags.data(), expectedCacheDiagnostics.data()};
+                const std::array<uint64_t, 5> expectedBytes{bytes[0], sizeof(expectedStatistics), sizeof(expectedArguments), expectedFlags.size() * sizeof(uint32_t), sizeof(expectedCacheDiagnostics)};
                 for (size_t index = 0; index < actual.size(); ++index) {
                     actual[index]->invalidate(); const void* mapped = actual[index]->map();
                     requireRemap(mapped != nullptr, "Remap result map");
@@ -317,7 +331,7 @@ public:
                 report["cases"].push_back({{"name", input.name}, {"virtualPages", count}, {"axis", input.axis},
                     {"levels", levels}, {"lightType", input.lightType}, {"denseBytes", dense.size() * sizeof(Mapping)},
                     {"compactBytes", compact.size() * sizeof(Page)}, {"allPageWordsEqual", true}, {"resetFlagsEqual", true},
-                    {"statisticsEqual", true}, {"indirectResetEqual", true}, {"invalidated", invalidated}, {"remapped", remapped}});
+                    {"statisticsEqual", true}, {"cacheDiagnosticsEqual", true}, {"indirectResetEqual", true}, {"invalidated", invalidated}, {"remapped", remapped}});
             }
             report["validation"] = validation.snapshot();
             requireRemap(!validation.failed(), "Compact remap Vulkan validation error");

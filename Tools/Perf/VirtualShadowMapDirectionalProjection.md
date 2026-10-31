@@ -7,6 +7,12 @@ boolean `benchmarkDirectionalProjection` must be `false` in A and `true` in B;
 all other case and graph settings must match. Production `directionalProjection`
 is overridden by this benchmark switch.
 
+The established Mark/Build/bitset optimizations are now unconditional. Remove
+their retired production and benchmark properties from new capture graphs; the
+live runner rejects them rather than treating ignored controls as valid A/B
+settings. Historical evidence still verifies under its recorded protocol. See
+[retired VSM experiments](VirtualShadowMapRetiredExperiments.md).
+
 This experiment requires one directional face and per-face projection scopes.
 Mixed-light one-pass projection is outside this candidate. The shader receipts
 require `directionalProjection=true` only for B's `vsmProjectMain`, and require

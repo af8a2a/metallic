@@ -1,5 +1,7 @@
 # VSM 方向光 build 编译特化
 
+> 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
+
 `VirtualShadowMapSettings::directionalBuild` 及两个 VSM Pass 默认启用方向光专用 build，已有图无需添加属性。`directionalBuild: false` 可恢复通用 build；显式布尔 `benchmarkDirectionalBuild` 优先于生产属性。只有方向光生效，Spot 和 PointFace 继续使用通用程序。本项验证以当前默认的 cluster/triangle dirty-page bitset 为基线。
 
 ## 编译与数据契约

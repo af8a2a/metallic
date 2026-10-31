@@ -281,21 +281,16 @@ class OptimizationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete fixed"):
             optimization.verify_experiment(source)
 
-    def test_runner_failure_is_retained_without_retry(self):
-        output = self.root / "failed"
-        plan = {"processes": optimization.schedule("discovery"), "inputs": {
-            arm: {"cases": __file__, "casesSHA256": a.digest(__file__), "graph": __file__, "graphSHA256": a.digest(__file__)}
-            for arm in optimization.ARMS}}
-        with mock.patch.object(optimization, "prepare_plan", return_value=plan), \
-                mock.patch.object(a, "run", side_effect=RuntimeError("synthetic process failure")) as launch:
-            with self.assertRaisesRegex(RuntimeError, "synthetic"):
-                optimization.run(SimpleNamespace(output=output, exe=Path("never-started.exe")))
-        self.assertEqual(launch.call_count, 1)
-        self.assertEqual(launch.call_args.args[0].runs, 1)
-        self.assertEqual(launch.call_args.args[0].timeout, 600)
-        self.assertEqual(a.read(output / "Processes.json")[0]["status"], "failed")
-        self.assertTrue(a.read(output / "Processes.json")[0]["ended"])
-        self.assertTrue((output / "Failure.json").exists())
+    def test_retired_live_runner_cannot_plan_or_launch(self):
+        output = self.root / "retired"
+        args = SimpleNamespace(output=output, exe=Path("never-started.exe"))
+        with mock.patch.object(a, "run") as launch, mock.patch.object(a, "read") as read:
+            for entry in (optimization.prepare_plan, optimization.run):
+                with self.assertRaisesRegex(ValueError, "Retired VSM four-arm"):
+                    entry(args)
+            launch.assert_not_called()
+            read.assert_not_called()
+        self.assertFalse(output.exists())
 
     def test_reports_plot_and_reproduce_without_modifying_sealed_packages(self):
         diagnostic = self.experiment("diagnostic")

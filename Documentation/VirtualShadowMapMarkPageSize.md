@@ -1,5 +1,7 @@
 # 方向光 Mark 页地址专用编译
 
+> 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
+
 2026-10-31：根据用户提供的 Nsight GPU Trace 和本机 Unreal Engine 5.7.4 源码，实现方向光 Mark 页地址移位候选。正确性通过；独立确认 Mark 收益 18.93%、Shadows 收益 7.08%、RenderGraph 收益 5.10%，预定门槛判定为 `accept / confirmed_gain / manual_promotion`。生产默认仍为关闭。
 
 ## Trace 与 Unreal 对照

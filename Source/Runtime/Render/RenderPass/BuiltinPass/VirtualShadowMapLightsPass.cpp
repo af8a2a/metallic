@@ -333,30 +333,14 @@ public:
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.collectGPUWork = collectGPUWork_;
         settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
-        settings.optimizeMark = !boolProperty(&properties, "benchmarkLegacyMark", !settings.optimizeMark);
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
         settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
             boolProperty(&properties, "onePassProjection", settings.onePassProjection));
-        settings.optimizeMarkSamples = boolProperty(&properties, "benchmarkMarkSamples", settings.optimizeMarkSamples);
-        settings.directionalMark = boolProperty(&properties, "benchmarkDirectionalMark",
-            boolProperty(&properties, "directionalMark", settings.directionalMark));
         settings.directionalProjection = boolProperty(&properties, "benchmarkDirectionalProjection",
             boolProperty(&properties, "directionalProjection", settings.directionalProjection));
-        settings.specializeMarkClipmaps = boolProperty(&properties, "benchmarkMarkClipmapSpecialization",
-            boolProperty(&properties, "markClipmapSpecialization", settings.specializeMarkClipmaps));
-        settings.specializeMarkPageSize = boolProperty(&properties, "benchmarkMarkPageSizeSpecialization",
-            boolProperty(&properties, "markPageSizeSpecialization", settings.specializeMarkPageSize));
         settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
             boolProperty(&properties, "markRayPages", settings.markRayPages));
-        settings.directionalBuild = boolProperty(&properties, "benchmarkDirectionalBuild",
-            boolProperty(&properties, "directionalBuild", settings.directionalBuild));
         settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
-        settings.clusterCulling = !boolProperty(&properties, "benchmarkDisableClusterCull", false);
-        // An explicit benchmark override wins over the production property for A/B graphs.
-        settings.clusterPageBitset = boolProperty(&properties, "benchmarkClusterPageBitset",
-            boolProperty(&properties, "clusterPageBitset", settings.clusterPageBitset));
-        settings.trianglePageBitset = boolProperty(&properties, "benchmarkTrianglePageBitset",
-            boolProperty(&properties, "trianglePageBitset", settings.trianglePageBitset));
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
         const bool demandDriven = boolProperty(&properties, "demandDrivenBudget", true);

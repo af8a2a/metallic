@@ -1,5 +1,7 @@
 # VSM 精确三角形页枚举
 
+> 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
+
 精确三角形 build 复用 cluster dirty-page bitset，按原三角投影包围矩形逐行枚举置位页，替代对矩形内每个页读取 uint4 元数据。`VirtualShadowMapSettings::trianglePageBitset` 默认 true；两个 VSM Pass 读取生产属性 `trianglePageBitset`，显式布尔 `benchmarkTrianglePageBitset` 优先覆盖。有效值还要求 cluster culling 和 cluster-page bitset 均开启；任一依赖关闭时回到原逐页扫描。
 
 ## 枚举与生产者契约

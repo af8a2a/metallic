@@ -43,6 +43,13 @@ def graph(arm, mode, resolved=False, directional=False, compact=False, direction
     return result
 
 
+def live_graph(value):
+    for node in value["nodes"]:
+        for key in bitset.RETIRED_PROPERTIES:
+            node.get("properties", {}).pop(key, None)
+    return value
+
+
 def shader_log(arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, directional_projection=False, mark_page_size=False):
     if directional_projection or mark_page_size:
         lines = []
@@ -444,11 +451,9 @@ class BitsetTests(unittest.TestCase):
             value["cases"][0]["graph"] = f"{arm}.json"
             a.save(cases / f"Diagnostic-{arm}Cases.json", value)
             a.save(cases / f"{arm}.json", graph(arm, "diagnostic", mark_clipmaps=True))
-        plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="mark-clipmaps",
-            cases_dir=cases, exe=self.root / "fake.exe"))
-        self.assertEqual(plan["protocol"], bitset.MARK_CLIPMAPS_PROTOCOL)
-        self.assertEqual(plan["policy"]["primaryMetric"], "markMs")
-        self.assertNotEqual(plan["protocol"], bitset.DIRECTIONAL_MARK_PROTOCOL)
+        with self.assertRaisesRegex(ValueError, "Retired VSM experiment"):
+            bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="mark-clipmaps",
+                cases_dir=cases, exe=self.root / "fake.exe"))
 
     def test_one_pass_switch_preserves_production_settings(self):
         workloads = []
@@ -563,7 +568,7 @@ class BitsetTests(unittest.TestCase):
             value = spec("diagnostic", arm)
             value["cases"][0]["graph"] = f"{arm}.json"
             a.save(cases / f"Diagnostic-{arm}Cases.json", value)
-            a.save(cases / f"{arm}.json", graph(arm, "diagnostic", one_pass=True))
+            a.save(cases / f"{arm}.json", live_graph(graph(arm, "diagnostic", one_pass=True)))
         plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="one-pass-projection", role="overhead",
             cases_dir=cases, exe=self.root / "fake.exe"))
         self.assertEqual(plan["protocol"], bitset.ONE_PASS_PROTOCOL)
@@ -655,10 +660,9 @@ class BitsetTests(unittest.TestCase):
             value["cases"][0]["graph"] = f"{arm}.json"
             a.save(cases / f"Diagnostic-{arm}Cases.json", value)
             a.save(cases / f"{arm}.json", graph(arm, "diagnostic", directional_mark=True))
-        plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="directional-mark",
-            cases_dir=cases, exe=self.root / "fake.exe"))
-        self.assertEqual(plan["protocol"], bitset.DIRECTIONAL_MARK_PROTOCOL)
-        self.assertEqual(plan["policy"]["primaryMetric"], "markMs")
+        with self.assertRaisesRegex(ValueError, "Retired VSM experiment"):
+            bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="directional-mark",
+                cases_dir=cases, exe=self.root / "fake.exe"))
 
     def test_directional_mark_rejects_changed_images_and_wrong_policy(self):
         source = self.experiment("diagnostic", directional_mark=True)
@@ -727,9 +731,9 @@ class BitsetTests(unittest.TestCase):
             value["cases"][0]["graph"] = f"{arm}.json"
             a.save(cases / f"Diagnostic-{arm}Cases.json", value)
             a.save(cases / f"{arm}.json", graph(arm, "diagnostic", directional=True))
-        plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="directional-build",
-            cases_dir=cases, exe=self.root / "fake.exe"))
-        self.assertEqual(plan["protocol"], bitset.DIRECTIONAL_PROTOCOL)
+        with self.assertRaisesRegex(ValueError, "Retired VSM experiment"):
+            bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="directional-build",
+                cases_dir=cases, exe=self.root / "fake.exe"))
 
     def test_compact_switch_is_explicit_and_only_difference(self):
         for arm in bitset.ARMS:
@@ -801,7 +805,7 @@ class BitsetTests(unittest.TestCase):
             value = spec("diagnostic", arm)
             value["cases"][0]["graph"] = f"{arm}.json"
             a.save(cases / f"Diagnostic-{arm}Cases.json", value)
-            a.save(cases / f"{arm}.json", graph(arm, "diagnostic", compact=True))
+            a.save(cases / f"{arm}.json", live_graph(graph(arm, "diagnostic", compact=True)))
         plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="compact-build",
             cases_dir=cases, exe=self.root / "fake.exe"))
         self.assertEqual(plan["protocol"], bitset.COMPACT_PROTOCOL)
@@ -1015,6 +1019,44 @@ class BitsetTests(unittest.TestCase):
         self.assertTrue((output / "BuildDiagnosticFrames.json").exists())
         self.assertEqual(before, {path: a.digest(path) for path in before})
 
+    def test_retired_live_experiments_fail_before_io_or_launch(self):
+        for name in bitset.RETIRED_EXPERIMENTS:
+            args = SimpleNamespace(experiment=name, output=self.root / name)
+            with mock.patch.object(a, "run") as launch, mock.patch.object(a, "read") as read:
+                for entry in (bitset.prepare_plan, bitset.run):
+                    with self.assertRaisesRegex(ValueError, "Retired VSM experiment"):
+                        entry(args)
+                launch.assert_not_called()
+                read.assert_not_called()
+            self.assertFalse(args.output.exists())
+
+    def test_live_candidates_plan_and_reject_ignored_controls(self):
+        variants = (("compact-build", bitset.COMPACT_SWITCH, bitset.COMPACT_PROTOCOL),
+            ("mark-ray-pages", bitset.MARK_RAY_PAGES_SWITCH, bitset.MARK_RAY_PAGES_PROTOCOL),
+            ("directional-projection", bitset.DIRECTIONAL_PROJECTION_SWITCH, bitset.DIRECTIONAL_PROJECTION_PROTOCOL),
+            ("one-pass-projection", bitset.ONE_PASS_SWITCH, bitset.ONE_PASS_PROTOCOL))
+        for name, switch, protocol in variants:
+            cases = self.root / name
+            cases.mkdir()
+            for arm in bitset.ARMS:
+                case = spec("diagnostic", arm)
+                case["cases"][0]["graph"] = f"{arm}.json"
+                value = live_graph(optimization_tests.graph("Both", "diagnostic"))
+                value["nodes"][0]["properties"][switch] = arm == "B"
+                a.save(cases / f"Diagnostic-{arm}Cases.json", case)
+                a.save(cases / f"{arm}.json", value)
+            args = SimpleNamespace(phase="diagnostic", experiment=name, cases_dir=cases, exe=self.root / "fake.exe")
+            self.assertEqual(bitset.prepare_plan(args)["protocol"], protocol)
+            for key in bitset.RETIRED_PROPERTIES:
+                value = a.read(cases / "A.json")
+                for setting in (False, True):
+                    value["nodes"][0]["properties"][key] = setting
+                    a.save(cases / "A.json", value)
+                    with self.assertRaisesRegex(ValueError, "Retired VSM graph properties"):
+                        bitset.prepare_plan(args)
+                value["nodes"][0]["properties"].pop(key)
+                a.save(cases / "A.json", value)
+
     def test_runner_failure_preserves_receipt_without_retry(self):
         cases = self.root / "cases"
         cases.mkdir()
@@ -1022,8 +1064,8 @@ class BitsetTests(unittest.TestCase):
             value = spec("diagnostic", arm)
             value["cases"][0]["graph"] = f"{arm}.json"
             a.save(cases / f"Diagnostic-{arm}Cases.json", value)
-            a.save(cases / f"{arm}.json", graph(arm, "diagnostic"))
-        args = SimpleNamespace(phase="diagnostic", cases_dir=cases, exe=self.root / "fake.exe", output=self.root / "run")
+            a.save(cases / f"{arm}.json", live_graph(graph(arm, "diagnostic", compact=True)))
+        args = SimpleNamespace(phase="diagnostic", experiment="compact-build", cases_dir=cases, exe=self.root / "fake.exe", output=self.root / "run")
         with mock.patch.object(a, "run", side_effect=RuntimeError("synthetic failure")) as launch:
             with self.assertRaisesRegex(RuntimeError, "synthetic"):
                 bitset.run(args)

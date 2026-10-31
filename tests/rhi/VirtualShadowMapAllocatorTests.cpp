@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <numeric>
@@ -33,13 +34,16 @@ void requireAllocator(const Result<T>& result, const std::string& message)
     requireAllocator(bool(result), message + (result ? "" : ": " + std::string(resultToString(result))));
 }
 
-// The production inline ABI is 52 words. This probe binds only allocation
-// fields; image, material and geometry indices are intentionally unavailable.
+// Match the complete 216-byte production ShadowPush, including its LOD tail.
+// This probe binds only allocation fields; refined receiver geometry is absent.
 struct AllocatorPush
 {
     std::array<uint32_t, 52> words{};
+    float lodScreenRayLength = 0.f;
+    uint32_t receiverGeometry = UINT32_MAX;
 };
-static_assert(sizeof(AllocatorPush) == 208);
+static_assert(sizeof(AllocatorPush) == 216);
+static_assert(offsetof(AllocatorPush, lodScreenRayLength) == 208 && offsetof(AllocatorPush, receiverGeometry) == 212);
 
 struct AllocationCase
 {

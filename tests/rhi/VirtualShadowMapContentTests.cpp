@@ -314,7 +314,6 @@ public:
                     check(runtime->sceneReady(), "Content terminal pages not ready");
                 }
                 VirtualShadowMaps cached, forced;
-                std::array<VirtualShadowMaps, 3> optimizationControls;
                 VirtualShadowMapCasterCache casterCache;
                 std::shared_ptr<void> previousCasterOwner;
                 VirtualShadowMapLight light;
@@ -327,7 +326,7 @@ public:
                 VirtualShadowMapCasterSettings casterSettings{.tessellationEnabled = true, .tessellationFactor = 4,
                     .texturePublicationRevision = 101};
                 HeightImage* currentHeight = &heightA;
-                auto record = [&](VirtualShadowMaps& shadows, bool force, bool cancel = false, uint32_t optimizationArm = 3) {
+                auto record = [&](VirtualShadowMaps& shadows, bool force, bool cancel = false) {
                     gpu.begin();
                     if (runtime) { check(runtime->syncRuntimeScene(scene, log), "Synchronize content edit: " + log); }
                     auto stream = runtime ? runtime->shadowGeometryResources() : MeshletStreamShadowGeometryView{};
@@ -346,8 +345,6 @@ public:
                     settings.pageSize = 32; settings.virtualPagesPerAxis = 8; settings.clipmapCount = 3;
                     settings.physicalPageCount = 256; settings.cacheEnabled = true; settings.forceRedraw = force;
                     settings.maxWorkItems = 65535;
-                    settings.optimizeMark = (optimizationArm & 1) != 0;
-                    settings.clusterCulling = (optimizationArm & 2) != 0;
                     std::array<TextureView*, 2> alphaViews{nullptr, material.alphaMode == "MASK" ? currentHeight->view.get() : nullptr};
                     const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);
                     auto shadow = shadows.record(device, *gpu.commands, *depthView, view, light, *casters,
@@ -389,21 +386,6 @@ public:
                     report["activeCase"] = {{"name", name}, {"stream", streamed}};
                     auto actual = record(cached, false), reference = record(forced, true);
                     check(actual.shadow == reference.shadow, "Stale content cache at " + name);
-                    Json optimizationEvidence = Json::array();
-                    for (uint32_t arm = 0; arm < optimizationControls.size(); ++arm) {
-                        const auto control = record(optimizationControls[arm], false, false, arm);
-                        const char* armName = std::array{"Legacy", "MarkOnly", "ClusterOnly"}[arm];
-                        report["activeOptimizationComparison"] = {{"arm", armName},
-                            {"candidateStatistics", actual.stats}, {"controlStatistics", control.stats},
-                            {"candidateShadowSha256", debug::debugSha256(actual.shadow)},
-                            {"controlShadowSha256", debug::debugSha256(control.shadow)},
-                            {"geometryBytesEqual", actual.geometryBytes == control.geometryBytes}};
-                        check(actual.shadow == control.shadow && actual.stats == control.stats &&
-                            actual.geometryBytes == control.geometryBytes,
-                            name + ": " + armName + " changed displaced/MASK geometry, shadow or 32-word statistics");
-                        optimizationEvidence.push_back({{"arm", armName}, {"statistics", control.stats},
-                            {"shadowSha256", debug::debugSha256(control.shadow)}, {"equal", true}});
-                    }
                     check(actual.geometryBytes == reference.geometryBytes, "Cached GPU geometry differs from uncached preparation at " + name);
                     check(actual.contentKeys == reference.contentKeys && actual.dependency == reference.dependency,
                         "Cached caster metadata differs from uncached preparation at " + name);
@@ -495,7 +477,6 @@ public:
                             std::abs(casterUVCoverage[2] - .5) < 2e-5, "Shadow patches do not cover the authored UV square at " + name);
                     }
                     report["frames"].push_back({{"name", name}, {"stream", streamed}, {"equal", true},
-                        {"optimizationControls", std::move(optimizationEvidence)},
                         {"geometryBytesEqual", true}, {"casterPackageReused", reused},
                         {"statistics", actual.stats}, {"triangles", actual.triangles.size()}, {"maximumGeometryError", maximumError},
                         {"windingErrors", windingErrors}, {"tessellationFactor", casterSettings.tessellationFactor},
@@ -548,9 +529,6 @@ public:
                     movedCaster.SetupByTranslation(float3(.35f, 0, 0));
                     check(scene.setNodeLocalMatrix(1, movedCaster * originalCaster), "Move resident caster before cancellation");
                     const auto cancelled = record(cached, false, true);
-                    for (uint32_t arm = 0; arm < optimizationControls.size(); ++arm) {
-                        (void)record(optimizationControls[arm], false, true, arm);
-                    }
                     check(cancelled.casterOwner != previousCasterOwner, "Cancelled edit did not rebuild caster package");
                     previousCasterOwner = cancelled.casterOwner;
                     const auto retry = compare("CancelledPreparationRetry", true, true);

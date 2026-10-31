@@ -1,5 +1,7 @@
 # VSM dirty-page bitset
 
+> 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
+
 精确三角形阶段的后续复用见 [三角形页枚举](VirtualShadowMapTriangleBitset.md)；本文以下保留 cluster 粗筛的实现与历史测量范围。
 
 `VirtualShadowMapSettings::clusterPageBitset` 及两个 VSM Pass 的生产配置现在默认开启，无需修改已有 RenderGraph。图属性 `clusterPageBitset: false` 可恢复逐页扫描。显式布尔属性 `benchmarkClusterPageBitset` 优先于生产属性，保留历史 A/B 图的 false/true 覆盖能力；关闭 cluster culling 时，bitset 的有效值始终为 false。
