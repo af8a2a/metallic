@@ -108,6 +108,7 @@ public:
                 actualRenderHeight = binding.texture->desc().height;
             }
             const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory" ||
+                binding.id == "Shadows.lodStatistics" ||
                 (collectGPUWork && (binding.id == "Shadows.workload" || binding.id == "Shadows.buildDiagnostics"));
             const bool image = (captureImages && (binding.id == "VBuffer.depth" ||
                 binding.id == "VBuffer.visibility" || binding.id == "Shadows.shadows")) ||
@@ -160,6 +161,12 @@ public:
             {"budgetDroppedCount", header.budgetDroppedCount}, {"disabledCount", header.disabledCount},
             {"physicalPageBudget", header.physicalPageBudget}, {"sceneIdentity", header.sceneIdentity}}},
             {"statistics", faces}, {"totals", totals}};
+        const auto rawLOD = read("Shadows.lodStatistics");
+        requireAcceptance(rawLOD.size() == 32 * sizeof(uint32_t), "Unexpected VSM LOD statistics layout");
+        std::array<uint32_t, 32> lodStatistics;
+        std::memcpy(lodStatistics.data(), rawLOD.data(), sizeof(lodStatistics));
+        requireAcceptance(lodStatistics[0] == 2, "Unsupported VSM LOD statistics version");
+        result["lodStatistics"] = lodStatistics;
         result["gpuWork"] = {{"version", 1}, {"enabled", collectGPUWork}};
         result["gpuBuildDiagnostics"] = {{"version", 3}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
@@ -483,6 +490,10 @@ public:
                     report["cpuProfileScope"] = "CPU attribution includes diagnostic clocks and counters; nested sections are inclusive and must not be summed with their children. This is not ordinary performance acceptance.";
                 }
                 const uint32_t shadowId = shadows->id;
+                output["shadowLODSettings"] = {
+                    {"enabled", shadows->properties.value("shadowLOD", false)},
+                    {"hierarchy", shadows->properties.value("shadowLODHierarchy", true)},
+                    {"errorTexels", shadows->properties.value("shadowLODErrorTexels", 1.0f)}};
                 auto* raster = graph.findNode("VBuffer");
                 requireAcceptance(raster && raster->type == "VisibilityBufferPass", "Acceptance requires production VBuffer");
                 const uint32_t rasterId = raster->id;

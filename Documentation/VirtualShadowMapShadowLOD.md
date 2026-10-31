@@ -79,6 +79,50 @@ CPU resources 还保留 `(render node, primitive-local group, local cluster)` �
 
 图表、IQR、完整原始数据与脚本位于 `build/vsm-shadow-hierarchy/Summary/report.md`、`CPUTraversal.png`、`WorkCounts.png` 和 `Summarize.py`。初轮 Run1 也保留；最终 Run2 包含数值余量及大平移回归。不同 LOD 的质量仍沿用下方初版边界，层级优化本身不改变选中 cut。
 
+## GPU 影响验证
+
+2026-10-31，RTX 5070 Ti / driver 621.01，Release，768 × 512，真实多级 Bunny + plane。阴影输入为完整 resident authored 几何；主视图固定最细级，预建 stream 的 54 页全部驻留，geometry 3,171,840 bytes，frame 16 冻结驻留。相机、光源、资源内容、接收面深度与流送身份在各臂相同，没有 RT/CLAS 分配。单方向光只有一个 face，`onePassProjection=true` 按既有默认实现走单面 projection。
+
+三臂为关闭 LOD、1 texel 平铺、1 texel 层级。分别测 `cacheEnabled=false` 的每帧重绘与 `cacheEnabled=true` 的静止暖缓存。每种 workload 固定 3 个 ABCCBA 区组，共 36 个独立计时进程；每进程 96 帧、前 32 帧预热。普通计时关闭 validation、工作量原子计数、CPU profile 和 build substage，只保留标准 GPU stage 时间戳。磁盘缓存保留，不停止用户程序，不锁 GPU 时钟。区组内使用两个进程中位数的平均 log ratio，95% 区间使用 3 个区组、t(df=2)=4.303；帧不作为独立样本，未追加性能样本。
+
+下表是六个进程中位数的中位数，单位 ms；RenderGraph span 不包含 present，也不能转换为应用 FPS 收益：
+
+| 状态 / GPU 范围 | Off | Flat | Hierarchy |
+|---|---:|---:|---:|
+| 重绘 / RenderGraph | 1.987000 | 1.176408 | 0.987728 |
+| 重绘 / Shadows | 1.160032 | 0.406712 | 0.407472 |
+| 重绘 / Mark | 0.027528 | 0.027944 | 0.027952 |
+| 重绘 / Build | 0.047152 | 0.036064 | 0.036064 |
+| 重绘 / Raster | 1.025752 | 0.284840 | 0.284992 |
+| 重绘 / Projection | 0.043840 | 0.043600 | 0.043640 |
+| 暖缓存 / RenderGraph | 0.677320 | 0.668816 | 0.666000 |
+| 暖缓存 / Shadows | 0.110144 | 0.110504 | 0.110112 |
+
+重绘时 Hierarchy/Off 的 Shadows 为 **−64.91%**，95% CI **[−65.01%, −64.81%]**；Build 为 −23.60% [−26.07%, −21.04%]，Raster 为 −72.23% [−72.43%, −72.04%]，RenderGraph 为 −48.52% [−55.25%, −40.76%]。收益主要来自减少 raster 几何，不代表 Mark/allocator 同样减少；Mark 约增加 0.4 μs。这里仅证明该固定 fixture 的 GPU 时间变化。
+
+层级相对平铺的重绘 Shadows 为 **+0.06% [−0.36%, +0.47%]**，RenderGraph 为 −10.21% [−27.78%, +11.65%]；均不能证明额外 GPU 加速。两者提交相同 cut，层级优化减少 CPU 选择工作。暖缓存 Hierarchy/Off 的 Shadows 为 −0.04% [−3.26%, +3.27%]、RenderGraph 为 −0.30% [−6.48%, +6.28%]，同样没有明确收益。暖缓存三臂 dirty/build/raster 有效工作均为零，相关 GPU span 是空 dispatch、同步等固定开销。
+
+独立诊断为六进程 × 48 帧，前 32 帧预热，frame 32/47 保存输出；均无 VVL 消息、work overflow 或 coarse receiver fallback。Off→LOD 的实际计数如下，Flat 与 Hierarchy 完全一致：
+
+| 每帧重绘工作 | Off | LOD |
+|---|---:|---:|
+| 选中 triangle slots / build 解码三角 | 69,453 | 17,348 |
+| Build 线程组 | 1,086 | 272 |
+| Cluster level 测试 | 4,344 | 1,088 |
+| Cluster dirty-bitset word 测试 | 3,270 | 828 |
+| Fine raster 工作项 | 211,611 | 54,157 |
+| Raster 解码三角 | 281,064 | 71,505 |
+
+接收像素均为 376,832，请求/分配页均为 52；LOD 选中 146 clusters。层级将 CPU group 误差测试 50→20、拓扑访问 52→18，但不改变 GPU 工作。两种缓存状态内，Flat/Hierarchy 的深度、阴影、HDR、最终输出哈希完全相同；日志提供的 Mark/Build/Project SPIR-V 在同计数模式的各臂相同。
+
+`cacheEnabled` 会改变方向光深度 padding 和 coarse 投影范围，因此重绘/暖缓存不是相同投影的精确缓存对照；本例 LOD 最终 PNG 跨这两种状态相差 1 像素。另加两个仅正确性诊断进程，在缓存保持开启的 Flat/Hierarchy 上，使用 frame 47 内置 `forceRedraw` 比较：几何/可见性/深度身份稳定，shadow changed bytes=0、HDR byte equal，VVL=0。这两个进程不进入性能统计。
+
+已查看质量对照图。1 texel LOD 相对 Off 在重绘最终图改变 1,356 像素（全图 0.345%，非黑区域并集约 9.36%），Bunny 自阴影斑点增加；plane 最终着色为黑色，当前图不能证明其投影轮廓质量。没有连续运动、复杂场景或软阴影质量保证。`shadowLOD=false` 默认保持不变；不因本例 GPU 收益忽略质量代价。
+
+证据位于 `build/vsm-lod-gpu-impact/`：`Diagnostic-v2/`、`Timing/`、`CacheEquivalence-Flat/`、`CacheEquivalence-Hierarchy/`、`Summary/Report.md`、`Summary/Redraw-GPU.png`、`Summary/Warm-GPU.png` 和 `QualityReview/BunnyShadowLODComparison.png`。初次诊断目录 `Diagnostic/` 保留：渲染已通过，脚本误要求单 face 场景编译 one-pass shader，修正路径验收后重跑；没有修改 renderer。
+
+复用工具为 `Tools/Perf/PrepareVirtualShadowMapLODImpact.py` 和 `Tools/Perf/VirtualShadowMapLODImpact.py`。准备器依赖本地 `build/vsm-shadow-hierarchy/Run2/.../VirtualShadowMapLOD` 的真实 fixture；所有输出目录必须新建。`run --phase diagnostic` 通过后才可 `run --phase timing --diagnostic <diagnostic-directory>`；`verify` / `report` 可从原始 receipt 重建验证与图表。额外缓存等价诊断使用 `VirtualShadowMapAcceptance.py` 和已保存的 `CacheEquivalenceCases/`。
+
 ## 初版验证与限制
 
 2026-10-31 本机 Release 验证通过：`Metallic`、`MetallicRHITests` 构建完成，shader module audit 为 387 files / 275 modules / 112 implementation units，`git diff --check` 通过。复用 build-release，仅启用该树的测试目标，没有更换编译器或 SDK。
@@ -92,7 +136,7 @@ CPU resources 还保留 `(render node, primitive-local group, local cluster)` �
 
 证据位于本地 `build/vsm-shadow-lod/`：`Run3/virtual_shadow_map_shadow_lod`、`Run1/virtual_shadow_map_shadow_lod_pass`、`Run2/virtual_shadow_map_cache_layers`，以及 `Summary/report.md`、`Geometry.png`、`QualityDiffMontage.png` 与可重生成的 `Summarize.py`。前两次 direct 测试失败记录保留：首次把未准入缓存页的有效性也纳入精确比较；第二次在 raster-only fixture 使用了要求 RT 资源的冻结模式。修正了测试契约，没有放宽可查询深度或最终可见性比较。
 
-未测 GPU 时间，不声称性能收益；尚未验证大型场景长时间驻留压力、连续运动的 LOD 跳变和软阴影质量。
+初版未测 GPU 时间；后续固定 fixture 的测量见上方“GPU 影响验证”。仍未验证大型场景长时间驻留压力、连续运动的 LOD 跳变和软阴影质量。
 
 需要区分三类比较：相同 cut 的 cached/force-redraw 可以检查精确一致；resident 零误差路径保留原三角顺序，可与原完整几何作精确基线比较；不同 LOD 的输出允许近似差异，需单独检查轮廓、细小遮挡、跨层切换和阴影采样结果，不能要求与最细几何逐像素相等。
 
