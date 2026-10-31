@@ -3,13 +3,14 @@
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapLOD.h"
 
 #include <memory>
 #include <array>
 #include <span>
 #include <string>
 
-namespace metallic::scene { struct RenderMaterial; }
+namespace metallic::scene { struct RenderMaterial; struct Bounds; }
 
 namespace metallic::render {
 
@@ -53,6 +54,8 @@ struct VirtualShadowMapSettings
     bool trianglePageBitset = true; // Enumerate dirty fine pages; requires the effective cluster-page bitset.
     bool directionalBuild = true; // Build-only orthographic shader specialization; local lights stay generic.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
+    bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
+    float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
     uint32_t clipmapCount = 4;
@@ -71,6 +74,7 @@ struct VirtualShadowMapSettings
     bool receiverFootprint = true; // All filters share receiver-selected resolution; false starts at the finest level.
     bool enabled = true;
     bool cacheEnabled = false;
+    bool cacheLayering = false; // Separate static base depth from dynamic composition; requires caching.
     bool forceRedraw = false;
 };
 
@@ -91,6 +95,7 @@ struct VirtualShadowMapResult
     // Keeps backing wrappers alive for deferred projection/readback. It owns no
     // State or cache links, so cross-face projection cannot form reference cycles.
     std::shared_ptr<void> resourceOwner;
+    Buffer* cacheDiagnostics = nullptr; // Independent kVirtualShadowMapCacheDiagnosticSize public prefix.
 };
 
 // The caller owns these graph textures through GPU completion and transitions
@@ -117,6 +122,7 @@ struct VirtualShadowMapProjectionGroup
 struct VirtualShadowMapMemoryUsage
 {
     uint64_t atlasBytes = 0;
+    uint64_t staticAtlasBytes = 0; // Subset of atlasBytes, not additional memory.
     uint64_t privateOutputBytes = 0;
     uint64_t bufferBytes = 0;
     uint64_t allocatedAtlasPages = 0;
@@ -139,6 +145,9 @@ class VirtualShadowMaps
 public:
     VirtualShadowMaps();
     ~VirtualShadowMaps();
+    static Result<std::vector<VirtualShadowMapLODProjection>> makeShadowLODProjections(
+        const scene::Bounds& bounds, const ViewConstants& view, const VirtualShadowMapLight& light,
+        const VirtualShadowMapSettings& settings, std::string& log);
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
         const VirtualShadowMapCasterResources& casters,

@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -95,6 +96,40 @@ Vector normalized(Vector value)
     const float length = std::sqrt(dot(value, value));
     for (auto& component : value) { component /= length; }
     return value;
+}
+
+bool validProjectionSettings(const VirtualShadowMapSettings& settings)
+{
+    return settings.pageSize != 0 && settings.pageSize <= 128 && !(settings.pageSize & (settings.pageSize - 1)) &&
+        settings.virtualPagesPerAxis != 0 && settings.virtualPagesPerAxis <= 128 &&
+        settings.clipmapCount != 0 && settings.clipmapCount <= 12 &&
+        std::isfinite(settings.firstClipmapExtent) && settings.firstClipmapExtent > 0 &&
+        std::isfinite(settings.shadowBias) && settings.shadowBias >= 0 &&
+        std::isfinite(settings.shadowLODErrorTexels) && settings.shadowLODErrorTexels >= 0;
+}
+
+Result<> validateProjectionLight(const VirtualShadowMapLight& light, std::string& log)
+{
+    const bool directional = light.type == VirtualShadowMapLightType::Directional;
+    const auto finite = [](const Vector& value) {
+        return std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); });
+    };
+    if (uint32_t(light.type) > uint32_t(VirtualShadowMapLightType::PointFace) ||
+        !std::isfinite(light.angularRadius) || light.angularRadius < 0 || light.angularRadius >= 1.5707963267948966f ||
+        !std::isfinite(light.sourceRadius) || light.sourceRadius < 0 ||
+        (light.type != VirtualShadowMapLightType::PointFace && (!finite(light.direction) || dot(light.direction, light.direction) < 1e-12f)) ||
+        (!directional && (!finite(light.position) || !std::isfinite(light.range) || light.range < 0 ||
+            !std::isfinite(light.nearPlane) || light.nearPlane <= 0)) ||
+        (light.type == VirtualShadowMapLightType::PointFace && light.face >= 6)) {
+        log += "Invalid VSM light projection.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    if (light.type == VirtualShadowMapLightType::Spot && (!std::isfinite(light.outerConeAngle) ||
+        light.outerConeAngle <= 0 || light.outerConeAngle >= 1.5707963267948966f)) {
+        log += "VSM spot projection requires an outer half-angle strictly between zero and pi/2.\n";
+        return makeError(Error::Unsupported);
+    }
+    return {};
 }
 
 std::vector<ShadowProjection> makeProjections(const scene::Bounds& bounds, const ViewConstants& view,
@@ -283,6 +318,8 @@ struct VirtualShadowMaps::Cache
 {
     Device* device = nullptr;
     std::shared_ptr<ShadowAtlas> atlas;
+    std::shared_ptr<ShadowAtlas> staticAtlas;
+    std::vector<uint64_t> dynamicCasters;
     std::shared_ptr<Buffer> pages;
     std::vector<ShadowProjection> projections;
     std::vector<std::array<int64_t, 2>> origins;
@@ -291,6 +328,7 @@ struct VirtualShadowMaps::Cache
     VirtualShadowMapLight light;
     float farPlane = 0;
     uint64_t sceneIdentity = 0, structuralRevision = 0, dependencyKey = 0;
+    uint64_t geometryRevision = 0, texturePublicationRevision = 0, tessellationKey = 0;
     uint32_t epoch = 0;
     bool enabled = false;
     GPUCompletionPoint completion;
@@ -311,8 +349,8 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 12> buffers;
-    std::array<std::vector<TextureEntry>, 3> textures;
+    std::array<std::vector<BufferEntry>, 13> buffers;
+    std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     VirtualShadowMapResourcePoolStats stats;
 
@@ -405,6 +443,10 @@ struct VirtualShadowMaps::State
         std::array<std::shared_ptr<Buffer>, 10> buffers;
         std::shared_ptr<Buffer> pointFaces;
         std::shared_ptr<Buffer> projectionJobs;
+        std::shared_ptr<Buffer> cacheDiagnostics;
+        std::shared_ptr<ShadowAtlas> staticAtlas;
+        std::array<std::shared_ptr<void>, 2> casterLayers;
+        uint64_t layerBufferBytes = 0;
         std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
         std::array<std::shared_ptr<TextureView>, 3> views;
     };
@@ -422,6 +464,41 @@ struct VirtualShadowMaps::State
 };
 
 VirtualShadowMaps::VirtualShadowMaps() = default;
+
+Result<std::vector<VirtualShadowMapLODProjection>> VirtualShadowMaps::makeShadowLODProjections(
+    const scene::Bounds& bounds, const ViewConstants& view, const VirtualShadowMapLight& light,
+    const VirtualShadowMapSettings& settings, std::string& log)
+{
+    if (!validProjectionSettings(settings)) {
+        log += "Invalid VSM shadow LOD projection settings.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    if (auto valid = validateProjectionLight(light, log); !valid) { return std::unexpected(valid.error()); }
+    if (!light.enabled || !settings.enabled) { return std::vector<VirtualShadowMapLODProjection>{}; }
+    const bool directional = light.type == VirtualShadowMapLightType::Directional;
+    // Only X/Y/W are consumed by LOD; local far depth does not affect them.
+    auto projections = directional ? makeProjections(bounds, view, light.direction, settings) :
+        makeLocalProjections(light, light.nearPlane * 2, settings);
+    if (directional && bounds.valid) {
+        auto& coarse = projections.back();
+        const auto [low, high] = projectedBounds(bounds, coarse);
+        const float minimumExtent = std::max(.01f, .5f * coarse.metric[0] *
+            std::max(high[0] - low[0], high[1] - low[1]));
+        // A reused coarse cache may have a smaller padded domain than a newly
+        // constructed projection. Every valid cache contains these full bounds;
+        // their unpadded extent conservatively bounds its texel density.
+        const float scale = coarse.metric[0] / minimumExtent;
+        for (auto& component : coarse.rowX) { component *= scale; }
+        for (auto& component : coarse.rowY) { component *= scale; }
+    }
+    std::vector<VirtualShadowMapLODProjection> result;
+    result.reserve(projections.size());
+    for (const auto& projection : projections) {
+        result.push_back({projection.rowX, projection.rowY, projection.rowW,
+            projection.page[1] * settings.pageSize, directional ? 0.f : light.nearPlane});
+    }
+    return result;
+}
 VirtualShadowMaps::~VirtualShadowMaps() = default;
 
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
@@ -457,12 +534,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     static const scene::RenderMaterial defaultMaterial;
     if (materials.empty()) { materials = {&defaultMaterial, 1}; }
     total.work("materials", materials.size());
-    if (settings.pageSize == 0 || settings.pageSize > 128 || (settings.pageSize & (settings.pageSize - 1)) ||
-        settings.virtualPagesPerAxis == 0 || settings.virtualPagesPerAxis > 128 || settings.clipmapCount == 0 ||
-        settings.clipmapCount > 12 || settings.physicalPageCount == 0 || settings.physicalPageCount > 4096 ||
+    if (!validProjectionSettings(settings) || settings.physicalPageCount == 0 || settings.physicalPageCount > 4096 ||
         settings.maxWorkItems == 0 || settings.maxWorkItems > 4 * 1024 * 1024 ||
-        !std::isfinite(settings.firstClipmapExtent) || settings.firstClipmapExtent <= 0 ||
-        !std::isfinite(settings.shadowBias) || settings.shadowBias < 0 ||
         uint32_t(settings.filter) > uint32_t(VirtualShadowMapFilter::SMRT) ||
         !std::isfinite(settings.pcfRadius) || settings.pcfRadius < 0 || settings.pcfRadius > 8 ||
         settings.smrtRayCount == 0 || settings.smrtRayCount > 32 ||
@@ -486,24 +559,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool compactBuild = settings.clusterCulling && settings.compactBuild;
     // The local-light permutation has confirmed gains; directional hoisting regressed Mark.
     const bool optimizeMarkSamples = settings.optimizeMarkSamples && !directional;
-    const auto finite = [](const Vector& value) {
-        return std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); });
-    };
-    if (uint32_t(light.type) > uint32_t(VirtualShadowMapLightType::PointFace) ||
-        !std::isfinite(light.angularRadius) || light.angularRadius < 0 || light.angularRadius >= 1.5707963267948966f ||
-        !std::isfinite(light.sourceRadius) || light.sourceRadius < 0 ||
-        (light.type != VirtualShadowMapLightType::PointFace && (!finite(light.direction) || dot(light.direction, light.direction) < 1e-12f)) ||
-        (!directional && (!finite(light.position) || !std::isfinite(light.range) || light.range < 0 ||
-            !std::isfinite(light.nearPlane) || light.nearPlane <= 0)) ||
-        (light.type == VirtualShadowMapLightType::PointFace && light.face >= 6)) {
-        log += "Invalid VSM light projection.\n";
-        return makeError(Error::InvalidArgument);
-    }
-    if (light.type == VirtualShadowMapLightType::Spot && (!std::isfinite(light.outerConeAngle) ||
-        light.outerConeAngle <= 0 || light.outerConeAngle >= 1.5707963267948966f)) {
-        log += "VSM spot projection requires an outer half-angle strictly between zero and pi/2.\n";
-        return makeError(Error::Unsupported);
-    }
+    if (auto valid = validateProjectionLight(light, log); !valid) { return std::unexpected(valid.error()); }
     if (light.type == VirtualShadowMapLightType::PointFace && settings.filter != VirtualShadowMapFilter::Hard && !deferProjection) {
         log += "Filtered point VSM requires six deferred faces before project().\n";
         return makeError(Error::InvalidArgument);
@@ -609,9 +665,27 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         makeLocalProjections(light, farPlane, settings);
     const auto origins = directional ? pageOrigins(view, direction, settings) :
         std::vector<std::array<int64_t, 2>>(settings.clipmapCount, {0, 0});
-    bool reuse = cache_ && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
+    const bool layered = settings.cacheEnabled && settings.cacheLayering;
+    std::array<uint32_t, 48> cacheDiagnostics{};
+    auto& reasons = cacheDiagnostics[kVSMCacheReasons];
+    if (!settings.cacheEnabled) { reasons |= kVSMCacheReasonCacheDisabled; }
+    if (!cache_) { reasons |= kVSMCacheReasonCold; }
+    if (settings.forceRedraw) { reasons |= kVSMCacheReasonForceRedraw; }
+    if (cache_) {
+        if (cache_->device != &device) { reasons |= kVSMCacheReasonDevice; }
+        if (!compatibleLight(cache_->light, light) || cache_->enabled != enabled) { reasons |= kVSMCacheReasonLight; }
+        if (!compatibleSettings(cache_->settings, settings)) { reasons |= kVSMCacheReasonSettings; }
+        if (cache_->sceneIdentity != casters.sceneIdentity) { reasons |= kVSMCacheReasonScene; }
+        if (cache_->structuralRevision != casters.structuralRevision) { reasons |= kVSMCacheReasonStructure; }
+        if (cache_->geometryRevision != casters.geometryRevision) { reasons |= kVSMCacheReasonGeometryPublication; }
+        if (cache_->texturePublicationRevision != casters.texturePublicationRevision) { reasons |= kVSMCacheReasonTexturePublication; }
+        if (cache_->tessellationKey != casters.tessellationKey) { reasons |= kVSMCacheReasonTessellation; }
+        if (cache_->settings.cacheLayering != settings.cacheLayering) { reasons |= kVSMCacheReasonLayerMode; }
+    }
+    bool reuse = cache_ && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
         cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey;
+    const bool compatibleCache = reuse;
     if (reuse && directional && casters.bounds.valid) {
         const auto [low, high] = projectedBounds(casters.bounds, cache_->projections.back());
         const float xyMargin = 2.f / settings.pageSize;
@@ -621,7 +695,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     } else if (reuse && !directional) {
         reuse = farExtent + farMargin <= cache_->farPlane;
     }
-    std::vector<scene::Bounds> dirtyBounds;
+    if (compatibleCache && !reuse) { reasons |= kVSMCacheReasonProjectionRange; }
+    std::vector<scene::Bounds> dirtyBounds, staticDirtyBounds;
+    std::vector<uint64_t> dynamicCasters = reuse && layered ? cache_->dynamicCasters : std::vector<uint64_t>{};
+    const auto isDynamic = [&](uint64_t id) { return std::binary_search(dynamicCasters.begin(), dynamicCasters.end(), id); };
     if (reuse) {
         if (!directional) {
             projections = cache_->projections;
@@ -637,12 +714,33 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             const auto* old = oldIndex < cache_->casters.size() ? &cache_->casters[oldIndex] : nullptr;
             const auto* next = newIndex < casters.states.size() ? &casters.states[newIndex] : nullptr;
             if (old && (!next || old->id < next->id)) {
-                dirtyBounds.push_back(old->bounds); ++oldIndex;
+                dirtyBounds.push_back(old->bounds);
+                ++cacheDiagnostics[kVSMCacheRemovedCasters];
+                if (!isDynamic(old->id)) { staticDirtyBounds.push_back(old->bounds); }
+                ++oldIndex;
             } else if (next && (!old || next->id < old->id)) {
-                dirtyBounds.push_back(next->bounds); ++newIndex;
+                dirtyBounds.push_back(next->bounds);
+                ++cacheDiagnostics[kVSMCacheAddedCasters];
+                if (!isDynamic(next->id)) { staticDirtyBounds.push_back(next->bounds); }
+                ++newIndex;
             } else {
+                const bool lodChanged = old->lodKey != next->lodKey;
+                cacheDiagnostics[kVSMCacheLODChangedCasters] += lodChanged;
                 if (old->contentKey != next->contentKey) {
                     dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
+                    ++cacheDiagnostics[kVSMCacheChangedCasters];
+                    cacheDiagnostics[kVSMCacheTransformChanges] += old->transformKey != next->transformKey;
+                    cacheDiagnostics[kVSMCacheMaterialChanges] += old->materialKey != next->materialKey;
+                    if (layered && !isDynamic(old->id)) {
+                        staticDirtyBounds.push_back(old->bounds);
+                        dynamicCasters.insert(std::lower_bound(dynamicCasters.begin(), dynamicCasters.end(), old->id), old->id);
+                        ++cacheDiagnostics[kVSMCachePromotedCasters];
+                    }
+                } else if (lodChanged) {
+                    dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
+                    if (!isDynamic(old->id)) {
+                        staticDirtyBounds.push_back(old->bounds); staticDirtyBounds.push_back(next->bounds);
+                    }
                 }
                 ++oldIndex; ++newIndex;
             }
@@ -653,45 +751,62 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (!lease) { return std::unexpected(lease.error()); }
         push.previousPages = lease->shaderIndex(); state->leases.push_back(*lease);
     }
-    push.cacheMode = (reuse ? 1u : 8u) | (settings.cacheEnabled ? 2u : 0u) | (settings.forceRedraw ? 4u : 0u);
+    push.cacheMode = (reuse ? 1u : 8u) | (settings.cacheEnabled ? 2u : 0u) | (settings.forceRedraw ? 4u : 0u) | (layered ? 16u : 0u);
     push.cacheEpoch = reuse ? cache_->epoch : (cache_ ? cache_->epoch + 1 : 1);
     push.dirtyBoundsCount = static_cast<uint32_t>(dirtyBounds.size());
     total.work("reuse", reuse);
     phase.work("dirtyBounds", dirtyBounds.size());
     phase.next("Build VSM page remapping");
-    // One uint4 per fine level: signed old-page offset, first rectangle, count.
-    // Inclusive integer rectangles follow the level records. Keep projection and
-    // edge rounding on the CPU identical to the former dense remap producer.
-    std::vector<std::array<uint32_t, 4>> pageChanges(settings.clipmapCount);
-    if (reuse) {
-        for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
-            const int64_t axis = projections[level].page[1];
-            const auto dx = origins[level][0] - cache_->origins[level][0];
-            const auto dy = origins[level][1] - cache_->origins[level][1];
-            const auto offsetX = int32_t(std::clamp(dx, -axis, axis));
-            const auto offsetY = int32_t(std::clamp(dy, -axis, axis));
-            const auto firstRectangle = uint32_t(pageChanges.size());
-            pageChanges[level] = {uint32_t(offsetX), uint32_t(offsetY), firstRectangle, 0};
-            // A whole-level scroll cannot retain pages. Force redraw retains
-            // mappings, but its dirty bit already covers every rectangle.
-            if (std::abs(offsetX) == axis || std::abs(offsetY) == axis || settings.forceRedraw) { continue; }
-            for (const auto& bounds : dirtyBounds) {
-                if (!bounds.valid) { continue; }
-                const auto [low, high] = projectedBounds(bounds, projections[level]);
-                if (high[0] < -1 || low[0] > 1 || high[1] < -1 || low[1] > 1) { continue; }
-                const auto page = [axis](float v, float epsilon) {
-                    return uint32_t(std::clamp(int(std::floor((std::clamp(v, -1.f, 1.f) * .5f + .5f) * axis + epsilon)), 0, int(axis - 1)));
-                };
-                pageChanges.push_back({page(low[0], -.0001f), page(low[1], -.0001f),
-                    page(high[0], .0001f), page(high[1], .0001f)});
+    // Each remap table begins with one uint4 per level followed by inclusive rectangles.
+    // Static and composite tables share snapped offsets and the physical page mapping.
+    std::vector<std::array<uint32_t, 4>> pageChanges;
+    const auto appendRemap = [&](std::span<const scene::Bounds> changedBounds) {
+        const uint32_t base = uint32_t(pageChanges.size());
+        pageChanges.resize(pageChanges.size() + settings.clipmapCount);
+        if (reuse) {
+            for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
+                const int64_t axis = projections[level].page[1];
+                const auto dx = origins[level][0] - cache_->origins[level][0];
+                const auto dy = origins[level][1] - cache_->origins[level][1];
+                const auto offsetX = int32_t(std::clamp(dx, -axis, axis));
+                const auto offsetY = int32_t(std::clamp(dy, -axis, axis));
+                const auto firstRectangle = uint32_t(pageChanges.size());
+                pageChanges[base + level] = {uint32_t(offsetX), uint32_t(offsetY), firstRectangle, 0};
+                if (std::abs(offsetX) == axis || std::abs(offsetY) == axis || settings.forceRedraw) { continue; }
+                for (const auto& bounds : changedBounds) {
+                    if (!bounds.valid) { continue; }
+                    const auto [low, high] = projectedBounds(bounds, projections[level]);
+                    if (high[0] < -1 || low[0] > 1 || high[1] < -1 || low[1] > 1) { continue; }
+                    const auto page = [axis](float v, float epsilon) {
+                        return uint32_t(std::clamp(int(std::floor((std::clamp(v, -1.f, 1.f) * .5f + .5f) * axis + epsilon)), 0, int(axis - 1)));
+                    };
+                    pageChanges.push_back({page(low[0], -.0001f), page(low[1], -.0001f),
+                        page(high[0], .0001f), page(high[1], .0001f)});
+                }
+                pageChanges[base + level][3] = uint32_t(pageChanges.size()) - firstRectangle;
             }
-            pageChanges[level][3] = uint32_t(pageChanges.size()) - firstRectangle;
         }
+        return base;
+    };
+    appendRemap(dirtyBounds);
+    cacheDiagnostics[kVSMCacheDirtyRectangles] = uint32_t(pageChanges.size()) - settings.clipmapCount;
+    const uint32_t staticRemapBase = layered ? appendRemap(staticDirtyBounds) : 0u;
+    cacheDiagnostics[kVSMCacheStaticDirtyRectangles] = layered ? uint32_t(pageChanges.size()) - staticRemapBase - settings.clipmapCount : 0u;
+    cacheDiagnostics[kVSMCacheLayered] = layered;
+    cacheDiagnostics[kVSMCacheReused] = reuse;
+    cacheDiagnostics[kVSMCacheDirtyBounds] = uint32_t(dirtyBounds.size());
+    cacheDiagnostics[kVSMCacheStaticDirtyBounds] = layered ? uint32_t(staticDirtyBounds.size()) : 0u;
+    cacheDiagnostics[kVSMCacheCancelledRecordings] = cancelledCount;
+    cacheDiagnostics[kVSMCacheRasterWorkAvailable] = layered && settings.collectGPUWork;
+    for (const auto& caster : casters.states) {
+        ++cacheDiagnostics[layered && isDynamic(caster.id) ? kVSMCacheDynamicCasters : kVSMCacheStaticCasters];
     }
+    cacheDiagnostics[35] = uint32_t(staticDirtyBounds.size());
+    cacheDiagnostics[36] = staticRemapBase;
     phase.work("remapBytes", pageChanges.size() * sizeof(pageChanges[0]));
     phase.work("denseRemapBytes", uint64_t(push.totalPages) * 8);
     phase.work("remapLevels", settings.clipmapCount);
-    phase.work("dirtyRectangles", pageChanges.size() - settings.clipmapCount);
+    phase.work("dirtyRectangles", cacheDiagnostics[kVSMCacheDirtyRectangles]);
     phase.next("Prepare VSM materials and alpha leases");
     std::vector<ShadowMaterial> gpuMaterials;
     for (size_t index = 0; index < materials.size(); ++index) {
@@ -831,6 +946,52 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (!lease) { return std::unexpected(lease.error()); }
         *textureIndices[index] = lease->shaderIndex(); state->leases.push_back(*lease);
     }
+    // Static atlases obey the same completion/reader retirement rule as the composite atlas.
+    // Run this on cache hits and after disabling layering, not only on pool acquisition.
+    std::erase_if(pool_->textures[3], [&](const auto& entry) {
+        const auto& desc = entry.resource.texture->desc();
+        const bool obsolete = !layered || desc.width != push.physicalPagesX * push.pageSize ||
+            desc.height != push.physicalPagesY * push.pageSize;
+        if (!obsolete || entry.resource.texture.use_count() != 1 || !entry.completion.isComplete()) { return false; }
+        ++pool_->stats.textureEvictions;
+        return true;
+    });
+    if (layered) {
+        if (reuse) {
+            state->resources->staticAtlas = cache_->staticAtlas;
+        } else {
+            auto atlas = pool_->texture(3, {.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferSource |
+                TextureUsageBits::DepthStencilAttachment, .format = Format::D32Sfloat,
+                .width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize}, completion, push.pageSize);
+            if (!atlas) { return std::unexpected(atlas.error()); }
+            state->resources->staticAtlas = std::make_shared<ShadowAtlas>(std::move(*atlas));
+        }
+        auto atlasLease = state->registry->sampledImage(*state->resources->staticAtlas->view);
+        if (!atlasLease) { return std::unexpected(atlasLease.error()); }
+        cacheDiagnostics[32] = atlasLease->shaderIndex(); state->leases.push_back(*atlasLease);
+        for (uint32_t layer = 0; layer < 2; ++layer) {
+            auto geometryLayer = prepareVirtualShadowMapCasterLayer(device, commands, casters, dynamicCasters, layer == 0, log);
+            if (!geometryLayer) { return std::unexpected(geometryLayer.error()); }
+            auto lease = state->registry->storageBuffer(*geometryLayer->parameters);
+            if (!lease) { return std::unexpected(lease.error()); }
+            cacheDiagnostics[33 + layer] = lease->shaderIndex(); state->leases.push_back(*lease);
+            state->leases.insert(state->leases.end(), geometryLayer->leases.begin(), geometryLayer->leases.end());
+            state->resources->casterLayers[layer] = geometryLayer->owner;
+            state->resources->layerBufferBytes += geometryLayer->layerBufferBytes;
+        }
+    }
+    auto diagnostics = pool_->buffer(12, {.size = sizeof(cacheDiagnostics), .structureStride = 4,
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::HostUpload}, completion);
+    if (!diagnostics) { return std::unexpected(diagnostics.error()); }
+    state->resources->cacheDiagnostics = *diagnostics;
+    void* diagnosticData = (*diagnostics)->map();
+    if (!diagnosticData) { return makeError(Error::Failure); }
+    std::memcpy(diagnosticData, cacheDiagnostics.data(), sizeof(cacheDiagnostics));
+    (*diagnostics)->flush(); (*diagnostics)->unmap();
+    auto diagnosticLease = state->registry->storageBuffer(**diagnostics);
+    if (!diagnosticLease) { return std::unexpected(diagnosticLease.error()); }
+    push.sampleReserved = diagnosticLease->shaderIndex(); state->leases.push_back(*diagnosticLease);
     auto depthLease = state->registry->sampledImage(depth);
     if (!depthLease) { return std::unexpected(depthLease.error()); }
     push.depth = depthLease->shaderIndex(); state->leases.push_back(*depthLease);
@@ -1042,47 +1203,78 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.next("Record VSM raster commands");
     phase.work("coarseBatches", push.coarseBatchCount);
     phase.work("fineBatches", push.batchCount);
-    const TextureBarrierDesc depthBegin{.texture = state->resources->textures[0].get(), .oldLayout = reuse ? TextureLayout::ShaderRead : TextureLayout::Undefined,
-        .newLayout = TextureLayout::DepthStencilAttachment,
-        .before = {PipelineStageBits::AllCommands, reuse ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
-        .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite}};
-    if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
-    const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
-    const RenderingAttachmentDesc attachment{.view = state->resources->views[0].get(), .layout = TextureLayout::DepthStencilAttachment,
-        .loadOp = reuse ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
-    if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"}); }
-    if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment}); !r) { return std::unexpected(r.error()); }
-    if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
-    commands.setScissor(area);
-    if (enabled) {
-        if (reuse) {
-            if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-            if (auto r = commands.drawMeshTasks(push.physicalPageCount); !r) { return std::unexpected(r.error()); }
+    const uint32_t fullGeometry = push.geometry;
+    const BufferBarrierDesc diagnosticReady{.buffer = state->resources->cacheDiagnostics.get(),
+        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+        .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+    if (auto r = commands.synchronize({.buffers = {&diagnosticReady, 1}}); !r) { return std::unexpected(r.error()); }
+    for (uint32_t layer = 0; layer < (layered ? 2u : 1u); ++layer) {
+        const bool staticPass = layered && layer == 0;
+        auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
+            staticPass ? "VSM static raster" : "VSM dynamic raster and restore") : RenderGraphExecutionContext::ProfileScope{};
+        auto* rasterTexture = staticPass ? state->resources->staticAtlas->texture.get() : state->resources->textures[0].get();
+        auto* rasterView = staticPass ? state->resources->staticAtlas->view.get() : state->resources->views[0].get();
+        push.geometry = layered ? cacheDiagnostics[33 + layer] : fullGeometry;
+        const TextureBarrierDesc depthBegin{.texture = rasterTexture, .oldLayout = reuse ? TextureLayout::ShaderRead : TextureLayout::Undefined,
+            .newLayout = TextureLayout::DepthStencilAttachment,
+            .before = {PipelineStageBits::AllCommands, reuse ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
+            .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite}};
+        if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
+        const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
+        const RenderingAttachmentDesc attachment{.view = rasterView, .layout = TextureLayout::DepthStencilAttachment,
+            .loadOp = reuse ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
+        if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"}); }
+        if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment}); !r) { return std::unexpected(r.error()); }
+        if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
+        commands.setScissor(area);
+        if (enabled) {
+            if (reuse || (layered && !staticPass)) {
+                push.rasterCoarse = staticPass ? 2u : 0u;
+                if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                if (auto r = commands.drawMeshTasks(push.physicalPageCount); !r) { return std::unexpected(r.error()); }
+            }
+            push.rasterCoarse = staticPass ? 3u : 1u;
+            for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
+                push.workBase = batch * kDrawBatchSize;
+                if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                auto args = state->resources->buffers[7]->slice({uint64_t(push.batchCount + batch) * 12, 12});
+                if (!args) { return std::unexpected(args.error()); }
+                if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+            }
+            push.rasterCoarse = staticPass ? 2u : 0u;
+            for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
+                push.workBase = batch * kDrawBatchSize;
+                if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                auto args = state->resources->buffers[7]->slice({uint64_t(batch) * 12, 12});
+                if (!args) { return std::unexpected(args.error()); }
+                if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+            }
         }
-        push.rasterCoarse = 1;
-        for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
-            push.workBase = batch * kDrawBatchSize;
-            if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-            auto args = state->resources->buffers[7]->slice({uint64_t(push.batchCount + batch) * 12, 12});
-            if (!args) { return std::unexpected(args.error()); }
-            if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
-        }
-        push.rasterCoarse = 0;
-        for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
-            push.workBase = batch * kDrawBatchSize;
-            if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-            auto args = state->resources->buffers[7]->slice({uint64_t(batch) * 12, 12});
-            if (!args) { return std::unexpected(args.error()); }
-            if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+        commands.endRendering();
+        if (!gpuProfiler) { commands.endDebugLabel(); }
+        const TextureBarrierDesc atlasReady{.texture = rasterTexture,
+            .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
+            .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
+            .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead}};
+        if (auto r = commands.synchronize({.textures = {&atlasReady, 1}}); !r) { return std::unexpected(r.error()); }
+        if (layered && staticPass) {
+            std::vector<BufferBarrierDesc> layerReady{{.buffer = state->resources->cacheDiagnostics.get(),
+                .before = {PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
+                .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}};
+            if (settings.collectGPUWork) {
+                layerReady.push_back({.buffer = state->resources->buffers[4].get(),
+                    .before = {PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::PreRasterization, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
+            }
+            if (auto r = commands.synchronize({.buffers = layerReady}); !r) { return std::unexpected(r.error()); }
         }
     }
-    commands.endRendering();
-    if (!gpuProfiler) { commands.endDebugLabel(); }
-    const TextureBarrierDesc atlasReady{.texture = state->resources->textures[0].get(),
-        .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
-        .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
-        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
-    if (auto r = commands.synchronize({.textures = {&atlasReady, 1}}); !r) { return std::unexpected(r.error()); }
+    push.geometry = fullGeometry;
+    push.rasterCoarse = 0;
+    const BufferBarrierDesc diagnosticPublished{.buffer = state->resources->cacheDiagnostics.get(),
+        .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+    if (auto r = commands.synchronize({.buffers = {&diagnosticPublished, 1}}); !r) { return std::unexpected(r.error()); }
     if (settings.collectGPUWork) {
         const BufferBarrierDesc workReady{.buffer = state->resources->buffers[4].get(),
             .before = {PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
@@ -1099,6 +1291,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         next->pages = state->resources->buffers[1]; next->projections = std::move(projections); next->origins = origins;
         next->casters = casters.states; next->settings = settings; next->light = light; next->farPlane = farPlane;
         next->sceneIdentity = casters.sceneIdentity; next->structuralRevision = casters.structuralRevision;
+        next->staticAtlas = state->resources->staticAtlas; next->dynamicCasters = std::move(dynamicCasters);
+        next->geometryRevision = casters.geometryRevision; next->texturePublicationRevision = casters.texturePublicationRevision;
+        next->tessellationKey = casters.tessellationKey;
         next->dependencyKey = casters.dependencyKey; next->epoch = push.cacheEpoch; next->enabled = enabled;
         next->completion = frame->completion();
         next->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
@@ -1115,7 +1310,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.next("Finish VSM record");
     return VirtualShadowMapResult{state->outputTextures[0], state->resources->views[1].get(), state->outputTextures[1], state->resources->views[2].get(),
         state->resources->buffers[4].get(), state->resources->textures[0].get(), state->resources->views[0].get(), state->resources->buffers[1].get(), state->resources->buffers[5].get(), push.physicalPagesX, push.clipmapCount, push.pageSize,
-        state->resources};
+        state->resources, state->resources->cacheDiagnostics.get()};
 }
 
 Result<> VirtualShadowMaps::preparePointFaces(CommandBuffer& commands,
@@ -1451,10 +1646,11 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
     VirtualShadowMapMemoryUsage usage;
     std::unordered_set<const Texture*> textures;
     std::unordered_set<const Buffer*> buffers;
-    const auto addAtlas = [&](const Texture* texture, uint32_t pageSize) {
+    const auto addAtlas = [&](const Texture* texture, uint32_t pageSize, bool staticLayer = false) {
         if (texture && textures.insert(texture).second) {
             const auto& desc = texture->desc();
             usage.atlasBytes += uint64_t(desc.width) * desc.height * 4;
+            if (staticLayer) { usage.staticAtlasBytes += uint64_t(desc.width) * desc.height * 4; }
             usage.allocatedAtlasPages += uint64_t(desc.width / pageSize) * (desc.height / pageSize);
         }
     };
@@ -1464,6 +1660,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
     const auto addCache = [&](const std::shared_ptr<Cache>& cache) {
         if (cache) {
             addAtlas(cache->atlas->texture.get(), cache->settings.pageSize);
+            if (cache->staticAtlas) { addAtlas(cache->staticAtlas->texture.get(), cache->settings.pageSize, true); }
             addBuffer(cache->pages.get());
         }
     };
@@ -1471,6 +1668,9 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
     addCache(pending_);
     if (state_) {
         addAtlas(state_->resources->textures[0].get(), state_->push.pageSize);
+        if (state_->resources->staticAtlas) { addAtlas(state_->resources->staticAtlas->texture.get(), state_->push.pageSize, true); }
+        addBuffer(state_->resources->cacheDiagnostics.get());
+        usage.bufferBytes += state_->resources->layerBufferBytes;
         for (size_t index = 1; index < state_->resources->textures.size(); ++index) {
             if (const auto& texture = state_->resources->textures[index]; texture && textures.insert(texture.get()).second) {
                 const auto& desc = texture->desc();
@@ -1490,7 +1690,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
         for (size_t slot = 0; slot < pool_->textures.size(); ++slot) {
             for (const auto& entry : pool_->textures[slot]) {
                 const auto* texture = entry.resource.texture.get();
-                if (slot == 0) { addAtlas(texture, entry.pageSize); }
+                if (slot == 0 || slot == 3) { addAtlas(texture, entry.pageSize, slot == 3); }
                 else if (textures.insert(texture).second) {
                     const auto& desc = texture->desc();
                     usage.privateOutputBytes += uint64_t(desc.width) * desc.height * (slot == 1 ? 1 : 4);

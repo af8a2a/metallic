@@ -513,6 +513,7 @@ add_executable(MetallicRHITests
     rhi/VirtualShadowMapAllocatorTests.cpp
     rhi/VirtualShadowMapRemapTests.cpp
     rhi/VirtualShadowMapContentTests.cpp
+    rhi/VirtualShadowMapLODTests.cpp
     rhi/VirtualShadowMapAcceptanceTests.cpp
     rhi/StreamClusterCandidateTests.cpp
     rhi/StreamClusterClassificationTests.cpp

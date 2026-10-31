@@ -3760,6 +3760,34 @@ MeshletStreamShadowGeometryView MeshletStreamRuntime::shadowGeometryResources() 
         .runtimeRenderNodeIndices = runtimeRenderNodeIndices_, .geometryRevision = shadowGeometryRevision_};
 }
 
+MeshletStreamRuntime::ShadowPageRequests MeshletStreamRuntime::requestShadowPages(
+    std::span<const uint32_t> pageIndices)
+{
+    ShadowPageRequests result;
+    // Refresh all resident readers before admitting requests that may trigger
+    // budget eviction. The recording already owns their geometry-use fence.
+    if (!sourceResidencyFrozen_ && !rasterSnapshotFrozen_) {
+        for (const uint32_t page : pageIndices) {
+            if (residency_.pageResident(page)) { residency_.requestPage(page); }
+        }
+    }
+    for (const uint32_t page : pageIndices) {
+        if (residency_.pageResident(page)) { continue; }
+        if (sourceResidencyFrozen_ || rasterSnapshotFrozen_) {
+            ++result.blockedPages;
+            continue;
+        }
+        // requestPage returns false for a newly queued upload as well as a
+        // rejection. Allocation/state, rather than that bool, owns admission.
+        residency_.requestPage(page);
+        const bool admitted = residency_.pageAllocated(page) &&
+            residency_.pageState(page) != MeshletStreamPageResidencyState::PendingUnload;
+        result.requestedPages += admitted ? 1u : 0u;
+        result.blockedPages += admitted ? 0u : 1u;
+    }
+    return result;
+}
+
 Result<> MeshletStreamRuntime::cmdPrepareShadowGeometry(CommandBuffer& commandBuffer)
 {
     if (!ready()) { return makeError(Error::InvalidArgument); }

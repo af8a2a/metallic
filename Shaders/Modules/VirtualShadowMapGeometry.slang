@@ -32,7 +32,7 @@ struct VirtualShadowMapGeometryParameters
     uint streamed, triangles, candidates, instances;
     uint pages, pageTable, pageWordCount, triangleCapacity;
     uint normals, tessellation, tessellationFactor, subdivisionDepth;
-    uint residentClusterBounds, reserved0, reserved1, reserved2;
+    uint residentClusterBounds, casterLayerMask, casterLayer, reserved2;
 };
 
 void displaceVirtualShadowMapTriangle(VirtualShadowMapGeometryParameters parameters,
@@ -169,6 +169,11 @@ public bool loadVirtualShadowMapTriangle(uint geometryResourceIndex, uint triang
         resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapGeometryParameters>>(geometryResourceIndex));
     VirtualShadowMapGeometryParameters p = parameters[0];
     if (triangleIndex >= p.triangleCapacity) { return false; }
+    if (p.casterLayer != 0u) {
+        StructuredBuffer<uint> dynamicMask = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(p.casterLayerMask));
+        bool dynamic = (dynamicMask[triangleIndex / 32u] & (1u << (triangleIndex & 31u))) != 0u;
+        if (dynamic != (p.casterLayer == 2u)) { return false; }
+    }
     if (p.streamed == 0u) {
         StructuredBuffer<VirtualShadowMapTriangle> triangles =
             resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapTriangle>>(p.triangles));

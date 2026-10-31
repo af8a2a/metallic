@@ -8,6 +8,7 @@ import VirtualShadowMapGeometry;
 import VirtualShadowMapCommon;
 
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
@@ -68,6 +69,20 @@ struct ShadowPush
     float rayLengthScale, maxRayAngle;
     uint samplePhase, sampleReserved;
 };
+
+// sampleReserved names a 32-word diagnostic prefix followed by immutable layer metadata.
+uint vsmCacheMetadata(ShadowPush push, uint word)
+{
+    StructuredBuffer<uint> data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.sampleReserved));
+    return data[word];
+}
+
+void vsmCacheAdd(ShadowPush push, uint counter, uint value)
+{
+    if (value == 0u) { return; }
+    RWStructuredBuffer<uint> data = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.sampleReserved));
+    InterlockedAdd(data[counter], value);
+}
 
 #if VSM_CLUSTER_PAGE_BITSET
 uint vsmClusterPageBitsetOffset(ShadowPush push)
@@ -849,7 +864,8 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     if (id.x < push.totalPages) {
         bool coarse = id.x == push.totalPages - 1u;
         uint4 entry = uint4(coarse ? 0u : 0xffffffffu, coarse && push.enabled != 0u ? 3u : 0u,
-            coarse ? push.clipmapCount : id.x / (push.virtualPagesPerAxis * push.virtualPagesPerAxis), 2u);
+            coarse ? push.clipmapCount : id.x / (push.virtualPagesPerAxis * push.virtualPagesPerAxis),
+            2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u));
         uint mappingFlags = 0u;
         if ((push.cacheMode & 1u) != 0u) {
             // Fine levels occupy fixed VPA^2 strides; local mips only use the
@@ -886,6 +902,19 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                     entry.x = old.x;
                     bool dirty = mappingDirty || (old.w & 1u) == 0u;
                     entry.w = dirty ? 2u : 1u;
+                    vsmCacheAdd(push, kVSMCacheCompositeInvalidatedResidentPages, mappingDirty ? 1u : 0u);
+                    if ((push.cacheMode & 16u) != 0u) {
+                        bool staticDirty = (push.cacheMode & 4u) != 0u || (coarse && vsmCacheMetadata(push, 35u) != 0u);
+                        if (!coarse) {
+                            uint4 staticChange = changes[vsmCacheMetadata(push, 36u) + entry.z];
+                            for (uint rectangle = 0u; !staticDirty && rectangle < staticChange.w; ++rectangle) {
+                                uint4 bounds = changes[staticChange.z + rectangle];
+                                staticDirty = all(page >= bounds.xy) && all(page <= bounds.zw);
+                            }
+                        }
+                        vsmCacheAdd(push, kVSMCacheStaticInvalidatedResidentPages, staticDirty ? 1u : 0u);
+                        entry.w |= staticDirty || (old.w & 4u) == 0u ? 8u : 4u;
+                    }
                 }
             }
         }
@@ -1130,7 +1159,7 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
             // coarser mip instead of the complete low-resolution scene map.
             rank = statistics[0] - 1u - rank;
             if (rank < push.physicalPageCount - 1u) { entry.y |= 2u; }
-            else { entry.x = 0xffffffffu; entry.w = 2u; }
+            else { entry.x = 0xffffffffu; entry.w = 2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u); }
         }
         pages[id.x] = entry;
         if (entry.x != 0xffffffffu) { owners[entry.x] = id.x + 1u; }
@@ -1222,7 +1251,7 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
         pages[evicted - 1u] = old;
     }
     uint4 entry = pages[id.x];
-    entry.x = physical; entry.w = 2u;
+    entry.x = physical; entry.w = 2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u);
     pages[id.x] = entry;
     owners[physical] = id.x + 1u;
 #if VSM_CLUSTER_PAGE_BITSET
@@ -1607,8 +1636,16 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         if (push.enabled != 0u && (entry.y & 2u) != 0u && (entry.w & 2u) != 0u) {
             if (id.x == coarsePage || statistics[5] == 0u) { entry.w |= 1u; }
             else { entry.w &= ~1u; }
+            vsmCacheAdd(push, id.x == coarsePage ? kVSMCacheCompositeDirtyCoarsePages : kVSMCacheCompositeDirtyFinePages, 1u);
+            if ((push.cacheMode & 16u) != 0u && (entry.w & 8u) != 0u) {
+                if (id.x == coarsePage || statistics[5] == 0u) { entry.w |= 4u; }
+                else { entry.w &= ~4u; }
+                vsmCacheAdd(push, id.x == coarsePage ? kVSMCacheStaticDirtyCoarsePages : kVSMCacheStaticDirtyFinePages, 1u);
+            }
             pages[id.x] = entry;
         }
+        if ((push.cacheMode & 16u) != 0u && id.x != coarsePage && entry.x != 0xffffffffu &&
+            (entry.y & 2u) != 0u && (entry.w & 12u) == 4u) { vsmCacheAdd(push, kVSMCacheStaticReusedFinePages, 1u); }
         if (id.x != coarsePage && entry.x != 0xffffffffu && (entry.w & 1u) != 0u) {
             InterlockedAdd(statistics[24], 1u);
         }
@@ -1629,8 +1666,13 @@ struct ShadowClearVertex
 };
 
 [shader("fragment")]
-void vsmClearFragmentMain()
+float vsmClearFragmentMain(ShadowClearVertex input, uniform ShadowPush push) : SV_Depth
 {
+    if ((push.cacheMode & 16u) != 0u && (push.rasterCoarse & 2u) == 0u) {
+        Texture2D<float> staticAtlas = resolveUniform(ResourceHandle<Texture2D<float>>(vsmCacheMetadata(push, 32u)));
+        return staticAtlas.Load(int3(int2(input.position.xy), 0));
+    }
+    return 0.0;
 }
 
 [shader("mesh")]
@@ -1645,11 +1687,14 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     bool clear = false;
     if (owner != 0u && push.enabled != 0u) {
         uint4 entry = pages[owner - 1u];
-        clear = (entry.y & 2u) != 0u && (entry.w & 2u) != 0u;
+        clear = (entry.y & 2u) != 0u && (entry.w & ((push.rasterCoarse & 2u) != 0u ? 8u : 2u)) != 0u;
     }
     SetMeshOutputCounts(clear ? 4u : 0u, clear ? 2u : 0u);
     if (!clear) { return; }
-    if (lane == 0u) { vsmWorkAdd(push, kVSMWorkRasterClearedPages, 1u); }
+    if (lane == 0u) {
+        vsmWorkAdd(push, kVSMWorkRasterClearedPages, 1u);
+        if ((push.cacheMode & 16u) != 0u && (push.rasterCoarse & 2u) == 0u) { vsmCacheAdd(push, kVSMCacheRestoredPages, 1u); }
+    }
     if (lane < 4u) {
         float2 corner = float2(lane & 1u, lane >> 1u);
         vertices[lane].position = float4(vsmAtlasPosition(corner, group.x, push), 0.0, 1.0);
@@ -1670,25 +1715,32 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     out vertices ShadowRasterVertex vertices[9], out indices uint3 triangles[7], uniform ShadowPush push)
 {
     if (lane == 0u) {
-        vsmWorkAdd(push, push.rasterCoarse != 0u ? kVSMWorkRasterCoarseGroups : kVSMWorkRasterFineGroups, 1u);
+        vsmWorkAdd(push, (push.rasterCoarse & 1u) != 0u ? kVSMWorkRasterCoarseGroups : kVSMWorkRasterFineGroups, 1u);
         g_vsmVertexCount = 0u;
         StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
         StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
         uint triangleIndex = push.workBase + group.x;
         uint virtualPage = push.totalPages - 1u;
-        if (push.rasterCoarse == 0u) {
+        if ((push.rasterCoarse & 1u) == 0u) {
             StructuredBuffer<uint2> work = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.workItems));
             uint2 item = work[push.workBase + group.x];
             triangleIndex = item.x;
             virtualPage = item.y;
         }
         VirtualShadowMapTriangle triangle;
-        if (loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
+        const bool staticPass = (push.rasterCoarse & 2u) != 0u;
+        const bool layerPageActive = !staticPass || (pages[virtualPage].w & 8u) != 0u;
+        if (layerPageActive && loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
             vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
+#if VSM_WORKLOAD_DIAGNOSTICS
+            if ((push.cacheMode & 16u) != 0u) {
+                vsmCacheAdd(push, staticPass ? kVSMCacheStaticDecodedTriangles : kVSMCacheDynamicDecodedTriangles, 1u);
+            }
+#endif
             uint4 page = pages[virtualPage];
             ShadowProjection projection = projections[page.z];
             float4 bounds = vsmPageBounds(virtualPage, projection);
-            if (projection.metric.w < 0.5 && push.rasterCoarse == 0u) {
+            if (projection.metric.w < 0.5 && (push.rasterCoarse & 1u) == 0u) {
                 uint local = virtualPage - projection.page.x;
                 uint2 pageXY = uint2(local % projection.page.y, local / projection.page.y);
                 // Directional originNear.xy carries the snapped page-grid
@@ -1717,7 +1769,14 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     GroupMemoryBarrierWithGroupSync();
     uint vertexCount = g_vsmVertexCount;
     uint triangleCount = vertexCount >= 3u ? vertexCount - 2u : 0u;
-    if (lane == 0u) { vsmWorkAdd(push, kVSMWorkRasterOutputPrimitives, triangleCount); }
+    if (lane == 0u) {
+        vsmWorkAdd(push, kVSMWorkRasterOutputPrimitives, triangleCount);
+#if VSM_WORKLOAD_DIAGNOSTICS
+        if ((push.cacheMode & 16u) != 0u) {
+            vsmCacheAdd(push, (push.rasterCoarse & 2u) != 0u ? kVSMCacheStaticOutputPrimitives : kVSMCacheDynamicOutputPrimitives, triangleCount);
+        }
+#endif
+    }
     SetMeshOutputCounts(vertexCount, triangleCount);
     if (lane < vertexCount) {
         ShadowClipVertex vertex = g_vsmPolygon[lane];

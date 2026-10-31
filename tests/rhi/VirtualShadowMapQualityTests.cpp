@@ -4,6 +4,7 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -89,6 +90,8 @@ constexpr uint64_t kHDROffset = (kReadbackSize + 15) & ~uint64_t(15);
 constexpr uint64_t kWorkOffset = kHDROffset + kPixels * 16;
 constexpr uint64_t kBuildOffset = kWorkOffset + kLayers * kVirtualShadowMapWorkloadSize;
 constexpr uint64_t kWorkReadbackSize = kBuildOffset + kLayers * kVirtualShadowMapBuildDiagnosticSize;
+constexpr uint64_t kCacheOffset = kWorkReadbackSize;
+constexpr uint64_t kCacheReadbackSize = kCacheOffset + kLayers * kVirtualShadowMapCacheDiagnosticSize;
 
 class VSMQualityEvidencePass final : public UnsafePass {
 public:
@@ -113,9 +116,13 @@ public:
             reflection.addBufferInput("workload").buffer(kLayers * kVirtualShadowMapWorkloadSize).transferRead();
             reflection.addBufferInput("buildDiagnostics").buffer(kLayers * kVirtualShadowMapBuildDiagnosticSize).transferRead();
         }
+        const bool captureCache = properties().value("captureCache", false);
+        if (captureCache) {
+            reflection.addBufferInput("cacheDiagnostics").buffer(kLayers * kVirtualShadowMapCacheDiagnosticSize).transferRead();
+        }
         reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
             .shaderRead().memoryLocation = MemoryLocation::HostUpload;
-        reflection.addBufferOutput("data").buffer(captureWork ? kWorkReadbackSize : captureHDR ? kHDROffset + kPixels * 16 : kReadbackSize)
+        reflection.addBufferOutput("data").buffer(captureCache ? kCacheReadbackSize : captureWork ? kWorkReadbackSize : captureHDR ? kHDROffset + kPixels * 16 : kReadbackSize)
             .transferWrite().hostReadback();
         reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
         return reflection;
@@ -163,6 +170,13 @@ public:
                 if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
             }
         }
+        if (context.properties().value("captureCache", false)) {
+            auto source = context.inputBuffer("cacheDiagnostics").buffer()->slice({0, kLayers * kVirtualShadowMapCacheDiagnosticSize});
+            auto destination = buffer->slice({kCacheOffset, kLayers * kVirtualShadowMapCacheDiagnosticSize});
+            if (!source) { return std::unexpected(source.error()); }
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        }
         auto* info = context.inputBuffer("rasterInfo").buffer();
         const void* mapped = info->map();
         if (!mapped) { return makeError(Error::Failure); }
@@ -192,6 +206,7 @@ struct Snapshot {
     VirtualShadowMapLightsHeader header{};
     std::array<VirtualShadowMapLightEntry, kCapacity> entries{};
     std::array<std::array<uint32_t, 32>, kLayers> statistics{};
+    std::array<std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount>, kLayers> cacheDiagnostics{};
     std::array<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>, kLayers> workload{};
     std::array<std::array<uint64_t, kVirtualShadowMapBuildDiagnosticCounterCount>, kLayers> buildDiagnostics{};
     std::array<std::vector<uint8_t>, kLayers> shadows;
@@ -202,7 +217,7 @@ struct Snapshot {
     Format hdrFormat = Format::Unknown;
     VisibilityBufferFrameInfo camera;
 };
-Snapshot snapshot(const std::string& name, bool captureDebug = false, bool captureHDR = false, bool captureWork = false)
+Snapshot snapshot(const std::string& name, bool captureDebug = false, bool captureHDR = false, bool captureWork = false, bool captureCache = false)
 {
     Snapshot result;
     auto* buffer = evidence->buffers.at(name);
@@ -229,6 +244,7 @@ Snapshot snapshot(const std::string& name, bool captureDebug = false, bool captu
         std::memcpy(result.workload.data(), mapped + kWorkOffset, sizeof(result.workload));
         std::memcpy(result.buildDiagnostics.data(), mapped + kBuildOffset, sizeof(result.buildDiagnostics));
     }
+    if (captureCache) { std::memcpy(result.cacheDiagnostics.data(), mapped + kCacheOffset, sizeof(result.cacheDiagnostics)); }
     if (captureHDR) {
         result.hdrFormat = evidence->hdrFormats.at(name);
         const uint32_t componentBytes = result.hdrFormat == Format::RGBA16Sfloat ? 2 : 4;
@@ -1089,25 +1105,28 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCompactTest);
 
-class VirtualShadowMapProjectionEquivalenceTest final : public RHITest {
+class VirtualShadowMapProjectionEquivalenceTest : public RHITest {
 public:
-    VirtualShadowMapProjectionEquivalenceTest()
+    explicit VirtualShadowMapProjectionEquivalenceTest(bool layered = false) : layered_(layered)
     {
-        type = RHITestType::Rendering; name = "virtual_shadow_map_projection_equivalence";
+        type = RHITestType::Rendering; name = layered_ ? "virtual_shadow_map_cache_layer_projection_equivalence" : "virtual_shadow_map_projection_equivalence";
     }
 
     RHITestResult run(RHITestContext& context) override
     {
-        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapProjectionEquivalence";
+        const std::string reportName = layered_ ? "VirtualShadowMapCacheLayerProjectionEquivalence" : "VirtualShadowMapProjectionEquivalence";
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
         Json report{{"passed", false}, {"frames", Json::array()}, {"extent", {kWidth, kHeight}}};
         bench::ValidationRecorder validation;
-        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapProjectionEquivalence.json") << report.dump(2) << '\n'; };
+        const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
         try {
             std::filesystem::create_directories(directory);
             registerQualityEvidence();
             const auto floor = writeFixture(directory / "Floor", false);
             const auto room = writeFixture(directory / "Room", true);
             constexpr std::array names{"Legacy", "Shared", "OnePass", "NoDebug", "StatisticsFallback"};
+            report["cacheLayering"] = layered_;
+            if (layered_) { report["cacheDiagnosticNames"] = kVirtualShadowMapCacheDiagnosticNames; }
             report["projectionStatisticsArms"] = {{"Legacy",false},{"Shared",false},{"OnePass",false},{"NoDebug",false},{"StatisticsFallback",true}};
             report["selectionControls"] = {
                 {"Legacy",{{"onePassProjection",true},{"benchmarkOnePassProjection",true},{"benchmarkLegacyProjection",true}}},
@@ -1120,7 +1139,9 @@ public:
             report["counterNames"] = kVirtualShadowMapWorkCounterNames;
             report["buildDiagnosticCounterNames"] = kVirtualShadowMapBuildDiagnosticCounterNames;
             report["gpuTimingScope"] = "Diagnostic dispatch-path verification with workload counters; not ordinary performance acceptance";
-            report["gpuProfilingPolicy"] = "Always profile OnePass; secondary is Shared on Cold, Legacy on Warm, then alternating NoDebug/StatisticsFallback to stay within the serial timestamp budget";
+            report["gpuProfilingPolicy"] = layered_ ?
+                "Profile only layered OnePass; all five arms retain exact output/counter comparisons within the serial timestamp budget" :
+                "Always profile OnePass; secondary is Shared on Cold, Legacy on Warm, then alternating NoDebug/StatisticsFallback to stay within the serial timestamp budget";
             constexpr std::array phases{"Cold", "Warm", "Redraw", "JitterMotion", "TemporalContinue", "Reorder", "FiniteBudget",
                 "Disabled", "Overflow", "Recovered", "TwoPoints", "NearPlane", "ZeroBudget", "SingleFace"};
             for (const std::string filter : {"hard", "pcf", "smrt"}) {
@@ -1173,13 +1194,14 @@ public:
                                 {"smrtTemporalEnabled",false},{"smrtTemporalMaxFrames",32},{"compactOutputs",compact},
                                 {"debugOutput",debug},{"benchmarkLegacyProjection",arm==0},
                                 {"benchmarkProjectionStatistics",arm==4},
-                                {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",arm==1 || arm==2},{"benchmarkGPUWork",true}};
+                                {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",arm==2 || (!layered_ && arm==1)},{"benchmarkGPUWork",true}};
                             if (arm == 1) {
                                 settings["onePassProjection"] = false;
                             } else if (arm != 2) {
                                 settings["onePassProjection"] = arm == 0;
                                 settings["benchmarkOnePassProjection"] = true;
                             }
+                            if (layered_) { settings["cacheLayering"] = arm == 2; }
                             auto pass = createRenderGraphPass("VirtualShadowMapLightsPass");
                             require(pass != nullptr, "Create projection reflection probe");
                             pass->setProperties(settings);
@@ -1196,10 +1218,11 @@ public:
                             graph.addEdge(node + ".shadows", deferred + ".virtualShadows");
                             graph.addEdge(node + ".lights", deferred + ".virtualShadowLights");
                             graph.addNode("VSMQualityEvidencePass", capture,
-                                {{"evidenceName",node},{"captureDebug",debug},{"debugInput",debug},{"captureHDR",true},{"captureWork",true}});
+                                {{"evidenceName",node},{"captureDebug",debug},{"debugInput",debug},{"captureHDR",true},{"captureWork",true},{"captureCache",layered_}});
                             for (const char* field : {"shadows","lights","statistics","memory","workload","buildDiagnostics"}) {
                                 graph.addEdge(node + "." + field, capture + "." + field);
                             }
+                            if (layered_) { graph.addEdge(node + ".cacheDiagnostics", capture + ".cacheDiagnostics"); }
                             if (debug) { graph.addEdge(node + ".debug", capture + ".debug"); }
                             graph.addEdge(deferred + ".color", capture + ".hdr");
                             graph.addEdge("Raster.depth", capture + ".depth"); graph.addEdge("Raster.rasterInfo", capture + ".rasterInfo");
@@ -1218,7 +1241,7 @@ public:
                             validation.phase(phase);
                             for (uint32_t arm = 0; arm < names.size(); ++arm) {
                                 require(graph.setNodeRuntimeProperty(graph.findNode(names[arm])->id, "benchmarkGPUProfile",
-                                    arm == 2 || arm == secondaryTimingArm), "Set bounded projection GPU profiling controls");
+                                    arm == 2 || (!layered_ && arm == secondaryTimingArm)), "Set bounded projection GPU profiling controls");
                             }
                             if (frame == 1) {
                                 require(graph.setNodeRuntimeProperty(graph.findNode("Shared")->id, "onePassProjection", true) &&
@@ -1278,19 +1301,27 @@ public:
                             require(completed->size() == 1 && completed->front().gpuTimingAvailable,
                                 "Missing one-pass projection timestamp frame");
                             const auto& timings = completed->front();
-                            const std::array images{snapshot("Legacy", true, true, true), snapshot("Shared", true, true, true),
-                                snapshot("OnePass", true, true, true), snapshot("NoDebug", false, true, true), snapshot("StatisticsFallback", true, true, true)};
+                            const std::array images{snapshot("Legacy", true, true, true, layered_), snapshot("Shared", true, true, true, layered_),
+                                snapshot("OnePass", true, true, true, layered_), snapshot("NoDebug", false, true, true, layered_), snapshot("StatisticsFallback", true, true, true, layered_)};
                             const auto& baseline = images[0];
                             report["frames"].push_back({{"name",phase},{"statistics",baseline.statistics},{"memory",Json::object()},
                                 {"admittedLights",baseline.header.admittedCount},{"budgetDroppedLights",baseline.header.budgetDroppedCount},
                                 {"totalFaces",baseline.header.totalFaces},
-                                {"gpuProfilingArms",{names[2],names[secondaryTimingArm]}},{"profilingOverflow",timings.profilingOverflow},
+                                {"gpuProfilingArms",layered_ ? Json::array({names[2]}) : Json::array({names[2],names[secondaryTimingArm]})},{"profilingOverflow",timings.profilingOverflow},
                                 {"smrtTemporalEnabled",filter=="smrt" && frame>=3}});
                             auto& frameReport = report["frames"].back();
                             save();
                             for (uint32_t arm = 0; arm < images.size(); ++arm) {
                                 const auto& image = images[arm];
                                 frameReport["memory"][names[arm]] = image.memory;
+                                if (layered_) {
+                                    frameReport["cacheDiagnostics"][names[arm]] = image.cacheDiagnostics;
+                                    for (uint32_t face = 0; face < kLayers; ++face) {
+                                        if (image.statistics[face][11] == 0) { continue; }
+                                        require(image.cacheDiagnostics[face][kVSMCacheLayered] == (arm == 2 ? 1u : 0u),
+                                            phase + ": published cache layer selection disagrees with graph property");
+                                    }
+                                }
                                 frameReport["matches"][names[arm]] = {{"shadow",image.shadows==baseline.shadows},
                                     {"depth",image.depth==baseline.depth},{"statistics",image.statistics==baseline.statistics},
                                     {"debug",arm==3 || image.debug==baseline.debug},{"hdr",image.hdr==baseline.hdr},
@@ -1318,6 +1349,10 @@ public:
                                     for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
                                         // Shared Mark hash collisions change only atomic issue counts.
                                         if (counter == kVSMWorkMarkPageRequests) { continue; }
+                                        // Two depth layers intentionally change raster groups, clears and decoded work.
+                                        // Demand, allocation, full build and all projection work remain exact.
+                                        if (layered_ && arm == 2 && counter >= kVSMWorkRasterCoarseGroups &&
+                                            counter <= kVSMWorkRasterClearedPages) { continue; }
                                         require(counts[counter] == baseline.workload[face][counter],
                                             phase + ": one-pass projection changed deterministic GPU work");
                                     }
@@ -1332,14 +1367,16 @@ public:
                                 require(image.memory[1] == 0, phase + ": legacy or compact layout retained private face outputs");
                                 const uint64_t layers = compact ? kCapacity : kLayers;
                                 require(image.memory[3] == layers * kPixels * (arm == 3 ? 1 : 5), phase + ": public output allocation disagrees with optional debug");
-                                require(image.memory[0] == baseline.memory[0] && image.memory[4] == baseline.memory[4] && image.memory[5] == baseline.memory[5],
+                                const uint64_t atlasMultiplier = layered_ && arm == 2 ? 2u : 1u;
+                                require(image.memory[0] == baseline.memory[0] * atlasMultiplier && image.memory[4] == baseline.memory[4] &&
+                                    image.memory[5] == baseline.memory[5] * atlasMultiplier,
                                     phase + ": output/projection optimization changed atlas allocation");
                                 if (frame < 3) {
                                     require(image.memory[6] == 0, phase + ": fixed-phase cache gate unexpectedly allocated temporal history");
                                 } else if (filter == "smrt" && frame <= 4) {
                                     require(image.memory[6] > 0, phase + ": temporal progression did not allocate light histories");
                                 }
-                                if (arm == 2 || arm == secondaryTimingArm) {
+                                if (arm == 2 || (!layered_ && arm == secondaryTimingArm)) {
                                     const auto node = std::ranges::find(timings.nodes, names[arm], &RenderGraphNodeExecutionStat::name);
                                     require(node != timings.nodes.end(), phase + ": projection GPU profiling node is missing");
                                     uint32_t onePassScopes = 0, faceScopes = 0;
@@ -1386,7 +1423,7 @@ public:
                                 });
                             if (frame == 0) {
                                 require(sharedScope == sharedNode->sections.end(), phase + ": cold default control enabled CPU profiling alongside GPU scopes");
-                                frameReport["sharedProjectionCPU"] = {{"available",false},{"reason","Cold default path verified with GPU scopes"}};
+                                frameReport["sharedProjectionCPU"] = {{"available",false},{"reason",layered_ ? "Shared auxiliary CPU profiling disabled; layered default OnePass verified with GPU scopes" : "Cold default path verified with GPU scopes"}};
                             } else if (sharedScope == sharedNode->sections.end()) {
                                 // The executor rejects a complete CPU metadata tree when it
                                 // exceeds 256 sections. Fourteen recorded faces exceed this
@@ -1475,8 +1512,17 @@ public:
             return RHITestResult::fail(error.what());
         }
     }
+private:
+    bool layered_ = false;
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionEquivalenceTest);
+
+class VirtualShadowMapCacheLayerProjectionEquivalenceTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapCacheLayerProjectionEquivalenceTest() : VirtualShadowMapProjectionEquivalenceTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCacheLayerProjectionEquivalenceTest);
 
 class VirtualShadowMapFilterDemandTest final : public RHITest {
 public:
@@ -2956,6 +3002,213 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTSearchTest);
+
+constexpr uint64_t kLODPassStatisticsOffset = kShadowStride * kLayers;
+constexpr uint64_t kLODPassFacesOffset = kLODPassStatisticsOffset + 32 * sizeof(uint32_t);
+constexpr uint64_t kLODPassTableOffset = kLODPassFacesOffset + kLayers * kVirtualShadowMapFaceStatisticsSize;
+constexpr uint64_t kLODPassReadbackSize = kLODPassTableOffset + kTableSize;
+std::shared_ptr<EvidenceState> lodPassEvidence;
+
+class VSMLODPassEvidence final : public UnsafePass
+{
+public:
+    explicit VSMLODPassEvidence(std::shared_ptr<EvidenceState> state) : state_(std::move(state)) {}
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        auto& shadows = reflection.addTextureInput("shadows").transferRead();
+        shadows.format = Format::R8Unorm;
+        shadows.layerCount = 0;
+        reflection.addBufferInput("lodStatistics").buffer(32 * sizeof(uint32_t)).transferRead();
+        reflection.addBufferInput("statistics").buffer(properties().value("lights", false) ?
+            kLayers * kVirtualShadowMapFaceStatisticsSize : kVirtualShadowMapFaceStatisticsSize).transferRead();
+        if (properties().value("lights", false)) { reflection.addBufferInput("lights").buffer(kTableSize).transferRead(); }
+        reflection.addBufferOutput("data").buffer(kLODPassReadbackSize).transferWrite().hostReadback();
+        reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
+        return reflection;
+    }
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        auto& commands = context.commandBuffer();
+        const auto shadows = context.inputTexture("shadows");
+        auto* buffer = context.outputBuffer("data").buffer();
+        const auto name = context.properties().at("evidenceName").get<std::string>();
+        state_->buffers[name] = buffer;
+        state_->layers[name] = shadows.desc().layerCount;
+        for (uint32_t layer = 0; layer < shadows.desc().layerCount; ++layer) {
+            auto destination = buffer->slice({layer * kShadowStride, kPixels});
+            if (!destination) { return makeError(destination.error()); }
+            if (auto r = commands.copyTextureToBuffer({.texture = shadows.texture(), .buffer = *destination,
+                .width = kWidth, .height = kHeight, .baseLayer = layer}); !r) { return r; }
+        }
+        std::vector<std::pair<const char*, uint64_t>> fields{{"lodStatistics", kLODPassStatisticsOffset},
+            {"statistics", kLODPassFacesOffset}};
+        if (context.properties().value("lights", false)) { fields.emplace_back("lights", kLODPassTableOffset); }
+        for (const auto& [field, offset] : fields) {
+            const auto input = context.inputBuffer(field);
+            auto source = input.buffer()->slice({0, input.desc().size});
+            auto destination = buffer->slice({offset, input.desc().size});
+            if (!source) { return makeError(source.error()); }
+            if (!destination) { return makeError(destination.error()); }
+            if (auto r = commands.copyBuffer(*source, *destination); !r) { return r; }
+        }
+        return commands.clearColorTexture(*context.outputTexture("color").texture(), TextureLayout::TransferDestination, {0, 0, 0, 1});
+    }
+private:
+    std::shared_ptr<EvidenceState> state_;
+};
+
+struct LODPassSnapshot
+{
+    std::array<uint32_t, 32> lod{};
+    std::vector<std::vector<uint8_t>> shadows;
+    std::vector<std::array<uint32_t, 32>> statistics;
+    VirtualShadowMapLightsHeader header{};
+    std::array<VirtualShadowMapLightEntry, kCapacity> entries{};
+};
+
+LODPassSnapshot readLODPass(const std::string& name, bool lights)
+{
+    LODPassSnapshot result;
+    auto* buffer = lodPassEvidence->buffers.at(name);
+    buffer->invalidate();
+    const auto* mapped = static_cast<const std::byte*>(buffer->map());
+    require(mapped != nullptr, "Map shadow LOD pass evidence");
+    result.shadows.resize(lodPassEvidence->layers.at(name));
+    result.statistics.resize(lights ? kLayers : 1);
+    for (size_t layer = 0; layer < result.shadows.size(); ++layer) {
+        result.shadows[layer].resize(kPixels);
+        std::memcpy(result.shadows[layer].data(), mapped + layer * kShadowStride, kPixels);
+    }
+    std::memcpy(result.lod.data(), mapped + kLODPassStatisticsOffset, sizeof(result.lod));
+    std::memcpy(result.statistics.data(), mapped + kLODPassFacesOffset,
+        result.statistics.size() * kVirtualShadowMapFaceStatisticsSize);
+    if (lights) {
+        std::memcpy(&result.header, mapped + kLODPassTableOffset, sizeof(result.header));
+        std::memcpy(result.entries.data(), mapped + kLODPassTableOffset + sizeof(result.header), sizeof(result.entries));
+    }
+    buffer->unmap();
+    return result;
+}
+
+class VirtualShadowMapLODPassTest final : public RHITest
+{
+public:
+    VirtualShadowMapLODPassTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_shadow_lod_pass"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapLODPass";
+        Json report{{"scope", "Real single/multi-light RenderGraph shadow LOD properties, readback and admitted-face aggregation"},
+            {"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapLODPass.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            static const bool registered = registerRenderGraphPassType("VSMLODPassEvidence",
+                "Test-only shadow LOD pass output readback", [] { return std::make_unique<VSMLODPassEvidence>(lodPassEvidence); });
+            require(registered, "Register shadow LOD pass evidence");
+            const auto fixture = writeFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load shadow LOD pass fixture");
+            RenderView view;
+            RenderGraphPreviewRenderer preview;
+            configurePreview(preview, scene, view, context, validation);
+            publishSource(scene, preview, Source{"Point"});
+            environment::WorldEnvironment world;
+            world.sun.enabled = true;
+            world.moon.enabled = false;
+            world.sun.direction = float3(.6f, -1, 0);
+            world.sun.illuminance = 3;
+            (void)preview.setWorldEnvironment(world);
+            lodPassEvidence = std::make_shared<EvidenceState>();
+            RenderGraph graph;
+            graph.setName("VirtualShadowMapLODPass");
+            graph.setViewProperties({{"temporalJitter", false},
+                {"renderResolution", {{"width", kWidth}, {"height", kHeight}, {"adaptive", false}}}});
+            graph.addNode("VisibilityBufferPass", "Raster", {{"path", fixture.source.generic_string()},
+                {"streamAssetPath", fixture.cache.generic_string()}, {"autoBuildStreamAsset", false},
+                {"maxResidentPages", 128}, {"maxLockedFallbackPages", 128}, {"maxActiveGroups", 512},
+                {"maxGpuPageRequests", 512}, {"maxTraversalWorkers", 64}, {"maxTraversalWorkItems", 1024},
+                {"autoLod", false}, {"lodLevel", 0}, {"instanceFrustumCull", false}, {"meshletFrustumCull", false},
+                {"instanceHzbCull", false}, {"meshletHzbCull", false}, {"meshletNormalConeCull", false},
+                {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
+            for (bool lights : {false, true}) {
+                for (bool enabled : {false, true}) {
+                    const std::string name = std::string(lights ? "Lights" : "Single") + (enabled ? "Zero" : "Off");
+                    graph.addNode(lights ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass", name,
+                        {{"lightCapacity", kCapacity}, {"physicalPageBudget", 256}, {"physicalPageCount", 128},
+                            {"pageSize", 32}, {"virtualPagesPerAxis", 4}, {"clipmapCount", 4}, {"firstClipmapExtent", 4},
+                            {"maxWorkItems", 131072}, {"shadowBias", .002}, {"cacheEnabled", true}, {"cacheLayering", true},
+                            {"filter", "hard"}, {"receiverFootprint", true}, {"shadowLOD", enabled}, {"shadowLODErrorTexels", 0}});
+                    graph.addEdge("Raster.depth", name + ".depth");
+                    graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
+                    const std::string readback = name + "Evidence";
+                    graph.addNode("VSMLODPassEvidence", readback, {{"evidenceName", name}, {"lights", lights}});
+                    graph.addEdge(name + (lights ? ".shadows" : ".shadow"), readback + ".shadows");
+                    for (const char* field : {"lodStatistics", "statistics"}) { graph.addEdge(name + "." + field, readback + "." + field); }
+                    if (lights) { graph.addEdge(name + ".lights", readback + ".lights"); }
+                    graph.markOutput(readback + ".color");
+                }
+            }
+            const auto capture = [&](const char* phase, uint32_t expectedFaces) {
+                validation.phase(phase);
+                require(preview.render(graph, kWidth, kHeight, "LightsZeroEvidence.color"),
+                    "Render shadow LOD pass graph: " + preview.lastLog());
+                require(preview.lastLog().find("Initial material compilation failed") == std::string::npos,
+                    "Shadow LOD pass graph used the error material");
+                Json frame{{"phase", phase}};
+                for (bool lights : {false, true}) {
+                    const std::string prefix = lights ? "Lights" : "Single";
+                    const auto off = readLODPass(prefix + "Off", lights), zero = readLODPass(prefix + "Zero", lights);
+                    require(off.shadows == zero.shadows, prefix + ": zero-error LOD changed exact final visibility");
+                    require(off.lod[0] == 1 && off.lod[1] == 0 && off.lod[2] == 0,
+                        prefix + ": disabled LOD readback ABI or activation differs");
+                    require(zero.lod[0] == 1 && zero.lod[1] == 1 && zero.lod[2] == (lights ? expectedFaces : 1) * 5,
+                        prefix + ": LOD projections do not match every admitted face and level");
+                    require(zero.lod[3] > 0 && zero.lod[4] > 0 && zero.lod[5] == off.lod[5] && zero.lod[5] == zero.lod[10],
+                        prefix + ": zero-error complete terminal fixture has wrong selection or slot accounting");
+                    require(zero.lod[6] == 0 && zero.lod[7] == 0 && zero.lod[8] == 0 && zero.lod[9] == 0,
+                        prefix + ": complete opaque terminal fixture unexpectedly requested, blocked or protected geometry");
+                    uint64_t histogram = 0;
+                    for (size_t index = 16; index < zero.lod.size(); ++index) { histogram += zero.lod[index]; }
+                    require(histogram == zero.lod[4], prefix + ": selected-level histogram does not account for selected clusters");
+                    uint64_t shadowed = 0;
+                    for (const auto& layer : zero.shadows) {
+                        shadowed += std::count_if(layer.begin(), layer.end(), [](uint8_t value) { return value < 128; });
+                    }
+                    require(shadowed > 0, prefix + ": exact comparison did not exercise any shadowed receivers");
+                    for (const auto& stats : zero.statistics) { require(stats[5] == 0 && stats[9] == 0, prefix + ": work overflow or unresolved receiver"); }
+                    if (lights) {
+                        uint32_t faces = 0;
+                        for (const auto& entry : zero.entries) {
+                            if (entry.status == kVirtualShadowMapLightAdmitted) { faces += entry.faceCount; }
+                        }
+                        require(zero.header.version == kVirtualShadowMapLightsVersion && faces == expectedFaces &&
+                            zero.header.admittedCount == (expectedFaces == 7 ? 2 : 1), "LOD multi-light admission evidence differs");
+                    }
+                    frame[prefix] = {{"exactVisibility", true}, {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"shadowedPixels", shadowed}};
+                }
+                report["frames"].push_back(std::move(frame));
+                save();
+            };
+            capture("DirectionalAndPointInitial", 7);
+            capture("DirectionalAndPointCached", 7);
+            publishSource(scene, preview, Source{"Directional"});
+            capture("RemovedPointAdmission", 1);
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Shadow LOD graph Vulkan validation error");
+            report["passed"] = true;
+            save();
+            return RHITestResult::pass("Single and multi-light shadow LOD graph paths preserve zero-error visibility and publish complete face/selection counters");
+        } catch (const std::exception& error) {
+            report["error"] = error.what();
+            report["validation"] = validation.snapshot();
+            save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapLODPassTest);
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 

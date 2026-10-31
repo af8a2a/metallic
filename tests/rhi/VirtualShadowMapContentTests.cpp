@@ -6,6 +6,7 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapPrototype.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -1178,6 +1179,371 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapScrollPrecisionTest);
+
+class VirtualShadowMapCacheLayersTest final : public RHITest
+{
+public:
+    VirtualShadowMapCacheLayersTest() { name = "virtual_shadow_map_cache_layers"; type = RHITestType::Rendering; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory / "VirtualShadowMapCacheLayers");
+        std::filesystem::create_directories(directory);
+        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapCacheDiagnosticNames},
+            {"scope", "Correctness and workload, not performance acceptance"},
+            {"shadowedPixelScope", "Output texels below 255 summed across face images; not unique screen receivers"},
+            {"depthTexelScope", "Depth texels counted once per reference comparison; not unique atlas occupancy"}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapCacheLayers.json") << report.dump(2); };
+        try {
+            const auto path = writeContentFixture(directory / "Fixture");
+            const auto streamPath = directory / "Fixture.meshstream.bin";
+            std::string log;
+            check(scene::buildMeshletStreamAssetOffline({.sourcePath = path, .outputPath = streamPath,
+                .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook cache layer fixture: " + log);
+            auto deviceResult = createDevice({.applicationName = "VSM cache layers",
+                .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
+                .enableRayTracingAccelerationStructure = false, .enableRayQuery = false,
+                .enableRayTracingPipeline = false, .enableClusterAccelerationStructure = false,
+                .validationSink = validation.sink()});
+            if (hasError(deviceResult, Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and bindless"); }
+            check(deviceResult, "Cache layers device");
+            auto& device = **deviceResult;
+            ContentCommands gpu(device);
+            auto heightA = makeHeight(device, gpu, 9, false);
+            auto heightB = makeHeight(device, gpu, 5, true);
+            std::unique_ptr<Streamer> streamer;
+            check(createStreamer(device, {.constantBufferSize = 1u << 20}).transform([&](auto s) { streamer = std::move(s); }), "Layer streamer");
+            std::unique_ptr<Texture> depth;
+            std::unique_ptr<TextureView> depthView;
+            check(device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+                .format = Format::D32Sfloat, .width = kWidth, .height = kHeight})
+                .transform([&](auto t) { depth = std::move(t); }), "Layer receiver depth");
+            check(device.createTextureView(*depth, {.format = Format::D32Sfloat})
+                .transform([&](auto v) { depthView = std::move(v); }), "Layer receiver view");
+            auto upload = device.createBuffer({.size = kPixels * sizeof(float), .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload});
+            check(upload, "Layer receiver upload");
+            auto* values = static_cast<float*>((*upload)->map()); check(values != nullptr, "Map layer receiver");
+            std::fill(values, values + kPixels, (10.f - 4.f) / (10.f - .01f));
+            (*upload)->flush(); (*upload)->unmap();
+            gpu.begin();
+            const TextureBarrierDesc depthBegin{.texture = depth.get(), .oldLayout = TextureLayout::Undefined,
+                .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+            check(gpu.commands->synchronize({.textures = {&depthBegin, 1}}), "Layer depth begin");
+            check((*upload)->slice().and_then([&](const auto& slice) {
+                return gpu.commands->copyBufferToTexture({.texture = depth.get(), .buffer = slice, .width = kWidth, .height = kHeight});
+            }), "Layer receiver copy");
+            const TextureBarrierDesc depthReady{.texture = depth.get(), .oldLayout = TextureLayout::TransferDestination,
+                .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+            check(gpu.commands->synchronize({.textures = {&depthReady, 1}}), "Layer receiver ready");
+            gpu.finish();
+
+            struct Capture
+            {
+                std::vector<uint8_t> visibility;
+                std::vector<uint32_t> atlas;
+                std::vector<std::array<uint32_t, 4>> pages;
+                std::array<uint32_t, 32> statistics{};
+                std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount> cacheDiagnostics{};
+                uint32_t atlasWidth = 0, physicalPagesX = 0;
+            };
+            for (bool streamed : {false, true}) {
+                for (uint32_t variant = 0; variant < 5; ++variant) {
+                    if (streamed && variant > 2) { continue; }
+                    const bool point = variant == 4;
+                    const uint32_t faceCount = point ? 6u : 1u;
+                    const auto filter = variant == 0 ? VirtualShadowMapFilter::Hard :
+                        variant == 1 || variant == 3 ? VirtualShadowMapFilter::PCF : VirtualShadowMapFilter::SMRT;
+                    const std::string label = std::string(streamed ? "Stream-" : "Resident-") +
+                        std::array{"DirectionalHard", "DirectionalPCF", "DirectionalSMRT", "SpotPCF", "PointSMRT"}[variant];
+                    scene::SceneDocument scene;
+                    check(streamed ? scene.loadStreamMetadata(path) : scene.load(path), "Load layer fixture");
+                    auto material = scene.materials()[1];
+                    material.displacementMagnitude = 0;
+                    check(scene.setMaterialProperties(1, material), "Set layer fixture material");
+                    std::shared_ptr<MeshletStreamRuntime> runtime;
+                    if (streamed) {
+                        runtime = std::make_shared<MeshletStreamRuntime>();
+                        check(runtime->initialize(device, {.sourcePath = path, .streamAssetPath = streamPath,
+                            .maxResidentBytes = 4ull << 20, .maxResidentPages = 32, .maxLockedFallbackPages = 32,
+                            .maxGpuPageRequests = 128, .maxGpuPageUnloadRequests = 128, .maxActiveGroups = 128,
+                            .maxRasterCandidates = 128, .maxTraversalWorkers = 32, .maxTraversalWorkItems = 256,
+                            .pageLoadConcurrency = 0, .queuedFrameCount = 1}, log), "Layer stream runtime: " + log);
+                        check(runtime->syncRuntimeScene(scene, log), "Layer stream mapping: " + log);
+                        for (uint32_t attempt = 0; attempt < 32 && !runtime->sceneReady(); ++attempt) {
+                            gpu.begin(); check(streamer->beginFrame(gpu.frame), "Layer stream frame");
+                            check(runtime->cmdLoadInitialResources(*gpu.commands, *streamer), "Layer initial load");
+                            gpu.finish(); streamer->endFrame(); runtime->prepareMaintenance();
+                        }
+                        check(runtime->sceneReady(), "Layer terminal pages not ready");
+                    }
+                    RenderView camera;
+                    const auto setCamera = [&](float x) {
+                        check(camera.setCamera({.eye = {x,0,4}, .center = {x,0,0}, .nearPlane = .01f,
+                            .farPlane = 10, .orthoHeight = 4, .orthographic = true}), "Layer camera");
+                    };
+                    setCamera(0);
+                    VirtualShadowMapLight light;
+                    light.direction = variant < 3 ? std::array<float,3>{1,0,-1} : std::array<float,3>{0,0,-1};
+                    light.type = point ? VirtualShadowMapLightType::PointFace :
+                        variant == 3 ? VirtualShadowMapLightType::Spot : VirtualShadowMapLightType::Directional;
+                    light.position = {0,0,3}; light.outerConeAngle = 1.2f; light.range = 20;
+                    light.angularRadius = .03f; light.sourceRadius = .08f;
+                    VirtualShadowMapSettings settings;
+                    settings.pageSize = 32; settings.virtualPagesPerAxis = 8; settings.clipmapCount = 3;
+                    settings.physicalPageCount = 256; settings.cacheEnabled = true; settings.collectGPUWork = true;
+                    settings.maxWorkItems = 65535; settings.filter = filter; settings.pcfRadius = 1.5f;
+                    settings.smrtRayCount = 2; settings.smrtSamplesPerRay = 4;
+                    settings.smrtTemporalSampling = false;
+                    VirtualShadowMapCasterSettings casterSettings{.texturePublicationRevision = 101};
+                    HeightImage* currentHeight = &heightA;
+                    std::array<std::array<VirtualShadowMaps, 6>, 3> maps;
+                    VirtualShadowMapCasterCache casterCache;
+                    const auto move = [&](float x) {
+                        float4x4 matrix; matrix.SetupByTranslation(float3(x, 0, 0));
+                        check(scene.setNodeLocalMatrix(1, matrix), "Move layer caster");
+                    };
+                    const auto record = [&](uint32_t arm, bool cancel = false) {
+                        gpu.begin();
+                        if (runtime) { check(runtime->syncRuntimeScene(scene, log), "Synchronize layer edit: " + log); }
+                        auto stream = runtime ? runtime->shadowGeometryResources() : MeshletStreamShadowGeometryView{};
+                        stream.owner = runtime;
+                        std::array<TextureView*, 2> heightViews{nullptr, currentHeight->view.get()};
+                        casterSettings.displacementTextures = heightViews;
+                        const auto casters = casterCache.prepare(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, casterSettings);
+                        check(casters, "Layer casters: " + log);
+                        auto selected = settings;
+                        selected.cacheLayering = arm == 0;
+                        selected.forceRedraw = arm == 2;
+                        std::array<TextureView*, 2> alphaViews{nullptr, material.alphaMode == "MASK" ? currentHeight->view.get() : nullptr};
+                        const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);
+                        std::array<VirtualShadowMapResult, 6> results;
+                        for (uint32_t face = 0; face < faceCount; ++face) {
+                            light.face = face;
+                            auto result = maps[arm][face].record(device, *gpu.commands, *depthView, view, light, *casters,
+                                scene.materials(), alphaViews, selected, log, true);
+                            check(result, label + ": record layer shadow: " + log);
+                            results[face] = *result;
+                        }
+                        for (uint32_t face = 0; face < faceCount; ++face) {
+                            check(maps[arm][face].project(*gpu.commands,
+                                point ? std::span<const VirtualShadowMapResult>(results.data(), faceCount) : std::span<const VirtualShadowMapResult>{}, log),
+                                "Project layer shadow: " + log);
+                        }
+                        std::vector<Capture> captures(faceCount);
+                        std::vector<std::unique_ptr<Buffer>> readbacks;
+                        const uint64_t tableBytes = uint64_t(settings.clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1) * 16u;
+                        for (uint32_t face = 0; face < faceCount; ++face) {
+                            const auto& shadow = results[face];
+                            auto& capture = captures[face];
+                            const auto atlasDesc = shadow.atlas->desc();
+                            capture.atlasWidth = atlasDesc.width; capture.physicalPagesX = shadow.physicalPagesX;
+                            capture.atlas.resize(size_t(atlasDesc.width) * atlasDesc.height); capture.pages.resize(tableBytes / 16u);
+                            capture.visibility.resize(kPixels);
+                            const uint64_t atlasBytes = capture.atlas.size() * sizeof(uint32_t);
+                            const uint64_t statsOffset = atlasBytes + tableBytes, diagnosticsOffset = statsOffset + sizeof(capture.statistics);
+                            const uint64_t visibilityOffset = diagnosticsOffset + sizeof(capture.cacheDiagnostics);
+                            auto readback = device.createBuffer({.size = visibilityOffset + kPixels, .usage = BufferUsageBits::TransferDestination,
+                                .memoryLocation = MemoryLocation::HostReadback});
+                            check(readback, "Layer readback");
+                            const TextureBarrierDesc textures[]{
+                                {.texture = shadow.atlas, .oldLayout = TextureLayout::ShaderRead, .newLayout = TextureLayout::TransferSource,
+                                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::DepthStencilWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+                                {.texture = shadow.texture, .oldLayout = TextureLayout::ShaderRead, .newLayout = TextureLayout::TransferSource,
+                                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}}};
+                            const BufferBarrierDesc buffers[]{
+                                {.buffer = shadow.pageTable, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+                                {.buffer = shadow.statistics, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+                                {.buffer = shadow.cacheDiagnostics, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}}};
+                            check(gpu.commands->synchronize({.textures = textures, .buffers = buffers}), "Layer readback barriers");
+                            check((*readback)->slice({0, atlasBytes}).and_then([&](const auto& slice) {
+                                return gpu.commands->copyTextureToBuffer({.texture = shadow.atlas, .buffer = slice, .width = atlasDesc.width, .height = atlasDesc.height});
+                            }), "Layer atlas copy");
+                            check((*readback)->slice({visibilityOffset, kPixels}).and_then([&](const auto& slice) {
+                                return gpu.commands->copyTextureToBuffer({.texture = shadow.texture, .buffer = slice, .width = kWidth, .height = kHeight});
+                            }), "Layer visibility copy");
+                            for (const auto& [source, offset, bytes] : {std::tuple{shadow.pageTable, atlasBytes, tableBytes},
+                                std::tuple{shadow.statistics, statsOffset, uint64_t(sizeof(capture.statistics))},
+                                std::tuple{shadow.cacheDiagnostics, diagnosticsOffset, uint64_t(sizeof(capture.cacheDiagnostics))}}) {
+                                auto from = source->slice({0, bytes}), to = (*readback)->slice({offset, bytes});
+                                check(from, "Layer buffer source"); check(to, "Layer buffer destination");
+                                check(gpu.commands->copyBuffer(*from, *to), "Layer buffer copy");
+                            }
+                            const TextureBarrierDesc restore[]{
+                                {.texture = shadow.atlas, .oldLayout = TextureLayout::TransferSource, .newLayout = TextureLayout::ShaderRead,
+                                    .before = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
+                                {.texture = shadow.texture, .oldLayout = TextureLayout::TransferSource, .newLayout = TextureLayout::ShaderRead,
+                                    .before = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}}};
+                            check(gpu.commands->synchronize({.textures = restore}), "Restore layer atlas");
+                            readbacks.push_back(std::move(*readback));
+                        }
+                        gpu.finish(cancel);
+                        if (cancel) { return captures; }
+                        for (uint32_t face = 0; face < faceCount; ++face) {
+                            auto& capture = captures[face];
+                            const uint64_t atlasBytes = capture.atlas.size() * sizeof(uint32_t);
+                            const uint64_t statsOffset = atlasBytes + tableBytes, diagnosticsOffset = statsOffset + sizeof(capture.statistics);
+                            const uint64_t visibilityOffset = diagnosticsOffset + sizeof(capture.cacheDiagnostics);
+                            readbacks[face]->invalidate(); const auto* bytes = static_cast<const std::byte*>(readbacks[face]->map());
+                            check(bytes != nullptr, "Map layer capture");
+                            std::memcpy(capture.atlas.data(), bytes, atlasBytes); std::memcpy(capture.pages.data(), bytes + atlasBytes, tableBytes);
+                            std::memcpy(capture.statistics.data(), bytes + statsOffset, sizeof(capture.statistics));
+                            std::memcpy(capture.cacheDiagnostics.data(), bytes + diagnosticsOffset, sizeof(capture.cacheDiagnostics));
+                            std::memcpy(capture.visibility.data(), bytes + visibilityOffset, kPixels); readbacks[face]->unmap();
+                        }
+                        return captures;
+                    };
+                    const auto compare = [&](const char* phase) {
+                        validation.phase(label + "-" + phase);
+                        report["activeCase"] = label + "-" + phase;
+                        std::array<std::vector<Capture>, 3> captures{record(0), record(1), record(2)};
+                        Json faces = Json::array();
+                        uint64_t occupiedDepth = 0, shadowedPixels = 0, overflow = 0;
+                        for (uint32_t face = 0; face < faceCount; ++face) {
+                            const auto& actual = captures[0][face];
+                            const auto& counters = actual.cacheDiagnostics;
+                            report["activeComparison"] = {{"face", face}, {"layeredDiagnostics", counters},
+                                {"singleDiagnostics", captures[1][face].cacheDiagnostics},
+                                {"layeredStatistics", actual.statistics}, {"singleStatistics", captures[1][face].statistics},
+                                {"forcedStatistics", captures[2][face].statistics}};
+                            save();
+                            check(counters[kVSMCacheLayered] == 1 && captures[1][face].cacheDiagnostics[kVSMCacheLayered] == 0,
+                                label + ": diagnostic layer selection disagrees with requested mode");
+                            for (uint32_t word = 0; word < actual.statistics.size(); ++word) {
+                                if (word == 28) { continue; } // Only the layered arm records the deliberate cancellation.
+                                check(actual.statistics[word] == captures[1][face].statistics[word],
+                                    label + "-" + phase + ": layering changed original statistics word " + std::to_string(word));
+                            }
+                            const auto staticDirty = counters[kVSMCacheStaticDirtyFinePages] + counters[kVSMCacheStaticDirtyCoarsePages];
+                            const auto compositeDirty = counters[kVSMCacheCompositeDirtyFinePages] + counters[kVSMCacheCompositeDirtyCoarsePages];
+                            if (std::string_view(phase) == "Cold") {
+                                check((counters[kVSMCacheReasons] & kVSMCacheReasonCold) != 0 && counters[kVSMCacheDynamicCasters] == 0,
+                                    "Cold layer classification/reason missing");
+                            } else if (std::string_view(phase) == "Warm" || std::string_view(phase) == "CancelledPromotionRollback") {
+                                check(staticDirty == 0 && compositeDirty == 0 && counters[kVSMCacheDynamicCasters] == 0,
+                                    "Warm or cancelled promotion changed committed static depth/classification");
+                                if (std::string_view(phase) == "CancelledPromotionRollback") {
+                                    check(counters[kVSMCacheCancelledRecordings] == 1, "Cancelled layered recording was not reported");
+                                }
+                            } else if (std::string_view(phase) == "FirstDynamicMove") {
+                                check(counters[kVSMCachePromotedCasters] == 1 && counters[kVSMCacheTransformChanges] == 1 &&
+                                    counters[kVSMCacheDynamicCasters] == 1 && staticDirty > 0,
+                                    "First motion did not migrate caster and erase old static depth");
+                            } else if (std::string_view(phase) == "RepeatedDynamicMove") {
+                                check(counters[kVSMCachePromotedCasters] == 0 && counters[kVSMCacheTransformChanges] == 1 &&
+                                    counters[kVSMCacheDynamicCasters] == 1 && staticDirty == 0 && compositeDirty > 0 &&
+                                    counters[kVSMCacheStaticDecodedTriangles] == 0 && counters[kVSMCacheDynamicDecodedTriangles] > 0,
+                                    "Repeated dynamic motion redrew static geometry or did not redraw dynamic geometry");
+                            } else if (std::string_view(phase) == "ShadowMaterialEdit") {
+                                check(counters[kVSMCacheMaterialChanges] == 1, "Shadow material invalidation was not attributed");
+                            } else if (std::string_view(phase) == "TexturePublication") {
+                                check((counters[kVSMCacheReasons] & kVSMCacheReasonTexturePublication) != 0,
+                                    "Texture publication invalidation reason missing");
+                            } else if (std::string_view(phase) == "DisplacementMode") {
+                                check((counters[kVSMCacheReasons] & kVSMCacheReasonTessellation) != 0,
+                                    "Tessellation invalidation reason missing");
+                            }
+                            uint64_t comparedTexels = 0, nonzeroTexels = 0;
+                            for (uint32_t arm = 1; arm < captures.size(); ++arm) {
+                                const auto& reference = captures[arm][face];
+                                if (actual.visibility != reference.visibility) {
+                                    const auto mismatch = std::mismatch(actual.visibility.begin(), actual.visibility.end(), reference.visibility.begin());
+                                    report["firstVisibilityMismatch"] = {{"arm", arm}, {"face", face},
+                                        {"pixel", size_t(mismatch.first - actual.visibility.begin())}, {"actual", *mismatch.first}, {"reference", *mismatch.second}};
+                                }
+                                check(actual.visibility == reference.visibility, label + "-" + phase + ": stale layered visibility against arm " + std::to_string(arm));
+                                for (size_t page = 0; page < actual.pages.size(); ++page) {
+                                    const auto& a = actual.pages[page]; const auto& b = reference.pages[page];
+                                    check((a[1] & 3u) == (b[1] & 3u), "Layer page demand or admission changed");
+                                    // Force redraw invalidates every fine page on overflow, whereas the cached arms
+                                    // can retain unaffected valid pages. The coarse fallback and visibility stay exact.
+                                    const bool forcedOverflowFine = arm == 2 && page + 1 < actual.pages.size() &&
+                                        (actual.statistics[5] != 0 || reference.statistics[5] != 0);
+                                    if (!forcedOverflowFine) {
+                                        check((a[3] & 1u) == (b[3] & 1u), "Layer page validity changed");
+                                    }
+                                    if ((a[1] & 2u) == 0u || (a[3] & 1u) == 0u || (b[3] & 1u) == 0u) { continue; }
+                                    check(a[0] != UINT32_MAX && b[0] != UINT32_MAX, "Layer valid page lacks physical mapping");
+                                    for (uint32_t y = 0; y < settings.pageSize; ++y) { for (uint32_t x = 0; x < settings.pageSize; ++x) {
+                                        const auto texel = [&](const Capture& c, uint32_t physical) {
+                                            return size_t(physical / c.physicalPagesX * settings.pageSize + y) * c.atlasWidth +
+                                                physical % c.physicalPagesX * settings.pageSize + x;
+                                        };
+                                        const uint32_t depthA = actual.atlas[texel(actual, a[0])], depthB = reference.atlas[texel(reference, b[0])];
+                                        if (depthA != depthB) {
+                                            report["firstDepthMismatch"] = {{"arm", arm}, {"face", face}, {"page", page}, {"xy", {x, y}},
+                                                {"actual", depthA}, {"reference", depthB}, {"actualPage", a}, {"referencePage", b}};
+                                        }
+                                        check(depthA == depthB, label + "-" + phase + ": layered D32 differs at virtual page " + std::to_string(page));
+                                        ++comparedTexels; nonzeroTexels += depthA != 0;
+                                    }}
+                                }
+                            }
+                            occupiedDepth += nonzeroTexels;
+                            shadowedPixels += std::count_if(actual.visibility.begin(), actual.visibility.end(), [](uint8_t value) { return value < 255; });
+                            overflow += actual.statistics[5];
+                            faces.push_back({{"face", face}, {"layeredStatistics", actual.statistics},
+                                {"cacheDiagnostics", actual.cacheDiagnostics},
+                                {"singleCacheDiagnostics", captures[1][face].cacheDiagnostics},
+                                {"singleStatistics", captures[1][face].statistics}, {"forcedStatistics", captures[2][face].statistics},
+                                {"visibilitySHA256", debug::debugSha256(actual.visibility)}, {"comparedDepthTexels", comparedTexels},
+                                {"occupiedDepthTexels", nonzeroTexels}});
+                        }
+                        report["frames"].push_back({{"name", label + "-" + phase}, {"faces", std::move(faces)},
+                            {"occupiedDepthTexels", occupiedDepth}, {"shadowedPixels", shadowedPixels}, {"overflow", overflow}});
+                        if (std::string_view(phase) == "Cold") {
+                            check(occupiedDepth > 0 && shadowedPixels > 0, "Layer fixture did not exercise actual shadow depth/receivers");
+                        }
+                        if (std::string_view(phase) == "Overflow") { check(overflow > 0, "Layer fixture failed to trigger work overflow"); }
+                        save();
+                        return captures[0];
+                    };
+                    (void)compare("Cold");
+                    (void)compare("Warm");
+                    move(.2f); (void)record(0, true); move(0);
+                    (void)compare("CancelledPromotionRollback");
+                    move(.2f); (void)compare("FirstDynamicMove");
+                    move(.4f); (void)compare("RepeatedDynamicMove");
+                    if (variant == 0) {
+                        check(scene.setObjectVisible(scene.objectForNode(1).entity(), false), "Hide layered caster");
+                        (void)compare("HiddenDynamicCaster");
+                        check(scene.setObjectVisible(scene.objectForNode(1).entity(), true), "Restore layered caster");
+                        (void)compare("VisibleDynamicCaster");
+                        material.alphaMode = "MASK"; material.alphaCutoff = .5f;
+                        check(scene.setMaterialProperties(1, material), "Mask layered caster");
+                        (void)compare("ShadowMaterialEdit");
+                        currentHeight = &heightB; ++casterSettings.texturePublicationRevision;
+                        (void)compare("TexturePublication");
+                        currentHeight = &heightA; ++casterSettings.texturePublicationRevision;
+                        material.alphaMode = "OPAQUE"; material.displacementMagnitude = .4f;
+                        check(scene.setMaterialProperties(1, material), "Displace layered caster");
+                        casterSettings.tessellationEnabled = true; casterSettings.tessellationFactor = 2;
+                        (void)compare("DisplacementMode");
+                        setCamera(1.1f); (void)compare("ClipmapScroll");
+                    }
+                    move(.6f); settings.maxWorkItems = 1;
+                    (void)compare("Overflow");
+                    settings.maxWorkItems = 65535;
+                    (void)compare("OverflowRecovery");
+                    (void)compare("RecoveredWarm");
+                }
+            }
+            report["validation"] = validation.snapshot();
+            check(!validation.failed(), "Layer cache Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Static/dynamic layered depth matches cached and forced single-layer rendering across edits and cancellation");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCacheLayersTest);
+
 
 class VirtualShadowMapDemandEquivalenceTest final : public RHITest
 {

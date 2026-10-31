@@ -570,7 +570,7 @@ StreamMeshletLODReference selectStreamMeshletLodReference(
     std::span<const uint8_t> drawableGroups,
     const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view,
     uint32_t manualLevel, uint32_t capacity, std::span<const uint8_t> availableGroups,
-    std::span<const MeshletLODBVHNode> bvh)
+    std::span<const MeshletLODBVHNode> bvh, std::span<const uint8_t> needsFineOverride)
 {
     StreamMeshletLODReference result;
     const auto fail = [&](const char* reason) {
@@ -581,7 +581,8 @@ StreamMeshletLODReference selectStreamMeshletLodReference(
         return result;
     };
     if (groups.size() > UINT32_MAX || ranges.size() != groups.size() || drawableGroups.size() != groups.size() ||
-        (!availableGroups.empty() && availableGroups.size() != groups.size())) {
+        (!availableGroups.empty() && availableGroups.size() != groups.size()) ||
+        (!needsFineOverride.empty() && needsFineOverride.size() != groups.size())) {
         return fail("stream LOD metadata sizes disagree");
     }
     result.activeGroups.resize(groups.size(), 0);
@@ -618,7 +619,10 @@ StreamMeshletLODReference selectStreamMeshletLodReference(
 
     const auto visitGroup = [&](uint32_t group) {
         ++result.testedGroups;
-        if (!meshletLodNeedsFine(groups[group], instance, view, manualLevel)) {
+        const bool needsFine = needsFineOverride.empty() ?
+            meshletLodNeedsFine(groups[group], instance, view, manualLevel) :
+            (groups[group].flags & kMeshletLODTerminalGroup) != 0 || needsFineOverride[group] != 0;
+        if (!needsFine) {
             return;
         }
         if (drawableGroups[group] == 0) {
@@ -631,7 +635,9 @@ StreamMeshletLODReference selectStreamMeshletLodReference(
             result.activeGroups[group] = 1;
         }
     };
-    if (bvh.empty()) {
+    // An external consumer supplies its own metric; the raster-view BVH bound
+    // cannot reject groups wanted by that consumer.
+    if (bvh.empty() || !needsFineOverride.empty()) {
         for (size_t reverse = groups.size(); reverse != 0; --reverse) {
             visitGroup(static_cast<uint32_t>(reverse - 1));
         }

@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
@@ -34,7 +35,7 @@ uint64_t temporalContentKey(const VirtualShadowMapCasterResources& casters, cons
     append(casters.sceneIdentity); append(casters.structuralRevision); append(casters.dependencyKey);
     append(raster.sceneIdentity); append(raster.rasterSettingsRevision);
     for (const auto& caster : casters.states) {
-        append(caster.id); append(caster.contentKey); append(caster.bounds.valid);
+        append(caster.id); append(caster.contentKey); append(caster.lodKey); append(caster.bounds.valid);
         append(caster.bounds.min.x); append(caster.bounds.min.y); append(caster.bounds.min.z);
         append(caster.bounds.max.x); append(caster.bounds.max.y); append(caster.bounds.max.z);
     }
@@ -89,6 +90,11 @@ public:
         reflection.addBufferOutput("statistics", "Six 32-uint face blocks per light entry")
             .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapFaceStatisticsSize, sizeof(uint32_t))
             .bufferLayout("u32").transferWrite();
+        reflection.addBufferOutput("cacheDiagnostics", "Six cache invalidation and static/dynamic page-work blocks per light entry")
+            .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapCacheDiagnosticSize, sizeof(uint32_t))
+            .bufferLayout("u32").transferWrite();
+        reflection.addBufferOutput("lodStatistics", "Shared shadow LOD selection, page demand and selected cluster level histogram")
+            .buffer(32 * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         if (properties().value("benchmarkGPUWork", false)) {
             reflection.addBufferOutput("workload", "Six GPU workload blocks per light entry; sixteen low/high uint pairs per face")
                 .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapWorkloadSize, sizeof(uint32_t))
@@ -97,7 +103,7 @@ public:
                 .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapBuildDiagnosticSize, sizeof(uint32_t))
                 .bufferLayout("u32").transferWrite();
         }
-        reflection.addBufferOutput("memory", "Logical owned bytes: atlas, private output, buffers, public output, faces, atlas pages, temporal history")
+        reflection.addBufferOutput("memory", "Logical owned bytes: total atlas, private output, buffers, public output, faces, atlas pages, temporal history, static atlas subset")
             .buffer(8 * sizeof(uint64_t), sizeof(uint64_t)).transferWrite();
         return reflection;
     }
@@ -112,6 +118,9 @@ public:
         return {capacity, compact, debugOutput,
             runtimeBoolSetting("enabled", "Virtual Shadows", true),
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", true),
+            runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
+            runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
+            runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
@@ -183,6 +192,8 @@ public:
         const auto debug = context.outputTexture("debug");
         const auto table = context.outputBuffer("lights");
         const auto statistics = context.outputBuffer("statistics");
+        const auto cacheDiagnostics = context.outputBuffer("cacheDiagnostics");
+        const auto lodStatisticsOutput = context.outputBuffer("lodStatistics");
         const auto workload = context.outputBuffer("workload");
         const auto buildDiagnostics = context.outputBuffer("buildDiagnostics");
         auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
@@ -192,7 +203,7 @@ public:
         if (!scene || !gpuScene || !context.streamer() || !depth.valid() || !depth.view() ||
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
-            !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !memory.valid() ||
+            !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !cacheDiagnostics.valid() || !lodStatisticsOutput.valid() || !memory.valid() ||
             (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid()))) {
             return makeError(Error::InvalidArgument);
         }
@@ -236,6 +247,9 @@ public:
         if (historyFrames == 0 || historyFrames > 64) { return makeError(Error::InvalidArgument); }
         settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
+        settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
+        settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
+        settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.collectGPUWork = collectGPUWork_;
         settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
@@ -378,7 +392,10 @@ public:
             BufferSlice destinationWorkload;
             BufferSlice sourceBuildDiagnostics;
             BufferSlice destinationBuildDiagnostics;
+            BufferSlice sourceCacheDiagnostics;
+            BufferSlice destinationCacheDiagnostics;
             std::string name;
+            std::string cacheName;
         };
         std::vector<FacePublication> publications;
         publications.reserve(admittedFaces);
@@ -389,13 +406,15 @@ public:
                 &lights[index].entry, sizeof(VirtualShadowMapLightEntry));
         }
         std::vector<uint32_t> zeroStatistics(statistics.desc().size / sizeof(uint32_t), 0);
+        std::vector<uint32_t> zeroCacheDiagnostics(cacheDiagnostics.desc().size / sizeof(uint32_t), 0);
         std::vector<uint32_t> zeroWorkload(collectGPUWork_ ? workload.desc().size / sizeof(uint32_t) : 0, 0);
         std::vector<uint32_t> zeroBuildDiagnostics(collectGPUWork_ ? buildDiagnostics.desc().size / sizeof(uint32_t) : 0, 0);
         auto batch = context.streamer()->beginCopyBatch();
         if (!batch) { return makeError(batch.error()); }
         std::vector<StreamDataChunk> chunks{{tableData.data(), tableData.size()},
-            {zeroStatistics.data(), zeroStatistics.size() * sizeof(uint32_t)}};
-        std::vector<Buffer*> destinations{table.buffer(), statistics.buffer()};
+            {zeroStatistics.data(), zeroStatistics.size() * sizeof(uint32_t)},
+            {zeroCacheDiagnostics.data(), zeroCacheDiagnostics.size() * sizeof(uint32_t)}};
+        std::vector<Buffer*> destinations{table.buffer(), statistics.buffer(), cacheDiagnostics.buffer()};
         if (collectGPUWork_) {
             chunks.push_back({zeroWorkload.data(), zeroWorkload.size() * sizeof(uint32_t)});
             destinations.push_back(workload.buffer());
@@ -409,7 +428,9 @@ public:
         }
         std::vector<RenderGraphStageUse> initializeUses{RenderGraphStageUse{"shadows", RenderGraphResourceAccess::TextureTransferWrite},
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
-            RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
+            RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
+            RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
+            RenderGraphStageUse{"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (debugOutput_) { initializeUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite}); }
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
@@ -419,6 +440,9 @@ public:
         projections.reserve(header.admittedCount);
         ViewConstants view{};
         uint64_t contentKey = 0;
+        std::array<uint32_t, 32> lodStatistics{};
+        lodStatistics[0] = 1;
+        lodStatistics[1] = settings.shadowLOD;
         auto recordFaces = [&](CommandBuffer&) -> Result<> {
             cpuPhase.next("Caster textures and geometry");
             auto profile = context.profileScope("VSM caster preparation");
@@ -469,6 +493,43 @@ public:
                 auto casters = casterCache_.prepare(*device_, commands, *scene,
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
+                lodStatistics[10] = casters->triangleCapacity;
+                if (settings.shadowLOD) {
+                    std::vector<VirtualShadowMapLODProjection> lodProjections;
+                    for (uint32_t index : order) {
+                        const auto& item = lights[index];
+                        if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                        for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
+                            auto light = item.light;
+                            light.face = face;
+                            auto faceSettings = settings;
+                            faceSettings.physicalPageCount = item.faceBudgets[face];
+                            const auto faceProjections = VirtualShadowMaps::makeShadowLODProjections(
+                                casters->bounds, view, light, faceSettings, log);
+                            if (!faceProjections) {
+                                spdlog::error("VirtualShadowMapLightsPass shadow LOD projections: {}", log);
+                                return makeError(faceProjections.error());
+                            }
+                            lodProjections.insert(lodProjections.end(), faceProjections->begin(), faceProjections->end());
+                        }
+                    }
+                    lodStatistics[2] = uint32_t(lodProjections.size());
+                    casters = prepareVirtualShadowMapShadowLOD(*device_, commands, *scene,
+                        scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
+                        lodProjections, settings.shadowLODErrorTexels, log);
+                    if (!casters) { spdlog::error("VirtualShadowMapLightsPass shadow LOD: {}", log); return makeError(casters.error()); }
+                }
+                const auto& lod = casters->shadowLOD;
+                lodStatistics[3] = lod.testedGroups;
+                lodStatistics[4] = lod.selectedClusters;
+                lodStatistics[5] = casters->triangleCapacity;
+                lodStatistics[6] = lod.requestedPages;
+                lodStatistics[7] = lod.blockedPages;
+                lodStatistics[8] = lod.fallbackCasters;
+                lodStatistics[9] = lod.protectedCasters;
+                for (size_t level = 0; level < lod.selectedLevels.size(); ++level) {
+                    lodStatistics[16 + std::min(level, size_t(15))] += lod.selectedLevels[level];
+                }
                 if (!temporalIdentities.empty()) { contentKey = temporalContentKey(*casters, info); }
                 profile.next("VSM page demand, cache and raster");
                 cpuPhase.next("Record all faces");
@@ -495,7 +556,12 @@ public:
                             kVirtualShadowMapFaceStatisticsSize});
                         auto importedStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize +
                             (collectGPUWork_ ? kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0)});
-                        if (!sourceStats || !destinationStats || !importedStats) { return makeError(Error::InvalidArgument); }
+                        auto sourceCacheDiagnostics = shadow->cacheDiagnostics->slice({0, kVirtualShadowMapCacheDiagnosticSize});
+                        auto destinationCacheDiagnostics = cacheDiagnostics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapCacheDiagnosticSize,
+                            kVirtualShadowMapCacheDiagnosticSize});
+                        if (!sourceStats || !destinationStats || !importedStats || !sourceCacheDiagnostics || !destinationCacheDiagnostics) {
+                            return makeError(Error::InvalidArgument);
+                        }
                         BufferSlice sourceWorkload, destinationWorkload;
                         BufferSlice sourceBuildDiagnostics, destinationBuildDiagnostics;
                         if (collectGPUWork_) {
@@ -513,7 +579,8 @@ public:
                         }
                         publications.push_back({*sourceStats, *destinationStats, *importedStats,
                             sourceWorkload, destinationWorkload, sourceBuildDiagnostics, destinationBuildDiagnostics,
-                            "faceStatistics" + std::to_string(layer)});
+                            *sourceCacheDiagnostics, *destinationCacheDiagnostics,
+                            "faceStatistics" + std::to_string(layer), "faceCacheDiagnostics" + std::to_string(layer)});
                     }
                     VirtualShadowMapProjectionGroup group;
                     group.results = std::move(pointResults);
@@ -526,6 +593,10 @@ public:
             return {};
         };
         if (auto r = recordFaces(context.commandBuffer()); !r) { (void)context.streamer()->cancelCopyBatch(*batch); return r; }
+        const StreamDataChunk lodChunk{lodStatistics.data(), sizeof(lodStatistics)};
+        const auto lodUpload = context.streamer()->streamBufferData({.dataChunks = {&lodChunk, 1},
+            .placementAlignment = 16, .dstBuffer = lodStatisticsOutput.buffer(), .copyBatch = *batch});
+        if (!lodUpload.valid()) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(Error::OutOfMemory); }
         cpuPhase.next("Publication stage setup");
         // Build views only after the owning names have reached their final
         // addresses. Projection writes the public arrays directly; only face
@@ -534,17 +605,20 @@ public:
         std::vector<RenderGraphStageUse> projectionUses{{"shadows", RenderGraphResourceAccess::TextureStorageWrite},
             {"depth", RenderGraphResourceAccess::TextureSampleRead}};
         if (debugOutput_) { projectionUses.push_back({"debug", RenderGraphResourceAccess::TextureStorageWrite}); }
-        std::vector<RenderGraphStageUse> publishUses{{"statistics", RenderGraphResourceAccess::BufferTransferWrite}};
+        std::vector<RenderGraphStageUse> publishUses{{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
+            {"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (collectGPUWork_) {
             publishUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             publishUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
         }
-        bufferImports.reserve(publications.size());
-        publishUses.reserve(3 + publications.size());
+        bufferImports.reserve(publications.size() * 2);
+        publishUses.reserve(4 + publications.size() * 2);
         projectionUses.reserve(3 + publications.size());
         for (const auto& publication : publications) {
             bufferImports.push_back({publication.name, publication.importedStats, RenderGraphResourceAccess::BufferStorageReadWrite});
+            bufferImports.push_back({publication.cacheName, publication.sourceCacheDiagnostics, RenderGraphResourceAccess::BufferStorageReadWrite});
             publishUses.push_back({publication.name, RenderGraphResourceAccess::BufferTransferRead});
+            publishUses.push_back({publication.cacheName, RenderGraphResourceAccess::BufferTransferRead});
             projectionUses.push_back({publication.name, RenderGraphResourceAccess::BufferStorageReadWrite});
         }
 
@@ -598,6 +672,7 @@ public:
                         memoryData[2] += usage.bufferBytes;
                         ++memoryData[4];
                         memoryData[5] += usage.allocatedAtlasPages;
+                        memoryData[7] += usage.staticAtlasBytes;
                     }
                 }
                 // R8 visibility and optional RGBA8 page-debug arrays.
@@ -607,6 +682,8 @@ public:
                 }
                 for (const auto& publication : publications) {
                     auto copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
+                    if (!copied) { return copied; }
+                    copied = cmd.copyBuffer(publication.sourceCacheDiagnostics, publication.destinationCacheDiagnostics);
                     if (!copied) { return copied; }
                     if (collectGPUWork_) {
                         copied = cmd.copyBuffer(publication.sourceWorkload, publication.destinationWorkload);

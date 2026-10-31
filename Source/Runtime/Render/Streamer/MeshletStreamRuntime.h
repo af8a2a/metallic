@@ -812,6 +812,10 @@ public:
     // Consume after the frame's page publication, including after cmdEndFrame.
     // Does not change the primary view's traversal/cut or issue stream requests.
     Result<> cmdPrepareShadowGeometry(CommandBuffer& commandBuffer);
+    struct ShadowPageRequests { uint32_t requestedPages = 0, blockedPages = 0; };
+    // Touch selected pages and enqueue missing refinements without borrowing
+    // the primary-view cut. Accepted requests are not necessarily resident.
+    ShadowPageRequests requestShadowPages(std::span<const uint32_t> pageIndices);
     uint32_t frameIndex() const { return frameIndex_; }
     uint32_t visibleClusterCapacity() const;
     uint32_t rasterCandidateCapacity() const { return rasterCandidateCapacity_; }
