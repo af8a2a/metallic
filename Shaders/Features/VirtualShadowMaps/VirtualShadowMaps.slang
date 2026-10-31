@@ -5,6 +5,7 @@ import ShaderCore;
 import Material;
 import MaterialProgram;
 import VirtualShadowMapGeometry;
+import VirtualShadowMapReceiver;
 import VirtualShadowMapCommon;
 
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
@@ -18,6 +19,9 @@ import VirtualShadowMapCommon;
 #endif
 #ifndef VSM_ONE_PASS_PROJECTION
 #define VSM_ONE_PASS_PROJECTION 0
+#endif
+#ifndef VSM_REFINED_RECEIVER
+#define VSM_REFINED_RECEIVER 0
 #endif
 #ifndef VSM_OPTIMIZE_MARK_SAMPLES
 #define VSM_OPTIMIZE_MARK_SAMPLES 0
@@ -65,10 +69,11 @@ struct ShadowPush
     float lightRange;
     uint projectionFace, filterMode, pointFaces;
     float pcfRadius, rayLength, sourceRadius, angularRadius;
-    uint rayCount, samplesPerRay, receiverFootprint, filterReserved;
+    uint rayCount, samplesPerRay, receiverFootprint, projectionFlags;
     float rayLengthScale, maxRayAngle;
     uint samplePhase, sampleReserved;
     float lodScreenRayLength;
+    uint receiverGeometry;
 };
 
 // sampleReserved names a 32-word diagnostic prefix followed by immutable layer metadata.
@@ -419,6 +424,144 @@ float vsmLODScreenRayOffset(float3 position, float3 normal, float linearDepth, f
     }
     return rayLength;
 }
+
+#if VSM_REFINED_RECEIVER
+float3 vsmPrimaryCameraNormal(VirtualShadowMapReceiverTriangle triangle, ViewConstants view)
+{
+    float3 toCamera = view.current.upProjection.w > 0.5 ? view.current.eye.xyz - view.current.center.xyz :
+        view.current.eye.xyz - triangle.a;
+    return dot(triangle.normal, toCamera) >= 0.0 ? triangle.normal : -triangle.normal;
+}
+
+void vsmLimitReceiverRay(float planeDistance, float planeRate, inout float distance)
+{
+    if (planeRate < 0.0) { distance = min(distance, planeDistance / -planeRate); }
+}
+
+bool vsmReceiverCandidateBlocks(uint2 pixel, VirtualShadowMapReceiverContext context,
+    float3 origin, float3 direction, bool nearReceiver, inout uint4 recent0, inout uint4 recent1,
+    inout uint previousVisibility)
+{
+    if (nearReceiver) {
+        return vsmPrimaryClusterBlocksRay(pixel, context, origin, direction, recent0, recent1);
+    }
+    return vsmPrimaryTriangleBlocksRayAtPixel(pixel, context, origin, direction, recent0, recent1, previousVisibility);
+}
+
+bool vsmAllowLODReceiverCorrection(uint2 pixel, float3 position, float linearDepth, float3 toLight,
+    ViewConstants view, uint receiverGeometry, float screenLength)
+{
+    // Missing primary geometry is an optional representation, not permission
+    // to infer that a depth-only miss is visible. Keep the original shadow.
+    if (receiverGeometry == 0xffffffffu) { return false; }
+    VirtualShadowMapReceiverContext context = vsmResolveReceiverContext(receiverGeometry);
+    VirtualShadowMapReceiverTriangle receiver;
+    if (!vsmPrimaryReceiverTriangle(pixel, context, receiver)) { return false; }
+    if (dot(vsmPrimaryCameraNormal(receiver, view), toLight) <= 0.0) { return false; }
+
+    // Missing/discontinuous primary ownership cannot establish that the shadow
+    // is a receiver error. Adjacent facing alone does not establish occlusion;
+    // the candidate clusters below test their actual triangles instead.
+    static const int2 neighbors[4] = {int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1)};
+    for (uint i = 0u; i < 4u; ++i) {
+        int2 neighbor = int2(pixel) + neighbors[i];
+        if (any(neighbor < 0) || any(neighbor >= int2(view.current.viewport.yz))) { return false; }
+        VirtualShadowMapReceiverTriangle adjacent;
+        if (!vsmPrimaryReceiverTriangle(uint2(neighbor), context, adjacent) ||
+            adjacent.instanceIndex != receiver.instanceIndex) { return false; }
+    }
+
+    bool orthographic = view.current.upProjection.w > 0.5;
+    float3 forward = normalize(view.current.center.xyz - view.current.eye.xyz);
+    float3 cameraRay = orthographic ? forward : normalize(position - view.current.eye.xyz);
+    float denominator = dot(receiver.normal, cameraRay);
+    if (abs(denominator) <= 1e-5) { return false; }
+    // Recover the primary triangle's surface rather than tracing from rounded
+    // D32 reconstruction, which can lie just inside its own fine geometry.
+    float3 origin = position + cameraRay * (dot(receiver.normal, receiver.a - position) / denominator);
+    float3 right = normalize(cross(forward, view.current.upProjection.xyz));
+    float3 up = cross(right, forward);
+    float3 cameraOrigin = origin - view.current.eye.xyz;
+    float axial = dot(cameraOrigin, forward), axialRate = dot(toLight, forward);
+    float2 transverse = float2(dot(cameraOrigin, right), dot(cameraOrigin, up));
+    float2 transverseRate = float2(dot(toLight, right), dot(toLight, up));
+    float tangent = tan(view.current.viewport.w * 0.5);
+    float2 scale = float2(view.current.viewport.x, 1.0) *
+        (orthographic ? view.current.clipOrtho.z * 0.5 : tangent);
+    float2 extent = scale * (orthographic ? 1.0 : axial);
+    float2 extentRate = scale * (orthographic ? 0.0 : axialRate);
+    float2 jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
+    float2 lower = float2(-1.0, -1.0) + float2(2.0, -2.0) * jitter / view.current.viewport.yz;
+    float2 upper = lower + 2.0;
+    float2 lowerDistance = transverse - lower * extent;
+    float2 upperDistance = upper * extent - transverse;
+    if (axial <= view.current.clipOrtho.x || axial >= view.current.clipOrtho.y ||
+        any(lowerDistance < 0.0) || any(upperDistance < 0.0)) { return false; }
+    // Candidate collection ends at the camera frustum, not at the bias length.
+    // A distant fine blocker can produce a short conflict in the LOD atlas.
+    float rayLength = 1e30;
+    vsmLimitReceiverRay(axial - view.current.clipOrtho.x, axialRate, rayLength);
+    vsmLimitReceiverRay(view.current.clipOrtho.y - axial, -axialRate, rayLength);
+    [unroll] for (uint axis = 0u; axis < 2u; ++axis) {
+        vsmLimitReceiverRay(lowerDistance[axis], transverseRate[axis] - lower[axis] * extentRate[axis], rayLength);
+        vsmLimitReceiverRay(upperDistance[axis], upper[axis] * extentRate[axis] - transverseRate[axis], rayLength);
+    }
+    float endDepth = axial + axialRate * rayLength;
+    if (endDepth <= 0.0) { return false; }
+    float2 ndc = (transverse + transverseRate * rayLength) / (scale * (orthographic ? 1.0 : endDepth));
+    float2 endScreen = float2(ndc.x + 1.0, 1.0 - ndc.y) * 0.5 * view.current.viewport.yz - jitter;
+    endScreen = clamp(endScreen, float2(0.0), view.current.viewport.yz);
+
+    // Near the receiver, include cluster microtriangles that never covered a
+    // pixel center. Beyond the original offset interval, query only the visible
+    // primary triangles. All candidate intersections test the whole forward ray.
+    // This finite screen representation does not replace hidden/offscreen scene
+    // geometry, change the shadow caster cut, or require an additional AS.
+    uint4 recent0 = uint4(0xffffffffu), recent1 = uint4(0xffffffffu);
+    for (uint i = 0u; i < 4u; ++i) {
+        if (vsmPrimaryClusterBlocksRay(uint2(int2(pixel) + neighbors[i]), context,
+            origin, toLight, recent0, recent1)) { return false; }
+    }
+    float2 startScreen = float2(pixel) + 0.5;
+    float2 deltaScreen = endScreen - startScreen;
+    float viewHeight = orthographic ? view.current.clipOrtho.z : 2.0 * linearDepth * tangent;
+    float nearDistance = min(screenLength * viewHeight, rayLength);
+    float nearDepth = axial + axialRate * nearDistance;
+    float2 nearNDC = (transverse + transverseRate * nearDistance) / (scale * (orthographic ? 1.0 : nearDepth));
+    float2 nearScreen = float2(nearNDC.x + 1.0, 1.0 - nearNDC.y) * 0.5 * view.current.viewport.yz - jitter;
+    float screenDistanceSquared = dot(deltaScreen, deltaScreen);
+    float nearFraction = screenDistanceSquared > 1e-20 ?
+        saturate(dot(nearScreen - startScreen, deltaScreen) / screenDistanceSquared) : 1.0;
+    int2 cell = int2(pixel), lastCell = min(int2(endScreen), int2(view.current.viewport.yz) - 1);
+    int2 direction = int2(deltaScreen.x >= 0.0 ? 1 : -1, deltaScreen.y >= 0.0 ? 1 : -1);
+    float2 stepTime = 1.0 / max(abs(deltaScreen), float2(1e-30));
+    float2 nextTime = stepTime * 0.5;
+    float cellEntryTime = 0.0;
+    uint previousVisibility = 0u;
+    // A clipped 2D grid ray crosses at most width + height cell boundaries.
+    uint maximumVisits = uint(view.current.viewport.y + view.current.viewport.z) + 1u;
+    for (uint visited = 0u; visited < maximumVisits; ++visited) {
+        // Accumulated step times can round a boundary tie toward an exterior
+        // cell before lastCell. Do not read outside the primary image.
+        if (any(cell < 0) || any(cell >= int2(view.current.viewport.yz))) { return false; }
+        if (vsmReceiverCandidateBlocks(uint2(cell), context, origin, toLight, cellEntryTime <= nearFraction,
+            recent0, recent1, previousVisibility)) { return false; }
+        if (all(cell == lastCell)) { return true; }
+        if (nextTime.x == nextTime.y) {
+            // At a corner, the following iteration visits the Y-side cell.
+            // Include the X-side cell as well before reaching the diagonal.
+            int2 corner = cell + int2(direction.x, 0);
+            if (all(corner >= 0) && all(corner < int2(view.current.viewport.yz)) &&
+                vsmReceiverCandidateBlocks(uint2(corner), context, origin, toLight, nextTime.x <= nearFraction,
+                    recent0, recent1, previousVisibility)) { return false; }
+        }
+        if (nextTime.x < nextTime.y) { cellEntryTime = nextTime.x; cell.x += direction.x; nextTime.x += stepTime.x; }
+        else { cellEntryTime = nextTime.y; cell.y += direction.y; nextTime.y += stepTime.y; }
+    }
+    // Keep the original shadow if numerical traversal did not reach its exit.
+    return false;
+}
+#endif
 
 float vsmPerspectiveReceiverDepth(float3 position, float3 normal, uint2 virtualTexel,
     ShadowProjection projection, uint pageSize)
@@ -1865,14 +2008,15 @@ void vsmDepthFragmentMain(ShadowRasterVertex input, bool frontFace : SV_IsFrontF
 
 #if VSM_ONE_PASS_PROJECTION
 // Common filter settings stay in push constants. Only face-specific values
-// come from this table; its 80-byte layout matches ShadowProjectionJob in C++.
+// come from this table; its 84-byte layout matches ShadowProjectionJob in C++.
 struct ShadowProjectionJob
 {
     uint pages, statistics, projections, atlas;
     uint filterMode, shadow, debug, physicalPagesX;
     uint clipmapCount, enabled, lightType, projectionFace;
-    uint pointFaces, filterReserved, samplePhase, view;
+    uint pointFaces, projectionFlags, samplePhase, view;
     float lightRange, sourceRadius, angularRadius, lodScreenRayLength;
+    uint receiverGeometry;
 };
 
 #endif
@@ -1896,7 +2040,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
     float3 position;
     float linearDepth;
-    bool sharedPointLayer = push.filterReserved != 0u && push.lightType == 2u;
+    bool sharedPointLayer = (push.projectionFlags & 1u) != 0u && push.lightType == 2u;
     if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) {
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         if (push.filterMode != 0u) { projectionCounts |= 1u << 0u; }
@@ -2018,6 +2162,11 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         float blockerDistance = (storedDepth - compareDepth) / depthScale + bias;
         float offset = vsmLODScreenRayOffset(position, normal, linearDepth, normalize(projection.rowZ.xyz),
             view, depth, push.lodScreenRayLength, blockerDistance, bias);
+#if VSM_REFINED_RECEIVER
+        if ((push.projectionFlags & 2u) != 0u && compareDepth + offset * depthScale >= storedDepth &&
+            !vsmAllowLODReceiverCorrection(id.xy, position, linearDepth, normalize(projection.rowZ.xyz),
+                view, push.receiverGeometry, push.lodScreenRayLength)) { offset = 0.0; }
+#endif
         compareDepth += offset * depthScale;
     }
     // The producer's scene-Z/far margin keeps real casters above zero. A receiver
@@ -2130,8 +2279,9 @@ void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush co
         push.debug = job.debug; push.physicalPagesX = job.physicalPagesX;
         push.clipmapCount = job.clipmapCount; push.enabled = job.enabled;
         push.lightType = job.lightType; push.projectionFace = job.projectionFace;
-        push.pointFaces = job.pointFaces; push.filterReserved = job.filterReserved;
+        push.pointFaces = job.pointFaces; push.projectionFlags = job.projectionFlags;
         push.lodScreenRayLength = job.lodScreenRayLength;
+        push.receiverGeometry = job.receiverGeometry;
         push.samplePhase = job.samplePhase; push.view = job.view; push.lightRange = job.lightRange;
         push.sourceRadius = job.sourceRadius; push.angularRadius = job.angularRadius;
         uint3 counts;

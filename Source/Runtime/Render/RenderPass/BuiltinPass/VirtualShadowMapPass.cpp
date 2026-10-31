@@ -33,6 +33,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.shadowLODHierarchy = boolProperty(&properties, "shadowLODHierarchy", settings.shadowLODHierarchy);
     settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
     settings.shadowLODSmartBias = boolProperty(&properties, "shadowLODSmartBias", settings.shadowLODSmartBias);
+    settings.shadowLODSmartBiasRefine = boolProperty(&properties, "shadowLODSmartBiasRefine", settings.shadowLODSmartBiasRefine);
     settings.shadowLODScreenRayLength = properties.value("shadowLODScreenRayLength", settings.shadowLODScreenRayLength);
     settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
     settings.collectGPUWork = boolProperty(&properties, "benchmarkGPUWork", false);
@@ -76,7 +77,7 @@ public:
 
     RenderGraphSceneDependency sceneDependency() const override
     {
-        return {RenderGraphSceneSource::Input, {"depth", "rasterInfo"}};
+        return {RenderGraphSceneSource::Input, {"depth", "rasterInfo", "visibility"}};
     }
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -84,6 +85,8 @@ public:
         RenderPassReflection reflection;
         reflection.addTextureInput("depth", "Receiver depth from the matching visibility raster")
             .sampledRead().format = Format::D32Sfloat;
+        reflection.addTextureInput("visibility", "Optional same-raster triangle IDs for refined LOD receiver bias")
+            .sampledRead().setOptional().format = Format::R32Uint;
         auto& info = reflection.addBufferInput("rasterInfo", "Matching raster camera and scene identity")
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         info.memoryLocation = MemoryLocation::HostUpload;
@@ -119,6 +122,7 @@ public:
             runtimeBoolSetting("shadowLODHierarchy", "Adaptive Shadow LOD Hierarchy", true),
             runtimeBoolSetting("shadowLODDepthGuard", "Preserve Shadow LOD Depth Agreement", true),
             runtimeBoolSetting("shadowLODSmartBias", "Shadow LOD Screen Depth Bias", false),
+            runtimeBoolSetting("shadowLODSmartBiasRefine", "Refine Shadow LOD Receiver Bias", true),
             runtimeFloatSetting("shadowLODScreenRayLength", "Shadow LOD Screen Ray Length", .015f, 0, 1),
             runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
@@ -186,6 +190,7 @@ public:
         CPUProfileScope cpuTotal(cpu, "VSM single light CPU");
         CPUProfileScope cpuPhase(cpu, "Validate inputs and prepare view");
         const auto depth = context.inputTexture("depth");
+        const auto visibility = context.inputTexture("visibility");
         const auto metadata = context.inputBuffer("rasterInfo");
         const auto output = context.outputTexture("shadow");
         const auto debugOutput = context.outputTexture("debug");
@@ -282,6 +287,16 @@ public:
         }
         const auto light = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[lightIndex];
         const auto settings = shadowSettings(context.properties());
+        VirtualShadowMapReceiverResources receiver{};
+        if (settings.shadowLOD && settings.shadowLODSmartBias && settings.shadowLODSmartBiasRefine &&
+            visibility.valid() && (info.reserved & 1u) == 0) {
+            if (visibility.desc().width != info.width || visibility.desc().height != info.height) {
+                return makeError(Error::InvalidArgument);
+            }
+            const auto* receiverStream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
+                info.frameIndex, info.sceneIdentity);
+            if (receiverStream) { receiver = {visibility.view(), receiverStream}; }
+        }
         std::array<uint32_t, 32> lodStatistics{};
         lodStatistics[0] = 2;
         lodStatistics[1] = settings.shadowLOD;
@@ -327,7 +342,8 @@ public:
         profile.next("VSM demand, raster and resolve");
         cpuPhase.next("Record shadow face");
         auto shadow = shadows_.record(*device_, commands, *depth.view(), view, light, *casters,
-            scene->materials(), alphaTextures, settings, log, false, nullptr, cpu, gpuProfiler);
+            scene->materials(), alphaTextures, settings, log, false, nullptr, cpu, gpuProfiler,
+            receiver.stream ? &receiver : nullptr);
         if (!shadow) {
             spdlog::error("VirtualShadowMapPass: {}", log);
             return makeError(shadow.error());

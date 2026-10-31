@@ -547,7 +547,8 @@ private:
 // Scene dependencies are part of the pass contract, like texture/buffer inputs.
 // World follows the bound document, falling back to path only without a valid world.
 // An authored sceneBinding="asset" explicitly opts a World pass into a separate asset.
-// Input inherits one producer's scene; every listed input must come from that producer.
+// Input inherits one producer's scene; every connected listed input must come from it.
+// Unconnected inputs are allowed only when their reflection declares them optional.
 enum class RenderGraphSceneSource { None, World, Input };
 struct RenderGraphSceneDependency {
     RenderGraphSceneSource source = RenderGraphSceneSource::None;

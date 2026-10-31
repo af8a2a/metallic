@@ -543,6 +543,7 @@ public:
                     {"hierarchy", shadows->properties.value("shadowLODHierarchy", true)},
                     {"depthGuard", shadows->properties.value("shadowLODDepthGuard", true)},
                     {"smartBias", shadows->properties.value("shadowLODSmartBias", false)},
+                    {"smartBiasRefine", shadows->properties.value("shadowLODSmartBiasRefine", true)},
                     {"screenRayLength", shadows->properties.value("shadowLODScreenRayLength", 0.015f)},
                     {"errorTexels", shadows->properties.value("shadowLODErrorTexels", 1.0f)}};
                 auto* raster = graph.findNode("VBuffer");

@@ -184,6 +184,16 @@
             "id": 15,
             "src": "MoonShadows.parameters",
             "dst": "Deferred.moonShadowParameters"
+        },
+        {
+            "id": 16,
+            "src": "VBuffer.visibility",
+            "dst": "SunShadows.visibility"
+        },
+        {
+            "id": 17,
+            "src": "VBuffer.visibility",
+            "dst": "MoonShadows.visibility"
         }
     ],
     "outputs": [],

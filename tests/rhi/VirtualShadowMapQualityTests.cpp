@@ -6,6 +6,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -496,6 +497,7 @@ RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt"
             {"pcfRadius",1.5},{"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},
             {"receiverFootprint",true},{"compactOutputs",std::string_view(name)=="Compact"}});
         graph.addEdge("Raster.depth",std::string(name)+".depth");
+        graph.addEdge("Raster.visibility",std::string(name)+".visibility");
         graph.addEdge("Raster.rasterInfo",std::string(name)+".rasterInfo");
         const std::string readback=std::string(name)+"Evidence";
         graph.addNode("VSMQualityEvidencePass",readback,{{"evidenceName",name},{"captureDebug",compactComparison}});
@@ -1107,16 +1109,22 @@ METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCompactTest);
 
 class VirtualShadowMapProjectionEquivalenceTest : public RHITest {
 public:
-    explicit VirtualShadowMapProjectionEquivalenceTest(bool layered = false) : layered_(layered)
+    explicit VirtualShadowMapProjectionEquivalenceTest(bool layered = false, bool refinedReceiver = false)
+        : layered_(layered), refinedReceiver_(refinedReceiver)
     {
-        type = RHITestType::Rendering; name = layered_ ? "virtual_shadow_map_cache_layer_projection_equivalence" : "virtual_shadow_map_projection_equivalence";
+        type = RHITestType::Rendering;
+        name = refinedReceiver_ ? "virtual_shadow_map_refined_receiver_projection_equivalence" :
+            layered_ ? "virtual_shadow_map_cache_layer_projection_equivalence" : "virtual_shadow_map_projection_equivalence";
     }
 
     RHITestResult run(RHITestContext& context) override
     {
-        const std::string reportName = layered_ ? "VirtualShadowMapCacheLayerProjectionEquivalence" : "VirtualShadowMapProjectionEquivalence";
+        const std::string reportName = refinedReceiver_ ? "VirtualShadowMapRefinedReceiverProjectionEquivalence" :
+            layered_ ? "VirtualShadowMapCacheLayerProjectionEquivalence" : "VirtualShadowMapProjectionEquivalence";
         const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
-        Json report{{"passed", false}, {"frames", Json::array()}, {"extent", {kWidth, kHeight}}};
+        const uint32_t expectedStates = refinedReceiver_ ? 30u : 86u;
+        Json report{{"passed", false}, {"frames", Json::array()}, {"extent", {kWidth, kHeight}},
+            {"refinedReceiver",refinedReceiver_},{"expectedStates",expectedStates},{"completedStates",0}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
         try {
@@ -1126,6 +1134,10 @@ public:
             const auto room = writeFixture(directory / "Room", true);
             constexpr std::array names{"Legacy", "Shared", "OnePass", "NoDebug", "StatisticsFallback"};
             report["cacheLayering"] = layered_;
+            if (refinedReceiver_) {
+                report["shadowLODSettings"] = {{"enabled",true},{"depthGuard",false},{"smartBias",true},
+                    {"smartBiasRefine",true},{"screenRayLength",.015}};
+            }
             if (layered_) { report["cacheDiagnosticNames"] = kVirtualShadowMapCacheDiagnosticNames; }
             report["projectionStatisticsArms"] = {{"Legacy",false},{"Shared",false},{"OnePass",false},{"NoDebug",false},{"StatisticsFallback",true}};
             report["selectionControls"] = {
@@ -1145,6 +1157,7 @@ public:
             constexpr std::array phases{"Cold", "Warm", "Redraw", "JitterMotion", "TemporalContinue", "Reorder", "FiniteBudget",
                 "Disabled", "Overflow", "Recovered", "TwoPoints", "NearPlane", "ZeroBudget", "SingleFace"};
             for (const std::string filter : {"hard", "pcf", "smrt"}) {
+                if (refinedReceiver_ && filter != "hard") { continue; }
                 for (bool compact : {false, true}) {
                     for (bool isRoom : {false, true}) {
                         const auto& fixture = isRoom ? room : floor;
@@ -1202,6 +1215,13 @@ public:
                                 settings["benchmarkOnePassProjection"] = true;
                             }
                             if (layered_) { settings["cacheLayering"] = arm == 2; }
+                            if (refinedReceiver_) {
+                                settings["shadowLOD"] = true;
+                                settings["shadowLODDepthGuard"] = false;
+                                settings["shadowLODSmartBias"] = true;
+                                settings["shadowLODSmartBiasRefine"] = true;
+                                settings["shadowLODScreenRayLength"] = .015;
+                            }
                             auto pass = createRenderGraphPass("VirtualShadowMapLightsPass");
                             require(pass != nullptr, "Create projection reflection probe");
                             pass->setProperties(settings);
@@ -1210,6 +1230,7 @@ public:
                                 label + ": optional debug output was still reflected or disappeared when enabled");
                             graph.addNode("VirtualShadowMapLightsPass", node, settings);
                             graph.addEdge("Raster.depth", node + ".depth"); graph.addEdge("Raster.rasterInfo", node + ".rasterInfo");
+                            if (refinedReceiver_) { graph.addEdge("Raster.visibility", node + ".visibility"); }
                             graph.addNode("VisibilityBufferDeferredPass", deferred, {{"lightingMode","realtime"},{"debugView","final"},
                                 {"materialBinning",compact},{"shadow.enabled",false},{"accumulate",false},{"outputLinear",true}});
                             for (const char* field : {"visibility","depth","rasterInfo"}) {
@@ -1310,6 +1331,18 @@ public:
                                 {"gpuProfilingArms",layered_ ? Json::array({names[2]}) : Json::array({names[2],names[secondaryTimingArm]})},{"profilingOverflow",timings.profilingOverflow},
                                 {"smrtTemporalEnabled",filter=="smrt" && frame>=3}});
                             auto& frameReport = report["frames"].back();
+                            if (refinedReceiver_) {
+                                const auto* gpuScene = preview.subsystemHost()->get<GPUSceneSubsystem>();
+                                require(gpuScene != nullptr && (baseline.camera.reserved & 1u) == 0,
+                                    phase + ": refined receiver requires an ordinary primary stream");
+                                const auto* receiverStream = gpuScene->visibilityStream(
+                                    {baseline.camera.lightGridViewIndex, baseline.camera.lightGridViewGeneration},
+                                    baseline.camera.frameIndex, baseline.camera.sceneIdentity);
+                                require(receiverStream != nullptr, phase + ": refined receiver publication is missing");
+                                frameReport["receiverGeometry"] = {{"recordCapacity",receiverStream->visibleRecordCapacity},
+                                    {"frame",baseline.camera.frameIndex},{"viewIndex",baseline.camera.lightGridViewIndex},
+                                    {"viewGeneration",baseline.camera.lightGridViewGeneration},{"sceneIdentity",baseline.camera.sceneIdentity}};
+                            }
                             save();
                             for (uint32_t arm = 0; arm < images.size(); ++arm) {
                                 const auto& image = images[arm];
@@ -1498,14 +1531,20 @@ public:
                                     phase + ": point fixture did not exercise three canonical faces and cube seams");
                                 report["roomCoverage"] = {{"facePixels",facePixels},{"seamPixels",seamPixels}};
                             }
+                            report["completedStates"] = report["frames"].size();
                             save();
                         }
                         require(!validation.failed(), label + ": Vulkan validation error");
                     }
                 }
             }
-            require(report["frames"].size() == 86, "Projection matrix did not complete 84 equivalence states and two zero/single-face controls");
+            require(report["frames"].size() == expectedStates, refinedReceiver_ ?
+                "Refined receiver projection matrix did not complete 26 floor and four room states" :
+                "Projection matrix did not complete 84 equivalence states and two zero/single-face controls");
             evidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
+            if (refinedReceiver_) {
+                return RHITestResult::pass("GPU refined receiver one-pass projection matches legacy/shared shadows, statistics, deterministic work and Deferred HDR across 30 hard-shadow states with valid primary stream publications");
+            }
             return RHITestResult::pass("GPU one-pass projection matches legacy/shared shadows, statistics, deterministic work and Deferred HDR across 84 states plus zero/single-face fallback controls");
         } catch (const std::exception& error) {
             evidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
@@ -1514,6 +1553,7 @@ public:
     }
 private:
     bool layered_ = false;
+    bool refinedReceiver_ = false;
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionEquivalenceTest);
 
@@ -1523,6 +1563,13 @@ public:
     VirtualShadowMapCacheLayerProjectionEquivalenceTest() : VirtualShadowMapProjectionEquivalenceTest(true) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCacheLayerProjectionEquivalenceTest);
+
+class VirtualShadowMapRefinedReceiverProjectionEquivalenceTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapRefinedReceiverProjectionEquivalenceTest() : VirtualShadowMapProjectionEquivalenceTest(false, true) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapRefinedReceiverProjectionEquivalenceTest);
 
 class VirtualShadowMapFilterDemandTest final : public RHITest {
 public:

@@ -15,12 +15,23 @@ namespace metallic::scene { struct RenderMaterial; struct Bounds; }
 namespace metallic::render {
 
 struct VirtualShadowMapCasterResources;
+struct MeshletStreamDeferredGPUResourcesView;
 struct CPUProfileRecorder;
 class RenderGraphExecutionContext;
 class VirtualShadowMaps;
 
 enum class VirtualShadowMapLightType : uint32_t { Directional, Spot, PointFace };
 enum class VirtualShadowMapFilter : uint32_t { Hard, PCF, SMRT };
+
+// Optional, same-frame primary visibility from the rasterInfo producer. The
+// pass supplies only ordinary (non-tessellated) stream publications; missing
+// inputs leave refined receiver correction disabled. record() retains every
+// referenced native allocation through its descriptor leases.
+struct VirtualShadowMapReceiverResources
+{
+    TextureView* visibility = nullptr;
+    const MeshletStreamDeferredGPUResourcesView* stream = nullptr;
+};
 
 // Point faces use +X, -X, +Y, -Y, +Z, -Z. Position and the complete light
 // projection identify depth content; source identities belong to the manager.
@@ -58,6 +69,7 @@ struct VirtualShadowMapSettings
     bool shadowLODHierarchy = true; // Cached adaptive traversal; false retains the flat reference for A/B.
     float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.
     bool shadowLODSmartBias = false; // Hard directional shadows: screen-depth constrained receiver bias.
+    bool shadowLODSmartBiasRefine = true; // Conservative receiver test; false retains the original experiment.
     float shadowLODScreenRayLength = 0.015f; // Fraction of vertical view extent at the receiver.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
@@ -157,14 +169,16 @@ public:
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
         const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr,
-        RenderGraphExecutionContext* gpuProfiler = nullptr);
+        RenderGraphExecutionContext* gpuProfiler = nullptr,
+        const VirtualShadowMapReceiverResources* receiver = nullptr);
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapCasterResources& casters,
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
         const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr,
-        RenderGraphExecutionContext* gpuProfiler = nullptr);
+        RenderGraphExecutionContext* gpuProfiler = nullptr,
+        const VirtualShadowMapReceiverResources* receiver = nullptr);
 
     // A filtered point light records all six faces before projecting any face.
     // The ordered face results keep each tap's page table, projection and atlas

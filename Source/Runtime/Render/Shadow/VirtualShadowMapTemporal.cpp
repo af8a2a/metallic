@@ -33,7 +33,7 @@ bool sameSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSetti
             s.maxWorkItems, s.firstClipmapExtent, s.shadowBias, s.filter, s.pcfRadius,
             s.smrtRayCount, s.smrtSamplesPerRay, s.smrtMaxRayLength, s.smrtRayLengthScale,
             s.smrtMaxRayAngle, s.receiverFootprint, s.enabled,
-            s.shadowLOD, s.shadowLODSmartBias, s.shadowLODScreenRayLength};
+            s.shadowLOD, s.shadowLODSmartBias, s.shadowLODSmartBiasRefine, s.shadowLODScreenRayLength};
     };
     // Cache redraw and sampling phase do not change the underlying visibility.
     return key(a) == key(b);

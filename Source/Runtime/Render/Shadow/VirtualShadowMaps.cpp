@@ -8,6 +8,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Scene/scene.h"
@@ -43,22 +44,31 @@ struct ShadowPush
     float lightRange;
     uint32_t projectionFace, filterMode, pointFaces;
     float pcfRadius, rayLength, sourceRadius, angularRadius;
-    uint32_t rayCount, samplesPerRay, receiverFootprint, filterReserved;
+    uint32_t rayCount, samplesPerRay, receiverFootprint, projectionFlags;
     float rayLengthScale, maxRayAngle;
     uint32_t samplePhase, sampleReserved;
     float lodScreenRayLength;
+    uint32_t receiverGeometry;
 };
-static_assert(sizeof(ShadowPush) == 212);
+static_assert(sizeof(ShadowPush) == 216);
 
 struct ShadowProjectionJob
 {
     uint32_t pages, statistics, projections, atlas;
     uint32_t filterMode, shadow, debug, physicalPagesX;
     uint32_t clipmapCount, enabled, lightType, projectionFace;
-    uint32_t pointFaces, filterReserved, samplePhase, view;
+    uint32_t pointFaces, projectionFlags, samplePhase, view;
     float lightRange, sourceRadius, angularRadius, lodScreenRayLength;
+    uint32_t receiverGeometry;
 };
-static_assert(sizeof(ShadowProjectionJob) == 80);
+static_assert(sizeof(ShadowProjectionJob) == 84);
+
+struct ShadowReceiverGeometry
+{
+    uint32_t visibility, records, groups, pages;
+    uint32_t pageTable, params, recordCapacity, flags;
+};
+static_assert(sizeof(ShadowReceiverGeometry) == 32);
 
 struct ShadowFace
 {
@@ -309,6 +319,7 @@ struct VirtualShadowMaps::Programs
     bool trianglePageBitset = false;
     bool directionalBuild = false;
     bool compactBuild = false;
+    bool refinedReceiver = false;
     std::array<std::unique_ptr<ShaderModule>, 15> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 11> compute;
     std::unique_ptr<ShaderModule> onePassShader;
@@ -352,7 +363,7 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 13> buffers;
+    std::array<std::vector<BufferEntry>, 14> buffers;
     std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     VirtualShadowMapResourcePoolStats stats;
@@ -446,6 +457,7 @@ struct VirtualShadowMaps::State
         std::array<std::shared_ptr<Buffer>, 10> buffers;
         std::shared_ptr<Buffer> pointFaces;
         std::shared_ptr<Buffer> projectionJobs;
+        std::shared_ptr<Buffer> receiverGeometry;
         std::shared_ptr<Buffer> cacheDiagnostics;
         std::shared_ptr<ShadowAtlas> staticAtlas;
         std::array<std::shared_ptr<void>, 2> casterLayers;
@@ -508,7 +520,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
-    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
+    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+    const VirtualShadowMapReceiverResources* receiver)
 {
     CPUProfileScope total(profiler, "VSM sun record");
     VirtualShadowMapLight light;
@@ -516,14 +529,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow);
     if (light.enabled) { light.direction = {sun.direction[0], sun.direction[1], sun.direction[2]}; }
     light.angularRadius = sun.angularRadius;
-    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection, output, profiler, gpuProfiler);
+    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection, output, profiler, gpuProfiler, receiver);
 }
 
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
     TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& inputLight,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
-    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
+    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+    const VirtualShadowMapReceiverResources* receiver)
 {
     CPUProfileScope total(profiler, "VSM face record");
     total.work("lightType", uint32_t(inputLight.type));
@@ -615,8 +629,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (!registry) { return std::unexpected(registry.error()); }
     state->registry = *registry;
     auto& push = state->push;
+    push.receiverGeometry = UINT32_MAX;
     state->externalOutput = output != nullptr;
-    push.filterReserved = output && output->sharedPointLayer ? 1u : 0u;
+    // bit 0: canonical shared point-light layer; bit 1: refined receiver bias.
+    push.projectionFlags = (output && output->sharedPointLayer ? 1u : 0u) |
+        (settings.shadowLODSmartBiasRefine ? 2u : 0u);
     push.triangleCount = casters.triangleCapacity;
     push.clipmapCount = settings.clipmapCount;
     push.virtualPagesPerAxis = settings.virtualPagesPerAxis;
@@ -1000,6 +1017,45 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     auto depthLease = state->registry->sampledImage(depth);
     if (!depthLease) { return std::unexpected(depthLease.error()); }
     push.depth = depthLease->shaderIndex(); state->leases.push_back(*depthLease);
+    // A view supplies the same receiver resources for every light, including
+    // lights that do not use the directional bias, so one-pass jobs share a permutation.
+    if (receiver) {
+        ShadowReceiverGeometry receiverData{};
+        const auto& stream = *receiver->stream;
+        auto visibilityLease = state->registry->sampledImage(*receiver->visibility);
+        if (!visibilityLease) { return std::unexpected(visibilityLease.error()); }
+        receiverData.visibility = visibilityLease->shaderIndex();
+        state->leases.push_back(*visibilityLease);
+        const std::array receiverBuffers{stream.visibleClusterBuffer, stream.activeGroupBuffer,
+            stream.pageBuffer, stream.pageTableBuffer, stream.paramsBuffer};
+        const std::array receiverIndices{&receiverData.records, &receiverData.groups,
+            &receiverData.pages, &receiverData.pageTable, &receiverData.params};
+        for (size_t index = 0; index < receiverBuffers.size(); ++index) {
+            auto lease = state->registry->storageBuffer(*receiverBuffers[index]);
+            if (!lease) { return std::unexpected(lease.error()); }
+            *receiverIndices[index] = lease->shaderIndex();
+            state->leases.push_back(*lease);
+        }
+        receiverData.recordCapacity = stream.visibleRecordCapacity;
+        auto table = pool_->buffer(13, {.size = sizeof(receiverData), .structureStride = sizeof(receiverData),
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, completion);
+        if (!table) { return std::unexpected(table.error()); }
+        state->resources->receiverGeometry = std::move(*table);
+        void* mapped = state->resources->receiverGeometry->map();
+        if (!mapped) { return makeError(Error::Failure); }
+        std::memcpy(mapped, &receiverData, sizeof(receiverData));
+        state->resources->receiverGeometry->flush();
+        state->resources->receiverGeometry->unmap();
+        auto lease = state->registry->storageBuffer(*state->resources->receiverGeometry);
+        if (!lease) { return std::unexpected(lease.error()); }
+        push.receiverGeometry = lease->shaderIndex();
+        state->leases.push_back(*lease);
+    }
+    const bool refinedReceiver = push.receiverGeometry != UINT32_MAX;
+    if (settings.shadowLODSmartBias && settings.shadowLODSmartBiasRefine && !refinedReceiver) {
+        // Missing optional primary geometry must not enable the unrefined correction.
+        push.lodScreenRayLength = 0.f;
+    }
     auto sampler = state->registry->sampler({});
     if (!sampler) { return std::unexpected(sampler.error()); }
     push.sampler = sampler->shaderIndex(); state->leases.push_back(*sampler);
@@ -1015,7 +1071,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->directionalMark != directionalMark ||
         programs_->clusterCulling != settings.clusterCulling ||
         programs_->clusterPageBitset != clusterPageBitset || programs_->trianglePageBitset != trianglePageBitset ||
-        programs_->directionalBuild != directionalBuild || programs_->compactBuild != compactBuild;
+        programs_->directionalBuild != directionalBuild || programs_->compactBuild != compactBuild ||
+        programs_->refinedReceiver != refinedReceiver;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
         std::filesystem::path generatedDirectory;
@@ -1035,6 +1092,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->trianglePageBitset = trianglePageBitset;
         programs->directionalBuild = directionalBuild;
         programs->compactBuild = compactBuild;
+        programs->refinedReceiver = refinedReceiver;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain"};
@@ -1055,6 +1113,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
             if (index == 1) { entryMacros.push_back({"VSM_DIRECTIONAL_MARK", directionalMark ? "1" : "0"}); }
+            if (index == 5) { entryMacros.push_back({"VSM_REFINED_RECEIVER", refinedReceiver ? "1" : "0"}); }
             if (buildEntry) { entryMacros.push_back({"VSM_DIRECTIONAL_BUILD", directionalBuild ? "1" : "0"}); }
             if (compactEntry) { entryMacros.push_back({"VSM_COMPACT_BUILD", compactBuild ? "1" : "0"}); }
             auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
@@ -1066,9 +1125,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             programs->shaders[index] = std::move(*module);
             if (index == 1 || index == 3 || index == 5 || index == 14) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={}", entries[index],
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={} refinedReceiver={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
-                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics, buildEntry && directionalBuild, compactEntry && compactBuild, index == 1 && directionalMark);
+                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics, buildEntry && directionalBuild, compactEntry && compactBuild, index == 1 && directionalMark, index == 5 && refinedReceiver);
             }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
@@ -1525,7 +1584,8 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     if (!programs.onePassCompute) {
         const std::array macros{SlangMacroDefine{"VSM_ONE_PASS_PROJECTION", "1"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", programs.collectGPUWork ? "1" : "0"},
-            SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", programs.optimizeProjectionStatistics ? "1" : "0"}};
+            SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", programs.optimizeProjectionStatistics ? "1" : "0"},
+            SlangMacroDefine{"VSM_REFINED_RECEIVER", programs.refinedReceiver ? "1" : "0"}};
         const std::array capabilities{"spvMeshShadingEXT"};
         auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
             .entryPointName = "vsmProjectOnePassMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
@@ -1540,8 +1600,8 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
         programs.onePassShader = std::move(*module);
         programs.onePassCompute = std::move(*pipeline);
         const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-        spdlog::info("[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={} work={} projectionStatistics={}",
-            debug::debugSha256(bytes), programs.collectGPUWork, programs.optimizeProjectionStatistics);
+        spdlog::info("[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={} work={} projectionStatistics={} refinedReceiver={}",
+            debug::debugSha256(bytes), programs.collectGPUWork, programs.optimizeProjectionStatistics, programs.refinedReceiver);
     }
 
     phase.next("Upload VSM projection jobs");
@@ -1558,7 +1618,8 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             const auto& p = state.push;
             assert(state.registry == first.registry && state.programs->device == &device);
             assert(state.programs->collectGPUWork == programs.collectGPUWork &&
-                state.programs->optimizeProjectionStatistics == programs.optimizeProjectionStatistics);
+                state.programs->optimizeProjectionStatistics == programs.optimizeProjectionStatistics &&
+                state.programs->refinedReceiver == programs.refinedReceiver);
             assert(p.depth == push.depth && p.pageSize == push.pageSize && p.pcfRadius == push.pcfRadius &&
                 p.rayLength == push.rayLength && p.rayLengthScale == push.rayLengthScale && p.maxRayAngle == push.maxRayAngle &&
                 p.rayCount == push.rayCount && p.samplesPerRay == push.samplesPerRay && p.receiverFootprint == push.receiverFootprint);
@@ -1567,8 +1628,8 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             jobs.push_back({p.pages, p.statistics, p.projections, p.atlas,
                 p.filterMode, p.shadow, p.debug, p.physicalPagesX,
                 p.clipmapCount, p.enabled, p.lightType, p.projectionFace,
-                p.pointFaces, p.filterReserved, p.samplePhase, p.view,
-                p.lightRange, p.sourceRadius, p.angularRadius, p.lodScreenRayLength});
+                p.pointFaces, p.projectionFlags, p.samplePhase, p.view,
+                p.lightRange, p.sourceRadius, p.angularRadius, p.lodScreenRayLength, p.receiverGeometry});
         }
     }
     auto* frame = RenderFrameContext::from(commands);
@@ -1685,6 +1746,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
         for (const auto& buffer : state_->resources->buffers) { addBuffer(buffer.get()); }
         addBuffer(state_->resources->pointFaces.get());
         addBuffer(state_->resources->projectionJobs.get());
+        addBuffer(state_->resources->receiverGeometry.get());
         addCache(state_->previous);
         addCache(state_->next);
     }

@@ -190,7 +190,7 @@ Release `Metallic` 和 `MetallicRHITests` 构建通过，以下三个 GPU 回归
 
 这版继续准备 base 快照，CPU 遍历、顶点打包和上传可能抵消 build/raster 工作量下降。多灯共用所有投影中要求最细的 cut，未实现逐灯或逐页独立几何选择；stream 预算不足时也可能持续使用较粗回退。原有 build 的 dirty-page bitset、候选压缩与 indirect 路径继续消费该 cut，但减少候选或三角槽本身不证明 GPU 或整帧加速。性能结论必须来自同场景、同设置、相同预热与驻留条件下的受控 A/B。
 
-## 保留简化几何的 receiver 修正（2026-10-31，可选）
+## 保留简化几何的 receiver 修正初版（2026-10-31，历史结果）
 
 新增 `shadowLODSmartBias`（默认 false）和 `shadowLODScreenRayLength`（默认 0.015，receiver 处竖直 view extent 的比例）。显式使用 `shadowLOD=true, shadowLODDepthGuard=false, shadowLODSmartBias=true` 才是本次保留简化几何的候选；原有默认值保持不变。
 
@@ -214,6 +214,51 @@ RTX 5070 Ti / 621.01、Release、固定 resident Bunny、768×512、finest 主�
 
 独立 5/10/20/40 mm 零厚度 blocker 测试包含 Nominal、实际 120 mm Stress、关闭和零长度对照，以及 all-lit/all-dark 负对照；最终 false-shadow/leak 均为 0，缓存与重绘一致。早期两个候选的漏光失败保留在 `Contact1/Contact2`，最终为 `Contact3`，没有放宽门槛。Release 构建、shader module audit、receiver quality、LOD pass、temporal lifecycle、多灯 projection equivalence 回归通过；后者覆盖 Hard/PCF/SMRT 和默认关闭路径，VVL=0。
 
-**结论：保留可选实现，不默认启用，不宣布无损修复。** 屏外/隐藏/亚像素遮挡、连续运动和大型场景仍需验证；下一步先解决已定位的 63 个新增真实漏影，不能继续扩大 bias 或退回完整几何来掩盖问题。
+**初版结论：保留可选实现，不默认启用，不宣布无损修复。** 当时仍有 63 个新增真实漏影；下节记录后续修复与代价。屏外/隐藏/亚像素遮挡、连续运动和大型场景仍需验证，不能继续扩大 bias 或退回完整几何来掩盖问题。
 
 工具：`Tools/Perf/VirtualShadowMapLODSmartBias.py`、`VirtualShadowMapLODSmartBiasQuality.py`、`VirtualShadowMapLODSmartBiasOracle.py`。证据：`build/vsm-lod-smart-bias/{Diagnostic2,DiagnosticReverse,DiagnosticClose,Contact3,Oracle2,Timing,Regression}`；汇总、Python 图表与重验脚本在 `Summary/{Report.md,plot_report.py,verify_all.py,Verification.json}`。图像/捕获保留为本地输出，不纳入源码。
+
+## 真实漏影修复：近段 cluster 与远段 primary 查询（2026-10-31，可选）
+
+新增 `shadowLODSmartBiasRefine=true`；本轮使用 `shadowLOD=true, shadowLODDepthGuard=false, shadowLODSmartBias=true` 验证保留简化几何的 receiver 修正路径，显式将 Refine 设为 false 可复现上节旧 Smart。`shadowLOD` 与 `shadowLODSmartBias` 整体仍默认关闭。当前结果支持保留部分重绘收益，**不支持暖缓存性能收益或默认启用 SmartBias**。
+
+初版主深度法把微小面片的真实遮挡误认为接收面误差；另外，产生短距离 atlas 深度冲突的真实 blocker 可以远在原修正距离以外。最终方案只检查原 Smart 即将从遮挡改成受光的像素：通过同一主视图的 visibility 解码真实 receiver 三角形，使用几何朝向和相邻实例归属约束，将 D32 重建点投回真实三角面；近段检查沿屏幕光线及四邻域可见 cluster 的三角形，远段检查直到相机视锥出口的可见 primary 三角形。候选求交使用完整正向光线，不把 blocker 距离截断到 bias 长度。命中或无法可靠解码时保留 Legacy 阴影，因此 Hard 可见性满足 `Legacy <= Refined <= Smart`。
+
+这不是全几何阴影回退：复用主视图已有的 finest stream 资源，不增加 shadow caster、重绘或 AS。重复查询共享资源句柄与容量，近段缓存最近八个 cluster，远段跳过已验证 cluster 和相邻重复 triangle ID。`VSM_REFINED_RECEIVER` 只专用编译 Project / one-pass Project；其他阶段保持相同编译路径。此有限屏幕表示仍不保证覆盖隐藏、屏外或远段亚像素遮挡，不能视为 Unreal 实现或通用无误差保证。
+
+Single/Lights Pass 新增可选 R32Uint `visibility` 输入，必须与 `depth` / `rasterInfo` 来自同一 producer，stream 发布的 view/frame/scene 身份必须匹配；八个样例 graph 已连接。缺失该表示或主视图使用 tessellation 时保留 Legacy 阴影，不使用不受约束的旧 Smart 修正。RenderGraph 对可选 scene 输入仅允许缺失，已连接的不同 producer 在 prepare/compile 前报错。开关参与 temporal history 失效，资源表与 stream leases 保持到 GPU 使用结束。
+
+正式独立 authored-triangle oracle 使用 ε=1e-5 m、原主深度容差 2e-5；另外保留 ε=0/1e-6/1e-4 的结果。固定旧漏影像素集合，未使用 erosion 排除边界，也未放宽阈值。三场景各八个诊断进程，Redraw/Warm 的 frame 32/47 均通过原生与独立质量门槛：
+
+| 场景 / 重绘结果 | 旧 Smart 新增漏影修复 | 保留真实 acne 修复 | Refined 真实误遮挡 / 漏影 |
+|---|---:|---:|---:|
+| 原视角 | 63 / 63 | 1,335 / 1,359（98.23%） | 342 / 669 |
+| 反向光照 | 42 / 42 | 641 / 674（95.10%） | 194 / 569 |
+| 近视角 | 62 / 62 | 2,810 / 2,845（98.77%） | 1,251 / 1,559 |
+
+相对 Legacy，三场景均没有新增真实漏影；暖缓存门槛也通过。原视角 Legacy/Smart/Refined 的真实漏影为 669/732/669，仍保留 Legacy 已有的 669 处错误，不能宣称所有漏影消失。原视角与反向光照各 23,917 个合格像素、30 个 unresolved；近视角 61,267 个合格像素、39 个 unresolved（其中 2 个 authored silhouette 命中其他实例、37 个深度不符），全部单列未知并以 brute-force 交叉检查，不计作修复。
+
+Legacy、Smart、Refined 均为 **146 clusters / 17,348 shadow triangles**，完整几何 Off 为 69,453 triangles；重绘 Build 解码 17,348 对 69,453，Raster 解码 71,505 对 281,064。Mark samples 与 atlas loads 均为 376,832，暖缓存 Build/Raster 有效工作为零。新增 receiver 几何与主深度查询未计入原 atlas load 计数，其成本由 Projection 实测体现。
+
+RTX 5070 Ti / driver 621.01、Release、768×512、54 页驻留固定 fixture。普通计时为每状态 3 个 ABCDDCBA 区组，共 **48 个独立进程**；每进程 96 帧 / 32 预热，关闭 validation、工作量计数和诊断读回。源码、二进制、输入与驻留身份封存；保留磁盘缓存，未锁时钟或强制隔离其他应用；没有追加样本或事后删样。下表为六个进程中位数的中位数，单位 ms：
+
+| 状态 / GPU 范围 | Off 完整几何 | Legacy | Smart 初版 | Refined |
+|---|---:|---:|---:|---:|
+| 重绘 / RenderGraph | 1.706040 | 0.933112 | 0.933872 | 1.458944 |
+| 重绘 / Shadows | 1.150032 | 0.399904 | 0.401592 | 0.925464 |
+| 重绘 / Build | 0.042368 | 0.032632 | 0.032608 | 0.032704 |
+| 重绘 / Raster | 1.020384 | 0.278816 | 0.279848 | 0.280216 |
+| 重绘 / Projection | 0.043640 | 0.043448 | 0.045032 | 0.566904 |
+| 暖缓存 / RenderGraph | 0.636416 | 0.640224 | 0.649080 | 1.174200 |
+| 暖缓存 / Shadows | 0.110816 | 0.109624 | 0.111600 | 0.633432 |
+| 暖缓存 / Projection | 0.043088 | 0.043504 | 0.045056 | 0.568200 |
+
+以完整区组 process-median log ratio 为统计单位，95% CI 使用 t(df=2)=4.303。Refined/Off 重绘 Shadows **−19.61% [−19.93%, −19.30%]**、RenderGraph **−15.07% [−20.04%, −9.79%]**，保留部分 LOD 收益；但相对旧 Smart，重绘 Shadows **+130.43% [129.83%, 131.03%]**。Projection 每帧新增约 **0.522 ms**，使暖缓存 Refined/Off Shadows **+471.67% [464.39%, 479.03%]**、RenderGraph **+85.89% [83.26%, 88.55%]**。这不是常态净收益，也不是应用 FPS 结论；graph 不含 present。
+
+Release `Metallic` / `MetallicRHITests` 构建与 shader module audit（388 files / 276 modules / 112 implementation units）通过。`ContactHybrid` 三项运行时检查通过、VVL=0：refined receiver 的 single/one-pass Hard projection 等价覆盖 30 状态 / 五臂，实际编译并使用 refined permutation；5/10/20/40 mm 薄遮挡的 nominal/stress/zero-length、冷暖缓存和 all-lit/all-dark 负对照通过；RenderGraph 可选输入与同 producer 契约通过。
+
+`RegressionHybrid` 的四项回归全部实际执行并通过：`virtual_shadow_map_projection_equivalence`、`virtual_shadow_map_receiver_quality`、`virtual_shadow_map_shadow_lod_pass`、`virtual_shadow_map_temporal_lifecycle`。覆盖默认 Hard/PCF/SMRT、多灯 projection、既有 receiver、LOD pass 与 Refine 开关切换的 temporal history；VVL=0。接触与回归共七项，不作为普通性能样本。
+
+正式证据位于 `build/vsm-lod-smart-bias-refine/`：`HybridDiagnostic{,Reverse,Close}`、`HybridOracle{,Reverse,Close}`、`ContactHybrid`、`RegressionHybrid`、`Timing`。`Summary/Report.md` 提供质量图、全部时间分布与 CI；`Summary/SourceSnapshot` 保存最终候选与 SHA256，`ExperimentHistory.json` 保留早期 DeviceLost、短段查询未通过门槛、全 cluster 查询成本过高等记录，不混入普通计时。早期 DeviceLost 的具体编译器/驱动根因未确证。
+
+维护工具为 `Tools/Perf/VirtualShadowMapLODSmartBiasRefine.py`、`VirtualShadowMapLODSmartBiasRefineQuality.py`、`VirtualShadowMapLODSmartBiasForensics.py`；旧 v1 工具可继续复验初版。运行 `python -B build/vsm-lod-smart-bias-refine/Summary/build_report.py` 可重验封存包并重建图表，不启动 GPU。下一步性能工作应减少这项修正查询覆盖的像素和遍历成本，同时保留固定漏影集合与独立 oracle 门槛。

@@ -213,6 +213,11 @@
             "id": 18,
             "src": "ColorGrading.lut",
             "dst": "FinalBlit.lut"
+        },
+        {
+            "id": 19,
+            "src": "VBuffer.visibility",
+            "dst": "Shadows.visibility"
         }
     ],
     "outputs": [],

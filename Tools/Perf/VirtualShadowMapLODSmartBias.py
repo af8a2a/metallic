@@ -62,6 +62,8 @@ def normalize(spec, graph, phase, workload, arm):
                     shadowLODScreenRayLength=RAY_LENGTH, shadowBias=.002, filter="hard")
     if any(type(props.get(k)) is not type(v) or props[k] != v for k, v in expected.items()):
         raise ValueError("LOD, guard, Smart bias, ray length or base shadow bias changed")
+    if props.pop("shadowLODSmartBiasRefine", False) is not False:
+        raise ValueError("v1 Smart must retain the original unrefined path")
     # The old validator supplies scene, stream, residency and instrumentation
     # checks; these substitutions affect only its private validation copies.
     saved_camera = case["camera"]
@@ -85,10 +87,11 @@ def prepare(args):
             for arm, (enabled, smart) in ARMS.items():
                 name = f"{phase.title()}-{workload}-{arm}"
                 graph = fixture.base_graph()
+                graph["edges"] = [edge for edge in graph["edges"] if edge["dst"] != "Shadows.visibility"]
                 graph["view"]["camera"] = copy.deepcopy(camera)
                 props = next(n["properties"] for n in graph["nodes"] if n["name"] == "Shadows")
                 props.update(shadowLOD=enabled, shadowLODHierarchy=True, shadowLODDepthGuard=False,
-                             shadowLODSmartBias=smart, shadowLODScreenRayLength=RAY_LENGTH,
+                             shadowLODSmartBias=smart, shadowLODScreenRayLength=RAY_LENGTH, shadowLODSmartBiasRefine=False,
                              cacheEnabled=workload == "Warm", benchmarkGPUWork=phase == "diagnostic")
                 case = dict(id=f"BunnySmartBias{args.scenario}{workload}", graph=f"{name}.json",
                             scene=fixture.SCENE_PATH.as_posix(), metadataOnly=False, enableStreamline=False,
@@ -137,6 +140,8 @@ def read_package(source, plan, scheduled):
         raise ValueError("Child inputs or executable differ from the archived plan")
     normalize(spec, acceptance.read(archived_graph), phase, workload, arm)
     actual = case.get("shadowLODSettings", {})
+    if actual.get("smartBiasRefine", False) is not False:
+        raise ValueError("v1 receipt unexpectedly enabled Smart-bias refinement")
     expected = dict(enabled=ARMS[arm][0], hierarchy=True, depthGuard=False, smartBias=ARMS[arm][1], errorTexels=1.)
     if (any(actual.get(k) != v for k, v in expected.items())
             or not math.isclose(actual.get("screenRayLength", -1), RAY_LENGTH, rel_tol=0, abs_tol=1e-8)):

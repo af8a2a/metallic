@@ -777,6 +777,10 @@ struct RenderGraphExecutor::Impl {
                 const CompiledNode* producer = nullptr;
                 for (const auto& input : dependency.inputs) {
                     const auto alias = inputAliases.find(makeRenderGraphFieldName(node.name, input));
+                    if (alias == inputAliases.end()) {
+                        const auto* field = node.reflection.findField(input, RenderGraphFieldVisibility::Input);
+                        if (field != nullptr && field->optional) { continue; }
+                    }
                     std::string sourceName, sourceField;
                     if (alias == inputAliases.end() ||
                         !splitRenderGraphFieldName(alias->second, sourceName, sourceField)) {
@@ -2956,7 +2960,11 @@ Result<> RenderGraphExecutor::compile(
             .staticProperties = node->properties, .runtimeProperties = node->runtimeProperties,
             .effectiveProperties = effectiveProperties, .pass = std::move(pass),
         });
-        impl_->executionList.back().sceneDependency = impl_->executionList.back().pass->sceneDependency();
+        auto& compiledNode = impl_->executionList.back();
+        compiledNode.sceneDependency = compiledNode.pass->sceneDependency();
+        // Resolve input optionality before scene preparation, using the same
+        // scene-independent reflection contract as RenderGraph::validate().
+        compiledNode.reflection = compiledNode.pass->reflect(RenderGraphCompileContext{});
     }
     spdlog::info("[RenderGraph] Created {} compiled pass objects", impl_->executionList.size());
     impl_->rebuildInputAliases(graph, activeGraph);

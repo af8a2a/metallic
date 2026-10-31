@@ -324,6 +324,9 @@ public:
             settings.shadowLODScreenRayLength = .01f;
             (void)uniform("ScreenRayLengthChange", 53, 255, 1, 0);
             (void)uniform("AfterScreenRayLength", 54, 0, .5);
+            settings.shadowLODSmartBiasRefine = false;
+            (void)uniform("SmartBiasRefineChange", 55, 255, 1, 0);
+            (void)uniform("AfterSmartBiasRefine", 56, 0, .5);
 
             // Point visibility is one signal per light, even when six public
             // layers are used. Distinct face inputs expose accidental wrapping.

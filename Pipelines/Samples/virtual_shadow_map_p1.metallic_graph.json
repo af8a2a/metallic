@@ -77,7 +77,8 @@
         {"id": 8, "src": "Shadows.parameters", "dst": "Deferred.shadowParameters"},
         {"id": 9, "src": "Deferred.color", "dst": "AutoExposure.source"},
         {"id": 10, "src": "AutoExposure.color", "dst": "FinalBlit.source"},
-        {"id": 11, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"}
+        {"id": 11, "src": "ColorGrading.lut", "dst": "FinalBlit.lut"},
+        {"id": 12, "src": "VBuffer.visibility", "dst": "Shadows.visibility"}
     ],
     "outputs": [],
     "view": {
