@@ -47,6 +47,8 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
         boolProperty(&properties, "directionalProjection", settings.directionalProjection));
     settings.specializeMarkClipmaps = boolProperty(&properties, "benchmarkMarkClipmapSpecialization",
         boolProperty(&properties, "markClipmapSpecialization", settings.specializeMarkClipmaps));
+    settings.specializeMarkPageSize = boolProperty(&properties, "benchmarkMarkPageSizeSpecialization",
+        boolProperty(&properties, "markPageSizeSpecialization", settings.specializeMarkPageSize));
     settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
         boolProperty(&properties, "markRayPages", settings.markRayPages));
     settings.directionalBuild = boolProperty(&properties, "benchmarkDirectionalBuild",

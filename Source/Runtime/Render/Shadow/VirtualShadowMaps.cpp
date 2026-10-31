@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cfloat>
 #include <cassert>
@@ -316,6 +317,7 @@ struct VirtualShadowMaps::Programs
     bool directionalMark = false;
     bool directionalProjection = false;
     uint32_t markCacheLevels = 12;
+    int markPageShift = -1;
     bool markRayPages = false;
     bool clusterCulling = true;
     bool clusterPageBitset = false;
@@ -578,6 +580,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool directionalMark = directional && settings.directionalMark;
     const bool directionalProjection = directional && settings.directionalProjection;
     const uint32_t markCacheLevels = directional && settings.specializeMarkClipmaps ? settings.clipmapCount : 12u;
+    // validProjectionSettings guarantees a nonzero power-of-two page size, at most 128.
+    const int markPageShift = directional && settings.specializeMarkPageSize ? std::countr_zero(settings.pageSize) : -1;
     const bool markRayPages = directional && settings.markRayPages;
     const bool compactBuild = settings.clusterCulling && settings.compactBuild;
     // The local-light permutation has confirmed gains; directional hoisting regressed Mark.
@@ -1076,7 +1080,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->optimizeMark != settings.optimizeMark || programs_->optimizeMarkSamples != optimizeMarkSamples ||
         programs_->directionalMark != directionalMark ||
         programs_->directionalProjection != directionalProjection ||
-        programs_->markCacheLevels != markCacheLevels || programs_->markRayPages != markRayPages ||
+        programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift || programs_->markRayPages != markRayPages ||
         programs_->clusterCulling != settings.clusterCulling ||
         programs_->clusterPageBitset != clusterPageBitset || programs_->trianglePageBitset != trianglePageBitset ||
         programs_->directionalBuild != directionalBuild || programs_->compactBuild != compactBuild ||
@@ -1097,6 +1101,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->directionalMark = directionalMark;
         programs->directionalProjection = directionalProjection;
         programs->markCacheLevels = markCacheLevels;
+        programs->markPageShift = markPageShift;
         programs->markRayPages = markRayPages;
         programs->clusterCulling = settings.clusterCulling;
         programs->clusterPageBitset = clusterPageBitset;
@@ -1119,6 +1124,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             SlangMacroDefine{"VSM_CLUSTER_PAGE_BITSET", clusterPageBitset ? "1" : "0"},
             SlangMacroDefine{"VSM_TRIANGLE_PAGE_BITSET", trianglePageBitset ? "1" : "0"}};
         const std::string markCacheLevelsDefine = std::to_string(markCacheLevels);
+        const std::string markPageShiftDefine = std::to_string(markPageShift);
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
             if (index == 14 && !compactBuild) { continue; }
             const bool buildEntry = index == 3 || index == 14;
@@ -1127,6 +1133,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (index == 1) {
                 entryMacros.push_back({"VSM_DIRECTIONAL_MARK", directionalMark ? "1" : "0"});
                 entryMacros.push_back({"VSM_MARK_CACHE_LEVELS", markCacheLevelsDefine.c_str()});
+                entryMacros.push_back({"VSM_MARK_PAGE_SHIFT", markPageShiftDefine.c_str()});
                 entryMacros.push_back({"VSM_MARK_RAY_PAGES", markRayPages ? "1" : "0"});
             }
             if (index == 5) {
@@ -1144,9 +1151,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             programs->shaders[index] = std::move(*module);
             if (index == 1 || index == 3 || index == 5 || index == 6 || index == 7 || index == 14) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={} refinedReceiver={} markCacheLevels={} markRayPages={} directionalProjection={}", entries[index],
+                spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={} refinedReceiver={} markCacheLevels={} markRayPages={} directionalProjection={} markPageShift={}", entries[index],
                     debug::debugSha256(bytes), settings.optimizeMark,
-                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics, buildEntry && directionalBuild, compactEntry && compactBuild, index == 1 && directionalMark, index == 5 && refinedReceiver, index == 1 ? markCacheLevels : 12u, index == 1 && markRayPages, index == 5 && directionalProjection);
+                    settings.clusterCulling, clusterPageBitset, settings.collectGPUWork, optimizeMarkSamples, uint32_t(light.type), trianglePageBitset, settings.optimizeProjectionStatistics, buildEntry && directionalBuild, compactEntry && compactBuild, index == 1 && directionalMark, index == 5 && refinedReceiver, index == 1 ? markCacheLevels : 12u, index == 1 && markRayPages, index == 5 && directionalProjection, index == 1 ? markPageShift : -1);
             }
             if (index < 6 || index >= 10) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},

@@ -31,26 +31,30 @@ def one_pass_shader_log(arm, mode, role="primary"):
     return "\n".join(lines)
 
 
-def graph(arm, mode, resolved=False, directional=False, compact=False, directional_mark=False, one_pass=False, mark_clipmaps=False, directional_projection=False):
+def graph(arm, mode, resolved=False, directional=False, compact=False, directional_mark=False, one_pass=False, mark_clipmaps=False, directional_projection=False, mark_page_size=False):
     result = optimization_tests.graph("Both", mode)
-    result["nodes"][0]["properties"][bitset.DIRECTIONAL_PROJECTION_SWITCH if directional_projection else bitset.MARK_CLIPMAPS_SWITCH if mark_clipmaps else bitset.ONE_PASS_SWITCH if one_pass else bitset.DIRECTIONAL_MARK_SWITCH if directional_mark else bitset.COMPACT_SWITCH if compact else bitset.DIRECTIONAL_SWITCH if directional else bitset.SWITCH] = arm == "B"
-    if mark_clipmaps:
+    result["nodes"][0]["properties"][bitset.MARK_PAGE_SIZE_SWITCH if mark_page_size else bitset.DIRECTIONAL_PROJECTION_SWITCH if directional_projection else bitset.MARK_CLIPMAPS_SWITCH if mark_clipmaps else bitset.ONE_PASS_SWITCH if one_pass else bitset.DIRECTIONAL_MARK_SWITCH if directional_mark else bitset.COMPACT_SWITCH if compact else bitset.DIRECTIONAL_SWITCH if directional else bitset.SWITCH] = arm == "B"
+    if mark_clipmaps or mark_page_size:
         result["nodes"][0]["properties"].update(benchmarkDirectionalMark=True, clipmapCount=6)
+    if mark_page_size:
+        result["nodes"][0]["properties"]["pageSize"] = 128
     if resolved:
         result["outputs"] = ["FinalBlit.color"] + (["Deferred.color"] if mode == "diagnostic" else [])
     return result
 
 
-def shader_log(arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, directional_projection=False):
-    if directional_projection:
+def shader_log(arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, directional_projection=False, mark_page_size=False):
+    if directional_projection or mark_page_size:
         lines = []
         for index, entry in enumerate(("vsmMarkMain", "vsmBuildMain", "vsmProjectMain", "vsmRasterMeshMain", "vsmDepthFragmentMain")):
             flags = {"optimizeMark": True, "clusterCull": True, "clusterPageBitset": True,
                 "trianglePageBitset": True, "compactBuild": False, "markSamples": False,
                 "directionalMark": index == 0, "directionalBuild": index == 1,
-                "directionalProjection": index == 2 and arm == "B",
+                "directionalProjection": directional_projection and index == 2 and arm == "B",
                 "work": mode == "diagnostic", "projectionStatistics": False}
-            value = "f" if index == 2 and arm == "B" else str(index + 1)
+            if mark_page_size:
+                flags.update(markPageShift=7 if arm == "B" and index == 0 else -1, markCacheLevels=6 if index == 0 else 12, markRayPages=index == 0)
+            value = "f" if index == (0 if mark_page_size else 2) and arm == "B" else str(index + 1)
             lines.append(f"[VSMShader] entry={entry} lightType=0 spirvSHA256={value * 64} " +
                 " ".join(f"{key}={str(value).lower()}" for key, value in flags.items()))
         return "\n".join(lines)
@@ -99,15 +103,15 @@ class BitsetTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def experiment(self, phase, gain=.2, name=None, frames=64, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, directional_projection=False):
+    def experiment(self, phase, gain=.2, name=None, frames=64, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, directional_projection=False, mark_page_size=False):
         source = self.root / (name or phase)
         source.mkdir()
         mode = "diagnostic" if phase == "diagnostic" else "timing"
-        protocol = bitset.DIRECTIONAL_PROJECTION_PROTOCOL if directional_projection else bitset.MARK_CLIPMAPS_PROTOCOL if mark_clipmaps else bitset.ONE_PASS_PROTOCOL if one_pass else bitset.DIRECTIONAL_MARK_PROTOCOL if directional_mark else bitset.COMPACT_PROTOCOL if compact else bitset.DIRECTIONAL_PROTOCOL if directional else bitset.PROTOCOL
+        protocol = bitset.MARK_PAGE_SIZE_PROTOCOL if mark_page_size else bitset.DIRECTIONAL_PROJECTION_PROTOCOL if directional_projection else bitset.MARK_CLIPMAPS_PROTOCOL if mark_clipmaps else bitset.ONE_PASS_PROTOCOL if one_pass else bitset.DIRECTIONAL_MARK_PROTOCOL if directional_mark else bitset.COMPACT_PROTOCOL if compact else bitset.DIRECTIONAL_PROTOCOL if directional else bitset.PROTOCOL
         plan = {"protocol": protocol, "phase": phase, "mode": mode, "policy": bitset.experiment_policy(protocol, role),
             "processes": bitset.schedule(phase), "blocks": bitset.BLOCKS[phase], "runsPerPackage": 1,
             "timeoutSeconds": 600, "comparisonStartFrame": 16,
-            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass, mark_clipmaps=mark_clipmaps, directional_projection=directional_projection), "A", directional, compact, directional_mark, one_pass, mark_clipmaps, directional_projection=directional_projection),
+            "workload": bitset.normalized_workload(spec(mode, frames=frames), graph("A", mode, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass, mark_clipmaps=mark_clipmaps, directional_projection=directional_projection, mark_page_size=mark_page_size), "A", directional, compact, directional_mark, one_pass, mark_clipmaps, directional_projection=directional_projection, mark_page_size=mark_page_size),
             "inputs": {arm: {"cases": f"/{mode}-{arm}.json", "casesSHA256": arm,
                 "graph": f"/{arm}.json", "graphSHA256": arm} for arm in bitset.ARMS}}
         a.save(source / "Plan.json", plan)
@@ -118,10 +122,10 @@ class BitsetTests(unittest.TestCase):
             directory = package / "run-1"
             directory.mkdir(parents=True)
             arm = item["arm"]
-            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass, mark_clipmaps=mark_clipmaps, directional_projection=directional_projection),
+            case = {"id": "Scene", "status": "passed", "resolvedGraph": graph(arm, mode, resolved=True, directional=directional, compact=compact, directional_mark=directional_mark, one_pass=one_pass, mark_clipmaps=mark_clipmaps, directional_projection=directional_projection, mark_page_size=mark_page_size),
                 "noRayTracingAllocations": True, "noRayQueryOrRTAS": True, "frames": []}
             for index in range(frames):
-                row = frame(index, faces=(9 if role == "primary" else 1) if one_pass else 1 if mark_clipmaps or directional_projection else 2, scale=1000 if index < 32 else (1 if arm == "A" else 1 - gain))
+                row = frame(index, faces=(9 if role == "primary" else 1) if one_pass else 1 if mark_clipmaps or directional_projection or mark_page_size else 2, scale=1000 if index < 32 else (1 if arm == "A" else 1 - gain))
                 if one_pass and arm == "B" and role == "primary":
                     sections = row["nodes"][0]["sections"]
                     total = sum(section["gpuMs"] for section in sections if section["name"] == "VSM projection")
@@ -137,7 +141,7 @@ class BitsetTests(unittest.TestCase):
                     add_work(row)
                     add_build(row)
                     # Build diagnostics are valid but deliberately differ; legacy/image receipts do not.
-                    if directional or compact or directional_mark or mark_clipmaps or one_pass or directional_projection:
+                    if directional or compact or directional_mark or mark_clipmaps or one_pass or directional_projection or mark_page_size:
                         diagnostic = row["shadow"]["gpuBuildDiagnostics"]
                         diagnostic["version"] = 3
                         for counters in [diagnostic["totals"], *[face["counters"] for face in diagnostic["faces"]]]:
@@ -146,7 +150,7 @@ class BitsetTests(unittest.TestCase):
                         for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
                             face["counters"]["clusterGroups"] += 1
                         row["shadow"]["gpuBuildDiagnostics"]["totals"]["clusterGroups"] += 2
-                    if one_pass or mark_clipmaps or directional_projection:
+                    if one_pass or mark_clipmaps or directional_projection or mark_page_size:
                         shadow = row["shadow"]
                         count = 9 if one_pass and role == "primary" else 1
                         shadow["statistics"] = [shadow["statistics"][0].copy() for _ in range(count)]
@@ -164,7 +168,7 @@ class BitsetTests(unittest.TestCase):
             data = {"protocol": "virtual-shadow-map-acceptance-v2", "status": "passed", "mode": mode,
                 "validation": mode == "diagnostic", "performanceEligible": mode == "timing", "cases": [case]}
             a.save(directory / "VirtualShadowMapAcceptance.json", data)
-            (directory / "Process.log").write_text(shader_log(arm, mode, directional, compact, directional_mark, one_pass, role, mark_clipmaps, directional_projection), encoding="utf-8")
+            (directory / "Process.log").write_text(shader_log(arm, mode, directional, compact, directional_mark, one_pass, role, mark_clipmaps, directional_projection, mark_page_size), encoding="utf-8")
             a.save(package / "Cases.json", spec(mode, arm, frames))
             paths = plan["inputs"][arm]
             a.save(package / "Identity.json", {"sources": {"source": "1" * 64}, "binaries": {"exe": "2" * 64},
@@ -212,6 +216,55 @@ class BitsetTests(unittest.TestCase):
         value["nodes"][0]["properties"].pop(bitset.DIRECTIONAL_PROJECTION_SWITCH)
         with self.assertRaisesRegex(ValueError, bitset.DIRECTIONAL_PROJECTION_SWITCH):
             bitset.normalized_workload(spec("timing", "B"), value, "B", directional_projection=True)
+
+    def test_mark_page_size_sealed_phases_and_exact_work(self):
+        for phase in ("diagnostic", "discovery", "confirmation"):
+            result = bitset.verify_experiment(self.experiment(phase, mark_page_size=True))
+            self.assertEqual(result["plan"]["policy"]["primaryMetric"], "markMs")
+            self.assertEqual(len(result["processes"][0]["shaders"]), 5)
+            if phase == "diagnostic":
+                self.assertTrue(result["exactPNGLinearHDRDepthShadowAndLegacyStatistics"])
+                self.assertIn("exactBuildDiagnostics", result["diagnosticReceipts"])
+                counters = result["diagnosticReceipts"]["stableWorkCounters"][0]["faces"][0]["counters"]
+                self.assertEqual(set(counters), set(bitset.profile.WORK_COUNTERS) - {"markPageRequests"})
+
+    def test_mark_page_size_shader_identity_and_non_mark_guards(self):
+        for shift in range(8):
+            rows = []
+            for arm in bitset.ARMS:
+                log = shader_log(arm, "timing", mark_page_size=True).replace("markPageShift=7", f"markPageShift={shift}")
+                shaders = bitset.shader_identity(log, arm, "timing", mark_page_size=True, mark_page_size_shift=shift, mark_cache_levels=6)
+                rows.append({"arm": arm, "shaders": shaders})
+            bitset.check_shaders(rows, mark_page_size=True)
+        for entry in rows[0]["shaders"]:
+            altered = rows[1]["shaders"].copy()
+            altered[entry] = rows[0]["shaders"][entry] if entry == "vsmMarkMain" else "e" * 64
+            with self.assertRaises(ValueError):
+                bitset.check_shaders([rows[0], {"arm": "B", "shaders": altered}], mark_page_size=True)
+        log = shader_log("B", "timing", mark_page_size=True)
+        for changed in (log.replace("markPageShift=7", "markPageShift=6"), log.replace("markPageShift=-1", "markPageShift=7"),
+                log.replace("markCacheLevels=6", "markCacheLevels=12"), log.replace("markRayPages=true", "markRayPages=false"),
+                log.replace("directionalProjection=false", "directionalProjection=true"),
+                "\n".join(line for line in log.splitlines() if "vsmDepthFragmentMain" not in line)):
+            with self.assertRaises(ValueError):
+                bitset.shader_identity(changed, "B", "timing", mark_page_size=True, mark_page_size_shift=7, mark_cache_levels=6)
+
+    def test_mark_page_size_explicit_switch_and_power_of_two(self):
+        for shift in range(8):
+            value = graph("B", "timing", mark_page_size=True)
+            value["nodes"][0]["properties"]["pageSize"] = 1 << shift
+            self.assertEqual(bitset.mark_page_shift(value["nodes"][0]["properties"]), shift)
+            bitset.normalized_workload(spec("timing", "B"), value, "B", mark_page_size=True)
+        for key, invalid in (("pageSize", 3), ("pageSize", 0), ("pageSize", True), ("pageSize", 256),
+                (bitset.MARK_PAGE_SIZE_SWITCH, None), ("markRayPages", False), ("markClipmapSpecialization", False),
+                ("directionalProjection", True)):
+            value = graph("B", "timing", mark_page_size=True)
+            value["nodes"][0]["properties"][key] = invalid
+            with self.assertRaises(ValueError):
+                bitset.normalized_workload(spec("timing", "B"), value, "B", mark_page_size=True)
+        left = bitset.normalized_workload(spec("timing"), graph("A", "timing", mark_page_size=True), "A", mark_page_size=True)
+        right = bitset.normalized_workload(spec("timing", "B"), graph("B", "timing", mark_page_size=True), "B", mark_page_size=True)
+        self.assertEqual(left, right)
 
     def test_fixed_budget_and_production_flags(self):
         self.assertEqual(len(bitset.schedule("diagnostic")), 2)

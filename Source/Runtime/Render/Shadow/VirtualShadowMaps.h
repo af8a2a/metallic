@@ -62,6 +62,7 @@ struct VirtualShadowMapSettings
     bool directionalMark = true; // Mark-only orthographic specialization; preserves receiver/sample demands.
     bool directionalProjection = false; // Per-face Projection orthographic calculations; one-pass stays generic.
     bool specializeMarkClipmaps = true; // Compile directional Mark cache/loop bounds for the active clipmap count.
+    bool specializeMarkPageSize = false; // Compile directional Mark page addressing for its power-of-two page size.
     bool markRayPages = true; // Directional SMRT Mark skips samples of rays that stay inside one page.
     bool clusterCulling = true;
     bool clusterPageBitset = true; // Production cluster-page query; effective only with clusterCulling.

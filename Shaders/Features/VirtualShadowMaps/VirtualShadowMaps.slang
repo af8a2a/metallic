@@ -41,6 +41,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_MARK_RAY_PAGES
 #define VSM_MARK_RAY_PAGES 0
 #endif
+#ifndef VSM_MARK_PAGE_SHIFT
+#define VSM_MARK_PAGE_SHIFT -1
+#endif
 #ifndef VSM_MARK_CACHE_LEVELS
 #define VSM_MARK_CACHE_LEVELS 12
 #endif
@@ -266,7 +269,11 @@ uint2 vsmVirtualTexel(float3 position, ShadowProjection projection, uint pageSiz
 
 uint vsmVirtualPage(uint2 texel, ShadowProjection projection, uint pageSize)
 {
+#if VSM_MARK_PAGE_SHIFT >= 0
+    uint2 page = texel >> VSM_MARK_PAGE_SHIFT;
+#else
     uint2 page = texel / pageSize;
+#endif
     return projection.page.x + page.y * projection.page.y + page.x;
 }
 

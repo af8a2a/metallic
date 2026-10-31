@@ -16,6 +16,8 @@ and requires different Mark but unchanged build/projection SPIR-V.
 directional Mark in both arms; verifies Mark cache levels 12 versus clipmapCount.
 --experiment mark-ray-pages toggles benchmarkMarkRayPages, targets markMs and keeps
 output/statistics exact while markSamplePositions and markLevelTests may fall.
+--experiment mark-page-size toggles benchmarkMarkPageSizeSpecialization, targets
+markMs, and requires identical output/work with only Mark SPIR-V changed.
 --experiment directional-projection targets projectionMs, specializes orthographic
 calculations only and requires unchanged Mark/Build/Raster SPIR-V.
 --experiment one-pass-projection targets projectionMs with unchanged Mark/Build.
@@ -57,6 +59,8 @@ MARK_CLIPMAPS_PROTOCOL = "virtual-shadow-map-mark-clipmaps-v1"
 MARK_CLIPMAPS_SWITCH = "benchmarkMarkClipmapSpecialization"
 MARK_RAY_PAGES_PROTOCOL = "virtual-shadow-map-mark-ray-pages-v1"
 MARK_RAY_PAGES_SWITCH = "benchmarkMarkRayPages"
+MARK_PAGE_SIZE_PROTOCOL = "virtual-shadow-map-mark-page-size-v1"
+MARK_PAGE_SIZE_SWITCH = "benchmarkMarkPageSizeSpecialization"
 DIRECTIONAL_PROJECTION_PROTOCOL = "virtual-shadow-map-directional-projection-v1"
 DIRECTIONAL_PROJECTION_SWITCH = "benchmarkDirectionalProjection"
 ONE_PASS_PROTOCOL = "virtual-shadow-map-one-pass-projection-v1"
@@ -77,7 +81,7 @@ def schedule(phase):
 def experiment_policy(protocol, role="primary"):
     if role not in ("primary", "overhead") or (role != "primary" and protocol != ONE_PASS_PROTOCOL):
         raise ValueError("Only one-pass-projection supports the overhead role")
-    policy = {**POLICY, "primaryMetric": "markMs" if protocol in (DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL, MARK_RAY_PAGES_PROTOCOL) else "buildMs"}
+    policy = {**POLICY, "primaryMetric": "markMs" if protocol in (DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL, MARK_RAY_PAGES_PROTOCOL, MARK_PAGE_SIZE_PROTOCOL) else "buildMs"}
     if protocol == DIRECTIONAL_PROJECTION_PROTOCOL:
         policy["primaryMetric"] = "projectionMs"
     if protocol == ONE_PASS_PROTOCOL:
@@ -85,7 +89,7 @@ def experiment_policy(protocol, role="primary"):
     return policy
 
 
-def normalized_workload(spec, graph, arm, directional=False, compact=False, directional_mark=False, one_pass=False, mark_clipmaps=False, mark_ray_pages=False, directional_projection=False):
+def normalized_workload(spec, graph, arm, directional=False, compact=False, directional_mark=False, one_pass=False, mark_clipmaps=False, mark_ray_pages=False, directional_projection=False, mark_page_size=False):
     mode = spec["mode"]
     if mode not in ("diagnostic", "timing") or len(spec["cases"]) != 1:
         raise ValueError("Expected one diagnostic or timing case")
@@ -104,7 +108,7 @@ def normalized_workload(spec, graph, arm, directional=False, compact=False, dire
           any(spec.get(key, False) or case.get(key, False) for key in ("validation", "synchronizationValidation"))):
         raise ValueError("Ordinary timing requires validation and capture/readback off")
     graph = copy.deepcopy(graph)
-    switch = DIRECTIONAL_PROJECTION_SWITCH if directional_projection else MARK_RAY_PAGES_SWITCH if mark_ray_pages else MARK_CLIPMAPS_SWITCH if mark_clipmaps else ONE_PASS_SWITCH if one_pass else DIRECTIONAL_MARK_SWITCH if directional_mark else COMPACT_SWITCH if compact else DIRECTIONAL_SWITCH if directional else SWITCH
+    switch = MARK_PAGE_SIZE_SWITCH if mark_page_size else DIRECTIONAL_PROJECTION_SWITCH if directional_projection else MARK_RAY_PAGES_SWITCH if mark_ray_pages else MARK_CLIPMAPS_SWITCH if mark_clipmaps else ONE_PASS_SWITCH if one_pass else DIRECTIONAL_MARK_SWITCH if directional_mark else COMPACT_SWITCH if compact else DIRECTIONAL_SWITCH if directional else SWITCH
     nodes = [node for node in graph["nodes"] if node.get("name") == "Shadows"]
     if len(nodes) != 1 or nodes[0].get("properties", {}).get(switch) is not (arm == "B"):
         raise ValueError(f"{arm}: {switch} must explicitly be the boolean {arm == 'B'}")
@@ -119,6 +123,18 @@ def normalized_workload(spec, graph, arm, directional=False, compact=False, dire
         levels = properties.get("clipmapCount")
         if type(levels) is not int or not 1 <= levels < 12:
             raise ValueError("Mark clipmap specialization requires explicit clipmapCount in [1,11]")
+    if mark_page_size:
+        properties = nodes[0]["properties"]
+        mark_page_shift(properties)
+        levels = properties.get("clipmapCount")
+        if type(levels) is not int or not 1 <= levels <= 12:
+            raise ValueError("Mark page-size specialization requires explicit clipmapCount in [1,12]")
+        for production, benchmark, default in (("directionalMark", DIRECTIONAL_MARK_SWITCH, True),
+                ("markClipmapSpecialization", MARK_CLIPMAPS_SWITCH, True),
+                ("markRayPages", MARK_RAY_PAGES_SWITCH, True),
+                ("directionalProjection", DIRECTIONAL_PROJECTION_SWITCH, False)):
+            if properties.get(benchmark, properties.get(production, default)) is not default:
+                raise ValueError(f"Mark page-size specialization requires production {production}={default}")
     if one_pass:
         properties = nodes[0]["properties"]
         expected = {DIRECTIONAL_MARK_SWITCH: True, DIRECTIONAL_SWITCH: True, COMPACT_SWITCH: False,
@@ -134,6 +150,13 @@ def normalized_workload(spec, graph, arm, directional=False, compact=False, dire
         if mode == "timing" and node.get("properties", {}).get("benchmarkBuildSubstages", False):
             raise ValueError("Build substage timestamps are attribution diagnostics, not ordinary A/B timing")
     return optimization.normalized_workload(spec, graph, "Both")
+
+
+def mark_page_shift(properties):
+    size = properties.get("pageSize")
+    if type(size) is not int or not 1 <= size <= 128 or size & (size - 1):
+        raise ValueError("Mark page-size specialization requires explicit power-of-two pageSize in [1,128]")
+    return size.bit_length() - 1
 
 
 def declared_output_workload(workload):
@@ -160,7 +183,8 @@ def prepare_plan(args):
     directional_mark = directional_mark or mark_ray_pages
     one_pass = getattr(args, "experiment", "cluster-bitset") == "one-pass-projection"
     directional_projection = getattr(args, "experiment", "cluster-bitset") == "directional-projection"
-    protocol = DIRECTIONAL_PROJECTION_PROTOCOL if directional_projection else MARK_RAY_PAGES_PROTOCOL if mark_ray_pages else MARK_CLIPMAPS_PROTOCOL if mark_clipmaps else ONE_PASS_PROTOCOL if one_pass else DIRECTIONAL_MARK_PROTOCOL if directional_mark else COMPACT_PROTOCOL if compact else DIRECTIONAL_PROTOCOL if directional else PROTOCOL
+    mark_page_size = getattr(args, "experiment", "cluster-bitset") == "mark-page-size"
+    protocol = MARK_PAGE_SIZE_PROTOCOL if mark_page_size else DIRECTIONAL_PROJECTION_PROTOCOL if directional_projection else MARK_RAY_PAGES_PROTOCOL if mark_ray_pages else MARK_CLIPMAPS_PROTOCOL if mark_clipmaps else ONE_PASS_PROTOCOL if one_pass else DIRECTIONAL_MARK_PROTOCOL if directional_mark else COMPACT_PROTOCOL if compact else DIRECTIONAL_PROTOCOL if directional else PROTOCOL
     inputs, previous = {}, None
     for arm in ARMS:
         cases = args.cases_dir.resolve() / f"{mode.title()}-{arm}Cases.json"
@@ -168,7 +192,7 @@ def prepare_plan(args):
         if spec["mode"] != mode:
             raise ValueError("Case mode differs from the phase")
         graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
-        workload = normalized_workload(spec, acceptance.read(graph), arm, directional, compact, directional_mark, one_pass, mark_clipmaps, mark_ray_pages, directional_projection)
+        workload = normalized_workload(spec, acceptance.read(graph), arm, directional, compact, directional_mark, one_pass, mark_clipmaps, mark_ray_pages, directional_projection, mark_page_size)
         if previous is not None and workload != previous:
             raise ValueError("Cases/graphs differ beyond the declared experiment switch")
         previous = workload
@@ -182,7 +206,11 @@ def prepare_plan(args):
             "gpuExclusivity": "Not enforced; no applications are stopped", "workload": declared_output_workload(previous)}
 
 
-def shader_identity(log, arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, mark_cache_levels=None, mark_ray_pages=False, directional_projection=False):
+def shader_identity(log, arm, mode, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, mark_cache_levels=None, mark_ray_pages=False, directional_projection=False, mark_page_size=False, mark_page_size_shift=None):
+    if mark_page_size:
+        if type(mark_page_size_shift) is not int or not 0 <= mark_page_size_shift <= 7:
+            raise ValueError("Expected declared Mark page shift in [0,7]")
+        return directional_projection_shader_identity(log, arm, mode, mark_page_size_shift, mark_cache_levels)
     if directional_projection:
         return directional_projection_shader_identity(log, arm, mode)
     if one_pass:
@@ -252,7 +280,9 @@ def shader_identity(log, arm, mode, directional=False, compact=False, directiona
     return result
 
 
-def check_shaders(processes, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, directional_projection=False):
+def check_shaders(processes, directional=False, compact=False, directional_mark=False, one_pass=False, role="primary", mark_clipmaps=False, directional_projection=False, mark_page_size=False):
+    if mark_page_size:
+        return check_directional_projection_shaders(processes, "vsmMarkMain")
     if directional_projection:
         return check_directional_projection_shaders(processes)
     if one_pass:
@@ -277,7 +307,10 @@ def check_shaders(processes, directional=False, compact=False, directional_mark=
         raise ValueError("Candidate did not change actual build SPIR-V")
 
 
-def directional_projection_shader_identity(log, arm, mode):
+def directional_projection_shader_identity(log, arm, mode, page_shift=None, cache_levels=None):
+    if page_shift is not None and (type(page_shift) is not int or not 0 <= page_shift <= 7 or
+            type(cache_levels) is not int or not 1 <= cache_levels <= 12):
+        raise ValueError("Expected declared Mark page shift [0,7] and cache levels [1,12]")
     entries = ("vsmMarkMain", "vsmBuildMain", "vsmProjectMain", "vsmRasterMeshMain", "vsmDepthFragmentMain")
     found = {entry: set() for entry in entries}
     for line in log.splitlines():
@@ -294,10 +327,16 @@ def directional_projection_shader_identity(log, arm, mode):
         expected = {"optimizeMark": True, "clusterCull": True, "clusterPageBitset": True,
             "trianglePageBitset": True, "compactBuild": False, "markSamples": False,
             "directionalMark": entry == "vsmMarkMain", "directionalBuild": entry == "vsmBuildMain",
-            "directionalProjection": arm == "B" and entry == "vsmProjectMain",
+            "directionalProjection": page_shift is None and arm == "B" and entry == "vsmProjectMain",
             "work": mode == "diagnostic", "projectionStatistics": False}
         if fields.get("lightType") != "0" or any(fields.get(key) != str(value).lower() for key, value in expected.items()):
             raise ValueError("Directional projection shader light type or compiled flags mismatch")
+        if page_shift is not None:
+            wanted_shift = page_shift if arm == "B" and entry == "vsmMarkMain" else -1
+            wanted_levels = cache_levels if entry == "vsmMarkMain" else 12
+            if (fields.get("markPageShift") != str(wanted_shift) or fields.get("markCacheLevels") != str(wanted_levels) or
+                    fields.get("markRayPages") != str(entry == "vsmMarkMain").lower()):
+                raise ValueError("Actual Mark page shift/cache levels/ray-page flag mismatch")
         value = fields.get("spirvSHA256", "")
         if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
             raise ValueError("Missing or invalid directional projection SPIR-V SHA256")
@@ -307,7 +346,7 @@ def directional_projection_shader_identity(log, arm, mode):
     return {entry: next(iter(values)) for entry, values in found.items()}
 
 
-def check_directional_projection_shaders(processes):
+def check_directional_projection_shaders(processes, changed_entry="vsmProjectMain"):
     hashes = {}
     for row in processes:
         if row["arm"] in hashes and hashes[row["arm"]] != row["shaders"]:
@@ -315,9 +354,9 @@ def check_directional_projection_shaders(processes):
         hashes[row["arm"]] = row["shaders"]
     for entry in hashes["A"]:
         same = hashes["A"][entry] == hashes["B"][entry]
-        if entry == "vsmProjectMain" and same:
-            raise ValueError("Candidate did not change actual projection SPIR-V")
-        if entry != "vsmProjectMain" and not same:
+        if entry == changed_entry and same:
+            raise ValueError(f"Candidate did not change actual {changed_entry} SPIR-V")
+        if entry != changed_entry and not same:
             raise ValueError(f"Unrelated {entry} shader changed between experiment arms")
 
 
@@ -415,9 +454,10 @@ def verify_experiment(source):
     mark_clipmaps = plan.get("protocol") == MARK_CLIPMAPS_PROTOCOL
     one_pass = plan.get("protocol") == ONE_PASS_PROTOCOL
     directional_projection = plan.get("protocol") == DIRECTIONAL_PROJECTION_PROTOCOL
+    mark_page_size = plan.get("protocol") == MARK_PAGE_SIZE_PROTOCOL
     expected = schedule(phase)
     mode = "diagnostic" if phase == "diagnostic" else "timing"
-    if (plan.get("protocol") not in (PROTOCOL, DIRECTIONAL_PROTOCOL, COMPACT_PROTOCOL, DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL, MARK_RAY_PAGES_PROTOCOL, ONE_PASS_PROTOCOL, DIRECTIONAL_PROJECTION_PROTOCOL) or plan.get("policy") != experiment_policy(plan.get("protocol"), plan.get("policy", {}).get("role", "primary")) or plan.get("mode") != mode or
+    if (plan.get("protocol") not in (PROTOCOL, DIRECTIONAL_PROTOCOL, COMPACT_PROTOCOL, DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL, MARK_RAY_PAGES_PROTOCOL, ONE_PASS_PROTOCOL, DIRECTIONAL_PROJECTION_PROTOCOL, MARK_PAGE_SIZE_PROTOCOL) or plan.get("policy") != experiment_policy(plan.get("protocol"), plan.get("policy", {}).get("role", "primary")) or plan.get("mode") != mode or
             plan.get("processes") != expected or plan.get("blocks") != BLOCKS[phase] or
             plan.get("timeoutSeconds") != 600 or plan.get("runsPerPackage") != 1 or
             plan.get("comparisonStartFrame") != 16 or len(receipts) != len(expected)):
@@ -456,7 +496,7 @@ def verify_experiment(source):
                 (identity is not None and current != identity)):
             raise ValueError("Empty or changed source/binary identity")
         identity = current
-        current = normalized_workload(spec, case["resolvedGraph"], item["arm"], directional, compact, directional_mark, one_pass, mark_clipmaps, mark_ray_pages, directional_projection)
+        current = normalized_workload(spec, case["resolvedGraph"], item["arm"], directional, compact, directional_mark, one_pass, mark_clipmaps, mark_ray_pages, directional_projection, mark_page_size)
         if (workload is not None and current != workload) or current != planned_workload:
             raise ValueError("Cases/graphs differ beyond the bitset switch")
         workload = current
@@ -475,7 +515,7 @@ def verify_experiment(source):
             check_projection_execution(timings, item["arm"], plan["policy"]["role"])
         elif any(row["projectionMode"] != "per-face" for row in timings):
             raise ValueError("One-pass projection execution cannot enter an older experiment protocol")
-        if (mark_clipmaps or directional_projection) and any(row["faceCount"] != 1 for row in timings):
+        if (mark_clipmaps or directional_projection or mark_page_size) and any(row["faceCount"] != 1 for row in timings):
             raise ValueError("Directional specialization requires one directional face")
         work_rows = [profile.work_frame(frame, mode) for frame in case["frames"]]
         build_rows = [profile.build_frame(frame, mode) for frame in case["frames"]]
@@ -496,7 +536,7 @@ def verify_experiment(source):
                         name: face["counters"][name] for name in profile.WORK_COUNTERS if name not in unstable}}
                     for face in sorted(faces, key=lambda value: (value["lightIndex"], value["face"]))]})
             signature["stableWorkCounters"] = stable_work
-            if directional or compact or directional_mark or mark_clipmaps or one_pass or directional_projection:
+            if directional or compact or directional_mark or mark_clipmaps or one_pass or directional_projection or mark_page_size:
                 if not all(row["gpuBuildDiagnosticsAvailable"] for row in build_rows):
                     raise ValueError("Specialization requires complete build diagnostic readbacks")
                 if any(raw["shadow"]["gpuBuildDiagnostics"]["version"] != 3 for raw in case["frames"]):
@@ -515,14 +555,16 @@ def verify_experiment(source):
         valid = [row for row in timings if not row["warmup"]]
         medians = {metric: profile.describe([row[metric] for row in valid])["median"] for metric in METRICS}
         mark_cache_levels = next(node["properties"]["clipmapCount"] for node in case["resolvedGraph"]["nodes"]
-            if node.get("name") == "Shadows") if mark_clipmaps else None
+            if node.get("name") == "Shadows") if mark_clipmaps or mark_page_size else None
+        page_shift = next(mark_page_shift(node["properties"]) for node in case["resolvedGraph"]["nodes"]
+            if node.get("name") == "Shadows") if mark_page_size else None
         rows.append({**item, "started": receipt["started"], "ended": receipt["ended"], "capture": str(path),
             "manifestSHA256": receipt["manifestSHA256"], "postWarmupFrames": len(valid), "metrics": medians,
             "faceCount": valid[0]["faceCount"],
-            "shaders": shader_identity((path.parent / "Process.log").read_text(encoding="utf-8", errors="replace"), item["arm"], mode, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"), mark_clipmaps, mark_cache_levels, mark_ray_pages, directional_projection)})
+            "shaders": shader_identity((path.parent / "Process.log").read_text(encoding="utf-8", errors="replace"), item["arm"], mode, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"), mark_clipmaps, mark_cache_levels, mark_ray_pages, directional_projection, mark_page_size, page_shift)})
         for output, values in ((frames, timings), (work, work_rows), (build, build_rows)):
             output.extend({"process": item["index"], "arm": item["arm"], "block": item["block"], **row} for row in values)
-    check_shaders(rows, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"), mark_clipmaps, directional_projection)
+    check_shaders(rows, directional, compact, directional_mark, one_pass, plan["policy"].get("role", "primary"), mark_clipmaps, directional_projection, mark_page_size)
     if one_pass and len({row["faceCount"] for row in rows}) != 1:
         raise ValueError("Admitted face count differs between projection experiment processes")
     # All input identities are checked before attributing output differences to correctness.
@@ -718,11 +760,12 @@ def plots(result, output):
         mark_clipmaps = result["plan"]["protocol"] == MARK_CLIPMAPS_PROTOCOL
         one_pass = result["plan"]["protocol"] == ONE_PASS_PROTOCOL
         directional_projection = result["plan"]["protocol"] == DIRECTIONAL_PROJECTION_PROTOCOL
+        mark_page_size = result["plan"]["protocol"] == MARK_PAGE_SIZE_PROTOCOL
         panels = ((axes[0], "buildDiagnosticFrames", ("clusterLevelTests", "clusterSurvivingGroups")),
             (axes[1], "buildDiagnosticFrames", ("clusterBitsetWordTests", "triangleBitsetWordTests", "triangleBitsetPageHits"))) if directional or compact else (
             (axes[0], "workFrames", ("buildPageTests",)),
             (axes[1], "buildDiagnosticFrames", ("clusterPageTests", "clusterBitsetWordTests")))
-        if directional_mark or mark_clipmaps:
+        if directional_mark or mark_clipmaps or mark_page_size:
             panels = ((axes[0], "workFrames", ("markReceiverDispatches", "markSamplePositions", "markLevelTests")),
                       (axes[1], "workFrames", ("markPageRequests",)))
         if one_pass or directional_projection:
@@ -737,7 +780,8 @@ def plots(result, output):
             axis.set_ylabel("Post-warmup per-frame median count")
             if axis.has_data():
                 axis.legend(fontsize=8)
-        figure.suptitle("Directional projection: exact logical work; counts are not timings" if directional_projection else
+        figure.suptitle("Mark page size: exact logical work; counts are not timings" if mark_page_size else
+            "Directional projection: exact logical work; counts are not timings" if directional_projection else
             "One-pass projection: exact logical work; counts are not timings" if one_pass else
             "Mark ray pages: Mark samples and level tests reduced; counts are not timings" if mark_ray_pages else
             "Mark clipmaps: logical work unchanged; request atomics may vary; counts are not timings" if mark_clipmaps else
@@ -802,8 +846,10 @@ def report(args):
         mark_clipmaps = result["plan"]["protocol"] == MARK_CLIPMAPS_PROTOCOL
         one_pass = result["plan"]["protocol"] == ONE_PASS_PROTOCOL
         directional_projection = result["plan"]["protocol"] == DIRECTIONAL_PROJECTION_PROTOCOL
-        title = "directional projection" if directional_projection else "mark ray pages" if mark_ray_pages else "mark clipmaps" if mark_clipmaps else "one-pass projection" if one_pass else "directional mark" if directional_mark else "compact build" if compact else "directional build" if directional else "bitset"
-        description = ("A: generic projection; B: orthographic-only compiled directional projection. Resource lookup and sampling remain unchanged." if directional_projection else
+        mark_page_size = result["plan"]["protocol"] == MARK_PAGE_SIZE_PROTOCOL
+        title = "mark page size" if mark_page_size else "directional projection" if directional_projection else "mark ray pages" if mark_ray_pages else "mark clipmaps" if mark_clipmaps else "one-pass projection" if one_pass else "directional mark" if directional_mark else "compact build" if compact else "directional build" if directional else "bitset"
+        description = ("A: dynamic page-size division; B: directional Mark page addressing compiled to the declared power-of-two shift. Other settings are identical." if mark_page_size else
+            "A: generic projection; B: orthographic-only compiled directional projection. Resource lookup and sampling remain unchanged." if directional_projection else
             "A: full directional SMRT Mark sweep; B: rays inside one page skip per-sample Mark work. All other graph settings are identical." if mark_ray_pages else
             "A: directional Mark with 12 compiled cache levels; B: directional Mark specialized to the declared clipmapCount. Actual markCacheLevels is verified in shader logs; non-Mark entries retain 12. All other graph settings are identical." if mark_clipmaps else
             "A: per-face projection; B: one dispatch for admitted multi-face projection, retaining the original single-face kernel. Other settings are identical." if one_pass else
@@ -811,7 +857,8 @@ def report(args):
             "A: direct cluster build; B: compact candidates and indirect build. All other graph settings are identical." if compact else
             "A: generic build; B: directional-only compiled build. All other graph settings are identical." if directional else
             "A: bitset disabled; B: enabled. Production mark and cluster culling remain enabled.")
-        diagnostic_note = ("All 45 build diagnostic counters and stable workload counters match exactly. Mark/Build/Raster SPIR-V remains unchanged; only directional Projection changes." if directional_projection else
+        diagnostic_note = ("All 45 build diagnostics and 15 stable workload counters match exactly. Only Mark SPIR-V changes; Build/Projection/Raster remains unchanged." if mark_page_size else
+            "All 45 build diagnostic counters and stable workload counters match exactly. Mark/Build/Raster SPIR-V remains unchanged; only directional Projection changes." if directional_projection else
             "All 45 build diagnostic counters and per-face projection workload counters match exactly. Actual Mark/Build shader variants remain unchanged. Execution scope names verify the selected projection path." if one_pass else
             "All 45 build diagnostic counters match exactly for every canonical frame and face. Actual build/projection SPIR-V is unchanged; Mark SPIR-V differs." if directional_mark or mark_clipmaps else
             "All 45 build diagnostic counters match exactly for every canonical frame and face. Actual mark/projection SPIR-V is unchanged; build SPIR-V differs." if directional or compact else
@@ -861,7 +908,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     execute = commands.add_parser("run")
     execute.add_argument("--phase", choices=tuple(BLOCKS), required=True)
-    execute.add_argument("--experiment", choices=("cluster-bitset", "directional-build", "compact-build", "directional-mark", "mark-clipmaps", "mark-ray-pages", "directional-projection", "one-pass-projection"), default="cluster-bitset")
+    execute.add_argument("--experiment", choices=("cluster-bitset", "directional-build", "compact-build", "directional-mark", "mark-clipmaps", "mark-ray-pages", "mark-page-size", "directional-projection", "one-pass-projection"), default="cluster-bitset")
     execute.add_argument("--role", choices=("primary", "overhead"), default="primary", help="one-pass projection workload role")
     execute.add_argument("--cases-dir", type=Path, required=True)
     execute.add_argument("--exe", type=Path, required=True)
