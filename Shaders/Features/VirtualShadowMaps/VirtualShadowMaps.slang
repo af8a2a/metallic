@@ -975,7 +975,11 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // Hard and the nine-tap PCF kernel keep the short direct path. Cache setup
     // pays off for the longer SMRT traces handled by the overload below.
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
-#if VSM_LOCAL_MARK
+#if VSM_DIRECTIONAL_MARK
+    // makeProjections and cache reuse preserve one rowZ across all clipmaps.
+    float4 samplePosition = float4(position, 1.0);
+    float sampleZ = dot(projections[0].rowZ, samplePosition);
+#elif VSM_LOCAL_MARK
     // makeLocalProjections repeats all four rows across mips; makeProjections
     // repeats rowZ across directional clipmaps. Keep the original dot products
     // (no endpoint interpolation or reassociation at page boundaries).
@@ -987,7 +991,10 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
         ShadowProjection projection = projections[level];
-#if VSM_LOCAL_MARK
+#if VSM_DIRECTIONAL_MARK
+        float3 projected = float3(dot(projection.rowX, samplePosition),
+            dot(projection.rowY, samplePosition), sampleZ);
+#elif VSM_LOCAL_MARK
         float3 projected = sharedProjected;
         if (push.lightType == 0u) {
             float4 p = float4(position, 1.0);
@@ -1015,7 +1022,11 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // the admission budget on pages the receiver will never sample.
     // The selected Mark permutation bounds clipmapCount by its cache size.
     // Constant indices keep the small per-receiver cache in registers across all SMRT rays.
-#if VSM_LOCAL_MARK
+#if VSM_DIRECTIONAL_MARK
+    // makeProjections and cache reuse preserve one rowZ across all clipmaps.
+    float4 samplePosition = float4(position, 1.0);
+    float sampleZ = dot(projections[0].rowZ, samplePosition);
+#elif VSM_LOCAL_MARK
     ShadowProjection sharedProjection = projections[firstLevel];
     float3 sharedProjected = push.lightType == 0u ?
         float3(0.0, 0.0, dot(sharedProjection.rowZ, float4(position, 1.0))) :
@@ -1029,7 +1040,10 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 #endif
         ++workCounts.y;
         ShadowProjection projection = projections[level];
-#if VSM_LOCAL_MARK
+#if VSM_DIRECTIONAL_MARK
+        float3 projected = float3(dot(projection.rowX, samplePosition),
+            dot(projection.rowY, samplePosition), sampleZ);
+#elif VSM_LOCAL_MARK
         float3 projected = sharedProjected;
         if (push.lightType == 0u) {
             float4 p = float4(position, 1.0);
@@ -1057,12 +1071,21 @@ uint vsmMarkRayPages(float3 origin, float3 span, StructuredBuffer<ShadowProjecti
 {
     uint sweepLevels = 0u;
     ++workCounts.x;
+#if VSM_DIRECTIONAL_MARK
+    float4 samplePosition = float4(origin, 1.0);
+    float sampleZ = dot(projections[0].rowZ, samplePosition);
+#endif
     [unroll]
     for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
         if (level < firstLevel || level >= push.clipmapCount) { continue; }
         ++workCounts.y;
         ShadowProjection projection = projections[level];
+#if VSM_DIRECTIONAL_MARK
+        float3 projected = float3(dot(projection.rowX, samplePosition),
+            dot(projection.rowY, samplePosition), sampleZ);
+#else
         float3 projected = vsmProjectPosition(origin, projection);
+#endif
         float resolution = float(projection.page.y * push.pageSize);
         float2 start = (projected.xy * 0.5 + 0.5) * resolution;
         float2 end = start + float2(dot(projection.rowX.xyz, span), dot(projection.rowY.xyz, span)) * 0.5 * resolution;
