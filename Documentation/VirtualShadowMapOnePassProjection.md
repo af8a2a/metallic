@@ -1,8 +1,8 @@
 # VSM GPU one-pass projection
 
-**最终结论（2026-10-31）：正确性通过，性能证据有效但结论不确定。** 保留可选实现，默认关闭；没有将 discovery 的正收益当作确认结果，也没有追加采样。
+**最终结论（2026-10-31）：正确性通过，性能证据有效但结论不确定。** 按用户后续要求默认开启，保留显式关闭；没有将 discovery 的正收益当作确认结果，也没有追加性能采样。默认值变更不代表已确认性能收益。
 
-本轮按用户要求撤掉空 receiver tile 实验，保留本机归档；方向光 Mark 默认启用不变。`VirtualShadowMapSettings::onePassProjection` 默认关闭，LightsPass 可用 `onePassProjection` 开启，显式 `benchmarkOnePassProjection` 优先。`benchmarkLegacyProjection=true` 保留最高优先级，用于原逐面路径对照。
+本轮按用户要求撤掉空 receiver tile 实验，保留本机归档；方向光 Mark 默认启用不变。`VirtualShadowMapSettings::onePassProjection` 和 `projectShared()` 参数默认开启，LightsPass 可用 `onePassProjection=false` 关闭，显式 `benchmarkOnePassProjection` 优先。`benchmarkLegacyProjection=true` 保留最高优先级，用于原逐面路径对照。
 
 ## 实现
 
@@ -33,6 +33,8 @@ Diagnostic 64 帧，检查点 16/32/63；普通 96 帧，预热 32 帧，关闭 
 Release `Metallic`、`MetallicRHITests` 构建通过，109 项 VSM Python 测试、387 文件 Slang 模块审计通过。最终 `Regression-v4` 的 86 状态 × 五臂通过，无跳过；先前的 profiling 回归也通过。已有 14 面状态仍触及 CPU metadata 发布上限，12 个状态显式标记 CPU 记录不可用，没有把预期值当作实测；GPU 投影路径及正确性检查继续完整执行。
 
 Mixed 与 Sponza diagnostic 均通过：16/32/63 的 PNG/HDR/depth/shadow 精确一致，第 16–63 帧的逐面 stats32、build45、15 项稳定工作量及输入一致。已目视检查两场景实际输出。Mixed 的实际 projection scope 为 A9/B1；Sponza 为 A1/B1，保留原内核。统计实验兼容臂的 31 个已采样状态均证明使用原逐面 scope。
+
+默认开启后的独立功能回归位于 `build/vsm-one-pass-projection/DefaultEnabled/`。Release `Metallic`、`MetallicRHITests` 重建通过；projection equivalence 的 OnePass 臂省略两个启用属性，86 状态 × 五臂全部通过（303 秒），实际 GPU scope 验证默认多面单次调度、零/单面回退、显式关闭与统计兼容回退。Profiling 回归 20 状态 × 四臂通过（约 32 秒），默认多面一次投影，单面仍逐面，计时/工作量开关未改变输出。该轮只验证默认行为，不新增性能收益结论。
 
 ## 独立性能确认
 
@@ -74,4 +76,4 @@ Mixed 与 Sponza diagnostic 均通过：16/32/63 的 PNG/HDR/depth/shadow 精确
 - [Mixed 最终复核](../build/vsm-one-pass-projection/Mixed/FinalVerificationReport/report.md)、[Sponza 最终复核](../build/vsm-one-pass-projection/Sponza/FinalVerificationReport/report.md)
 - [最终诊断编译审计](../build/vsm-one-pass-projection/CompilerAudit/RegressionFinal/CompilerAudit.md)、[原生资源及普通运行身份](../build/vsm-one-pass-projection/ResourcesReport/report.md)
 
-原始包和失败未覆盖。最终使用当前 verifier 重核两份 confirmation 及其 diagnostic/discovery 链接；739 个源码、20 个二进制及声明输入的当前哈希保持一致。
+原始包和失败未覆盖。性能实验结束时使用当时的 verifier 重核两份 confirmation 及其 diagnostic/discovery 链接；739 个源码、20 个二进制及声明输入的哈希保持一致。后续默认值变更与默认路径验证单独记录，不改写该轮性能证据。

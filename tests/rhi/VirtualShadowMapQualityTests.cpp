@@ -1111,9 +1111,9 @@ public:
             report["projectionStatisticsArms"] = {{"Legacy",false},{"Shared",false},{"OnePass",false},{"NoDebug",false},{"StatisticsFallback",true}};
             report["selectionControls"] = {
                 {"Legacy",{{"onePassProjection",true},{"benchmarkOnePassProjection",true},{"benchmarkLegacyProjection",true}}},
-                {"SharedCold",Json::object()},
+                {"SharedCold",{{"onePassProjection",false}}},
                 {"SharedWarmAndLater",{{"onePassProjection",true},{"benchmarkOnePassProjection",false}}},
-                {"OnePass",{{"onePassProjection",false},{"benchmarkOnePassProjection",true}}},
+                {"OnePass",Json::object()},
                 {"NoDebug",{{"onePassProjection",false},{"benchmarkOnePassProjection",true},{"debugOutput",false}}},
                 {"StatisticsFallback",{{"onePassProjection",false},{"benchmarkOnePassProjection",true},{"benchmarkProjectionStatistics",true}}}};
             report["statisticsCompatibilityControl"] = "Grouped projection statistics must retain the per-face kernel even when one-pass projection is requested";
@@ -1174,7 +1174,9 @@ public:
                                 {"debugOutput",debug},{"benchmarkLegacyProjection",arm==0},
                                 {"benchmarkProjectionStatistics",arm==4},
                                 {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",arm==1 || arm==2},{"benchmarkGPUWork",true}};
-                            if (arm != 1) {
+                            if (arm == 1) {
+                                settings["onePassProjection"] = false;
+                            } else if (arm != 2) {
                                 settings["onePassProjection"] = arm == 0;
                                 settings["benchmarkOnePassProjection"] = true;
                             }

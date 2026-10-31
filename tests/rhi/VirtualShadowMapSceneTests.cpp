@@ -2460,7 +2460,7 @@ public:
             require(!VirtualShadowMapSettings{}.profileBuildSubstages, "Build substage attribution must default off");
             const auto fixture = writeLocalFixture(directory / "Fixture", false);
             constexpr std::array modes{"Off", "Timing", "Work", "Both"};
-            constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection"};
+            constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection", "VSM one-pass projection"};
             constexpr std::array buildStages{"VSM build direct", "VSM build compact", "VSM build compact sync",
                 "VSM build indirect", "VSM build finalize sync", "VSM build finalize"};
             for (uint32_t variant = 0; variant < 5; ++variant) {
@@ -2564,7 +2564,9 @@ public:
                                 require(section.parent == UINT32_MAX || section.parent < node->sections.size(), "Invalid GPU stage parent");
                                 total += section.gpuMilliseconds;
                             }
-                            require(count == (timing ? activeFaces : 0), std::string("GPU stage toggle/count mismatch: ") + stage);
+                            const size_t expected = std::string_view(stage) == "VSM one-pass projection" ? (local ? 1u : 0u) :
+                                std::string_view(stage) == "VSM projection" && local ? 0u : activeFaces;
+                            require(count == (timing ? expected : 0), std::string("GPU stage toggle/count mismatch: ") + stage);
                             durations[stage] = {{"count", count}, {"gpuMs", total}};
                         }
                         std::vector<double> childTimes(node->sections.size(), 0);

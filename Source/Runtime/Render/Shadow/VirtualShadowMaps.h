@@ -44,8 +44,8 @@ struct VirtualShadowMapSettings
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
     bool optimizeMark = true;
     bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.
-    // Experimental multi-face GPU projection; single faces and grouped projection statistics retain the original kernel.
-    bool onePassProjection = false;
+    // Multi-face GPU projection; single faces and grouped projection statistics retain the original kernel.
+    bool onePassProjection = true;
     bool optimizeMarkSamples = true; // Reuse invariant Mark work for local lights; directional uses the original path.
     bool directionalMark = true; // Mark-only orthographic specialization; preserves receiver/sample demands.
     bool clusterCulling = true;
@@ -165,7 +165,7 @@ public:
     // supplied by LightsPass. Empty input is valid; one face uses project().
     static Result<> projectShared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
         std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
-        bool onePassProjection = false);
+        bool onePassProjection = true);
 
     // Logical resource bytes currently owned by this cache, recording and pool.
     // Native padding and retired recordings outside this cache/pool are excluded;
