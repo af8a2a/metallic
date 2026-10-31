@@ -2,7 +2,7 @@
 
 2026-10-31。按当前 VSMSample-Sponza 完整图先采集分阶段 GPU 时间与工作量，再实现方向光 Mark 的编译级数裁剪。独立确认得到 **Mark 收益 22.96%，Shadows 总 GPU 收益 5.32%**；RenderGraph 收益区间跨零，不声明整图或端到端 FPS 提升。
 
-候选保持 **默认关闭**。两个 VSM Pass 支持生产属性 `markClipmapSpecialization: true`，显式布尔 `benchmarkMarkClipmapSpecialization` 优先。已有方向光 Mark 特化仍默认开启。局部光保持 12 槽路径，不改变样本数、页预算、过滤质量或 LOD 设置。
+方向光 Mark 的 clipmap 编译裁剪现已 **默认开启**，两个 VSM Pass 和已有图均继承该默认值。生产属性 `markClipmapSpecialization: false` 可恢复 12 槽路径，显式布尔 `benchmarkMarkClipmapSpecialization` 优先。已有方向光 Mark 特化仍默认开启。局部光保持 12 槽路径，不改变样本数、页预算、过滤质量或 LOD 设置。
 
 ## 先采集，再选择候选
 
@@ -30,7 +30,7 @@
 
 ## 实现与数值契约
 
-仅 Mark 编译入口传入 `VSM_MARK_CACHE_LEVELS`。默认及局部光取 12；方向光开启候选时取已验证的 `settings.clipmapCount`。有效值进入 `Programs` 缓存键和 `[VSMShader] markCacheLevels` 日志，非 Mark 日志保持 12。
+仅 Mark 编译入口传入 `VSM_MARK_CACHE_LEVELS`。关闭该选项及局部光取 12；方向光默认取已验证的 `settings.clipmapCount`。有效值进入 `Programs` 缓存键和 `[VSMShader] markCacheLevels` 日志，非 Mark 日志保持 12。独立 shader 的宏缺省仍为 12，由 CPU 录制时选择实际排列。
 
 Shader 只替换 SMRT `lastPages` 参数/局部数组、初始化循环和固定展开循环的上限。Sponza 从 12 个编译缓存槽裁成 6 个，**两臂实际仍为同样的 6 层 clipmap**。保留 `level < firstLevel || level >= push.clipmapCount` 判断、`push.lightType` 数据流、所有浮点表达式及采样顺序。
 
@@ -86,4 +86,16 @@ A/B 两列是每臂六个进程中位数的中位数；收益和区间使用三�
 - [最终重验与身份检查](../build/vsm-sponza-mark-20261031/FinalVerification.json)、[重验脚本](../build/vsm-sponza-mark-20261031/VerifyFinal.py)。当前 744 项源码、20 项二进制与 A/B 封存身份一致。
 - `Budget.json`、`Candidate.json`、`Cases/`、`ABCases/`、`RunAB.py` 保存预算、候选与命令。新采集必须使用新输出目录；已有报告的 `Reproduce.py NEW_REPORT_DIRECTORY` 调用当前仓库工具离线重验，不运行封存的未知脚本。
 
-生产默认仍关闭；开启使用 `markClipmapSpecialization: true`。默认路径提升是单独操作，不混入本轮候选 A/B。
+上述候选 A/B 采集时默认关闭，随后按用户要求提升默认路径；默认验证与性能 A/B 分开记录。
+
+## 默认开启验证
+
+按用户要求将 `VirtualShadowMapSettings::specializeMarkClipmaps` 默认值改为 true。两个 Pass 继续继承 settings 默认，无需修改图资产；shader 算法、排列宏及资源布局不变。Default 测试臂省略生产与 benchmark 开关，直接与 Specialized 比较。
+
+Release `Metallic`、`MetallicVSMSample`、`MetallicRHITests` 构建通过。106 状态 GPU 矩阵及 10 组选择控制通过，validation 为 0；日志中 399 条局部光 Mark 记录均保持 12 槽。
+
+Sponza 独立运行默认、生产显式开启、生产显式关闭三份 64 帧诊断。16/32/63 帧 PNG、线性 HDR、depth、shadow 完全一致；16–63 帧 stats32、45 项 Build diagnostics 和 15 项稳定工作量精确一致，validation 为 0。默认与显式开启的 Mark 都是已验证的诊断版 `d28ffd45…`，显式关闭恢复 `c4845e9d…`。已查看默认输出图像。
+
+另一次 96 帧普通默认路径执行 Mark `036ad786…`，Mark/Build/Projection SHA 三元组与上一轮独立性能确认的候选完全一致。本次仅验证默认选择和正确性，没有新增性能 A/B，不从该单进程计时重新声明收益。最终 744 项源码、20 项二进制身份核验一致。
+
+证据位于 [默认路径验证报告](../build/vsm-mark-clipmaps-default/report.md)及[机器可读记录](../build/vsm-mark-clipmaps-default/Verification.json)。

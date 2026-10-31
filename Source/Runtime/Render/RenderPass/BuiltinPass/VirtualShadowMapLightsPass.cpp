@@ -342,6 +342,8 @@ public:
             boolProperty(&properties, "directionalMark", settings.directionalMark));
         settings.specializeMarkClipmaps = boolProperty(&properties, "benchmarkMarkClipmapSpecialization",
             boolProperty(&properties, "markClipmapSpecialization", settings.specializeMarkClipmaps));
+        settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
+            boolProperty(&properties, "markRayPages", settings.markRayPages));
         settings.directionalBuild = boolProperty(&properties, "benchmarkDirectionalBuild",
             boolProperty(&properties, "directionalBuild", settings.directionalBuild));
         settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);

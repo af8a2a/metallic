@@ -35,6 +35,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_DIRECTIONAL_MARK
 #define VSM_DIRECTIONAL_MARK 0
 #endif
+#ifndef VSM_MARK_RAY_PAGES
+#define VSM_MARK_RAY_PAGES 0
+#endif
 #ifndef VSM_MARK_CACHE_LEVELS
 #define VSM_MARK_CACHE_LEVELS 12
 #endif
@@ -1011,7 +1014,11 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts
+#if VSM_MARK_RAY_PAGES
+    , uint sweepLevels
+#endif
+)
 {
     ++workCounts.x;
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
@@ -1028,6 +1035,9 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     [unroll]
     for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
         if (level < firstLevel || level >= push.clipmapCount) { continue; }
+#if VSM_MARK_RAY_PAGES
+        if (((sweepLevels >> level) & 1u) == 0u) { continue; }
+#endif
         ++workCounts.y;
         ShadowProjection projection = projections[level];
 #if VSM_OPTIMIZE_MARK_SAMPLES
@@ -1046,6 +1056,41 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
         vsmMarkPage(pages, page, workCounts);
     }
 }
+
+#if VSM_MARK_RAY_PAGES
+// Directional samples lie on origin..origin+span, so a level whose whole segment
+// stays inside one page requests only the page of the ray's t=0 sample. Returns
+// the levels that must retain the per-sample sweep. The one-texel margin absorbs
+// rounding, so requests match the sweep exactly; the depth range is tested only
+// at t=0 because that sample alone already requests the shared page.
+uint vsmMarkRayPages(float3 origin, float3 span, StructuredBuffer<ShadowProjection> projections,
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts)
+{
+    uint sweepLevels = 0u;
+    ++workCounts.x;
+    [unroll]
+    for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
+        if (level < firstLevel || level >= push.clipmapCount) { continue; }
+        ++workCounts.y;
+        ShadowProjection projection = projections[level];
+        float3 projected = vsmProjectPosition(origin, projection);
+        float resolution = float(projection.page.y * push.pageSize);
+        float2 start = (projected.xy * 0.5 + 0.5) * resolution;
+        float2 end = start + float2(dot(projection.rowX.xyz, span), dot(projection.rowY.xyz, span)) * 0.5 * resolution;
+        float2 low = min(start, end) - 1.0, high = max(start, end) + 1.0;
+        if (any(low < 1.0) || any(high >= resolution - 1.0) || projected.z < 1e-4 || projected.z > 1.0 - 1e-4 ||
+            any(floor(low / float(push.pageSize)) != floor(high / float(push.pageSize)))) {
+            sweepLevels |= 1u << level;
+            continue;
+        }
+        uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
+        if (lastPages[level] == page) { continue; }
+        lastPages[level] = page;
+        vsmMarkPage(pages, page, workCounts);
+    }
+    return sweepLevels;
+}
+#endif
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -1226,6 +1271,10 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
             float3 endpoint = vsmRayEndpoint(position, projections[0], trace, ray, id.xy);
             float3 dither = vsmRayDither(position, projections[receiverLevel], trace, ray, id.xy);
 #endif
+#if VSM_MARK_RAY_PAGES
+            uint sweepLevels = vsmMarkRayPages(position + dither, endpoint - position, projections, pages, push, receiverLevel, lastPages, workCounts);
+            if (sweepLevels == 0u) { continue; }
+#endif
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
 #if VSM_OPTIMIZE_MARK_SAMPLES
                 float t = 1.0 - (float(step + 1u) - stepRandom) / float(push.samplesPerRay);
@@ -1236,7 +1285,11 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
                 float time = vsmRaySampleTime(step, push, id.xy);
                 float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
 #endif
-                vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages, workCounts);
+                vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages, workCounts
+#if VSM_MARK_RAY_PAGES
+                    , sweepLevels
+#endif
+                );
             }
         }
     }
