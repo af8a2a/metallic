@@ -1424,6 +1424,7 @@ constexpr uint64_t kLocalStatsOffset = kLocalDepthOffset + kPixels * 4;
 constexpr uint64_t kLocalLightsOffset = kLocalStatsOffset + kLocalLayers * kVirtualShadowMapFaceStatisticsSize;
 constexpr uint64_t kLocalTableSize = sizeof(VirtualShadowMapLightsHeader) + kLocalCapacity * sizeof(VirtualShadowMapLightEntry);
 constexpr uint64_t kLocalReadbackSize = kLocalLightsOffset + kLocalTableSize;
+constexpr uint64_t kLocalBudgetDiagnosticSize = (8 + kLocalLayers * 8) * sizeof(uint32_t);
 
 class VSMLocalEvidencePass final : public UnsafePass {
 public:
@@ -1440,7 +1441,13 @@ public:
         reflection.addBufferInput("lights").buffer(kLocalTableSize).transferRead();
         reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
             .shaderRead().memoryLocation = MemoryLocation::HostUpload;
-        reflection.addBufferOutput("data").buffer(kLocalReadbackSize).transferWrite().hostReadback();
+        const bool captureBudget = properties().value("captureBudget", false);
+        if (captureBudget) {
+            reflection.addBufferInput("memory").buffer(64).transferRead();
+            reflection.addBufferInput("budgetDiagnostics").buffer(kLocalBudgetDiagnosticSize).transferRead();
+        }
+        reflection.addBufferOutput("data").buffer(kLocalReadbackSize +
+            (captureBudget ? 64 + kLocalBudgetDiagnosticSize : 0)).transferWrite().hostReadback();
         reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
         return reflection;
     }
@@ -1470,6 +1477,16 @@ public:
             if (!destination) { return std::unexpected(destination.error()); }
             if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
         }
+        if (context.properties().value("captureBudget", false)) {
+            for (const auto& [name, offset, size] : {std::tuple{"memory", kLocalReadbackSize, uint64_t(64)},
+                std::tuple{"budgetDiagnostics", kLocalReadbackSize + 64, kLocalBudgetDiagnosticSize}}) {
+                auto source = context.inputBuffer(name).buffer()->slice({0, size});
+                auto destination = buffer->slice({offset, size});
+                if (!source) { return std::unexpected(source.error()); }
+                if (!destination) { return std::unexpected(destination.error()); }
+                if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+            }
+        }
         auto* info = context.inputBuffer("rasterInfo").buffer();
         const void* mapped = info->map();
         if (!mapped) { return makeError(Error::Failure); }
@@ -1491,9 +1508,12 @@ struct LocalSnapshot {
     std::array<std::vector<uint32_t>, kLocalLayers> debug;
     std::vector<float> depth;
     VisibilityBufferFrameInfo camera;
+    std::array<uint64_t, 8> memory{};
+    std::array<uint32_t, 8> budgetHeader{};
+    std::array<std::array<uint32_t, 8>, kLocalLayers> budgetFaces{};
 };
 
-LocalSnapshot localSnapshot(const std::string& name)
+LocalSnapshot localSnapshot(const std::string& name, bool captureBudget = false)
 {
     LocalSnapshot result;
     auto* buffer = activeEvidence->namedReadbacks.at(name);
@@ -1510,6 +1530,11 @@ LocalSnapshot localSnapshot(const std::string& name)
     std::memcpy(result.statistics.data(), mapped + kLocalStatsOffset, sizeof(result.statistics));
     std::memcpy(&result.header, mapped + kLocalLightsOffset, sizeof(result.header));
     std::memcpy(result.entries.data(), mapped + kLocalLightsOffset + sizeof(result.header), sizeof(result.entries));
+    if (captureBudget) {
+        std::memcpy(result.memory.data(), mapped + kLocalReadbackSize, sizeof(result.memory));
+        std::memcpy(result.budgetHeader.data(), mapped + kLocalReadbackSize + 64, sizeof(result.budgetHeader));
+        std::memcpy(result.budgetFaces.data(), mapped + kLocalReadbackSize + 64 + sizeof(result.budgetHeader), sizeof(result.budgetFaces));
+    }
     buffer->unmap();
     result.camera = activeEvidence->camera;
     require(result.header.version == kVirtualShadowMapLightsVersion && result.header.capacity == kLocalCapacity &&
@@ -2270,6 +2295,559 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapLocalLightsTest);
+
+class VirtualShadowMapDemandBudgetTest final : public RHITest
+{
+public:
+    VirtualShadowMapDemandBudgetTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_demand_budget"; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapDemandBudget";
+        Json report{{"passed", false}, {"width", kWidth}, {"height", kHeight}, {"settlingFrames", 16}, {"slackFeedbackFrames", 10},
+            {"scope", "Completed-frame demand feedback, per-face allocation, independent geometry and cache correctness; diagnostic only"},
+            {"limits", "Resident floor fixture; point-face/seam and stream regressions remain in virtual_shadow_map_local_lights. Submission cancellation is covered separately by virtual_shadow_map_demand_feedback_lifecycle."},
+            {"frames", Json::array()}, {"oracles", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapDemandBudget.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            static const bool registered = registerRenderGraphPassType("VSMDemandBudgetEvidencePass",
+                "Test-only demand budget, memory and local shadow readback",
+                [] { return std::make_unique<VSMLocalEvidencePass>(activeEvidence); });
+            require(registered, "Register demand-budget evidence pass");
+            const auto fixture = writeLocalFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load demand-budget fixture");
+            environment::WorldEnvironment world; world.sun.enabled = false; world.moon.enabled = false;
+            RenderView view;
+            RenderGraphPreviewRenderer preview;
+            configureCachePreview(preview, scene, view, context, validation, world);
+            scene::LightingSettings lighting;
+            lighting.autoExposure.enabled = false;
+            lighting.lights.push_back(localLight("Point", false, {-1,4,0}));
+            lighting.lights.push_back(localLight("HotSpot", true, {1,4,0}));
+            lighting.lights.push_back(localLight("EmptySpot", true, {100,4,0}));
+            lighting.lights.back().properties.range = 1;
+            const auto publish = [&] {
+                require(scene.setLighting(lighting), "Publish demand-budget light edits");
+                lighting = scene.lighting();
+                require(preview.setLighting(lighting), "Publish demand-budget preview lighting");
+            };
+            publish();
+            const uint64_t pointId = lighting.lights[0].stableId, hotId = lighting.lights[1].stableId,
+                emptyId = lighting.lights[2].stableId;
+            activeEvidence = std::make_shared<EvidenceState>();
+            const auto templateGraph = makeLocalGraph(fixture);
+            RenderGraph graph;
+            graph.setName("VirtualShadowMapDemandBudget");
+            graph.setViewProperties({{"temporalJitter",false},
+                {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
+            graph.addNode("VisibilityBufferPass", "Raster", templateGraph.findNode("Raster")->properties);
+            constexpr std::array arms{"Equal", "EqualRedraw", "Demand", "DemandRedraw", "Reference"};
+            constexpr uint32_t pressureBudget = 64, referenceBudget = 4096;
+            for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                const std::string name = arms[arm], evidenceName = name + "Evidence";
+                auto settings = templateGraph.findNode("Cached")->properties;
+                settings["physicalPageBudget"] = referenceBudget;
+                settings["demandDrivenBudget"] = arm == 2 || arm == 3;
+                settings["forceRedraw"] = arm == 1 || arm == 3;
+                settings["filter"] = "hard";
+                settings["smrtTemporalEnabled"] = false;
+                settings["smrtRayCount"] = 2;
+                settings["smrtSamplesPerRay"] = 2;
+                settings["smrtMaxRayLength"] = .5;
+                graph.addNode("VirtualShadowMapLightsPass", name, settings);
+                graph.addEdge("Raster.depth", name + ".depth");
+                graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
+                graph.addNode("VSMDemandBudgetEvidencePass", evidenceName,
+                    {{"evidenceName",name},{"captureBudget",true}});
+                for (const char* field : {"shadows", "debug", "lights", "statistics", "memory", "budgetDiagnostics"}) {
+                    graph.addEdge(name + "." + field, evidenceName + "." + field);
+                }
+                graph.addEdge("Raster.depth", evidenceName + ".depth");
+                graph.addEdge("Raster.rasterInfo", evidenceName + ".rasterInfo");
+                graph.markOutput(evidenceName + ".color");
+            }
+            uint32_t totalBudget = referenceBudget, frameIndex = 0;
+            bool enabled = true;
+            std::string filter = "hard";
+            using Images = std::array<LocalSnapshot, arms.size()>;
+            using FaceKey = std::pair<uint64_t, uint32_t>;
+            using FaceState = std::map<FaceKey, std::array<uint32_t, 2>>;
+            const auto faceState = [](const LocalSnapshot& image) {
+                FaceState result;
+                for (uint32_t index = 0; index < image.header.count; ++index) {
+                    const auto& entry = image.entries[index];
+                    if (entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        const auto& stats = image.statistics[entry.baseLayer + face];
+                        result[{localEntryId(entry), face}] = {stats[12], stats[23]};
+                    }
+                }
+                return result;
+            };
+            const auto totals = [](const LocalSnapshot& image) {
+                std::array<uint64_t, 32> result{};
+                for (const auto& face : image.statistics) {
+                    for (uint32_t word = 0; word < result.size(); ++word) { result[word] += face[word]; }
+                }
+                return result;
+            };
+            const auto property = [&](const char* key, const Json& value) {
+                for (const char* arm : arms) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(arm)->id, key, value), "Set demand-budget property");
+                }
+            };
+            const auto budget = [&](uint32_t value) {
+                totalBudget = value;
+                for (uint32_t arm = 0; arm < 4; ++arm) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(arms[arm])->id, "physicalPageBudget", value),
+                        "Set demand-budget pressure");
+                }
+            };
+            const auto capture = [&](const std::string& phase) {
+                validation.phase(phase);
+                renderAndRequire(preview, graph, "DemandEvidence.color");
+                Images images;
+                Json row{{"frame", frameIndex++}, {"phase",phase}, {"filter",filter}, {"budget",totalBudget},
+                    {"enabled",enabled}, {"arms",Json::object()}};
+                for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                    images[arm] = localSnapshot(arms[arm], true);
+                    const auto& image = images[arm];
+                    auto& data = row["arms"][arms[arm]];
+                    data = {{"budgetHeader",image.budgetHeader}, {"memory",image.memory},
+                        {"totals",totals(image)}, {"admitted",image.header.admittedCount},
+                        {"dropped",image.header.budgetDroppedCount}, {"entries",Json::array()}};
+                    for (uint32_t index = 0; index < image.header.count; ++index) {
+                        const auto& entry = image.entries[index];
+                        Json item{{"stableId",localEntryId(entry)}, {"source",entry.source}, {"kind",entry.kind},
+                            {"status",entry.status}, {"pageBudget",entry.pageBudget}, {"faces",Json::array()}};
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            const auto layer = entry.baseLayer + face;
+                            item["faces"].push_back({{"face",face}, {"statistics",image.statistics[layer]},
+                                {"budget",image.budgetFaces[layer]}, {"shadowSHA256",debug::debugSha256(image.shadows[layer])}});
+                        }
+                        data["entries"].push_back(std::move(item));
+                    }
+                }
+                report["frames"].push_back(std::move(row));
+                auto& recorded = report["frames"].back();
+                for (uint32_t arm = 0; arm < arms.size(); ++arm) {
+                    const auto& image = images[arm];
+                    const uint32_t limit = arm == 4 ? referenceBudget : totalBudget;
+                    require(image.budgetHeader[0] == 1 && image.budgetHeader[1] == uint32_t(arm == 2 || arm == 3),
+                        phase + ": invalid demand diagnostic version or mode");
+                    uint32_t assigned = 0, admittedFaces = 0;
+                    for (uint32_t index = 0; index < image.header.count; ++index) {
+                        const auto& entry = image.entries[index];
+                        uint32_t lightAssigned = 0;
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            const auto layer = entry.baseLayer + face;
+                            const auto& stats = image.statistics[layer];
+                            if (entry.status != kVirtualShadowMapLightAdmitted) {
+                                require(stats == std::array<uint32_t, 32>{}, phase + ": unadmitted face retained statistics");
+                                continue;
+                            }
+                            ++admittedFaces;
+                            require(stats[12] >= 1 && stats[12] <= 4096 && stats[1] <= stats[12] - 1,
+                                phase + ": invalid face capacity or fine admission");
+                            require(stats[0] == stats[1] + stats[2], phase + ": requested/admitted/rejected accounting");
+                            require(stats[5] == 0 && stats[9] == 0, phase + ": raster work overflow or invalid coarse coverage");
+                            require(image.budgetFaces[layer][3] == stats[12], phase + ": published quota differs from executed capacity");
+                            lightAssigned += stats[12];
+                        }
+                        require(lightAssigned == entry.pageBudget, phase + ": light budget differs from face capacities");
+                        assigned += lightAssigned;
+                    }
+                    require(assigned <= limit && image.budgetHeader[4] == limit &&
+                        image.budgetHeader[5] == assigned && image.budgetHeader[2] == admittedFaces,
+                        phase + ": global physical budget accounting");
+                    require(image.depth == images[0].depth, phase + ": allocation policy changed primary depth");
+                }
+                for (uint32_t cached : {0u, 2u}) {
+                    const auto& image = images[cached];
+                    const auto& redrawn = images[cached + 1];
+                    require(image.shadows == redrawn.shadows, phase + ": cached and forced-redraw shadows differ");
+                    for (uint32_t layer = 0; layer < kLocalLayers; ++layer) {
+                        require(image.statistics[layer][12] == redrawn.statistics[layer][12],
+                            phase + ": paired feedback schedulers selected different quotas");
+                    }
+                }
+                for (uint32_t arm : {0u, 2u}) {
+                    uint64_t differences = 0;
+                    for (uint32_t layer = 0; layer < kLocalLayers; ++layer) {
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            differences += images[arm].shadows[layer][pixel] != images[4].shadows[layer][pixel];
+                        }
+                    }
+                    recorded["arms"][arms[arm]]["changedPixelsVsHighBudget"] = differences;
+                }
+                return images;
+            };
+            const auto oracle = [&](const Images& images, const std::string& phase) {
+                require(filter == "hard", "Demand-budget triangle oracle requires hard shadows");
+                auto oracleLighting = scene.lighting();
+                std::erase_if(oracleLighting.lights, [&](const auto& light) { return light.stableId == emptyId; });
+                for (uint32_t arm : {0u, 2u, 4u}) {
+                    report["oracles"].push_back({{"phase",phase}, {"arm",arms[arm]},
+                        {"result",verifyLocalOracle(images[arm], fixture, oracleLighting, directory,
+                            phase + "-" + arms[arm], .001)}});
+                }
+            };
+            const auto settled = [&](const std::string& phase) {
+                Images images;
+                for (uint32_t frame = 0; frame < 16; ++frame) { images = capture(phase + "-Settle" + std::to_string(frame)); }
+                const auto stable = faceState(images[2]);
+                const auto atlasBytes = images[2].memory[0], atlasPages = images[2].memory[5];
+                require(images[2].budgetHeader[3] == images[2].budgetHeader[2], phase + ": admitted faces did not receive completed GPU demand");
+                for (uint32_t frame = 0; frame < 3; ++frame) {
+                    images = capture(phase + "-Stable" + std::to_string(frame));
+                    require(faceState(images[2]) == stable, phase + ": stable quotas or cache epochs oscillate");
+                    require(images[2].budgetHeader[6] == 0 && images[2].budgetHeader[7] == 0,
+                        phase + ": stable demand recreated quotas or feedback buffers");
+                    require(images[2].memory[0] == atlasBytes && images[2].memory[5] == atlasPages,
+                        phase + ": stable demand changed retained atlas memory");
+                    for (uint32_t arm : {0u, 2u, 4u}) {
+                        for (uint32_t index = 0; index < images[arm].header.count; ++index) {
+                            const auto& entry = images[arm].entries[index];
+                            if (entry.status == kVirtualShadowMapLightAdmitted) {
+                                requireLocalReused(images[arm], localEntryId(entry), phase + "-" + arms[arm]);
+                            }
+                        }
+                    }
+                }
+                save();
+                return images;
+            };
+
+            auto images = capture("SlackCold");
+            require(images[2].budgetHeader[3] == 0 && images[2].shadows == images[0].shadows,
+                "Unknown cold demand did not use the equal-budget fallback");
+            require(images[2].header.admittedCount == 3 && images[2].budgetHeader[2] == 8 &&
+                localEntry(images[2], pointId).faceCount == 6 && totals(images[2])[0] > 0 && totals(images[2])[2] == 0,
+                "Slack fixture did not admit the complete point and spot demand");
+            const auto slackState = faceState(images[2]);
+            const auto slackShadows = images[2].shadows;
+            const auto slackAtlasBytes = images[2].memory[0], slackAtlasPages = images[2].memory[5];
+            // Cross-policy equality is required only while all requests fit the
+            // original equal quotas. Pressure below intentionally changes them.
+            for (uint32_t frame = 0; frame < 10; ++frame) {
+                const std::string phase = "SlackFeedback" + std::to_string(frame);
+                images = capture(phase);
+                const bool exact = images[2].shadows == images[0].shadows && images[2].shadows == slackShadows;
+                report["frames"].back()["slackEqualDemandByteExact"] = exact;
+                require(images[2].budgetHeader[3] == 8 && images[2].budgetHeader[6] == 0,
+                    phase + ": satisfied feedback changed quotas or did not become known");
+                require(faceState(images[2]) == slackState && images[2].memory[0] == slackAtlasBytes &&
+                    images[2].memory[5] == slackAtlasPages, phase + ": satisfied demand changed the atlas layout or cache epochs");
+                require(totals(images[2])[2] == 0 && exact, phase + ": satisfied demand changed the equal-budget image");
+                for (uint64_t id : {pointId, hotId, emptyId}) { requireLocalReused(images[2], id, phase); }
+                const auto& point = localEntry(images[2], pointId);
+                uint32_t emptyFaces = 0, busyFaces = 0;
+                for (uint32_t face = 0; face < point.faceCount; ++face) {
+                    const auto& stats = images[2].statistics[point.baseLayer + face];
+                    if (stats[0] == 0) { ++emptyFaces; require(stats[12] > 1, phase + ": slack empty point face lost its retained quota"); }
+                    else { ++busyFaces; }
+                }
+                const auto& emptySpot = localEntry(images[2], emptyId);
+                require(point.faceCount == 6 && emptyFaces > 0 && busyFaces > 0 && emptySpot.pageBudget > 1 &&
+                    images[2].statistics[emptySpot.baseLayer][0] == 0,
+                    phase + ": slack fixture lost its six-face imbalance or empty spot coverage");
+            }
+            oracle(images, "Slack");
+
+            budget(pressureBudget);
+            (void)capture("PressureTransition");
+            images = settled("Pressure");
+            const auto& equalEmpty = localEntry(images[0], emptyId);
+            const auto& demandEmpty = localEntry(images[2], emptyId);
+            require(equalEmpty.pageBudget > 1 && demandEmpty.pageBudget == 1 &&
+                images[2].statistics[demandEmpty.baseLayer][0] == 0, "Empty light did not return fine-page capacity");
+            require(totals(images[2])[1] > totals(images[0])[1] && totals(images[2])[2] < totals(images[0])[2],
+                "Hot-light fixture did not improve fine admission at the same total budget");
+            const auto& demandPoint = localEntry(images[2], pointId);
+            require(demandPoint.faceCount == 6, "Demand allocation split the point light");
+            uint32_t emptyPointFaces = 0, busyPointFaces = 0;
+            for (uint32_t face = 0; face < 6; ++face) {
+                const auto& stats = images[2].statistics[demandPoint.baseLayer + face];
+                if (stats[0] == 0) { ++emptyPointFaces; require(stats[12] == 1, "Empty point face retained fine pages"); }
+                else { ++busyPointFaces; }
+            }
+            require(emptyPointFaces > 0 && busyPointFaces > 0, "Point fixture did not exercise face demand imbalance");
+            require(totals(images[4])[2] == 0, "High-budget reference did not admit all fine demand");
+            oracle(images, "Pressure");
+
+            const auto beforeReorder = faceState(images[2]);
+            std::reverse(lighting.lights.begin(), lighting.lights.end()); publish();
+            images = capture("Reordered");
+            require(faceState(images[2]) == beforeReorder, "Source-slot reordering lost stable face quota or cache identity");
+            for (uint64_t id : {pointId, hotId, emptyId}) { requireLocalReused(images[2], id, "Reordered demand"); }
+            oracle(images, "Reordered");
+
+            budget(8);
+            images = capture("CoarseOnlyTransition");
+            require(images[2].header.admittedCount == 3, "Eight-page budget did not admit complete point and spots");
+            images = settled("CoarseOnly");
+            require(totals(images[2])[12] == 8 && totals(images[2])[1] == 0, "Coarse-only global budget leaked fine pages");
+            oracle(images, "CoarseOnly");
+            budget(0);
+            images = capture("ZeroBudget");
+            require(images[2].header.admittedCount == 0 && images[2].header.budgetDroppedCount == 3,
+                "Zero budget did not publish whole-light rejection");
+            budget(pressureBudget);
+            (void)capture("BudgetRestoredTransition");
+            images = settled("BudgetRestored");
+            oracle(images, "BudgetRestored");
+
+            const auto empty = [&]() -> scene::PunctualLight& {
+                return *std::find_if(lighting.lights.begin(), lighting.lights.end(),
+                    [&](const auto& light) { return light.stableId == emptyId; });
+            };
+            empty().enabled = false; publish();
+            images = capture("EmptyDisabledTransition");
+            require(localEntry(images[2], emptyId).status == kVirtualShadowMapLightDisabled, "Disabled light retained admission");
+            (void)settled("EmptyDisabled");
+            empty().enabled = true; publish();
+            (void)capture("EmptyEnabledTransition");
+            images = settled("EmptyEnabled");
+            require(localEntry(images[2], emptyId).pageBudget == 1, "Re-enabled empty light did not reconverge");
+            std::erase_if(lighting.lights, [&](const auto& light) { return light.stableId == emptyId; }); publish();
+            (void)capture("EmptyRemovedTransition");
+            images = settled("EmptyRemoved");
+            require(images[2].header.count == 4 && images[2].header.admittedCount == 2,
+                "Removed light remained in the public source-slot table");
+
+            auto& hot = *std::find_if(lighting.lights.begin(), lighting.lights.end(),
+                [&](const auto& light) { return light.stableId == hotId; });
+            hot.position.x -= 1.5f; publish();
+            images = capture("HotMovedTransition");
+            require(images[2].statistics[localEntry(images[2], hotId).baseLayer][21] == 1,
+                "Moved hot light reused stale coarse depth");
+            images = settled("HotMoved");
+            oracle(images, "HotMoved");
+
+            enabled = false; property("enabled", false);
+            images = capture("PassDisabled");
+            require(images[2].header.admittedCount == 0 && totals(images[2])[12] == 0, "Disabled pass retained physical quotas");
+            enabled = true; property("enabled", true);
+            (void)capture("PassEnabledTransition");
+            images = settled("PassEnabled");
+            oracle(images, "PassEnabled");
+
+            for (const char* kind : {"spot", "point"}) {
+                auto& converted = *std::find_if(lighting.lights.begin(), lighting.lights.end(),
+                    [&](const auto& light) { return light.stableId == pointId; });
+                converted.properties.type = kind;
+                // Reuse the fixture's verified spot projection for this identity
+                // transition, then restore the original six-face point position.
+                const auto& spotControl = *std::find_if(lighting.lights.begin(), lighting.lights.end(),
+                    [&](const auto& light) { return light.stableId == hotId; });
+                converted.position = std::string_view(kind) == "spot" ? spotControl.position : float3(-1,4,0);
+                converted.direction = spotControl.direction;
+                converted.properties.outerConeAngle = spotControl.properties.outerConeAngle;
+                converted.properties.innerConeAngle = spotControl.properties.innerConeAngle;
+                converted.properties.range = spotControl.properties.range;
+                publish();
+                const std::string phase = std::string("PointIdentityAs-") + kind;
+                images = capture(phase + "-Transition");
+                const auto& entry = localEntry(images[2], pointId);
+                const uint32_t expectedFaces = std::string_view(kind) == "point" ? 6u : 1u;
+                require(entry.faceCount == expectedFaces, phase + ": light kind did not change its full face set");
+                for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                    require(images[2].budgetFaces[entry.baseLayer + face][0] == 0,
+                        phase + ": converted light inherited demand from the old projection kind");
+                }
+                images = settled(phase);
+                oracle(images, phase);
+            }
+
+            filter = "pcf"; property("filter", filter); property("pcfRadius", 1.0);
+            (void)capture("PCFTransition");
+            images = settled("PCF");
+            require(totals(images[2])[30] > 0, "PCF demand did not execute filtered queries");
+            filter = "smrt"; property("filter", filter);
+            for (auto& light : lighting.lights) { light.properties.sourceRadius = .05; }
+            publish();
+            (void)capture("SMRTTransition");
+            images = settled("SMRT");
+            require(totals(images[2])[30] > 0, "SMRT demand did not execute filtered queries");
+            report["validation"] = validation.snapshot();
+            requireValidPreview(report["validation"]);
+            report["passed"] = true;
+            save();
+            activeEvidence.reset();
+            return RHITestResult::pass("Demand/equal cached-redraw pairs, ample-budget byte equality, completed GPU feedback, hot/empty lights, six point faces, stable quotas, budget changes, source identity and Hard/PCF/SMRT verified");
+        } catch (const std::exception& error) {
+            report["error"] = error.what();
+            report["validation"] = validation.snapshot();
+            save();
+            activeEvidence.reset();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDemandBudgetTest);
+
+class VirtualShadowMapDemandFeedbackLifecycleTest final : public RHITest
+{
+public:
+    VirtualShadowMapDemandFeedbackLifecycleTest()
+    {
+        type = RHITestType::Rendering;
+        name = "virtual_shadow_map_demand_feedback_lifecycle";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapDemandFeedbackLifecycle";
+        Json report{{"passed",false}, {"scope","Real LightsPass readback publication follows the copy command transaction, not aggregate frame submission"},
+            {"primingFrames",2},
+            {"limits","Equal-mode submissions initialize graph resources before cancelling the first demand readback. Cold whole-graph cancellation exposed non-aliased graph layout tracking ahead of the GPU in Focused2; graph rollback is outside this feedback test."},
+            {"cases",Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapDemandFeedbackLifecycle.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            static const bool registered = registerRenderGraphPassType("VSMFeedbackLifetimeEvidencePass",
+                "Test-only external-command VSM feedback readback",
+                [] { return std::make_unique<VSMLocalEvidencePass>(activeEvidence); });
+            require(registered, "Register feedback-lifetime evidence pass");
+            registerBuiltInRenderGraphPasses();
+            std::unique_ptr<Device> device;
+            require(createDevice({.applicationName = "VSM demand feedback lifecycle",
+                .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true, .enableShaderObject = true, .enableMeshShader = true,
+                .enableTaskShader = true, .enableTaskShaderSubgroupBallot = true, .enableGeometryShader = true,
+                .enableSubgroupSizeControl = true, .enableComputeFullSubgroups = true, .preferredTaskSubgroupSize = 32,
+                .validationSink = validation.sink(), .enableAsyncCompute = true, .enableAftermath = false})
+                .transform([&](auto value) { device = std::move(value); }), "Create feedback-lifetime device");
+            const auto fixture = writeLocalFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load feedback-lifetime fixture");
+            environment::WorldEnvironment world;
+            world.sun.enabled = false; world.moon.enabled = false;
+            // SceneDocument returns false for an unchanged, already valid value.
+            (void)scene.setWorldEnvironment(world);
+            require(scene.worldEnvironment() == world, "Disable feedback-lifetime celestials");
+            scene::LightingSettings lighting;
+            lighting.autoExposure.enabled = false;
+            lighting.lights.push_back(localLight("Point", false, {-1,4,0}));
+            require(scene.setLighting(lighting), "Set feedback-lifetime point light");
+            const auto templateGraph = makeLocalGraph(fixture);
+            for (uint32_t cancellation : {1u, 2u}) {
+                const std::string label = cancellation == 1 ? "UnsubmittedWholeFrame" : "AcceptedPrefixCancelledTail";
+                validation.phase(label);
+                activeEvidence = std::make_shared<EvidenceState>();
+                RenderGraph graph;
+                graph.setName("VirtualShadowMapDemandFeedbackLifecycle");
+                graph.setViewProperties({{"temporalJitter",false},
+                    {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
+                graph.addNode("VisibilityBufferPass", "Raster", templateGraph.findNode("Raster")->properties);
+                auto settings = templateGraph.findNode("Cached")->properties;
+                settings["physicalPageBudget"] = 64;
+                settings["demandDrivenBudget"] = false;
+                graph.addNode("VirtualShadowMapLightsPass", "Demand", settings);
+                graph.addEdge("Raster.depth", "Demand.depth");
+                graph.addEdge("Raster.rasterInfo", "Demand.rasterInfo");
+                graph.addNode("VSMFeedbackLifetimeEvidencePass", "Evidence", {{"evidenceName","Demand"},{"captureBudget",true}});
+                for (const char* field : {"shadows", "debug", "lights", "statistics", "memory", "budgetDiagnostics"}) {
+                    graph.addEdge(std::string("Demand.") + field, std::string("Evidence.") + field);
+                }
+                graph.addEdge("Raster.depth", "Evidence.depth");
+                graph.addEdge("Raster.rasterInfo", "Evidence.rasterInfo");
+                graph.markOutput("Evidence.color");
+                RenderView view;
+                require(view.setRenderResolution(kWidth, kHeight), "Set feedback-lifetime extent");
+                require(view.setCamera({.eye = {0,4,6}, .center = {0,0,0}, .fovDegrees = 50,
+                    .nearPlane = .1f, .farPlane = 100, .orthoHeight = 7}), "Set feedback-lifetime camera");
+                // Binding a SceneDocument does not publish its virtual lights
+                // into RenderWorld; the preview's setLighting normally owns it.
+                RenderWorld renderWorld;
+                renderWorld.setScene(&scene);
+                require(renderWorld.setLighting(scene.lighting()), "Publish feedback-lifetime world light");
+                renderWorld.setEnvironment({.enabled = false});
+                RenderGraphExecutor executor;
+                executor.bindRenderView(&view);
+                executor.bindRenderWorld(&renderWorld);
+                executor.bindRuntimeScene(&scene);
+                std::string log;
+                require(executor.compile(*device, graph, kWidth, kHeight, log), "Compile feedback-lifetime graph: " + log);
+                graph.clearDirty();
+                // The whole real graph, including its feedback copy, goes in
+                // the tail. Only an unrelated empty command is ever accepted in
+                // the partial case. Its completed aggregate frame is not proof
+                // that the tail's feedback bytes were copied.
+                CacheCommands gpu(*device);
+                const auto record = [&](uint32_t cancelMode) {
+                    gpu.begin();
+                    require(executor.execute(*gpu.commands), "Record feedback-lifetime graph");
+                    gpu.finish(cancelMode);
+                };
+                report["cases"].push_back({{"name",label}, {"priming",Json::array()}, {"frames",Json::array()}});
+                auto& output = report["cases"].back();
+                const auto appendImage = [&](const LocalSnapshot& image, Json& rows, uint32_t index) {
+                    uint64_t requested = 0, receivers = 0;
+                    for (const auto& stats : image.statistics) { requested += stats[0]; receivers += stats[6]; }
+                    rows.push_back({{"index",index}, {"admittedLights",image.header.admittedCount},
+                        {"budgetHeader",image.budgetHeader}, {"budgetFaces",image.budgetFaces},
+                        {"statistics",image.statistics}, {"memory",image.memory},
+                        {"requestedFine",requested}, {"receiverCount",receivers}});
+                    save();
+                    require(image.header.admittedCount == 1 && image.budgetHeader[2] == 6,
+                        label + ": real point-light six-face path was not executed");
+                    require(requested > 0 && receivers > 0, label + ": feedback case had no real receiver demand");
+                };
+                // A completed Equal frame establishes image layouts and scene
+                // uploads without creating demand feedback. Recompiling after
+                // cancellation would discard the very pass state being tested.
+                for (uint32_t prime = 0; prime < 2; ++prime) {
+                    validation.phase(label + "-EqualPrime" + std::to_string(prime));
+                    record(0);
+                    const auto image = localSnapshot("Demand", true);
+                    appendImage(image, output["priming"], prime);
+                    require(image.budgetHeader[1] == 0 && image.budgetHeader[3] == 0,
+                        label + ": priming unexpectedly enabled demand feedback");
+                }
+                require(graph.setNodeRuntimeProperty(graph.findNode("Demand")->id, "demandDrivenBudget", true),
+                    "Enable feedback after graph initialization");
+                require(executor.syncRuntimeProperties(graph), "Synchronize feedback mode without recompiling the pass");
+                validation.phase(label + "-CancelledFirstDemand");
+                record(cancellation);
+                const bool aggregateSubmitted = gpu.frame.completion().isSubmitted();
+                const bool aggregateCancelled = gpu.frame.completion().isCancelled();
+                require(cancellation == 2 ? aggregateSubmitted && !aggregateCancelled : !aggregateSubmitted && aggregateCancelled,
+                    label + ": cancellation did not establish the intended aggregate completion state");
+                output["aggregateSubmitted"] = aggregateSubmitted;
+                output["aggregateCancelled"] = aggregateCancelled;
+                for (uint32_t retry = 0; retry < 2; ++retry) {
+                    validation.phase(label + "-Retry" + std::to_string(retry));
+                    record(0);
+                    const auto image = localSnapshot("Demand", true);
+                    appendImage(image, output["frames"], retry);
+                    require(image.budgetHeader[1] == 1, label + ": valid retry did not enable demand feedback");
+                    require(image.budgetHeader[3] == (retry == 0 ? 0u : 6u),
+                        label + (retry == 0 ? ": cancelled feedback was consumed on the first valid retry" :
+                            ": completed valid feedback was not consumed on the next frame"));
+                }
+            }
+            activeEvidence.reset();
+            report["validation"] = validation.snapshot();
+            requireValidPreview(report["validation"]);
+            report["passed"] = true;
+            save();
+            return RHITestResult::pass("LightsPass whole-frame and accepted-prefix/tail cancellation do not publish demand; the next completed valid frame does");
+        } catch (const std::exception& error) {
+            activeEvidence.reset();
+            report["error"] = error.what(); report["validation"] = validation.snapshot();
+            save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDemandFeedbackLifecycleTest);
 
 struct ProfilingReadbackLayout
 {

@@ -109,6 +109,7 @@ public:
                 actualRenderHeight = binding.texture->desc().height;
             }
             const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory" ||
+                binding.id == "Shadows.budgetDiagnostics" ||
                 binding.id == "Shadows.lodStatistics" ||
                 (collectGPUWork && (binding.id == "Shadows.workload" || binding.id == "Shadows.buildDiagnostics"));
             const bool image = (captureImages && (binding.id == "VBuffer.depth" ||
@@ -147,6 +148,16 @@ public:
         std::memcpy(&header, table.data(), sizeof(header));
         requireAcceptance(header.version == kVirtualShadowMapLightsVersion && header.count <= header.capacity,
             "Invalid VSM light header");
+        requireAcceptance(table.size() == sizeof(header) + uint64_t(header.capacity) * sizeof(VirtualShadowMapLightEntry),
+            "Invalid VSM light entry array size");
+        Json entries = Json::array();
+        for (uint32_t index = 0; index < header.count; ++index) {
+            VirtualShadowMapLightEntry entry;
+            std::memcpy(&entry, table.data() + sizeof(header) + index * sizeof(entry), sizeof(entry));
+            entries.push_back({{"index", index}, {"source", entry.source}, {"kind", entry.kind},
+                {"baseLayer", entry.baseLayer}, {"faceCount", entry.faceCount}, {"stableId", entry.stableId},
+                {"pageBudget", entry.pageBudget}, {"status", entry.status}, {"positionRange", entry.positionRange}});
+        }
         const auto raw = read("Shadows.statistics");
         requireAcceptance(raw.size() % kVirtualShadowMapFaceStatisticsSize == 0, "Invalid VSM statistics size");
         Json faces = Json::array();
@@ -161,7 +172,7 @@ public:
             {"totalFaces", header.totalFaces}, {"admittedCount", header.admittedCount},
             {"budgetDroppedCount", header.budgetDroppedCount}, {"disabledCount", header.disabledCount},
             {"physicalPageBudget", header.physicalPageBudget}, {"sceneIdentity", header.sceneIdentity}}},
-            {"statistics", faces}, {"totals", totals}};
+            {"entries", std::move(entries)}, {"statistics", faces}, {"totals", totals}};
         const auto rawLOD = read("Shadows.lodStatistics");
         requireAcceptance(rawLOD.size() == 32 * sizeof(uint32_t), "Unexpected VSM LOD statistics layout");
         std::array<uint32_t, 32> lodStatistics;
@@ -223,6 +234,21 @@ public:
             std::array<uint64_t, 8> values;
             std::memcpy(values.data(), rawMemory.data(), sizeof(values));
             result["resourceMemory"] = values;
+        }
+        if (captured.contains("Shadows.budgetDiagnostics")) {
+            const auto rawBudget = read("Shadows.budgetDiagnostics");
+            requireAcceptance(rawBudget.size() == (8 + uint64_t(header.capacity) * 6 * 8) * sizeof(uint32_t),
+                "Unexpected VSM budget diagnostic layout");
+            std::array<uint32_t, 8> budgetHeader;
+            std::memcpy(budgetHeader.data(), rawBudget.data(), sizeof(budgetHeader));
+            requireAcceptance(budgetHeader[0] == 1, "Unsupported VSM budget diagnostic version");
+            Json budgetFaces = Json::array();
+            for (size_t offset = sizeof(budgetHeader); offset < rawBudget.size(); offset += 8 * sizeof(uint32_t)) {
+                std::array<uint32_t, 8> values;
+                std::memcpy(values.data(), rawBudget.data() + offset, sizeof(values));
+                budgetFaces.push_back(values);
+            }
+            result["budgetDiagnostics"] = {{"header", budgetHeader}, {"faces", std::move(budgetFaces)}};
         }
         return result;
     }
