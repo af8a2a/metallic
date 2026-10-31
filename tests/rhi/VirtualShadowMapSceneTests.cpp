@@ -3303,7 +3303,7 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, DirectionalMark, MarkClipmapSpecialization, MarkRayPages, TriangleBitset, DirectionalBuild, CompactBuild };
+enum class VirtualShadowMapEquivalenceMode { MarkCluster, ClusterBitset, MarkSamples, DirectionalMark, MarkClipmapSpecialization, MarkRayPages, DirectionalProjection, TriangleBitset, DirectionalBuild, CompactBuild };
 
 class VirtualShadowMapEquivalenceTest : public RHITest
 {
@@ -3311,6 +3311,7 @@ public:
     explicit VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode mode) : mode_(mode)
     {
         name = mode == VirtualShadowMapEquivalenceMode::CompactBuild ? "virtual_shadow_map_compact_build_equivalence" :
+            mode == VirtualShadowMapEquivalenceMode::DirectionalProjection ? "virtual_shadow_map_directional_projection_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::MarkRayPages ? "virtual_shadow_map_mark_ray_pages_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization ? "virtual_shadow_map_mark_clipmap_specialization_equivalence" :
             mode == VirtualShadowMapEquivalenceMode::DirectionalMark ? "virtual_shadow_map_directional_mark_equivalence" :
@@ -3330,10 +3331,12 @@ public:
         const bool directionalMarkComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalMark;
         const bool markClipmapComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkClipmapSpecialization;
         const bool markRayPagesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkRayPages;
+        const bool directionalProjectionComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalProjection;
         const bool triangleBitsetComparison = mode_ == VirtualShadowMapEquivalenceMode::TriangleBitset;
         const bool directionalBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalBuild;
         const bool compactBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::CompactBuild;
         const std::string reportName = compactBuildComparison ? "VirtualShadowMapCompactBuildEquivalence" :
+            directionalProjectionComparison ? "VirtualShadowMapDirectionalProjectionEquivalence" :
             markClipmapComparison ? "VirtualShadowMapMarkClipmapSpecializationEquivalence" :
             markRayPagesComparison ? "VirtualShadowMapMarkRayPagesEquivalence" :
             directionalMarkComparison ? "VirtualShadowMapDirectionalMarkEquivalence" :
@@ -3369,7 +3372,7 @@ public:
             const std::vector<const char*> baseArms = compactBuildComparison ? std::vector<const char*>{"Direct", "Compact"} :
                 markClipmapComparison ? std::vector<const char*>{"Baseline", "Specialized"} :
                 markRayPagesComparison ? std::vector<const char*>{"Baseline", "RayPages"} :
-                (directionalBuildComparison || directionalMarkComparison) ? std::vector<const char*>{"Generic", "Directional"} :
+                (directionalBuildComparison || directionalMarkComparison || directionalProjectionComparison) ? std::vector<const char*>{"Generic", "Directional"} :
                 triangleBitsetComparison ? std::vector<const char*>{"Baseline", "TriangleBitset"} :
                 markSamplesComparison ? std::vector<const char*>{"Baseline", "Prepared"} :
                 bitsetComparison ? std::vector<const char*>{"Baseline", "Bitset"} :
@@ -3392,6 +3395,22 @@ public:
             uint64_t markReducedStates = 0, clusterReducedStates = 0, bitsetTestedLevels = 0, bitsetControlStates = 0;
             uint64_t markSamplesStates = 0, markSamplesControlStates = 0;
             uint64_t directionalMarkStates = 0, directionalMarkControlStates = 0;
+            uint64_t directionalProjectionStates = 0, directionalProjectionControlStates = 0, mixedProjectionStates = 0;
+            std::array<uint64_t, 2> directionalProjectionReceiversByPass{}, localProjectionReceiversByType{};
+            if (directionalProjectionComparison) {
+                report["selectionControls"] = {
+                    {"Generic",{{"directionalProjection",true},{"benchmarkDirectionalProjection",false}}},
+                    {"Directional",{{"directionalProjection",false},{"benchmarkDirectionalProjection",true}}},
+                    {"Default",Json::object()},
+                    {"ProductionOff",{{"directionalProjection",false}}},
+                    {"ProductionOn",{{"directionalProjection",true}}},
+                    {"Toggle",{{"directionalProjection","frame % 2 != 0"}}}};
+                report["productionDefault"] = VirtualShadowMapSettings{}.directionalProjection;
+                report["defaultReferenceArm"] = "Generic";
+                report["onePassProjection"] = "Disabled except mixed-onepass controls; the per-face directional shader handles the main matrix";
+                require(!VirtualShadowMapSettings{}.directionalProjection,
+                    "Unqualified directional Projection specialization must default off");
+            }
             uint64_t markClipmapStates = 0, markClipmapControlStates = 0;
             std::array<uint32_t, 12> markClipmapSweepStates{};
             std::array<uint64_t, 2> directionalMarkReceiversByPass{}, localMarkReceiversByType{};
@@ -3479,7 +3498,7 @@ public:
             for (bool streamed : {false, true}) {
                 for (const LocalFixture* fixture : std::array<const LocalFixture*, 4>{&floor, &near, &offscreen, &room}) {
                     const bool mainMatrix = fixture == &floor, nearCase = fixture == &near, roomCase = fixture == &room;
-                    std::vector<std::string> filters = mainMatrix ? (directionalMarkComparison || markClipmapComparison || markRayPagesComparison ?
+                    std::vector<std::string> filters = mainMatrix ? (directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-one", "smrt-max"} :
                         (triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ?
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33", "smrt-max"} : markSamplesComparison ?
@@ -3487,12 +3506,14 @@ public:
                         std::vector<std::string>{"pcf", "smrt", "single-hard", "single-hard-31", "single-hard-33"} :
                         std::vector<std::string>{"pcf", "smrt"}) :
                         std::vector<std::string>{nearCase ? "smrt" : roomCase ? "pcf" : "hard"};
-                    if ((markClipmapComparison || markRayPagesComparison) && mainMatrix && !streamed) {
+                    if ((markClipmapComparison || markRayPagesComparison || directionalProjectionComparison) && mainMatrix && !streamed) {
                         for (uint32_t count = 1; count <= 12; ++count) { filters.push_back("smrt-level-" + std::to_string(count)); }
                     }
+                    if (directionalProjectionComparison && mainMatrix) { filters.push_back("smrt-onepass"); }
                     for (const auto& filter : filters) {
                         const bool single = filter.starts_with("single-");
-                        const bool markClipmapSweep = (markClipmapComparison || markRayPagesComparison) && filter.starts_with("smrt-level-");
+                        const bool mixedProjection = directionalProjectionComparison && filter == "smrt-onepass";
+                        const bool markClipmapSweep = (markClipmapComparison || markRayPagesComparison || directionalProjectionComparison) && filter.starts_with("smrt-level-");
                         const uint32_t clipmapCount = markClipmapSweep ? uint32_t(std::stoul(filter.substr(11))) :
                             filter == "smrt-max" ? 12u : kClipmapCount;
                         const bool bitsetControls = bitsetComparison && mainMatrix && !streamed &&
@@ -3504,6 +3525,8 @@ public:
                         const bool markClipmapControls = markClipmapComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
                         const bool markRayPagesControls = markRayPagesComparison && mainMatrix && !streamed &&
+                            (filter == "single-hard" || filter == "smrt");
+                        const bool directionalProjectionControls = directionalProjectionComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
                         const bool triangleBitsetControls = triangleBitsetComparison && mainMatrix && !streamed &&
                             (filter == "single-hard" || filter == "smrt");
@@ -3518,6 +3541,7 @@ public:
                         if (directionalMarkControls) { arms.insert(arms.end(), {"Default", "GenericLegacyMark", "DirectionalLegacyMark", "ProductionOff", "ProductionOn"}); }
                         if (markClipmapControls) { arms.insert(arms.end(), {"Default", "BaselineLegacyMark", "SpecializedLegacyMark", "ProductionOff", "ProductionOn"}); }
                         if (markRayPagesControls) { arms.insert(arms.end(), {"Default", "RayPagesLegacyMark", "ProductionOn"}); }
+                        if (directionalProjectionControls) { arms.insert(arms.end(), {"Default", "ProductionOff", "ProductionOn", "Toggle"}); }
                         if (bitsetControls) { arms.insert(arms.end(), {"ProductionOff", "CullDisabled"}); }
                         if (triangleBitsetControls) { arms.insert(arms.end(), {"ProductionOff", "ClusterBitsetOff", "CullDisabled"}); }
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
@@ -3559,13 +3583,25 @@ public:
                                  {"pageSize", kPageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", clipmapCount},
                                  {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002},
                                  {"cacheEnabled", true}, {"receiverFootprint", true},
-                                 {"filter", filter == "smrt-max" || filter == "smrt-one" || markClipmapSweep ? "smrt" : single ? "hard" : filter}, {"pcfRadius", 1.5},
+                                 {"filter", filter == "smrt-max" || filter == "smrt-one" || markClipmapSweep || mixedProjection ? "smrt" : single ? "hard" : filter}, {"pcfRadius", 1.5},
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", filter == "smrt-one" ? 1 : 2},
                                  {"smrtSamplesPerRay", filter == "smrt-max" ? 32 : 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
-                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 1) == 0},
-                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 2) == 0},
+                                 {"benchmarkLegacyMark", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 1) == 0},
+                                 {"benchmarkDisableClusterCull", (bitsetComparison || markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || triangleBitsetComparison || directionalBuildComparison || compactBuildComparison) ? false : (arm & 2) == 0},
                                  {"benchmarkClusterPageBitset", false}, {"benchmarkTrianglePageBitset", false}};
+                            if (directionalProjectionComparison) {
+                                settings["demandDrivenBudget"] = false;
+                                settings["onePassProjection"] = mixedProjection;
+                                settings["benchmarkClusterPageBitset"] = true;
+                                settings["benchmarkTrianglePageBitset"] = true;
+                                if (arm < 2) {
+                                    settings["directionalProjection"] = arm == 0;
+                                    settings["benchmarkDirectionalProjection"] = arm == 1;
+                                } else if (arm != 2) {
+                                    settings["directionalProjection"] = arm == 4;
+                                }
+                            }
                             if (markClipmapComparison) {
                                 settings["directionalMark"] = true;
                                 // Isolate shader equivalence from adaptive quota changes,
@@ -3686,6 +3722,10 @@ public:
                         for (uint32_t frame = 0; frame < frameCount; ++frame) {
                             const std::string phase = std::array{"Cold", "Warm", "Dirty", "Overflow", "Recover"}[frame];
                             validation.phase(label + "-" + phase);
+                            if (directionalProjectionControls) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode("Toggle")->id, "directionalProjection", (frame & 1u) != 0),
+                                    "Toggle directional Projection compilation on a persistent pass");
+                            }
                             if (frame == 2) {
                                 float4x4 translation; translation.SetupByTranslation(float3(.35f,0,.2f));
                                 require(scene.setNodeLocalMatrix(0, translation * original), "Move optimization caster");
@@ -3713,14 +3753,14 @@ public:
                                     {"debugSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.debug.data()), snapshot.debug.size() * 4))},
                                     {"depthSha256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(snapshot.depth.data()), snapshot.depth.size() * 4))}};
                                 save();
-                                if (markClipmapComparison || markRayPagesComparison) {
+                                if (markClipmapComparison || markRayPagesComparison || directionalProjectionComparison) {
                                     require(snapshot.statistics[0][11] == clipmapCount,
                                         label + "-" + phase + ": GPU directional clipmap count differs from the compiled-bound case");
                                 }
                                 requireBuildDiagnosticInvariants(snapshot,
-                                    compactBuildComparison ? arm != 4 && arm != 5 : directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
+                                    compactBuildComparison ? arm != 4 && arm != 5 : directionalBuildComparison ? arm < 4 : triangleBitsetComparison ? arm != 4 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || (bitsetComparison ? arm != 3 : (arm & 2) != 0),
                                     label + "-" + phase + "-" + arms[arm],
-                                    compactBuildComparison ? arm < 2 || arm >= 6 : directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || (bitsetComparison && arm == 1));
+                                    compactBuildComparison ? arm < 2 || arm >= 6 : directionalBuildComparison ? arm < 2 : triangleBitsetComparison ? arm < 3 : markSamplesComparison || directionalMarkComparison || markClipmapComparison || markRayPagesComparison || directionalProjectionComparison || (bitsetComparison && arm == 1));
                                 if (arm != 0) {
                                     const auto& baseline = snapshots[(directionalMarkComparison || markClipmapComparison || markRayPagesComparison) && arm == 2 ? 1 : 0];
                                     require(snapshot.shadow == baseline.shadow && snapshot.debug == baseline.debug &&
@@ -3835,6 +3875,31 @@ public:
                                         if (!enumerate) {
                                             require(snapshots[arm].workload[face][kVSMWorkBuildPageTests] == snapshots[0].workload[face][kVSMWorkBuildPageTests],
                                                 label + "-" + phase + ": fallback did not restore metadata scanning");
+                                        }
+                                    }
+                                }
+                            } else if (directionalProjectionComparison) {
+                                if (markClipmapSweep) { ++markClipmapSweepStates[clipmapCount - 1]; }
+                                else if (mixedProjection) { ++mixedProjectionStates; }
+                                else { ++directionalProjectionStates; }
+                                directionalProjectionControlStates += directionalProjectionControls;
+                                if (!mixedProjection) {
+                                    directionalProjectionReceiversByPass[single ? 0 : 1] += snapshots[1].workload[0][kVSMWorkProjectionReceivers];
+                                    if (!single) {
+                                        for (uint32_t face = 12; face < faces; ++face) {
+                                            localProjectionReceiversByType[(face - 12) / 6] += snapshots[1].workload[face][kVSMWorkProjectionReceivers];
+                                        }
+                                    }
+                                }
+                                for (uint32_t arm = 1; arm < arms.size(); ++arm) {
+                                    require(snapshots[arm].buildDiagnostics == snapshots[0].buildDiagnostics,
+                                        label + "-" + phase + ": Projection specialization changed build diagnostics");
+                                    for (uint32_t face = 0; face < faces; ++face) {
+                                        for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                                            // Mark's shared cache atomic issue count can vary with scheduling.
+                                            if (counter == kVSMWorkMarkPageRequests) { continue; }
+                                            require(snapshots[arm].workload[face][counter] == snapshots[0].workload[face][counter],
+                                                label + "-" + phase + ": Projection specialization changed deterministic GPU work");
                                         }
                                     }
                                 }
@@ -3996,6 +4061,20 @@ public:
                     directionalMarkReceiversByPass[0] > 0 && directionalMarkReceiversByPass[1] > 0 &&
                     localMarkReceiversByType[0] > 0 && localMarkReceiversByType[1] > 0,
                     "Mark ray page matrix did not cover skipped and swept levels, both passes, local lights and all twelve SMRT bounds");
+            } else if (directionalProjectionComparison) {
+                report["directionalProjectionStates"] = directionalProjectionStates;
+                report["directionalProjectionControlStates"] = directionalProjectionControlStates;
+                report["mixedOnePassStates"] = mixedProjectionStates;
+                report["clipmapSweepStatesByCount"] = markClipmapSweepStates;
+                report["directionalProjectionReceiversByPass"] = {{"single",directionalProjectionReceiversByPass[0]},
+                    {"lights",directionalProjectionReceiversByPass[1]}};
+                report["localProjectionReceiversByType"] = {{"point",localProjectionReceiversByType[0]},
+                    {"spot",localProjectionReceiversByType[1]}};
+                require(directionalProjectionStates == 82 && directionalProjectionControlStates == 10 && mixedProjectionStates == 10 &&
+                    std::all_of(markClipmapSweepStates.begin(), markClipmapSweepStates.end(), [](uint32_t count) { return count == 2; }) &&
+                    directionalProjectionReceiversByPass[0] > 0 && directionalProjectionReceiversByPass[1] > 0 &&
+                    localProjectionReceiversByType[0] > 0 && localProjectionReceiversByType[1] > 0,
+                    "Directional Projection matrix did not cover both passes, all clipmap counts, local/mixed fallbacks and switch controls");
             } else if (directionalMarkComparison) {
                 report["directionalMarkStates"] = directionalMarkStates;
                 report["directionalMarkControlStates"] = directionalMarkControlStates;
@@ -4024,7 +4103,8 @@ public:
             }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
             return RHITestResult::pass(compactBuildComparison ?
-                "Compacted indirect build preserves images, statistics, diagnostics and deterministic work across both passes, light types and cache/overflow states" : markRayPagesComparison ?
+                "Compacted indirect build preserves images, statistics, diagnostics and deterministic work across both passes, light types and cache/overflow states" : directionalProjectionComparison ?
+                "Directional Projection preserves images, statistics and deterministic work across 82 matrix states, twelve Cold/Warm clipmap bounds and ten mixed one-pass states" : markRayPagesComparison ?
                 "Mark ray pages preserve images, statistics, diagnostics and non-Mark work across 82 matrix states and twelve Cold/Warm SMRT bounds" : markClipmapComparison ?
                 "Mark clipmap specialization preserves images, statistics, diagnostics and deterministic work across 82 matrix states and twelve Cold/Warm SMRT bounds" : directionalMarkComparison ?
                 "Directional Mark specialization preserves images, statistics, diagnostics and deterministic work across both passes, all filters, local lights and cache/overflow states" : directionalBuildComparison ?
@@ -4073,6 +4153,14 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalMarkEquivalenceTest);
+
+class VirtualShadowMapDirectionalProjectionEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+{
+public:
+    VirtualShadowMapDirectionalProjectionEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::DirectionalProjection) {}
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalProjectionEquivalenceTest);
 
 class VirtualShadowMapMarkClipmapSpecializationEquivalenceTest final : public VirtualShadowMapEquivalenceTest
 {

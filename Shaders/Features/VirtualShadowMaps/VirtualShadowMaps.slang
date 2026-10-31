@@ -35,6 +35,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_DIRECTIONAL_MARK
 #define VSM_DIRECTIONAL_MARK 0
 #endif
+#ifndef VSM_DIRECTIONAL_PROJECTION
+#define VSM_DIRECTIONAL_PROJECTION 0
+#endif
 #ifndef VSM_MARK_RAY_PAGES
 #define VSM_MARK_RAY_PAGES 0
 #endif
@@ -203,7 +206,7 @@ float4 vsmProjectClip(float3 position, ShadowProjection projection)
 float3 vsmProjectPosition(float3 position, ShadowProjection projection)
 {
     float4 clip = vsmProjectClip(position, projection);
-#if VSM_DIRECTIONAL_BUILD || VSM_DIRECTIONAL_MARK
+#if VSM_DIRECTIONAL_BUILD || VSM_DIRECTIONAL_MARK || VSM_DIRECTIONAL_PROJECTION
     // Entry-specific directional permutations; makeProjections writes metric.w=0.
     return clip.xyz;
 #else
@@ -792,7 +795,9 @@ float3 vsmPCFPosition(float3 position, float3 normal, ShadowProjection projectio
 float vsmComparisonDepth(float3 position, float3 normal, float3 projected, uint2 texel,
     ShadowProjection projection, uint pageSize)
 {
+#if !VSM_DIRECTIONAL_PROJECTION
     if (projection.metric.w > 0.5) { return vsmPerspectiveReceiverDepth(position, normal, texel, projection, pageSize); }
+#endif
     float denominator = dot(normal, normalize(projection.rowZ.xyz));
     float correction = 0.0;
     if (abs(denominator) > 1e-5) {
@@ -874,6 +879,9 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
 float vsmRayDepth(float depth, ShadowLookup sample, float3 receiver, uint pageSize)
 {
     ShadowProjection projection = sample.projection;
+#if VSM_DIRECTIONAL_PROJECTION
+    return (depth - dot(projection.rowZ, float4(receiver, 1.0))) / length(projection.rowZ.xyz);
+#else
     if (projection.metric.w < 0.5) {
         return (depth - dot(projection.rowZ, float4(receiver, 1.0))) / length(projection.rowZ.xyz);
     }
@@ -887,6 +895,7 @@ float vsmRayDepth(float depth, ShadowLookup sample, float3 receiver, uint pageSi
     // Inverse radial depth gives every cube face the same continuous history
     // coordinate. Larger values, as for directional depth, are toward the light.
     return (depth - scale) / (offset * length(texelRay));
+#endif
 }
 
 float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, uint2 pixel,
@@ -2192,9 +2201,12 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         return true;
     }
     float compareDepth;
+#if !VSM_DIRECTIONAL_PROJECTION
     if (projection.metric.w > 0.5) {
         compareDepth = vsmPerspectiveReceiverDepth(position, normal, virtualTexel, projection, push.pageSize);
-    } else {
+    } else
+#endif
+    {
         float3 axisDepth = normalize(projection.rowZ.xyz);
         float denominator = dot(normal, axisDepth);
         float correction = 0.0;
