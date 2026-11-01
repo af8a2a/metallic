@@ -29,7 +29,11 @@ static const uint32_t kVSMWorkProjectionAtlasLoads = 15;
 static const uint32_t kVSMWorkProjectionAdaptiveLitReceivers = 16;
 static const uint32_t kVSMWorkProjectionAdaptiveUmbraReceivers = 17;
 static const uint32_t kVSMWorkProjectionAdaptiveSavedRays = 18;
-static const uint32_t kVirtualShadowMapWorkCounterCount = 19;
+static const uint32_t kVSMWorkProjectionPageTableLoads = 19;
+static const uint32_t kVSMWorkProjectionMappingLoads = 20;
+static const uint32_t kVSMWorkProjectionMappedAncestors = 21;
+static const uint32_t kVSMWorkProjectionMappingSlowPaths = 22;
+static const uint32_t kVirtualShadowMapWorkCounterCount = 23;
 static const uint32_t kVirtualShadowMapWorkloadSize = kVirtualShadowMapWorkCounterCount * 8;
 
 // Optional build diagnostics follow the unchanged 32 public statistics words
@@ -88,7 +92,8 @@ inline constexpr std::array<std::string_view, kVirtualShadowMapWorkCounterCount>
     "buildActiveTriangleSlots", "buildDecodedTriangles", "buildLevelTests", "buildPageTests",
     "rasterCoarseGroups", "rasterFineGroups", "rasterDecodedTriangles", "rasterOutputPrimitives",
     "rasterClearedPages", "projectionReceivers", "projectionRays", "projectionAtlasLoads",
-    "projectionAdaptiveLitReceivers", "projectionAdaptiveUmbraReceivers", "projectionAdaptiveSavedRays"};
+    "projectionAdaptiveLitReceivers", "projectionAdaptiveUmbraReceivers", "projectionAdaptiveSavedRays",
+    "projectionPageTableLoads", "projectionMappingLoads", "projectionMappedAncestors", "projectionMappingSlowPaths"};
 inline constexpr std::array<std::string_view, kVirtualShadowMapBuildDiagnosticCounterCount> kVirtualShadowMapBuildDiagnosticCounterNames{
     "clusterGroups", "clusterBoundsValidGroups", "clusterSurvivingGroups", "clusterLevelTests", "clusterPageTests",
     "clusterPageHits", "clusterNearPlaneKeeps", "clusterOutsideLevels", "clusterEmptyLevels",

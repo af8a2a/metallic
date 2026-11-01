@@ -290,18 +290,38 @@ class GPUProfileTests(unittest.TestCase):
         self.assertEqual(current["projectionAdaptiveSavedRays"], 38)
 
     def test_work_schema_rejects_wrong_counter_layout_and_version(self):
-        for source, wrong in ((1, 2), (2, 1)):
+        for source, wrong in ((1, 2), (2, 1), (2, 3), (3, 2), (1, 3), (3, 1)):
             row = add_work(frame(1), version=source)
             row["shadow"]["gpuWork"]["version"] = wrong
             with self.assertRaisesRegex(ValueError, "Missing GPU work"):
                 profile.work_frame(row, "diagnostic")
-        for invalid in (None, {"version": True, "enabled": True}, {"version": 3, "enabled": True}):
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 4, "enabled": True}):
             row = frame(1)
             row["shadow"] = {"gpuWork": invalid} if invalid is not None else {"gpuWork": []}
             with self.assertRaisesRegex(ValueError, "schema"):
                 profile.work_frame(row, "diagnostic")
         row = add_work(frame(1), version=2)
         row["shadow"]["gpuWork"]["totals"]["projectionAdaptiveSavedRays"] += 1
+        with self.assertRaisesRegex(ValueError, "totals disagree"):
+            profile.work_frame(row, "diagnostic")
+
+    def test_mapping_counters_preserve_v1_and_v2_schemas(self):
+        current = profile.work_frame(add_work(frame(1), version=3), "diagnostic")
+        for version in (1, 2):
+            historical = profile.work_frame(add_work(frame(1), version=version), "diagnostic")
+            for name in profile.WORK_COUNTERS_BY_VERSION[version]:
+                self.assertEqual(current[name], historical[name])
+            for name in profile.MAPPING_WORK_COUNTERS:
+                self.assertNotIn(name, historical)
+                self.assertGreater(current[name], 0)
+        self.assertEqual(current["projectionPageTableLoads"], 40)
+        self.assertEqual(current["projectionMappingSlowPaths"], 46)
+
+    def test_mapping_counters_validate_totals_and_timing_mode(self):
+        row = add_work(frame(1), version=3)
+        with self.assertRaisesRegex(ValueError, "ordinary timing"):
+            profile.work_frame(row, "timing")
+        row["shadow"]["gpuWork"]["totals"]["projectionMappingLoads"] += 1
         with self.assertRaisesRegex(ValueError, "totals disagree"):
             profile.work_frame(row, "diagnostic")
 

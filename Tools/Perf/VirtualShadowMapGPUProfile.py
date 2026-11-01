@@ -44,8 +44,12 @@ WORK_COUNTERS = (
 ADAPTIVE_WORK_COUNTERS = (
     "projectionAdaptiveLitReceivers", "projectionAdaptiveUmbraReceivers", "projectionAdaptiveSavedRays",
 )
-ALL_WORK_COUNTERS = WORK_COUNTERS + ADAPTIVE_WORK_COUNTERS
-WORK_COUNTERS_BY_VERSION = {1: WORK_COUNTERS, 2: ALL_WORK_COUNTERS}
+MAPPING_WORK_COUNTERS = (
+    "projectionPageTableLoads", "projectionMappingLoads", "projectionMappedAncestors", "projectionMappingSlowPaths",
+)
+V2_WORK_COUNTERS = WORK_COUNTERS + ADAPTIVE_WORK_COUNTERS
+ALL_WORK_COUNTERS = V2_WORK_COUNTERS + MAPPING_WORK_COUNTERS
+WORK_COUNTERS_BY_VERSION = {1: WORK_COUNTERS, 2: V2_WORK_COUNTERS, 3: ALL_WORK_COUNTERS}
 COUNTER_DEFINITIONS = {
     "markReceiverDispatches": "Threads with a depth receiver in the light/face domain; point-light face dispatches may repeat receivers.",
     "markSamplePositions": "Calls to markPosition, including samples subsequently rejected by the point-face check.",
@@ -66,6 +70,10 @@ COUNTER_DEFINITIONS = {
     "projectionAdaptiveLitReceivers": "Receiver-light evaluations exiting after the first ray because all participating lanes missed, with rays remaining.",
     "projectionAdaptiveUmbraReceivers": "Receiver-light evaluations exiting after at least two rays because no participating lane has missed, with rays remaining.",
     "projectionAdaptiveSavedRays": "Ray iterations omitted by adaptive early exits relative to the configured ray count.",
+    "projectionPageTableLoads": "Raw page-table reads in receiver and filter fine-level searches or coarse fallback; propagation reads are excluded.",
+    "projectionMappingLoads": "Projection reads of the derived mapping table; propagation writes are excluded.",
+    "projectionMappedAncestors": "Direct mapped fine-ancestor resolutions with target level greater than the source level; own-page and coarse fallback resolutions are excluded.",
+    "projectionMappingSlowPaths": "Derived mapping unavailable or its certificate rejected, requiring the original page-table search.",
 }
 PAGE_STATISTICS = {0: "requestedFinePages", 1: "admittedFinePages", 2: "unadmittedFinePages",
                    16: "admittedDirtyFinePages", 17: "admittedCleanFinePages", 18: "invalidatedMappedPages",

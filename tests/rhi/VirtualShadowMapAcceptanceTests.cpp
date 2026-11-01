@@ -189,7 +189,7 @@ public:
         std::memcpy(lodStatistics.data(), rawLOD.data(), sizeof(lodStatistics));
         requireAcceptance(lodStatistics[0] == 2, "Unsupported VSM LOD statistics version");
         result["lodStatistics"] = lodStatistics;
-        result["gpuWork"] = {{"version", 2}, {"enabled", collectGPUWork}};
+        result["gpuWork"] = {{"version", 3}, {"enabled", collectGPUWork}};
         result["gpuBuildDiagnostics"] = {{"version", 3}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
             const auto rawWorkload = read("Shadows.workload");

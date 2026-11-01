@@ -318,13 +318,14 @@ struct VirtualShadowMaps::Programs
     bool directional = false;
     bool directionalProjection = false;
     bool adaptiveRayCount = false;
+    bool propagatedMapping = false;
     uint32_t markCacheLevels = 12;
     int markPageShift = -1;
     bool markRayPages = false;
     bool compactBuild = false;
     bool refinedReceiver = false;
-    std::array<std::unique_ptr<ShaderModule>, 15> shaders;
-    std::array<std::unique_ptr<ComputePipeline>, 11> compute;
+    std::array<std::unique_ptr<ShaderModule>, 16> shaders;
+    std::array<std::unique_ptr<ComputePipeline>, 12> compute;
     std::array<std::unique_ptr<ShaderModule>, 2> onePassShaders;
     std::array<std::unique_ptr<ComputePipeline>, 2> onePassComputes;
     std::unique_ptr<GraphicsPipeline> raster;
@@ -864,7 +865,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint32_t compactBatches = compactBuild ? (clusterCapacity + kDrawBatchSize - 1) / kDrawBatchSize : 0u;
     const uint64_t compactWords = compactBuild ? 1u + uint64_t(clusterCapacity) * 2u : 0u;
     const uint64_t compactArgumentOffset = uint64_t(push.batchCount + push.coarseBatchCount) * 12u;
-    const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
+    // The original range is the allocator/cache ownership table. Projection
+    // mappings are rebuilt into a disjoint tail after Finalize publishes validity.
+    const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16 * (settings.propagatedMapping ? 2u : 1u),
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
@@ -1084,6 +1087,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->directional != directional ||
         programs_->directionalProjection != directionalProjection ||
         programs_->adaptiveRayCount != adaptiveRayCount ||
+        programs_->propagatedMapping != settings.propagatedMapping ||
         programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift || programs_->markRayPages != markRayPages ||
         programs_->compactBuild != compactBuild ||
         programs_->refinedReceiver != refinedReceiver;
@@ -1102,6 +1106,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->directional = directional;
         programs->directionalProjection = directionalProjection;
         programs->adaptiveRayCount = adaptiveRayCount;
+        programs->propagatedMapping = settings.propagatedMapping;
         programs->markCacheLevels = markCacheLevels;
         programs->markPageShift = markPageShift;
         programs->markRayPages = markRayPages;
@@ -1109,7 +1114,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->refinedReceiver = refinedReceiver;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
-            "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain"};
+            "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -1123,9 +1128,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const std::string markPageShiftDefine = std::to_string(markPageShift);
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
             if (index == 14 && !compactBuild) { continue; }
+            if (index == 15 && !settings.propagatedMapping) { continue; }
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
+            if (index == 5 || index == 15) {
+                entryMacros.push_back({"VSM_PROPAGATED_MAPPING", settings.propagatedMapping ? "1" : "0"});
+            }
             if (index == 1 && settings.collectReceiverCoverage) {
                 entryMacros.push_back({"VSM_RECEIVER_COVERAGE_DIAGNOSTICS", "1"});
             }
@@ -1149,6 +1158,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
             if (!module) { return std::unexpected(module.error()); }
             programs->shaders[index] = std::move(*module);
+            if (index == 5 || index == 15) {
+                const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
+                spdlog::info("[VSMMappingShader] entry={} propagatedMapping={} spirvSHA256={}",
+                    entries[index], settings.propagatedMapping, debug::debugSha256(bytes));
+            }
             if (index == 1 || index == 3 || index == 5 || index == 6 || index == 7 || index == 14) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
                 spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={} refinedReceiver={} markCacheLevels={} markRayPages={} directionalProjection={} markPageShift={} adaptiveRayCount={}", entries[index],
@@ -1298,6 +1312,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = barrier({4}); !r) { return std::unexpected(r.error()); }
     buildGpu.next("VSM build finalize");
     if (auto r = dispatch(4, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63) / 64); !r) { return std::unexpected(r.error()); }
+    if (settings.propagatedMapping) {
+        // Finalize may invalidate fine pages on work overflow. Read only its
+        // completed ownership entries; no propagation thread consumes the tail.
+        if (auto r = barrier({1}); !r) { return std::unexpected(r.error()); }
+        auto mappingGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM propagate mappings") : RenderGraphExecutionContext::ProfileScope{};
+        if (auto r = dispatch(11, (push.totalPages + 63u) / 64u); !r) { return std::unexpected(r.error()); }
+    }
     if (auto r = barrier({3, 1, 9}, PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({7}, PipelineStageBits::DrawIndirect, AccessBits::IndirectRead); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4}, settings.collectGPUWork ? PipelineStageBits::PreRasterization : PipelineStageBits::ComputeShader);
@@ -1638,6 +1659,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     CPUProfileScope phase(profiler, "Prepare VSM one-pass pipeline");
     if (!programs.onePassComputes[variant]) {
         const std::array macros{SlangMacroDefine{"VSM_ONE_PASS_PROJECTION", "1"},
+            SlangMacroDefine{"VSM_PROPAGATED_MAPPING", programs.propagatedMapping ? "1" : "0"},
             SlangMacroDefine{"VSM_LIGHT_GRID_PROJECTION", lightGrid ? "1" : "0"},
             SlangMacroDefine{"VSM_ADAPTIVE_RAY_COUNT", programs.adaptiveRayCount ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", programs.collectGPUWork ? "1" : "0"},
@@ -1657,6 +1679,8 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
         programs.onePassShaders[variant] = std::move(*module);
         programs.onePassComputes[variant] = std::move(*pipeline);
         const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
+        spdlog::info("[VSMMappingShader] entry=vsmProjectOnePassMain propagatedMapping={} spirvSHA256={}",
+            programs.propagatedMapping, debug::debugSha256(bytes));
         spdlog::info("[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={} work={} projectionStatistics={} refinedReceiver={} lightGrid={} adaptiveRayCount={}",
             debug::debugSha256(bytes), programs.collectGPUWork, programs.optimizeProjectionStatistics, programs.refinedReceiver, lightGrid, programs.adaptiveRayCount);
     }
@@ -1697,8 +1721,9 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             assert(state.programs->collectGPUWork == programs.collectGPUWork &&
                 state.programs->optimizeProjectionStatistics == programs.optimizeProjectionStatistics &&
                 state.programs->adaptiveRayCount == programs.adaptiveRayCount &&
+                state.programs->propagatedMapping == programs.propagatedMapping &&
                 state.programs->refinedReceiver == programs.refinedReceiver);
-            assert(p.depth == push.depth && p.pageSize == push.pageSize && p.pcfRadius == push.pcfRadius &&
+            assert(p.depth == push.depth && p.pageSize == push.pageSize && p.virtualPagesPerAxis == push.virtualPagesPerAxis && p.pcfRadius == push.pcfRadius &&
                 p.rayLength == push.rayLength && p.rayLengthScale == push.rayLengthScale && p.maxRayAngle == push.maxRayAngle &&
                 p.rayCount == push.rayCount && p.samplesPerRay == push.samplesPerRay && p.receiverFootprint == push.receiverFootprint);
             assert(state.outputTextures[0]->desc().width == outputDesc.width &&
