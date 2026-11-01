@@ -17,6 +17,7 @@ namespace metallic::render {
 struct VirtualShadowMapCasterResources;
 struct MeshletStreamDeferredGPUResourcesView;
 struct CPUProfileRecorder;
+struct ClusterLightGridSnapshot;
 class RenderGraphExecutionContext;
 class VirtualShadowMaps;
 
@@ -128,6 +129,16 @@ struct VirtualShadowMapProjectionGroup
     std::array<VirtualShadowMapResult, 6> results{};
     uint32_t faceCount = 0;
     bool filteredPoint = false;
+    uint32_t lightIndex = UINT32_MAX; // Publication slot; required by the optional grid projection.
+};
+
+// The raster producer owns the matching grid through command completion.
+// A missing grid retains the original projection; diagnostics are optional and
+// use eight low/high uint pairs defined in VirtualShadowMapProjectionGrid.h.
+struct VirtualShadowMapProjectionGridResources
+{
+    const ClusterLightGridSnapshot* grid = nullptr;
+    Buffer* diagnostics = nullptr;
 };
 
 struct VirtualShadowMapMemoryUsage
@@ -187,7 +198,7 @@ public:
     // supplied by LightsPass. Empty input is valid; one face uses project().
     static Result<> projectShared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
         std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
-        bool onePassProjection = true);
+        bool onePassProjection = true, const VirtualShadowMapProjectionGridResources* grid = nullptr);
 
     // Logical resource bytes currently owned by this cache, recording and pool.
     // Native padding and retired recordings outside this cache/pool are excluded;
@@ -201,7 +212,8 @@ private:
     Result<> preparePointFaces(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
     Result<> projectPrepared(CommandBuffer& commands, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
     static Result<> projectOnePassPrepared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
-        uint32_t faceCount, std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
+        uint32_t faceCount, std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+        const VirtualShadowMapProjectionGridResources* grid);
     struct Programs;
     struct State;
     struct Cache;

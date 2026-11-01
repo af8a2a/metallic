@@ -1,4 +1,5 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
+#include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -8,6 +9,7 @@
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -150,6 +152,10 @@ public:
         reflection.addBufferOutput("budgetDiagnostics", "Demand budget header and eight uints per source face; completed GPU feedback only")
             .buffer(uint64_t(8 + capacity * 6 * 8) * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         if (properties().value("benchmarkGPUWork", false)) {
+            reflection.addBufferOutput("projectionGridDiagnostics", "One-pass local light grid workload; eight low/high uint pairs")
+                .buffer(kVirtualShadowMapProjectionGridDiagnosticSize, sizeof(uint32_t))
+                .bufferLayout("u32").transferWrite()
+                .stageAccess(RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Compute);
             reflection.addBufferOutput("workload", "Six GPU workload blocks per light entry; sixteen low/high uint pairs per face")
                 .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapWorkloadSize, sizeof(uint32_t))
                 .bufferLayout("u32").transferWrite();
@@ -286,11 +292,15 @@ public:
         const auto budgetDiagnostics = context.outputBuffer("budgetDiagnostics");
         const auto workload = context.outputBuffer("workload");
         const auto buildDiagnostics = context.outputBuffer("buildDiagnostics");
+        const auto projectionGridDiagnostics = context.outputBuffer("projectionGridDiagnostics");
         const auto coverageSettings = context.outputBuffer("receiverCoverageSettings");
         const auto coverageProjections = context.outputBuffer("receiverCoverageProjections");
         const auto coveragePages = context.outputBuffer("receiverCoveragePages");
         const auto coverageRecords = context.outputBuffer("receiverCoverage");
         auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
+        // Multi-light projection experiments need only these scopes; profiling
+        // every face can exhaust the graph's per-pass timestamp section budget.
+        auto* projectionGpuProfiler = gpuProfiler || context.properties().value("benchmarkProjectionProfile", false) ? &context : nullptr;
         const auto memory = context.outputBuffer("memory");
         const auto* scene = context.runtimeScene();
         const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
@@ -298,7 +308,7 @@ public:
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
             !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !cacheDiagnostics.valid() || !lodStatisticsOutput.valid() || !budgetDiagnostics.valid() || !memory.valid() ||
-            (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid())) ||
+            (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid() || !projectionGridDiagnostics.valid())) ||
             (receiverCoverage_ && (!coverageSettings.valid() || !coverageProjections.valid() || !coveragePages.valid())) ||
             (receiverCoverageRecords_ && !coverageRecords.valid())) {
             return makeError(Error::InvalidArgument);
@@ -369,6 +379,13 @@ public:
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
         settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
             boolProperty(&properties, "onePassProjection", settings.onePassProjection));
+        VirtualShadowMapProjectionGridResources projectionGrid;
+        if (boolProperty(&properties, "benchmarkLightGridProjection", false)) {
+            // The matching raster producer builds and retains this snapshot.
+            // Non-grid producers retain the existing full-domain projection.
+            projectionGrid.grid = gpuScene->lightGrid({info.lightGridViewIndex, info.lightGridViewGeneration}, info.lightGridFrameSlot);
+        }
+        projectionGrid.diagnostics = collectGPUWork_ ? projectionGridDiagnostics.buffer() : nullptr;
         settings.directionalProjection = boolProperty(&properties, "benchmarkDirectionalProjection",
             boolProperty(&properties, "directionalProjection", settings.directionalProjection));
         settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
@@ -637,6 +654,7 @@ public:
         std::vector<uint32_t> zeroCacheDiagnostics(cacheDiagnostics.desc().size / sizeof(uint32_t), 0);
         std::vector<uint32_t> zeroWorkload(collectGPUWork_ ? workload.desc().size / sizeof(uint32_t) : 0, 0);
         std::vector<uint32_t> zeroBuildDiagnostics(collectGPUWork_ ? buildDiagnostics.desc().size / sizeof(uint32_t) : 0, 0);
+        std::array<uint32_t, kVirtualShadowMapProjectionGridDiagnosticSize / sizeof(uint32_t)> zeroProjectionGrid{};
         auto batch = context.streamer()->beginCopyBatch();
         if (!batch) { return makeError(batch.error()); }
         std::vector<StreamDataChunk> chunks{{tableData.data(), tableData.size()},
@@ -649,6 +667,8 @@ public:
             destinations.push_back(workload.buffer());
             chunks.push_back({zeroBuildDiagnostics.data(), zeroBuildDiagnostics.size() * sizeof(uint32_t)});
             destinations.push_back(buildDiagnostics.buffer());
+            chunks.push_back({zeroProjectionGrid.data(), sizeof(zeroProjectionGrid)});
+            destinations.push_back(projectionGridDiagnostics.buffer());
         }
         if (receiverCoverage_) {
             chunks.push_back({coverageHeader.data(), sizeof(coverageHeader)});
@@ -669,6 +689,7 @@ public:
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             initializeUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
+            initializeUses.push_back({"projectionGridDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
         }
         if (receiverCoverage_) {
             initializeUses.push_back({"receiverCoverageSettings", RenderGraphResourceAccess::BufferTransferWrite});
@@ -853,6 +874,7 @@ public:
                     group.results = std::move(pointResults);
                     group.faceCount = item.entry.faceCount;
                     group.filteredPoint = filteredPoint;
+                    group.lightIndex = index;
                     for (uint32_t face = 0; face < group.faceCount; ++face) { group.faces[face] = faces[face].get(); }
                     projections.push_back(std::move(group));
                 }
@@ -873,6 +895,7 @@ public:
             {"depth", RenderGraphResourceAccess::TextureSampleRead}};
         if (receiver.stream) { projectionUses.push_back({"visibility", RenderGraphResourceAccess::TextureSampleRead}); }
         if (debugOutput_) { projectionUses.push_back({"debug", RenderGraphResourceAccess::TextureStorageWrite}); }
+        if (collectGPUWork_) { projectionUses.push_back({"projectionGridDiagnostics", RenderGraphResourceAccess::BufferStorageReadWrite}); }
         std::vector<RenderGraphStageUse> publishUses{{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             {"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (collectGPUWork_) {
@@ -882,6 +905,18 @@ public:
         bufferImports.reserve(publications.size() * 2);
         publishUses.reserve(4 + publications.size() * 2);
         projectionUses.reserve(3 + publications.size());
+        if (projectionGrid.grid) {
+            const auto& grid = *projectionGrid.grid;
+            const std::array gridBuffers{
+                std::pair{"vsmGridParameters", grid.parameters}, std::pair{"vsmGridCells", grid.cells},
+                std::pair{"vsmGridIndices", grid.lightIndices}, std::pair{"vsmGridCandidates", grid.candidates}};
+            for (const auto& [name, buffer] : gridBuffers) {
+                auto slice = buffer->slice();
+                if (!slice) { (void)context.streamer()->cancelCopyBatch(*batch); return std::unexpected(slice.error()); }
+                bufferImports.push_back({name, *slice, RenderGraphResourceAccess::BufferStorageRead});
+                projectionUses.push_back({name, RenderGraphResourceAccess::BufferStorageRead});
+            }
+        }
         for (const auto& publication : publications) {
             bufferImports.push_back({publication.name, publication.importedStats, RenderGraphResourceAccess::BufferStorageReadWrite});
             bufferImports.push_back({publication.cacheName, publication.sourceCacheDiagnostics, RenderGraphResourceAccess::BufferStorageReadWrite});
@@ -919,7 +954,8 @@ public:
                 CPUProfileScope stageCPU(cpu, "Project all faces");
                 std::string log;
                 if (!properties.value("benchmarkLegacyProjection", false)) {
-                    auto result = VirtualShadowMaps::projectShared(cmd, projections, log, cpu, gpuProfiler, settings.onePassProjection);
+                    auto result = VirtualShadowMaps::projectShared(cmd, projections, log, cpu, projectionGpuProfiler,
+                        settings.onePassProjection, &projectionGrid);
                     if (!result) { spdlog::error("VirtualShadowMapLightsPass projection: {}", log); }
                     return result;
                 }

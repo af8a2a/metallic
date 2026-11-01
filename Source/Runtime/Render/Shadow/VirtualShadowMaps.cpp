@@ -3,6 +3,8 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
+#include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -322,8 +324,8 @@ struct VirtualShadowMaps::Programs
     bool refinedReceiver = false;
     std::array<std::unique_ptr<ShaderModule>, 15> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 11> compute;
-    std::unique_ptr<ShaderModule> onePassShader;
-    std::unique_ptr<ComputePipeline> onePassCompute;
+    std::array<std::unique_ptr<ShaderModule>, 2> onePassShaders;
+    std::array<std::unique_ptr<ComputePipeline>, 2> onePassComputes;
     std::unique_ptr<GraphicsPipeline> raster;
     std::unique_ptr<GraphicsPipeline> clear;
 };
@@ -363,7 +365,7 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 14> buffers;
+    std::array<std::vector<BufferEntry>, 15> buffers;
     std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     VirtualShadowMapResourcePoolStats stats;
@@ -457,6 +459,7 @@ struct VirtualShadowMaps::State
         std::array<std::shared_ptr<Buffer>, 10> buffers;
         std::shared_ptr<Buffer> pointFaces;
         std::shared_ptr<Buffer> projectionJobs;
+        std::shared_ptr<Buffer> projectionGrid;
         std::shared_ptr<Buffer> receiverGeometry;
         std::shared_ptr<Buffer> cacheDiagnostics;
         std::shared_ptr<ShadowAtlas> staticAtlas;
@@ -468,6 +471,7 @@ struct VirtualShadowMaps::State
     std::shared_ptr<Resources> resources = std::make_shared<Resources>();
     std::shared_ptr<ResourcePool> pool;
     ShadowPush push{};
+    ViewConstants receiverView{};
     std::shared_ptr<ResourceRegistry> registry;
     std::shared_ptr<Programs> programs;
     std::vector<ResourceLease> leases;
@@ -628,6 +632,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const auto completion = frame && frame->recording() ? frame->completion() : GPUCompletionPoint{};
     phase.next("Prepare VSM recording resources");
     auto state = std::make_shared<State>();
+    state->receiverView = view;
     state->pool = pool_;
     auto registry = ResourceRegistry::forDevice(device);
     if (!registry) { return std::unexpected(registry.error()); }
@@ -1554,7 +1559,8 @@ Result<> VirtualShadowMaps::projectPrepared(CommandBuffer& commands, CPUProfileR
 
 Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
     std::span<const VirtualShadowMapProjectionGroup> groups, std::string& log,
-    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler, bool onePassProjection)
+    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler, bool onePassProjection,
+    const VirtualShadowMapProjectionGridResources* grid)
 {
     CPUProfileScope total(profiler, "VSM shared projection");
     uint32_t faceCount = 0;
@@ -1610,20 +1616,24 @@ Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
         }
     }
     total.work("pointTables", pointTables);
-    if (onePass) { return projectOnePassPrepared(commands, groups, faceCount, log, profiler, gpuProfiler); }
+    if (onePass) { return projectOnePassPrepared(commands, groups, faceCount, log, profiler, gpuProfiler, grid); }
     return {};
 }
 
 Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     std::span<const VirtualShadowMapProjectionGroup> groups, uint32_t faceCount, std::string& log,
-    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
+    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+    const VirtualShadowMapProjectionGridResources* grid)
 {
     auto& first = *groups.front().faces[0]->state_;
     auto& programs = *first.programs;
     auto& device = *programs.device;
+    const bool lightGrid = grid && grid->grid;
+    const uint32_t variant = lightGrid ? 1u : 0u;
     CPUProfileScope phase(profiler, "Prepare VSM one-pass pipeline");
-    if (!programs.onePassCompute) {
+    if (!programs.onePassComputes[variant]) {
         const std::array macros{SlangMacroDefine{"VSM_ONE_PASS_PROJECTION", "1"},
+            SlangMacroDefine{"VSM_LIGHT_GRID_PROJECTION", lightGrid ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", programs.collectGPUWork ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", programs.optimizeProjectionStatistics ? "1" : "0"},
             SlangMacroDefine{"VSM_REFINED_RECEIVER", programs.refinedReceiver ? "1" : "0"}};
@@ -1638,26 +1648,46 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
         auto pipeline = ShaderRegistry::instance().getComputePipeline(device,
             {.computeShader = {module->get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
         if (!pipeline) { return std::unexpected(pipeline.error()); }
-        programs.onePassShader = std::move(*module);
-        programs.onePassCompute = std::move(*pipeline);
+        programs.onePassShaders[variant] = std::move(*module);
+        programs.onePassComputes[variant] = std::move(*pipeline);
         const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
-        spdlog::info("[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={} work={} projectionStatistics={} refinedReceiver={}",
-            debug::debugSha256(bytes), programs.collectGPUWork, programs.optimizeProjectionStatistics, programs.refinedReceiver);
+        spdlog::info("[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={} work={} projectionStatistics={} refinedReceiver={} lightGrid={}",
+            debug::debugSha256(bytes), programs.collectGPUWork, programs.optimizeProjectionStatistics, programs.refinedReceiver, lightGrid);
     }
 
     phase.next("Upload VSM projection jobs");
     std::vector<ShadowProjectionJob> jobs;
     jobs.reserve(faceCount);
+    const bool gridContext = lightGrid || (grid && grid->diagnostics);
+    VirtualShadowMapProjectionGrid gridData{};
+    gridData.parameters = gridData.cells = gridData.lightIndices = gridData.candidates = UINT32_MAX;
+    gridData.diagnostics = UINT32_MAX;
     ShadowPush push = first.push;
     const auto& outputDesc = first.outputTextures[0]->desc();
     // LightsPass records every job with the same view/depth and filter settings.
     // Effective filtering, ownership, phase and light-specific inputs remain in
     // each job; all other projection inputs keep their push-constant storage.
     for (const auto& group : groups) {
+        if (gridContext) {
+            // LightsPass validates the complete publication domain before
+            // admission: two celestial slots plus at most 62 local sources.
+            assert(group.lightIndex < std::size(gridData.jobs));
+            gridData.jobs[group.lightIndex] = {uint32_t(jobs.size()), group.faceCount};
+            if (group.lightIndex >= 2u) {
+                const uint32_t source = group.lightIndex - 2u;
+                auto& mask = source < 32u ? gridData.admittedLow : gridData.admittedHigh;
+                mask |= 1u << (source & 31u);
+                gridData.localJobCount += group.faceCount;
+            }
+        }
         for (uint32_t face = 0; face < group.faceCount; ++face) {
             const auto& state = *group.faces[face]->state_;
             const auto& p = state.push;
             assert(state.registry == first.registry && state.programs->device == &device);
+            // Every recorded face receives the same immutable raster view.
+            // Sharing receiver reconstruction is valid even though its per-face
+            // descriptor handles differ.
+            assert(std::memcmp(&state.receiverView, &first.receiverView, sizeof(ViewConstants)) == 0);
             assert(state.programs->collectGPUWork == programs.collectGPUWork &&
                 state.programs->optimizeProjectionStatistics == programs.optimizeProjectionStatistics &&
                 state.programs->refinedReceiver == programs.refinedReceiver);
@@ -1690,7 +1720,39 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     // These fields are unused by the original projection helpers.
     push.geometry = lease->shaderIndex();
     push.triangleCount = faceCount;
+    push.arguments = UINT32_MAX;
+    if (gridContext) {
+        const auto bindBuffer = [&](Buffer& buffer, uint32_t& index) -> Result<> {
+            auto descriptor = first.registry->storageBuffer(buffer);
+            if (!descriptor) { return std::unexpected(descriptor.error()); }
+            index = descriptor->shaderIndex();
+            first.leases.push_back(*descriptor);
+            return {};
+        };
+        if (lightGrid) {
+            const auto& snapshot = *grid->grid;
+            if (auto r = bindBuffer(*snapshot.parameters, gridData.parameters); !r) { return r; }
+            if (auto r = bindBuffer(*snapshot.cells, gridData.cells); !r) { return r; }
+            if (auto r = bindBuffer(*snapshot.lightIndices, gridData.lightIndices); !r) { return r; }
+            if (auto r = bindBuffer(*snapshot.candidates, gridData.candidates); !r) { return r; }
+        }
+        if (grid->diagnostics) {
+            if (auto r = bindBuffer(*grid->diagnostics, gridData.diagnostics); !r) { return r; }
+        }
+        auto context = first.pool->buffer(14, {.size = sizeof(gridData), .structureStride = sizeof(gridData),
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload},
+            frame && frame->recording() ? frame->completion() : GPUCompletionPoint{});
+        if (!context) { return std::unexpected(context.error()); }
+        first.resources->projectionGrid = std::move(*context);
+        void* destination = first.resources->projectionGrid->map();
+        if (!destination) { return makeError(Error::Failure); }
+        std::memcpy(destination, &gridData, sizeof(gridData));
+        first.resources->projectionGrid->flush();
+        first.resources->projectionGrid->unmap();
+        if (auto r = bindBuffer(*first.resources->projectionGrid, push.arguments); !r) { return r; }
+    }
     commands.hostWriteBarrier();
+    phase.work("lightGrid", lightGrid);
     phase.work("jobs", faceCount);
     phase.work("jobBytes", jobs.size() * sizeof(ShadowProjectionJob));
 
@@ -1740,7 +1802,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     if (auto r = commands.synchronize({.textures = outputBegin, .buffers = statisticsBegin}); !r) { return r; }
     projectionGpu.next("VSM projection dispatch");
     commands.beginDebugLabel({.name = "VSM: one-pass receiver projection"});
-    if (auto r = commands.bindExecution(programs.onePassCompute->execution(), &push, sizeof(push)); !r) { return r; }
+    if (auto r = commands.bindExecution(programs.onePassComputes[variant]->execution(), &push, sizeof(push)); !r) { return r; }
     if (auto r = commands.dispatch((outputDesc.width + 7u) / 8u, (outputDesc.height + 7u) / 8u); !r) { return r; }
     commands.endDebugLabel();
     projectionGpu.next("VSM projection publish");
@@ -1790,6 +1852,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
         for (const auto& buffer : state_->resources->buffers) { addBuffer(buffer.get()); }
         addBuffer(state_->resources->pointFaces.get());
         addBuffer(state_->resources->projectionJobs.get());
+        addBuffer(state_->resources->projectionGrid.get());
         addBuffer(state_->resources->receiverGeometry.get());
         addCache(state_->previous);
         addCache(state_->next);

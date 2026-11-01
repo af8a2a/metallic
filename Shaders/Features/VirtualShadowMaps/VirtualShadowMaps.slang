@@ -7,9 +7,11 @@ import MaterialProgram;
 import VirtualShadowMapGeometry;
 import VirtualShadowMapReceiver;
 import VirtualShadowMapCommon;
+import Lighting;
 
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
+#include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
@@ -22,6 +24,9 @@ import VirtualShadowMapCommon;
 #endif
 #ifndef VSM_ONE_PASS_PROJECTION
 #define VSM_ONE_PASS_PROJECTION 0
+#endif
+#ifndef VSM_LIGHT_GRID_PROJECTION
+#define VSM_LIGHT_GRID_PROJECTION 0
 #endif
 #ifndef VSM_REFINED_RECEIVER
 #define VSM_REFINED_RECEIVER 0
@@ -63,6 +68,7 @@ import VirtualShadowMapCommon;
 using Metallic;
 using Metallic.Material;
 using Metallic.Shadow;
+using Metallic.Lighting;
 
 struct ShadowPush
 {
@@ -2253,6 +2259,16 @@ struct ShadowProjectionJob
 
 #endif
 
+#if VSM_LIGHT_GRID_PROJECTION
+struct VSMProjectionReceiver
+{
+    ViewConstants view;
+    float3 position;
+    float linearDepth;
+    bool valid;
+};
+#endif
+
 bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out float4 debugValue, out uint3 filterCounts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     , out uint projectionCounts
@@ -2411,7 +2427,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
 }
 
 // Ownership and filtering finish before either output is stored. Receiver
-// reconstruction remains local to the original projection/barrier sequence.
+// reconstruction retains the original per-job arithmetic in both paths.
 void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     , out uint projectionCounts
@@ -2498,60 +2514,170 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, u
     }
 }
 #else
+void vsmProjectionGridAdd(uint diagnostics, uint counter, uint laneValue)
+{
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (diagnostics == 0xffffffffu) { return; }
+    uint value = WaveActiveSum(laneValue);
+    if (WaveIsFirstLane() && value != 0u) {
+        RWStructuredBuffer<uint> counters = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(diagnostics));
+        uint previous;
+        InterlockedAdd(counters[counter * 2u], value, previous);
+        if (previous > 0xffffffffu - value) { InterlockedAdd(counters[counter * 2u + 1u], 1u); }
+    }
+#endif
+}
+
+void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job
+#if VSM_LIGHT_GRID_PROJECTION
+    , bool member
+#endif
+)
+{
+    ShadowPush push = common;
+    push.pages = job.pages; push.statistics = job.statistics;
+    push.projections = job.projections; push.atlas = job.atlas;
+    push.filterMode = job.filterMode; push.shadow = job.shadow;
+    push.debug = job.debug; push.physicalPagesX = job.physicalPagesX;
+    push.clipmapCount = job.clipmapCount; push.enabled = job.enabled;
+    push.lightType = job.lightType; push.projectionFace = job.projectionFace;
+    push.pointFaces = job.pointFaces; push.projectionFlags = job.projectionFlags;
+    push.lodScreenRayLength = job.lodScreenRayLength;
+    push.receiverGeometry = job.receiverGeometry;
+    push.samplePhase = job.samplePhase; push.view = job.view; push.lightRange = job.lightRange;
+    push.sourceRadius = job.sourceRadius; push.angularRadius = job.angularRadius;
+    uint3 counts = uint3(0u);
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    uint projectionCounts = 0u;
+#endif
+#if VSM_LIGHT_GRID_PROJECTION
+    if (member) {
+#endif
+    vsmProjectAndStore(id, push, counts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+        , projectionCounts
+#endif
+    );
+#if VSM_LIGHT_GRID_PROJECTION
+    }
+#endif
+    if (push.filterMode == 0u) { return; }
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    counts.z += (projectionCounts >> 3u) & 1u;
+#endif
+    // Integer subgroup reductions preserve the per-face totals without a
+    // workgroup barrier between jobs or shared storage for each face.
+    uint3 totals = WaveActiveSum(counts);
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    if (WaveIsFirstLane()) {
+        if (totals.x != 0u) { InterlockedAdd(statistics[30], totals.x); }
+        if (totals.y != 0u) { InterlockedAdd(statistics[31], totals.y); }
+        if (totals.z != 0u) { InterlockedAdd(statistics[9], totals.z); }
+    }
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    [unroll]
+    for (uint event = 0u; event < 5u; ++event) {
+        uint bit = event < 3u ? event : event + 1u;
+        uint total = WaveActiveSum((projectionCounts >> bit) & 1u);
+        if (WaveIsFirstLane() && total != 0u) {
+            uint index = event == 0u ? 8u : event == 1u ? 6u : event == 2u ? 29u : event == 3u ? 7u : 13u;
+            InterlockedAdd(statistics[index], total);
+        }
+    }
+#endif
+}
+
+#if VSM_LIGHT_GRID_PROJECTION
+uint2 vsmProjectionLocalMask(uint2 pixel, VSMProjectionReceiver receiver, VirtualShadowMapProjectionGrid context)
+{
+    uint2 mask = uint2(0u);
+    uint candidatesCount = 0u, fallback = 0u;
+    if (receiver.valid) {
+        ClusterLightGridParams grid = resolveUniform(ResourceHandle<StructuredBuffer<ClusterLightGridParams>>(context.parameters))[0];
+        StructuredBuffer<ClusterLightGridCell> cells = resolveUniform(ResourceHandle<StructuredBuffer<ClusterLightGridCell>>(context.cells));
+        StructuredBuffer<uint> indices = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.lightIndices));
+        StructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.candidates));
+        ClusterLightGridLookup lookup = clusterLightGridLookup(grid, cells, pixel, receiver.linearDepth);
+        fallback = lookup.fallback;
+        uint globalCount = clusterLightGridGlobalLightCount(grid);
+        candidatesCount = lookup.count + globalCount;
+        for (uint i = 0u; i < candidatesCount; ++i) {
+            uint source = i < lookup.count ? clusterLightGridLocalLightIndex(lookup, indices, candidates, i) :
+                clusterLightGridGlobalLightIndex(grid, candidates, i - lookup.count);
+            // LightsPass validates sourceSlotCount + two celestial slots <= 64.
+            mask[source >> 5u] |= 1u << (source & 31u);
+        }
+        mask &= uint2(context.admittedLow, context.admittedHigh);
+    }
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridReceiverLookups, receiver.valid ? 1u : 0u);
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridFallbacks, fallback);
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridLocalCandidates, candidatesCount);
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridLocalMemberships, countbits(mask.x) + countbits(mask.y));
+    return mask;
+}
+#endif
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush common)
 {
     StructuredBuffer<ShadowProjectionJob> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjectionJob>>(common.geometry));
-    // Every active lane visits the same job. Resource indices stay uniform,
-    // while canonical point-face ownership remains in vsmProjectReceiver.
-    for (uint jobIndex = 0u; jobIndex < common.triangleCount; ++jobIndex) {
-        ShadowProjectionJob job = jobs[jobIndex];
-        ShadowPush push = common;
-        push.pages = job.pages; push.statistics = job.statistics;
-        push.projections = job.projections; push.atlas = job.atlas;
-        push.filterMode = job.filterMode; push.shadow = job.shadow;
-        push.debug = job.debug; push.physicalPagesX = job.physicalPagesX;
-        push.clipmapCount = job.clipmapCount; push.enabled = job.enabled;
-        push.lightType = job.lightType; push.projectionFace = job.projectionFace;
-        push.pointFaces = job.pointFaces; push.projectionFlags = job.projectionFlags;
-        push.lodScreenRayLength = job.lodScreenRayLength;
-        push.receiverGeometry = job.receiverGeometry;
-        push.samplePhase = job.samplePhase; push.view = job.view; push.lightRange = job.lightRange;
-        push.sourceRadius = job.sourceRadius; push.angularRadius = job.angularRadius;
-        uint3 counts;
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-        uint projectionCounts;
-#endif
-        vsmProjectAndStore(id, push, counts
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-            , projectionCounts
-#endif
-        );
-        if (push.filterMode == 0u) { continue; }
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-        counts.z += (projectionCounts >> 3u) & 1u;
-#endif
-        // Integer subgroup reductions preserve the per-face totals without a
-        // workgroup barrier between jobs or shared storage for each face.
-        uint3 totals = WaveActiveSum(counts);
-        RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
-        if (WaveIsFirstLane()) {
-            if (totals.x != 0u) { InterlockedAdd(statistics[30], totals.x); }
-            if (totals.y != 0u) { InterlockedAdd(statistics[31], totals.y); }
-            if (totals.z != 0u) { InterlockedAdd(statistics[9], totals.z); }
-        }
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-        [unroll]
-        for (uint event = 0u; event < 5u; ++event) {
-            uint bit = event < 3u ? event : event + 1u;
-            uint total = WaveActiveSum((projectionCounts >> bit) & 1u);
-            if (WaveIsFirstLane() && total != 0u) {
-                uint index = event == 0u ? 8u : event == 1u ? 6u : event == 2u ? 29u : event == 3u ? 7u : 13u;
-                InterlockedAdd(statistics[index], total);
+#if VSM_LIGHT_GRID_PROJECTION
+    StructuredBuffer<VirtualShadowMapProjectionGrid> contexts = resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments));
+    VirtualShadowMapProjectionGrid context = contexts[0];
+    VSMProjectionReceiver receiver;
+    receiver.view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(common.view))[0];
+    if (any(id.xy >= uint2(receiver.view.current.viewport.yz))) { return; }
+    Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(common.depth));
+    receiver.valid = vsmReceiver(int2(id.xy), receiver.view, depth, receiver.position, receiver.linearDepth);
+    uint2 localMask = vsmProjectionLocalMask(id.xy, receiver, context);
+    // Publication slots include Sun/Moon. A single traversal keeps the large
+    // filtering body at one call site, rather than cloning it for each domain.
+    uint2 laneMask = uint2(localMask.x << 2u, (localMask.y << 2u) | (localMask.x >> 30u));
+    laneMask.x |= (contexts[0].jobs[0].count != 0u ? 1u : 0u) |
+        (contexts[0].jobs[1].count != 0u ? 2u : 0u);
+    uint2 waveMask = uint2(WaveActiveBitOr(laneMask.x), WaveActiveBitOr(laneMask.y));
+    // Keep every active lane on the same job: descriptor indices and integer
+    // reductions remain uniform even when receivers occupy different Z cells.
+    uint waveJobs = 0u, laneJobs = 0u;
+    for (uint word = 0u; word < 2u; ++word) {
+        uint pending = waveMask[word];
+        while (pending != 0u) {
+            uint bit = uint(firstbitlow(pending));
+            pending &= pending - 1u;
+            uint slot = word * 32u + bit;
+            bool member = (laneMask[word] & (1u << bit)) != 0u;
+            VirtualShadowMapProjectionJobRange range = contexts[0].jobs[slot];
+            if (slot >= 2u) {
+                waveJobs += range.count;
+                laneJobs += member ? range.count : 0u;
+            }
+            for (uint face = 0u; face < range.count; ++face) {
+                vsmProjectOnePassJob(id, common, jobs[range.first + face], member);
             }
         }
-#endif
     }
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridWaveLocalJobs, WaveIsFirstLane() ? waveJobs : 0u);
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridSkippedWaveLocalJobs, WaveIsFirstLane() ? context.localJobCount - waveJobs : 0u);
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridProjectedLaneJobs, laneJobs);
+    vsmProjectionGridAdd(context.diagnostics, kVSMGridPossibleLaneJobs, context.localJobCount);
+#else
+    // Baseline keeps full-screen, job-uniform traversal for the controlled A/B.
+    for (uint jobIndex = 0u; jobIndex < common.triangleCount; ++jobIndex) {
+        ShadowProjectionJob job = jobs[jobIndex];
+        vsmProjectOnePassJob(id, common, job);
+    }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (common.arguments != 0xffffffffu) {
+        VirtualShadowMapProjectionGrid context = resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments))[0];
+        ViewConstants view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(common.view))[0];
+        bool inViewport = all(id.xy < uint2(view.current.viewport.yz));
+        bool activeWave = WaveActiveSum(inViewport ? 1u : 0u) != 0u;
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridWaveLocalJobs, WaveIsFirstLane() && activeWave ? context.localJobCount : 0u);
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridProjectedLaneJobs, inViewport ? context.localJobCount : 0u);
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridPossibleLaneJobs, inViewport ? context.localJobCount : 0u);
+    }
+#endif
+#endif
 }
 #endif

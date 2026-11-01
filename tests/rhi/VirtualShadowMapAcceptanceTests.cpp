@@ -8,6 +8,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -116,7 +117,8 @@ public:
             const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory" ||
                 binding.id == "Shadows.budgetDiagnostics" ||
                 binding.id == "Shadows.lodStatistics" ||
-                (collectGPUWork && (binding.id == "Shadows.workload" || binding.id == "Shadows.buildDiagnostics"));
+                (collectGPUWork && (binding.id == "Shadows.workload" || binding.id == "Shadows.buildDiagnostics" ||
+                    binding.id == "Shadows.projectionGridDiagnostics"));
             const bool image = (captureImages && (binding.id == "VBuffer.depth" ||
                 binding.id == "VBuffer.visibility" || binding.id == "Shadows.shadows")) ||
                 (captureHDR && pass == hdrPass && binding.id == hdrOutput);
@@ -235,6 +237,17 @@ public:
             }
             result["gpuBuildDiagnostics"]["faces"] = std::move(buildFaces);
             result["gpuBuildDiagnostics"]["totals"] = std::move(buildTotals);
+            const auto rawGrid = read("Shadows.projectionGridDiagnostics");
+            requireAcceptance(rawGrid.size() == kVirtualShadowMapProjectionGridDiagnosticSize,
+                "Unexpected VSM projection grid diagnostic layout");
+            std::array<uint32_t, kVirtualShadowMapProjectionGridCounterCount * 2> gridWords;
+            std::memcpy(gridWords.data(), rawGrid.data(), sizeof(gridWords));
+            Json gridCounters = Json::object();
+            for (size_t index = 0; index < kVirtualShadowMapProjectionGridCounterCount; ++index) {
+                gridCounters[std::string(kVirtualShadowMapProjectionGridCounterNames[index])] =
+                    uint64_t(gridWords[index * 2]) | (uint64_t(gridWords[index * 2 + 1]) << 32);
+            }
+            result["projectionGrid"] = std::move(gridCounters);
         }
         if (captured.contains("Shadows.memory")) {
             const auto rawMemory = read("Shadows.memory");
