@@ -1040,9 +1040,11 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 #endif
     [unroll]
     for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
-        if (level < firstLevel || level >= push.clipmapCount) { continue; }
 #if VSM_MARK_RAY_PAGES
+        // vsmMarkRayPages only sets bits in [firstLevel, clipmapCount).
         if (((sweepLevels >> level) & 1u) == 0u) { continue; }
+#else
+        if (level < firstLevel || level >= push.clipmapCount) { continue; }
 #endif
         ++workCounts.y;
 #if VSM_DIRECTIONAL_MARK
