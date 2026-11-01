@@ -36,6 +36,8 @@ struct VirtualShadowMapTemporalParams
 #ifdef __cplusplus
 static_assert(sizeof(VirtualShadowMapTemporalParams) == 80);
 
+class RenderGraphExecutionContext;
+
 // One stable light owns this history, independently of its publication layer.
 // The caller serializes frames and provides receiver depth in ShaderRead and
 // the whole shadows array in General, with its current writes made visible.
@@ -52,7 +54,7 @@ public:
         TextureView& shadows, const ViewConstants& view, uint64_t frameIndex,
         uint64_t invalidationRevision, uint64_t contentKey, const VirtualShadowMapLight& light,
         const VirtualShadowMapSettings& settings, uint32_t maxFrames, uint32_t baseLayer,
-        uint32_t faceCount, bool compact, std::string& log);
+        uint32_t faceCount, bool compact, std::string& log, RenderGraphExecutionContext* gpuProfiler = nullptr);
     uint64_t memoryBytes() const;
 
 private:

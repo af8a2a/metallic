@@ -170,6 +170,8 @@ public:
         debugOutput.rebuildGraph = true;
         return {capacity, compact, debugOutput,
             runtimeBoolSetting("enabled", "Virtual Shadows", true),
+            runtimeBoolSetting("benchmarkGPUProfile", "Detailed GPU Profile", false),
+            runtimeBoolSetting("benchmarkBuildSubstages", "Profile Build Substages", false),
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", true),
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
@@ -909,7 +911,7 @@ public:
                     }
                     if (auto r = history->record(*device_, cmd, *depth.view(), *output.view(), view, info.frameIndex,
                         revision, lightContentKey, item.light, temporalSettings, historyFrames,
-                        item.entry.baseLayer, item.entry.faceCount, compact_, log); !r) {
+                        item.entry.baseLayer, item.entry.faceCount, compact_, log, gpuProfiler); !r) {
                         spdlog::error("VirtualShadowMapLightsPass temporal: {}", log);
                         return r;
                     }

@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 
 #include <algorithm>
 #include <array>
@@ -108,7 +109,7 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
     TextureView& shadows, const ViewConstants& view, uint64_t frameIndex,
     uint64_t invalidationRevision, uint64_t contentKey, const VirtualShadowMapLight& light,
     const VirtualShadowMapSettings& settings, uint32_t maxFrames, uint32_t baseLayer,
-    uint32_t faceCount, bool compact, std::string& log)
+    uint32_t faceCount, bool compact, std::string& log, RenderGraphExecutionContext* gpuProfiler)
 {
     auto* frame = RenderFrameContext::from(commands);
     if (!frame || !frame->recording() || maxFrames == 0 || maxFrames > 64 ||
@@ -202,14 +203,19 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
         barrierCount = 2;
         old->completion = frame->completion();
     }
+    auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM temporal prepare") :
+        RenderGraphExecutionContext::ProfileScope{};
     if (auto result = commands.synchronize({.textures = {barriers.data(), barrierCount}}); !result) { return result; }
     current->layout = TextureLayout::General;
     current->completion = frame->completion();
+    gpu.next("VSM temporal dispatch");
     if (auto result = state.kernel.dispatch(commands, *encoded, (width + 7u) / 8u, (height + 7u) / 8u); !result) { return result; }
+    gpu.next("VSM temporal publish");
     // The public whole-array view is shared by successive light resolves.
     const MemoryBarrierDesc ready{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
         {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
     if (auto result = commands.synchronize({.memory = {&ready, 1}}); !result) { return result; }
+    gpu.end();
     state.pending = std::move(next);
     return {};
 }

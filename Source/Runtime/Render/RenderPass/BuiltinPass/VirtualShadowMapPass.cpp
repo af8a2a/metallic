@@ -107,6 +107,8 @@ public:
     {
         return {
             runtimeBoolSetting("enabled", "Celestial Shadows", true),
+            runtimeBoolSetting("benchmarkGPUProfile", "Detailed GPU Profile", false),
+            runtimeBoolSetting("benchmarkBuildSubstages", "Profile Build Substages", false),
             runtimeIntSetting("lightIndex", "Celestial Light (0 Sun, 1 Moon)", 0, 0, 1),
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", false),
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),

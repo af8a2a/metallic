@@ -1176,6 +1176,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     };
     phase.next("Record VSM demand and build commands");
     auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM reset") : RenderGraphExecutionContext::ProfileScope{};
+    auto resetGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM reset prepare") : RenderGraphExecutionContext::ProfileScope{};
     commands.hostWriteBarrier();
     std::array<BufferBarrierDesc, 5> recycledReady;
     constexpr std::array<size_t, 5> deviceSlots{1, 3, 4, 7, 9};
@@ -1194,24 +1195,38 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     // Reset writes diagnostics at statistics[32 + id.x], independently of the public 32 words.
     const uint32_t statisticsResetThreads = settings.collectGPUWork ?
         (kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize) / sizeof(uint32_t) : 32u;
+    resetGpu.next("VSM reset dispatch");
     if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, statisticsResetThreads,
         (push.batchCount + push.coarseBatchCount + compactBatches) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
+    resetGpu.next("VSM reset publish");
     if (auto r = barrier({1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
+    resetGpu.end();
     gpu.next("VSM mark");
+    auto markGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM mark dispatch") : RenderGraphExecutionContext::ProfileScope{};
     if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
+    markGpu.next("VSM mark publish");
     if (auto r = barrier(settings.collectGPUWork ? std::initializer_list<size_t>{1, 4} : std::initializer_list<size_t>{1});
         !r) { return std::unexpected(r.error()); }
+    markGpu.end();
     gpu.next("VSM allocator");
+    // Each allocator child includes its publication dependency. Keep the
+    // aggregate names stable for existing stage reports; never sum parent + child.
+    auto allocatorGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM allocator count") : RenderGraphExecutionContext::ProfileScope{};
     if (auto r = dispatch(6, allocationBlocks); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
+    allocatorGpu.next("VSM allocator allocate");
     if (auto r = dispatch(2, 1); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
+    allocatorGpu.next("VSM allocator admit");
     if (auto r = dispatch(7, allocationBlocks); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
+    allocatorGpu.next("VSM allocator physical");
     if (auto r = dispatch(8, 1); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
+    allocatorGpu.next("VSM allocator assign");
     if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
+    allocatorGpu.end();
     gpu.next("VSM build");
     auto buildGpu = gpuProfiler && settings.profileBuildSubstages ?
         gpuProfiler->profileScope(commands, compactBuild ? "VSM build compact" : "VSM build direct") :
@@ -1279,6 +1294,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const bool staticPass = layered && layer == 0;
         auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
             staticPass ? "VSM static raster" : "VSM dynamic raster and restore") : RenderGraphExecutionContext::ProfileScope{};
+        auto rasterGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster prepare") : RenderGraphExecutionContext::ProfileScope{};
         auto* rasterTexture = staticPass ? state->resources->staticAtlas->texture.get() : state->resources->textures[0].get();
         auto* rasterView = staticPass ? state->resources->staticAtlas->view.get() : state->resources->views[0].get();
         push.geometry = layered ? cacheDiagnostics[33 + layer] : fullGeometry;
@@ -1295,11 +1311,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
         commands.setScissor(area);
         if (enabled) {
+            rasterGpu.next("VSM raster clear and restore");
             if (reuse || (layered && !staticPass)) {
                 push.rasterCoarse = staticPass ? 2u : 0u;
                 if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
                 if (auto r = commands.drawMeshTasks(push.physicalPageCount); !r) { return std::unexpected(r.error()); }
             }
+            rasterGpu.next("VSM raster coarse");
             push.rasterCoarse = staticPass ? 3u : 1u;
             for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
@@ -1308,6 +1326,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 if (!args) { return std::unexpected(args.error()); }
                 if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
             }
+            rasterGpu.next("VSM raster fine");
             push.rasterCoarse = staticPass ? 2u : 0u;
             for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
@@ -1317,6 +1336,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
             }
         }
+        rasterGpu.next("VSM raster publish");
         commands.endRendering();
         if (!gpuProfiler) { commands.endDebugLabel(); }
         const TextureBarrierDesc atlasReady{.texture = rasterTexture,
@@ -1338,6 +1358,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     }
     push.geometry = fullGeometry;
     push.rasterCoarse = 0;
+    auto diagnosticGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster diagnostics publish") : RenderGraphExecutionContext::ProfileScope{};
     const BufferBarrierDesc diagnosticPublished{.buffer = state->resources->cacheDiagnostics.get(),
         .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
         .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
@@ -1349,6 +1370,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::TransferRead}};
         if (auto r = commands.synchronize({.buffers = {&workReady, 1}}); !r) { return std::unexpected(r.error()); }
     }
+    diagnosticGpu.end();
     gpu.end();
     phase.next("Prepare VSM cache snapshot");
     if (settings.cacheEnabled) {
@@ -1472,6 +1494,7 @@ Result<> VirtualShadowMaps::projectPrepared(CommandBuffer& commands, CPUProfileR
     if (auto r = state.registry->bind(commands, state.leases); !r) { return r; }
     phase.next("Record VSM projection barriers and dispatch");
     auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM projection") : RenderGraphExecutionContext::ProfileScope{};
+    auto projectionGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM projection prepare") : RenderGraphExecutionContext::ProfileScope{};
     if (state.externalOutput) {
         // Point faces share one layer. Canonical ownership makes their writes
         // disjoint, while the explicit dependency also satisfies whole-view
@@ -1493,11 +1516,13 @@ Result<> VirtualShadowMaps::projectPrepared(CommandBuffer& commands, CPUProfileR
     if (!state.externalOutput) {
         if (auto r = commands.synchronize({.textures = outputBegin}); !r) { return r; }
     }
+    projectionGpu.next("VSM projection dispatch");
     commands.beginDebugLabel({.name = "VSM: receiver projection"});
     if (auto r = commands.bindExecution(state.programs->compute[5]->execution(), &push, sizeof(push)); !r) { return r; }
     const auto& desc = state.outputTextures[0]->desc();
     if (auto r = commands.dispatch((desc.width + 7) / 8, (desc.height + 7) / 8); !r) { return r; }
     commands.endDebugLabel();
+    projectionGpu.next("VSM projection publish");
     const TextureBarrierDesc outputEnd[]{
         {.texture = state.resources->textures[1].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
             .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
@@ -1698,11 +1723,14 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     if (auto r = first.registry->bind(commands, leases); !r) { return r; }
     phase.next("Dispatch VSM one-pass projection");
     auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM one-pass projection") : RenderGraphExecutionContext::ProfileScope{};
+    auto projectionGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM projection prepare") : RenderGraphExecutionContext::ProfileScope{};
     if (auto r = commands.synchronize({.textures = outputBegin, .buffers = statisticsBegin}); !r) { return r; }
+    projectionGpu.next("VSM projection dispatch");
     commands.beginDebugLabel({.name = "VSM: one-pass receiver projection"});
     if (auto r = commands.bindExecution(programs.onePassCompute->execution(), &push, sizeof(push)); !r) { return r; }
     if (auto r = commands.dispatch((outputDesc.width + 7u) / 8u, (outputDesc.height + 7u) / 8u); !r) { return r; }
     commands.endDebugLabel();
+    projectionGpu.next("VSM projection publish");
     if (auto r = commands.synchronize({.textures = outputEnd, .buffers = statisticsEnd}); !r) { return r; }
     for (const auto& group : groups) {
         for (uint32_t face = 0; face < group.faceCount; ++face) { group.faces[face]->state_->projectionPending = false; }

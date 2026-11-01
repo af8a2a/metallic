@@ -35,6 +35,8 @@
             },
             "properties": {
                 "enabled": true,
+                "benchmarkGPUProfile": true,
+                "benchmarkBuildSubstages": true,
                 "pageSize": 128,
                 "virtualPagesPerAxis": 128,
                 "clipmapCount": 6,
