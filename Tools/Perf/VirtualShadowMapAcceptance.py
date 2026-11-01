@@ -64,6 +64,15 @@ def validate_capture(directory, spec):
                 or (strict_capabilities and not case.get("noRayQueryOrRTAS"))
                 or [f["frame"] for f in case["frames"]] != list(range(count))):
             raise ValueError("Incomplete no-shadow-TLAS frame sequence")
+        if "nsightTraceFrame" in spec:
+            trace = case.get("sdkTrace", {})
+            if (spec["mode"] != "diagnostic" or data["validation"] or data["performanceEligible"]
+                    or not data.get("diagnostic") or data.get("shaderDebugMode") != "capture"
+                    or data.get("shaderOptimization") != "O1" or not trace.get("complete")
+                    or trace.get("frame") != spec["nsightTraceFrame"] or trace.get("frames") != 1
+                    or trace.get("artifactVerified") is not False
+                    or any(frame.get("timingEligible") is not False for frame in case["frames"])):
+                raise ValueError("Missing or invalid diagnostic SDK trace receipt; artifact validation remains separate")
         for frame in case["frames"]:
             value = frame.get("graphMs")
             if (value is None or not math.isfinite(value) or value <= 0
@@ -86,6 +95,8 @@ def run(args):
     if len(spec["cases"]) != 1:
         raise ValueError("Run each named *Cases.json separately: acceptance uses one scene/device per process")
     validation = spec.get("validation", spec["mode"] == "diagnostic")
+    if "nsightTraceFrame" in spec:
+        raise ValueError("Launch SDK trace cases through ngfx with --start-with-ngfx-sdk --stop-with-ngfx-sdk; validate_capture checks the resulting report")
     if spec["mode"] == "timing" and validation:
         raise ValueError("Ordinary timing cannot enable validation")
     output = args.output.resolve()

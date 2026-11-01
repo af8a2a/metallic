@@ -3528,9 +3528,14 @@ public:
                                             if (counter == kVSMWorkMarkPageRequests) { continue; }
                                             if (markRayPagesComparison && arm == 1 && face < 12 &&
                                                 (counter == kVSMWorkMarkSamplePositions || counter == kVSMWorkMarkLevelTests)) {
+                                                // A receiver certificate projects two endpoints per ray,
+                                                // then tests each level before retaining the old ray sweep.
+                                                const uint32_t receiverCertificateWork =
+                                                    (filter == "smrt-one" ? 2u : 4u) + clipmapCount;
                                                 require(snapshot.workload[face][counter] <= baseline.workload[face][counter] +
-                                                    baseline.workload[face][kVSMWorkMarkReceiverDispatches] * 2 * clipmapCount,
-                                                    label + ": Mark ray pages increased logical samples");
+                                                    baseline.workload[face][kVSMWorkMarkReceiverDispatches] *
+                                                        (2 * clipmapCount + receiverCertificateWork),
+                                                    label + ": Mark coverage exceeded certificate and sweep work bound");
                                                 continue;
                                             }
                                             require(snapshot.workload[face][counter] == workReference.workload[face][counter],

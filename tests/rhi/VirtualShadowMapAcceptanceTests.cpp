@@ -2,7 +2,9 @@
 #include "harness/ValidationRecorder.h"
 #include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
@@ -21,6 +23,7 @@
 #include <fstream>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
 
 namespace metallic::tests {
@@ -479,6 +482,11 @@ public:
             {"validation", context.enableValidation}, {"cases", Json::array()}};
         const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapAcceptance.json") << report.dump(2) << '\n'; };
         bench::ValidationRecorder validation;
+        struct ShaderDebugScope
+        {
+            std::optional<SlangShaderDebugMode> previous;
+            ~ShaderDebugScope() { if (previous) { setSlangShaderDebugMode(*previous); } }
+        } shaderDebug;
         try {
             const auto root = std::filesystem::path(PROJECT_SOURCE_DIR);
             const auto manifestPath = std::filesystem::absolute(requested);
@@ -488,9 +496,25 @@ public:
             requireAcceptance(manifest.at("version").get<uint32_t>() == 1, "Unsupported manifest version");
             const std::string mode = manifest.at("mode");
             requireAcceptance(mode == "diagnostic" || mode == "timing", "Mode must be diagnostic or timing");
-            const bool diagnostic = mode == "diagnostic";
+            std::optional<uint32_t> nsightTraceFrame;
+            if (manifest.contains("nsightTraceFrame")) {
+                const auto& frame = manifest.at("nsightTraceFrame");
+                requireAcceptance(mode == "diagnostic" && !context.enableValidation &&
+                    frame.is_number_unsigned() && frame.get<uint64_t>() > 0 && frame.get<uint64_t>() < 16384,
+                    "Nsight trace requires diagnostic mode, validation disabled and a positive frame index");
+                nsightTraceFrame = frame.get<uint32_t>();
+                shaderDebug.previous = slangShaderDebugMode();
+                setSlangShaderDebugMode(SlangShaderDebugMode::CaptureSymbols);
+                requireAcceptance(slangShaderOptimizationLevel(SlangShaderDesc{}) == SlangShaderOptimizationLevel::O1,
+                    "Nsight trace requires optimized O1 capture symbols");
+                report["shaderDebugMode"] = "capture";
+                report["shaderOptimization"] = "O1";
+                report["diagnostic"] = true;
+            }
+            // SDK traces retain ordinary frame commands without diagnostic GPU readbacks.
+            const bool diagnostic = mode == "diagnostic" && !nsightTraceFrame;
             requireAcceptance(diagnostic || !context.enableValidation, "Ordinary timings must disable validation");
-            report["mode"] = mode; report["performanceEligible"] = !diagnostic && !context.enableValidation;
+            report["mode"] = mode; report["performanceEligible"] = !diagnostic && !nsightTraceFrame && !context.enableValidation;
             report["timingScope"] = "Completed production graph GPU timestamps; preview serializes each submitted frame";
             report["memoryScope"] = "Device live allocations after submission completion; driver heap usage includes other processes";
             report["extentMeasurement"] = "Diagnostic reads each VBuffer depth descriptor; timing reads every frame's CPU execution snapshot. Snapshots add CPU collection work without changing GPU commands, scheduling or resource lifetimes; no post-warmup GPU samples are excluded.";
@@ -515,11 +539,17 @@ public:
                 requireAcceptance(!synchronizationValidation || context.enableValidation,
                     "Synchronization validation requires validation to be enabled");
                 requireAcceptance(diagnostic || (comparisons.empty() && captures.empty()), "Timing mode forbids diagnostic captures");
+                requireAcceptance(!nsightTraceFrame || (*nsightTraceFrame >= warmup && *nsightTraceFrame < frames),
+                    "Nsight trace frame must follow warmup and be within the run");
                 for (const auto frame : comparisons) { requireAcceptance(frame >= warmup && frame < frames, "Comparison frame outside post-warmup range"); }
                 for (const auto frame : captures) { requireAcceptance(frame < frames, "Capture frame outside run"); }
                 report["cases"].push_back({{"id", id}, {"status", "running"}, {"spec", spec},
                     {"frames", Json::array()}, {"comparisons", Json::array()}, {"captures", Json::array()}});
                 auto& output = report["cases"].back();
+                if (nsightTraceFrame) {
+                    output["sdkTrace"] = {{"frame", *nsightTraceFrame}, {"frames", 1},
+                        {"complete", false}, {"artifactVerified", false}};
+                }
                 output["synchronizationValidation"] = synchronizationValidation;
                 output["requireNoRayCapabilities"] = requireNoRayCapabilities;
                 output["enableStreamline"] = enableStreamline;
@@ -692,12 +722,47 @@ public:
                     const bool extentSnapshot = !diagnostic;
                     preview.setExecutionCaptureEnabled(extentSnapshot);
                     const auto begin = std::chrono::steady_clock::now();
-                    requireAcceptance(preview.render(graph, width, height, displayOutput, capture), preview.lastLog());
+                    {
+                        struct TraceScope
+                        {
+                            RenderGraphPreviewRenderer& preview;
+                            Json& output;
+                            bool active = false;
+                            ~TraceScope()
+                            {
+                                if (!active) { return; }
+                                try {
+                                    // A failed render can leave a submitted prefix; drain before stopping.
+                                    if (!preview.subsystemHost()->device()->waitIdle()) {
+                                        output["sdkTrace"]["cleanupDrainFailed"] = true;
+                                    }
+                                    std::string error;
+                                    if (!profiling::endExternalNsightGpuTrace(error)) {
+                                        output["sdkTrace"]["cleanupError"] = error;
+                                    }
+                                } catch (...) { /* Preserve the original test failure. */ }
+                            }
+                        } trace{preview, output};
+                        if (nsightTraceFrame && frame == *nsightTraceFrame) {
+                            // The previous preview.render drained all submissions before returning.
+                            std::string error;
+                            requireAcceptance(profiling::beginExternalNsightGpuTrace(error), error);
+                            trace.active = true;
+                        }
+                        requireAcceptance(preview.render(graph, width, height, displayOutput, capture), preview.lastLog());
+                        if (trace.active) {
+                            // Successful preview.render also drains the captured frame.
+                            std::string error;
+                            requireAcceptance(profiling::endExternalNsightGpuTrace(error), error);
+                            trace.active = false;
+                            output["sdkTrace"]["complete"] = true;
+                        }
+                    }
                     auto row = frameStatistics(preview);
                     row["frame"] = frame; row["warmup"] = frame < warmup; row["width"] = width; row["height"] = height;
                     row["requestedRenderWidth"] = renderWidth; row["requestedRenderHeight"] = renderHeight;
                     row["extentSnapshot"] = extentSnapshot;
-                    row["timingEligible"] = frame >= warmup;
+                    row["timingEligible"] = !nsightTraceFrame && frame >= warmup;
                     if (diagnostic) {
                         actualRenderWidth = receipt.actualRenderWidth;
                         actualRenderHeight = receipt.actualRenderHeight;

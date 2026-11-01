@@ -1026,6 +1026,12 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // makeProjections and cache reuse preserve one rowZ across all clipmaps.
     float4 samplePosition = float4(position, 1.0);
     float sampleZ = dot(projections[0].rowZ, samplePosition);
+    // Fine page grids share axis and stride across levels and cache reuse.
+    // Each light owns its pages/projections buffers, with no publication offset.
+    uint pageAxis = push.virtualPagesPerAxis;
+    uint pageStride = pageAxis * pageAxis;
+    float resolution = float(pageAxis * push.pageSize);
+    float margin = 1.0 / resolution;
 #elif VSM_LOCAL_MARK
     ShadowProjection sharedProjection = projections[firstLevel];
     float3 sharedProjected = push.lightType == 0u ?
@@ -1039,11 +1045,21 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
         if (((sweepLevels >> level) & 1u) == 0u) { continue; }
 #endif
         ++workCounts.y;
-        ShadowProjection projection = projections[level];
 #if VSM_DIRECTIONAL_MARK
-        float3 projected = float3(dot(projection.rowX, samplePosition),
-            dot(projection.rowY, samplePosition), sampleZ);
-#elif VSM_LOCAL_MARK
+        float2 projected = float2(dot(projections[level].rowX, samplePosition),
+            dot(projections[level].rowY, samplePosition));
+        if (!(all(projected >= -1.0 + margin) && all(projected < 1.0 - margin) &&
+            sampleZ >= 0.0 && sampleZ <= 1.0)) { continue; }
+        uint2 texel = uint2(floor((projected * 0.5 + 0.5) * resolution));
+#if VSM_MARK_PAGE_SHIFT >= 0
+        uint2 pageXY = texel >> VSM_MARK_PAGE_SHIFT;
+#else
+        uint2 pageXY = texel / push.pageSize;
+#endif
+        uint page = level * pageStride + pageXY.y * pageAxis + pageXY.x;
+#else
+        ShadowProjection projection = projections[level];
+#if VSM_LOCAL_MARK
         float3 projected = sharedProjected;
         if (push.lightType == 0u) {
             float4 p = float4(position, 1.0);
@@ -1054,6 +1070,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 #endif
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
         uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
+#endif
         if (lastPages[level] == page) { continue; }
         lastPages[level] = page;
         vsmMarkPage(pages, page, workCounts);
