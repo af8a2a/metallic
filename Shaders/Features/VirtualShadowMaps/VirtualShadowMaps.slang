@@ -1083,6 +1083,50 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 }
 
 #if VSM_MARK_RAY_PAGES
+#if VSM_DIRECTIONAL_MARK
+bool vsmMarkRayAlreadyCovered(float2 start, float2 end, float2 low, float2 high,
+    float3 rayPosition, float3 rayEndpoint, float3 rayDither, ShadowProjection projection,
+    ShadowPush push, uint lastPage)
+{
+    // Bound the original lerp(position, endpoint, t) + dither, not just the
+    // rounded origin/span representation. The allowance includes texel rounding.
+    float resolution = float(projection.page.y * push.pageSize);
+    float3 magnitude = abs(rayPosition) + abs(rayEndpoint) + abs(rayDither) + 1.0;
+    float projectedMagnitude = dot(max(abs(projection.rowX.xyz), abs(projection.rowY.xyz)), magnitude) +
+        max(abs(projection.rowX.w), abs(projection.rowY.w)) + 1.0;
+    float error = projectedMagnitude * (256.0 * 5.960464477539063e-8) * resolution;
+    float2 lower = low - error, upper = high + error;
+    if (!(projectedMagnitude >= 1.0 && isfinite(error) && all(isfinite(start)) && all(isfinite(end)) &&
+        all(isfinite(lower)) && all(isfinite(upper)))) { return false; }
+
+    // Every accepted sample has an integer texel in [0, resolution - 1].
+    // Clamping this enclosing interval preserves its valid integer texels.
+    uint2 firstTexel = uint2(clamp(lower, 0.0, resolution - 1.0));
+    uint2 lastTexel = uint2(clamp(upper, 0.0, resolution - 1.0));
+#if VSM_MARK_PAGE_SHIFT >= 0
+    uint2 firstPage = firstTexel >> VSM_MARK_PAGE_SHIFT;
+    uint2 lastPageXY = lastTexel >> VSM_MARK_PAGE_SHIFT;
+#else
+    uint2 firstPage = firstTexel / push.pageSize;
+    uint2 lastPageXY = lastTexel / push.pageSize;
+#endif
+    uint2 extent = lastPageXY - firstPage + 1u;
+    if (extent.x * extent.y > 4u) { return false; }
+    for (uint y = firstPage.y; y <= lastPageXY.y; ++y) {
+        for (uint x = firstPage.x; x <= lastPageXY.x; ++x) {
+            uint page = projection.page.x + y * projection.page.y + x;
+            if (page == lastPage) { continue; }
+            // A matching key promises an eventual OR by its inserting lane.
+            // Never insert queried pages: a miss must retain the original sweep.
+            uint observed;
+            InterlockedOr(gVsmMarkedPages[(page * 2654435761u) >> 24u], 0u, observed);
+            if (observed != page) { return false; }
+        }
+    }
+    return true;
+}
+#endif
+
 // Directional samples lie on origin..origin+span, so a level whose whole segment
 // stays inside one page requests only the page of the ray's t=0 sample. Returns
 // the levels that must retain the per-sample sweep. The one-texel margin absorbs
@@ -1130,6 +1174,10 @@ uint vsmMarkRayPages(float3 origin, float3 span, StructuredBuffer<ShadowProjecti
 #endif
         if (any(low < 1.0) || any(high >= resolution - 1.0) || projected.z < 1e-4 || projected.z > 1.0 - 1e-4 ||
             any(floor(low / float(push.pageSize)) != floor(high / float(push.pageSize)))) {
+#if VSM_DIRECTIONAL_MARK
+            if (vsmMarkRayAlreadyCovered(start, end, low, high, rayPosition, rayEndpoint, rayDither,
+                projection, push, lastPages[level])) { continue; }
+#endif
             sweepLevels |= 1u << level;
             continue;
         }

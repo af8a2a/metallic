@@ -10,6 +10,7 @@
 | cluster / triangle dirty-page bitset | [cluster](VirtualShadowMapsDirtyPageBitset.md)、[triangle](VirtualShadowMapTriangleBitset.md) |
 | 方向光 Mark clipmap 数专用编译 | [clipmap 验收](VirtualShadowMapMarkClipmapSpecialization.md) |
 | 方向光 Mark 页尺寸移位专用编译 | [page-size 验收](VirtualShadowMapMarkPageSize.md)；本轮由候选转为固定启用 |
+| 方向光 Mark 有界 tile 请求集合覆盖 | [实现与验证](VirtualShadowMapMarkHashCoverage.md)；2026-11-01 按用户决定默认采用，无新增 A/B 开关 |
 
 方向光/局部灯的编译排列仍按真实灯光类型选择；clipmap 数和 pageSize 仍进入程序缓存身份。局部灯继续使用通用页地址计算。可配置页尺寸的二次幂约束、采样与阴影质量设置不变。
 
