@@ -380,9 +380,10 @@ public:
         settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
             boolProperty(&properties, "onePassProjection", settings.onePassProjection));
         VirtualShadowMapProjectionGridResources projectionGrid;
-        if (boolProperty(&properties, "benchmarkLightGridProjection", false)) {
+        if (!sources.empty()) {
             // The matching raster producer builds and retains this snapshot.
-            // Non-grid producers retain the existing full-domain projection.
+            // Non-grid producers and celestial-only scenes keep the original
+            // projection without paying for a local-light grid lookup.
             projectionGrid.grid = gpuScene->lightGrid({info.lightGridViewIndex, info.lightGridViewGeneration}, info.lightGridFrameSlot);
         }
         projectionGrid.diagnostics = collectGPUWork_ ? projectionGridDiagnostics.buffer() : nullptr;

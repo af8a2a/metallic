@@ -1,7 +1,8 @@
-# Grid-driven local VSM projection candidate
+# Grid-driven local VSM projection
 
-`VirtualShadowMapLightsPass` accepts `benchmarkLightGridProjection: true` to
-test grid-driven one-pass projection. It defaults to false. The candidate keeps
+`VirtualShadowMapLightsPass` uses grid-driven local-light one-pass projection by
+default. The former `benchmarkLightGridProjection` switch is no longer read.
+Celestial-only scenes skip the local-light grid lookup. The implementation keeps
 the existing R8 visibility layers, temporal history, Mark, page allocation and
 filtering settings. Four-bit shadow packing is a separate future change.
 
@@ -32,7 +33,7 @@ and filter eligibility checks still apply.
 - LightsPass clears the external visibility array to white before projection,
   so omitted local receivers need no store. Debug pixels and receiver/background
   counters may differ where an omitted job previously wrote or counted them.
-  The candidate does not promise identical debug visualization.
+  The grid path does not promise identical debug visualization.
 
 The grid context is a 544-byte CPU/Slang structure. It uses the projection-only
 `ShadowPush.arguments` field; existing non-grid direct callers use the invalid
@@ -67,3 +68,7 @@ local outputs under `build/vsm-grid-projection-20261101-bounded3/`. Earlier
 timestamp-capacity and correctness failures remain in `bounded/` and `bounded2/`
 respectively. Consult the report for measured results and remaining coverage;
 the implementation alone is not a performance acceptance result.
+
+Default-path adoption is validated separately under
+`build/vsm-grid-projection-default-20261101/`, using a graph with no experiment
+override and the successful candidate's existing captures as the reference.
