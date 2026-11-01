@@ -52,6 +52,7 @@ struct VirtualShadowMapLight
 // One projection view: directional clipmaps, a spot frustum or one point face.
 struct VirtualShadowMapSettings
 {
+    bool collectReceiverCoverage = false; // Diagnostic per-pixel records; requires GPU work diagnostics.
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
     bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.

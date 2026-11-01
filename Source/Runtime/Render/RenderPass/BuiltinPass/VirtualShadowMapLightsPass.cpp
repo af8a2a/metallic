@@ -12,6 +12,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
+#include <bit>
 #include <numeric>
 #include <unordered_map>
 #include <unordered_set>
@@ -108,7 +109,7 @@ public:
     {
         return {RenderGraphSceneSource::Input, {"depth", "rasterInfo", "visibility"}};
     }
-    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {
         const uint32_t capacity = properties().value("lightCapacity", 8u);
         const bool compact = properties().value("compactOutputs", false);
@@ -155,6 +156,21 @@ public:
             reflection.addBufferOutput("buildDiagnostics", "Six cluster build counter and page-scan histogram blocks per light entry")
                 .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapBuildDiagnosticSize, sizeof(uint32_t))
                 .bufferLayout("u32").transferWrite();
+        }
+        if (properties().value("benchmarkReceiverCoverage", false)) {
+            const auto levels = properties().value("clipmapCount", 4u);
+            const auto axis = properties().value("virtualPagesPerAxis", 16u);
+            reflection.addBufferOutput("receiverCoverageSettings", "Receiver coverage protocol and actual face settings")
+                .buffer(16 * sizeof(uint32_t), sizeof(uint32_t)).transferWrite();
+            reflection.addBufferOutput("receiverCoverageProjections", "Complete directional projections including coarse fallback")
+                .buffer(uint64_t(levels + 1) * 112, 4).transferWrite();
+            reflection.addBufferOutput("receiverCoveragePages", "Actual directional page table after allocation and projection")
+                .buffer((uint64_t(levels) * axis * axis + 1) * 16, 4).transferWrite();
+            if (properties().value("benchmarkReceiverCoverageRecords", false)) {
+                reflection.addBufferOutput("receiverCoverage", "Per-pixel receiver coverage diagnostic records")
+                    .buffer(uint64_t(context.width) * context.height * kVSMReceiverCoverageRecordWords * sizeof(uint32_t), 4)
+                    .transferWrite();
+            }
         }
         reflection.addBufferOutput("memory", "Logical owned bytes: total atlas, private output, buffers, public output, faces, atlas pages, temporal history, static atlas subset")
             .buffer(8 * sizeof(uint64_t), sizeof(uint64_t)).transferWrite();
@@ -210,6 +226,12 @@ public:
         compact_ = properties().value("compactOutputs", false);
         debugOutput_ = properties().value("debugOutput", true);
         collectGPUWork_ = properties().value("benchmarkGPUWork", false);
+        receiverCoverage_ = properties().value("benchmarkReceiverCoverage", false);
+        receiverCoverageRecords_ = properties().value("benchmarkReceiverCoverageRecords", false);
+        if (receiverCoverageRecords_ && (!receiverCoverage_ || !collectGPUWork_)) {
+            log = "Receiver coverage records require benchmarkReceiverCoverage and benchmarkGPUWork";
+            return makeError(Error::InvalidArgument);
+        }
         if (properties().value("benchmarkCPUProfile", false) && properties().value("benchmarkGPUProfile", false)) {
             log = "VSM CPU and detailed GPU profiling must run separately";
             return makeError(Error::InvalidArgument);
@@ -234,8 +256,10 @@ public:
     {
         if ((context.properties().value("benchmarkCPUProfile", false) &&
             context.properties().value("benchmarkGPUProfile", false)) ||
-            context.properties().value("benchmarkGPUWork", false) != collectGPUWork_) {
-            spdlog::error("VSM CPU and GPU profiling must run separately; changing benchmarkGPUWork requires graph recompilation");
+            context.properties().value("benchmarkGPUWork", false) != collectGPUWork_ ||
+            context.properties().value("benchmarkReceiverCoverage", false) != receiverCoverage_ ||
+            context.properties().value("benchmarkReceiverCoverageRecords", false) != receiverCoverageRecords_) {
+            spdlog::error("VSM CPU and GPU profiling must run separately; changing diagnostic resource settings requires graph recompilation");
             return makeError(Error::InvalidArgument);
         }
         CPUProfileRecorder cpuRecorder;
@@ -262,6 +286,10 @@ public:
         const auto budgetDiagnostics = context.outputBuffer("budgetDiagnostics");
         const auto workload = context.outputBuffer("workload");
         const auto buildDiagnostics = context.outputBuffer("buildDiagnostics");
+        const auto coverageSettings = context.outputBuffer("receiverCoverageSettings");
+        const auto coverageProjections = context.outputBuffer("receiverCoverageProjections");
+        const auto coveragePages = context.outputBuffer("receiverCoveragePages");
+        const auto coverageRecords = context.outputBuffer("receiverCoverage");
         auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
         const auto memory = context.outputBuffer("memory");
         const auto* scene = context.runtimeScene();
@@ -270,7 +298,9 @@ public:
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
             !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !cacheDiagnostics.valid() || !lodStatisticsOutput.valid() || !budgetDiagnostics.valid() || !memory.valid() ||
-            (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid()))) {
+            (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid())) ||
+            (receiverCoverage_ && (!coverageSettings.valid() || !coverageProjections.valid() || !coveragePages.valid())) ||
+            (receiverCoverageRecords_ && !coverageRecords.valid())) {
             return makeError(Error::InvalidArgument);
         }
         VisibilityBufferFrameInfo info;
@@ -334,6 +364,7 @@ public:
         }
         settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
         settings.collectGPUWork = collectGPUWork_;
+        settings.collectReceiverCoverage = receiverCoverageRecords_;
         settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
         settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
@@ -546,6 +577,30 @@ public:
         cpuTotal.work("sourceSlots", sources.size());
         cpuTotal.work("admittedLights", header.admittedCount);
         cpuTotal.work("admittedFaces", admittedFaces);
+        std::array<uint32_t, 16> coverageHeader{};
+        if (receiverCoverage_) {
+            const auto selected = std::find_if(lights.begin(), lights.end(), [](const auto& item) {
+                return item.entry.status == kVirtualShadowMapLightAdmitted;
+            });
+            if (admittedFaces != 1 || selected == lights.end() ||
+                selected->light.type != VirtualShadowMapLightType::Directional || !settings.enabled ||
+                settings.filter != VirtualShadowMapFilter::SMRT || settings.smrtRayCount != 2 || !settings.markRayPages) {
+                spdlog::error("Receiver coverage export requires one admitted enabled directional SMRT face with two rays and ray-page marking");
+                return makeError(Error::InvalidArgument);
+            }
+            const uint64_t recordBytes = uint64_t(info.width) * info.height * kVSMReceiverCoverageRecordWords * sizeof(uint32_t);
+            if ((receiverCoverageRecords_ && coverageRecords.desc().size != recordBytes) ||
+                coverageProjections.desc().size != uint64_t(settings.clipmapCount + 1) * 112 ||
+                coveragePages.desc().size != (uint64_t(settings.clipmapCount) * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1) * 16) {
+                spdlog::error("Receiver coverage export dimensions/settings changed without graph recompilation");
+                return makeError(Error::InvalidArgument);
+            }
+            coverageHeader = {1, info.width, info.height, settings.pageSize, settings.virtualPagesPerAxis,
+                settings.clipmapCount, selected->faceBudgets[0], settings.smrtRayCount, settings.smrtSamplesPerRay,
+                std::bit_cast<uint32_t>(selected->light.angularRadius), uint32_t(selected - lights.begin()),
+                uint32_t(receiverCoverageRecords_), kVSMReceiverCoverageRecordWords, uint32_t(coverageProjections.desc().size),
+                uint32_t(coveragePages.desc().size), 0};
+        }
         cpuPhase.next("Light table and statistics upload");
 
         struct FacePublication
@@ -562,6 +617,14 @@ public:
             std::string name;
             std::string cacheName;
         };
+        struct CoveragePublication
+        {
+            BufferSlice source;
+            BufferSlice destination;
+            std::string name;
+            std::string output;
+        };
+        std::vector<CoveragePublication> coveragePublications;
         std::vector<FacePublication> publications;
         publications.reserve(admittedFaces);
         std::vector<std::byte> tableData(table.desc().size);
@@ -587,6 +650,10 @@ public:
             chunks.push_back({zeroBuildDiagnostics.data(), zeroBuildDiagnostics.size() * sizeof(uint32_t)});
             destinations.push_back(buildDiagnostics.buffer());
         }
+        if (receiverCoverage_) {
+            chunks.push_back({coverageHeader.data(), sizeof(coverageHeader)});
+            destinations.push_back(coverageSettings.buffer());
+        }
         for (size_t index = 0; index < chunks.size(); ++index) {
             const auto upload = context.streamer()->streamBufferData({.dataChunks = {&chunks[index], 1},
                 .placementAlignment = 16, .dstBuffer = destinations[index], .copyBatch = *batch});
@@ -602,6 +669,9 @@ public:
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             initializeUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
+        }
+        if (receiverCoverage_) {
+            initializeUses.push_back({"receiverCoverageSettings", RenderGraphResourceAccess::BufferTransferWrite});
         }
         std::vector<VirtualShadowMapProjectionGroup> projections;
         projections.reserve(header.admittedCount);
@@ -725,12 +795,34 @@ public:
                             receiver.stream ? &receiver : nullptr);
                         if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
                         pointResults[face] = *shadow;
+                        if (receiverCoverage_) {
+                            auto appendCoverage = [&](Buffer* source, uint64_t offset, const auto& destination,
+                                const std::string& name, const std::string& outputName) -> Result<> {
+                                auto input = source->slice({offset, destination.desc().size});
+                                auto targetSlice = destination.buffer()->slice();
+                                if (!input || !targetSlice) { return makeError(Error::InvalidArgument); }
+                                coveragePublications.push_back({*input, *targetSlice, name, outputName});
+                                return {};
+                            };
+                            if (auto r = appendCoverage(shadow->projections, 0, coverageProjections,
+                                "coverageProjectionSource", "receiverCoverageProjections"); !r) { return r; }
+                            if (auto r = appendCoverage(shadow->pageTable, 0, coveragePages,
+                                "coveragePageSource", "receiverCoveragePages"); !r) { return r; }
+                            if (receiverCoverageRecords_) {
+                                if (auto r = appendCoverage(shadow->statistics,
+                                    uint64_t(kVSMReceiverCoverageStatisticsWordOffset) * sizeof(uint32_t), coverageRecords,
+                                    "coverageRecordSource", "receiverCoverage"); !r) { return r; }
+                            }
+                        }
                         const uint32_t layer = index * 6 + face;
                         auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize});
                         auto destinationStats = statistics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapFaceStatisticsSize,
                             kVirtualShadowMapFaceStatisticsSize});
+                        // Stage imports merge aliases by allocation and retain the first slice.
+                        // Include the diagnostic tail here so its transfer barrier covers every record.
                         auto importedStats = shadow->statistics->slice({0, kVirtualShadowMapFaceStatisticsSize +
-                            (collectGPUWork_ ? kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0)});
+                            (collectGPUWork_ ? kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0) +
+                            (receiverCoverageRecords_ ? coverageRecords.desc().size : 0)});
                         auto sourceCacheDiagnostics = shadow->cacheDiagnostics->slice({0, kVirtualShadowMapCacheDiagnosticSize});
                         auto destinationCacheDiagnostics = cacheDiagnostics.buffer()->slice({uint64_t(layer) * kVirtualShadowMapCacheDiagnosticSize,
                             kVirtualShadowMapCacheDiagnosticSize});
@@ -798,6 +890,12 @@ public:
             projectionUses.push_back({publication.name, RenderGraphResourceAccess::BufferStorageReadWrite});
         }
 
+        for (const auto& publication : coveragePublications) {
+            bufferImports.push_back({publication.name, publication.source, RenderGraphResourceAccess::BufferStorageReadWrite});
+            publishUses.push_back({publication.name, RenderGraphResourceAccess::BufferTransferRead});
+            publishUses.push_back({publication.output, RenderGraphResourceAccess::BufferTransferWrite});
+        }
+
         auto memoryBatch = context.streamer()->beginCopyBatch();
         if (!memoryBatch) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(memoryBatch.error()); }
         std::vector<RenderGraphStageUse> temporalUses{{"memory", RenderGraphResourceAccess::BufferTransferWrite}};
@@ -856,6 +954,9 @@ public:
                 memoryData[3] = uint64_t(context.width()) * context.height() * output.desc().layerCount;
                 if (debugOutput_) {
                     memoryData[3] += uint64_t(context.width()) * context.height() * debug.desc().layerCount * 4;
+                }
+                for (const auto& publication : coveragePublications) {
+                    if (auto copied = cmd.copyBuffer(publication.source, publication.destination); !copied) { return copied; }
                 }
                 for (const auto& publication : publications) {
                     auto copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
@@ -983,6 +1084,8 @@ private:
     bool compact_ = false;
     bool debugOutput_ = true;
     bool collectGPUWork_ = false;
+    bool receiverCoverage_ = false;
+    bool receiverCoverageRecords_ = false;
     uint64_t sceneIdentity_ = 0;
     uint64_t demandKey_ = 0;
     std::unordered_map<uint64_t, std::shared_ptr<LightDemand>> demands_;

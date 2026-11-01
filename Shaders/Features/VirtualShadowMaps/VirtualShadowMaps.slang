@@ -14,6 +14,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
 #endif
+#ifndef VSM_RECEIVER_COVERAGE_DIAGNOSTICS
+#define VSM_RECEIVER_COVERAGE_DIAGNOSTICS 0
+#endif
 #ifndef VSM_OPTIMIZE_PROJECTION_STATISTICS
 #define VSM_OPTIMIZE_PROJECTION_STATISTICS 0
 #endif
@@ -1086,7 +1089,11 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 // rounding, so requests match the sweep exactly; the depth range is tested only
 // at t=0 because that sample alone already requests the shared page.
 uint vsmMarkRayPages(float3 origin, float3 span, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts
+#if VSM_DIRECTIONAL_MARK
+    , float3 rayPosition, float3 rayEndpoint, float3 rayDither
+#endif
+)
 {
     uint sweepLevels = 0u;
     ++workCounts.x;
@@ -1109,6 +1116,18 @@ uint vsmMarkRayPages(float3 origin, float3 span, StructuredBuffer<ShadowProjecti
         float2 start = (projected.xy * 0.5 + 0.5) * resolution;
         float2 end = start + float2(dot(projection.rowX.xyz, span), dot(projection.rowY.xyz, span)) * 0.5 * resolution;
         float2 low = min(start, end) - 1.0, high = max(start, end) + 1.0;
+#if VSM_DIRECTIONAL_MARK
+        if (any(high < 0.0) || any(low > resolution)) {
+            // origin/span rounding differs from lerp(position, endpoint, t) + dither.
+            // Bound both evaluation paths before certifying an empty XY domain.
+            float3 magnitude = abs(rayPosition) + abs(rayEndpoint) + abs(rayDither) + 1.0;
+            float projectedMagnitude = dot(max(abs(projection.rowX.xyz), abs(projection.rowY.xyz)), magnitude) +
+                max(abs(projection.rowX.w), abs(projection.rowY.w)) + 1.0;
+            float error = projectedMagnitude * (256.0 * 5.960464477539063e-8) * resolution;
+            if (projectedMagnitude >= 1.0 && isfinite(error) && all(isfinite(start)) && all(isfinite(end)) &&
+                (any(high + error < 0.0) || any(low - error > resolution))) { continue; }
+        }
+#endif
         if (any(low < 1.0) || any(high >= resolution - 1.0) || projected.z < 1e-4 || projected.z > 1.0 - 1e-4 ||
             any(floor(low / float(push.pageSize)) != floor(high / float(push.pageSize)))) {
             sweepLevels |= 1u << level;
@@ -1221,12 +1240,46 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     }
 }
 
+#if VSM_RECEIVER_COVERAGE_DIAGNOSTICS
+// Diagnostic-only observation of the directional cached Mark domain/address.
+// This does not request a page or update the per-receiver cache.
+uint vsmReceiverCoveragePage(float3 position, StructuredBuffer<ShadowProjection> projections,
+    ShadowPush push, uint level)
+{
+    float4 samplePosition = float4(position, 1.0);
+    float sampleZ = dot(projections[0].rowZ, samplePosition);
+    uint pageAxis = push.virtualPagesPerAxis;
+    float resolution = float(pageAxis * push.pageSize);
+    float margin = 1.0 / resolution;
+    float2 projected = float2(dot(projections[level].rowX, samplePosition),
+        dot(projections[level].rowY, samplePosition));
+    if (!(all(projected >= -1.0 + margin) && all(projected < 1.0 - margin) &&
+        sampleZ >= 0.0 && sampleZ <= 1.0)) { return 0xffffffffu; }
+    uint2 texel = uint2(floor((projected * 0.5 + 0.5) * resolution));
+#if VSM_MARK_PAGE_SHIFT >= 0
+    uint2 pageXY = texel >> VSM_MARK_PAGE_SHIFT;
+#else
+    uint2 pageXY = texel / push.pageSize;
+#endif
+    return level * (pageAxis * pageAxis) + pageXY.y * pageAxis + pageXY.x;
+}
+#endif
+
 void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
 {
     workCounts = uint3(0u);
     if (push.enabled == 0u) { return; }
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
     ViewConstants view = views[0];
+#if VSM_RECEIVER_COVERAGE_DIAGNOSTICS
+    // CPU enables this permutation only for one directional SMRT recording.
+    // Every in-viewport pixel owns one record, including rejected receivers.
+    if (any(id.xy >= uint2(view.current.viewport.yz))) { return; }
+    RWStructuredBuffer<uint> coverageData = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint coverageRecord = kVSMReceiverCoverageStatisticsWordOffset +
+        (id.y * uint(view.current.viewport.y) + id.x) * kVSMReceiverCoverageRecordWords;
+    coverageData[coverageRecord] = 0u;
+#endif
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
     float3 position;
     float linearDepth;
@@ -1261,6 +1314,22 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
     } else if (push.filterMode == 2u) {
         ShadowPush trace = push;
         trace.rayLength = vsmSearchLength(position, linearDepth, view, push);
+#if VSM_RECEIVER_COVERAGE_DIAGNOSTICS
+        coverageData[coverageRecord + 1u] = asuint(position.x);
+        coverageData[coverageRecord + 2u] = asuint(position.y);
+        coverageData[coverageRecord + 3u] = asuint(position.z);
+        coverageData[coverageRecord + 4u] = asuint(trace.rayLength);
+        coverageData[coverageRecord + 5u] = receiverLevel;
+        coverageData[coverageRecord + 6u] = 0u;
+        coverageData[coverageRecord + 7u] = 0u;
+        coverageData[coverageRecord + 8u] = vsmReceiverCoveragePage(position, projections, push, receiverLevel);
+        [unroll]
+        for (uint level = 0u; level < kVSMReceiverCoverageLevelCapacity; ++level) {
+            coverageData[coverageRecord + kVSMReceiverCoverageWitnessOffset + level] = 0xffffffffu;
+        }
+        coverageData[coverageRecord + kVSMReceiverCoverageLinearDepthOffset] = asuint(linearDepth);
+        coverageData[coverageRecord] = 1u;
+#endif
         uint lastPages[VSM_MARK_CACHE_LEVELS];
         [unroll]
         for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) { lastPages[level] = 0xffffffffu; }
@@ -1303,7 +1372,30 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
             float3 dither = vsmRayDither(position, projections[receiverLevel], trace, ray, id.xy);
 #endif
 #if VSM_MARK_RAY_PAGES
-            uint sweepLevels = vsmMarkRayPages(position + dither, endpoint - position, projections, pages, push, receiverLevel, lastPages, workCounts);
+            uint sweepLevels = vsmMarkRayPages(position + dither, endpoint - position, projections, pages, push, receiverLevel, lastPages, workCounts
+#if VSM_DIRECTIONAL_MARK
+                , position, endpoint, dither
+#endif
+            );
+#if VSM_RECEIVER_COVERAGE_DIAGNOSTICS
+            coverageData[coverageRecord + 6u + ray] = sweepLevels;
+            if (ray == 0u) {
+                // Evaluate the actual final sample expression, not a replacement
+                // receiver center. The original helper returns time zero here.
+                float3 witnessPosition = vsmRayPosition(position, endpoint,
+                    vsmRaySampleTime(push.samplesPerRay, push, id.xy), projections[0], push) + dither;
+                [unroll]
+                for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
+                    if (level < receiverLevel || level >= push.clipmapCount) { continue; }
+                    // Same-page certificates requested lastPages; empty-domain
+                    // certificates leave it invalid on ray zero. Residual levels
+                    // use their real t=0 sample domain/address.
+                    uint witness = ((sweepLevels >> level) & 1u) != 0u ?
+                        vsmReceiverCoveragePage(witnessPosition, projections, push, level) : lastPages[level];
+                    coverageData[coverageRecord + kVSMReceiverCoverageWitnessOffset + level] = witness;
+                }
+            }
+#endif
             if (sweepLevels == 0u) { continue; }
 #endif
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {

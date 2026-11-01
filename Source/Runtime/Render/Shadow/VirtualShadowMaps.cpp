@@ -310,6 +310,7 @@ struct VirtualShadowMaps::Programs
 {
     Device* device = nullptr;
     uint64_t coverageKey = 0;
+    bool collectReceiverCoverage = false;
     bool collectGPUWork = false;
     bool optimizeProjectionStatistics = false;
     bool directional = false;
@@ -568,6 +569,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     auto light = inputLight;
     const bool directional = light.type == VirtualShadowMapLightType::Directional;
     const bool enabled = settings.enabled && light.enabled;
+    if (settings.collectReceiverCoverage && (!directional || !enabled || !settings.collectGPUWork ||
+        settings.filter != VirtualShadowMapFilter::SMRT || settings.smrtRayCount != 2 || !settings.markRayPages)) {
+        log = "Receiver coverage diagnostics require enabled directional SMRT with two rays, ray-page marking and GPU work counters";
+        return makeError(Error::InvalidArgument);
+    }
     const bool directionalProjection = directional && settings.directionalProjection;
     const uint32_t markCacheLevels = directional ? settings.clipmapCount : 12u;
     // validProjectionSettings guarantees a nonzero power-of-two page size, at most 128.
@@ -853,7 +859,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint64_t compactArgumentOffset = uint64_t(push.batchCount + push.coarseBatchCount) * 12u;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16,
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
-            kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u),
+            kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
+            (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
+                kVSMReceiverCoverageRecordWords * sizeof(uint32_t) : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), compactArgumentOffset + uint64_t(compactBatches) * 12u,
         pageChanges.size() * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + compactWords) * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
@@ -1064,6 +1072,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     phase.next("Prepare VSM pipeline cache");
     const bool programMiss = !programs_ || programs_->device != &device || programs_->coverageKey != coverage->coverageKey() ||
         programs_->collectGPUWork != settings.collectGPUWork ||
+        programs_->collectReceiverCoverage != settings.collectReceiverCoverage ||
         programs_->optimizeProjectionStatistics != settings.optimizeProjectionStatistics ||
         programs_->directional != directional ||
         programs_->directionalProjection != directionalProjection ||
@@ -1080,6 +1089,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->device = &device;
         programs->coverageKey = coverage->coverageKey();
         programs->collectGPUWork = settings.collectGPUWork;
+        programs->collectReceiverCoverage = settings.collectReceiverCoverage;
         programs->optimizeProjectionStatistics = settings.optimizeProjectionStatistics;
         programs->directional = directional;
         programs->directionalProjection = directionalProjection;
@@ -1107,6 +1117,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
+            if (index == 1 && settings.collectReceiverCoverage) {
+                entryMacros.push_back({"VSM_RECEIVER_COVERAGE_DIAGNOSTICS", "1"});
+            }
             if (index == 1) {
                 entryMacros.push_back({"VSM_DIRECTIONAL_MARK", directional ? "1" : "0"});
                 entryMacros.push_back({"VSM_MARK_CACHE_LEVELS", markCacheLevelsDefine.c_str()});

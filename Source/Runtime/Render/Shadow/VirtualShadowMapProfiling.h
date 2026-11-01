@@ -52,6 +52,15 @@ static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 45;
 static const uint32_t kVirtualShadowMapBuildDiagnosticSize = 360;
 static const uint32_t kVirtualShadowMapBuildDiagnosticWordOffset = 64;
 
+// Optional per-pixel receiver coverage records follow all existing diagnostics.
+// Each pixel owns its record; valid is written even when depth rejects the pixel.
+static const uint32_t kVSMReceiverCoverageRecordWords = 22;
+static const uint32_t kVSMReceiverCoverageWitnessOffset = 9;
+static const uint32_t kVSMReceiverCoverageLevelCapacity = 12;
+static const uint32_t kVSMReceiverCoverageLinearDepthOffset = 21;
+static const uint32_t kVSMReceiverCoverageStatisticsWordOffset = 32 +
+    (kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize) / 4;
+
 // Groups enter only after enabled/range/nonzero-dirty guards. Each valid group
 // tests every fine level; each level contributes exactly one hit/near/outside/
 // empty outcome. Legacy page tests count actual page-table loads, including the

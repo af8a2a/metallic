@@ -83,6 +83,8 @@ class VSMAcceptanceReceipt final : public IRenderDebugObserver {
 public:
     bool captureImages = false;
     bool captureHDR = false;
+    bool captureReceiverCoverage = false;
+    bool receiverCoverageRecords = false;
     std::string hdrOutput, hdrPass;
     bool collectGPUWork = false;
     bool completed = false;
@@ -118,7 +120,10 @@ public:
             const bool image = (captureImages && (binding.id == "VBuffer.depth" ||
                 binding.id == "VBuffer.visibility" || binding.id == "Shadows.shadows")) ||
                 (captureHDR && pass == hdrPass && binding.id == hdrOutput);
-            if (!stats && !image) { continue; }
+            const bool coverage = captureReceiverCoverage &&
+                (binding.id == "Shadows.receiverCoverageSettings" || binding.id == "Shadows.receiverCoverageProjections" ||
+                 binding.id == "Shadows.receiverCoveragePages" || (receiverCoverageRecords && binding.id == "Shadows.receiverCoverage"));
+            if (!stats && !image && !coverage) { continue; }
             try {
                 copy(commands, binding, image);
             } catch (const std::exception& exception) { error = exception.what(); return; }
@@ -261,6 +266,38 @@ public:
         auto result = hdrReceipt(hdrFormat_, hdrWidth_, hdrHeight_, bytes);
         result["output"] = hdrOutput;
         result["rawSha256"] = hashBytes(bytes);
+        return result;
+    }
+    Json saveReceiverCoverage(const std::filesystem::path& directory, const std::string& stem)
+    {
+        const auto raw = read("Shadows.receiverCoverageSettings");
+        std::array<uint32_t, 16> header{};
+        requireAcceptance(raw.size() == sizeof(header), "Invalid receiver coverage header size");
+        std::memcpy(header.data(), raw.data(), sizeof(header));
+        requireAcceptance(header[0] == 1 && header[12] == kVSMReceiverCoverageRecordWords &&
+            header[1] == actualRenderWidth && header[2] == actualRenderHeight &&
+            bool(header[11]) == receiverCoverageRecords, "Invalid receiver coverage protocol or extent");
+        Json result{{"version", header[0]}, {"width", header[1]}, {"height", header[2]},
+            {"pageSize", header[3]}, {"virtualPagesPerAxis", header[4]}, {"clipmapCount", header[5]},
+            {"physicalPageCount", header[6]}, {"rayCount", header[7]}, {"samplesPerRay", header[8]},
+            {"angularRadius", std::bit_cast<float>(header[9])}, {"lightIndex", header[10]},
+            {"recordsEnabled", bool(header[11])}, {"recordWords", header[12]}};
+        const auto saveBuffer = [&](const std::string& resource, const std::string& suffix, uint64_t expectedBytes, uint32_t stride) {
+            const auto bytes = read(resource);
+            requireAcceptance(bytes.size() == expectedBytes, "Invalid receiver coverage buffer size: " + resource);
+            const std::string filename = stem + "-" + suffix + ".bin";
+            std::ofstream file(directory / filename, std::ios::binary);
+            file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+            file.close();
+            requireAcceptance(file.good(), "Write receiver coverage buffer: " + filename);
+            return Json{{"file", filename}, {"byteLength", bytes.size()}, {"rawSha256", hashBytes(bytes)}, {"strideBytes", stride}};
+        };
+        result["projections"] = saveBuffer("Shadows.receiverCoverageProjections", "projections", header[13], 112);
+        result["pages"] = saveBuffer("Shadows.receiverCoveragePages", "pages", header[14], 16);
+        if (receiverCoverageRecords) {
+            result["records"] = saveBuffer("Shadows.receiverCoverage", "receivers",
+                uint64_t(header[1]) * header[2] * header[12] * sizeof(uint32_t), header[12] * sizeof(uint32_t));
+        }
         return result;
     }
     Json saveImage(const std::filesystem::path& directory, const std::string& resource, const std::string& stem)
@@ -532,6 +569,7 @@ public:
                 requireAcceptance(frames > warmup && frames <= 16384, "Invalid frame budget");
                 const auto comparisons = spec.value("comparisonFrames", std::vector<uint32_t>{});
                 const auto captures = spec.value("captureFrames", std::vector<uint32_t>{});
+                const auto receiverCoverageFrames = spec.value("receiverCoverageFrames", std::vector<uint32_t>{});
                 const bool enableStreamline = spec.value("enableStreamline", false);
                 const bool requireNoRayCapabilities = spec.value("requireNoRayCapabilities", !enableStreamline);
                 const bool synchronizationValidation = spec.value("synchronizationValidation",
@@ -565,6 +603,22 @@ public:
                 const bool gpuProfileDiagnostics = shadows->properties.value("benchmarkGPUProfile", false);
                 const bool buildSubstageDiagnostics = shadows->properties.value("benchmarkBuildSubstages", false);
                 const bool gpuWorkDiagnostics = shadows->properties.value("benchmarkGPUWork", false);
+                const bool receiverCoverage = shadows->properties.value("benchmarkReceiverCoverage", false);
+                const bool receiverCoverageRecords = shadows->properties.value("benchmarkReceiverCoverageRecords", false);
+                requireAcceptance(!receiverCoverageRecords || (receiverCoverage && gpuWorkDiagnostics),
+                    "Receiver coverage records require export and GPU work diagnostics");
+                requireAcceptance(!receiverCoverage || (diagnostic && !receiverCoverageFrames.empty()),
+                    "Receiver coverage export requires diagnostic mode and explicit receiverCoverageFrames");
+                requireAcceptance(receiverCoverage || receiverCoverageFrames.empty(), "Receiver coverage frames require export");
+                requireAcceptance(std::is_sorted(receiverCoverageFrames.begin(), receiverCoverageFrames.end()) &&
+                    std::adjacent_find(receiverCoverageFrames.begin(), receiverCoverageFrames.end()) == receiverCoverageFrames.end() &&
+                    (receiverCoverageFrames.empty() || receiverCoverageFrames.back() < frames), "Invalid receiver coverage frame list");
+                if (receiverCoverage) {
+                    output["receiverCoverageCaptures"] = Json::array();
+                    output["receiverCoverageRecords"] = receiverCoverageRecords;
+                    report["performanceEligible"] = false;
+                    report["receiverCoverageScope"] = "Diagnostic per-pixel writes run every frame when records are enabled; binary readback occurs only on declared frames. No ordinary timing claim.";
+                }
                 requireAcceptance(!buildSubstageDiagnostics || gpuProfileDiagnostics,
                     "Build substage attribution requires detailed GPU profiling");
                 requireAcceptance(!cpuProfileDiagnostics || diagnostic, "CPU profile attribution requires diagnostic mode");
@@ -622,6 +676,7 @@ public:
                 RenderGraphPreviewRenderer preview;
                 VSMAcceptanceReceipt receipt;
                 receipt.collectGPUWork = gpuWorkDiagnostics;
+                receipt.receiverCoverageRecords = receiverCoverageRecords;
                 receipt.hdrOutput = comparisonOutput;
                 receipt.hdrPass = comparisonOutput.substr(0, comparisonOutput.rfind('.'));
                 struct ReceiptLifetimeScope
@@ -718,6 +773,8 @@ public:
                     validation.phase(id + "/" + std::to_string(frame));
                     const bool capture = std::find(captures.begin(), captures.end(), frame) != captures.end();
                     receipt.captureImages = diagnostic && capture;
+                    receipt.captureReceiverCoverage = receiverCoverage &&
+                        std::binary_search(receiverCoverageFrames.begin(), receiverCoverageFrames.end(), frame);
                     receipt.captureHDR = diagnostic && capture;
                     const bool extentSnapshot = !diagnostic;
                     preview.setExecutionCaptureEnabled(extentSnapshot);
@@ -806,6 +863,11 @@ public:
                         requireAcceptance(!sceneHandoff || (!previousSceneIdentity.is_null() && identity != previousSceneIdentity),
                             "Scene handoff did not change the published VSM scene identity");
                         previousSceneIdentity = identity;
+                    }
+                    if (receipt.captureReceiverCoverage) {
+                        auto coverage = receipt.saveReceiverCoverage(directory, id + "-" + std::to_string(frame));
+                        coverage["frame"] = frame;
+                        output["receiverCoverageCaptures"].push_back(std::move(coverage));
                     }
                     output["frames"].push_back(row);
                     noRayTracingAllocations &= row["memory"]["domains"]["RayTracing"]["peakAllocationBytes"] == 0 &&
