@@ -46,6 +46,9 @@ import Lighting;
 #ifndef VSM_DIRECTIONAL_PROJECTION
 #define VSM_DIRECTIONAL_PROJECTION 0
 #endif
+#ifndef VSM_ADAPTIVE_RAY_COUNT
+#define VSM_ADAPTIVE_RAY_COUNT 0
+#endif
 #ifndef VSM_MARK_RAY_PAGES
 #define VSM_MARK_RAY_PAGES 0
 #endif
@@ -141,7 +144,7 @@ void vsmWorkAdd(ShadowPush push, uint counter, uint value)
 #if VSM_WORKLOAD_DIAGNOSTICS
 void vsmBuildDiagnosticAdd(ShadowPush push, uint counter, uint value)
 {
-    // Reuse the workload's low/high carry contract, starting at uint word 64.
+    // Reuse the workload's low/high carry contract after its counter block.
     vsmWorkAdd(push, kVirtualShadowMapWorkCounterCount + counter, value);
 }
 
@@ -915,6 +918,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         return sum / 9.0;
     }
     float visibility = 0.0;
+#if VSM_ADAPTIVE_RAY_COUNT
+    uint tracedRays = push.rayCount;
+#endif
     // A ray keeps its receiver's resolution. An angular footprint shrinks to
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
@@ -963,8 +969,27 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             previousReference = reference;
         }
         visibility += blocked ? 0.0 : 1.0;
+#if VSM_ADAPTIVE_RAY_COUNT
+        if (ray + 1u < push.rayCount) {
+            // Vote only among this light's active receivers. This heuristic
+            // assumes full light after one miss, or umbra after two hits in
+            // every participating lane; it is not the fixed-ray estimator.
+            uint keepTracing = ray == 0u ? (blocked ? 1u : 0u) : (visibility > 0.0 ? 1u : 0u);
+            if (WaveActiveSum(keepTracing) == 0u) {
+                tracedRays = ray + 1u;
+                vsmWorkAdd(push, ray == 0u ? kVSMWorkProjectionAdaptiveLitReceivers :
+                    kVSMWorkProjectionAdaptiveUmbraReceivers, 1u);
+                vsmWorkAdd(push, kVSMWorkProjectionAdaptiveSavedRays, push.rayCount - tracedRays);
+                break;
+            }
+        }
+#endif
     }
+#if VSM_ADAPTIVE_RAY_COUNT
+    return visibility / float(tracedRays);
+#else
     return visibility / float(push.rayCount);
+#endif
 }
 
 groupshared uint gVsmMarkedPages[256];

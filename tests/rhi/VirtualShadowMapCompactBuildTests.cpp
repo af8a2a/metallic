@@ -249,8 +249,8 @@ public:
                     }
                     requireCompact(emitted == expected, label + ": candidate list duplicated or lost a cluster");
                     const auto counter = [&](uint32_t index) { return uint64_t(statistics[index*2]) | (uint64_t(statistics[index*2+1]) << 32u); };
-                    requireCompact(counter(32+kVSMBuildDiagnosticClusterGroups) == (warm ? 0u : groups) &&
-                        counter(32+kVSMBuildDiagnosticClusterSurvivingGroups) == survivors, label + ": compact diagnostics mismatch");
+                    requireCompact(counter(kVirtualShadowMapBuildDiagnosticWordOffset/2+kVSMBuildDiagnosticClusterGroups) == (warm ? 0u : groups) &&
+                        counter(kVirtualShadowMapBuildDiagnosticWordOffset/2+kVSMBuildDiagnosticClusterSurvivingGroups) == survivors, label + ": compact diagnostics mismatch");
                     if (!boundary) {
                         const uint32_t active = mode == 0 ? triangleCount : survivors*64u;
                         requireCompact(counter(16+kVSMWorkBuildActiveTriangleSlots) == active &&

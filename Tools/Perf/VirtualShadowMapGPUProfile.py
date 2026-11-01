@@ -41,6 +41,11 @@ WORK_COUNTERS = (
     "rasterCoarseGroups", "rasterFineGroups", "rasterDecodedTriangles", "rasterOutputPrimitives",
     "rasterClearedPages", "projectionReceivers", "projectionRays", "projectionAtlasLoads",
 )
+ADAPTIVE_WORK_COUNTERS = (
+    "projectionAdaptiveLitReceivers", "projectionAdaptiveUmbraReceivers", "projectionAdaptiveSavedRays",
+)
+ALL_WORK_COUNTERS = WORK_COUNTERS + ADAPTIVE_WORK_COUNTERS
+WORK_COUNTERS_BY_VERSION = {1: WORK_COUNTERS, 2: ALL_WORK_COUNTERS}
 COUNTER_DEFINITIONS = {
     "markReceiverDispatches": "Threads with a depth receiver in the light/face domain; point-light face dispatches may repeat receivers.",
     "markSamplePositions": "Calls to markPosition, including samples subsequently rejected by the point-face check.",
@@ -58,6 +63,9 @@ COUNTER_DEFINITIONS = {
     "projectionReceivers": "Receivers passing canonical-face, enabled and domain checks.",
     "projectionRays": "Actual SMRT ray-loop iterations; hard/PCF paths do not execute these rays.",
     "projectionAtlasLoads": "Executed hard/filtered atlas.Load calls, including coarse/cross-face loads; failed lookups excluded.",
+    "projectionAdaptiveLitReceivers": "Receiver-light evaluations exiting after the first ray because all participating lanes missed, with rays remaining.",
+    "projectionAdaptiveUmbraReceivers": "Receiver-light evaluations exiting after at least two rays because no participating lane has missed, with rays remaining.",
+    "projectionAdaptiveSavedRays": "Ray iterations omitted by adaptive early exits relative to the configured ray count.",
 }
 PAGE_STATISTICS = {0: "requestedFinePages", 1: "admittedFinePages", 2: "unadmittedFinePages",
                    16: "admittedDirtyFinePages", 17: "admittedCleanFinePages", 18: "invalidatedMappedPages",
@@ -224,24 +232,26 @@ def work_frame(frame, mode):
     work = shadow.get("gpuWork")
     result = {"frame": frame["frame"], "warmup": frame["warmup"], "gpuWorkAvailable": False}
     if work is not None:
-        if work.get("version") != 1 or not isinstance(work.get("enabled"), bool):
+        if (not isinstance(work, dict) or type(work.get("version")) is not int or
+                work["version"] not in WORK_COUNTERS_BY_VERSION or not isinstance(work.get("enabled"), bool)):
             raise ValueError("Unknown or malformed GPU work schema")
+        counter_names = WORK_COUNTERS_BY_VERSION[work["version"]]
         if work["enabled"]:
             if mode != "diagnostic":
                 raise ValueError("GPU work instrumentation cannot enter ordinary timing evidence")
             faces, totals = work["faces"], work["totals"]
-            if not faces or set(totals) != set(WORK_COUNTERS):
+            if not faces or set(totals) != set(counter_names):
                 raise ValueError("Missing GPU work faces or counters")
             face_ids = set()
-            summed = dict.fromkeys(WORK_COUNTERS, 0)
+            summed = dict.fromkeys(counter_names, 0)
             for face in faces:
                 identity = (integer_counter(face["lightIndex"], "lightIndex"), integer_counter(face["face"], "face"))
-                if identity in face_ids or identity[1] >= 6 or set(face["counters"]) != set(WORK_COUNTERS):
+                if identity in face_ids or identity[1] >= 6 or set(face["counters"]) != set(counter_names):
                     raise ValueError("Duplicated or malformed GPU work face")
                 face_ids.add(identity)
-                for name in WORK_COUNTERS:
+                for name in counter_names:
                     summed[name] += integer_counter(face["counters"][name], name)
-            for name in WORK_COUNTERS:
+            for name in counter_names:
                 if summed[name] != integer_counter(totals[name], name):
                     raise ValueError(f"GPU work face totals disagree: {name}")
             result.update(gpuWorkAvailable=True, **totals)
@@ -367,7 +377,7 @@ def summarize_package(source):
             valid = [frame for frame in frames if not frame["warmup"]]
             columns = ["graphMs", "shadowsMs", "stageSumMs", "otherShadowsMs", *[f"{stage}Ms" for stage in STAGES]]
             metrics = {column: describe([frame[column] for frame in valid]) for column in columns}
-            counter_names = list(WORK_COUNTERS) + list(PAGE_STATISTICS.values())
+            counter_names = list(ALL_WORK_COUNTERS) + list(PAGE_STATISTICS.values())
             counters = {name: describe([row[name] for row in work if not row["warmup"] and name in row])
                         for name in counter_names if any(not row["warmup"] and name in row for row in work)}
             build_counters = {name: describe([row[name] for row in build if not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] and name in row])
@@ -448,7 +458,7 @@ def plot_work(case, output, filename):
     import matplotlib.pyplot as plt
 
     values = case["counterProcessMedianSummary"]
-    names = [name for name in WORK_COUNTERS if name in values]
+    names = [name for name in ALL_WORK_COUNTERS if name in values]
     if not names:
         return None
     figure, axis = plt.subplots(figsize=(12, 7), constrained_layout=True)

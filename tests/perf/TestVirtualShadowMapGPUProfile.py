@@ -24,9 +24,9 @@ def frame(index, faces=2, scale=1.):
                        "domains": {"RayTracing": {"peakAllocationBytes": 0}, "CLAS": {"peakAllocationBytes": 0}}}}
 
 
-def add_work(row):
-    counters = {name: index + 1 for index, name in enumerate(profile.WORK_COUNTERS)}
-    row["shadow"] = {"gpuWork": {"version": 1, "enabled": True,
+def add_work(row, version=1):
+    counters = {name: index + 1 for index, name in enumerate(profile.WORK_COUNTERS_BY_VERSION[version])}
+    row["shadow"] = {"gpuWork": {"version": version, "enabled": True,
                       "faces": [{"lightIndex": 0, "face": face, "counters": counters.copy()} for face in range(2)],
                       "totals": {name: value * 2 for name, value in counters.items()}},
                      "totals": [1000 + index for index in range(32)]}
@@ -278,6 +278,32 @@ class GPUProfileTests(unittest.TestCase):
         self.assertNotIn("projectionRays", result)
         row["shadow"] = {"gpuWork": {"version": 1, "enabled": False}}
         self.assertEqual(result, profile.work_frame(row, "diagnostic"))
+
+    def test_adaptive_counters_preserve_historical_schema(self):
+        historical = profile.work_frame(add_work(frame(1)), "diagnostic")
+        current = profile.work_frame(add_work(frame(1), version=2), "diagnostic")
+        for name in profile.WORK_COUNTERS:
+            self.assertEqual(historical[name], current[name])
+        for name in profile.ADAPTIVE_WORK_COUNTERS:
+            self.assertNotIn(name, historical)
+            self.assertGreater(current[name], 0)
+        self.assertEqual(current["projectionAdaptiveSavedRays"], 38)
+
+    def test_work_schema_rejects_wrong_counter_layout_and_version(self):
+        for source, wrong in ((1, 2), (2, 1)):
+            row = add_work(frame(1), version=source)
+            row["shadow"]["gpuWork"]["version"] = wrong
+            with self.assertRaisesRegex(ValueError, "Missing GPU work"):
+                profile.work_frame(row, "diagnostic")
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 3, "enabled": True}):
+            row = frame(1)
+            row["shadow"] = {"gpuWork": invalid} if invalid is not None else {"gpuWork": []}
+            with self.assertRaisesRegex(ValueError, "schema"):
+                profile.work_frame(row, "diagnostic")
+        row = add_work(frame(1), version=2)
+        row["shadow"]["gpuWork"]["totals"]["projectionAdaptiveSavedRays"] += 1
+        with self.assertRaisesRegex(ValueError, "totals disagree"):
+            profile.work_frame(row, "diagnostic")
 
     def test_work_counters_cannot_be_timing(self):
         with self.assertRaisesRegex(ValueError, "ordinary timing"):

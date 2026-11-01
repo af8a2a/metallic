@@ -26,12 +26,15 @@ static const uint32_t kVSMWorkRasterClearedPages = 12;
 static const uint32_t kVSMWorkProjectionReceivers = 13;
 static const uint32_t kVSMWorkProjectionRays = 14;
 static const uint32_t kVSMWorkProjectionAtlasLoads = 15;
-static const uint32_t kVirtualShadowMapWorkCounterCount = 16;
-static const uint32_t kVirtualShadowMapWorkloadSize = 128;
+static const uint32_t kVSMWorkProjectionAdaptiveLitReceivers = 16;
+static const uint32_t kVSMWorkProjectionAdaptiveUmbraReceivers = 17;
+static const uint32_t kVSMWorkProjectionAdaptiveSavedRays = 18;
+static const uint32_t kVirtualShadowMapWorkCounterCount = 19;
+static const uint32_t kVirtualShadowMapWorkloadSize = kVirtualShadowMapWorkCounterCount * 8;
 
-// Optional build diagnostics follow the original 32 statistics words and
-// 16 workload counters without changing either ABI. Values are low/high uint32
-// pairs at byte offset 256. Disabled cluster culling leaves this segment zero.
+// Optional build diagnostics follow the unchanged 32 public statistics words
+// and the current workload counter segment. Values are low/high uint32 pairs.
+// Disabled cluster culling leaves this segment zero.
 static const uint32_t kVSMBuildDiagnosticClusterGroups = 0;
 static const uint32_t kVSMBuildDiagnosticClusterBoundsValidGroups = 1;
 static const uint32_t kVSMBuildDiagnosticClusterSurvivingGroups = 2;
@@ -50,7 +53,7 @@ static const uint32_t kVSMBuildDiagnosticTriangleBitsetWordTests = 43;
 static const uint32_t kVSMBuildDiagnosticTriangleBitsetPageHits = 44;
 static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 45;
 static const uint32_t kVirtualShadowMapBuildDiagnosticSize = 360;
-static const uint32_t kVirtualShadowMapBuildDiagnosticWordOffset = 64;
+static const uint32_t kVirtualShadowMapBuildDiagnosticWordOffset = 32 + kVirtualShadowMapWorkCounterCount * 2;
 
 // Optional per-pixel receiver coverage records follow all existing diagnostics.
 // Each pixel owns its record; valid is written even when depth rejects the pixel.
@@ -73,6 +76,7 @@ static const uint32_t kVSMReceiverCoverageStatisticsWordOffset = 32 +
 // Page hits count every emitted candidate, including work-capacity overflow.
 #ifdef __cplusplus
 static_assert(kVirtualShadowMapBuildDiagnosticWordOffset == 32u + kVirtualShadowMapWorkCounterCount * 2u);
+static_assert(kVirtualShadowMapWorkloadSize == kVirtualShadowMapWorkCounterCount * sizeof(uint64_t));
 static_assert(kVSMBuildDiagnosticClusterBitsetLevelTests == kVSMBuildDiagnosticClusterPageScanHistogram +
     kVirtualShadowMapBuildDiagnosticHistogramCount);
 static_assert(kVSMBuildDiagnosticTriangleBitsetWordTests == kVSMBuildDiagnosticClusterBitsetScanHistogram +
@@ -83,7 +87,8 @@ inline constexpr std::array<std::string_view, kVirtualShadowMapWorkCounterCount>
     "markReceiverDispatches", "markSamplePositions", "markLevelTests", "markPageRequests",
     "buildActiveTriangleSlots", "buildDecodedTriangles", "buildLevelTests", "buildPageTests",
     "rasterCoarseGroups", "rasterFineGroups", "rasterDecodedTriangles", "rasterOutputPrimitives",
-    "rasterClearedPages", "projectionReceivers", "projectionRays", "projectionAtlasLoads"};
+    "rasterClearedPages", "projectionReceivers", "projectionRays", "projectionAtlasLoads",
+    "projectionAdaptiveLitReceivers", "projectionAdaptiveUmbraReceivers", "projectionAdaptiveSavedRays"};
 inline constexpr std::array<std::string_view, kVirtualShadowMapBuildDiagnosticCounterCount> kVirtualShadowMapBuildDiagnosticCounterNames{
     "clusterGroups", "clusterBoundsValidGroups", "clusterSurvivingGroups", "clusterLevelTests", "clusterPageTests",
     "clusterPageHits", "clusterNearPlaneKeeps", "clusterOutsideLevels", "clusterEmptyLevels",
