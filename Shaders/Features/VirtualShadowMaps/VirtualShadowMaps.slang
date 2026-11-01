@@ -35,6 +35,9 @@ import VirtualShadowMapCommon;
 #ifndef VSM_DIRECTIONAL_MARK
 #define VSM_DIRECTIONAL_MARK 0
 #endif
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_COVERAGE_DIAGNOSTICS
+#error The full-cone Mark candidate does not support the legacy per-ray receiver coverage records.
+#endif
 #ifndef VSM_DIRECTIONAL_PROJECTION
 #define VSM_DIRECTIONAL_PROJECTION 0
 #endif
@@ -1313,6 +1316,72 @@ uint vsmReceiverCoveragePage(float3 position, StructuredBuffer<ShadowProjection>
 }
 #endif
 
+#if VSM_DIRECTIONAL_MARK
+float2 vsmDirectionalFootprintRange(float4 row, float3 position, float3 toLight,
+    float3 right, float3 up, float rayLength, float coneRadius, float texelSize)
+{
+    float center = dot(row, float4(position, 1.0));
+    float axial = rayLength * dot(row.xyz, toLight);
+    float transverse = coneRadius * length(row.xyz);
+    float dither = 0.5 * texelSize * (abs(dot(row.xyz, right)) + abs(dot(row.xyz, up)));
+    // Include the original endpoint, world-space lerp and texel dither paths.
+    // The axial term also retains finite-precision XY/light-axis nonorthogonality.
+    float magnitude = dot(abs(row.xyz), abs(position) + rayLength + texelSize + 1.0) + abs(row.w) + 1.0;
+    float error = magnitude * (256.0 * 5.960464477539063e-8);
+    return float2(center + min(0.0, axial) - transverse - dither - error,
+        center + max(0.0, axial) + transverse + dither + error);
+}
+
+void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProjection> projections,
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint3 workCounts)
+{
+    ++workCounts.x;
+    float3 toLight = normalize(projections[0].rowZ.xyz);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    // The receiver-selected texel sets dither for every sampled clipmap.
+    float texelSize = projections[firstLevel].metric.y;
+    float coneRadius = push.rayLength * sin(push.angularRadius);
+    float2 depthRange = vsmDirectionalFootprintRange(projections[0].rowZ, position,
+        toLight, right, up, push.rayLength, coneRadius, texelSize);
+    if (all(isfinite(depthRange)) && (depthRange.y < 0.0 || depthRange.x > 1.0)) { return; }
+
+    for (uint level = firstLevel; level < push.clipmapCount; ++level) {
+        ++workCounts.y;
+        ShadowProjection projection = projections[level];
+        float2 xRange = vsmDirectionalFootprintRange(projection.rowX, position,
+            toLight, right, up, push.rayLength, coneRadius, texelSize);
+        float2 yRange = vsmDirectionalFootprintRange(projection.rowY, position,
+            toLight, right, up, push.rayLength, coneRadius, texelSize);
+        float2 low = float2(xRange.x, yRange.x), high = float2(xRange.y, yRange.y);
+        uint2 firstPage = uint2(0u), lastPage = uint2(projection.page.y - 1u);
+        // Unbounded numerical ranges retain the full grid, never an empty request.
+        if (all(isfinite(low)) && all(isfinite(high)) && all(low <= high)) {
+            if (any(high < -1.0) || any(low > 1.0)) { continue; }
+            float resolution = float(projection.page.y * push.pageSize);
+            // Intersect before float-to-uint conversion; one texel covers rounding
+            // of the projected-domain-to-texel conversion and its floor boundary.
+            uint2 firstTexel = uint2(clamp((clamp(low, -1.0, 1.0) * 0.5 + 0.5) * resolution - 1.0,
+                0.0, resolution - 1.0));
+            uint2 lastTexel = uint2(clamp((clamp(high, -1.0, 1.0) * 0.5 + 0.5) * resolution + 1.0,
+                0.0, resolution - 1.0));
+#if VSM_MARK_PAGE_SHIFT >= 0
+            firstPage = firstTexel >> VSM_MARK_PAGE_SHIFT;
+            lastPage = lastTexel >> VSM_MARK_PAGE_SHIFT;
+#else
+            firstPage = firstTexel / push.pageSize;
+            lastPage = lastTexel / push.pageSize;
+#endif
+        }
+        for (uint y = firstPage.y; y <= lastPage.y; ++y) {
+            for (uint x = firstPage.x; x <= lastPage.x; ++x) {
+                vsmMarkPage(pages, projection.page.x + y * projection.page.y + x, workCounts);
+            }
+        }
+    }
+}
+#endif
+
 void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
 {
     workCounts = uint3(0u);
@@ -1378,6 +1447,9 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         coverageData[coverageRecord + kVSMReceiverCoverageLinearDepthOffset] = asuint(linearDepth);
         coverageData[coverageRecord] = 1u;
 #endif
+#if VSM_DIRECTIONAL_MARK
+        vsmMarkDirectionalFootprint(position, projections, pages, trace, receiverLevel, workCounts);
+#else
         uint lastPages[VSM_MARK_CACHE_LEVELS];
         [unroll]
         for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) { lastPages[level] = 0xffffffffu; }
@@ -1463,6 +1535,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
                 );
             }
         }
+#endif
     }
 }
 
