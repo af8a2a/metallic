@@ -64,7 +64,7 @@ struct VirtualShadowMapSettings
     bool markRayPages = true; // Directional SMRT Mark skips samples of rays that stay inside one page.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.
-    bool receiverMask = false; // Experimental 8x8 masks for layered directional SMRT; other modes retain full pages.
+    bool receiverMask = false; // Experimental persistent 8x8 coverage for layered directional SMRT; other modes retain full pages.
     bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
     bool shadowLODHierarchy = true; // Cached adaptive traversal; false retains the flat reference for A/B.
     float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.

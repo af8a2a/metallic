@@ -705,6 +705,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool layered = settings.cacheEnabled && settings.cacheLayering;
     const bool receiverMask = settings.receiverMask && layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
+    // Persistent receiver coverage follows the optional propagated table.
+    // Changing that layout cannot reinterpret a previous cache allocation.
+    const bool receiverMaskLayoutChanged = cache_ && receiverMask &&
+        cache_->settings.propagatedMapping != settings.propagatedMapping;
     std::array<uint32_t, 48> cacheDiagnostics{};
     auto& reasons = cacheDiagnostics[kVSMCacheReasons];
     if (!settings.cacheEnabled) { reasons |= kVSMCacheReasonCacheDisabled; }
@@ -713,7 +717,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (cache_) {
         if (cache_->device != &device) { reasons |= kVSMCacheReasonDevice; }
         if (!compatibleLight(cache_->light, light) || cache_->enabled != enabled) { reasons |= kVSMCacheReasonLight; }
-        if (!compatibleSettings(cache_->settings, settings) || cache_->receiverMask != receiverMask) { reasons |= kVSMCacheReasonSettings; }
+        if (!compatibleSettings(cache_->settings, settings) || cache_->receiverMask != receiverMask || receiverMaskLayoutChanged) { reasons |= kVSMCacheReasonSettings; }
         if (cache_->sceneIdentity != casters.sceneIdentity) { reasons |= kVSMCacheReasonScene; }
         if (cache_->structuralRevision != casters.structuralRevision) { reasons |= kVSMCacheReasonStructure; }
         if (cache_->geometryRevision != casters.geometryRevision) { reasons |= kVSMCacheReasonGeometryPublication; }
@@ -721,7 +725,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (cache_->tessellationKey != casters.tessellationKey) { reasons |= kVSMCacheReasonTessellation; }
         if (cache_->settings.cacheLayering != settings.cacheLayering) { reasons |= kVSMCacheReasonLayerMode; }
     }
-    bool reuse = cache_ && cache_->receiverMask == receiverMask && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
+    bool reuse = cache_ && cache_->receiverMask == receiverMask && !receiverMaskLayoutChanged && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
         cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey;
     const bool compatibleCache = reuse;
@@ -876,7 +880,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint64_t compactArgumentOffset = uint64_t(push.batchCount + push.coarseBatchCount) * 12u;
     // The original range is the allocator/cache ownership table. Projection
     // mappings are rebuilt into a disjoint tail after Finalize publishes validity.
-    const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16 * (settings.propagatedMapping ? 2u : 1u),
+    const uint64_t validReceiverMaskBytes = receiverMask ? ((uint64_t(push.totalPages) + 1u) / 2u) * 16u : 0u;
+    const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16 * (settings.propagatedMapping ? 2u : 1u) + validReceiverMaskBytes,
         coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
@@ -1151,7 +1156,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (settings.dirtyPageHierarchy && (compactEntry || index == 16)) {
                 entryMacros.push_back({"VSM_DIRTY_PAGE_HIERARCHY", "1"});
             }
-            if (index == 5 || index == 15) {
+            if (index == 5 || index == 15 || (receiverMask && (index == 0 || index == 4 || index == 11 || index == 13))) {
                 entryMacros.push_back({"VSM_PROPAGATED_MAPPING", settings.propagatedMapping ? "1" : "0"});
             }
             if (index == 1 && settings.collectReceiverCoverage) {
@@ -1180,6 +1185,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (index == 16) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
                 spdlog::info("[VSMHierarchyShader] entry={} spirvSHA256={} receiverMask={}", entries[index], debug::debugSha256(bytes), receiverMask);
+            }
+            if (receiverMask && (index == 0 || index == 4 || index == 11 || index == 13)) {
+                const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
+                spdlog::info("[VSMReceiverMaskShader] entry={} persistentCoverage=true propagatedMapping={} spirvSHA256={}",
+                    entries[index], settings.propagatedMapping, debug::debugSha256(bytes));
             }
             if (index == 5 || index == 15) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));

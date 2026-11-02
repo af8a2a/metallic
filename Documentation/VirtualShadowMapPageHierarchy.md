@@ -21,11 +21,22 @@ This is not a production-default change.
   Other modes use complete pages. Coarse pages and static-dirty fine pages keep
   complete geometry. Static and dynamic raster passes share the Build list, so
   static-dirty work cannot be filtered by current receivers.
-- Partial dynamic depth is valid for the current receiver footprint only. Reset
-  invalidates resident fine dynamic composition each frame while preserving the
-  static depth layer. Changing the effective receiver-mask mode invalidates the
-  cache, including transitions to hard shadows. This can cost more than it saves
-  in a stationary warm-cache scene.
+- Partial dynamic depth has a persistent 64-bit valid-coverage mask. Reset
+  carries it through the same `oldIndex` remap as the resident page, only when
+  the old depth remains valid and its casters have not invalidated it. After
+  Mark, Admit keeps clean pages when `requested & ~valid` is zero; new coverage
+  makes a resident admitted page dirty through the existing allocation path.
+- Successful Finalize replaces valid coverage with the current mask. It records
+  full coverage for static-dirty pages because their shared work list draws the
+  complete page. It never unions stale coverage after a dynamic redraw. Overflow
+  cannot publish valid coverage, and eviction clears it. The page table and mask
+  share the existing submission/completion and cancelled-recording lifecycle.
+- Valid masks occupy an 8-byte-per-page tail after the residency table and
+  optional propagated mappings, with total allocation rounded to 16 bytes.
+  Byte-addressed two-word stores avoid writes overlapping adjacent pages. No
+  new dispatch or push-constant field is required. Changing the effective mask
+  mode, or the propagated-table layout while masks are active, invalidates the
+  cache before the old tail could be interpreted using a different offset.
 - Build mask bounds include one texel plus a coordinate-magnitude allowance for
   the differing clipmap and canonical page translations. It follows Mark's
   conservative numerical policy; focused rendering equivalence is not a proof
@@ -71,7 +82,7 @@ not the unchanged shipped sample configuration. Ordinary timing is separate
 from diagnostics. One symmetric timing block does not establish a confidence
 interval or independent confirmation.
 
-## Initial result
+## Initial result before persistent valid coverage
 
 The Release build, module audit and 102 Python tests passed. The GPU hierarchy
 probe passed 67,212 queries; the cache fixture passed 16 transitions. Sponza's
@@ -97,3 +108,25 @@ separating cached static work from dynamic Build work. HMip needs either exact
 confirmation of positive results or bounded descent to control false positives.
 See the full raw evidence, timing chart and reproduction script in
 `build/vsm-page-hierarchy-20261102/Report.md`.
+
+## Persistent-coverage validation
+
+The subsequent persistent-coverage implementation passed a 30-state GPU cache
+test, including actual subpage rejection, coverage growth/shrink/revisit,
+replacement after dynamic redraw, virtual-page remapping, physical-slot reuse,
+and mapping-tail layout changes. All shadow/depth comparisons matched complete
+redraw, with zero validation messages. Sponza supplied another 48 byte-exact raw
+image comparisons and unchanged canonical inputs/page demand. Nine actual bound
+lifecycle SPIR-V binaries passed `spirv-val`.
+
+Sponza's warm persistent-mask path now retains 2,047 clean fine pages, with zero
+dirty fine pages, zero Build triangle decodes and zero fine raster groups.
+In one same-runtime ABBA block on RTX 5070 Ti (621.01), Build was approximately
+0.017 ms. Shadows was approximately 2.09 ms with persistent masks versus 1.82 ms
+with masks disabled (both arms use HMip and layered caching). Mark remains the
+main extra cost: approximately 0.482 versus 0.223 ms. This achieves cache reuse
+but does not justify enabling masks by default. The earlier every-frame-redraw
+results above are historical context, not this ABBA's baseline.
+
+Evidence and reproducible charts: `build/vsm-receiver-validmask-20261102/Report.md`.
+The next priority is reducing receiver/tile mask calculation and atomic writes.

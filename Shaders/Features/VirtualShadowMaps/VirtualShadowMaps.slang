@@ -133,6 +133,14 @@ public uint vsmReceiverMaskOffset(ShadowPush push)
 }
 
 #if VSM_RECEIVER_MASK
+uint vsmValidReceiverMaskByteOffset(ShadowPush push, uint page)
+{
+    // Persistent tail after residency and optional propagated mappings. Each
+    // page owns two uint words; byte addressing avoids uint4 read/modify/write
+    // between adjacent pages. CPU allocation rounds the final size to 16 bytes.
+    return push.totalPages * (VSM_PROPAGATED_MAPPING ? 32u : 16u) + page * 8u;
+}
+
 // Eight rows of eight subtiles, packed as two groups of four rows.
 public uint2 vsmReceiverRectangleMask(uint2 first, uint2 last)
 {
@@ -1414,6 +1422,9 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
     if (id.x < push.totalPages) {
         bool coarse = id.x == push.totalPages - 1u;
+#if VSM_RECEIVER_MASK
+        uint2 validReceiverMask = uint2(0u);
+#endif
         uint4 entry = uint4(coarse ? 0u : 0xffffffffu, coarse && push.enabled != 0u ? 3u : 0u,
             coarse ? push.clipmapCount : id.x / (push.virtualPagesPerAxis * push.virtualPagesPerAxis),
             2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u));
@@ -1453,9 +1464,10 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                     entry.x = old.x;
                     bool dirty = mappingDirty || (old.w & 1u) == 0u;
 #if VSM_RECEIVER_MASK
-                    // Dynamic composition may cover only this frame's receivers.
-                    // Preserve the complete static cache, but rebuild fine dynamic pages.
-                    dirty = dirty || !coarse;
+                    if (!dirty && !coarse) {
+                        ByteAddressBuffer previousCoverage = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.previousPages));
+                        validReceiverMask = previousCoverage.Load2(vsmValidReceiverMaskByteOffset(push, oldIndex));
+                    }
 #endif
                     entry.w = dirty ? 2u : 1u;
                     vsmCacheAdd(push, kVSMCacheCompositeInvalidatedResidentPages, mappingDirty ? 1u : 0u);
@@ -1475,6 +1487,10 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             }
         }
         pages[id.x] = entry;
+#if VSM_RECEIVER_MASK
+        RWByteAddressBuffer validCoverage = resolveUniform(ResourceHandle<RWByteAddressBuffer>(push.pages));
+        validCoverage.Store2(vsmValidReceiverMaskByteOffset(push, id.x), validReceiverMask);
+#endif
         owners[push.physicalPageCount + id.x] = mappingFlags;
     }
     // Each counter has exactly one writer, including the diagnostic constants.
@@ -1879,7 +1895,25 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
             // budget on refinement. A missing fine page can then use a nearby
             // coarser mip instead of the complete low-resolution scene map.
             rank = statistics[0] - 1u - rank;
-            if (rank < push.physicalPageCount - 1u) { entry.y |= 2u; }
+            if (rank < push.physicalPageCount - 1u) {
+                entry.y |= 2u;
+#if VSM_RECEIVER_MASK
+                // Reset carried coverage through the same oldIndex remap as
+                // residency. Mark is complete before Admit: retain a clean page
+                // only when its existing depth covers every requested subtile.
+                if (entry.x != 0xffffffffu && (entry.w & 3u) == 1u) {
+                    uint offset = vsmReceiverMaskOffset(push) + id.x * 2u;
+                    uint2 requested = uint2(owners[offset], owners[offset + 1u]);
+                    ByteAddressBuffer validCoverage = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.pages));
+                    uint2 valid = validCoverage.Load2(vsmValidReceiverMaskByteOffset(push, id.x));
+                    if (any((requested & ~valid) != uint2(0u))) {
+                        entry.w = (entry.w & ~1u) | 2u;
+                        InterlockedAdd(statistics[18], 1u);
+                        vsmCacheAdd(push, kVSMCacheCompositeInvalidatedResidentPages, 1u);
+                    }
+                }
+#endif
+            }
             else { entry.x = 0xffffffffu; entry.w = 2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u); }
         }
         pages[id.x] = entry;
@@ -1970,6 +2004,10 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
         uint4 old = pages[evicted - 1u];
         old.x = 0xffffffffu; old.w = 2u;
         pages[evicted - 1u] = old;
+#if VSM_RECEIVER_MASK
+        RWByteAddressBuffer validCoverage = resolveUniform(ResourceHandle<RWByteAddressBuffer>(push.pages));
+        validCoverage.Store2(vsmValidReceiverMaskByteOffset(push, evicted - 1u), uint2(0u));
+#endif
     }
     uint4 entry = pages[id.x];
     entry.x = physical; entry.w = 2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u);
@@ -2432,6 +2470,23 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                 vsmCacheAdd(push, id.x == coarsePage ? kVSMCacheStaticDirtyCoarsePages : kVSMCacheStaticDirtyFinePages, 1u);
             }
             pages[id.x] = entry;
+#if VSM_RECEIVER_MASK
+            // The pending cache publishes this tail with the page table only
+            // after submission; the same validity bit gates projection while
+            // raster completes the declared draw list. Overflow cannot certify
+            // partial work. Redraw replaces coverage, never unions stale depth.
+            RWByteAddressBuffer validCoverage = resolveUniform(ResourceHandle<RWByteAddressBuffer>(push.pages));
+            uint2 valid = uint2(0u);
+            if (id.x != coarsePage && (entry.w & 1u) != 0u) {
+                if ((entry.w & 8u) != 0u) { valid = uint2(0xffffffffu); }
+                else {
+                    StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+                    uint offset = vsmReceiverMaskOffset(push) + id.x * 2u;
+                    valid = uint2(owners[offset], owners[offset + 1u]);
+                }
+            }
+            validCoverage.Store2(vsmValidReceiverMaskByteOffset(push, id.x), valid);
+#endif
         }
         if ((push.cacheMode & 16u) != 0u && id.x != coarsePage && entry.x != 0xffffffffu &&
             (entry.y & 2u) != 0u && (entry.w & 12u) == 4u) { vsmCacheAdd(push, kVSMCacheStaticReusedFinePages, 1u); }

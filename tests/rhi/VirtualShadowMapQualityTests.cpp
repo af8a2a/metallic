@@ -3452,13 +3452,19 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapReceiverMaskCache";
-        Json report{{"passed", false}, {"scope", "Two-arm directional SMRT receiver-mask cache lifecycle"},
+        Json report{{"passed", false}, {"scope", "Two-arm persistent directional receiver-mask coverage/cache lifecycle"},
             {"frames", Json::array()}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / "VirtualShadowMapReceiverMaskCache.json") << report.dump(2) << '\n'; };
         try {
             std::filesystem::create_directories(directory); registerQualityEvidence();
-            const auto fixture = writeFixture(directory / "Floor", false, 1.5, .8, nullptr, true);
+            Fixture authored;
+            addFixtureQuad(authored, {0,0,0}, {8,0,0}, {0,0,-8});
+            addFixtureQuad(authored, {0,1.5,0}, {.8,0,0}, {0,0,.8});
+            // This small independent caster shares coarse fine-page cells with
+            // the narrow receiver, but lies outside its marked subtiles.
+            addFixtureQuad(authored, {0,1.5,2.6}, {.06,0,0}, {0,0,.06});
+            const auto fixture = writeFixture(directory / "Floor", false, 1.5, .8, &authored, true);
             scene::SceneDocument scene; require(scene.load(fixture.source), "Load receiver-mask split-caster fixture");
             RenderView view; RenderGraphPreviewRenderer preview;
             configurePreview(preview, scene, view, context, validation);
@@ -3500,8 +3506,9 @@ public:
                     graph.addEdge(std::string(name) + "." + field, capture + "." + field);
                 }
             }
+            enum class CacheExpectation { Any, Clean, PartialRedraw, CoverageGrowth, Remapped, Reallocated };
             uint64_t maskTests = 0, maskRejects = 0;
-            const auto capture = [&](const char* phase, bool warmDynamic = false, bool lowBudget = false) {
+            const auto capture = [&](const char* phase, CacheExpectation expected = CacheExpectation::Any, bool lowBudget = false) {
                 validation.phase(phase);
                 const auto rendered = preview.render(graph, kWidth, kHeight, "CompactEvidence.color");
                 require(rendered, "Render receiver mask: " + preview.lastLog());
@@ -3510,50 +3517,108 @@ public:
                 const auto& entry = activeEntry(candidate); const uint32_t face = entry.baseLayer;
                 const auto& cache = candidate.cacheDiagnostics[face];
                 const auto& counters = candidate.buildDiagnostics[face];
-                require(baseline.depth == candidate.depth && baseline.shadows == candidate.shadows,
+                const auto stats = searchStatistics(candidate);
+                const bool exactVisibility = baseline.depth == candidate.depth && baseline.shadows == candidate.shadows;
+                maskTests += counters[kVSMBuildDiagnosticReceiverMaskPageTests];
+                maskRejects += counters[kVSMBuildDiagnosticReceiverMaskPageRejects];
+                report["frames"].push_back({{"phase",phase},{"exactVisibility",exactVisibility},
+                    {"cache",cache},{"build",counters},{"statistics",stats},{"workload",candidate.workload[face]},
+                    {"shadowSha256",debug::debugSha256(candidate.shadows[face])},
+                    {"baselineShadowSha256",debug::debugSha256(baseline.shadows[face])}});
+                save();
+                require(exactVisibility,
                     std::string(phase) + ": receiver-mask visibility differs from complete redraw");
-                require(searchStatistics(candidate)[5] == 0 && searchStatistics(candidate)[9] == 0,
+                require(stats[5] == 0 && stats[9] == 0,
                     std::string(phase) + ": work overflow or unresolved query");
-                if (warmDynamic) {
+                if (expected == CacheExpectation::Clean) {
+                    require(cache[kVSMCacheReused] != 0 && stats[16] == 0 && stats[17] > 0 &&
+                        cache[kVSMCacheCompositeDirtyFinePages] == 0 && cache[kVSMCacheStaticReusedFinePages] > 0,
+                        std::string(phase) + ": contained receiver coverage did not reuse clean fine depth");
+                    require(candidate.workload[face][kVSMWorkBuildDecodedTriangles] == 0 &&
+                        candidate.workload[face][kVSMWorkRasterFineGroups] == 0,
+                        std::string(phase) + ": clean coverage still decoded or rasterized fine geometry");
+                }
+                if (expected == CacheExpectation::PartialRedraw) {
                     require(cache[kVSMCacheDynamicCasters] > 0 && cache[kVSMCacheStaticCasters] > 0,
                         "Receiver-mask fixture lacks mixed static/dynamic casters");
                     require(cache[kVSMCacheStaticDirtyFinePages] == 0 && cache[kVSMCacheStaticReusedFinePages] > 0 &&
                         cache[kVSMCacheCompositeDirtyFinePages] > 0,
-                        "Receiver-mask warm frame did not preserve static pages and rebuild dynamic composition");
+                        std::string(phase) + ": dynamic change did not rebuild partial composition over cached static depth");
+                }
+                if (expected == CacheExpectation::CoverageGrowth) {
+                    require(cache[kVSMCacheChangedCasters] == 0 && cache[kVSMCacheReused] != 0 &&
+                        cache[kVSMCacheCompositeDirtyFinePages] > cache[kVSMCacheStaticDirtyFinePages],
+                        std::string(phase) + ": receiver growth did not redraw an existing partially covered page");
+                }
+                if (expected == CacheExpectation::Remapped) {
+                    require(cache[kVSMCacheReused] != 0 && stats[19] > 0,
+                        std::string(phase) + ": camera scroll did not exercise cached virtual-page remapping");
+                }
+                if (expected == CacheExpectation::Reallocated) {
+                    require(cache[kVSMCacheReused] != 0 && stats[20] > 0 && stats[1] == 7 && stats[2] > 0,
+                        std::string(phase) + ": fixed seven-fine-page pool did not reuse physical slots for newly admitted pages");
                 }
                 if (lowBudget) {
-                    require(searchStatistics(candidate)[7] > 0, "Receiver-mask low budget did not exercise coarse fallback");
+                    require(stats[7] > 0, "Receiver-mask low budget did not exercise coarse fallback");
                 }
-                maskTests += counters[kVSMBuildDiagnosticReceiverMaskPageTests];
-                maskRejects += counters[kVSMBuildDiagnosticReceiverMaskPageRejects];
-                report["frames"].push_back({{"phase",phase},{"exactVisibility",true},
-                    {"cache",cache},{"build",counters},{"statistics",searchStatistics(candidate)},
-                    {"shadowSha256",debug::debugSha256(candidate.shadows[face])}});
-                save();
                 return candidate;
             };
-            capture("Cold"); capture("WarmStatic");
+            capture("Cold"); capture("WarmStatic", CacheExpectation::Clean);
             float4x4 shift; shift.SetupByTranslation(float3(.15f,0,0));
-            require(scene.setNodeLocalMatrix(1, shift * scene.nodes()[1].localMatrix), "Promote independent dynamic caster");
-            capture("CasterPromotion"); capture("WarmDynamic", true);
+            const auto moveCasters = [&] {
+                for (uint32_t node : {1u, 2u}) {
+                    require(scene.setNodeLocalMatrix(node, shift * scene.nodes()[node].localMatrix), "Move independent dynamic caster");
+                }
+            };
+            moveCasters(); capture("CasterPromotion");
+            // Promotion invalidates the complete static page. A subsequent
+            // dynamic-only edit is needed to produce a genuinely partial page.
+            moveCasters(); capture("NarrowDynamicRedraw", CacheExpectation::PartialRedraw);
+            capture("NarrowPartialWarm", CacheExpectation::Clean);
             camera.orthoHeight = 3; require(view.setCamera(camera), "Expand receiver coverage in cached pages");
-            capture("CoverageExpansion"); capture("ExpandedWarmDynamic", true);
-            require(scene.setNodeLocalMatrix(1, shift * scene.nodes()[1].localMatrix), "Move independent dynamic caster again");
-            capture("DynamicMove"); capture("MovedWarmDynamic", true);
-            both("physicalPageBudget", 1); capture("CoarseBudget", false, true);
-            both("physicalPageBudget", 256); capture("BudgetRestore"); capture("BudgetRestoreWarm");
+            capture("CoverageExpansion", CacheExpectation::CoverageGrowth);
+            capture("ExpandedWarm", CacheExpectation::Clean);
+            camera.orthoHeight = 1; require(view.setCamera(camera), "Shrink receiver coverage");
+            capture("CoverageShrink", CacheExpectation::Clean);
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Revisit already valid receiver coverage");
+            capture("ReexpandWithinValidCoverage", CacheExpectation::Clean);
+            camera.orthoHeight = 1; require(view.setCamera(camera), "Narrow before dynamic replacement");
+            capture("ShrinkBeforeDynamicRedraw", CacheExpectation::Clean);
+            moveCasters(); capture("ReplaceWithNarrowDynamicCoverage", CacheExpectation::PartialRedraw);
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Revisit coverage replaced by narrow redraw");
+            capture("ReexpandAfterCoverageReplacement", CacheExpectation::CoverageGrowth);
+            capture("ReplacementWarm", CacheExpectation::Clean);
+            camera.eye[2] = 1.25f; camera.center[2] = 1.25f; require(view.setCamera(camera), "Scroll clipmap page origins");
+            capture("PageRemap", CacheExpectation::Remapped);
+            capture("RemappedWarm", CacheExpectation::Clean);
+            camera.eye[2] = 0; camera.center[2] = 0; require(view.setCamera(camera), "Return clipmap page origins");
+            capture("PageRemapReturn", CacheExpectation::Remapped);
+            both("physicalPageBudget", 8);
+            const auto smallBudget = searchStatistics(capture("SmallBudgetCold"));
+            require(smallBudget[1] == 7 && smallBudget[2] > 0,
+                "Receiver-mask eviction fixture did not fill its seven-fine-page pool");
+            camera.eye[2] = 3.25f; camera.center[2] = 3.25f; require(view.setCamera(camera), "Move receivers under fixed budget");
+            capture("FixedBudgetEviction", CacheExpectation::Reallocated);
+            camera.eye[2] = 0; camera.center[2] = 0; require(view.setCamera(camera), "Revisit evicted receiver pages");
+            capture("FixedBudgetReturn", CacheExpectation::Reallocated);
+            both("physicalPageBudget", 1); capture("CoarseBudget", CacheExpectation::Any, true);
+            both("physicalPageBudget", 256); capture("BudgetRestore"); capture("BudgetRestoreWarm", CacheExpectation::Clean);
             property("Compact", "benchmarkReceiverMask", false);
             const auto disabled = capture("DisableMask");
             require((disabled.cacheDiagnostics[activeEntry(disabled).baseLayer][kVSMCacheReasons] & kVSMCacheReasonSettings) != 0,
                 "Disabling partial receiver masks did not invalidate the incomplete cache");
-            capture("DisabledWarm");
+            capture("DisabledWarm", CacheExpectation::Clean);
             property("Compact", "benchmarkReceiverMask", true); capture("ReenableMask");
-            both("filter", "hard"); capture("HardFallback"); capture("HardWarm");
+            property("Compact", "benchmarkPropagatedMapping", false); capture("MappingTailDisabled");
+            capture("MappingTailDisabledWarm", CacheExpectation::Clean);
+            property("Compact", "benchmarkPropagatedMapping", true); capture("MappingTailRestored");
+            both("filter", "hard"); capture("HardFallback"); capture("HardWarm", CacheExpectation::Clean);
             require(maskTests > 0, "Receiver-mask candidate performed no per-page intersection tests");
+            require(maskRejects > 0, "Receiver-mask fixture did not exercise subpage caster rejection");
             report["maskPageTests"] = maskTests; report["maskPageRejects"] = maskRejects;
             report["validation"] = validation.snapshot(); require(!validation.failed(), "Receiver-mask Vulkan validation error");
             report["passed"] = true; save();
-            return RHITestResult::pass("Receiver masks preserve complete-redraw visibility through dynamic, receiver, budget and mode transitions");
+            return RHITestResult::pass("Persistent receiver coverage reuses clean depth and matches complete redraw through coverage, dynamic, remap, eviction and mode transitions");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());
