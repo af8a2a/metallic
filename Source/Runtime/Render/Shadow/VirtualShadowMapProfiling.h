@@ -38,7 +38,8 @@ static const uint32_t kVirtualShadowMapWorkloadSize = kVirtualShadowMapWorkCount
 
 // Optional build diagnostics follow the unchanged 32 public statistics words
 // and the current workload counter segment. Values are low/high uint32 pairs.
-// Disabled cluster culling leaves this segment zero.
+// Cluster counters are zero when cluster culling is disabled. Triangle and
+// receiver-mask counters remain independent of cluster culling.
 static const uint32_t kVSMBuildDiagnosticClusterGroups = 0;
 static const uint32_t kVSMBuildDiagnosticClusterBoundsValidGroups = 1;
 static const uint32_t kVSMBuildDiagnosticClusterSurvivingGroups = 2;
@@ -55,8 +56,13 @@ static const uint32_t kVSMBuildDiagnosticClusterBitsetScanHistogram = 27;
 static const uint32_t kVirtualShadowMapBuildDiagnosticHistogramCount = 16;
 static const uint32_t kVSMBuildDiagnosticTriangleBitsetWordTests = 43;
 static const uint32_t kVSMBuildDiagnosticTriangleBitsetPageHits = 44;
-static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 45;
-static const uint32_t kVirtualShadowMapBuildDiagnosticSize = 360;
+static const uint32_t kVSMBuildDiagnosticClusterHierarchyLevelTests = 45;
+static const uint32_t kVSMBuildDiagnosticClusterHierarchyNodeTests = 46;
+static const uint32_t kVSMBuildDiagnosticClusterHierarchyBoundsRejects = 47;
+static const uint32_t kVSMBuildDiagnosticReceiverMaskPageTests = 48;
+static const uint32_t kVSMBuildDiagnosticReceiverMaskPageRejects = 49;
+static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 50;
+static const uint32_t kVirtualShadowMapBuildDiagnosticSize = kVirtualShadowMapBuildDiagnosticCounterCount * 8;
 static const uint32_t kVirtualShadowMapBuildDiagnosticWordOffset = 32 + kVirtualShadowMapWorkCounterCount * 2;
 
 // Optional per-pixel receiver coverage records follow all existing diagnostics.
@@ -77,7 +83,8 @@ static const uint32_t kVSMReceiverCoverageStatisticsWordOffset = 32 +
 // zero for near/outside exits: 0, 1, 2-3, ..., 8192-16383, 16384+.
 // Version 3 appends exact-triangle bitset uint loads and set-bit page hits.
 // These replace fine triangle page-table reads, not cluster scan counters.
-// Page hits count every emitted candidate, including work-capacity overflow.
+// Page hits count enumerated bits before receiver rejection or capacity overflow.
+// Version 4 adds hierarchy queries (no scan histogram) and receiver-mask tests.
 #ifdef __cplusplus
 static_assert(kVirtualShadowMapBuildDiagnosticWordOffset == 32u + kVirtualShadowMapWorkCounterCount * 2u);
 static_assert(kVirtualShadowMapWorkloadSize == kVirtualShadowMapWorkCounterCount * sizeof(uint64_t));
@@ -85,7 +92,7 @@ static_assert(kVSMBuildDiagnosticClusterBitsetLevelTests == kVSMBuildDiagnosticC
     kVirtualShadowMapBuildDiagnosticHistogramCount);
 static_assert(kVSMBuildDiagnosticTriangleBitsetWordTests == kVSMBuildDiagnosticClusterBitsetScanHistogram +
     kVirtualShadowMapBuildDiagnosticHistogramCount);
-static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticTriangleBitsetPageHits + 1u);
+static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticReceiverMaskPageRejects + 1u);
 static_assert(kVirtualShadowMapBuildDiagnosticSize == kVirtualShadowMapBuildDiagnosticCounterCount * sizeof(uint64_t));
 inline constexpr std::array<std::string_view, kVirtualShadowMapWorkCounterCount> kVirtualShadowMapWorkCounterNames{
     "markReceiverDispatches", "markSamplePositions", "markLevelTests", "markPageRequests",
@@ -106,6 +113,8 @@ inline constexpr std::array<std::string_view, kVirtualShadowMapBuildDiagnosticCo
     "clusterBitsetScan8To15", "clusterBitsetScan16To31", "clusterBitsetScan32To63", "clusterBitsetScan64To127",
     "clusterBitsetScan128To255", "clusterBitsetScan256To511", "clusterBitsetScan512To1023", "clusterBitsetScan1024To2047",
     "clusterBitsetScan2048To4095", "clusterBitsetScan4096To8191", "clusterBitsetScan8192To16383", "clusterBitsetScan16384Plus",
-    "triangleBitsetWordTests", "triangleBitsetPageHits"};
+    "triangleBitsetWordTests", "triangleBitsetPageHits",
+    "clusterHierarchyLevelTests", "clusterHierarchyNodeTests", "clusterHierarchyBoundsRejects",
+    "receiverMaskPageTests", "receiverMaskPageRejects"};
 } // namespace metallic::render
 #endif

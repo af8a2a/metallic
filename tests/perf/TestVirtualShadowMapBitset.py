@@ -152,7 +152,7 @@ class BitsetTests(unittest.TestCase):
                         diagnostic = row["shadow"]["gpuBuildDiagnostics"]
                         diagnostic["version"] = 3
                         for counters in [diagnostic["totals"], *[face["counters"] for face in diagnostic["faces"]]]:
-                            counters.update({name: 0 for name in bitset.profile.ALL_BUILD_COUNTERS if name not in counters})
+                            counters.update({name: 0 for name in bitset.profile.V3_BUILD_COUNTERS if name not in counters})
                     elif arm == "B":
                         for face in row["shadow"]["gpuBuildDiagnostics"]["faces"]:
                             face["counters"]["clusterGroups"] += 1

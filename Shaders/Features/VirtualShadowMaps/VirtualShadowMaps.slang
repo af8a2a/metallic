@@ -20,6 +20,9 @@ import Lighting;
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
 #endif
+#ifndef VSM_RECEIVER_MASK
+#define VSM_RECEIVER_MASK 0
+#endif
 #ifndef VSM_RECEIVER_COVERAGE_DIAGNOSTICS
 #define VSM_RECEIVER_COVERAGE_DIAGNOSTICS 0
 #endif
@@ -68,6 +71,9 @@ import Lighting;
 #ifndef VSM_COMPACT_BUILD
 #define VSM_COMPACT_BUILD 0
 #endif
+#ifndef VSM_DIRTY_PAGE_HIERARCHY
+#define VSM_DIRTY_PAGE_HIERARCHY 0
+#endif
 
 // Allocator/remap-only probes may supply owners without the dirty-page tail.
 // Production always enables this storage; build always consumes the bitset.
@@ -80,7 +86,7 @@ using Metallic.Material;
 using Metallic.Shadow;
 using Metallic.Lighting;
 
-struct ShadowPush
+public struct ShadowPush
 {
     uint geometry, materials, pages, coverageInputs;
     uint workItems, statistics, projections, atlas;
@@ -121,11 +127,80 @@ uint vsmClusterPageBitsetOffset(ShadowPush push)
     return push.physicalPageCount * 2u + push.totalPages + (push.totalPages + 255u) / 256u;
 }
 
+public uint vsmReceiverMaskOffset(ShadowPush push)
+{
+    return vsmClusterPageBitsetOffset(push) + (push.totalPages + 31u) / 32u;
+}
+
+#if VSM_RECEIVER_MASK
+// Eight rows of eight subtiles, packed as two groups of four rows.
+public uint2 vsmReceiverRectangleMask(uint2 first, uint2 last)
+{
+    uint row = (0xffu << first.x) & (0xffu >> (7u - last.x));
+    uint2 mask = uint2(0u);
+    [unroll]
+    for (uint y = 0u; y < 8u; ++y) {
+        if (y >= first.y && y <= last.y) {
+            if (y < 4u) { mask.x |= row << (y * 8u); }
+            else { mask.y |= row << ((y - 4u) * 8u); }
+        }
+    }
+    return mask;
+}
+
+public uint2 vsmReceiverTexelMask(uint2 first, uint2 last, uint2 page, uint pageSize)
+{
+    int2 origin = int2(page * pageSize);
+    uint2 localFirst = uint2(clamp(int2(first) - origin, int2(0), int2(pageSize - 1u)));
+    uint2 localLast = uint2(clamp(int2(last) - origin, int2(0), int2(pageSize - 1u)));
+    return vsmReceiverRectangleMask(localFirst * 8u / pageSize, localLast * 8u / pageSize);
+}
+#endif
+
+#if VSM_DIRTY_PAGE_HIERARCHY
+public uint vsmPageHierarchyAxis(ShadowPush push)
+{
+    return 1u << uint(firstbithigh(push.virtualPagesPerAxis * 2u - 1u));
+}
+
+public uint vsmPageHierarchyLevelWords(ShadowPush push)
+{
+    uint axis = vsmPageHierarchyAxis(push);
+    // Inclusive XY bounds, followed by mip1..root. Mip0 is the dirty bitset.
+    return 4u + (axis * axis - 1u) / 3u;
+}
+
+public uint vsmPageHierarchyOffset(ShadowPush push)
+{
+    return vsmReceiverMaskOffset(push) + (VSM_RECEIVER_MASK ? push.totalPages * 2u : 0u);
+}
+
+uint vsmPageHierarchyMipOffset(uint paddedAxis, uint mip)
+{
+    uint previousAxis = paddedAxis >> (mip - 1u);
+    return (paddedAxis * paddedAxis - previousAxis * previousAxis) / 3u;
+}
+
+public void vsmResetPageHierarchy(uint index, ShadowPush push, RWStructuredBuffer<uint> owners)
+{
+    uint levelWords = vsmPageHierarchyLevelWords(push);
+    if (index < push.clipmapCount * levelWords) {
+        owners[vsmPageHierarchyOffset(push) + index] = index % levelWords < 2u ? 0xffffffffu : 0u;
+    }
+}
+#endif
+
 #if VSM_COMPACT_BUILD
 uint vsmCompactCandidateOffset(ShadowPush push)
 {
     uint offset = push.physicalPageCount * 2u + push.totalPages + (push.totalPages + 255u) / 256u;
     offset += (push.totalPages + 31u) / 32u;
+#if VSM_RECEIVER_MASK
+    offset += push.totalPages * 2u;
+#endif
+#if VSM_DIRTY_PAGE_HIERARCHY
+    offset += push.clipmapCount * vsmPageHierarchyLevelWords(push);
+#endif
     return offset;
 }
 
@@ -160,6 +235,11 @@ void vsmRecordClusterLevel(ShadowPush push, uint scanTests, uint outcome)
     // Every completed predicate has one outcome and one scan observation.
     // Count actual bitset loads, not the rectangle's logical page area.
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterLevelTests, 1u);
+#if VSM_DIRTY_PAGE_HIERARCHY
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterHierarchyLevelTests, 1u);
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterHierarchyNodeTests, scanTests);
+    vsmBuildDiagnosticAdd(push, outcome, 1u);
+#else
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBitsetLevelTests, 1u);
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterBitsetWordTests, scanTests);
     const uint histogram = kVSMBuildDiagnosticClusterBitsetScanHistogram;
@@ -167,10 +247,11 @@ void vsmRecordClusterLevel(ShadowPush push, uint scanTests, uint outcome)
     uint bucket = 0u;
     if (scanTests != 0u) { bucket = min(uint(firstbithigh(scanTests)) + 1u, kVirtualShadowMapBuildDiagnosticHistogramCount - 1u); }
     vsmBuildDiagnosticAdd(push, histogram + bucket, 1u);
+#endif
 }
 #endif
 
-struct ShadowProjection
+public struct ShadowProjection
 {
     float4 rowX, rowY, rowZ, rowW, metric;
     uint4 page; // Virtual-page offset, pages per axis, level, coarse flag.
@@ -1371,6 +1452,11 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                     mappingFlags = (mappingDirty ? 1u : 0u) | (oldIndex != id.x ? 2u : 0u);
                     entry.x = old.x;
                     bool dirty = mappingDirty || (old.w & 1u) == 0u;
+#if VSM_RECEIVER_MASK
+                    // Dynamic composition may cover only this frame's receivers.
+                    // Preserve the complete static cache, but rebuild fine dynamic pages.
+                    dirty = dirty || !coarse;
+#endif
                     entry.w = dirty ? 2u : 1u;
                     vsmCacheAdd(push, kVSMCacheCompositeInvalidatedResidentPages, mappingDirty ? 1u : 0u);
                     if ((push.cacheMode & 16u) != 0u) {
@@ -1408,6 +1494,12 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     if (id.x < push.physicalPageCount) { owners[id.x] = 0u; }
 #if VSM_CLUSTER_PAGE_BITSET
     if (id.x < (push.totalPages + 31u) / 32u) { owners[vsmClusterPageBitsetOffset(push) + id.x] = 0u; }
+#endif
+#if VSM_RECEIVER_MASK
+    if (id.x < push.totalPages * 2u) { owners[vsmReceiverMaskOffset(push) + id.x] = 0u; }
+#endif
+#if VSM_DIRTY_PAGE_HIERARCHY
+    vsmResetPageHierarchy(id.x, push, owners);
 #endif
 #if VSM_COMPACT_BUILD
     uint argumentBatches = push.batchCount + push.coarseBatchCount;
@@ -1485,15 +1577,16 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
             toLight, right, up, push.rayLength, coneRadius, texelSize);
         float2 low = float2(xRange.x, yRange.x), high = float2(xRange.y, yRange.y);
         uint2 firstPage = uint2(0u), lastPage = uint2(projection.page.y - 1u);
+        float resolution = float(projection.page.y * push.pageSize);
+        uint2 firstTexel = uint2(0u), lastTexel = uint2(projection.page.y * push.pageSize - 1u);
         // Unbounded numerical ranges retain the full grid, never an empty request.
         if (all(isfinite(low)) && all(isfinite(high)) && all(low <= high)) {
             if (any(high < -1.0) || any(low > 1.0)) { continue; }
-            float resolution = float(projection.page.y * push.pageSize);
             // Intersect before float-to-uint conversion; one texel covers rounding
             // of the projected-domain-to-texel conversion and its floor boundary.
-            uint2 firstTexel = uint2(clamp((clamp(low, -1.0, 1.0) * 0.5 + 0.5) * resolution - 1.0,
+            firstTexel = uint2(clamp((clamp(low, -1.0, 1.0) * 0.5 + 0.5) * resolution - 1.0,
                 0.0, resolution - 1.0));
-            uint2 lastTexel = uint2(clamp((clamp(high, -1.0, 1.0) * 0.5 + 0.5) * resolution + 1.0,
+            lastTexel = uint2(clamp((clamp(high, -1.0, 1.0) * 0.5 + 0.5) * resolution + 1.0,
                 0.0, resolution - 1.0));
 #if VSM_MARK_PAGE_SHIFT >= 0
             firstPage = firstTexel >> VSM_MARK_PAGE_SHIFT;
@@ -1505,7 +1598,16 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
         }
         for (uint y = firstPage.y; y <= lastPage.y; ++y) {
             for (uint x = firstPage.x; x <= lastPage.x; ++x) {
-                vsmMarkPage(pages, projection.page.x + y * projection.page.y + x, workCounts);
+                uint page = projection.page.x + y * projection.page.y + x;
+#if VSM_RECEIVER_MASK
+                // Page deduplication must not discard another receiver's subtiles.
+                uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel, uint2(x, y), push.pageSize);
+                RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+                uint offset = vsmReceiverMaskOffset(push) + page * 2u;
+                if (mask.x != 0u) { InterlockedOr(owners[offset], mask.x); }
+                if (mask.y != 0u) { InterlockedOr(owners[offset + 1u], mask.y); }
+#endif
+                vsmMarkPage(pages, page, workCounts);
             }
         }
     }
@@ -1883,6 +1985,101 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
 groupshared float3 g_vsmClusterMinimum, g_vsmClusterMaximum;
 groupshared uint g_vsmClusterValid, g_vsmClusterLevelMask;
 
+public void vsmBuildPageHierarchy(uint index, ShadowPush push)
+{
+#if VSM_DIRTY_PAGE_HIERARCHY
+    uint bitsetWords = (push.totalPages + 31u) / 32u;
+    if (index >= bitsetWords) { return; }
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    if (statistics[16] == 0u) { return; }
+    RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    uint bits = owners[vsmClusterPageBitsetOffset(push) + index];
+    uint pageStride = push.virtualPagesPerAxis * push.virtualPagesPerAxis;
+    uint paddedAxis = vsmPageHierarchyAxis(push);
+    while (bits != 0u) {
+        uint page = index * 32u + uint(firstbitlow(bits));
+        bits &= bits - 1u;
+        // Admit/Assign publish only resident, admitted, dirty fine-page bits.
+        uint level = page / pageStride;
+        uint axis = push.lightType == 0u ? push.virtualPagesPerAxis : max(1u, push.virtualPagesPerAxis >> level);
+        uint localPage = page % pageStride;
+        uint2 xy = uint2(localPage % axis, localPage / axis);
+        uint base = vsmPageHierarchyOffset(push) + level * vsmPageHierarchyLevelWords(push);
+        InterlockedMin(owners[base], xy.x);
+        InterlockedMin(owners[base + 1u], xy.y);
+        InterlockedMax(owners[base + 2u], xy.x);
+        InterlockedMax(owners[base + 3u], xy.y);
+        uint mipOffset = base + 4u;
+        for (uint mipAxis = paddedAxis >> 1u; mipAxis != 0u; mipAxis >>= 1u) {
+            xy >>= 1u;
+            uint previous;
+            InterlockedOr(owners[mipOffset + xy.y * mipAxis + xy.x], 1u, previous);
+            // The first writer propagates to the root. The dispatch publication
+            // barrier completes that writer before any cluster consumes nodes.
+            if (previous != 0u) { break; }
+            mipOffset += mipAxis * mipAxis;
+        }
+    }
+#endif
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsmBuildPageHierarchyMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
+{
+    vsmBuildPageHierarchy(id.x, push);
+}
+
+#if VSM_DIRTY_PAGE_HIERARCHY
+public bool vsmHierarchyOverlaps(int2 first, int2 last, ShadowProjection projection, ShadowPush push)
+{
+    StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    uint base = vsmPageHierarchyOffset(push) + projection.page.z * vsmPageHierarchyLevelWords(push);
+    uint2 low = uint2(owners[base], owners[base + 1u]);
+    uint2 high = uint2(owners[base + 2u], owners[base + 3u]);
+    bool empty = any(low > high) || any(uint2(last) < low) || any(uint2(first) > high);
+#if VSM_WORKLOAD_DIAGNOSTICS
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterLevelTests, 1u);
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterHierarchyLevelTests, 1u);
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterHierarchyBoundsRejects, empty ? 1u : 0u);
+#endif
+    if (empty) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterEmptyLevels, 1u);
+#endif
+        return false;
+    }
+    uint2 clippedFirst = max(uint2(first), low), clippedLast = min(uint2(last), high);
+    uint2 span = clippedLast - clippedFirst;
+    uint maxSpan = max(span.x, span.y);
+    // Inclusive extent <= 2^mip intersects at most two aligned cells per axis.
+    uint mip = maxSpan == 0u ? 0u : uint(firstbithigh(maxSpan)) + 1u;
+    uint nodeTests = 0u;
+    uint flags = 0u;
+    if (mip == 0u) {
+        uint page = projection.page.x + clippedFirst.y * projection.page.y + clippedFirst.x;
+        flags = owners[vsmClusterPageBitsetOffset(push) + (page >> 5u)] & (1u << (page & 31u));
+        nodeTests = 1u;
+    } else {
+        uint paddedAxis = vsmPageHierarchyAxis(push);
+        uint axis = paddedAxis >> mip;
+        uint offset = base + 4u + vsmPageHierarchyMipOffset(paddedAxis, mip);
+        uint2 start = clippedFirst >> mip, end = clippedLast >> mip;
+        for (uint y = start.y; y <= end.y; ++y) {
+            for (uint x = start.x; x <= end.x; ++x) {
+                flags |= owners[offset + y * axis + x];
+                ++nodeTests;
+            }
+        }
+    }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterHierarchyNodeTests, nodeTests);
+    vsmBuildDiagnosticAdd(push, flags != 0u ? kVSMBuildDiagnosticClusterPageHits : kVSMBuildDiagnosticClusterEmptyLevels, 1u);
+#endif
+    return flags != 0u;
+}
+#endif
+
 bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection projection,
     StructuredBuffer<uint4> pages, ShadowPush push)
 {
@@ -1919,6 +2116,9 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
     }
     int2 first = clamp(int2(floor(saturate(lo * 0.5 + 0.5) * float(axis))) - 1, int2(0), int2(axis - 1));
     int2 last = clamp(int2(floor(saturate(hi * 0.5 + 0.5) * float(axis))) + 1, int2(0), int2(axis - 1));
+#if VSM_DIRTY_PAGE_HIERARCHY
+    return vsmHierarchyOverlaps(first, last, projection, push);
+#else
     StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     uint offset = vsmClusterPageBitsetOffset(push);
     uint cachedWord = 0xffffffffu, rawWord = 0u;
@@ -1954,6 +2154,7 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
     vsmRecordClusterLevel(push, wordTests, kVSMBuildDiagnosticClusterEmptyLevels);
 #endif
     return false;
+#endif
 }
 
 #if VSM_COMPACT_BUILD
@@ -2132,6 +2333,22 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
         // world coordinates need not fit the page-index integer range.
         int2 first = min(int2(floor(saturate(lo.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
         int2 last = min(int2(floor(saturate(hi.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
+#if VSM_RECEIVER_MASK
+        // Build uses clipmap translation; Raster forms canonical page translation.
+        // Bound the operand magnitudes of both paths before converting their
+        // rounding allowance to texels. The 256-epsilon allowance follows Mark's
+        // conservative footprint policy; one extra texel covers integer boundaries.
+        float resolution = float(uint(axis) * push.pageSize);
+        float3 positionMagnitude = max(abs(triangle.vertices[0].position.xyz),
+            max(abs(triangle.vertices[1].position.xyz), abs(triangle.vertices[2].position.xyz)));
+        float2 clipMagnitude = float2(dot(abs(projection.rowX.xyz), positionMagnitude),
+            dot(abs(projection.rowY.xyz), positionMagnitude)) + abs(float2(projection.rowX.w, projection.rowY.w)) + 1.0;
+        float2 pageTranslationMagnitude = (abs(projection.originNear.xy) + float(axis) + 1.0) * (2.0 / float(axis));
+        float2 texelPadding = 1.0 + (clipMagnitude + pageTranslationMagnitude) *
+            (256.0 * 5.960464477539063e-8) * (0.5 * resolution);
+        uint2 firstTexel = uint2(clamp(saturate(lo.xy * 0.5 + 0.5) * resolution - texelPadding, 0.0, resolution - 1.0));
+        uint2 lastTexel = uint2(clamp(saturate(hi.xy * 0.5 + 0.5) * resolution + texelPadding, 0.0, resolution - 1.0));
+#endif
         uint cachedWord = 0xffffffffu, rawWord = 0u;
         for (int y = first.y; y <= last.y; ++y) {
             uint firstPage = projection.page.x + uint(y * axis + first.x);
@@ -2158,6 +2375,25 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                     // Increasing set bits preserve this triangle's row order.
 #if VSM_WORKLOAD_DIAGNOSTICS
                     ++pageHits;
+#endif
+#if VSM_RECEIVER_MASK
+                    // Both layers share this work list. Static-dirty pages must
+                    // remain complete for reuse by future receiver footprints.
+                    if ((pages[page].w & 8u) == 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+                        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticReceiverMaskPageTests, 1u);
+#endif
+                        uint localPage = page - projection.page.x;
+                        uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel,
+                            uint2(localPage % uint(axis), localPage / uint(axis)), push.pageSize);
+                        uint offset = vsmReceiverMaskOffset(push) + page * 2u;
+                        if (((mask.x & bitset[offset]) | (mask.y & bitset[offset + 1u])) == 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+                            vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticReceiverMaskPageRejects, 1u);
+#endif
+                            continue;
+                        }
+                    }
 #endif
                     uint index;
                     InterlockedAdd(statistics[3], 1u, index);

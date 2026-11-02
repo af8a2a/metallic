@@ -378,6 +378,8 @@ public:
         settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
         settings.propagatedMapping = boolProperty(&properties, "benchmarkPropagatedMapping", settings.propagatedMapping);
+        settings.dirtyPageHierarchy = boolProperty(&properties, "benchmarkDirtyPageHierarchy", settings.dirtyPageHierarchy);
+        settings.receiverMask = boolProperty(&properties, "benchmarkReceiverMask", settings.receiverMask);
         settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
             boolProperty(&properties, "onePassProjection", settings.onePassProjection));
         VirtualShadowMapProjectionGridResources projectionGrid;

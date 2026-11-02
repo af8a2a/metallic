@@ -23,6 +23,7 @@ SECTION_NAMES = {f"VSM {stage}": stage for stage in STAGES}
 ONE_PASS_PROJECTION_SECTION = "VSM one-pass projection"
 SECTION_NAMES[ONE_PASS_PROJECTION_SECTION] = "projection"
 BUILD_SUBSTAGES = {
+    "VSM build page hierarchy": "hierarchyMs",
     "VSM build direct": "directMs",
     "VSM build compact": "compactMs",
     "VSM build compact sync": "compactSyncMs",
@@ -101,7 +102,16 @@ TRIANGLE_BITSET_COUNTER_DEFINITIONS = {
     "triangleBitsetPageHits": "Set bits enumerated for exact triangle/page work emission; not page metadata loads.",
 }
 TRIANGLE_BITSET_COUNTERS = tuple(TRIANGLE_BITSET_COUNTER_DEFINITIONS)
-ALL_BUILD_COUNTERS = (*V2_BUILD_COUNTERS, *TRIANGLE_BITSET_COUNTERS)
+V3_BUILD_COUNTERS = (*V2_BUILD_COUNTERS, *TRIANGLE_BITSET_COUNTERS)
+HIERARCHY_COUNTER_DEFINITIONS = {
+    "clusterHierarchyLevelTests": "Cluster level checks using hierarchy mode, including early near/outside exits.",
+    "clusterHierarchyNodeTests": "Actual hierarchy node or mip-zero bitset reads; at most four per level check.",
+    "clusterHierarchyBoundsRejects": "Cluster level checks rejected by empty or disjoint tight dirty-page bounds.",
+    "receiverMaskPageTests": "Fine triangle/page mask intersections; static-dirty and coarse work bypass this test.",
+    "receiverMaskPageRejects": "Fine triangle/page work rejected by an empty receiver-mask intersection.",
+}
+HIERARCHY_COUNTERS = tuple(HIERARCHY_COUNTER_DEFINITIONS)
+ALL_BUILD_COUNTERS = (*V3_BUILD_COUNTERS, *HIERARCHY_COUNTERS)
 
 
 def duration(value, label):
@@ -214,7 +224,10 @@ def build_substage_frame(frame, required=False):
     faces, totals = [], {}
     for index, children in builds.items():
         names = tuple(name for name, _ in children)
-        branch = next((name for name, expected in BUILD_SUBSTAGE_PATTERNS.items() if names == expected), None)
+        remaining = names[1:] if names[:1] == ("hierarchyMs",) else names
+        branch = next((name for name, expected in BUILD_SUBSTAGE_PATTERNS.items() if remaining == expected), None)
+        if names == ("hierarchyMs",):
+            branch = "hierarchyOnly"
         if branch is None:
             raise ValueError("Missing, duplicated, reordered or inconsistent per-face build substages")
         parent_ms = duration(sections[index]["gpuMs"], "VSM build")
@@ -282,7 +295,7 @@ def build_frame(frame, mode):
         return result
     diagnostic = shadow["gpuBuildDiagnostics"]
     if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
-            diagnostic["version"] not in (1, 2, 3) or not isinstance(diagnostic.get("enabled"), bool)):
+            diagnostic["version"] not in (1, 2, 3, 4) or not isinstance(diagnostic.get("enabled"), bool)):
         raise ValueError("Unknown or malformed GPU build diagnostic schema")
     if not diagnostic["enabled"]:
         if "faces" in diagnostic or "totals" in diagnostic:
@@ -291,7 +304,7 @@ def build_frame(frame, mode):
         return result
     if mode != "diagnostic":
         raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
-    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: ALL_BUILD_COUNTERS}[diagnostic["version"]]
+    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: ALL_BUILD_COUNTERS}[diagnostic["version"]]
     faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
     if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(names) or
             not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
@@ -324,11 +337,16 @@ def build_frame(frame, mode):
         outcomes = sum(counters[name] for name in ("clusterPageHits", "clusterNearPlaneKeeps", "clusterOutsideLevels", "clusterEmptyLevels"))
         histogram = [counters[name] for name in BUILD_HISTOGRAM_COUNTERS]
         bitset_levels = counters.get("clusterBitsetLevelTests", 0)
+        hierarchy_levels = counters.get("clusterHierarchyLevelTests", 0)
         bitset_histogram = [counters.get(name, 0) for name in BITSET_HISTOGRAM_COUNTERS]
-        if outcomes != levels or sum(histogram) + bitset_levels != levels or sum(bitset_histogram) != bitset_levels:
+        if outcomes != levels or sum(histogram) + bitset_levels + hierarchy_levels != levels or sum(bitset_histogram) != bitset_levels:
             raise ValueError("GPU build level outcomes/histogram do not partition level tests")
-        if histogram[0] + bitset_histogram[0] != counters["clusterNearPlaneKeeps"] + counters["clusterOutsideLevels"]:
+        if not hierarchy_levels and histogram[0] + bitset_histogram[0] != counters["clusterNearPlaneKeeps"] + counters["clusterOutsideLevels"]:
             raise ValueError("GPU build zero-scan histogram disagrees with near/outside exits")
+        if counters.get("clusterHierarchyBoundsRejects", 0) > hierarchy_levels or counters.get("clusterHierarchyNodeTests", 0) > 4 * hierarchy_levels:
+            raise ValueError("Hierarchy query counters exceed four nodes per tested level")
+        if counters.get("receiverMaskPageRejects", 0) > counters.get("receiverMaskPageTests", 0):
+            raise ValueError("Receiver mask rejects exceed tests")
         minimum = sum(count * bounds[0] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
         maximum = sum(count * bounds[1] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
         if not minimum <= counters["clusterPageTests"] <= maximum:
@@ -559,7 +577,7 @@ def report(args):
             if build_counters:
                 text.extend(["| Independent build diagnostic | Median of process medians | Processes with evidence |",
                              "| --- | ---: | ---: |"])
-                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS):
+                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS, *HIERARCHY_COUNTERS):
                     if name not in build_counters:
                         continue
                     values = build_counters[name]
@@ -583,7 +601,7 @@ def report(args):
     text.extend(["## GPU counter definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
     text.extend(f"| {name} | {definition} |" for name, definition in COUNTER_DEFINITIONS.items())
     text.extend(["", "## Independent build diagnostic definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
-    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items()))
+    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items(), *HIERARCHY_COUNTER_DEFINITIONS.items()))
     text.extend(["", "`clusterPageScan0/1/2To3/.../8192To16383/16384Plus` record one observation per level check, using actual reads before return.",
                  "The current maximum is 16384 reads per level. Counts are checked per face against legacy clipmap/enabled/dirty statistics, outcome partitions, histogram totals and weighted scan bounds.",
                  "Build diagnostic data is diagnostic-only and never enters ordinary timing or the four-arm performance policy. Cluster culling disabled can legitimately publish all-zero available diagnostics."])

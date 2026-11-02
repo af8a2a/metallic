@@ -3445,6 +3445,123 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapLODPassTest);
 
+class VirtualShadowMapReceiverMaskCacheTest final : public RHITest
+{
+public:
+    VirtualShadowMapReceiverMaskCacheTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_receiver_mask_cache"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapReceiverMaskCache";
+        Json report{{"passed", false}, {"scope", "Two-arm directional SMRT receiver-mask cache lifecycle"},
+            {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapReceiverMaskCache.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "Floor", false, 1.5, .8, nullptr, true);
+            scene::SceneDocument scene; require(scene.load(fixture.source), "Load receiver-mask split-caster fixture");
+            RenderView view; RenderGraphPreviewRenderer preview;
+            configurePreview(preview, scene, view, context, validation);
+            Source source{"Directional", {0,4,0}, {.3,-1,0}, .015};
+            publishSource(scene, preview, source);
+            ViewCamera camera{.eye={.8f,5,0}, .center={.8f,0,0}, .up={0,0,-1},
+                .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=1, .orthographic=true};
+            require(view.setCamera(camera), "Set narrow receiver-mask camera");
+            evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture, "smrt", true, 8);
+            const auto property = [&](const char* node, const char* key, const Json& value) {
+                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, key, value),
+                    std::string("Set receiver-mask ") + key);
+            };
+            const auto both = [&](const char* key, const Json& value) {
+                property("Cached", key, value); property("Compact", key, value);
+            };
+            both("compactOutputs", false); both("cacheLayering", true);
+            both("smrtTemporalEnabled", false); both("smrtRayCount", 2); both("smrtSamplesPerRay", 8);
+            both("smrtMaxRayLength", 4); both("smrtRayLengthScale", 0);
+            both("physicalPageBudget", 256); both("benchmarkGPUWork", true);
+            property("Cached", "forceRedraw", true);
+            property("Compact", "benchmarkReceiverMask", true);
+            property("Compact", "benchmarkDirtyPageHierarchy", true);
+            for (const char* name : {"Cached", "Compact"}) {
+                const std::string capture = std::string(name) + "Evidence";
+                // Reflection reads authored properties, not runtime overrides.
+                // Declare the optional outputs/inputs before adding their edges.
+                auto* shadowNode = graph.findNode(name);
+                auto shadowProperties = shadowNode->properties;
+                shadowProperties["benchmarkGPUWork"] = true;
+                shadowProperties["compactOutputs"] = false;
+                require(graph.setNodeProperties(shadowNode->id, std::move(shadowProperties)), "Declare receiver-mask workload outputs");
+                auto* captureNode = graph.findNode(capture);
+                auto captureProperties = captureNode->properties;
+                captureProperties["captureWork"] = true;
+                captureProperties["captureCache"] = true;
+                require(graph.setNodeProperties(captureNode->id, std::move(captureProperties)), "Declare receiver-mask workload/cache inputs");
+                for (const char* field : {"workload", "buildDiagnostics", "cacheDiagnostics"}) {
+                    graph.addEdge(std::string(name) + "." + field, capture + "." + field);
+                }
+            }
+            uint64_t maskTests = 0, maskRejects = 0;
+            const auto capture = [&](const char* phase, bool warmDynamic = false, bool lowBudget = false) {
+                validation.phase(phase);
+                const auto rendered = preview.render(graph, kWidth, kHeight, "CompactEvidence.color");
+                require(rendered, "Render receiver mask: " + preview.lastLog());
+                const auto baseline = snapshot("Cached", true, false, true, true);
+                const auto candidate = snapshot("Compact", true, false, true, true);
+                const auto& entry = activeEntry(candidate); const uint32_t face = entry.baseLayer;
+                const auto& cache = candidate.cacheDiagnostics[face];
+                const auto& counters = candidate.buildDiagnostics[face];
+                require(baseline.depth == candidate.depth && baseline.shadows == candidate.shadows,
+                    std::string(phase) + ": receiver-mask visibility differs from complete redraw");
+                require(searchStatistics(candidate)[5] == 0 && searchStatistics(candidate)[9] == 0,
+                    std::string(phase) + ": work overflow or unresolved query");
+                if (warmDynamic) {
+                    require(cache[kVSMCacheDynamicCasters] > 0 && cache[kVSMCacheStaticCasters] > 0,
+                        "Receiver-mask fixture lacks mixed static/dynamic casters");
+                    require(cache[kVSMCacheStaticDirtyFinePages] == 0 && cache[kVSMCacheStaticReusedFinePages] > 0 &&
+                        cache[kVSMCacheCompositeDirtyFinePages] > 0,
+                        "Receiver-mask warm frame did not preserve static pages and rebuild dynamic composition");
+                }
+                if (lowBudget) {
+                    require(searchStatistics(candidate)[7] > 0, "Receiver-mask low budget did not exercise coarse fallback");
+                }
+                maskTests += counters[kVSMBuildDiagnosticReceiverMaskPageTests];
+                maskRejects += counters[kVSMBuildDiagnosticReceiverMaskPageRejects];
+                report["frames"].push_back({{"phase",phase},{"exactVisibility",true},
+                    {"cache",cache},{"build",counters},{"statistics",searchStatistics(candidate)},
+                    {"shadowSha256",debug::debugSha256(candidate.shadows[face])}});
+                save();
+                return candidate;
+            };
+            capture("Cold"); capture("WarmStatic");
+            float4x4 shift; shift.SetupByTranslation(float3(.15f,0,0));
+            require(scene.setNodeLocalMatrix(1, shift * scene.nodes()[1].localMatrix), "Promote independent dynamic caster");
+            capture("CasterPromotion"); capture("WarmDynamic", true);
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Expand receiver coverage in cached pages");
+            capture("CoverageExpansion"); capture("ExpandedWarmDynamic", true);
+            require(scene.setNodeLocalMatrix(1, shift * scene.nodes()[1].localMatrix), "Move independent dynamic caster again");
+            capture("DynamicMove"); capture("MovedWarmDynamic", true);
+            both("physicalPageBudget", 1); capture("CoarseBudget", false, true);
+            both("physicalPageBudget", 256); capture("BudgetRestore"); capture("BudgetRestoreWarm");
+            property("Compact", "benchmarkReceiverMask", false);
+            const auto disabled = capture("DisableMask");
+            require((disabled.cacheDiagnostics[activeEntry(disabled).baseLayer][kVSMCacheReasons] & kVSMCacheReasonSettings) != 0,
+                "Disabling partial receiver masks did not invalidate the incomplete cache");
+            capture("DisabledWarm");
+            property("Compact", "benchmarkReceiverMask", true); capture("ReenableMask");
+            both("filter", "hard"); capture("HardFallback"); capture("HardWarm");
+            require(maskTests > 0, "Receiver-mask candidate performed no per-page intersection tests");
+            report["maskPageTests"] = maskTests; report["maskPageRejects"] = maskRejects;
+            report["validation"] = validation.snapshot(); require(!validation.failed(), "Receiver-mask Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Receiver masks preserve complete-redraw visibility through dynamic, receiver, budget and mode transitions");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapReceiverMaskCacheTest);
+
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 
 } // namespace

@@ -190,7 +190,7 @@ public:
         requireAcceptance(lodStatistics[0] == 2, "Unsupported VSM LOD statistics version");
         result["lodStatistics"] = lodStatistics;
         result["gpuWork"] = {{"version", 3}, {"enabled", collectGPUWork}};
-        result["gpuBuildDiagnostics"] = {{"version", 3}, {"enabled", collectGPUWork}};
+        result["gpuBuildDiagnostics"] = {{"version", 4}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
             const auto rawWorkload = read("Shadows.workload");
             requireAcceptance(rawWorkload.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapWorkloadSize,

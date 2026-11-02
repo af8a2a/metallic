@@ -401,13 +401,52 @@ class GPUProfileTests(unittest.TestCase):
         data["version"] = 3
         for face in data["faces"]:
             face["counters"].update(triangleBitsetWordTests=3, triangleBitsetPageHits=5)
-        data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.ALL_BUILD_COUNTERS}
+        data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.V3_BUILD_COUNTERS}
         parsed = profile.build_frame(row, "diagnostic")
         self.assertEqual(parsed["triangleBitsetWordTests"], 3 * len(data["faces"]))
         self.assertEqual(parsed["triangleBitsetPageHits"], 5 * len(data["faces"]))
         del data["faces"][0]["counters"]["triangleBitsetPageHits"]
         with self.assertRaisesRegex(ValueError, "malformed"):
             profile.build_frame(row, "diagnostic")
+
+    def test_hierarchy_v4_counters_and_bounds(self):
+        row = add_build(frame(1))
+        data = row["shadow"]["gpuBuildDiagnostics"]
+        data["version"] = 4
+        for face in data["faces"]:
+            face["counters"] = dict.fromkeys(profile.ALL_BUILD_COUNTERS, 0)
+            face["counters"].update(clusterGroups=3, clusterBoundsValidGroups=2,
+                clusterSurvivingGroups=1, clusterLevelTests=6, clusterPageHits=1,
+                clusterNearPlaneKeeps=1, clusterOutsideLevels=1, clusterEmptyLevels=3,
+                clusterHierarchyLevelTests=6, clusterHierarchyNodeTests=8,
+                clusterHierarchyBoundsRejects=2, receiverMaskPageTests=7, receiverMaskPageRejects=3)
+        def totals():
+            data["totals"] = {name: sum(f["counters"][name] for f in data["faces"]) for name in profile.ALL_BUILD_COUNTERS}
+        totals()
+        parsed = profile.build_frame(row, "diagnostic")
+        self.assertEqual(parsed["clusterHierarchyNodeTests"], 16)
+        self.assertEqual(parsed["receiverMaskPageRejects"], 6)
+        data["faces"][0]["counters"]["clusterHierarchyNodeTests"] = 25
+        totals()
+        with self.assertRaisesRegex(ValueError, "Hierarchy"):
+            profile.build_frame(row, "diagnostic")
+        data["faces"][0]["counters"]["clusterHierarchyNodeTests"] = 8
+        data["faces"][0]["counters"]["receiverMaskPageRejects"] = 8
+        totals()
+        with self.assertRaisesRegex(ValueError, "Receiver mask"):
+            profile.build_frame(row, "diagnostic")
+
+    def test_hierarchy_substage_is_inclusive_and_optional(self):
+        row = frame(1)
+        for index, section in list(enumerate(row["nodes"][0]["sections"])):
+            if section["name"] == "VSM build":
+                row["nodes"][0]["sections"].append({"name": "VSM build page hierarchy",
+                    "parent": index, "cpuOnly": False, "gpuMs": .1})
+        result = profile.build_substage_frame(row)
+        self.assertAlmostEqual(result["hierarchyMs"], .2)
+        self.assertEqual(result["buildMs"], 2.)
+        add_substages(row)
+        self.assertAlmostEqual(profile.build_substage_frame(row)["hierarchyMs"], .2)
 
     def test_old_packages_do_not_claim_zero_build_work(self):
         result = profile.summarize_package(self.package("diagnostic", scales=(1.,)))
@@ -437,7 +476,7 @@ class GPUProfileTests(unittest.TestCase):
         row["shadow"]["gpuBuildDiagnostics"]["enabled"] = False
         with self.assertRaisesRegex(ValueError, "stale"):
             profile.build_frame(row, "diagnostic")
-        for invalid in (None, {"version": True, "enabled": True}, {"version": 4, "enabled": True}):
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 5, "enabled": True}):
             row["shadow"]["gpuBuildDiagnostics"] = invalid
             with self.subTest(schema=invalid), self.assertRaisesRegex(ValueError, "schema"):
                 profile.build_frame(row, "diagnostic")
