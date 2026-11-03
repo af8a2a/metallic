@@ -124,7 +124,8 @@ public:
                 (captureHDR && pass == hdrPass && binding.id == hdrOutput);
             const bool coverage = captureReceiverCoverage &&
                 (binding.id == "Shadows.receiverCoverageSettings" || binding.id == "Shadows.receiverCoverageProjections" ||
-                 binding.id == "Shadows.receiverCoveragePages" || (receiverCoverageRecords && binding.id == "Shadows.receiverCoverage"));
+                 binding.id == "Shadows.receiverCoveragePages" || binding.id == "Shadows.receiverCoverageMask" ||
+                 (receiverCoverageRecords && binding.id == "Shadows.receiverCoverage"));
             if (!stats && !image && !coverage) { continue; }
             try {
                 copy(commands, binding, image);
@@ -189,8 +190,8 @@ public:
         std::memcpy(lodStatistics.data(), rawLOD.data(), sizeof(lodStatistics));
         requireAcceptance(lodStatistics[0] == 2, "Unsupported VSM LOD statistics version");
         result["lodStatistics"] = lodStatistics;
-        result["gpuWork"] = {{"version", 3}, {"enabled", collectGPUWork}};
-        result["gpuBuildDiagnostics"] = {{"version", 4}, {"enabled", collectGPUWork}};
+        result["gpuWork"] = {{"version", 6}, {"enabled", collectGPUWork}};
+        result["gpuBuildDiagnostics"] = {{"version", 5}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
             const auto rawWorkload = read("Shadows.workload");
             requireAcceptance(rawWorkload.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapWorkloadSize,
@@ -307,6 +308,9 @@ public:
         };
         result["projections"] = saveBuffer("Shadows.receiverCoverageProjections", "projections", header[13], 112);
         result["pages"] = saveBuffer("Shadows.receiverCoveragePages", "pages", header[14], 16);
+        if (header[15]) {
+            result["receiverMask"] = saveBuffer("Shadows.receiverCoverageMask", "receiverMask", header[15], 8);
+        }
         if (receiverCoverageRecords) {
             result["records"] = saveBuffer("Shadows.receiverCoverage", "receivers",
                 uint64_t(header[1]) * header[2] * header[12] * sizeof(uint32_t), header[12] * sizeof(uint32_t));

@@ -3486,7 +3486,7 @@ public:
             both("smrtMaxRayLength", 4); both("smrtRayLengthScale", 0);
             both("physicalPageBudget", 256); both("benchmarkGPUWork", true);
             property("Cached", "forceRedraw", true);
-            property("Compact", "benchmarkReceiverMask", true);
+            property("Cached", "benchmarkReceiverMask", false); // Full-page reference.
             property("Compact", "benchmarkDirtyPageHierarchy", true);
             for (const char* name : {"Cached", "Compact"}) {
                 const std::string capture = std::string(name) + "Evidence";
@@ -3626,6 +3626,181 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapReceiverMaskCacheTest);
+
+class VirtualShadowMapPhysicalHZBTest final : public RHITest
+{
+public:
+    VirtualShadowMapPhysicalHZBTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_physical_hzb"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapPhysicalHZB";
+        Json report{{"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "PhysicalHZB.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            Fixture authored;
+            addFixtureQuad(authored, {0,0,0}, {8,0,0}, {0,0,-8});          // Receivers
+            addFixtureQuad(authored, {0,3,0}, {2.5,0,0}, {0,0,2.5});      // Static roof
+            addFixtureQuad(authored, {.45,1,.45}, {.20,0,0}, {0,0,.20}); // Behind the roof
+            addFixtureQuad(authored, {.45,4,.45}, {.16,0,0}, {0,0,.16}); // In front of the roof
+            // Resident Build groups span 64 triangle slots across mesh boundaries.
+            // Fill the first group, then put four movable quads behind the roof
+            // in their own group so all eight of its triangles are dynamic.
+            for (uint32_t tile = 0; tile < 28; ++tile) {
+                addFixtureQuad(authored, {.35 + .025*(tile%8),1.3,.40 + .025*(tile/8)}, {.0125,0,0}, {0,0,.0125});
+            }
+            const auto patchFirstNode = static_cast<uint32_t>(authored.triangles.size() / 2);
+            constexpr uint32_t kPatchQuadCount = 4;
+            for (uint32_t quad = 0; quad < kPatchQuadCount; ++quad) {
+                addFixtureQuad(authored, {.30 + .10*quad,1.3,.45}, {.05,0,0}, {0,0,.05});
+            }
+            const auto fixture = writeFixture(directory / "Roof", false, 1.5, .8, &authored, true);
+            scene::SceneDocument scene; require(scene.load(fixture.source), "Load physical HZB fixture");
+            RenderView view; RenderGraphPreviewRenderer preview;
+            configurePreview(preview, scene, view, context, validation);
+            publishSource(scene, preview, Source{"Directional", {0,5,0}, {0,-1,0}, 0.});
+            // Look down from beneath all three blockers so the actual floor shadow is visible.
+            ViewCamera camera{.eye={0,.75f,0}, .center={0,0,0}, .up={0,0,-1},
+                .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=6, .orthographic=true};
+            require(view.setCamera(camera), "Set HZB receiver view");
+            evidence = std::make_shared<EvidenceState>();
+            auto graph = makeGraph(fixture, "hard", true, 8);
+            for (const char* name : {"Cached", "Compact"}) {
+                auto* node = graph.findNode(name);
+                auto properties = node->properties;
+                const bool useHZB = std::string_view(name) == "Compact";
+                properties.update(Json{{"physicalPageBudget", 128}, {"cacheLayering", true}, {"forceRedraw", !useHZB},
+                    {"receiverFootprint", false}, {"compactOutputs", false},
+                    {"benchmarkGPUWork", useHZB}});
+                // Exercise the production defaults against full redraw with occlusion disabled.
+                if (!useHZB) { properties["benchmarkStaticPageHZB"] = false; }
+                require(graph.setNodeProperties(node->id, std::move(properties)), "Set HZB arm properties");
+            }
+            auto* output = graph.findNode("CompactEvidence");
+            auto properties = output->properties;
+            properties["captureWork"] = true; properties["captureCache"] = true;
+            require(graph.setNodeProperties(output->id, std::move(properties)), "Declare HZB readback");
+            for (const char* field : {"workload", "buildDiagnostics", "cacheDiagnostics"}) {
+                graph.addEdge(std::string("Compact.") + field, std::string("CompactEvidence.") + field);
+            }
+            const auto move = [&](uint32_t node, float x) {
+                float4x4 transform; transform.SetupByTranslation(float3(x,0,0));
+                require(scene.setNodeLocalMatrix(node, transform), "Move HZB fixture caster");
+            };
+            const auto movePatch = [&](float x) {
+                for (uint32_t quad = 0; quad < kPatchQuadCount; ++quad) { move(patchFirstNode + quad, x); }
+            };
+            uint64_t clusterRejects = 0;
+            const auto capture = [&](const char* phase) {
+                validation.phase(phase);
+                const auto rendered = preview.render(graph, kWidth, kHeight, "CompactEvidence.color");
+                require(rendered, "Render physical HZB: " + preview.lastLog());
+                auto candidate = snapshot("Compact", false, false, true, true);
+                const auto reference = snapshot("Cached");
+                const auto face = activeEntry(candidate).baseLayer;
+                const auto& cache = candidate.cacheDiagnostics[face];
+                const auto& build = candidate.buildDiagnostics[face];
+                const auto& work = candidate.workload[face];
+                const auto stats = searchStatistics(candidate);
+                const bool exact = candidate.depth == reference.depth && candidate.shadows == reference.shadows;
+                clusterRejects += build[kVSMBuildDiagnosticHZBLevelRejects];
+                report["frames"].push_back({{"phase",phase},{"exact",exact},{"builtPages",cache[kVSMCacheStaticHZBBuiltPages]},
+                    {"savedInvalidations",cache[kVSMCacheHZBSavedInvalidations]},{"clusterPageTests",build[kVSMBuildDiagnosticHZBPageTests]},
+                    {"clusterLevelRejects",build[kVSMBuildDiagnosticHZBLevelRejects]},{"decodedTriangles",work[kVSMWorkBuildDecodedTriangles]},
+                    {"rasterClusterLevelTests",work[kVSMWorkRasterHZBClusterLevelTests]},
+                    {"rasterRejectedLevels",work[kVSMWorkRasterHZBRejectedLevels]},
+                    {"rasterSkippedTriangles",work[kVSMWorkRasterHZBSkippedTriangles]},
+                    {"staticMergedPages",work[kVSMWorkRasterStaticMergedPages]},
+                    {"staticMergedTriangles",work[kVSMWorkRasterStaticMergedTriangles]},
+                    {"cache",cache},{"statistics",stats},{"referenceHash",debug::debugSha256(reference.shadows[face])},
+                    {"shadowHash",debug::debugSha256(candidate.shadows[face])}});
+                save();
+                require(exact, std::string(phase) + ": HZB differs from complete redraw");
+                require(stats[5] == 0 && stats[9] == 0, std::string(phase) + ": overflow or unresolved pages");
+                return candidate;
+            };
+            const auto cacheOf = [&](const Snapshot& s) { return s.cacheDiagnostics[activeEntry(s).baseLayer]; };
+            require(cacheOf(capture("Cold"))[kVSMCacheStaticHZBBuiltPages] > 0, "Cold render built no HZB");
+            require(cacheOf(capture("Warm"))[kVSMCacheStaticHZBBuiltPages] == 0, "Clean frame rebuilt HZB");
+            move(2, .05f); move(3, .05f); movePatch(.05f);
+            const auto compactId = graph.findNode("Compact")->id;
+            // Rebuild every static page on promotion. Any dynamic rejection on
+            // this frame must use the newly rasterized static depth.
+            require(graph.setNodeRuntimeProperty(compactId, "forceRedraw", true), "Force fresh HZB on promotion");
+            const auto promotion = capture("PromoteMovers");
+            require(graph.setNodeRuntimeProperty(compactId, "forceRedraw", false), "Resume incremental HZB updates");
+            require(cacheOf(promotion)[kVSMCachePromotedCasters] >= 2 + kPatchQuadCount && cacheOf(promotion)[kVSMCacheStaticHZBBuiltPages] > 0,
+                "Moving casters did not refresh the affected static pages");
+            const auto& promotionWork = promotion.workload[activeEntry(promotion).baseLayer];
+            require(promotion.buildDiagnostics[activeEntry(promotion).baseLayer][kVSMBuildDiagnosticHZBLevelRejects] == 0,
+                "Build accepted retained HZB occlusion on a full static redraw");
+            require(promotionWork[kVSMWorkRasterHZBRejectedLevels] > 0 && promotionWork[kVSMWorkRasterHZBSkippedTriangles] > 0,
+                "The rebuilt static HZB did not skip a dynamic cluster before mesh decode");
+            move(2, .10f);
+            const auto hidden = capture("HiddenMotion");
+            require(cacheOf(hidden)[kVSMCacheHZBSavedInvalidations] > 0 && cacheOf(hidden)[kVSMCacheStaticHZBBuiltPages] == 0,
+                "Hidden motion did not suppress invalidation using retained static depth");
+            move(3, .12f);
+            const auto front = capture("FrontMotion");
+            require(cacheOf(front)[kVSMCacheCompositeDirtyFinePages] > 0, "Unoccluded front caster did not dirty fine pages");
+            move(2, 3.f);
+            const auto exposed = capture("EmergeFromRoof");
+            require(exposed.shadows != front.shadows, "Emerging caster produced no visible change");
+            move(2, .10f);
+            const auto hiddenAgain = capture("ReturnBehindRoof");
+            require(hiddenAgain.shadows == front.shadows, "Old exposed caster shadow survived its return behind the roof");
+            move(2, .15f);
+            move(1, 5.f);
+            const auto roofMoved = capture("MoveStaticRoofAndHiddenCaster");
+            require(cacheOf(roofMoved)[kVSMCacheStaticHZBBuiltPages] > 0 && roofMoved.shadows != hiddenAgain.shadows,
+                "Removing the roof did not refresh static occlusion and reveal the floor");
+            movePatch(1.f);
+            const auto patchMoved = capture("MoveExposedCluster");
+            require(patchMoved.shadows != roofMoved.shadows, "Previously occluded cluster cast no moving shadow after roof removal");
+            require(graph.setNodeRuntimeProperty(compactId, "framesStaticThreshold", 2), "Shorten static demotion threshold");
+            const auto settling = capture("OneFrameStationary");
+            require(cacheOf(settling)[kVSMCacheDynamicCasters] == kPatchQuadCount,
+                "Freshly moved quads did not remain dynamic for the first stationary frame");
+            const auto demoted = capture("DemoteExposedCluster");
+            const auto& demotionWork = demoted.workload[activeEntry(demoted).baseLayer];
+            require(cacheOf(demoted)[kVSMCacheDynamicCasters] == 0 &&
+                cacheOf(demoted)[kVSMCacheStaticCasters] == cacheOf(patchMoved)[kVSMCacheStaticCasters] + cacheOf(patchMoved)[kVSMCacheDynamicCasters] &&
+                cacheOf(demoted)[kVSMCacheStaticInvalidatedResidentPages] == 0 &&
+                demotionWork[kVSMWorkRasterStaticMergedPages] > 0 && demotionWork[kVSMWorkRasterStaticMergedTriangles] > 0 &&
+                cacheOf(demoted)[kVSMCacheStaticHZBBuiltPages] > 0 && demoted.shadows == patchMoved.shadows,
+                "Stationary quads did not merge into retained static pages and refresh their HZB");
+            const auto warmDemoted = capture("WarmAfterDemotion");
+            require(cacheOf(warmDemoted)[kVSMCacheStaticHZBBuiltPages] == 0 && cacheOf(warmDemoted)[kVSMCacheDynamicDecodedTriangles] == 0,
+                "Idle demoted geometry still generated shadow work");
+            movePatch(.05f);
+            const auto repromoted = capture("MoveDemotedCluster");
+            require(cacheOf(repromoted)[kVSMCachePromotedCasters] == kPatchQuadCount &&
+                cacheOf(repromoted)[kVSMCacheDynamicCasters] == kPatchQuadCount &&
+                repromoted.shadows == roofMoved.shadows && repromoted.shadows != demoted.shadows,
+                "Moving demoted quads did not erase the merged shadow at their old position");
+            for (const char* name : {"Cached","Compact"}) {
+                require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "physicalPageBudget", 8), "Limit HZB pool");
+            }
+            capture("SmallPool");
+            camera.eye[0] = 6; camera.center[0] = 6; require(view.setCamera(camera), "Scroll HZB pages");
+            const auto scroll = capture("ReusePhysicalSlots");
+            require(searchStatistics(scroll)[20] > 0, "Small pool did not exercise physical-page eviction");
+            camera.eye[0] = 0; camera.center[0] = 0; require(view.setCamera(camera), "Revisit HZB pages");
+            capture("RevisitPhysicalSlots");
+            require(clusterRejects > 0, "Occluded clusters did not exercise HZB rejection");
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Physical HZB Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Incremental static page HZB saved invalidations and rejected occluded clusters with exact floor shadows");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPhysicalHZBTest);
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
 

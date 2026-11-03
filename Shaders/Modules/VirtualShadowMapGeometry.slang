@@ -161,6 +161,15 @@ public bool loadVirtualShadowMapClusterBounds(uint geometryResourceIndex, uint f
     return true;
 }
 
+// Word indices come from triangle slots in a layered geometry descriptor.
+public uint loadVirtualShadowMapDynamicMaskWord(uint geometryResourceIndex, uint word)
+{
+    StructuredBuffer<VirtualShadowMapGeometryParameters> parameters =
+        resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapGeometryParameters>>(geometryResourceIndex));
+    StructuredBuffer<uint> mask = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(parameters[0].casterLayerMask));
+    return mask[word];
+}
+
 public bool loadVirtualShadowMapTriangle(uint geometryResourceIndex, uint triangleIndex,
     out VirtualShadowMapTriangle triangle)
 {

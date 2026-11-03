@@ -33,7 +33,15 @@ static const uint32_t kVSMWorkProjectionPageTableLoads = 19;
 static const uint32_t kVSMWorkProjectionMappingLoads = 20;
 static const uint32_t kVSMWorkProjectionMappedAncestors = 21;
 static const uint32_t kVSMWorkProjectionMappingSlowPaths = 22;
-static const uint32_t kVirtualShadowMapWorkCounterCount = 23;
+static const uint32_t kVSMWorkMarkReceiverMaskAtomicOrs = 23;
+static const uint32_t kVSMWorkRasterHZBClusterLevelTests = 24;
+static const uint32_t kVSMWorkRasterHZBRejectedLevels = 25;
+static const uint32_t kVSMWorkRasterHZBSkippedTriangles = 26;
+static const uint32_t kVSMWorkRasterStaticMergedPages = 27;
+static const uint32_t kVSMWorkRasterStaticMergedTriangles = 28;
+static const uint32_t kVSMWorkAllocatorLRUEvictions = 29;
+static const uint32_t kVSMWorkAllocatorLRUEvictionAgeFrames = 30;
+static const uint32_t kVirtualShadowMapWorkCounterCount = 31;
 static const uint32_t kVirtualShadowMapWorkloadSize = kVirtualShadowMapWorkCounterCount * 8;
 
 // Optional build diagnostics follow the unchanged 32 public statistics words
@@ -61,7 +69,9 @@ static const uint32_t kVSMBuildDiagnosticClusterHierarchyNodeTests = 46;
 static const uint32_t kVSMBuildDiagnosticClusterHierarchyBoundsRejects = 47;
 static const uint32_t kVSMBuildDiagnosticReceiverMaskPageTests = 48;
 static const uint32_t kVSMBuildDiagnosticReceiverMaskPageRejects = 49;
-static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 50;
+static const uint32_t kVSMBuildDiagnosticHZBPageTests = 50;
+static const uint32_t kVSMBuildDiagnosticHZBLevelRejects = 51;
+static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 52;
 static const uint32_t kVirtualShadowMapBuildDiagnosticSize = kVirtualShadowMapBuildDiagnosticCounterCount * 8;
 static const uint32_t kVirtualShadowMapBuildDiagnosticWordOffset = 32 + kVirtualShadowMapWorkCounterCount * 2;
 
@@ -92,7 +102,7 @@ static_assert(kVSMBuildDiagnosticClusterBitsetLevelTests == kVSMBuildDiagnosticC
     kVirtualShadowMapBuildDiagnosticHistogramCount);
 static_assert(kVSMBuildDiagnosticTriangleBitsetWordTests == kVSMBuildDiagnosticClusterBitsetScanHistogram +
     kVirtualShadowMapBuildDiagnosticHistogramCount);
-static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticReceiverMaskPageRejects + 1u);
+static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticHZBLevelRejects + 1u);
 static_assert(kVirtualShadowMapBuildDiagnosticSize == kVirtualShadowMapBuildDiagnosticCounterCount * sizeof(uint64_t));
 inline constexpr std::array<std::string_view, kVirtualShadowMapWorkCounterCount> kVirtualShadowMapWorkCounterNames{
     "markReceiverDispatches", "markSamplePositions", "markLevelTests", "markPageRequests",
@@ -100,7 +110,10 @@ inline constexpr std::array<std::string_view, kVirtualShadowMapWorkCounterCount>
     "rasterCoarseGroups", "rasterFineGroups", "rasterDecodedTriangles", "rasterOutputPrimitives",
     "rasterClearedPages", "projectionReceivers", "projectionRays", "projectionAtlasLoads",
     "projectionAdaptiveLitReceivers", "projectionAdaptiveUmbraReceivers", "projectionAdaptiveSavedRays",
-    "projectionPageTableLoads", "projectionMappingLoads", "projectionMappedAncestors", "projectionMappingSlowPaths"};
+    "projectionPageTableLoads", "projectionMappingLoads", "projectionMappedAncestors", "projectionMappingSlowPaths",
+    "markReceiverMaskAtomicOrs", "rasterHZBClusterLevelTests", "rasterHZBRejectedLevels",
+    "rasterHZBSkippedTriangles", "rasterStaticMergedPages", "rasterStaticMergedTriangles",
+    "allocatorLRUEvictions", "allocatorLRUEvictionAgeFrames"};
 inline constexpr std::array<std::string_view, kVirtualShadowMapBuildDiagnosticCounterCount> kVirtualShadowMapBuildDiagnosticCounterNames{
     "clusterGroups", "clusterBoundsValidGroups", "clusterSurvivingGroups", "clusterLevelTests", "clusterPageTests",
     "clusterPageHits", "clusterNearPlaneKeeps", "clusterOutsideLevels", "clusterEmptyLevels",
@@ -115,6 +128,6 @@ inline constexpr std::array<std::string_view, kVirtualShadowMapBuildDiagnosticCo
     "clusterBitsetScan2048To4095", "clusterBitsetScan4096To8191", "clusterBitsetScan8192To16383", "clusterBitsetScan16384Plus",
     "triangleBitsetWordTests", "triangleBitsetPageHits",
     "clusterHierarchyLevelTests", "clusterHierarchyNodeTests", "clusterHierarchyBoundsRejects",
-    "receiverMaskPageTests", "receiverMaskPageRejects"};
+    "receiverMaskPageTests", "receiverMaskPageRejects", "hzbPageTests", "hzbLevelRejects"};
 } // namespace metallic::render
 #endif

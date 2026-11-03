@@ -1,7 +1,7 @@
 #pragma once
 
 // Independent 32-uint per-recording diagnostics. Read after GPU completion.
-// CPU words 0..15 and 28..29; GPU words 16..27. Page counts include only the named scope.
+// CPU words 0..15 and 28..29; GPU words 16..27 and 30..31. Page counts include only the named scope.
 // Raster counters 20..23 are available only when word 28 is nonzero.
 // Triangle/primitive words 20..23 require collectGPUWork; otherwise zero.
 #ifdef __cplusplus
@@ -41,10 +41,14 @@ static const uint32_t kVSMCacheStaticInvalidatedResidentPages = 26;
 static const uint32_t kVSMCacheCompositeInvalidatedResidentPages = 27;
 static const uint32_t kVSMCacheRasterWorkAvailable = 28;
 static const uint32_t kVSMCacheLODChangedCasters = 29;
-static const uint32_t kVSMCacheReserved30 = 30;
-static const uint32_t kVSMCacheReserved31 = 31;
+static const uint32_t kVSMCacheStaticHZBBuiltPages = 30; // HZB counters require collectGPUWork.
+static const uint32_t kVSMCacheHZBSavedInvalidations = 31;
 static const uint32_t kVirtualShadowMapCacheDiagnosticCount = 32;
 static const uint32_t kVirtualShadowMapCacheDiagnosticSize = 128;
+
+// Private metadata following the public diagnostics. Valid on demotion frames.
+static const uint32_t kVSMCacheMergeRemap = 41;
+static const uint32_t kVSMCacheMergeGeometry = 42;
 
 static const uint32_t kVSMCacheReasonCacheDisabled = 1u << 0;
 static const uint32_t kVSMCacheReasonCold = 1u << 1;
@@ -62,7 +66,7 @@ static const uint32_t kVSMCacheReasonLayerMode = 1u << 12;
 
 #ifdef __cplusplus
 inline constexpr std::array<std::string_view, 32> kVirtualShadowMapCacheDiagnosticNames{
-    "reasons", "layered", "reused", "staticCasters", "dynamicCasters", "addedCasters", "removedCasters", "changedCasters", "transformChanges", "materialChanges", "promotedCasters", "dirtyBounds", "staticDirtyBounds", "dirtyRectangles", "staticDirtyRectangles", "cancelledRecordings", "staticDirtyFinePages", "staticDirtyCoarsePages", "compositeDirtyFinePages", "compositeDirtyCoarsePages", "staticDecodedTriangles", "dynamicDecodedTriangles", "staticOutputPrimitives", "dynamicOutputPrimitives", "restoredPages", "staticReusedFinePages", "staticInvalidatedResidentPages", "compositeInvalidatedResidentPages", "rasterWorkAvailable", "lodChangedCasters", "reserved30", "reserved31"
+    "reasons", "layered", "reused", "staticCasters", "dynamicCasters", "addedCasters", "removedCasters", "changedCasters", "transformChanges", "materialChanges", "promotedCasters", "dirtyBounds", "staticDirtyBounds", "dirtyRectangles", "staticDirtyRectangles", "cancelledRecordings", "staticDirtyFinePages", "staticDirtyCoarsePages", "compositeDirtyFinePages", "compositeDirtyCoarsePages", "staticDecodedTriangles", "dynamicDecodedTriangles", "staticOutputPrimitives", "dynamicOutputPrimitives", "restoredPages", "staticReusedFinePages", "staticInvalidatedResidentPages", "compositeInvalidatedResidentPages", "rasterWorkAvailable", "lodChangedCasters", "staticHZBBuiltPages", "hzbSavedInvalidations"
 };
 } // namespace metallic::render
 #endif

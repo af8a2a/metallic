@@ -290,12 +290,12 @@ class GPUProfileTests(unittest.TestCase):
         self.assertEqual(current["projectionAdaptiveSavedRays"], 38)
 
     def test_work_schema_rejects_wrong_counter_layout_and_version(self):
-        for source, wrong in ((1, 2), (2, 1), (2, 3), (3, 2), (1, 3), (3, 1)):
+        for source, wrong in ((1, 2), (2, 1), (2, 3), (3, 2), (1, 3), (3, 1), (3, 4), (4, 3), (4, 5), (5, 4), (5, 6), (6, 5)):
             row = add_work(frame(1), version=source)
             row["shadow"]["gpuWork"]["version"] = wrong
             with self.assertRaisesRegex(ValueError, "Missing GPU work"):
                 profile.work_frame(row, "diagnostic")
-        for invalid in (None, {"version": True, "enabled": True}, {"version": 4, "enabled": True}):
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 7, "enabled": True}):
             row = frame(1)
             row["shadow"] = {"gpuWork": invalid} if invalid is not None else {"gpuWork": []}
             with self.assertRaisesRegex(ValueError, "schema"):
@@ -316,6 +316,20 @@ class GPUProfileTests(unittest.TestCase):
                 self.assertGreater(current[name], 0)
         self.assertEqual(current["projectionPageTableLoads"], 40)
         self.assertEqual(current["projectionMappingSlowPaths"], 46)
+        self.assertNotIn("markReceiverMaskAtomicOrs", current)
+        latest = profile.work_frame(add_work(frame(1), version=4), "diagnostic")
+        self.assertEqual(latest["markReceiverMaskAtomicOrs"], 48)
+
+    def test_static_merge_and_lru_counters(self):
+        previous = profile.work_frame(add_work(frame(1), version=5), "diagnostic")
+        current = profile.work_frame(add_work(frame(1), version=6), "diagnostic")
+        for name in profile.V5_WORK_COUNTERS:
+            self.assertEqual(previous[name], current[name])
+        self.assertNotIn("rasterStaticMergedPages", previous)
+        self.assertEqual(current["rasterStaticMergedPages"], 56)
+        self.assertEqual(current["rasterStaticMergedTriangles"], 58)
+        self.assertEqual(current["allocatorLRUEvictions"], 60)
+        self.assertEqual(current["allocatorLRUEvictionAgeFrames"], 62)
 
     def test_mapping_counters_validate_totals_and_timing_mode(self):
         row = add_work(frame(1), version=3)
@@ -414,14 +428,14 @@ class GPUProfileTests(unittest.TestCase):
         data = row["shadow"]["gpuBuildDiagnostics"]
         data["version"] = 4
         for face in data["faces"]:
-            face["counters"] = dict.fromkeys(profile.ALL_BUILD_COUNTERS, 0)
+            face["counters"] = dict.fromkeys(profile.V4_BUILD_COUNTERS, 0)
             face["counters"].update(clusterGroups=3, clusterBoundsValidGroups=2,
                 clusterSurvivingGroups=1, clusterLevelTests=6, clusterPageHits=1,
                 clusterNearPlaneKeeps=1, clusterOutsideLevels=1, clusterEmptyLevels=3,
                 clusterHierarchyLevelTests=6, clusterHierarchyNodeTests=8,
                 clusterHierarchyBoundsRejects=2, receiverMaskPageTests=7, receiverMaskPageRejects=3)
         def totals():
-            data["totals"] = {name: sum(f["counters"][name] for f in data["faces"]) for name in profile.ALL_BUILD_COUNTERS}
+            data["totals"] = {name: sum(f["counters"][name] for f in data["faces"]) for name in profile.V4_BUILD_COUNTERS}
         totals()
         parsed = profile.build_frame(row, "diagnostic")
         self.assertEqual(parsed["clusterHierarchyNodeTests"], 16)
@@ -434,6 +448,21 @@ class GPUProfileTests(unittest.TestCase):
         data["faces"][0]["counters"]["receiverMaskPageRejects"] = 8
         totals()
         with self.assertRaisesRegex(ValueError, "Receiver mask"):
+            profile.build_frame(row, "diagnostic")
+
+    def test_static_hzb_reject_requires_a_tested_page(self):
+        row = add_build(frame(1))
+        data = row["shadow"]["gpuBuildDiagnostics"]
+        data["version"] = 5
+        for face in data["faces"]:
+            counters = dict.fromkeys(profile.ALL_BUILD_COUNTERS, 0)
+            counters.update(face["counters"])
+            counters["hzbPageTests"] = counters["hzbLevelRejects"] = counters["clusterPageHits"]
+            face["counters"] = counters
+        data["totals"] = {k: sum(face["counters"][k] for face in data["faces"]) for k in profile.ALL_BUILD_COUNTERS}
+        self.assertGreater(profile.build_frame(row, "diagnostic")["hzbLevelRejects"], 0)
+        data["faces"][0]["counters"]["hzbPageTests"] = 0
+        with self.assertRaisesRegex(ValueError, "Static HZB"):
             profile.build_frame(row, "diagnostic")
 
     def test_hierarchy_substage_is_inclusive_and_optional(self):
@@ -476,7 +505,7 @@ class GPUProfileTests(unittest.TestCase):
         row["shadow"]["gpuBuildDiagnostics"]["enabled"] = False
         with self.assertRaisesRegex(ValueError, "stale"):
             profile.build_frame(row, "diagnostic")
-        for invalid in (None, {"version": True, "enabled": True}, {"version": 5, "enabled": True}):
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 6, "enabled": True}):
             row["shadow"]["gpuBuildDiagnostics"] = invalid
             with self.subTest(schema=invalid), self.assertRaisesRegex(ValueError, "schema"):
                 profile.build_frame(row, "diagnostic")

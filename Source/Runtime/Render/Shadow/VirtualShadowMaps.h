@@ -64,7 +64,10 @@ struct VirtualShadowMapSettings
     bool markRayPages = true; // Directional SMRT Mark skips samples of rays that stay inside one page.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.
-    bool receiverMask = false; // Experimental persistent 8x8 coverage for layered directional SMRT; other modes retain full pages.
+    bool receiverMask = true; // Persistent 8x8 coverage for layered directional SMRT.
+    bool aggregateReceiverMask = true; // Coalesce Mark's writes when persistent receiver masks are active.
+    bool staticPageHZB = true; // Incremental physical-page occluders for layered directional shadows.
+    bool clusterHZBCulling = true; // Cull dynamic raster work against the current static page hierarchy.
     bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
     bool shadowLODHierarchy = true; // Cached adaptive traversal; false retains the flat reference for A/B.
     float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.
@@ -90,6 +93,7 @@ struct VirtualShadowMapSettings
     bool enabled = true;
     bool cacheEnabled = false;
     bool cacheLayering = false; // Separate static base depth from dynamic composition; requires caching.
+    uint32_t framesStaticThreshold = 100; // Submitted unchanged frames before a dynamic caster rejoins static depth. Zero disables.
     bool forceRedraw = false;
 };
 
@@ -111,6 +115,9 @@ struct VirtualShadowMapResult
     // State or cache links, so cross-face projection cannot form reference cycles.
     std::shared_ptr<void> resourceOwner;
     Buffer* cacheDiagnostics = nullptr; // Independent kVirtualShadowMapCacheDiagnosticSize public prefix.
+    // Current-frame requested subtile words in allocator scratch, before admission restricts residency.
+    Buffer* requestedReceiverMasks = nullptr;
+    uint64_t requestedReceiverMaskOffset = 0;
 };
 
 // The caller owns these graph textures through GPU completion and transitions

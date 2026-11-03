@@ -44,6 +44,7 @@
                 "firstClipmapExtent": 1.0,
                 "shadowBias": 0.002,
                 "cacheEnabled": true,
+                "cacheLayering": true,
                 "lightCapacity": 2,
                 "physicalPageBudget": 2048,
                 "nearPlane": 0.001,

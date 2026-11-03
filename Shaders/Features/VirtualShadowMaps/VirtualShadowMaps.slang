@@ -1,6 +1,10 @@
 #language slang 2026
 module VirtualShadowMaps;
 
+#if VSM_STATIC_PAGE_HZB
+__include "VirtualShadowMapStaticHZB.slang";
+#endif
+
 #if VSM_PROPAGATED_MAPPING_PROBE
 __include "../../../tests/rhi/shaders/VirtualShadowMapPropagatedMappingProbe.slang";
 #endif
@@ -22,6 +26,9 @@ import Lighting;
 #endif
 #ifndef VSM_RECEIVER_MASK
 #define VSM_RECEIVER_MASK 0
+#endif
+#ifndef VSM_AGGREGATE_RECEIVER_MASK
+#define VSM_AGGREGATE_RECEIVER_MASK 0
 #endif
 #ifndef VSM_RECEIVER_COVERAGE_DIAGNOSTICS
 #define VSM_RECEIVER_COVERAGE_DIAGNOSTICS 0
@@ -113,6 +120,10 @@ uint vsmCacheMetadata(ShadowPush push, uint word)
     StructuredBuffer<uint> data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.sampleReserved));
     return data[word];
 }
+
+// An incremental static update keeps the old D32 page and draws only casters
+// transitioning this frame. Finalize certifies the result like a static redraw.
+static const uint kVSMPageMergeStatic = 16u;
 
 void vsmCacheAdd(ShadowPush push, uint counter, uint value)
 {
@@ -1412,10 +1423,52 @@ uint vsmMarkRayPages(float3 origin, float3 span, StructuredBuffer<ShadowProjecti
 }
 #endif
 
+#if VSM_STATIC_PAGE_HZB
+// Support points give the extrema of an orthographic row over the entire world AABB.
+// Bound dot/clip rounding by operand magnitude even when translation nearly cancels.
+float2 vsmHZBProjectedRange(float3 minimum, float3 maximum, float4 row)
+{
+    float low = dot(row, float4(select(row.xyz >= 0.0, minimum, maximum), 1.0));
+    float high = dot(row, float4(select(row.xyz >= 0.0, maximum, minimum), 1.0));
+    float error = (dot(abs(row.xyz), max(abs(minimum), abs(maximum))) + abs(row.w) + 1.0) *
+        (256.0 * 5.960464477539063e-8);
+    return float2(low - error, high + error);
+}
+
+bool vsmStaticPageHidesBounds(ShadowPush push, ShadowProjection projection, uint2 page,
+    uint physicalPage, float3 minimum, float3 maximum)
+{
+    // Match fine Raster's canonical page translation, including after clipmap scroll.
+    float axis = float(projection.page.y);
+    float halfPage = 1.0 / axis;
+    if (projection.page.w == 0u) {
+        float2 center = projection.originNear.xy + float2(page) + 0.5 - 0.5 * axis;
+        projection.rowX.w = -center.x * (2.0 * halfPage);
+        projection.rowY.w = -center.y * (2.0 * halfPage);
+    }
+    float2 x = vsmHZBProjectedRange(minimum, maximum, projection.rowX);
+    float2 y = vsmHZBProjectedRange(minimum, maximum, projection.rowY);
+    float closestDepth = vsmHZBProjectedRange(minimum, maximum, projection.rowZ).y;
+    float scale = float(push.pageSize) / (2.0 * halfPage);
+    float2 lo = (float2(x.x, y.x) + halfPage) * scale - 1.0;
+    float2 hi = (float2(x.y, y.y) + halfPage) * scale + 1.0;
+    if (!all(isfinite(lo)) || !all(isfinite(hi)) || !isfinite(closestDepth)) { return false; }
+    float last = float(push.pageSize - 1u);
+    return vsmStaticHZBOccludes(push, physicalPage, uint2(clamp(lo, 0.0, last)),
+        uint2(clamp(hi, 0.0, last)), closestDepth);
+}
+#endif
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 {
+#if VSM_STATIC_PAGE_HZB
+    if (id.x == 0u) {
+        RWStructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
+        jobs[0] = 0u; jobs[1] = 1u; jobs[2] = 1u;
+    }
+#endif
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
@@ -1456,21 +1509,7 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                 // Only resident pages need rectangle tests. Count consumes these
                 // flags before replacing the same scratch words with scan ranks.
                 if (old.x != 0xffffffffu) {
-                    for (uint rectangle = 0u; !mappingDirty && rectangle < change.w; ++rectangle) {
-                        uint4 bounds = changes[change.z + rectangle];
-                        mappingDirty = all(page >= bounds.xy) && all(page <= bounds.zw);
-                    }
-                    mappingFlags = (mappingDirty ? 1u : 0u) | (oldIndex != id.x ? 2u : 0u);
-                    entry.x = old.x;
-                    bool dirty = mappingDirty || (old.w & 1u) == 0u;
-#if VSM_RECEIVER_MASK
-                    if (!dirty && !coarse) {
-                        ByteAddressBuffer previousCoverage = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.previousPages));
-                        validReceiverMask = previousCoverage.Load2(vsmValidReceiverMaskByteOffset(push, oldIndex));
-                    }
-#endif
-                    entry.w = dirty ? 2u : 1u;
-                    vsmCacheAdd(push, kVSMCacheCompositeInvalidatedResidentPages, mappingDirty ? 1u : 0u);
+                    uint staticFlags = 0u;
                     if ((push.cacheMode & 16u) != 0u) {
                         bool staticDirty = (push.cacheMode & 4u) != 0u || (coarse && vsmCacheMetadata(push, 35u) != 0u);
                         if (!coarse) {
@@ -1481,8 +1520,76 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                             }
                         }
                         vsmCacheAdd(push, kVSMCacheStaticInvalidatedResidentPages, staticDirty ? 1u : 0u);
-                        entry.w |= staticDirty || (old.w & 4u) == 0u ? 8u : 4u;
+                        staticFlags = staticDirty || (old.w & 4u) == 0u ? 8u : 4u;
                     }
+#if VSM_STATIC_PAGE_HZB && VSM_WORKLOAD_DIAGNOSTICS
+                    bool hadOverlap = false;
+#endif
+#if VSM_STATIC_PAGE_HZB
+                    StructuredBuffer<ShadowProjection> projections = resolveUniform(
+                        ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+                    if (coarse && mappingDirty && staticFlags == 4u && (old.w & 1u) != 0u && push.dirtyBoundsCount <= 32u) {
+                        // The coarse page has no per-level rect list. Its stable
+                        // projection covers the whole scene. Only a proof for
+                        // every old/new dirty AABB permits keeping its depth.
+                        uint base = vsmCacheMetadata(push, 39u);
+                        mappingDirty = false;
+                        for (uint b = 0u; b < push.dirtyBoundsCount && !mappingDirty; ++b) {
+                            uint4 lo = changes[base + b * 2u];
+                            mappingDirty = lo.w == 0u || !vsmStaticPageHidesBounds(push, projections[entry.z], page, old.x,
+                                asfloat(lo.xyz), asfloat(changes[base + b * 2u + 1u].xyz));
+                        }
+#if VSM_WORKLOAD_DIAGNOSTICS
+                        hadOverlap = true;
+#endif
+                    }
+#endif
+                    for (uint rectangle = 0u; !mappingDirty && rectangle < change.w; ++rectangle) {
+                        uint4 bounds = changes[change.z + rectangle];
+#if VSM_STATIC_PAGE_HZB
+                        mappingDirty = all(page >= bounds.xy) && all(page <= uint2(bounds.z & 0xffffu, bounds.z >> 16u));
+                        if (mappingDirty && staticFlags == 4u && (old.w & 1u) != 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+                            hadOverlap = true;
+#endif
+                            uint index = vsmCacheMetadata(push, 39u) + 2u * bounds.w;
+                            mappingDirty = !vsmStaticPageHidesBounds(push, projections[entry.z], page, old.x,
+                                asfloat(changes[index].xyz), asfloat(changes[index + 1u].xyz));
+                        }
+#else
+                        mappingDirty = all(page >= bounds.xy) && all(page <= bounds.zw);
+#endif
+                    }
+                    if ((push.cacheMode & 32u) != 0u) {
+                        bool transitioned = coarse;
+                        if (!coarse) {
+                            uint4 merge = changes[vsmCacheMetadata(push, kVSMCacheMergeRemap) + entry.z];
+                            for (uint rectangle = 0u; !transitioned && rectangle < merge.w; ++rectangle) {
+                                uint4 bounds = changes[merge.z + rectangle];
+                                transitioned = all(page >= bounds.xy) && all(page <= bounds.zw);
+                            }
+                        }
+                        if (transitioned) {
+                            mappingDirty = true;
+                            // Invalid or independently dirtied static depth needs a full redraw.
+                            // Unadmitted merge pages have no valid bit until redrawn on a later request.
+                            if (staticFlags == 4u) { staticFlags = 8u | kVSMPageMergeStatic; }
+                        }
+                    }
+#if VSM_STATIC_PAGE_HZB && VSM_WORKLOAD_DIAGNOSTICS
+                    vsmCacheAdd(push, kVSMCacheHZBSavedInvalidations, hadOverlap && !mappingDirty ? 1u : 0u);
+#endif
+                    mappingFlags = (mappingDirty ? 1u : 0u) | (oldIndex != id.x ? 2u : 0u);
+                    entry.x = old.x;
+                    bool dirty = mappingDirty || (old.w & 1u) == 0u;
+#if VSM_RECEIVER_MASK
+                    if (!dirty && !coarse) {
+                        ByteAddressBuffer previousCoverage = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.previousPages));
+                        validReceiverMask = previousCoverage.Load2(vsmValidReceiverMaskByteOffset(push, oldIndex));
+                    }
+#endif
+                    entry.w = (dirty ? 2u : 1u) | staticFlags;
+                    vsmCacheAdd(push, kVSMCacheCompositeInvalidatedResidentPages, mappingDirty ? 1u : 0u);
                 }
             }
         }
@@ -1555,6 +1662,34 @@ uint vsmReceiverCoveragePage(float3 position, StructuredBuffer<ShadowProjection>
 #endif
 
 #if VSM_DIRECTIONAL_MARK
+#if VSM_RECEIVER_MASK
+void vsmWriteReceiverMask(ShadowPush push, uint page, uint2 mask)
+{
+    RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    uint offset = vsmReceiverMaskOffset(push) + page * 2u;
+    if (mask.x != 0u) { InterlockedOr(owners[offset], mask.x); }
+    if (mask.y != 0u) { InterlockedOr(owners[offset + 1u], mask.y); }
+    vsmWorkAdd(push, kVSMWorkMarkReceiverMaskAtomicOrs, uint(mask.x != 0u) + uint(mask.y != 0u));
+}
+
+#if VSM_AGGREGATE_RECEIVER_MASK
+// One slot per 8x8 tile lane. A slot's key never changes during accumulation.
+groupshared uint gVsmReceiverPages[64];
+groupshared uint2 gVsmReceiverMasks[64];
+
+bool vsmAccumulateReceiverMask(uint page, uint2 mask)
+{
+    uint slot = (page * 2654435761u) >> 26u;
+    uint previous;
+    InterlockedCompareExchange(gVsmReceiverPages[slot], 0xffffffffu, page, previous);
+    if (previous != 0xffffffffu && previous != page) { return false; }
+    if (mask.x != 0u) { InterlockedOr(gVsmReceiverMasks[slot].x, mask.x); }
+    if (mask.y != 0u) { InterlockedOr(gVsmReceiverMasks[slot].y, mask.y); }
+    return true;
+}
+#endif
+#endif
+
 float2 vsmDirectionalFootprintRange(float4 row, float3 position, float3 toLight,
     float3 right, float3 up, float rayLength, float coneRadius, float texelSize)
 {
@@ -1618,10 +1753,11 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
 #if VSM_RECEIVER_MASK
                 // Page deduplication must not discard another receiver's subtiles.
                 uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel, uint2(x, y), push.pageSize);
-                RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
-                uint offset = vsmReceiverMaskOffset(push) + page * 2u;
-                if (mask.x != 0u) { InterlockedOr(owners[offset], mask.x); }
-                if (mask.y != 0u) { InterlockedOr(owners[offset + 1u], mask.y); }
+#if VSM_AGGREGATE_RECEIVER_MASK
+                if (!vsmAccumulateReceiverMask(page, mask)) { vsmWriteReceiverMask(push, page, mask); }
+#else
+                vsmWriteReceiverMask(push, page, mask);
+#endif
 #endif
                 vsmMarkPage(pages, page, workCounts);
             }
@@ -1793,9 +1929,21 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
 {
     // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
     for (uint entry = lane; entry < 256u; entry += 64u) { gVsmMarkedPages[entry] = 0xffffffffu; }
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK && VSM_AGGREGATE_RECEIVER_MASK
+    gVsmReceiverPages[lane] = 0xffffffffu;
+    gVsmReceiverMasks[lane] = uint2(0u);
+#endif
     GroupMemoryBarrierWithGroupSync();
     uint3 counts;
     vsmMarkReceiver(id, push, counts);
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK && VSM_AGGREGATE_RECEIVER_MASK
+    // Receiver rejection and divergent page loops have completed on all lanes.
+    GroupMemoryBarrierWithGroupSync();
+    uint page = gVsmReceiverPages[lane];
+    if (page != 0xffffffffu) {
+        vsmWriteReceiverMask(push, page, gVsmReceiverMasks[lane]);
+    }
+#endif
     vsmWorkAdd(push, kVSMWorkMarkSamplePositions, counts.x);
     vsmWorkAdd(push, kVSMWorkMarkLevelTests, counts.y);
     vsmWorkAdd(push, kVSMWorkMarkPageRequests, counts.z);
@@ -1941,6 +2089,15 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
     }
 }
 
+uint2 vsmPhysicalHistory(ShadowPush push, uint previousBase, uint index)
+{
+    if ((push.cacheMode & 3u) == 3u) {
+        StructuredBuffer<uint2> previous = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.previousPages));
+        return previous[previousBase + index];
+    }
+    return uint2(index, 0u);
+}
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void vsmPhysicalMain(uint lane : SV_GroupIndex, uniform ShadowPush push)
@@ -1955,29 +2112,67 @@ void vsmPhysicalMain(uint lane : SV_GroupIndex, uniform ShadowPush push)
     uint candidatesOffset = blockOffset + blockCount;
     uint slotsPerLane = (push.physicalPageCount - 1u + 255u) / 256u;
     uint firstSlot = 1u + lane * slotsPerLane, endSlot = min(firstSlot + slotsPerLane, push.physicalPageCount);
+    // Use the actual descriptor range: the pool may return an oversized
+    // buffer, and the previous snapshot can have a different mapping layout.
+    uint historySize = (push.physicalPageCount + 1u) & ~1u;
+    uint previousBase = 0u, nextBase = 0u, frame = 1u;
+    if ((push.cacheMode & 3u) == 3u) {
+        StructuredBuffer<uint2> previous = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.previousPages));
+        uint size, stride;
+        previous.GetDimensions(size, stride);
+        previousBase = size - historySize;
+        frame = previous[previousBase].y + 1u;
+    }
+    RWStructuredBuffer<uint2> history = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.pages));
+    if ((push.cacheMode & 2u) != 0u) {
+        uint size, stride;
+        history.GetDimensions(size, stride);
+        nextBase = size - historySize;
+        if (lane == 0u) { history[nextBase] = uint2(0u, frame); }
+    }
     uint3 counts = uint3(0u);
     for (uint block = firstBlock; block < endBlock; ++block) { counts.x += owners[blockOffset + block]; }
-    for (uint physical = firstSlot; physical < endSlot; ++physical) {
-        uint owner = owners[physical];
+    for (uint index = firstSlot; index < endSlot; ++index) {
+        uint owner = owners[vsmPhysicalHistory(push, previousBase, index).x];
         if (owner == 0u) { ++counts.y; }
         else if ((pages[owner - 1u].y & 2u) == 0u) { ++counts.z; }
     }
     uint3 prefix = vsmAllocationPrefix(counts, lane);
-    uint freeCount = gVsmAllocationScan[255].y;
+    uint3 totals = gVsmAllocationScan[255];
+    uint candidateCount = totals.y + totals.z;
     for (uint block = firstBlock; block < endBlock; ++block) {
         uint count = owners[blockOffset + block];
         owners[blockOffset + block] = prefix.x;
         prefix.x += count;
     }
-    // Retained admitted pages are pinned. Allocation consumes every genuinely
-    // free slot in ascending order before evicting an unrequested old owner.
-    for (uint physical = firstSlot; physical < endSlot; ++physical) {
+    // Stable partition in the previous frame's LRU order: free, unrequested,
+    // pinned. Assign consumes the first missing candidates. Rotate that prefix
+    // to the newest end so every surviving unrequested owner keeps its order.
+    // Same-frame hits tie deterministically; ordering never compares frame IDs.
+    for (uint index = firstSlot; index < endSlot; ++index) {
+        uint2 prior = vsmPhysicalHistory(push, previousBase, index);
+        uint physical = prior.x;
         uint owner = owners[physical];
-        if (owner == 0u) { owners[candidatesOffset + prefix.y++] = physical; }
-        else if ((pages[owner - 1u].y & 2u) == 0u) { owners[candidatesOffset + freeCount + prefix.z++] = physical; }
+        uint rank;
+        if (owner == 0u) { rank = prefix.y++; }
+        else if ((pages[owner - 1u].y & 2u) == 0u) { rank = totals.y + prefix.z++; }
+        else { rank = candidateCount + index - 1u - prefix.y - prefix.z; }
+        if (rank < candidateCount) { owners[candidatesOffset + rank] = physical; }
+        if ((push.cacheMode & 2u) != 0u) {
+            bool assigned = rank < totals.x;
+            uint nextRank = assigned ? rank + push.physicalPageCount - 1u - totals.x : rank - totals.x;
+            uint lastRequestedFrame = assigned || rank >= candidateCount ? frame : (owner != 0u ? prior.y : 0u);
+            history[nextBase + 1u + nextRank] = uint2(physical, lastRequestedFrame);
+#if VSM_WORKLOAD_DIAGNOSTICS
+            if (assigned && owner != 0u) {
+                vsmWorkAdd(push, kVSMWorkAllocatorLRUEvictions, 1u);
+                vsmWorkAdd(push, kVSMWorkAllocatorLRUEvictionAgeFrames, frame - prior.y);
+            }
+#endif
+        }
     }
     if (lane == 0u) {
-        uint missing = gVsmAllocationScan[255].x;
+        uint missing = totals.x;
         statistics[20] = missing;
         statistics[16] += missing;
         statistics[21] = push.enabled != 0u && (pages[push.totalPages - 1u].w & 2u) != 0u ? 1u : 0u;
@@ -2118,6 +2313,90 @@ public bool vsmHierarchyOverlaps(int2 first, int2 last, ShadowProjection project
 }
 #endif
 
+#if VSM_STATIC_PAGE_HZB
+bool vsmClusterVisibleInStaticHZB(int2 first, int2 last, float3 minimum, float3 maximum,
+    ShadowProjection projection, StructuredBuffer<uint4> pages, ShadowPush push, bool afterStaticRaster)
+{
+    // Query only on a broad-phase hit. Bound the extra work on large clusters;
+    // keeping a level falls back to the original per-triangle page enumeration.
+    if (any(last - first >= 4)) { return true; }
+    bool tested = false;
+    for (int y = first.y; y <= last.y; ++y) {
+        for (int x = first.x; x <= last.x; ++x) {
+            uint2 xy = uint2(x, y);
+            uint4 entry = pages[projection.page.x + xy.y * projection.page.y + xy.x];
+            if ((entry.y & 2u) == 0u || (entry.w & 2u) == 0u) { continue; }
+            // Build can use only retained static depth. After static Raster and
+            // its HZB update, newly rendered complete pages also certify occlusion.
+            if ((entry.w & (afterStaticRaster ? 4u : 12u)) != 4u) { return true; }
+#if VSM_WORKLOAD_DIAGNOSTICS
+            if (afterStaticRaster) {
+                if (!tested) { vsmWorkAdd(push, kVSMWorkRasterHZBClusterLevelTests, 1u); }
+            } else { vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticHZBPageTests, 1u); }
+#endif
+            tested = true;
+            if (!vsmStaticPageHidesBounds(push, projection, xy, entry.x, minimum, maximum)) { return true; }
+        }
+    }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (afterStaticRaster) { vsmWorkAdd(push, kVSMWorkRasterHZBRejectedLevels, uint(tested)); }
+    else { vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticHZBLevelRejects, uint(tested)); }
+#endif
+    // A positive HMip node may contain no exact dirty pages in this rectangle.
+    // Keep its original decision unless we actually proved occlusion.
+    return !tested;
+}
+
+#if VSM_CLUSTER_HZB
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsmCullDynamicClustersHZBMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+{
+    uint cluster = push.workBase + group.x;
+    uint firstTriangle = cluster * 64u;
+    if (lane == 0u) {
+        uint dynamicBits = loadVirtualShadowMapDynamicMaskWord(push.geometry, cluster * 2u);
+        if (push.triangleCount - firstTriangle > 32u) {
+            dynamicBits |= loadVirtualShadowMapDynamicMaskWord(push.geometry, cluster * 2u + 1u);
+        }
+        g_vsmClusterLevelMask = 0xffffffffu;
+        g_vsmClusterValid = 0u;
+        if (dynamicBits != 0u) {
+            float3 minimum, maximum;
+            g_vsmClusterValid = uint(loadVirtualShadowMapClusterBounds(push.geometry, firstTriangle, minimum, maximum));
+            g_vsmClusterMinimum = minimum;
+            g_vsmClusterMaximum = maximum;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (g_vsmClusterValid != 0u && lane <= push.clipmapCount) {
+        StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+        StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+        ShadowProjection projection = projections[lane];
+        float3 minimum = g_vsmClusterMinimum, maximum = g_vsmClusterMaximum;
+        // Enumerate a superset of the pages Build can emit for any enclosed
+        // triangle. The coarse level always covers one physical page.
+        float2 x = vsmHZBProjectedRange(minimum, maximum, projection.rowX);
+        float2 y = vsmHZBProjectedRange(minimum, maximum, projection.rowY);
+        float2 lo = float2(x.x, y.x), hi = float2(x.y, y.y);
+        if (all(isfinite(lo)) && all(isfinite(hi)) && all(lo <= 1.0) && all(hi >= -1.0)) {
+            int axis = int(projection.page.y);
+            int2 first = min(int2(floor(saturate(lo * 0.5 + 0.5) * float(axis))), int2(axis - 1));
+            int2 last = min(int2(floor(saturate(hi * 0.5 + 0.5) * float(axis))), int2(axis - 1));
+            if (!vsmClusterVisibleInStaticHZB(first, last, minimum, maximum, projection, pages, push, true)) {
+                InterlockedAnd(g_vsmClusterLevelMask, ~(1u << lane));
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0u) {
+        RWStructuredBuffer<uint> visibility = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, 40u)));
+        visibility[cluster] = g_vsmClusterLevelMask;
+    }
+}
+#endif
+#endif
+
 bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection projection,
     StructuredBuffer<uint4> pages, ShadowPush push)
 {
@@ -2155,7 +2434,12 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
     int2 first = clamp(int2(floor(saturate(lo * 0.5 + 0.5) * float(axis))) - 1, int2(0), int2(axis - 1));
     int2 last = clamp(int2(floor(saturate(hi * 0.5 + 0.5) * float(axis))) + 1, int2(0), int2(axis - 1));
 #if VSM_DIRTY_PAGE_HIERARCHY
+#if VSM_STATIC_PAGE_HZB
+    if (!vsmHierarchyOverlaps(first, last, projection, push)) { return false; }
+    return vsmClusterVisibleInStaticHZB(first, last, minimum, maximum, projection, pages, push, false);
+#else
     return vsmHierarchyOverlaps(first, last, projection, push);
+#endif
 #else
     StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     uint offset = vsmClusterPageBitsetOffset(push);
@@ -2184,7 +2468,11 @@ bool vsmClusterNeedsLevel(float3 minimum, float3 maximum, ShadowProjection proje
 #if VSM_WORKLOAD_DIAGNOSTICS
                 vsmRecordClusterLevel(push, wordTests, kVSMBuildDiagnosticClusterPageHits);
 #endif
+#if VSM_STATIC_PAGE_HZB
+                return vsmClusterVisibleInStaticHZB(first, last, minimum, maximum, projection, pages, push, false);
+#else
                 return true;
+#endif
             }
         }
     }
@@ -2458,6 +2746,16 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     if (id.x == 0u) { statistics[4] = count; }
     uint coarsePage = push.totalPages - 1u;
     bool redrawCoarse = statistics[21] != 0u;
+#if VSM_CLUSTER_HZB
+    uint clusterCount = push.triangleCount / 64u + uint((push.triangleCount & 63u) != 0u);
+    if (id.x < (clusterCount + 65534u) / 65535u && vsmCacheMetadata(push, 40u) != 0xffffffffu) {
+        RWStructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
+        uint offset = 3u + push.physicalPageCount + id.x * 3u;
+        jobs[offset] = (count != 0u || redrawCoarse) ? min(clusterCount - id.x * 65535u, 65535u) : 0u;
+        jobs[offset + 1u] = 1u;
+        jobs[offset + 2u] = 1u;
+    }
+#endif
     if (id.x < push.totalPages) {
         uint4 entry = pages[id.x];
         if (push.enabled != 0u && (entry.y & 2u) != 0u && (entry.w & 2u) != 0u) {
@@ -2467,6 +2765,19 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             if ((push.cacheMode & 16u) != 0u && (entry.w & 8u) != 0u) {
                 if (id.x == coarsePage || statistics[5] == 0u) { entry.w |= 4u; }
                 else { entry.w &= ~4u; }
+#if VSM_WORKLOAD_DIAGNOSTICS
+                if ((entry.w & (4u | kVSMPageMergeStatic)) == (4u | kVSMPageMergeStatic)) {
+                    vsmWorkAdd(push, kVSMWorkRasterStaticMergedPages, 1u);
+                }
+#endif
+#if VSM_STATIC_PAGE_HZB
+                if ((entry.w & 4u) != 0u) {
+                    RWStructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
+                    uint job;
+                    InterlockedAdd(jobs[0], 1u, job);
+                    jobs[3u + job] = entry.x;
+                }
+#endif
                 vsmCacheAdd(push, id.x == coarsePage ? kVSMCacheStaticDirtyCoarsePages : kVSMCacheStaticDirtyFinePages, 1u);
             }
             pages[id.x] = entry;
@@ -2607,7 +2918,8 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     bool clear = false;
     if (owner != 0u && push.enabled != 0u) {
         uint4 entry = pages[owner - 1u];
-        clear = (entry.y & 2u) != 0u && (entry.w & ((push.rasterCoarse & 2u) != 0u ? 8u : 2u)) != 0u;
+        bool staticPass = (push.rasterCoarse & 2u) != 0u;
+        clear = (entry.y & 2u) != 0u && (staticPass ? (entry.w & (8u | kVSMPageMergeStatic)) == 8u : (entry.w & 2u) != 0u);
     }
     SetMeshOutputCounts(clear ? 4u : 0u, clear ? 2u : 0u);
     if (!clear) { return; }
@@ -2649,10 +2961,28 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         }
         VirtualShadowMapTriangle triangle;
         const bool staticPass = (push.rasterCoarse & 2u) != 0u;
-        const bool layerPageActive = !staticPass || (pages[virtualPage].w & 8u) != 0u;
+        bool layerPageActive = !staticPass || (pages[virtualPage].w & 8u) != 0u;
+#if VSM_CLUSTER_HZB
+        if ((push.rasterCoarse & 4u) != 0u) {
+            StructuredBuffer<uint> visibility = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 40u)));
+            layerPageActive = (visibility[triangleIndex >> 6u] & (1u << pages[virtualPage].z)) != 0u;
+#if VSM_WORKLOAD_DIAGNOSTICS
+            if (!layerPageActive) {
+                uint dynamicBits = loadVirtualShadowMapDynamicMaskWord(push.geometry, triangleIndex >> 5u);
+                vsmWorkAdd(push, kVSMWorkRasterHZBSkippedTriangles, (dynamicBits >> (triangleIndex & 31u)) & 1u);
+            }
+#endif
+        }
+#endif
+        bool mergeStatic = staticPass && (push.cacheMode & 32u) != 0u && (pages[virtualPage].w & kVSMPageMergeStatic) != 0u;
+        if (mergeStatic) {
+            uint mask = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, kVSMCacheMergeGeometry), triangleIndex >> 5u);
+            layerPageActive = (mask & (1u << (triangleIndex & 31u))) != 0u;
+        }
         if (layerPageActive && loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
             vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
 #if VSM_WORKLOAD_DIAGNOSTICS
+            if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }
             if ((push.cacheMode & 16u) != 0u) {
                 vsmCacheAdd(push, staticPass ? kVSMCacheStaticDecodedTriangles : kVSMCacheDynamicDecodedTriangles, 1u);
             }

@@ -50,9 +50,11 @@ struct AllocationCase
     std::vector<Page> pages;
     std::vector<Mapping> reuse;
     std::vector<uint32_t> owners;
+    std::vector<uint32_t> lastRequested;
     std::array<uint32_t, 32> statistics{};
     uint32_t pool = 1;
     uint32_t cacheMode = 0;
+    uint32_t frame = 0;
 };
 
 AllocationCase makeCase(uint32_t count, uint32_t pool, uint32_t mode)
@@ -60,6 +62,7 @@ AllocationCase makeCase(uint32_t count, uint32_t pool, uint32_t mode)
     AllocationCase input;
     input.pool = pool; input.cacheMode = mode == 0 ? 0 : 1;
     input.pages.resize(count); input.reuse.resize(count); input.owners.resize(pool);
+    input.lastRequested.resize(pool);
     for (uint32_t page = 0; page < count; ++page) {
         input.pages[page] = {kInvalid, 0, page / 16384, 2};
         input.reuse[page] = {kInvalid, 1};
@@ -108,7 +111,7 @@ AllocationCase makeCase(uint32_t count, uint32_t pool, uint32_t mode)
 // Independent serial policy reference: admit requested pages from coarser
 // levels first (reverse virtual order), then assign missing pages in ascending
 // virtual order. Admitted residents stay pinned; ascending free physical slots
-// precede ascending unrequested-owner eviction.
+// precede eviction in order of the frame of last request.
 AllocationCase serialReference(AllocationCase value)
 {
     uint32_t requested = 0, allocated = 0, invalidated = 0, remapped = 0;
@@ -131,23 +134,29 @@ AllocationCase serialReference(AllocationCase value)
         const auto& entry = value.pages[page];
         if (entry[0] != kInvalid) { value.owners[entry[0]] = page + 1; }
     }
-    uint32_t free = 1, evict = 1, added = 0, dirty = 0, clean = 0;
+    std::vector<uint32_t> candidates;
+    for (uint32_t slot = 1; slot < value.pool; ++slot) {
+        const uint32_t owner = value.owners[slot];
+        if (owner == 0 || (value.pages[owner - 1][1] & 2) == 0) { candidates.push_back(slot); }
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [&](uint32_t a, uint32_t b) {
+        if ((value.owners[a] == 0) != (value.owners[b] == 0)) { return value.owners[a] == 0; }
+        return value.lastRequested[a] < value.lastRequested[b];
+    });
+    uint32_t added = 0, dirty = 0, clean = 0;
     for (uint32_t page = 0; page + 1 < value.pages.size(); ++page) {
         auto& entry = value.pages[page];
         if ((entry[1] & 2) == 0) { continue; }
         if (entry[0] == kInvalid) {
-            while (free < value.pool && value.owners[free] != 0) { ++free; }
-            uint32_t physical = free;
-            if (physical == value.pool) {
-                while (evict < value.pool && (value.pages[value.owners[evict] - 1][1] & 2)) { ++evict; }
-                requireAllocator(evict < value.pool, "Reference allocation lacks a candidate");
-                physical = evict++;
+            const uint32_t physical = candidates.at(added);
+            if (value.owners[physical] != 0) {
                 auto& old = value.pages[value.owners[physical] - 1];
                 old[0] = kInvalid; old[3] = 2;
-            } else { ++free; }
+            }
             entry[0] = physical; entry[3] = 2;
             value.owners[physical] = page + 1; ++added;
         }
+        value.lastRequested[entry[0]] = value.frame;
         dirty += (entry[3] & 2) != 0;
         clean += (entry[3] & 3) == 1;
     }
@@ -213,11 +222,12 @@ public:
                 std::array{1025u,256u,2u}, std::array{1025u,256u,3u}, std::array{65537u,256u,1u},
                 std::array{65537u,4096u,2u}, std::array{196609u,4096u,0u}, std::array{196609u,4096u,1u},
                 std::array{196609u,4096u,2u}, std::array{196609u,4096u,3u}, std::array{196609u,4096u,4u},
-                std::array{196609u,1u,3u}, std::array{13u,5u,5u}, std::array{13u,5u,6u}};
+                std::array{196609u,1u,3u}, std::array{13u,5u,5u}, std::array{13u,5u,6u}, std::array{13u,5u,7u}};
             for (const auto& config : cases) {
-                const auto input = makeCase(config[0], config[1], config[2]);
-                const auto expected = serialReference(input);
+                const bool multiFrame = config[2] == 7u;
+                auto input = makeCase(config[0], config[1], multiFrame ? 0u : config[2]);
                 if (config[2] == 5 || config[2] == 6) {
+                    const auto expected = serialReference(input);
                     requireAllocator(expected.statistics[0] == 6 && expected.statistics[1] == 4 &&
                         expected.statistics[2] == 2, "Directed budget pressure was not exercised");
                     for (uint32_t page : {0u, 1u}) {
@@ -236,7 +246,24 @@ public:
                         expected.pages[3][0] == kInvalid, "Missing pages did not consume free slots before eviction");
                 }
                 const uint32_t blocks = (config[0] + 255u) / 256u;
-                for (uint32_t repetition = 0; repetition < 2; ++repetition) {
+                // Four fine slots. Touch the first three on distinct frames,
+                // then introduce new pages: slot 4 must go before 1, then 2.
+                const std::array<uint32_t, 8> requests{7u, 15u, 1u, 2u, 4u, 16u, 32u, 64u | 4u};
+                std::unique_ptr<Buffer> previousPages;
+                const uint32_t runs = multiFrame ? uint32_t(requests.size()) : 2u;
+                for (uint32_t repetition = 0; repetition < runs; ++repetition) {
+                    if (multiFrame) {
+                        input.cacheMode = repetition == 0 ? 2u : 3u;
+                        input.frame = repetition + 1u;
+                        for (uint32_t page = 0; page + 1 < config[0]; ++page) {
+                            auto& entry = input.pages[page];
+                            entry[1] = (requests[repetition] >> page) & 1u;
+                            entry[3] = entry[0] == kInvalid ? 2u : 1u;
+                            input.reuse[page] = {entry[0] == kInvalid ? kInvalid : page, 0u};
+                        }
+                        input.pages.back()[3] = repetition == 0 ? 2u : 1u;
+                    }
+                    const auto expected = serialReference(input);
                     validation.phase(std::to_string(config[0]) + "-" + std::to_string(config[1]) + "-" + std::to_string(config[2]));
                     auto owners = input.owners;
                     owners.resize(uint64_t(config[1]) * 2 + config[0] + blocks, 0xcdcdcdcdu);
@@ -248,9 +275,12 @@ public:
                         owners[config[1] + page] = mapping[0] == kInvalid ? 0u :
                             (mapping[1] != 0 ? 1u : 0u) | (mapping[0] != page ? 2u : 0u);
                     }
-                    const std::array<uint64_t, 3> bytes{input.pages.size() * sizeof(Page),
+                    auto table = input.pages;
+                    // The production tail has one uint2 per slot, rounded to a uint4.
+                    if (multiFrame) { table.resize(table.size() + (config[1] + 1u) / 2u); }
+                    const std::array<uint64_t, 3> bytes{table.size() * sizeof(Page),
                         sizeof(input.statistics), owners.size() * sizeof(uint32_t)};
-                    const std::array<const void*, 3> data{input.pages.data(), input.statistics.data(), owners.data()};
+                    const std::array<const void*, 3> data{table.data(), input.statistics.data(), owners.data()};
                     const std::array<uint32_t, 3> stride{16,4,4};
                     std::array<std::unique_ptr<Buffer>, 3> buffers;
                     std::array<ResourceLease, 3> leases;
@@ -273,7 +303,17 @@ public:
                     push.words[31] = input.cacheMode;
                     bench::GPUCommands gpu(*queue);
                     requireAllocator(gpu.initialize(*device), "Begin allocator commands");
-                    requireAllocator(registry->bind(*gpu.commands, leases), "Bind allocator resources");
+                    std::vector<ResourceLease> bound(leases.begin(), leases.end());
+                    if (previousPages) {
+                        auto prior = registry->storageBuffer(*previousPages);
+                        requireAllocator(prior, "LRU previous table descriptor");
+                        bound.push_back(*prior); push.words[28] = prior->shaderIndex();
+                        const BufferBarrierDesc priorReady{.buffer = previousPages.get(),
+                            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+                        requireAllocator(gpu.commands->synchronize({.buffers = {&priorReady, 1}}), "Publish previous LRU order");
+                    }
+                    requireAllocator(registry->bind(*gpu.commands, bound), "Bind allocator resources");
                     std::array<BufferBarrierDesc, 3> barriers;
                     for (size_t index = 0; index < barriers.size(); ++index) {
                         barriers[index] = {.buffer = buffers[index].get(),
@@ -294,24 +334,55 @@ public:
                     requireAllocator(gpu.submitAndWait(), "Complete allocator commands");
                     const std::array<const void*, 3> expectedData{expected.pages.data(), expected.statistics.data(), expected.owners.data()};
                     const std::array<size_t, 3> outputIndices{0,1,2};
-                    const std::array<uint64_t, 3> outputBytes{bytes[0],bytes[1],uint64_t(config[1])*4};
+                    const std::array<uint64_t, 3> outputBytes{input.pages.size()*sizeof(Page),bytes[1],uint64_t(config[1])*4};
                     for (size_t index = 0; index < outputIndices.size(); ++index) {
                         auto& buffer = *buffers[outputIndices[index]]; buffer.invalidate();
                         const void* mapped = buffer.map(); requireAllocator(mapped != nullptr, "Allocator result map");
                         const bool equal = std::memcmp(mapped, expectedData[index], outputBytes[index]) == 0;
+                        if (multiFrame && index == 0) {
+                            std::memcpy(input.pages.data(), mapped, outputBytes[index]);
+                            const auto* history = reinterpret_cast<const uint32_t*>(
+                                static_cast<const std::byte*>(mapped) + outputBytes[index]);
+                            requireAllocator(history[0] == 0u && history[1] == input.frame, "Wrong coarse page LRU frame");
+                            std::vector<bool> seen(config[1]);
+                            uint32_t oldest = 0;
+                            for (uint32_t rank = 1; rank < config[1]; ++rank) {
+                                const uint32_t slot = history[2u * rank], stamp = history[2u * rank + 1u];
+                                requireAllocator(slot != 0u && slot < config[1] && !seen[slot], "Invalid physical LRU slot order");
+                                requireAllocator(stamp == expected.lastRequested[slot] && stamp >= oldest,
+                                    "Last-requested frame or oldest-first order disagrees with request history");
+                                seen[slot] = true;
+                                oldest = stamp;
+                            }
+                        }
                         buffer.unmap(); requireAllocator(equal, "GPU allocator differs from serial reference: output " +
                             std::to_string(index) + ", pages " + std::to_string(config[0]) + ", pool " + std::to_string(config[1]) +
                             ", mode " + std::to_string(config[2]));
                     }
+                    if (multiFrame) {
+                        input.lastRequested = expected.lastRequested;
+                        bound.clear();
+                        previousPages = std::move(buffers[0]);
+                        report["lruFrames"].push_back({{"frame", input.frame}, {"requestedMask", requests[repetition]},
+                            {"physicalOwnersPlusOne", expected.owners}});
+                        if (repetition >= 5) {
+                            const std::array slots{4u, 1u, 2u};
+                            requireAllocator(input.pages[repetition - 1][0] == slots[repetition - 5],
+                                "Newly requested page did not receive the oldest physical slot");
+                        }
+                    }
+                    if (repetition + 1 == runs) {
+                        report["cases"].push_back({{"virtualPages",config[0]}, {"physicalPages",config[1]}, {"mode",config[2]},
+                            {"repetitions",multiFrame ? 1u : runs}, {"framesPerSequence",multiFrame ? runs : 1u},
+                            {"allPageWordsEqual",true}, {"allOwnersEqual",true}, {"statistics",expected.statistics}});
+                    }
                 }
-                report["cases"].push_back({{"virtualPages",config[0]}, {"physicalPages",config[1]}, {"mode",config[2]},
-                    {"repetitions",2}, {"allPageWordsEqual",true}, {"allOwnersEqual",true}, {"statistics",expected.statistics}});
             }
             report["validation"] = validation.snapshot();
             requireAllocator(!validation.failed(), "Allocator Vulkan validation error");
             report["passed"] = true;
             std::ofstream(directory / "VirtualShadowMapAllocator.json") << report.dump(2) << '\n';
-            return RHITestResult::pass("36 deterministic parallel allocations match coarse-first admission, resident pinning and free-before-evict reference");
+            return RHITestResult::pass("Allocator matches serial admission and pinning, free-before-evict and eight-frame LRU ordering");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot();
             std::ofstream(directory / "VirtualShadowMapAllocator.json") << report.dump(2) << '\n';

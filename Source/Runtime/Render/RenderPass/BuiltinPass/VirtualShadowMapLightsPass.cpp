@@ -172,6 +172,12 @@ public:
                 .buffer(uint64_t(levels + 1) * 112, 4).transferWrite();
             reflection.addBufferOutput("receiverCoveragePages", "Actual directional page table after allocation and projection")
                 .buffer((uint64_t(levels) * axis * axis + 1) * 16, 4).transferWrite();
+            const VirtualShadowMapSettings defaults;
+            if (properties().value("benchmarkReceiverMask", defaults.receiverMask) &&
+                properties().value("cacheEnabled", true) && properties().value("cacheLayering", defaults.cacheLayering)) {
+                reflection.addBufferOutput("receiverCoverageMask", "Current requested 8x8 receiver coverage for every virtual page")
+                    .buffer((uint64_t(levels) * axis * axis + 1) * 8, 4).transferWrite();
+            }
             if (properties().value("benchmarkReceiverCoverageRecords", false)) {
                 reflection.addBufferOutput("receiverCoverage", "Per-pixel receiver coverage diagnostic records")
                     .buffer(uint64_t(context.width) * context.height * kVSMReceiverCoverageRecordWords * sizeof(uint32_t), 4)
@@ -196,6 +202,7 @@ public:
             runtimeBoolSetting("benchmarkBuildSubstages", "Profile Build Substages", false),
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", true),
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
+            runtimeIntSetting("framesStaticThreshold", "Frames Before Caster Becomes Static (0 Off)", 100, 0, 65535),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
             runtimeBoolSetting("shadowLODHierarchy", "Adaptive Shadow LOD Hierarchy", true),
             runtimeBoolSetting("shadowLODDepthGuard", "Preserve Shadow LOD Depth Agreement", true),
@@ -296,6 +303,7 @@ public:
         const auto coverageSettings = context.outputBuffer("receiverCoverageSettings");
         const auto coverageProjections = context.outputBuffer("receiverCoverageProjections");
         const auto coveragePages = context.outputBuffer("receiverCoveragePages");
+        const auto coverageMask = context.outputBuffer("receiverCoverageMask");
         const auto coverageRecords = context.outputBuffer("receiverCoverage");
         auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
         // Multi-light projection experiments need only these scopes; profiling
@@ -354,6 +362,7 @@ public:
         settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
+        settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
         settings.shadowLODHierarchy = boolProperty(&properties, "shadowLODHierarchy", settings.shadowLODHierarchy);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
@@ -379,7 +388,10 @@ public:
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
         settings.propagatedMapping = boolProperty(&properties, "benchmarkPropagatedMapping", settings.propagatedMapping);
         settings.dirtyPageHierarchy = boolProperty(&properties, "benchmarkDirtyPageHierarchy", settings.dirtyPageHierarchy);
+        settings.staticPageHZB = boolProperty(&properties, "benchmarkStaticPageHZB", settings.staticPageHZB);
+        settings.clusterHZBCulling = boolProperty(&properties, "benchmarkClusterHZBCulling", settings.clusterHZBCulling);
         settings.receiverMask = boolProperty(&properties, "benchmarkReceiverMask", settings.receiverMask);
+        settings.aggregateReceiverMask = boolProperty(&properties, "benchmarkAggregateReceiverMask", settings.aggregateReceiverMask);
         settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
             boolProperty(&properties, "onePassProjection", settings.onePassProjection));
         VirtualShadowMapProjectionGridResources projectionGrid;
@@ -610,7 +622,8 @@ public:
                 return makeError(Error::InvalidArgument);
             }
             const uint64_t recordBytes = uint64_t(info.width) * info.height * kVSMReceiverCoverageRecordWords * sizeof(uint32_t);
-            if ((receiverCoverageRecords_ && coverageRecords.desc().size != recordBytes) ||
+            if (coverageMask.valid() != (settings.receiverMask && settings.cacheEnabled && settings.cacheLayering) ||
+                (receiverCoverageRecords_ && coverageRecords.desc().size != recordBytes) ||
                 coverageProjections.desc().size != uint64_t(settings.clipmapCount + 1) * 112 ||
                 coveragePages.desc().size != (uint64_t(settings.clipmapCount) * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1) * 16) {
                 spdlog::error("Receiver coverage export dimensions/settings changed without graph recompilation");
@@ -620,7 +633,7 @@ public:
                 settings.clipmapCount, selected->faceBudgets[0], settings.smrtRayCount, settings.smrtSamplesPerRay,
                 std::bit_cast<uint32_t>(selected->light.angularRadius), uint32_t(selected - lights.begin()),
                 uint32_t(receiverCoverageRecords_), kVSMReceiverCoverageRecordWords, uint32_t(coverageProjections.desc().size),
-                uint32_t(coveragePages.desc().size), 0};
+                uint32_t(coveragePages.desc().size), coverageMask.valid() ? uint32_t(coverageMask.desc().size) : 0u};
         }
         cpuPhase.next("Light table and statistics upload");
 
@@ -833,6 +846,14 @@ public:
                                 "coverageProjectionSource", "receiverCoverageProjections"); !r) { return r; }
                             if (auto r = appendCoverage(shadow->pageTable, 0, coveragePages,
                                 "coveragePageSource", "receiverCoveragePages"); !r) { return r; }
+                            if (coverageMask.valid()) {
+                                if (!shadow->requestedReceiverMasks) {
+                                    spdlog::error("Receiver mask export requires active directional SMRT layered caching");
+                                    return makeError(Error::InvalidArgument);
+                                }
+                                if (auto r = appendCoverage(shadow->requestedReceiverMasks, shadow->requestedReceiverMaskOffset,
+                                    coverageMask, "coverageMaskSource", "receiverCoverageMask"); !r) { return r; }
+                            }
                             if (receiverCoverageRecords_) {
                                 if (auto r = appendCoverage(shadow->statistics,
                                     uint64_t(kVSMReceiverCoverageStatisticsWordOffset) * sizeof(uint32_t), coverageRecords,

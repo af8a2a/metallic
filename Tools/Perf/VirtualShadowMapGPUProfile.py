@@ -49,13 +49,19 @@ MAPPING_WORK_COUNTERS = (
     "projectionPageTableLoads", "projectionMappingLoads", "projectionMappedAncestors", "projectionMappingSlowPaths",
 )
 V2_WORK_COUNTERS = WORK_COUNTERS + ADAPTIVE_WORK_COUNTERS
-ALL_WORK_COUNTERS = V2_WORK_COUNTERS + MAPPING_WORK_COUNTERS
-WORK_COUNTERS_BY_VERSION = {1: WORK_COUNTERS, 2: V2_WORK_COUNTERS, 3: ALL_WORK_COUNTERS}
+V3_WORK_COUNTERS = V2_WORK_COUNTERS + MAPPING_WORK_COUNTERS
+V4_WORK_COUNTERS = V3_WORK_COUNTERS + ("markReceiverMaskAtomicOrs",)
+V5_WORK_COUNTERS = V4_WORK_COUNTERS + ("rasterHZBClusterLevelTests", "rasterHZBRejectedLevels", "rasterHZBSkippedTriangles")
+ALL_WORK_COUNTERS = V5_WORK_COUNTERS + ("rasterStaticMergedPages", "rasterStaticMergedTriangles",
+                                        "allocatorLRUEvictions", "allocatorLRUEvictionAgeFrames")
+WORK_COUNTERS_BY_VERSION = {1: WORK_COUNTERS, 2: V2_WORK_COUNTERS, 3: V3_WORK_COUNTERS,
+                            4: V4_WORK_COUNTERS, 5: V5_WORK_COUNTERS, 6: ALL_WORK_COUNTERS}
 COUNTER_DEFINITIONS = {
     "markReceiverDispatches": "Threads with a depth receiver in the light/face domain; point-light face dispatches may repeat receivers.",
     "markSamplePositions": "Calls to markPosition, including samples subsequently rejected by the point-face check.",
     "markLevelTests": "Actual level-projection tests after face matching.",
     "markPageRequests": "Executed page-request InterlockedOr operations; not unique requested pages.",
+    "markReceiverMaskAtomicOrs": "Executed global 32-bit InterlockedOr writes to receiver-mask words during Mark.",
     "buildActiveTriangleSlots": "Slots reaching triangle decode after range, enabled, dirty-count and optional cluster coarse-cull exits; not slot capacity.",
     "buildDecodedTriangles": "Successful triangle decodes in build.",
     "buildLevelTests": "Actual triangle level iterations after optional cluster level-mask rejection; cluster prechecks are excluded.",
@@ -63,6 +69,13 @@ COUNTER_DEFINITIONS = {
     "rasterCoarseGroups": "Mesh shader groups entering the coarse raster path.",
     "rasterFineGroups": "Mesh shader groups entering the fine raster path.",
     "rasterDecodedTriangles": "Raster mesh groups with a successful triangle decode.",
+    "rasterStaticMergedPages": "Admitted fine or coarse pages completing an incremental update to existing static depth after caster demotion.",
+    "allocatorLRUEvictions": "Previously owned fine slots evicted to admit a missing page, excluding allocations from free slots.",
+    "allocatorLRUEvictionAgeFrames": "Sum of eviction ages in committed cache frames since last request (uint32 frame differences). Divide by allocatorLRUEvictions for mean age when nonzero.",
+    "rasterStaticMergedTriangles": "Successful demoted-caster triangle decodes on incremental static page updates, counted per triangle/page submission.",
+    "rasterHZBClusterLevelTests": "Dynamic cluster/level queries against current static depth with participating pages, including coarse.",
+    "rasterHZBRejectedLevels": "Tested cluster levels for which every participating page proved occlusion.",
+    "rasterHZBSkippedTriangles": "Dynamic triangle raster work items skipped before decode. A triangle submitted to multiple pages counts once per item.",
     "rasterOutputPrimitives": "Triangles emitted after clipping; not fragments or covered samples.",
     "rasterClearedPages": "Pages cleared by the hot-cache clear shader; cold attachment clears are excluded.",
     "projectionReceivers": "Receivers passing canonical-face, enabled and domain checks.",
@@ -111,7 +124,12 @@ HIERARCHY_COUNTER_DEFINITIONS = {
     "receiverMaskPageRejects": "Fine triangle/page work rejected by an empty receiver-mask intersection.",
 }
 HIERARCHY_COUNTERS = tuple(HIERARCHY_COUNTER_DEFINITIONS)
-ALL_BUILD_COUNTERS = (*V3_BUILD_COUNTERS, *HIERARCHY_COUNTERS)
+V4_BUILD_COUNTERS = (*V3_BUILD_COUNTERS, *HIERARCHY_COUNTERS)
+HZB_COUNTER_DEFINITIONS = {
+    "hzbPageTests": "Cluster occlusion tests against static physical-page depth pyramids.",
+    "hzbLevelRejects": "Cluster levels skipped after static HZB occlusion.",
+}
+ALL_BUILD_COUNTERS = (*V4_BUILD_COUNTERS, *HZB_COUNTER_DEFINITIONS)
 
 
 def duration(value, label):
@@ -295,7 +313,7 @@ def build_frame(frame, mode):
         return result
     diagnostic = shadow["gpuBuildDiagnostics"]
     if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
-            diagnostic["version"] not in (1, 2, 3, 4) or not isinstance(diagnostic.get("enabled"), bool)):
+            diagnostic["version"] not in (1, 2, 3, 4, 5) or not isinstance(diagnostic.get("enabled"), bool)):
         raise ValueError("Unknown or malformed GPU build diagnostic schema")
     if not diagnostic["enabled"]:
         if "faces" in diagnostic or "totals" in diagnostic:
@@ -304,7 +322,7 @@ def build_frame(frame, mode):
         return result
     if mode != "diagnostic":
         raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
-    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: ALL_BUILD_COUNTERS}[diagnostic["version"]]
+    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: V4_BUILD_COUNTERS, 5: ALL_BUILD_COUNTERS}[diagnostic["version"]]
     faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
     if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(names) or
             not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
@@ -347,6 +365,8 @@ def build_frame(frame, mode):
             raise ValueError("Hierarchy query counters exceed four nodes per tested level")
         if counters.get("receiverMaskPageRejects", 0) > counters.get("receiverMaskPageTests", 0):
             raise ValueError("Receiver mask rejects exceed tests")
+        if counters.get("hzbLevelRejects", 0) > min(counters.get("hzbPageTests", 0), counters["clusterPageHits"]):
+            raise ValueError("Static HZB level rejects exceed tested pages or dirty-level hits")
         minimum = sum(count * bounds[0] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
         maximum = sum(count * bounds[1] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
         if not minimum <= counters["clusterPageTests"] <= maximum:
@@ -577,7 +597,7 @@ def report(args):
             if build_counters:
                 text.extend(["| Independent build diagnostic | Median of process medians | Processes with evidence |",
                              "| --- | ---: | ---: |"])
-                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS, *HIERARCHY_COUNTERS):
+                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS, *HIERARCHY_COUNTERS, *HZB_COUNTER_DEFINITIONS):
                     if name not in build_counters:
                         continue
                     values = build_counters[name]
@@ -601,7 +621,7 @@ def report(args):
     text.extend(["## GPU counter definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
     text.extend(f"| {name} | {definition} |" for name, definition in COUNTER_DEFINITIONS.items())
     text.extend(["", "## Independent build diagnostic definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
-    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items(), *HIERARCHY_COUNTER_DEFINITIONS.items()))
+    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items(), *HIERARCHY_COUNTER_DEFINITIONS.items(), *HZB_COUNTER_DEFINITIONS.items()))
     text.extend(["", "`clusterPageScan0/1/2To3/.../8192To16383/16384Plus` record one observation per level check, using actual reads before return.",
                  "The current maximum is 16384 reads per level. Counts are checked per face against legacy clipmap/enabled/dirty statistics, outcome partitions, histogram totals and weighted scan bounds.",
                  "Build diagnostic data is diagnostic-only and never enters ordinary timing or the four-arm performance policy. Cluster culling disabled can legitimately publish all-zero available diagnostics."])
