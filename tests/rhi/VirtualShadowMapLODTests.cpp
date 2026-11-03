@@ -668,7 +668,7 @@ public:
                         {"requestedPages",d.requestedPages},{"blockedPages",d.blockedPages},{"fallbackCasters",d.fallbackCasters},
                         {"protectedCasters",d.protectedCasters},{"testedGroups",d.testedGroups},{"casterIdentities",identities},
                         {"selectedLevels",d.selectedLevels},{"selectedClusterIDs",d.selectedClusterIDs},
-                        {"metadataBuilds",d.metadataBuilds},{"metadataCacheHits",d.metadataCacheHits},
+                        {"metadataBuilds",d.metadataBuilds},{"metadataCacheHits",d.metadataCacheHits},{"reusedResidentCut",d.reusedResidentCut},
                         {"metricGroups",d.metricGroups},{"hierarchyNodes",d.hierarchyNodes},
                         {"prunedGroups",d.prunedGroups},{"topologyGroups",d.topologyGroups}};
                 };
@@ -702,9 +702,18 @@ public:
                     const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);
                     const auto projections = VirtualShadowMaps::makeShadowLODProjections(base->bounds, view, light, settings, log);
                     check(projections, "LOD light projections: " + log);
-                    auto selected = prepareVirtualShadowMapShadowLOD(device, *gpu.commands, scene,
+                    auto selected = casterCache.prepareShadowLOD(device, *gpu.commands, scene,
                         runtime ? &stream : nullptr, *base, casterSettings, *projections, threshold, log, hierarchical, maxWorldError);
                     check(selected, "Select shadow LOD: " + log);
+                    if (!streamed && !hierarchical && threshold == 1e9f) {
+                        // A wider error budget recomputes the same terminal cut. This
+                        // must preserve the uploaded geometry even across a cache miss.
+                        auto same = casterCache.prepareShadowLOD(device, *gpu.commands, scene, nullptr, *base, casterSettings,
+                            *projections, 2e9f, log, hierarchical, maxWorldError);
+                        check(same && selected->owner != base->owner && same->owner == selected->owner &&
+                            !same->shadowLOD.reusedResidentCut && same->shadowLOD.selectedClusterIDs == selected->shadowLOD.selectedClusterIDs,
+                            "Unchanged resident replacement cut repacked its geometry after a budget change");
+                    }
                     auto result = consume(*base, *selected, view);
                     if (runtime && pump) { streamer->endFrame(); runtime->prepareMaintenance(); }
                     return result;
@@ -773,8 +782,14 @@ public:
                             check(layered.selection.at(key) == other->selection.at(key), std::string("A/B shadow cut differs: ") + key);
                         }
                     }
-                    check(single.selection.at("metadataBuilds") == 0 && single.selection.at("metadataCacheHits").get<uint32_t>() > 0,
-                        "Repeated shadow selection did not reuse immutable metadata");
+                    if (streamed) {
+                        check(single.selection.at("metadataBuilds") == 0 && single.selection.at("metadataCacheHits").get<uint32_t>() > 0,
+                            "Repeated stream selection did not reuse immutable metadata");
+                    } else {
+                        check(single.selection.at("reusedResidentCut").get<bool>() && single.selection.at("testedGroups") == 0 &&
+                            single.selection.at("hierarchyNodes") == 0 && single.selection.at("metadataBuilds") == 0,
+                            "Identical resident projections did not reuse the published cut");
+                    }
                     report["captureComparisons"].back()["layeredVsSingle"] = compareSameCut(layered, single, settings.pageSize);
                     report["captureComparisons"].back()["layeredVsForced"] = compareSameCut(layered, forced, settings.pageSize);
                     report["captureComparisons"].back()["hierarchyVsFlat"] = compareSameCut(layered, flat, settings.pageSize); save();

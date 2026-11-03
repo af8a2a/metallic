@@ -344,6 +344,7 @@ public:
                     VirtualShadowMapSettings settings;
                     settings.pageSize = 32; settings.virtualPagesPerAxis = 8; settings.clipmapCount = 3;
                     settings.physicalPageCount = 256; settings.cacheEnabled = true; settings.forceRedraw = force;
+                    settings.clusterPageRaster = !force;
                     settings.maxWorkItems = 65535;
                     std::array<TextureView*, 2> alphaViews{nullptr, material.alphaMode == "MASK" ? currentHeight->view.get() : nullptr};
                     const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);

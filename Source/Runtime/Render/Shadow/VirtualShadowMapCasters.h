@@ -27,6 +27,7 @@ struct VirtualShadowMapCasterSettings
     // Immutable physical image/mip publication, including alpha and height.
     // Zero is appropriate only when no shadow material samples a texture.
     uint64_t texturePublicationRevision = 0;
+    bool instanceBuild = false;
 };
 
 struct VirtualShadowMapCasterState
@@ -61,6 +62,7 @@ struct VirtualShadowMapShadowLODDiagnostics
     uint32_t metadataBuilds = 0;
     uint32_t metadataCacheHits = 0;
     uint32_t topologyGroups = 0;
+    bool reusedResidentCut = false;
     std::vector<uint32_t> selectedLevels;
     // (render node, primitive-local group, local cluster), including base cuts.
     std::vector<std::array<uint32_t, 3>> selectedClusterIDs;
@@ -70,6 +72,7 @@ struct VirtualShadowMapCasterResources
 {
     Buffer* parameters = nullptr;
     uint32_t triangleCapacity = 0;
+    uint32_t instanceTable = UINT32_MAX;
     scene::Bounds bounds;
     std::vector<ResourceLease> leases;
     std::shared_ptr<void> owner;
@@ -133,10 +136,16 @@ public:
         Device& device, CommandBuffer& commands, const scene::Scene& scene,
         const MeshletStreamShadowGeometryView* stream, std::string& log,
         const VirtualShadowMapCasterSettings& settings = {});
+    // Select from the snapshot just returned by prepare, with the same caster settings.
+    Result<VirtualShadowMapCasterResources> prepareShadowLOD(
+        Device& device, CommandBuffer& commands, const scene::Scene& scene,
+        const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
+        const VirtualShadowMapCasterSettings& settings, std::span<const VirtualShadowMapLODProjection> projections,
+        float maxErrorTexels, std::string& log, bool hierarchical, float maxWorldError);
 
 private:
     struct Resident;
-    std::shared_ptr<const Resident> resident_;
+    std::shared_ptr<Resident> resident_;
     std::shared_ptr<VirtualShadowMapLODMetadataCache> lodMetadata_;
 };
 

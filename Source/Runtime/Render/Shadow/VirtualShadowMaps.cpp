@@ -323,17 +323,20 @@ struct VirtualShadowMaps::Programs
     int markPageShift = -1;
     bool markRayPages = false;
     bool compactBuild = false;
+    bool clusterPageRaster = false;
+    bool instanceBuild = false;
     bool dirtyPageHierarchy = false;
     bool receiverMask = false;
     bool aggregateReceiverMask = false;
     bool staticPageHZB = false;
     bool clusterHZBCulling = false;
     bool refinedReceiver = false;
-    std::array<std::unique_ptr<ShaderModule>, 19> shaders;
-    std::array<std::unique_ptr<ComputePipeline>, 15> compute;
+    std::array<std::unique_ptr<ShaderModule>, 21> shaders;
+    std::array<std::unique_ptr<ComputePipeline>, 16> compute;
     std::array<std::unique_ptr<ShaderModule>, 2> onePassShaders;
     std::array<std::unique_ptr<ComputePipeline>, 2> onePassComputes;
     std::unique_ptr<GraphicsPipeline> raster;
+    std::unique_ptr<GraphicsPipeline> packedRaster;
     std::unique_ptr<GraphicsPipeline> clear;
 };
 
@@ -343,13 +346,14 @@ struct VirtualShadowMaps::Cache
     std::shared_ptr<ShadowAtlas> atlas;
     std::shared_ptr<ShadowAtlas> staticAtlas;
     std::shared_ptr<Buffer> staticHZB;
-    // Aligned with casters in this submitted snapshot. Zero denotes static membership.
-    std::vector<uint64_t> lastChangedFrames;
+    struct DynamicCaster { size_t index; uint64_t lastChanged; };
+    std::vector<DynamicCaster> dynamic; // Sorted indices into this submitted snapshot.
     uint64_t cacheFrame = 0;
     std::shared_ptr<Buffer> pages;
     std::vector<ShadowProjection> projections;
     std::vector<std::array<int64_t, 2>> origins;
-    std::vector<VirtualShadowMapCasterState> casters;
+    std::weak_ptr<void> casterOwner;
+    std::shared_ptr<const std::vector<VirtualShadowMapCasterState>> casters;
     VirtualShadowMapSettings settings;
     VirtualShadowMapLight light;
     float farPlane = 0;
@@ -596,7 +600,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     // validProjectionSettings guarantees a nonzero power-of-two page size, at most 128.
     const int markPageShift = directional ? std::countr_zero(settings.pageSize) : -1;
     const bool markRayPages = directional && settings.markRayPages;
-    const bool compactBuild = settings.compactBuild;
+    const bool instanceBuild = directional && settings.instanceBuild && casters.instanceTable != UINT32_MAX;
+    const bool compactBuild = settings.compactBuild || instanceBuild;
+    const bool clusterPageRaster = settings.clusterPageRaster && device.capabilities().computeSubgroupBallotArithmetic;
+    const bool dirtyPageHierarchy = settings.dirtyPageHierarchy || instanceBuild;
     if (auto valid = validateProjectionLight(light, log); !valid) { return std::unexpected(valid.error()); }
     if (light.type == VirtualShadowMapLightType::PointFace && settings.filter != VirtualShadowMapFilter::Hard && !deferProjection) {
         log += "Filtered point VSM requires six deferred faces before project().\n";
@@ -722,7 +729,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     // Changing that layout cannot reinterpret a previous cache allocation.
     const bool receiverMaskLayoutChanged = cache_ && receiverMask &&
         cache_->settings.propagatedMapping != settings.propagatedMapping;
-    std::array<uint32_t, 48> cacheDiagnostics{};
+    std::array<uint32_t, 50> cacheDiagnostics{};
+    cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
+    cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
     auto& reasons = cacheDiagnostics[kVSMCacheReasons];
     if (!settings.cacheEnabled) { reasons |= kVSMCacheReasonCacheDisabled; }
     if (!cache_) { reasons |= kVSMCacheReasonCold; }
@@ -754,9 +763,23 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (compatibleCache && !reuse) { reasons |= kVSMCacheReasonProjectionRange; }
     const uint64_t cacheFrame = reuse ? cache_->cacheFrame + 1u : 1u;
     std::vector<scene::Bounds> dirtyBounds, staticDirtyBounds, mergeBounds;
-    std::vector<uint64_t> lastChangedFrames(layered ? casters.states.size() : 0);
+    std::vector<Cache::DynamicCaster> dynamic;
     std::vector<uint64_t> dynamicCasters, demotedCasters;
     std::vector<std::array<uint32_t, 2>> mergeTriangleRanges;
+    // A retained resident cut owns immutable geometry, authored keys and bounds.
+    // A different upload (including a changed cut) must compare both snapshots.
+    const bool unchangedCasters = reuse && casters.owner && cache_->casterOwner.lock() == casters.owner;
+    const auto trackDynamic = [&](size_t index, uint64_t lastChanged) {
+        const auto& caster = casters.states[index];
+        if (settings.framesStaticThreshold != 0 && cacheFrame - lastChanged >= settings.framesStaticThreshold) {
+            demotedCasters.push_back(caster.id);
+            mergeBounds.push_back(caster.bounds);
+            mergeTriangleRanges.push_back({caster.triangleFirst, caster.triangleCount});
+        } else {
+            dynamic.push_back({index, lastChanged});
+            dynamicCasters.push_back(caster.id);
+        }
+    };
     if (reuse) {
         if (!directional) {
             projections = cache_->projections;
@@ -767,14 +790,19 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             projections[index].metric[2] = cache_->projections[index].metric[2];
         }
         projections.back() = cache_->projections.back();
-        size_t oldIndex = 0, newIndex = 0;
-        while (oldIndex < cache_->casters.size() || newIndex < casters.states.size()) {
-            const auto* old = oldIndex < cache_->casters.size() ? &cache_->casters[oldIndex] : nullptr;
+        size_t oldIndex = 0, newIndex = 0, dynamicIndex = 0;
+        if (unchangedCasters) {
+            for (const auto& caster : cache_->dynamic) { trackDynamic(caster.index, caster.lastChanged); }
+        }
+        while (!unchangedCasters && (oldIndex < cache_->casters->size() || newIndex < casters.states.size())) {
+            const auto* old = oldIndex < cache_->casters->size() ? &(*cache_->casters)[oldIndex] : nullptr;
             const auto* next = newIndex < casters.states.size() ? &casters.states[newIndex] : nullptr;
+            const bool wasDynamic = dynamicIndex < cache_->dynamic.size() && cache_->dynamic[dynamicIndex].index == oldIndex;
             if (old && (!next || old->id < next->id)) {
                 dirtyBounds.push_back(old->bounds);
                 ++cacheDiagnostics[kVSMCacheRemovedCasters];
-                if (layered && cache_->lastChangedFrames[oldIndex] == 0) { staticDirtyBounds.push_back(old->bounds); }
+                if (layered && !wasDynamic) { staticDirtyBounds.push_back(old->bounds); }
+                dynamicIndex += wasDynamic;
                 ++oldIndex;
             } else if (next && (!old || next->id < old->id)) {
                 dirtyBounds.push_back(next->bounds);
@@ -783,7 +811,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 ++newIndex;
             } else {
                 const bool lodChanged = old->lodKey != next->lodKey;
-                uint64_t lastChanged = layered ? cache_->lastChangedFrames[oldIndex] : 0u;
+                uint64_t lastChanged = wasDynamic ? cache_->dynamic[dynamicIndex++].lastChanged : 0u;
                 cacheDiagnostics[kVSMCacheLODChangedCasters] += lodChanged;
                 if (old->contentKey != next->contentKey) {
                     dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
@@ -801,17 +829,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                         staticDirtyBounds.push_back(old->bounds); staticDirtyBounds.push_back(next->bounds);
                     }
                     if (lastChanged != 0) { lastChanged = cacheFrame; }
-                } else if (lastChanged != 0 && settings.framesStaticThreshold != 0 &&
-                    cacheFrame - lastChanged >= settings.framesStaticThreshold) {
-                    demotedCasters.push_back(next->id);
-                    mergeBounds.push_back(next->bounds);
-                    mergeTriangleRanges.push_back({next->triangleFirst, next->triangleCount});
-                    lastChanged = 0;
                 }
-                if (lastChanged != 0) {
-                    lastChangedFrames[newIndex] = lastChanged;
-                    dynamicCasters.push_back(next->id);
-                }
+                if (lastChanged != 0) { trackDynamic(newIndex, lastChanged); }
                 ++oldIndex; ++newIndex;
             }
         }
@@ -827,15 +846,26 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.cacheEpoch = reuse ? cache_->epoch : (cache_ ? cache_->epoch + 1 : 1);
     push.dirtyBoundsCount = static_cast<uint32_t>(dirtyBounds.size());
     total.work("reuse", reuse);
+    phase.work("comparedCasterStates", reuse && !unchangedCasters ? casters.states.size() : 0u);
     phase.work("dirtyBounds", dirtyBounds.size());
     phase.work("demotedCasters", demotedCasters.size());
     phase.next("Build VSM page remapping");
-    // Each remap table begins with one uint4 per level followed by inclusive rectangles.
-    // Static and composite tables share snapped offsets and the physical page mapping.
+    // Upload each changed world bound once per layer. The GPU emits compact
+    // per-level rectangle lists into a disjoint, uninitialized buffer tail.
     std::vector<std::array<uint32_t, 4>> pageChanges;
-    const auto appendRemap = [&](std::span<const scene::Bounds> changedBounds, bool includeHZBBounds) {
+    std::vector<uint32_t> rectangleHeaders;
+    uint64_t rectangleCapacity = 0;
+    const auto appendRemap = [&](std::span<const scene::Bounds> changedBounds) {
         const uint32_t base = uint32_t(pageChanges.size());
-        pageChanges.resize(pageChanges.size() + settings.clipmapCount);
+        pageChanges.resize(pageChanges.size() + settings.clipmapCount + 1);
+        const auto boundBase = uint32_t(pageChanges.size());
+        pageChanges[base + settings.clipmapCount] = {boundBase, uint32_t(changedBounds.size()), 0u, 0u};
+        for (const auto& bound : changedBounds) {
+            pageChanges.push_back({std::bit_cast<uint32_t>(bound.min.x), std::bit_cast<uint32_t>(bound.min.y),
+                std::bit_cast<uint32_t>(bound.min.z), uint32_t(bound.valid)});
+            pageChanges.push_back({std::bit_cast<uint32_t>(bound.max.x), std::bit_cast<uint32_t>(bound.max.y),
+                std::bit_cast<uint32_t>(bound.max.z), 0u});
+        }
         if (reuse) {
             for (uint32_t level = 0; level < settings.clipmapCount; ++level) {
                 const int64_t axis = projections[level].page[1];
@@ -843,33 +873,18 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 const auto dy = origins[level][1] - cache_->origins[level][1];
                 const auto offsetX = int32_t(std::clamp(dx, -axis, axis));
                 const auto offsetY = int32_t(std::clamp(dy, -axis, axis));
-                const auto firstRectangle = uint32_t(pageChanges.size());
-                pageChanges[base + level] = {uint32_t(offsetX), uint32_t(offsetY), firstRectangle, 0};
-                if (std::abs(offsetX) == axis || std::abs(offsetY) == axis || settings.forceRedraw) { continue; }
-                for (const auto& bounds : changedBounds) {
-                    if (!bounds.valid) { continue; }
-                    const auto [low, high] = projectedBounds(bounds, projections[level]);
-                    if (high[0] < -1 || low[0] > 1 || high[1] < -1 || low[1] > 1) { continue; }
-                    const auto page = [axis](float v, float epsilon) {
-                        return uint32_t(std::clamp(int(std::floor((std::clamp(v, -1.f, 1.f) * .5f + .5f) * axis + epsilon)), 0, int(axis - 1)));
-                    };
-                    const uint32_t maxX = page(high[0], .0001f), maxY = page(high[1], .0001f);
-                    // The HZB permutation keeps the broad-phase rect in three words.
-                    // The fourth refers to the original old/new world AABB shared by all levels.
-                    const uint32_t boundIndex = uint32_t(&bounds - changedBounds.data());
-                    pageChanges.push_back({page(low[0], -.0001f), page(low[1], -.0001f),
-                        includeHZBBounds ? maxX | (maxY << 16) : maxX, includeHZBBounds ? boundIndex : maxY});
-                }
-                pageChanges[base + level][3] = uint32_t(pageChanges.size()) - firstRectangle;
+                pageChanges[base + level] = {uint32_t(offsetX), uint32_t(offsetY), 0u, 0u};
+                if (changedBounds.empty() || std::abs(offsetX) == axis || std::abs(offsetY) == axis || settings.forceRedraw) { continue; }
+                rectangleHeaders.push_back(base + level);
+                pageChanges[base + level][2] = uint32_t(rectangleCapacity);
+                rectangleCapacity += changedBounds.size();
             }
         }
         return base;
     };
-    appendRemap(dirtyBounds, staticPageHZB);
-    cacheDiagnostics[kVSMCacheDirtyRectangles] = uint32_t(pageChanges.size()) - settings.clipmapCount;
-    const uint32_t staticRemapBase = layered ? appendRemap(staticDirtyBounds, false) : 0u;
-    cacheDiagnostics[kVSMCacheStaticDirtyRectangles] = layered ? uint32_t(pageChanges.size()) - staticRemapBase - settings.clipmapCount : 0u;
-    if (mergeStatic) { cacheDiagnostics[kVSMCacheMergeRemap] = appendRemap(mergeBounds, false); }
+    appendRemap(dirtyBounds);
+    const uint32_t staticRemapBase = layered ? appendRemap(staticDirtyBounds) : 0u;
+    if (mergeStatic) { cacheDiagnostics[kVSMCacheMergeRemap] = appendRemap(mergeBounds); }
     cacheDiagnostics[kVSMCacheLayered] = layered;
     cacheDiagnostics[kVSMCacheReused] = reuse;
     cacheDiagnostics[kVSMCacheDirtyBounds] = uint32_t(dirtyBounds.size());
@@ -880,15 +895,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     cacheDiagnostics[kVSMCacheStaticCasters] = uint32_t(casters.states.size() - dynamicCasters.size());
     cacheDiagnostics[35] = uint32_t(staticDirtyBounds.size());
     cacheDiagnostics[36] = staticRemapBase;
-    if (staticPageHZB) {
-        cacheDiagnostics[39] = uint32_t(pageChanges.size());
-        for (const auto& bounds : dirtyBounds) {
-            pageChanges.push_back({std::bit_cast<uint32_t>(bounds.min.x), std::bit_cast<uint32_t>(bounds.min.y),
-                std::bit_cast<uint32_t>(bounds.min.z), uint32_t(bounds.valid)});
-            pageChanges.push_back({std::bit_cast<uint32_t>(bounds.max.x), std::bit_cast<uint32_t>(bounds.max.y),
-                std::bit_cast<uint32_t>(bounds.max.z), 0u});
-        }
-    }
+    cacheDiagnostics[39] = pageChanges[settings.clipmapCount][0];
     if (mergeStatic) {
         // Build and coarse raster use original 64-slot cluster identities. Distinct
         // casters can share a cluster, including under the selected shadow LOD.
@@ -912,10 +919,16 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         cacheDiagnostics[kVSMCacheMergeClustersBase] = uint32_t(base);
         cacheDiagnostics[kVSMCacheMergeClusterCount] = uint32_t(pageChanges.size() - base);
     }
-    phase.work("remapBytes", pageChanges.size() * sizeof(pageChanges[0]));
+    if (rectangleCapacity + pageChanges.size() > UINT32_MAX) {
+        log += "VSM invalidation rectangle capacity exceeds the GPU address range.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    for (const auto header : rectangleHeaders) { pageChanges[header][2] += uint32_t(pageChanges.size()); }
+    const uint64_t remapUploadBytes = pageChanges.size() * sizeof(pageChanges[0]);
+    phase.work("remapBytes", remapUploadBytes);
     phase.work("denseRemapBytes", uint64_t(push.totalPages) * 8);
     phase.work("remapLevels", settings.clipmapCount);
-    phase.work("dirtyRectangles", cacheDiagnostics[kVSMCacheDirtyRectangles]);
+    phase.work("rectangleCapacity", rectangleCapacity);
     phase.next("Prepare VSM materials and alpha leases");
     std::vector<ShadowMaterial> gpuMaterials;
     for (size_t index = 0; index < materials.size(); ++index) {
@@ -938,16 +951,21 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint32_t clusterPageBitsetWords = (push.totalPages + 31u) / 32u;
     const uint32_t receiverMaskWords = receiverMask ? push.totalPages * 2u : 0u;
     const uint32_t hierarchyAxis = std::bit_ceil(push.virtualPagesPerAxis);
-    const uint32_t hierarchyWords = settings.dirtyPageHierarchy ?
+    const uint32_t hierarchyWords = dirtyPageHierarchy ?
         push.clipmapCount * (4u + (hierarchyAxis * hierarchyAxis - 1u) / 3u) : 0u;
     const uint32_t clusterCapacity = push.triangleCount / 64u + (push.triangleCount % 64u != 0u ? 1u : 0u);
     const uint32_t visibilityBatches = clusterHZBCulling && enabled &&
         cacheDiagnostics[kVSMCacheDynamicCasters] && cacheDiagnostics[kVSMCacheStaticCasters] ?
         (clusterCapacity + kDrawBatchSize - 1u) / kDrawBatchSize : 0u;
-    const uint32_t compactBatches = compactBuild ? (clusterCapacity + kDrawBatchSize - 1) / kDrawBatchSize : 0u;
-    const uint64_t compactWords = compactBuild ? 1u + uint64_t(clusterCapacity) * 2u : 0u;
+    // Splitting an original cluster at each instance boundary adds at most one
+    // ticket per boundary. Every ticket owns at least one distinct triangle slot.
+    const uint64_t candidateCapacity = instanceBuild ?
+        std::min<uint64_t>(push.triangleCount, uint64_t(clusterCapacity) + casters.states.size()) : clusterCapacity;
+    const uint32_t compactBatches = compactBuild ? static_cast<uint32_t>((candidateCapacity + kDrawBatchSize - 1) / kDrawBatchSize) : 0u;
+    const uint64_t compactWords = compactBuild ? 1u + candidateCapacity * 2u : 0u;
     const uint64_t compactArgumentOffset = uint64_t(push.batchCount + push.coarseBatchCount) * 12u;
     const uint32_t mergeDrawOffset = push.batchCount + push.coarseBatchCount + compactBatches;
+    const uint32_t clearDrawOffset = mergeDrawOffset + (mergeStatic ? push.batchCount + push.coarseBatchCount : 0u);
     cacheDiagnostics[kVSMCacheMergeDrawOffset] = mergeDrawOffset;
     // The original range is the allocator/cache ownership table. Projection
     // mappings are rebuilt into a disjoint tail after Finalize publishes validity.
@@ -956,14 +974,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     // the end of the actual pooled page buffer; cached and current sizes can differ.
     const uint64_t physicalHistoryBytes = settings.cacheEnabled ? ((push.physicalPageCount + 1u) / 2u) * 16u : 0u;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16 * (settings.propagatedMapping ? 2u : 1u) + validReceiverMaskBytes + physicalHistoryBytes,
-        coverage->inputBytes().size(), uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
+        coverage->inputBytes().size(), clusterPageRaster ? (uint64_t(push.workCapacity) + 1) * 16 : uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
                 kVSMReceiverCoverageRecordWords * sizeof(uint32_t) : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants),
-        uint64_t(mergeDrawOffset + (mergeStatic ? push.batchCount + push.coarseBatchCount : 0u)) * 12u,
-        pageChanges.size() * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + receiverMaskWords + hierarchyWords + compactWords) * sizeof(uint32_t)};
-    const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
+        uint64_t(clearDrawOffset + uint32_t(clusterPageRaster)) * 12u,
+        remapUploadBytes + rectangleCapacity * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + receiverMaskWords + hierarchyWords + compactWords) * sizeof(uint32_t)};
+    const uint32_t strides[]{64, 16, 4, clusterPageRaster ? 16u : 8u, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
         pageChanges.data(), nullptr};
     uint32_t* indices[]{&push.materials, &push.pages, &push.coverageInputs, &push.workItems,
@@ -974,7 +992,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     uint64_t bufferBytes = 0, hostUploadBytes = 0, hostUploadBuffers = 0;
     for (size_t index = 0; index < state->resources->buffers.size(); ++index) {
         bufferBytes += sizes[index];
-        if (data[index]) { hostUploadBytes += sizes[index]; ++hostUploadBuffers; }
+        const uint64_t uploadBytes = index == 8 ? remapUploadBytes : sizes[index];
+        if (data[index]) { hostUploadBytes += uploadBytes; ++hostUploadBuffers; }
         CPUProfileScope bufferPhase(profiler ? &bufferProfile : nullptr, bufferPhases[0]);
         auto buffer = pool_->buffer(index, {.size = sizes[index], .structureStride = strides[index],
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
@@ -986,8 +1005,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (data[index]) {
             void* mapped = state->resources->buffers[index]->map();
             if (!mapped) { return makeError(Error::Failure); }
-            std::memcpy(mapped, data[index], sizes[index]);
-            state->resources->buffers[index]->flush(); state->resources->buffers[index]->unmap();
+            std::memcpy(mapped, data[index], uploadBytes);
+            state->resources->buffers[index]->flush({0, uploadBytes}); state->resources->buffers[index]->unmap();
         }
         bufferPhase.next(bufferPhases[2]);
         auto lease = state->registry->storageBuffer(*state->resources->buffers[index]);
@@ -1214,8 +1233,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->adaptiveRayCount != adaptiveRayCount ||
         programs_->propagatedMapping != settings.propagatedMapping ||
         programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift || programs_->markRayPages != markRayPages ||
-        programs_->compactBuild != compactBuild ||
-        programs_->dirtyPageHierarchy != settings.dirtyPageHierarchy ||
+        programs_->compactBuild != compactBuild || programs_->instanceBuild != instanceBuild || programs_->clusterPageRaster != clusterPageRaster ||
+        programs_->dirtyPageHierarchy != dirtyPageHierarchy ||
         programs_->receiverMask != receiverMask ||
         programs_->aggregateReceiverMask != aggregateReceiverMask ||
         programs_->staticPageHZB != staticPageHZB ||
@@ -1241,7 +1260,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->markPageShift = markPageShift;
         programs->markRayPages = markRayPages;
         programs->compactBuild = compactBuild;
-        programs->dirtyPageHierarchy = settings.dirtyPageHierarchy;
+        programs->clusterPageRaster = clusterPageRaster;
+        programs->instanceBuild = instanceBuild;
+        programs->dirtyPageHierarchy = dirtyPageHierarchy;
         programs->receiverMask = receiverMask;
         programs->aggregateReceiverMask = aggregateReceiverMask;
         programs->staticPageHZB = staticPageHZB;
@@ -1250,7 +1271,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
-            "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain"};
+            "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
+            "vsmRasterPackedMeshMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -1266,19 +1288,23 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
             if (index == 14 && !compactBuild) { continue; }
             if (index == 15 && !settings.propagatedMapping) { continue; }
-            if (index == 16 && !settings.dirtyPageHierarchy) { continue; }
+            if (index == 16 && !dirtyPageHierarchy) { continue; }
             if (index == 17 && !staticPageHZB) { continue; }
             if (index == 18 && !clusterHZBCulling) { continue; }
+            if (index == 20 && !clusterPageRaster) { continue; }
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
-            if (staticPageHZB && (index == 0 || buildEntry || index == 4 || index == 17 || index == 18)) {
+            if (staticPageHZB && (index == 0 || buildEntry || index == 4 || index == 17 || index == 18 || index == 19)) {
                 entryMacros.push_back({"VSM_STATIC_PAGE_HZB", "1"});
             }
-            if (clusterHZBCulling && (index == 4 || index == 6 || index == 18)) {
+            if (clusterHZBCulling && (index == 4 || index == 6 || index == 18 || index == 20)) {
                 entryMacros.push_back({"VSM_CLUSTER_HZB", "1"});
             }
-            if (settings.dirtyPageHierarchy && (compactEntry || index == 16)) {
+            if (clusterPageRaster && (index == 0 || index == 3 || index == 4 || index == 20)) {
+                entryMacros.push_back({"VSM_CLUSTER_PAGE_RASTER", "1"});
+            }
+            if (dirtyPageHierarchy && (compactEntry || index == 16)) {
                 entryMacros.push_back({"VSM_DIRTY_PAGE_HIERARCHY", "1"});
             }
             if (index == 5 || index == 15 || (receiverMask && (index == 0 || index == 4 || index == 11 || index == 13))) {
@@ -1300,6 +1326,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 entryMacros.push_back({"VSM_ADAPTIVE_RAY_COUNT", adaptiveRayCount ? "1" : "0"});
             }
             if (buildEntry) { entryMacros.push_back({"VSM_DIRECTIONAL_BUILD", directional ? "1" : "0"}); }
+            if (instanceBuild && compactEntry) { entryMacros.push_back({"VSM_INSTANCE_BUILD", "1"}); }
             if (compactEntry) { entryMacros.push_back({"VSM_COMPACT_BUILD", compactBuild ? "1" : "0"}); }
             auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
                 .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = paths,
@@ -1326,21 +1353,32 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
                 spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={} refinedReceiver={} markCacheLevels={} markRayPages={} directionalProjection={} markPageShift={} adaptiveRayCount={} dirtyPageHierarchy={} receiverMask={} aggregateReceiverMask={}", entries[index],
                     debug::debugSha256(bytes), true,
-                    true, true, settings.collectGPUWork, !directional, uint32_t(light.type), true, settings.optimizeProjectionStatistics, buildEntry && directional, compactEntry && compactBuild, index == 1 && directional, index == 5 && refinedReceiver, index == 1 ? markCacheLevels : 12u, index == 1 && markRayPages, index == 5 && directionalProjection, index == 1 ? markPageShift : -1, index == 5 && adaptiveRayCount, settings.dirtyPageHierarchy && compactEntry, receiverMask, index == 1 && aggregateReceiverMask);
+                    true, true, settings.collectGPUWork, !directional, uint32_t(light.type), true, settings.optimizeProjectionStatistics, buildEntry && directional, compactEntry && compactBuild, index == 1 && directional, index == 5 && refinedReceiver, index == 1 ? markCacheLevels : 12u, index == 1 && markRayPages, index == 5 && directionalProjection, index == 1 ? markPageShift : -1, index == 5 && adaptiveRayCount, dirtyPageHierarchy && compactEntry, receiverMask, index == 1 && aggregateReceiverMask);
             }
-            if (index < 6 || index >= 10) {
+            if (index == 20) {
+                const auto bytes = std::as_bytes(std::span(shader->spirv));
+                spdlog::info("[VSMPackedRasterShader] entry={} spirvSHA256={}", entries[index],
+                    debug::debugSha256({reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()}));
+            }
+            if (index < 6 || (index >= 10 && index < 20)) {
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
                     .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
                 if (!pipeline) { return std::unexpected(pipeline.error()); }
                 programs->compute[index < 6 ? index : index - 4] = std::move(*pipeline);
             }
         }
-        auto raster = ShaderRegistry::instance().getGraphicsPipeline(device, {.meshShader = {programs->shaders[6].get()},
+        GraphicsPipelineDesc rasterDesc{.meshShader = {programs->shaders[6].get()},
             .fragmentShader = {programs->shaders[7].get()}, .depthStencilFormat = Format::D32Sfloat,
             .rasterization = {.cullMode = CullMode::None},
-            .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = CompareOp::GreaterEqual}, .usesBindlessHeap = true});
-        if (!raster) { return std::unexpected(raster.error()); }
-        programs->raster = std::move(*raster);
+            .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = CompareOp::GreaterEqual}, .usesBindlessHeap = true};
+        if (auto r = ShaderRegistry::instance().getGraphicsPipeline(device, rasterDesc)) { programs->raster = std::move(*r); }
+        else { return std::unexpected(r.error()); }
+        if (clusterPageRaster) {
+            rasterDesc.meshShader = {programs->shaders[20].get()};
+            auto packed = ShaderRegistry::instance().getGraphicsPipeline(device, rasterDesc);
+            if (!packed) { return std::unexpected(packed.error()); }
+            programs->packedRaster = std::move(*packed);
+        }
         auto clear = ShaderRegistry::instance().getGraphicsPipeline(device, {.meshShader = {programs->shaders[8].get()},
             .fragmentShader = {programs->shaders[9].get()},
             .depthStencilFormat = Format::D32Sfloat, .rasterization = {.cullMode = CullMode::None},
@@ -1396,6 +1434,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (auto r = commands.synchronize({.buffers = {&previousReady, 1}}); !r) { return std::unexpected(r.error()); }
     }
     if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: demand and cache allocation"}); }
+    if (rectangleCapacity != 0) {
+        resetGpu.next("VSM project changed caster bounds");
+        if (auto r = dispatch(15, settings.clipmapCount, mergeStatic ? 3u : layered ? 2u : 1u); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({8}); !r) { return std::unexpected(r.error()); }
+    }
     // Reset writes diagnostics at statistics[32 + id.x], independently of the public 32 words.
     const uint32_t statisticsResetThreads = settings.collectGPUWork ?
         (kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize) / sizeof(uint32_t) : 32u;
@@ -1403,7 +1446,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, statisticsResetThreads, hierarchyWords, receiverMaskWords,
         (push.batchCount + push.coarseBatchCount + compactBatches) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
     resetGpu.next("VSM reset publish");
-    if (auto r = barrier({1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier(clusterPageRaster ? std::initializer_list<size_t>{1, 3, 4, 7, 9} :
+        std::initializer_list<size_t>{1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
     resetGpu.end();
     gpu.next("VSM mark");
     auto markGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM mark dispatch") : RenderGraphExecutionContext::ProfileScope{};
@@ -1435,7 +1479,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
     allocatorGpu.end();
     gpu.next("VSM build");
-    if (settings.dirtyPageHierarchy) {
+    if (dirtyPageHierarchy) {
         auto hierarchyGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM build page hierarchy") :
             RenderGraphExecutionContext::ProfileScope{};
         if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: build page hierarchy"}); }
@@ -1444,17 +1488,19 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (!gpuProfiler) { commands.endDebugLabel(); }
     }
     auto buildGpu = gpuProfiler && settings.profileBuildSubstages ?
-        gpuProfiler->profileScope(commands, compactBuild ? "VSM build compact" : "VSM build direct") :
+        gpuProfiler->profileScope(commands, instanceBuild ? "VSM build instance cull" : compactBuild ? "VSM build compact" : "VSM build direct") :
         RenderGraphExecutionContext::ProfileScope{};
     const bool buildTriangles = push.triangleCount && enabled;
     if (buildTriangles) {
-        // Compute dispatch limit is 65535 workgroups; split immutable triangle ranges.
-        for (uint32_t base = 0; base < push.triangleCount;) {
-            push.workBase = base;
-            const uint32_t count = std::min(push.triangleCount - base, kDrawBatchSize * 64);
-            if (auto r = dispatch(compactBuild ? 10 : 3, (count + 63) / 64); !r) { return std::unexpected(r.error()); }
+        // A merge-only frame can directly select its short cluster list on GPU.
+        const uint32_t groups = instanceBuild ? std::max(cacheDiagnostics[kVSMCacheInstanceCount],
+            cacheDiagnostics[kVSMCacheMergeClusterCount]) : clusterCapacity;
+        for (uint32_t base = 0; base < groups;) {
+            push.workBase = instanceBuild ? base : base * 64u;
+            const uint32_t count = std::min(groups - base, kDrawBatchSize);
+            if (auto r = dispatch(compactBuild ? 10 : 3, count); !r) { return std::unexpected(r.error()); }
             base += count;
-            if (base < push.triangleCount) {
+            if (base < groups) {
                 if (auto r = barrier(compactBuild ? std::initializer_list<size_t>{4, 7, 9} : std::initializer_list<size_t>{3, 4});
                     !r) { return std::unexpected(r.error()); }
             }
@@ -1486,7 +1532,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         }
     }
     buildGpu.next("VSM build finalize sync");
-    if (auto r = barrier({4}); !r) { return std::unexpected(r.error()); }
+    if (auto r = barrier(clusterPageRaster ? std::initializer_list<size_t>{3, 4} :
+        std::initializer_list<size_t>{4}); !r) { return std::unexpected(r.error()); }
     buildGpu.next("VSM build finalize");
     if (staticPageHZB) {
         const BufferBarrierDesc jobsReady{.buffer = state->resources->staticHZBJobs.get(),
@@ -1517,7 +1564,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
         .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
     if (auto r = commands.synchronize({.buffers = {&diagnosticReady, 1}}); !r) { return std::unexpected(r.error()); }
-    for (uint32_t layer = 0; layer < (layered ? 2u : 1u); ++layer) {
+    // Cache compatibility includes enabled state. A previously disabled face
+    // already owns cleared, shader-readable atlases. Cold faces still clear them.
+    const uint32_t rasterLayers = reuse && !enabled ? 0u : (layered ? 2u : 1u);
+    phase.work("recordedRasterLayers", rasterLayers);
+    for (uint32_t layer = 0; layer < rasterLayers; ++layer) {
         const bool staticPass = layered && layer == 0;
         auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
             staticPass ? "VSM static raster" : "VSM dynamic raster and restore") : RenderGraphExecutionContext::ProfileScope{};
@@ -1542,7 +1593,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (reuse || (layered && !staticPass)) {
                 push.rasterCoarse = staticPass ? 2u : 0u;
                 if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                if (auto r = commands.drawMeshTasks(push.physicalPageCount); !r) { return std::unexpected(r.error()); }
+                if (clusterPageRaster) {
+                    auto args = state->resources->buffers[7]->slice({uint64_t(clearDrawOffset) * 12, 12});
+                    if (!args) { return std::unexpected(args.error()); }
+                    if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+                } else if (auto r = commands.drawMeshTasks(push.physicalPageCount); !r) { return std::unexpected(r.error()); }
             }
             rasterGpu.next("VSM raster coarse");
             const uint32_t rasterLayer = staticPass ? 2u : (visibilityBatches ? 4u : 0u);
@@ -1557,9 +1612,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             }
             rasterGpu.next("VSM raster fine");
             push.rasterCoarse = rasterLayer;
+            const auto& fineRaster = clusterPageRaster ? state->programs->packedRaster : state->programs->raster;
             for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
-                if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                if (auto r = commands.bindExecution(fineRaster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
                 auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + batch) * 12, 12});
                 if (!args) { return std::unexpected(args.error()); }
                 if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
@@ -1658,11 +1714,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         next->device = &device;
         next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->resources->textures[0], state->resources->views[0]});
         next->pages = state->resources->buffers[1]; next->projections = std::move(projections); next->origins = origins;
-        next->casters = casters.states; next->settings = settings; next->light = light; next->farPlane = farPlane;
+        next->casterOwner = casters.owner;
+        next->casters = unchangedCasters ? cache_->casters : std::make_shared<const std::vector<VirtualShadowMapCasterState>>(casters.states);
+        next->settings = settings; next->light = light; next->farPlane = farPlane;
         next->receiverMask = receiverMask;
         next->sceneIdentity = casters.sceneIdentity; next->structuralRevision = casters.structuralRevision;
         next->staticAtlas = state->resources->staticAtlas;
-        next->lastChangedFrames = std::move(lastChangedFrames); next->cacheFrame = cacheFrame;
+        next->dynamic = std::move(dynamic); next->cacheFrame = cacheFrame;
         next->staticHZB = state->resources->staticHZB;
         next->geometryRevision = casters.geometryRevision; next->texturePublicationRevision = casters.texturePublicationRevision;
         next->tessellationKey = casters.tessellationKey;

@@ -246,3 +246,29 @@ ownership over eight frames. The physical HZB fixture checks pure demotion,
 concurrent motion, subsequent reveals and re-promotion against full redraw.
 The receiver mask fixture also checks demotion after a narrow dynamic redraw
 and the next receiver coverage expansion.
+
+## Instance-driven Build and cache updates
+
+The directional `benchmarkInstanceBuild` option attaches world bounds and the
+current shadow geometry's slot range to each caster. A compute group tests an
+instance against the dirty fine-page bounds for each clipmap. Surviving ranges
+produce indirect Build work for the original clusters. Tickets on a shared
+64-slot cluster cover only the issuing instance's triangles. The downstream
+cluster, page and static HZB tests still apply. Pure demotion uses the sparse
+transition list. Build diagnostics v6 count instance tests, rejects and
+emitted cluster tickets separately.
+
+On a cache hit, an unchanged resident geometry owner reuses its caster state
+snapshot. Dynamic instances still age towards demotion. On a new geometry
+publication the CPU compares instance identities and classifies layer changes.
+A compute pass projects and compacts the resulting old/new and transition
+bounds into the existing per-level dirty rectangle tables.
+
+Resident shadow LOD retains the previous cut and its GPU buffers. Identical
+selection inputs skip the CPU hierarchy traversal. Changed inputs reselect
+the cut and reuse geometry if the ordered selected cluster IDs still match.
+Cold selection and streamed residency requests continue to use the CPU.
+Moving those cuts to compute requires stable cluster slots across cuts. The
+current host uses the selected slot ranges and per-caster LOD keys to publish
+layer masks and invalidate pages before Build. A GPU cut therefore needs to
+publish its active mask and per-instance cut transitions before invalidation.

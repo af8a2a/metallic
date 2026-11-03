@@ -71,7 +71,10 @@ static const uint32_t kVSMBuildDiagnosticReceiverMaskPageTests = 48;
 static const uint32_t kVSMBuildDiagnosticReceiverMaskPageRejects = 49;
 static const uint32_t kVSMBuildDiagnosticHZBPageTests = 50;
 static const uint32_t kVSMBuildDiagnosticHZBLevelRejects = 51;
-static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 52;
+static const uint32_t kVSMBuildDiagnosticInstanceTests = 52;
+static const uint32_t kVSMBuildDiagnosticInstanceRejects = 53;
+static const uint32_t kVSMBuildDiagnosticInstanceClusterTickets = 54;
+static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 55;
 static const uint32_t kVirtualShadowMapBuildDiagnosticSize = kVirtualShadowMapBuildDiagnosticCounterCount * 8;
 static const uint32_t kVirtualShadowMapBuildDiagnosticWordOffset = 32 + kVirtualShadowMapWorkCounterCount * 2;
 
@@ -102,7 +105,7 @@ static_assert(kVSMBuildDiagnosticClusterBitsetLevelTests == kVSMBuildDiagnosticC
     kVirtualShadowMapBuildDiagnosticHistogramCount);
 static_assert(kVSMBuildDiagnosticTriangleBitsetWordTests == kVSMBuildDiagnosticClusterBitsetScanHistogram +
     kVirtualShadowMapBuildDiagnosticHistogramCount);
-static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticHZBLevelRejects + 1u);
+static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticInstanceClusterTickets + 1u);
 static_assert(kVirtualShadowMapBuildDiagnosticSize == kVirtualShadowMapBuildDiagnosticCounterCount * sizeof(uint64_t));
 inline constexpr std::array<std::string_view, kVirtualShadowMapWorkCounterCount> kVirtualShadowMapWorkCounterNames{
     "markReceiverDispatches", "markSamplePositions", "markLevelTests", "markPageRequests",
@@ -128,6 +131,7 @@ inline constexpr std::array<std::string_view, kVirtualShadowMapBuildDiagnosticCo
     "clusterBitsetScan2048To4095", "clusterBitsetScan4096To8191", "clusterBitsetScan8192To16383", "clusterBitsetScan16384Plus",
     "triangleBitsetWordTests", "triangleBitsetPageHits",
     "clusterHierarchyLevelTests", "clusterHierarchyNodeTests", "clusterHierarchyBoundsRejects",
-    "receiverMaskPageTests", "receiverMaskPageRejects", "hzbPageTests", "hzbLevelRejects"};
+    "receiverMaskPageTests", "receiverMaskPageRejects", "hzbPageTests", "hzbLevelRejects",
+    "instanceTests", "instanceRejects", "instanceClusterTickets"};
 } // namespace metallic::render
 #endif

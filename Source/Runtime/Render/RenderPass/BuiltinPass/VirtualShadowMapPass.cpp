@@ -47,6 +47,8 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
         boolProperty(&properties, "markRayPages", settings.markRayPages));
     settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
+    settings.clusterPageRaster = boolProperty(&properties, "benchmarkClusterPageRaster", settings.clusterPageRaster);
+    settings.instanceBuild = boolProperty(&properties, "benchmarkInstanceBuild", settings.instanceBuild);
     settings.enabled = boolProperty(&properties, "enabled", true) &&
         !boolProperty(&properties, "debugDisableShadows", false);
     return settings;
@@ -267,11 +269,13 @@ public:
         const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
         const bool textureDependent = std::any_of(alphaTextures.begin(), alphaTextures.end(), hasTexture) ||
             std::any_of(displacementTextures.begin(), displacementTextures.end(), hasTexture);
+        const auto settings = shadowSettings(context.properties());
         const VirtualShadowMapCasterSettings casterSettings{
             .tessellationEnabled = (info.reserved & 1u) != 0,
             .tessellationFactor = context.properties().value("tessellationFactor", 4u),
             .subdivisionDepth = context.properties().value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
-            .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
+            .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0,
+            .instanceBuild = settings.instanceBuild};
         auto casters = casterCache_.prepare(*device_, commands, *scene,
             scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
         if (!casters) {
@@ -284,7 +288,6 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const auto light = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[lightIndex];
-        const auto settings = shadowSettings(context.properties());
         VirtualShadowMapReceiverResources receiver{};
         if (settings.shadowLOD && settings.shadowLODSmartBias && settings.shadowLODSmartBiasRefine &&
             visibility.valid() && (info.reserved & 1u) == 0) {
@@ -311,7 +314,7 @@ public:
                 return makeError(projections.error());
             }
             lodStatistics[2] = uint32_t(projections->size());
-            casters = prepareVirtualShadowMapShadowLOD(*device_, commands, *scene,
+            casters = casterCache_.prepareShadowLOD(*device_, commands, *scene,
                 scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
                 *projections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy,
                 boolProperty(&context.properties(), "shadowLODDepthGuard", true) ?

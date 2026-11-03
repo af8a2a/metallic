@@ -1,5 +1,11 @@
 # VSM 精确三角形页枚举
 
+## 细页硬件光栅候选
+
+`benchmarkClusterPageRaster` 保留 D32 深度附件、原有粗页 PSO 和逐三角形的精确页枚举。支持所需 subgroup 运算的设备可在 Build 中将同一 wave 当前命中的同 cluster、同页三角形合并为一条记录。记录包含原始 64 槽 cluster 起始位置、虚拟页和两个 32 位掩码。不同 wave 或不同枚举迭代可分别产生记录。
+
+每条记录最多覆盖 16 个相邻槽位。细页 mesh group 中的活跃 lane 独立解码三角形，在全落入页内时直接提交原始三角形，在穿越边界时沿用原裁剪与插值。输出上限为 144 个顶点和 112 个图元。一个三角形跨越多个页时仍在每个目标页解码。逻辑三角形/页预算与溢出回退保持原语义；按最坏情况预留的细页工作缓冲从每槽 8 B 增至 16 B，另有 16 B 的计数头。
+
 > 当前状态（2026-10-31）：本文对应的已接受优化已固定为生产路径，对应运行时 A/B 开关及参考分支已退役。下文保留历史实验设置和验收结果，不再作为当前开关使用说明；当前范围与验证见 [生产优化固化](VirtualShadowMapProductionOptimizations.md)。
 
 精确三角形 build 复用 cluster dirty-page bitset，按原三角投影包围矩形逐行枚举置位页，替代对矩形内每个页读取 uint4 元数据。`VirtualShadowMapSettings::trianglePageBitset` 默认 true；两个 VSM Pass 读取生产属性 `trianglePageBitset`，显式布尔 `benchmarkTrianglePageBitset` 优先覆盖。有效值还要求 cluster culling 和 cluster-page bitset 均开启；任一依赖关闭时回到原逐页扫描。

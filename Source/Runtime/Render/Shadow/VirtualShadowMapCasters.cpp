@@ -61,7 +61,7 @@ struct ShadowCasterSelection
 {
     bool replaceResident = false;
     bool replaceStream = false;
-    std::vector<uint32_t> vertices;
+    std::vector<uint32_t> residentClusters;
     std::vector<std::array<uint32_t, 2>> streamClusters; // Global group, local cluster.
     uint64_t lodKey = 0;
 };
@@ -212,7 +212,17 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
         const ShadowCasterSelection* selection = selections.empty() ? nullptr : &selections[nodeIndex];
         const bool replace = selection && selection->replaceResident;
         const bool indexed = !primitive.indices.empty();
-        const size_t count = replace ? selection->vertices.size() :
+        std::vector<uint32_t> vertices;
+        if (replace) {
+            for (const uint32_t clusterIndex : selection->residentClusters) {
+                const auto& cluster = primitive.meshletLodClusters[clusterIndex];
+                for (uint32_t vertex = 0; vertex < cluster.triangleCount * 3u; ++vertex) {
+                    const uint32_t local = primitive.meshletLodTriangles[cluster.triangleOffset + vertex];
+                    vertices.push_back(primitive.meshletLodVertices[cluster.vertexOffset + local]);
+                }
+            }
+        }
+        const size_t count = replace ? vertices.size() :
             (indexed ? primitive.indices.size() : primitive.positions.size());
         if (count % 3 != 0 || triangles.size() + count / 3 > UINT32_MAX) {
             log = "VSM resident triangle list has an invalid or unsupported size";
@@ -253,7 +263,7 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
             triangle.materialIndex = static_cast<uint32_t>(std::max(node.materialIndex, 0));
             triangle.reserved[0] = reflected ? 1u : 0u;
             for (uint32_t vertex = 0; vertex < 3; ++vertex) {
-                const size_t index = replace ? selection->vertices[triangleIndex + vertex] :
+                const size_t index = replace ? vertices[triangleIndex + vertex] :
                     (indexed ? primitive.indices[triangleIndex + vertex] : triangleIndex + vertex);
                 if (index >= primitive.positions.size()) {
                     log = "VSM resident triangle references an invalid vertex";
@@ -537,6 +547,26 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
         }
         resources.dependencyKey = dependency.value;
     }
+    if (settings.instanceBuild && !resources.states.empty()) {
+        struct InstanceRange {
+            std::array<float, 3> minimum;
+            uint32_t first;
+            std::array<float, 3> maximum;
+            uint32_t count;
+        };
+        static_assert(sizeof(InstanceRange) == 32);
+        std::vector<InstanceRange> instances;
+        instances.reserve(resources.states.size());
+        for (const auto& state : resources.states) {
+            const auto& b = state.bounds;
+            instances.push_back({{b.valid ? b.min.x : 1.f, b.min.y, b.min.z}, state.triangleFirst,
+                {b.valid ? b.max.x : 0.f, b.max.y, b.max.z}, state.triangleCount});
+        }
+        auto index = upload(device, **registry, *owner, resources.leases, instances.data(),
+            instances.size() * sizeof(InstanceRange), sizeof(InstanceRange));
+        if (!index) { return std::unexpected(index.error()); }
+        resources.instanceTable = *index;
+    }
     owner->parameters = parameters;
     auto parameterIndex = upload(device, **registry, *owner, resources.leases,
         &parameters, sizeof(parameters), sizeof(parameters));
@@ -559,12 +589,12 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasters(
     return prepareCasterGeometry(device, commands, scene, stream, log, settings);
 }
 
-Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
+static Result<VirtualShadowMapCasterResources> selectShadowLOD(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
     std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
-    bool hierarchical, float maxWorldError)
+    bool hierarchical, float maxWorldError, const VirtualShadowMapCasterResources* previous)
 {
     if (!std::isfinite(maxErrorTexels) || maxErrorTexels < 0 || !std::isfinite(maxWorldError) || maxWorldError < 0) {
         log = "VSM shadow LOD errors must be finite and nonnegative";
@@ -731,7 +761,7 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
                 ++diagnostics.metadataCacheHits;
             }
             const std::vector<uint8_t> drawable(metadata->groups.size(), 1);
-            const auto cut = select(*metadata, drawable, node);
+            auto cut = select(*metadata, drawable, node);
             if (!cut.valid) {
                 log = "VSM shadow LOD resident cut: " + cut.reason;
                 return makeError(Error::InvalidArgument);
@@ -749,26 +779,25 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
             // Preserve authored triangle ordering for exact finest/base A/Bs.
             selection.replaceResident = !finest && maxErrorTexels != 0;
             if (selection.replaceResident) {
-                for (const uint32_t clusterIndex : cut.selectedClusters) {
-                    const auto& cluster = primitive.meshletLodClusters[clusterIndex];
-                    for (uint32_t vertex = 0; vertex < cluster.triangleCount * 3u; ++vertex) {
-                        const uint32_t local = primitive.meshletLodTriangles[cluster.triangleOffset + vertex];
-                        selection.vertices.push_back(primitive.meshletLodVertices[cluster.vertexOffset + local]);
-                    }
-                }
+                selection.residentClusters = std::move(cut.selectedClusters);
             }
             selection.lodKey = selection.replaceResident ? hash.value : 0;
             replacement |= selection.replaceResident;
         }
     }
-    auto result = replacement ? prepareCasterGeometry(device, commands, scene, stream, log, settings, selections, base.lodMetadata) :
+    // The cache supplies a previous geometry only for the exact same immutable
+    // resident base. Ordered node/group/cluster identities uniquely name the cut.
+    const bool sameGeometry = replacement && previous && previous->owner != base.owner &&
+        diagnostics.selectedClusterIDs == previous->shadowLOD.selectedClusterIDs;
+    auto result = sameGeometry ? Result<VirtualShadowMapCasterResources>(*previous) :
+        replacement ? prepareCasterGeometry(device, commands, scene, stream, log, settings, selections, base.lodMetadata) :
         Result<VirtualShadowMapCasterResources>(base);
     if (!result) { return std::unexpected(result.error()); }
-    if (!replacement) {
+    if (!replacement || sameGeometry) {
         auto registry = ResourceRegistry::forDevice(device);
         if (!registry) { return std::unexpected(registry.error()); }
-        if (auto retained = commands.retainResource(base.owner); !retained) { return std::unexpected(retained.error()); }
-        for (const auto& lease : base.leases) {
+        if (auto retained = commands.retainResource(result->owner); !retained) { return std::unexpected(retained.error()); }
+        for (const auto& lease : result->leases) {
             if (auto retained = (*registry)->retain(commands, lease); !retained) { return std::unexpected(retained.error()); }
         }
     }
@@ -791,6 +820,17 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     diagnostics.selectedTriangleSlots = result->triangleCapacity;
     result->shadowLOD = std::move(diagnostics);
     return result;
+}
+
+Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
+    Device& device, CommandBuffer& commands, const scene::Scene& scene,
+    const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
+    const VirtualShadowMapCasterSettings& settings,
+    std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
+    bool hierarchical, float maxWorldError)
+{
+    return selectShadowLOD(device, commands, scene, stream, base, settings, projections, maxErrorTexels, log,
+        hierarchical, maxWorldError, nullptr);
 }
 
 Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasterLayer(
@@ -850,6 +890,7 @@ struct VirtualShadowMapCasterCache::Resident
         uint64_t materialRevision = 0;
         uint64_t texturePublicationRevision = 0;
         bool tessellationEnabled = false;
+        bool instanceBuild = false;
         uint32_t tessellationFactor = 0;
         uint32_t subdivisionDepth = 0;
 
@@ -859,7 +900,52 @@ struct VirtualShadowMapCasterCache::Resident
     Key key;
     std::vector<TextureView*> displacementTextures;
     VirtualShadowMapCasterResources resources;
+    struct Cut
+    {
+        std::vector<VirtualShadowMapLODProjection> projections;
+        float maxErrorTexels, maxWorldError;
+        bool hierarchical;
+        VirtualShadowMapCasterResources geometry;
+    };
+    std::optional<Cut> cut;
 };
+
+Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepareShadowLOD(
+    Device& device, CommandBuffer& commands, const scene::Scene& scene,
+    const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
+    const VirtualShadowMapCasterSettings& settings, std::span<const VirtualShadowMapLODProjection> projections,
+    float maxErrorTexels, std::string& log, bool hierarchical, float maxWorldError)
+{
+    // Stream cuts must re-evaluate residency and submit page requests on every recording.
+    if (stream) {
+        return prepareVirtualShadowMapShadowLOD(device, commands, scene, stream, base, settings, projections,
+            maxErrorTexels, log, hierarchical, maxWorldError);
+    }
+    auto& cut = resident_->cut;
+    if (cut && cut->maxErrorTexels == maxErrorTexels && cut->maxWorldError == maxWorldError &&
+        cut->hierarchical == hierarchical && std::ranges::equal(cut->projections, projections)) {
+        const auto& geometry = cut->geometry;
+        auto registry = ResourceRegistry::forDevice(device);
+        if (!registry) { return std::unexpected(registry.error()); }
+        if (auto retained = commands.retainResource(geometry.owner); !retained) { return std::unexpected(retained.error()); }
+        for (const auto& lease : geometry.leases) {
+            if (auto retained = (*registry)->retain(commands, lease); !retained) { return std::unexpected(retained.error()); }
+        }
+        return geometry;
+    }
+    const auto* previous = cut && cut->hierarchical == hierarchical ? &cut->geometry : nullptr;
+    auto selected = selectShadowLOD(device, commands, scene, nullptr, base, settings, projections,
+        maxErrorTexels, log, hierarchical, maxWorldError, previous);
+    if (!selected) { return std::unexpected(selected.error()); }
+    // The immutable host uploads are ready before submission. Replacing this entry
+    // (or cancelling its first recording) does not affect per-command retention.
+    cut.emplace(Resident::Cut{{projections.begin(), projections.end()}, maxErrorTexels, maxWorldError, hierarchical, *selected});
+    auto& diagnostics = cut->geometry.shadowLOD;
+    diagnostics.reusedResidentCut = true;
+    diagnostics.testedGroups = diagnostics.metricGroups = diagnostics.hierarchyNodes = diagnostics.prunedGroups = 0;
+    diagnostics.topologyGroups = diagnostics.metadataBuilds = diagnostics.metadataCacheHits = 0;
+    return selected;
+}
 
 Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
@@ -893,6 +979,7 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
         .materialRevision = scene.materialRevision(),
         .texturePublicationRevision = settings.texturePublicationRevision,
         .tessellationEnabled = settings.tessellationEnabled,
+        .instanceBuild = settings.instanceBuild,
         .tessellationFactor = settings.tessellationFactor,
         .subdivisionDepth = settings.subdivisionDepth};
     if (resident_ && resident_->key == key &&

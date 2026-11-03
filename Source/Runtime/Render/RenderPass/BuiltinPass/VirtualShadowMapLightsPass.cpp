@@ -407,6 +407,8 @@ public:
         settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
             boolProperty(&properties, "markRayPages", settings.markRayPages));
         settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
+        settings.clusterPageRaster = boolProperty(&properties, "benchmarkClusterPageRaster", settings.clusterPageRaster);
+        settings.instanceBuild = boolProperty(&properties, "benchmarkInstanceBuild", settings.instanceBuild);
         settings.enabled = boolProperty(&properties, "enabled", true) && !boolProperty(&properties, "debugDisableShadows", false);
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
         const bool demandDriven = boolProperty(&properties, "demandDrivenBudget", true);
@@ -764,7 +766,8 @@ public:
                     .tessellationEnabled = (info.reserved & 1u) != 0,
                     .tessellationFactor = properties.value("tessellationFactor", 4u),
                     .subdivisionDepth = properties.value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
-                    .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0};
+                    .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0,
+                    .instanceBuild = settings.instanceBuild};
                 auto casters = casterCache_.prepare(*device_, commands, *scene,
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
@@ -789,7 +792,7 @@ public:
                         }
                     }
                     lodStatistics[2] = uint32_t(lodProjections.size());
-                    casters = prepareVirtualShadowMapShadowLOD(*device_, commands, *scene,
+                    casters = casterCache_.prepareShadowLOD(*device_, commands, *scene,
                         scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
                         lodProjections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy,
                         boolProperty(&properties, "shadowLODDepthGuard", true) ?

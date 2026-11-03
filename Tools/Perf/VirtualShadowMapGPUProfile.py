@@ -129,7 +129,13 @@ HZB_COUNTER_DEFINITIONS = {
     "hzbPageTests": "Cluster occlusion tests against static physical-page depth pyramids.",
     "hzbLevelRejects": "Cluster levels skipped after static HZB occlusion.",
 }
-ALL_BUILD_COUNTERS = (*V4_BUILD_COUNTERS, *HZB_COUNTER_DEFINITIONS)
+V5_BUILD_COUNTERS = (*V4_BUILD_COUNTERS, *HZB_COUNTER_DEFINITIONS)
+INSTANCE_COUNTER_DEFINITIONS = {
+    "instanceTests": "Instance ranges screened against dirty fine-page bounds.",
+    "instanceRejects": "Tested instance ranges with no eligible clipmap level.",
+    "instanceClusterTickets": "Cluster workgroups submitted to indirect Build by the instance path.",
+}
+ALL_BUILD_COUNTERS = (*V5_BUILD_COUNTERS, *INSTANCE_COUNTER_DEFINITIONS)
 
 
 def duration(value, label):
@@ -313,7 +319,7 @@ def build_frame(frame, mode):
         return result
     diagnostic = shadow["gpuBuildDiagnostics"]
     if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
-            diagnostic["version"] not in (1, 2, 3, 4, 5) or not isinstance(diagnostic.get("enabled"), bool)):
+            diagnostic["version"] not in (1, 2, 3, 4, 5, 6) or not isinstance(diagnostic.get("enabled"), bool)):
         raise ValueError("Unknown or malformed GPU build diagnostic schema")
     if not diagnostic["enabled"]:
         if "faces" in diagnostic or "totals" in diagnostic:
@@ -322,7 +328,7 @@ def build_frame(frame, mode):
         return result
     if mode != "diagnostic":
         raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
-    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: V4_BUILD_COUNTERS, 5: ALL_BUILD_COUNTERS}[diagnostic["version"]]
+    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: V4_BUILD_COUNTERS, 5: V5_BUILD_COUNTERS, 6: ALL_BUILD_COUNTERS}[diagnostic["version"]]
     faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
     if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(names) or
             not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
@@ -354,6 +360,8 @@ def build_frame(frame, mode):
         groups, valid, surviving = (counters[name] for name in ("clusterGroups", "clusterBoundsValidGroups", "clusterSurvivingGroups"))
         if not surviving <= valid <= groups:
             raise ValueError("GPU build group counts violate surviving <= valid <= groups")
+        if counters.get("instanceRejects", 0) > counters.get("instanceTests", 0):
+            raise ValueError("Instance rejection count exceeds tests")
         levels = counters["clusterLevelTests"]
         if levels != valid * stats[11]:
             raise ValueError("GPU build level tests disagree with valid groups times clipmap count")
@@ -605,7 +613,7 @@ def report(args):
             if build_counters:
                 text.extend(["| Independent build diagnostic | Median of process medians | Processes with evidence |",
                              "| --- | ---: | ---: |"])
-                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS, *HIERARCHY_COUNTERS, *HZB_COUNTER_DEFINITIONS):
+                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS, *HIERARCHY_COUNTERS, *HZB_COUNTER_DEFINITIONS, *INSTANCE_COUNTER_DEFINITIONS):
                     if name not in build_counters:
                         continue
                     values = build_counters[name]
@@ -629,7 +637,7 @@ def report(args):
     text.extend(["## GPU counter definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
     text.extend(f"| {name} | {definition} |" for name, definition in COUNTER_DEFINITIONS.items())
     text.extend(["", "## Independent build diagnostic definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
-    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items(), *HIERARCHY_COUNTER_DEFINITIONS.items(), *HZB_COUNTER_DEFINITIONS.items()))
+    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items(), *HIERARCHY_COUNTER_DEFINITIONS.items(), *HZB_COUNTER_DEFINITIONS.items(), *INSTANCE_COUNTER_DEFINITIONS.items()))
     text.extend(["", "`clusterPageScan0/1/2To3/.../8192To16383/16384Plus` record one observation per level check, using actual reads before return.",
                  "The current maximum is 16384 reads per level. Counts are checked per face against legacy clipmap/enabled/dirty statistics, outcome partitions, histogram totals and weighted scan bounds.",
                  "Build diagnostic data is diagnostic-only and never enters ordinary timing or the four-arm performance policy. Cluster culling disabled can legitimately publish all-zero available diagnostics."])

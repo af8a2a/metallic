@@ -16,6 +16,7 @@ struct VirtualShadowMapLODProjection
     std::array<float, 4> rowW{0, 0, 0, 1};
     uint32_t resolution = 0;
     float nearPlane = 0;
+    bool operator==(const VirtualShadowMapLODProjection&) const = default;
 };
 
 struct VirtualShadowMapLODRequirements

@@ -1,7 +1,7 @@
 #pragma once
 
 // Independent 32-uint per-recording diagnostics. Read after GPU completion.
-// CPU words 0..15 and 28..29; GPU words 16..27 and 30..31. Page counts include only the named scope.
+// CPU words 0..12, 15 and 28..29; GPU words 13..14, 16..27 and 30..31. Page counts include only the named scope.
 // Raster counters 20..23 are available only when word 28 is nonzero.
 // Triangle/primitive words 20..23 require collectGPUWork; otherwise zero.
 #ifdef __cplusplus
@@ -52,6 +52,8 @@ static const uint32_t kVSMCacheMergeGeometry = 42;
 static const uint32_t kVSMCacheMergeDrawOffset = 43; // Indirect argument triples, after draw and compact ranges.
 static const uint32_t kVSMCacheMergeClustersBase = 44; // uint4 records in the page changes buffer.
 static const uint32_t kVSMCacheMergeClusterCount = 45;
+static const uint32_t kVSMCacheInstanceTable = 48;
+static const uint32_t kVSMCacheInstanceCount = 49;
 
 static const uint32_t kVSMCacheReasonCacheDisabled = 1u << 0;
 static const uint32_t kVSMCacheReasonCold = 1u << 1;

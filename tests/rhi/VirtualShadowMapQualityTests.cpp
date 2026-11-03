@@ -3487,6 +3487,8 @@ public:
             both("physicalPageBudget", 256); both("benchmarkGPUWork", true);
             property("Cached", "forceRedraw", true);
             property("Cached", "benchmarkReceiverMask", false); // Full-page reference.
+            property("Compact", "benchmarkInstanceBuild", true);
+            property("Compact", "benchmarkClusterPageRaster", true);
             property("Compact", "benchmarkDirtyPageHierarchy", true);
             for (const char* name : {"Cached", "Compact"}) {
                 const std::string capture = std::string(name) + "Evidence";
@@ -3688,7 +3690,11 @@ public:
                 properties.update(Json{{"physicalPageBudget", 128}, {"cacheLayering", true}, {"forceRedraw", !useHZB},
                     {"receiverFootprint", false}, {"compactOutputs", false},
                     {"benchmarkGPUWork", useHZB}});
-                // Exercise the production defaults against full redraw with occlusion disabled.
+                // Compare instance-driven Build against full redraw with occlusion disabled.
+                if (useHZB) {
+                    properties["benchmarkInstanceBuild"] = true;
+                    properties["benchmarkClusterPageRaster"] = true;
+                }
                 if (!useHZB) { properties["benchmarkStaticPageHZB"] = false; }
                 require(graph.setNodeProperties(node->id, std::move(properties)), "Set HZB arm properties");
             }
@@ -3737,7 +3743,11 @@ public:
                 return candidate;
             };
             const auto cacheOf = [&](const Snapshot& s) { return s.cacheDiagnostics[activeEntry(s).baseLayer]; };
-            require(cacheOf(capture("Cold"))[kVSMCacheStaticHZBBuiltPages] > 0, "Cold render built no HZB");
+            const auto cold = capture("Cold");
+            const auto& coldBuild = cold.buildDiagnostics[activeEntry(cold).baseLayer];
+            require(cacheOf(cold)[kVSMCacheStaticHZBBuiltPages] > 0, "Cold render built no HZB");
+            require(coldBuild[kVSMBuildDiagnosticInstanceTests] > 0 &&
+                coldBuild[kVSMBuildDiagnosticInstanceClusterTickets] > 0, "Cold render bypassed instance-driven Build");
             require(cacheOf(capture("Warm"))[kVSMCacheStaticHZBBuiltPages] == 0, "Clean frame rebuilt HZB");
             move(2, .05f); move(3, .05f); movePatch(.05f);
             const auto compactId = graph.findNode("Compact")->id;

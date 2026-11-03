@@ -78,6 +78,12 @@ import Lighting;
 #ifndef VSM_COMPACT_BUILD
 #define VSM_COMPACT_BUILD 0
 #endif
+#ifndef VSM_CLUSTER_PAGE_RASTER
+#define VSM_CLUSTER_PAGE_RASTER 0
+#endif
+#ifndef VSM_INSTANCE_BUILD
+#define VSM_INSTANCE_BUILD 0
+#endif
 #ifndef VSM_DIRTY_PAGE_HIERARCHY
 #define VSM_DIRTY_PAGE_HIERARCHY 0
 #endif
@@ -236,8 +242,12 @@ uint vsmCompactCandidateOffset(ShadowPush push)
 
 uint vsmCompactBatchCount(ShadowPush push)
 {
+#if VSM_INSTANCE_BUILD
+    return vsmCacheMetadata(push, kVSMCacheMergeDrawOffset) - push.batchCount - push.coarseBatchCount;
+#else
     uint clusters = push.triangleCount / 64u + (push.triangleCount % 64u != 0u ? 1u : 0u);
     return (clusters + 65534u) / 65535u;
+#endif
 }
 #endif
 
@@ -318,6 +328,105 @@ float4 vsmProjectClip(float3 position, ShadowProjection projection)
 {
     float4 p = float4(position, 1.0);
     return float4(dot(projection.rowX, p), dot(projection.rowY, p), dot(projection.rowZ, p), dot(projection.rowW, p));
+}
+
+// Match the ordered scalar arithmetic of projectedBounds used by cache
+// compatibility checks. A rounded page boundary changes which cache is reused.
+float vsmChangedBoundRow(float4 row, float3 p)
+{
+    return spirv_asm {
+        %x : $$float = OpFMul $(row.x) $(p.x);
+        %y : $$float = OpFMul $(row.y) $(p.y);
+        %z : $$float = OpFMul $(row.z) $(p.z);
+        %xy : $$float = OpFAdd %x %y;
+        %xyz : $$float = OpFAdd %xy %z;
+        %v : $$float = OpFAdd %xyz $(row.w);
+        OpDecorate %x NoContraction;
+        OpDecorate %y NoContraction;
+        OpDecorate %z NoContraction;
+        OpDecorate %xy NoContraction;
+        OpDecorate %xyz NoContraction;
+        OpDecorate %v NoContraction;
+        result : $$float = OpCopyObject %v
+    };
+}
+
+bool vsmChangedBoundRect(float3 minimum, float3 maximum, ShadowProjection projection, out uint4 rectangle)
+{
+    float2 lo = float2(3.402823466e38), hi = -lo;
+    float loW = lo.x, hiW = -loW;
+    const bool perspective = projection.metric.w != 0.0;
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        float3 p = float3((corner & 1u) != 0u ? maximum.x : minimum.x,
+            (corner & 2u) != 0u ? maximum.y : minimum.y, (corner & 4u) != 0u ? maximum.z : minimum.z);
+        precise float2 xy = float2(vsmChangedBoundRow(projection.rowX, p), vsmChangedBoundRow(projection.rowY, p));
+        if (perspective) {
+            float w = vsmChangedBoundRow(projection.rowW, p);
+            loW = min(loW, w); hiW = max(hiW, w);
+            xy /= max(w, projection.originNear.w);
+        }
+        lo = min(lo, xy); hi = max(hi, xy);
+    }
+    rectangle = uint4(0u);
+    if (perspective && loW <= projection.originNear.w) {
+        if (hiW < projection.originNear.w) { return false; }
+        lo = float2(-1.0); hi = float2(1.0);
+    }
+    if (any(hi < -1.0) || any(lo > 1.0)) { return false; }
+    float4 edges = clamp(float4(lo, hi), -1.0, 1.0);
+    float4 halfUnit = float4(.5), axis = float4(float(projection.page.y));
+    float4 guard = float4(-.0001, -.0001, .0001, .0001);
+    float4 page = spirv_asm {
+        %half : $$float4 = OpFMul $edges $halfUnit;
+        %uv : $$float4 = OpFAdd %half $halfUnit;
+        %scaled : $$float4 = OpFMul %uv $axis;
+        %p : $$float4 = OpFAdd %scaled $guard;
+        OpDecorate %half NoContraction;
+        OpDecorate %uv NoContraction;
+        OpDecorate %scaled NoContraction;
+        OpDecorate %p NoContraction;
+        result : $$float4 = OpCopyObject %p
+    };
+    rectangle = uint4(clamp(floor(page), 0.0, float(projection.page.y - 1u)));
+    return true;
+}
+
+groupshared uint g_vsmChangedRectCount;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsmProjectChangedBoundsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+{
+    uint table = group.y == 0u ? 0u : vsmCacheMetadata(push, group.y == 1u ? 36u : kVSMCacheMergeRemap);
+    RWStructuredBuffer<uint4> changes = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.reuse));
+    uint headerIndex = table + group.x;
+    uint4 header = changes[headerIndex];
+    if (header.z == 0u) { return; } // Cold, force-redraw or fully scrolled level.
+    uint4 source = changes[table + push.clipmapCount];
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+    ShadowProjection projection = projections[group.x];
+    if (lane == 0u) { g_vsmChangedRectCount = 0u; }
+    GroupMemoryBarrierWithGroupSync();
+    for (uint bound = lane; bound < source.y; bound += 64u) {
+        uint4 minimum = changes[source.x + bound * 2u];
+        uint4 rect;
+        if (minimum.w == 0u || !vsmChangedBoundRect(asfloat(minimum.xyz),
+            asfloat(changes[source.x + bound * 2u + 1u].xyz), projection, rect)) { continue; }
+#if VSM_STATIC_PAGE_HZB
+        if (group.y == 0u) { rect = uint4(rect.xy, rect.z | (rect.w << 16u), bound); }
+#endif
+        uint slot;
+        InterlockedAdd(g_vsmChangedRectCount, 1u, slot);
+        changes[header.z + slot] = rect;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0u) {
+        changes[headerIndex].w = g_vsmChangedRectCount;
+        if (group.y < 2u) {
+            vsmCacheAdd(push, group.y == 0u ? kVSMCacheDirtyRectangles : kVSMCacheStaticDirtyRectangles,
+                g_vsmChangedRectCount);
+        }
+    }
 }
 
 float3 vsmProjectPosition(float3 position, ShadowProjection projection)
@@ -1474,6 +1583,12 @@ bool vsmStaticPageHidesBounds(ShadowPush push, ShadowProjection projection, uint
 [numthreads(64, 1, 1)]
 void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 {
+#if VSM_CLUSTER_PAGE_RASTER
+    if (id.x == 0u) {
+        RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+        work[0] = uint4(0u);
+    }
+#endif
 #if VSM_STATIC_PAGE_HZB
     if (id.x == 0u) {
         RWStructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
@@ -2551,10 +2666,103 @@ uint vsmCullCluster(uint firstTriangle, uint lane, ShadowPush push,
 #endif
 
 #if VSM_COMPACT_BUILD
+#if VSM_INSTANCE_BUILD
+struct VSMInstanceRange
+{
+    float3 minimum;
+    uint first;
+    float3 maximum;
+    uint count;
+};
+
+bool vsmInstanceNeedsLevel(VSMInstanceRange instance, ShadowProjection projection, ShadowPush push)
+{
+    StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    uint base = vsmPageHierarchyOffset(push) + projection.page.z * vsmPageHierarchyLevelWords(push);
+    uint2 low = uint2(owners[base], owners[base + 1u]);
+    uint2 high = uint2(owners[base + 2u], owners[base + 3u]);
+    if (any(low > high)) { return false; }
+    if (any(instance.minimum > instance.maximum)) { return true; }
+    // The instance path is compiled only for orthographic directional lights.
+    // Use the same projection order and one-page rounding guard as cluster culling.
+    float2 lo = float2(1e30), hi = -lo;
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        float3 position = float3((corner & 1u) ? instance.maximum.x : instance.minimum.x,
+            (corner & 2u) ? instance.maximum.y : instance.minimum.y,
+            (corner & 4u) ? instance.maximum.z : instance.minimum.z);
+        float2 xy = vsmProjectClip(position, projection).xy;
+        lo = min(lo, xy); hi = max(hi, xy);
+    }
+    float axis = float(projection.page.y);
+    return all((hi * 0.5 + 0.5) * axis >= float2(low) - 1.0) &&
+        all((lo * 0.5 + 0.5) * axis <= float2(high) + 2.0);
+}
+
+groupshared uint g_vsmInstanceTicketBase;
+#endif
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
+#if VSM_INSTANCE_BUILD
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    uint input = push.workBase + group.x;
+    uint first, end;
+    if (statistics[16] == 0u) {
+        if ((push.cacheMode & 32u) == 0u || input >= vsmCacheMetadata(push, kVSMCacheMergeClusterCount)) { return; }
+        first = vsmMergeCluster(push, input).x;
+        end = first + min(push.triangleCount - first, 64u);
+    } else {
+        if (input >= vsmCacheMetadata(push, kVSMCacheInstanceCount)) { return; }
+        StructuredBuffer<VSMInstanceRange> instances = resolveUniform(ResourceHandle<StructuredBuffer<VSMInstanceRange>>(
+            vsmCacheMetadata(push, kVSMCacheInstanceTable)));
+        VSMInstanceRange instance = instances[input];
+        if (lane == 0u) { g_vsmClusterLevelMask = 0u; }
+        GroupMemoryBarrierWithGroupSync();
+        StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+        if (instance.count != 0u && lane < push.clipmapCount && vsmInstanceNeedsLevel(instance, projections[lane], push)) {
+            InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+        }
+        GroupMemoryBarrierWithGroupSync();
+#if VSM_WORKLOAD_DIAGNOSTICS
+        if (lane == 0u) {
+            vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticInstanceTests, 1u);
+            vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticInstanceRejects, uint(g_vsmClusterLevelMask == 0u));
+        }
+#endif
+        if (g_vsmClusterLevelMask == 0u) { return; }
+        first = instance.first;
+        end = first + instance.count;
+    }
+    uint clusterFirst = first >> 6u;
+    uint count = ((end - 1u) >> 6u) - clusterFirst + 1u;
+    RWStructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+    uint offset = vsmCompactCandidateOffset(push);
+    if (lane == 0u) {
+        uint slot;
+        InterlockedAdd(candidates[offset], count, slot);
+        g_vsmInstanceTicketBase = slot;
+        RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
+        // Contiguous reservations have no holes; publish the high-water mark in each indirect bin.
+        uint stop = slot + count;
+        for (uint i = slot; i < stop;) {
+            uint bin = i / 65535u;
+            uint remaining = min(stop - i, 65535u - i % 65535u);
+            InterlockedMax(arguments[(push.batchCount + push.coarseBatchCount + bin) * 3u], i % 65535u + remaining);
+            i += remaining;
+        }
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticInstanceClusterTickets, count);
+#endif
+    }
+    GroupMemoryBarrierWithGroupSync();
+    for (uint j = lane; j < count; j += 64u) {
+        uint aligned = (clusterFirst + j) * 64u;
+        uint ticket = offset + 1u + (g_vsmInstanceTicketBase + j) * 2u;
+        candidates[ticket] = max(aligned, first);
+        candidates[ticket + 1u] = aligned + min(end - aligned, 64u);
+    }
+#else
     // The source ranges are aligned to 64 triangles. Rounded tail lanes still
     // participate in the identical group-cooperative cluster predicate.
     uint firstTriangle = push.workBase + group.x * 64u;
@@ -2582,6 +2790,41 @@ void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform
         uint argument = (push.batchCount + push.coarseBatchCount + slot / 65535u) * 3u;
         InterlockedAdd(arguments[argument], 1u);
     }
+#endif
+}
+#endif
+
+#if VSM_CLUSTER_PAGE_RASTER
+void vsmAppendClusterPage(uint page, uint triangleIndex, RWStructuredBuffer<uint4> work,
+    RWStructuredBuffer<uint> statistics, uint capacity)
+{
+    // Every invocation here belongs to the same original aligned cluster,
+    // including indirect Build and sparse demotion. Each 16-slot quarter
+    // bounds worst-case clipped mesh output to 144 vertices and 112 primitives.
+    uint key = (page << 2u) | ((triangleIndex >> 4u) & 3u);
+    for (;;) {
+        uint firstKey = WaveReadLaneFirst(key);
+        if (key == firstKey) {
+            uint mask = WaveActiveBitOr(1u << (triangleIndex & 31u));
+            if (WaveIsFirstLane()) {
+                uint count = countbits(mask);
+                uint first;
+                InterlockedAdd(statistics[3], count, first);
+                uint admitted = min(capacity - min(capacity, first), count);
+                if (admitted < count) {
+                    InterlockedAdd(statistics[5], count - admitted);
+                    for (uint i = admitted; i < count; ++i) { mask &= mask - 1u; }
+                }
+                if (mask != 0u) {
+                    uint ticket;
+                    InterlockedAdd(work[0].x, 1u, ticket);
+                    bool high = (triangleIndex & 32u) != 0u;
+                    work[1u + ticket] = uint4(triangleIndex & ~63u, page, high ? 0u : mask, high ? mask : 0u);
+                }
+            }
+            break;
+        }
+    }
 }
 #endif
 
@@ -2593,9 +2836,15 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #if VSM_COMPACT_BUILD
     StructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     uint candidate = vsmCompactCandidateOffset(push) + 1u + (push.workBase + group.x) * 2u;
+#if VSM_INSTANCE_BUILD
+    uint firstSlot = candidates[candidate];
+    uint firstTriangle = firstSlot & ~63u;
+    uint triangleIndex = firstTriangle + lane;
+#else
     uint triangleIndex = candidates[candidate] + lane;
     uint levelMask = candidates[candidate + 1u];
     if (triangleIndex >= push.triangleCount) { return; }
+#endif
 #else
     uint triangleIndex = push.workBase + id.x;
     // Each CPU dispatch starts at a multiple of 64, including batched draws.
@@ -2622,6 +2871,10 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #endif
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+#if VSM_INSTANCE_BUILD
+    uint levelMask = vsmCullCluster(firstTriangle, lane, push, projections, pages);
+    if (levelMask == 0u || triangleIndex < firstSlot || triangleIndex >= candidates[candidate + 1u]) { return; }
+#endif
 #if !VSM_COMPACT_BUILD
     if (lane == 0u) {
 #if VSM_WORKLOAD_DIAGNOSTICS
@@ -2674,7 +2927,11 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #if VSM_WORKLOAD_DIAGNOSTICS
     uint wordTests = 0u, pageHits = 0u;
 #endif
+#if VSM_CLUSTER_PAGE_RASTER
+    RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+#else
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
+#endif
     for (uint level = 0u; level < push.clipmapCount; ++level) {
         if ((levelMask & (1u << level)) == 0u) { continue; }
         ShadowProjection projection = projections[level];
@@ -2774,10 +3031,14 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                         }
                     }
 #endif
+#if VSM_CLUSTER_PAGE_RASTER
+                    vsmAppendClusterPage(page, triangleIndex, work, statistics, push.workCapacity);
+#else
                     uint index;
                     InterlockedAdd(statistics[3], 1u, index);
                     if (index < push.workCapacity) { work[index] = uint2(triangleIndex, page); }
                     else { InterlockedAdd(statistics[5], 1u); }
+#endif
                 }
             }
         }
@@ -2800,6 +3061,15 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     uint coarsePage = push.totalPages - 1u;
     bool redrawCoarse = statistics[21] != 0u;
     bool mergeFrame = (push.cacheMode & 32u) != 0u;
+#if VSM_CLUSTER_PAGE_RASTER
+    if (id.x == 0u) {
+        uint clearOffset = vsmCacheMetadata(push, kVSMCacheMergeDrawOffset) +
+            (mergeFrame ? push.batchCount + push.coarseBatchCount : 0u);
+        arguments[clearOffset * 3u] = statistics[16] != 0u || redrawCoarse ? push.physicalPageCount : 0u;
+        arguments[clearOffset * 3u + 1u] = 1u;
+        arguments[clearOffset * 3u + 2u] = 1u;
+    }
+#endif
 #if VSM_CLUSTER_HZB
     uint clusterCount = push.triangleCount / 64u + uint((push.triangleCount & 63u) != 0u);
     if (id.x < (clusterCount + 65534u) / 65535u && vsmCacheMetadata(push, 40u) != 0xffffffffu) {
@@ -2866,7 +3136,12 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         uint first = (coarse ? id.x - push.batchCount : id.x) * 65535u;
         // Every demotion touches the complete coarse static page, even when its
         // previously composed depth is still exact.
-        uint drawCount = coarse ? ((redrawCoarse || (mergeFrame && push.enabled != 0u)) ? push.triangleCount : 0u) : count;
+        uint fineDrawCount = count;
+#if VSM_CLUSTER_PAGE_RASTER
+        StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
+        fineDrawCount = work[0].x;
+#endif
+        uint drawCount = coarse ? ((redrawCoarse || (mergeFrame && push.enabled != 0u)) ? push.triangleCount : 0u) : fineDrawCount;
         uint dynamicCount = (coarse ? redrawCoarse : statistics[16] != 0u) ? drawCount : 0u;
         if (coarse && mergeFrame && drawCount != 0u) {
             StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
@@ -3007,6 +3282,106 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     if (lane < 2u) { triangles[lane] = lane == 0u ? uint3(0u, 2u, 1u) : uint3(1u, 2u, 3u); }
 }
 
+// Fine packed and single-triangle raster must produce the same fan, UVs and
+// canonical page coordinates, including for alpha-masked materials.
+uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, bool skipInteriorClip,
+    out ShadowClipVertex polygon[9], out uint material, out uint physicalPage, out float4 bounds)
+{
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+    material = physicalPage = 0u;
+    bounds = float4(0.0);
+    VirtualShadowMapTriangle triangle;
+    const bool staticPass = (push.rasterCoarse & 2u) != 0u;
+    bool layerPageActive = staticPass ? (pages[virtualPage].w & 8u) != 0u :
+        ((push.cacheMode & 32u) == 0u || (pages[virtualPage].w & 2u) != 0u);
+#if VSM_CLUSTER_HZB
+    if (layerPageActive && (push.rasterCoarse & 4u) != 0u) {
+        StructuredBuffer<uint> visibility = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 40u)));
+        layerPageActive = (visibility[triangleIndex >> 6u] & (1u << pages[virtualPage].z)) != 0u;
+#if VSM_WORKLOAD_DIAGNOSTICS
+        if (!layerPageActive) {
+            uint dynamicBits = loadVirtualShadowMapDynamicMaskWord(push.geometry, triangleIndex >> 5u);
+            vsmWorkAdd(push, kVSMWorkRasterHZBSkippedTriangles, (dynamicBits >> (triangleIndex & 31u)) & 1u);
+        }
+#endif
+    }
+#endif
+    bool mergeStatic = staticPass && (push.cacheMode & 32u) != 0u && (pages[virtualPage].w & kVSMPageMergeStatic) != 0u;
+    if (mergeStatic) {
+        if ((push.rasterCoarse & 1u) != 0u) {
+            uint4 record = vsmMergeCluster(push, triangleIndex >> 6u);
+            uint sourceLane = triangleIndex & 63u;
+            triangleIndex = record.x + sourceLane;
+            layerPageActive = vsmMergeClusterHasLane(record, sourceLane);
+        } else {
+            uint mask = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, kVSMCacheMergeGeometry), triangleIndex >> 5u);
+            layerPageActive = (mask & (1u << (triangleIndex & 31u))) != 0u;
+        }
+    }
+    if (layerPageActive && loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
+        vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
+#if VSM_WORKLOAD_DIAGNOSTICS
+        if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }
+        if ((push.cacheMode & 16u) != 0u) {
+            vsmCacheAdd(push, staticPass ? kVSMCacheStaticDecodedTriangles : kVSMCacheDynamicDecodedTriangles, 1u);
+        }
+#endif
+        uint4 page = pages[virtualPage];
+        ShadowProjection projection = projections[page.z];
+        bounds = vsmPageBounds(virtualPage, projection);
+        if (projection.metric.w < 0.5 && (push.rasterCoarse & 1u) == 0u) {
+            uint local = virtualPage - projection.page.x;
+            uint2 pageXY = uint2(local % projection.page.y, local / projection.page.y);
+            // Directional originNear.xy carries the snapped page-grid
+            // origin. Form a canonical world-page translation before the
+            // vertex dot product: subtracting rolling clipmap bounds after
+            // projection changes clipping/depth rounding in cached pages.
+            float2 center = projection.originNear.xy + float2(pageXY) + 0.5 - 0.5 * float(projection.page.y);
+            float halfPage = 1.0 / float(projection.page.y);
+            projection.rowX.w = -center.x * (2.0 * halfPage);
+            projection.rowY.w = -center.y * (2.0 * halfPage);
+            bounds = float4(-halfPage, -halfPage, halfPage, halfPage);
+        }
+        bool inside = skipInteriorClip;
+        for (uint i = 0u; i < 3u; ++i) {
+            polygon[i].position = vsmProjectClip(triangle.vertices[i].position.xyz, projection);
+            polygon[i].uv = triangle.vertices[i].uv.xy;
+            if (skipInteriorClip) {
+                float4 clip = polygon[i].position;
+                inside = inside && all(clip.xy >= bounds.xy * clip.w) && all(clip.xy <= bounds.zw * clip.w) &&
+                    (projection.metric.w <= 0.5 || (clip.z >= 0.0 && clip.z <= clip.w));
+            }
+        }
+        material = triangle.materialIndex;
+        physicalPage = page.x;
+        uint count = inside ? 3u : vsmClipProjection(polygon, bounds, projection.metric.w > 0.5);
+        return count >= 3u ? count : 0u;
+    }
+    return 0u;
+}
+
+ShadowRasterVertex vsmRasterVertex(ShadowClipVertex vertex, float4 bounds, uint physicalPage, uint material, ShadowPush push)
+{
+    float2 pagePosition = saturate((vertex.position.xy / vertex.position.w - bounds.xy) / (bounds.zw - bounds.xy));
+    ShadowRasterVertex result;
+    result.position = float4(vsmAtlasPosition(pagePosition, physicalPage, push) * vertex.position.w,
+        vertex.position.z, vertex.position.w);
+    result.uv = vertex.uv;
+    result.materialIndex = material;
+    return result;
+}
+
+void vsmRecordRasterOutput(ShadowPush push, uint triangleCount)
+{
+    vsmWorkAdd(push, kVSMWorkRasterOutputPrimitives, triangleCount);
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if ((push.cacheMode & 16u) != 0u) {
+        vsmCacheAdd(push, (push.rasterCoarse & 2u) != 0u ? kVSMCacheStaticOutputPrimitives : kVSMCacheDynamicOutputPrimitives, triangleCount);
+    }
+#endif
+}
+
 groupshared ShadowClipVertex g_vsmPolygon[9];
 groupshared uint g_vsmVertexCount;
 groupshared uint g_vsmMaterial;
@@ -3021,9 +3396,6 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 {
     if (lane == 0u) {
         vsmWorkAdd(push, (push.rasterCoarse & 1u) != 0u ? kVSMWorkRasterCoarseGroups : kVSMWorkRasterFineGroups, 1u);
-        g_vsmVertexCount = 0u;
-        StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-        StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
         uint triangleIndex = push.workBase + group.x;
         uint virtualPage = push.totalPages - 1u;
         if ((push.rasterCoarse & 1u) == 0u) {
@@ -3032,94 +3404,81 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
             triangleIndex = item.x;
             virtualPage = item.y;
         }
-        VirtualShadowMapTriangle triangle;
-        const bool staticPass = (push.rasterCoarse & 2u) != 0u;
-        bool layerPageActive = staticPass ? (pages[virtualPage].w & 8u) != 0u :
-            ((push.cacheMode & 32u) == 0u || (pages[virtualPage].w & 2u) != 0u);
-#if VSM_CLUSTER_HZB
-        if (layerPageActive && (push.rasterCoarse & 4u) != 0u) {
-            StructuredBuffer<uint> visibility = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 40u)));
-            layerPageActive = (visibility[triangleIndex >> 6u] & (1u << pages[virtualPage].z)) != 0u;
-#if VSM_WORKLOAD_DIAGNOSTICS
-            if (!layerPageActive) {
-                uint dynamicBits = loadVirtualShadowMapDynamicMaskWord(push.geometry, triangleIndex >> 5u);
-                vsmWorkAdd(push, kVSMWorkRasterHZBSkippedTriangles, (dynamicBits >> (triangleIndex & 31u)) & 1u);
-            }
-#endif
-        }
-#endif
-        bool mergeStatic = staticPass && (push.cacheMode & 32u) != 0u && (pages[virtualPage].w & kVSMPageMergeStatic) != 0u;
-        if (mergeStatic) {
-            if ((push.rasterCoarse & 1u) != 0u) {
-                uint4 record = vsmMergeCluster(push, triangleIndex >> 6u);
-                uint sourceLane = triangleIndex & 63u;
-                triangleIndex = record.x + sourceLane;
-                layerPageActive = vsmMergeClusterHasLane(record, sourceLane);
-            } else {
-                uint mask = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, kVSMCacheMergeGeometry), triangleIndex >> 5u);
-                layerPageActive = (mask & (1u << (triangleIndex & 31u))) != 0u;
-            }
-        }
-        if (layerPageActive && loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
-            vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
-#if VSM_WORKLOAD_DIAGNOSTICS
-            if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }
-            if ((push.cacheMode & 16u) != 0u) {
-                vsmCacheAdd(push, staticPass ? kVSMCacheStaticDecodedTriangles : kVSMCacheDynamicDecodedTriangles, 1u);
-            }
-#endif
-            uint4 page = pages[virtualPage];
-            ShadowProjection projection = projections[page.z];
-            float4 bounds = vsmPageBounds(virtualPage, projection);
-            if (projection.metric.w < 0.5 && (push.rasterCoarse & 1u) == 0u) {
-                uint local = virtualPage - projection.page.x;
-                uint2 pageXY = uint2(local % projection.page.y, local / projection.page.y);
-                // Directional originNear.xy carries the snapped page-grid
-                // origin. Form a canonical world-page translation before the
-                // vertex dot product: subtracting rolling clipmap bounds after
-                // projection changes clipping/depth rounding in cached pages.
-                float2 center = projection.originNear.xy + float2(pageXY) + 0.5 - 0.5 * float(projection.page.y);
-                float halfPage = 1.0 / float(projection.page.y);
-                projection.rowX.w = -center.x * (2.0 * halfPage);
-                projection.rowY.w = -center.y * (2.0 * halfPage);
-                bounds = float4(-halfPage, -halfPage, halfPage, halfPage);
-            }
-            ShadowClipVertex polygon[9];
-            for (uint i = 0u; i < 3u; ++i) {
-                polygon[i].position = vsmProjectClip(triangle.vertices[i].position.xyz, projection);
-                polygon[i].uv = triangle.vertices[i].uv.xy;
-            }
-            uint count = vsmClipProjection(polygon, bounds, projection.metric.w > 0.5);
-            g_vsmVertexCount = count >= 3u ? count : 0u;
-            g_vsmMaterial = triangle.materialIndex;
-            g_vsmPhysicalPage = page.x;
-            g_vsmBounds = bounds;
-            for (uint i = 0u; i < count; ++i) { g_vsmPolygon[i] = polygon[i]; }
-        }
+        ShadowClipVertex polygon[9];
+        uint material, physicalPage;
+        float4 bounds;
+        uint count = vsmRasterPolygon(triangleIndex, virtualPage, push, false, polygon, material, physicalPage, bounds);
+        g_vsmVertexCount = count;
+        g_vsmMaterial = material;
+        g_vsmPhysicalPage = physicalPage;
+        g_vsmBounds = bounds;
+        for (uint i = 0u; i < count; ++i) { g_vsmPolygon[i] = polygon[i]; }
     }
     GroupMemoryBarrierWithGroupSync();
     uint vertexCount = g_vsmVertexCount;
     uint triangleCount = vertexCount >= 3u ? vertexCount - 2u : 0u;
-    if (lane == 0u) {
-        vsmWorkAdd(push, kVSMWorkRasterOutputPrimitives, triangleCount);
-#if VSM_WORKLOAD_DIAGNOSTICS
-        if ((push.cacheMode & 16u) != 0u) {
-            vsmCacheAdd(push, (push.rasterCoarse & 2u) != 0u ? kVSMCacheStaticOutputPrimitives : kVSMCacheDynamicOutputPrimitives, triangleCount);
-        }
-#endif
-    }
+    if (lane == 0u) { vsmRecordRasterOutput(push, triangleCount); }
     SetMeshOutputCounts(vertexCount, triangleCount);
     if (lane < vertexCount) {
-        ShadowClipVertex vertex = g_vsmPolygon[lane];
-        float2 pagePosition = saturate((vertex.position.xy / vertex.position.w - g_vsmBounds.xy) /
-            (g_vsmBounds.zw - g_vsmBounds.xy));
-        vertices[lane].position = float4(vsmAtlasPosition(pagePosition, g_vsmPhysicalPage, push) * vertex.position.w,
-            vertex.position.z, vertex.position.w);
-        vertices[lane].uv = vertex.uv;
-        vertices[lane].materialIndex = g_vsmMaterial;
+        vertices[lane] = vsmRasterVertex(g_vsmPolygon[lane], g_vsmBounds, g_vsmPhysicalPage, g_vsmMaterial, push);
     }
     if (lane < triangleCount) { triangles[lane] = uint3(0u, lane + 1u, lane + 2u); }
 }
+
+#if VSM_CLUSTER_PAGE_RASTER
+// A Build ticket is one nonempty 16-slot quarter of an original 64-triangle
+// cluster. Six clip planes can expand each source triangle to nine vertices.
+groupshared uint g_vsmPackedOffsets[17];
+
+[shader("mesh")]
+[numthreads(32, 1, 1)]
+[outputtopology("triangle")]
+void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+    out vertices ShadowRasterVertex vertices[144], out indices uint3 triangles[112], uniform ShadowPush push)
+{
+    StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
+    uint4 ticket = work[1u + push.workBase + group.x];
+    uint bits = ticket.z != 0u ? ticket.z : ticket.w;
+    uint quarter = (ticket.z != 0u ? 0u : 32u) + ((bits & 0xffffu) != 0u ? 0u : 16u);
+    uint slotMask = bits >> (quarter & 31u);
+    ShadowClipVertex polygon[9];
+    uint vertexCount = 0u, material = 0u, physicalPage = 0u;
+    float4 bounds = float4(0.0);
+    if (lane < 16u) {
+        if ((slotMask & (1u << lane)) != 0u) {
+            vertexCount = vsmRasterPolygon(ticket.x + quarter + lane, ticket.y, push, true,
+                polygon, material, physicalPage, bounds);
+        }
+        // A packed sum gives both output offsets; max total 144 cannot carry.
+        g_vsmPackedOffsets[lane] = vertexCount | (uint(max(int(vertexCount) - 2, 0)) << 16u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0u) {
+        uint sum = 0u;
+        for (uint i = 0u; i < 16u; ++i) {
+            uint counts = g_vsmPackedOffsets[i];
+            g_vsmPackedOffsets[i] = sum;
+            sum += counts;
+        }
+        g_vsmPackedOffsets[16] = sum;
+        vsmWorkAdd(push, kVSMWorkRasterFineGroups, 1u);
+        vsmRecordRasterOutput(push, sum >> 16u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint totals = g_vsmPackedOffsets[16];
+    SetMeshOutputCounts(totals & 0xffffu, totals >> 16u);
+    if (vertexCount != 0u) {
+        uint offsets = g_vsmPackedOffsets[lane];
+        uint firstVertex = offsets & 0xffffu;
+        for (uint i = 0u; i < vertexCount; ++i) {
+            vertices[firstVertex + i] = vsmRasterVertex(polygon[i], bounds, physicalPage, material, push);
+        }
+        for (uint i = 2u; i < vertexCount; ++i) {
+            triangles[(offsets >> 16u) + i - 2u] = uint3(firstVertex, firstVertex + i - 1u, firstVertex + i);
+        }
+    }
+}
+#endif
 
 [shader("fragment")]
 void vsmDepthFragmentMain(ShadowRasterVertex input, bool frontFace : SV_IsFrontFace, uniform ShadowPush push)
