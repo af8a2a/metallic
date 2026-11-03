@@ -63,6 +63,7 @@ struct VirtualShadowMapSettings
     bool propagatedMapping = true; // Projection-only ancestor mapping; ownership pages remain intact.
     bool markRayPages = true; // Directional SMRT Mark skips samples of rays that stay inside one page.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
+    bool pageWindowRaster = false; // Share directional fine geometry across bounded page windows.
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.
     bool instanceBuild = false; // Directional instance culling and indirect fine Build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.

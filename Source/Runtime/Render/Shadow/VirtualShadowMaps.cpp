@@ -323,6 +323,7 @@ struct VirtualShadowMaps::Programs
     int markPageShift = -1;
     bool markRayPages = false;
     bool compactBuild = false;
+    bool pageWindowRaster = false;
     bool clusterPageRaster = false;
     bool instanceBuild = false;
     bool dirtyPageHierarchy = false;
@@ -602,7 +603,16 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool markRayPages = directional && settings.markRayPages;
     const bool instanceBuild = directional && settings.instanceBuild && casters.instanceTable != UINT32_MAX;
     const bool compactBuild = settings.compactBuild || instanceBuild;
-    const bool clusterPageRaster = settings.clusterPageRaster && device.capabilities().computeSubgroupBallotArithmetic;
+    // Keep scalar rasterization for nonbinary grids: window rasterization at
+    // 127 pages per axis changed D32 values after clipmap scrolling.
+    // A uint4 header, one uint4 per window and four per admitted triangle.
+    // Keep the bindless view inside Vulkan's guaranteed storage-buffer range.
+    const uint64_t windowBytes = 16u + uint64_t(settings.maxWorkItems) * 16u +
+        uint64_t(std::min(casters.triangleCapacity, settings.maxWorkItems)) * 64u;
+    const bool pageWindowRaster = directional && settings.pageWindowRaster &&
+        std::has_single_bit(settings.virtualPagesPerAxis) && windowBytes <= (128ull << 20);
+    const bool clusterPageRaster = !settings.pageWindowRaster && settings.clusterPageRaster && device.capabilities().computeSubgroupBallotArithmetic;
+    const bool groupedFineRaster = pageWindowRaster || clusterPageRaster;
     const bool dirtyPageHierarchy = settings.dirtyPageHierarchy || instanceBuild;
     if (auto valid = validateProjectionLight(light, log); !valid) { return std::unexpected(valid.error()); }
     if (light.type == VirtualShadowMapLightType::PointFace && settings.filter != VirtualShadowMapFilter::Hard && !deferProjection) {
@@ -973,15 +983,17 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     // uint2(physicalSlot, lastRequestedFrame) in oldest-first order. Place this at
     // the end of the actual pooled page buffer; cached and current sizes can differ.
     const uint64_t physicalHistoryBytes = settings.cacheEnabled ? ((push.physicalPageCount + 1u) / 2u) * 16u : 0u;
+    const uint64_t workBytes = pageWindowRaster ? windowBytes :
+        clusterPageRaster ? (uint64_t(push.workCapacity) + 1u) * 16u : uint64_t(push.workCapacity) * 8u;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16 * (settings.propagatedMapping ? 2u : 1u) + validReceiverMaskBytes + physicalHistoryBytes,
-        coverage->inputBytes().size(), clusterPageRaster ? (uint64_t(push.workCapacity) + 1) * 16 : uint64_t(push.workCapacity) * 8, 128 + (settings.collectGPUWork ?
+        coverage->inputBytes().size(), workBytes, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
                 kVSMReceiverCoverageRecordWords * sizeof(uint32_t) : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants),
         uint64_t(clearDrawOffset + uint32_t(clusterPageRaster)) * 12u,
         remapUploadBytes + rectangleCapacity * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + receiverMaskWords + hierarchyWords + compactWords) * sizeof(uint32_t)};
-    const uint32_t strides[]{64, 16, 4, clusterPageRaster ? 16u : 8u, 4, 112, 208, 4, 16, 4};
+    const uint32_t strides[]{64, 16, 4, groupedFineRaster ? 16u : 8u, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
         pageChanges.data(), nullptr};
     uint32_t* indices[]{&push.materials, &push.pages, &push.coverageInputs, &push.workItems,
@@ -1234,6 +1246,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->propagatedMapping != settings.propagatedMapping ||
         programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift || programs_->markRayPages != markRayPages ||
         programs_->compactBuild != compactBuild || programs_->instanceBuild != instanceBuild || programs_->clusterPageRaster != clusterPageRaster ||
+        programs_->pageWindowRaster != pageWindowRaster ||
         programs_->dirtyPageHierarchy != dirtyPageHierarchy ||
         programs_->receiverMask != receiverMask ||
         programs_->aggregateReceiverMask != aggregateReceiverMask ||
@@ -1261,6 +1274,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->markRayPages = markRayPages;
         programs->compactBuild = compactBuild;
         programs->clusterPageRaster = clusterPageRaster;
+        programs->pageWindowRaster = pageWindowRaster;
         programs->instanceBuild = instanceBuild;
         programs->dirtyPageHierarchy = dirtyPageHierarchy;
         programs->receiverMask = receiverMask;
@@ -1272,7 +1286,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
             "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
-            "vsmRasterPackedMeshMain"};
+            pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -1291,7 +1305,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (index == 16 && !dirtyPageHierarchy) { continue; }
             if (index == 17 && !staticPageHZB) { continue; }
             if (index == 18 && !clusterHZBCulling) { continue; }
-            if (index == 20 && !clusterPageRaster) { continue; }
+            if (index == 20 && !groupedFineRaster) { continue; }
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
@@ -1301,8 +1315,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (clusterHZBCulling && (index == 4 || index == 6 || index == 18 || index == 20)) {
                 entryMacros.push_back({"VSM_CLUSTER_HZB", "1"});
             }
-            if (clusterPageRaster && (index == 0 || index == 3 || index == 4 || index == 20)) {
-                entryMacros.push_back({"VSM_CLUSTER_PAGE_RASTER", "1"});
+            if (groupedFineRaster && (index == 0 || index == 3 || index == 4 || index == 20)) {
+                entryMacros.push_back({pageWindowRaster ? "VSM_PAGE_WINDOW_RASTER" : "VSM_CLUSTER_PAGE_RASTER", "1"});
             }
             if (dirtyPageHierarchy && (compactEntry || index == 16)) {
                 entryMacros.push_back({"VSM_DIRTY_PAGE_HIERARCHY", "1"});
@@ -1373,7 +1387,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = CompareOp::GreaterEqual}, .usesBindlessHeap = true};
         if (auto r = ShaderRegistry::instance().getGraphicsPipeline(device, rasterDesc)) { programs->raster = std::move(*r); }
         else { return std::unexpected(r.error()); }
-        if (clusterPageRaster) {
+        if (groupedFineRaster) {
             rasterDesc.meshShader = {programs->shaders[20].get()};
             auto packed = ShaderRegistry::instance().getGraphicsPipeline(device, rasterDesc);
             if (!packed) { return std::unexpected(packed.error()); }
@@ -1446,7 +1460,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (auto r = dispatch(0, (std::max({push.totalPages, push.physicalPageCount, statisticsResetThreads, hierarchyWords, receiverMaskWords,
         (push.batchCount + push.coarseBatchCount + compactBatches) * 3}) + 63) / 64); !r) { return std::unexpected(r.error()); }
     resetGpu.next("VSM reset publish");
-    if (auto r = barrier(clusterPageRaster ? std::initializer_list<size_t>{1, 3, 4, 7, 9} :
+    if (auto r = barrier(groupedFineRaster ? std::initializer_list<size_t>{1, 3, 4, 7, 9} :
         std::initializer_list<size_t>{1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
     resetGpu.end();
     gpu.next("VSM mark");
@@ -1532,7 +1546,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         }
     }
     buildGpu.next("VSM build finalize sync");
-    if (auto r = barrier(clusterPageRaster ? std::initializer_list<size_t>{3, 4} :
+    if (auto r = barrier(groupedFineRaster ? std::initializer_list<size_t>{3, 4} :
         std::initializer_list<size_t>{4}); !r) { return std::unexpected(r.error()); }
     buildGpu.next("VSM build finalize");
     if (staticPageHZB) {
@@ -1612,7 +1626,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             }
             rasterGpu.next("VSM raster fine");
             push.rasterCoarse = rasterLayer;
-            const auto& fineRaster = clusterPageRaster ? state->programs->packedRaster : state->programs->raster;
+            const auto& fineRaster = groupedFineRaster ? state->programs->packedRaster : state->programs->raster;
             for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
                 if (auto r = commands.bindExecution(fineRaster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }

@@ -170,6 +170,19 @@ public uint loadVirtualShadowMapDynamicMaskWord(uint geometryResourceIndex, uint
     return mask[word];
 }
 
+// Window payloads have already passed the geometry decoder in Build. Raster
+// still selects its static or dynamic layer independently for each draw.
+public bool virtualShadowMapRasterLayerContains(uint geometryResourceIndex, uint triangleIndex)
+{
+    StructuredBuffer<VirtualShadowMapGeometryParameters> parameters =
+        resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapGeometryParameters>>(geometryResourceIndex));
+    VirtualShadowMapGeometryParameters p = parameters[0];
+    if (p.casterLayer == 0u) { return true; }
+    StructuredBuffer<uint> mask = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(p.casterLayerMask));
+    bool dynamic = (mask[triangleIndex >> 5u] & (1u << (triangleIndex & 31u))) != 0u;
+    return dynamic == (p.casterLayer == 2u);
+}
+
 public bool loadVirtualShadowMapTriangle(uint geometryResourceIndex, uint triangleIndex,
     out VirtualShadowMapTriangle triangle)
 {

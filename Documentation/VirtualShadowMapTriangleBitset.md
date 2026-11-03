@@ -104,3 +104,11 @@ python -B -m unittest discover -s tests/perf -p 'TestVirtualShadowMap*.py'
 python -B .cache/VSMTriangleBitset/TestTriangleBitset.py
 python -B .cache/VSMTriangleBitset/TriangleBitset.py report .cache/VSMTriangleBitset/Sponza/Confirmation .cache/vsm-triangle-recheck --diagnostic .cache/VSMTriangleBitset/Sponza/Diagnostic --reference .cache/VSMTriangleBitset/Sponza/Discovery
 ```
+
+## 方向光细页窗口实验
+
+`benchmarkPageWindowRaster` 默认关闭。开启后，Build 的每个 cluster lane 解码一个入选三角形，按 clipmap 层级投影包围盒，并将同一行最多四个有效页写入一个 16 B 窗口记录。所有引用同一三角形的窗口共享一份 64 B 世界坐标、UV 和材质数据。细页 Mesh Shader 按有效位裁剪并提交给原有硬件深度附件。逻辑预算与溢出计数仍以三角形/页对为单位。非二次幂页网格、局部光和超过 128 MiB 的工作缓冲使用标量路径。
+
+首次实验将顶点深度从 Build 传到 Mesh，在 Sponza 的五个抓取帧上共出现 79 个不同的阴影像素。最终版本在 Mesh 中沿用标量路径的逐页齐次投影与裁剪。五帧的阴影、可见性、相机深度、HDR 与最终颜色均逐位一致，定向滚动测试的 D32 深度也一致。
+
+Sponza 横移、1920×1080、2-ray、预热 32 帧后测量 32 帧。相对标量基线，Build 加 Raster 的源几何解码次数从 3,843,624 降到 3,226,632，细页 Mesh 工作组减少 19.22%。诊断 Build 从 0.2833 到 0.2880 ms，细页 Raster 从 0.1277 到 0.1022 ms。普通模式同一可执行文件各运行一次，Shadows 均值从 2.4842 到 2.5468 ms。本轮保留为实验开关。逐帧数据和复核脚本在本地 `build/vsm-page-window/Retry/report/` 与 `build/vsm-page-window/Retry/Analyze.py`。

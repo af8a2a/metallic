@@ -48,6 +48,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
         boolProperty(&properties, "markRayPages", settings.markRayPages));
     settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
     settings.clusterPageRaster = boolProperty(&properties, "benchmarkClusterPageRaster", settings.clusterPageRaster);
+    settings.pageWindowRaster = boolProperty(&properties, "benchmarkPageWindowRaster", settings.pageWindowRaster);
     settings.instanceBuild = boolProperty(&properties, "benchmarkInstanceBuild", settings.instanceBuild);
     settings.enabled = boolProperty(&properties, "enabled", true) &&
         !boolProperty(&properties, "debugDisableShadows", false);

@@ -78,6 +78,9 @@ import Lighting;
 #ifndef VSM_COMPACT_BUILD
 #define VSM_COMPACT_BUILD 0
 #endif
+#ifndef VSM_PAGE_WINDOW_RASTER
+#define VSM_PAGE_WINDOW_RASTER 0
+#endif
 #ifndef VSM_CLUSTER_PAGE_RASTER
 #define VSM_CLUSTER_PAGE_RASTER 0
 #endif
@@ -1583,7 +1586,7 @@ bool vsmStaticPageHidesBounds(ShadowPush push, ShadowProjection projection, uint
 [numthreads(64, 1, 1)]
 void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 {
-#if VSM_CLUSTER_PAGE_RASTER
+#if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
     if (id.x == 0u) {
         RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
         work[0] = uint4(0u);
@@ -2927,7 +2930,10 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #if VSM_WORKLOAD_DIAGNOSTICS
     uint wordTests = 0u, pageHits = 0u;
 #endif
-#if VSM_CLUSTER_PAGE_RASTER
+#if VSM_PAGE_WINDOW_RASTER
+    uint geometrySlot = 0xffffffffu;
+#endif
+#if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
     RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
 #else
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
@@ -3000,6 +3006,16 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                 uint bits = rawWord;
                 if (word == firstWord) { bits &= 0xffffffffu << (firstPage & 31u); }
                 if (word == lastWord) { bits &= 0xffffffffu >> (31u - (lastPage & 31u)); }
+#if VSM_PAGE_WINDOW_RASTER
+                // A nibble stays within this row and dirty word, including when the row starts mid-word.
+                uint pending = bits;
+                while (pending != 0u) {
+                    uint shift = uint(firstbitlow(pending)) & ~3u;
+                    bits = pending & (15u << shift);
+                    pending ^= bits;
+                    uint basePage = (word << 5u) + shift;
+                    uint accepted = 0u;
+#endif
                 while (bits != 0u) {
                     uint page = (word << 5u) + uint(firstbitlow(bits));
                     bits &= bits - 1u;
@@ -3031,7 +3047,9 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                         }
                     }
 #endif
-#if VSM_CLUSTER_PAGE_RASTER
+#if VSM_PAGE_WINDOW_RASTER
+                    accepted |= 1u << (page - basePage);
+#elif VSM_CLUSTER_PAGE_RASTER
                     vsmAppendClusterPage(page, triangleIndex, work, statistics, push.workCapacity);
 #else
                     uint index;
@@ -3040,9 +3058,39 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                     else { InterlockedAdd(statistics[5], 1u); }
 #endif
                 }
+#if VSM_PAGE_WINDOW_RASTER
+                    if (accepted == 0u) { continue; }
+                    uint count = countbits(accepted), firstWork;
+                    InterlockedAdd(statistics[3], count, firstWork);
+                    uint admitted = min(count, push.workCapacity - min(firstWork, push.workCapacity));
+                    if (admitted < count) {
+                        InterlockedAdd(statistics[5], count - admitted);
+                        for (uint i = admitted; i < count; ++i) { accepted &= accepted - 1u; }
+                        if (accepted == 0u) { continue; }
+                    }
+                    uint ticket;
+                    InterlockedAdd(work[0].x, 1u, ticket);
+                    if (geometrySlot == 0xffffffffu) {
+                        geometrySlot = push.triangleCount <= push.workCapacity ? triangleIndex : ticket;
+                    }
+                    work[1u + ticket] = uint4(triangleIndex, basePage, accepted, geometrySlot);
+                }
+#endif
             }
         }
     }
+#if VSM_PAGE_WINDOW_RASTER
+    // Build owns each selected triangle once, including split instance ranges and demotion.
+    // The Build -> mesh barrier publishes this payload together with every referring ticket.
+    if (geometrySlot != 0xffffffffu) {
+        uint base = 1u + push.workCapacity + 4u * geometrySlot;
+        for (uint i = 0u; i < 3u; ++i) {
+            work[base + i] = asuint(float4(triangle.vertices[i].position.xyz, triangle.vertices[i].uv.x));
+        }
+        work[base + 3u] = uint4(asuint(float3(triangle.vertices[0].uv.y, triangle.vertices[1].uv.y,
+            triangle.vertices[2].uv.y)), triangle.materialIndex);
+    }
+#endif
 #if VSM_WORKLOAD_DIAGNOSTICS
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetWordTests, wordTests);
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetPageHits, pageHits);
@@ -3137,7 +3185,7 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
         // Every demotion touches the complete coarse static page, even when its
         // previously composed depth is still exact.
         uint fineDrawCount = count;
-#if VSM_CLUSTER_PAGE_RASTER
+#if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
         StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
         fineDrawCount = work[0].x;
 #endif
@@ -3281,6 +3329,53 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     }
     if (lane < 2u) { triangles[lane] = lane == 0u ? uint3(0u, 2u, 1u) : uint3(1u, 2u, 3u); }
 }
+
+#if VSM_PAGE_WINDOW_RASTER
+bool vsmRasterPageLayerActive(inout uint triangleIndex, uint4 page, ShadowPush push, out bool mergeStatic)
+{
+    const bool staticPass = (push.rasterCoarse & 2u) != 0u;
+    bool layerPageActive = staticPass ? (page.w & 8u) != 0u :
+        ((push.cacheMode & 32u) == 0u || (page.w & 2u) != 0u);
+#if VSM_CLUSTER_HZB
+    if (layerPageActive && (push.rasterCoarse & 4u) != 0u) {
+        StructuredBuffer<uint> visibility = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 40u)));
+        layerPageActive = (visibility[triangleIndex >> 6u] & (1u << page.z)) != 0u;
+#if VSM_WORKLOAD_DIAGNOSTICS
+        if (!layerPageActive) {
+            uint dynamicBits = loadVirtualShadowMapDynamicMaskWord(push.geometry, triangleIndex >> 5u);
+            vsmWorkAdd(push, kVSMWorkRasterHZBSkippedTriangles, (dynamicBits >> (triangleIndex & 31u)) & 1u);
+        }
+#endif
+    }
+#endif
+    mergeStatic = staticPass && (push.cacheMode & 32u) != 0u && (page.w & kVSMPageMergeStatic) != 0u;
+    if (mergeStatic) {
+        if ((push.rasterCoarse & 1u) != 0u) {
+            uint4 record = vsmMergeCluster(push, triangleIndex >> 6u);
+            uint sourceLane = triangleIndex & 63u;
+            triangleIndex = record.x + sourceLane;
+            layerPageActive = vsmMergeClusterHasLane(record, sourceLane);
+        } else {
+            uint mask = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, kVSMCacheMergeGeometry), triangleIndex >> 5u);
+            layerPageActive = (mask & (1u << (triangleIndex & 31u))) != 0u;
+        }
+    }
+    return layerPageActive;
+}
+
+float4 vsmDirectionalPageBounds(uint virtualPage, inout ShadowProjection projection)
+{
+    uint local = virtualPage - projection.page.x;
+    uint2 pageXY = uint2(local % projection.page.y, local / projection.page.y);
+    // The snapped world-page translation belongs inside the vertex dot product.
+    // Subtracting rolling clipmap bounds afterwards changes cached depths.
+    float2 center = projection.originNear.xy + float2(pageXY) + 0.5 - 0.5 * float(projection.page.y);
+    float halfPage = 1.0 / float(projection.page.y);
+    projection.rowX.w = -center.x * (2.0 * halfPage);
+    projection.rowY.w = -center.y * (2.0 * halfPage);
+    return float4(-halfPage, -halfPage, halfPage, halfPage);
+}
+#endif
 
 // Fine packed and single-triangle raster must produce the same fan, UVs and
 // canonical page coordinates, including for alpha-masked materials.
@@ -3476,6 +3571,97 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
         for (uint i = 2u; i < vertexCount; ++i) {
             triangles[(offsets >> 16u) + i - 2u] = uint3(firstVertex, firstVertex + i - 1u, firstVertex + i);
         }
+    }
+}
+#endif
+
+#if VSM_PAGE_WINDOW_RASTER
+// Each lane clips to one of four consecutive virtual pages. A directional
+// triangle clipped by four XY planes produces at most seven vertices.
+groupshared uint g_vsmWindowCounts[4];
+groupshared ShadowClipVertex g_vsmWindowPolygon[28];
+groupshared float4 g_vsmWindowBounds[4];
+groupshared uint2 g_vsmWindowPageMaterial[4];
+
+[shader("mesh")]
+[numthreads(32, 1, 1)]
+[outputtopology("triangle")]
+void vsmRasterWindowMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+    out vertices ShadowRasterVertex vertices[28], out indices uint3 triangles[20], uniform ShadowPush push)
+{
+    StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
+    uint ticketIndex = 1u + push.workBase + group.x;
+    uint4 ticket = work[ticketIndex];
+    ShadowClipVertex polygon[9];
+    uint count = 0u, physicalPage = 0u, material = 0u;
+    float4 bounds = float4(0.0);
+    if (lane < 4u) {
+        if ((ticket.z & (1u << lane)) != 0u) {
+            StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+            uint virtualPage = ticket.y + lane;
+            uint4 page = pages[virtualPage];
+            uint triangleIndex = ticket.x;
+            bool mergeStatic;
+            if (vsmRasterPageLayerActive(triangleIndex, page, push, mergeStatic) &&
+                virtualShadowMapRasterLayerContains(push.geometry, triangleIndex)) {
+                StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+                ShadowProjection projection = projections[page.z];
+                // Preserve the scalar raster's projection and clip control flow.
+                // The producer supplies decoded world positions. The final
+                // depth dot stays in the mesh stage alongside canonical XY.
+                bounds = vsmPageBounds(virtualPage, projection);
+                if (projection.metric.w < 0.5 && (push.rasterCoarse & 1u) == 0u) {
+                    bounds = vsmDirectionalPageBounds(virtualPage, projection);
+                }
+                uint payload = 1u + push.workCapacity + 4u * ticket.w;
+                uint4 attributes = work[payload + 3u];
+                for (uint i = 0u; i < 3u; ++i) {
+                    float4 source = asfloat(work[payload + i]);
+                    polygon[i].position = vsmProjectClip(source.xyz, projection);
+                    polygon[i].uv = float2(source.w, asfloat(attributes[i]));
+                }
+                material = attributes.w;
+                physicalPage = page.x;
+                count = vsmClipProjection(polygon, bounds, projection.metric.w > 0.5);
+                if (count < 3u) { count = 0u; }
+#if VSM_WORKLOAD_DIAGNOSTICS
+                if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }
+#endif
+            }
+        }
+        g_vsmWindowCounts[lane] = count | (uint(max(int(count) - 2, 0)) << 16u);
+        g_vsmWindowBounds[lane] = bounds;
+        g_vsmWindowPageMaterial[lane] = uint2(physicalPage, material);
+        for (uint i = 0u; i < count; ++i) {
+            g_vsmWindowPolygon[lane * 7u + i] = polygon[i];
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint pageLane = lane >> 3u;
+    uint vertex = lane & 7u;
+    uint total = 0u, offset = 0u;
+    [unroll]
+    for (uint i = 0u; i < 4u; ++i) {
+        uint counts = g_vsmWindowCounts[i];
+        total += counts;
+        if (i < pageLane) { offset += counts; }
+    }
+    SetMeshOutputCounts(total & 0xffffu, total >> 16u);
+    if (lane == 0u) {
+        vsmWorkAdd(push, kVSMWorkRasterFineGroups, 1u);
+        vsmRecordRasterOutput(push, total >> 16u);
+    }
+    uint first = offset & 0xffffu;
+    uint pageCounts = g_vsmWindowCounts[pageLane];
+    if (vertex < (pageCounts & 0xffffu)) {
+        // Match the scalar path's rounded clipping/bounds handoff. In
+        // particular, 1/axis is inexact for non-power-of-two clipmaps.
+        uint2 pageMaterial = g_vsmWindowPageMaterial[pageLane];
+        vertices[first + vertex] = vsmRasterVertex(g_vsmWindowPolygon[pageLane * 7u + vertex],
+            g_vsmWindowBounds[pageLane], pageMaterial.x, pageMaterial.y, push);
+    }
+    if (vertex < (pageCounts >> 16u)) {
+        triangles[(offset >> 16u) + vertex] = uint3(first, first + vertex + 1u, first + vertex + 2u);
     }
 }
 #endif

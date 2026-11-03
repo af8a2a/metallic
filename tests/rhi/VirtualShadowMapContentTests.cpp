@@ -344,7 +344,8 @@ public:
                     VirtualShadowMapSettings settings;
                     settings.pageSize = 32; settings.virtualPagesPerAxis = 8; settings.clipmapCount = 3;
                     settings.physicalPageCount = 256; settings.cacheEnabled = true; settings.forceRedraw = force;
-                    settings.clusterPageRaster = !force;
+                    settings.clusterPageRaster = !force && !streamed;
+                    settings.pageWindowRaster = !force && streamed;
                     settings.maxWorkItems = 65535;
                     std::array<TextureView*, 2> alphaViews{nullptr, material.alphaMode == "MASK" ? currentHeight->view.get() : nullptr};
                     const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);
@@ -1065,6 +1066,7 @@ public:
                     gpu.begin();
                     auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log); check(casters, "Scroll casters: " + log);
                     settings.forceRedraw = force;
+                    settings.pageWindowRaster = !force;
                     const auto shadow = shadows.record(device, *gpu.commands, *depthView,
                         camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight), light, *casters, scene.materials(), {}, settings, log);
                     check(shadow, "Scroll shadow: " + log);
