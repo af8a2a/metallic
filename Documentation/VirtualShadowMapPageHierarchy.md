@@ -223,8 +223,18 @@ unchanged cache frames. Set it to zero to keep promoted casters dynamic.
 Content changes and dynamic LOD changes restart the interval. Cancelled
 recordings do not advance it. On demotion, a valid static page that only
 needs the new caster loads its existing depth and draws the transitioned
-casters into it. Dynamic composition and the static HZB then consume the
-updated depth. Independently invalidated pages get a full static redraw.
+casters into it and refreshes the static HZB. The composite can keep its
+previous depth because it already includes those casters at the same pose.
+This requires a valid composite with complete receiver coverage and no
+independent composite invalidation. A page with partial receiver coverage
+still needs composition before it can publish full coverage. Independently
+invalidated static pages get a full static redraw.
+The transition list uses the current shadow LOD's original 64-triangle
+clusters and a mask of the slots that changed layer. With only fine-page
+merges pending, Build decodes those slots. If another fine page needs
+composition, Build traverses the usual geometry and filters its output per
+page. Coarse static raster independently selects the transition clusters for
+a merge or the full static geometry for a redraw.
 An unadmitted or incomplete fine page must rebuild before reuse. A subsequent
 move promotes the caster again and invalidates its old static footprint.
 
@@ -232,5 +242,7 @@ Workload schema v6 adds counts of incremental static pages and triangle/page
 decodes, physical evictions and the sum of evicted page ages. With a nonzero
 eviction count, dividing the age sum by that count gives the mean victim age
 in submitted cache frames. The allocator GPU fixture checks timestamps and
-ownership over eight frames. The physical HZB fixture checks the transition,
-idle and re-promotion frames against full redraw using a two-frame threshold.
+ownership over eight frames. The physical HZB fixture checks pure demotion,
+concurrent motion, subsequent reveals and re-promotion against full redraw.
+The receiver mask fixture also checks demotion after a narrow dynamic redraw
+and the next receiver coverage expansion.

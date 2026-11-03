@@ -588,6 +588,24 @@ class GPUProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing declared frame readback"):
             profile.summarize_package(package)
 
+    def test_static_transition_can_visit_clusters_without_composite_fine_work(self):
+        row = add_build(frame(1))
+        shadow = row["shadow"]
+        shadow["statistics"][0][16] = 0
+        face = shadow["gpuBuildDiagnostics"]["faces"][0]
+        cache_face = {"lightIndex": face["lightIndex"], "face": face["face"],
+                      "counters": {"staticDirtyFinePages": 0, "staticDirtyCoarsePages": 0}}
+        shadow["cacheDiagnostics"] = {"faces": [cache_face]}
+        for key in cache_face["counters"]:
+            with self.subTest(key=key):
+                cache_face["counters"][key] = 1
+                self.assertTrue(profile.build_frame(row, "diagnostic")["gpuBuildDiagnosticsAvailable"])
+                cache_face["counters"][key] = 0
+        cache_face["face"] = face["face"] + 1
+        cache_face["counters"]["staticDirtyFinePages"] = 2
+        with self.assertRaisesRegex(ValueError, "Inactive or zero-dirty"):
+            profile.build_frame(row, "diagnostic")
+
     def test_declared_build_readback_cannot_be_entirely_missing(self):
         package = self.package("diagnostic", scales=(1.,))
         self.mutate_capture(package, lambda data: data["cases"][0].update(gpuBuildDiagnostics=True))

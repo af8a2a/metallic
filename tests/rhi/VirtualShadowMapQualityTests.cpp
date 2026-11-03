@@ -3588,6 +3588,20 @@ public:
             camera.orthoHeight = 3; require(view.setCamera(camera), "Revisit coverage replaced by narrow redraw");
             capture("ReexpandAfterCoverageReplacement", CacheExpectation::CoverageGrowth);
             capture("ReplacementWarm", CacheExpectation::Clean);
+            camera.orthoHeight = 1; require(view.setCamera(camera), "Narrow receiver before demotion");
+            moveCasters(); capture("NarrowDynamicBeforeDemotion", CacheExpectation::PartialRedraw);
+            property("Compact", "framesStaticThreshold", 1);
+            const auto merged = capture("DemoteWithNarrowCompositeCoverage");
+            const auto mergedFace = activeEntry(merged).baseLayer;
+            const auto& mergeCache = merged.cacheDiagnostics[mergedFace];
+            require(merged.workload[mergedFace][kVSMWorkRasterStaticMergedPages] > 0 &&
+                mergeCache[kVSMCacheDynamicCasters] == 0 && mergeCache[kVSMCacheCompositeDirtyFinePages] > 0 &&
+                mergeCache[kVSMCacheCompositeInvalidatedResidentPages] >= mergeCache[kVSMCacheCompositeDirtyFinePages] &&
+                mergeCache[kVSMCacheRestoredPages] == mergeCache[kVSMCacheCompositeDirtyFinePages] &&
+                mergeCache[kVSMCacheCompositeDirtyCoarsePages] == 0,
+                "Demotion did not restore partially covered fine pages and retain the complete coarse page");
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Expand receivers after merging partially covered pages");
+            capture("ReexpandAfterMaskedDemotion");
             camera.eye[2] = 1.25f; camera.center[2] = 1.25f; require(view.setCamera(camera), "Scroll clipmap page origins");
             capture("PageRemap", CacheExpectation::Remapped);
             capture("RemappedWarm", CacheExpectation::Clean);
@@ -3714,6 +3728,7 @@ public:
                     {"rasterSkippedTriangles",work[kVSMWorkRasterHZBSkippedTriangles]},
                     {"staticMergedPages",work[kVSMWorkRasterStaticMergedPages]},
                     {"staticMergedTriangles",work[kVSMWorkRasterStaticMergedTriangles]},
+                    {"coarseRasterGroups",work[kVSMWorkRasterCoarseGroups]},
                     {"cache",cache},{"statistics",stats},{"referenceHash",debug::debugSha256(reference.shadows[face])},
                     {"shadowHash",debug::debugSha256(candidate.shadows[face])}});
                 save();
@@ -3760,17 +3775,39 @@ public:
             const auto patchMoved = capture("MoveExposedCluster");
             require(patchMoved.shadows != roofMoved.shadows, "Previously occluded cluster cast no moving shadow after roof removal");
             require(graph.setNodeRuntimeProperty(compactId, "framesStaticThreshold", 2), "Shorten static demotion threshold");
-            const auto settling = capture("OneFrameStationary");
-            require(cacheOf(settling)[kVSMCacheDynamicCasters] == kPatchQuadCount,
-                "Freshly moved quads did not remain dynamic for the first stationary frame");
+            // The separate mover covers the patch on the floor. Other stationary
+            // casters demote on this same frame, but its motion still needs composition.
+            move(2, 1.f);
+            const auto settling = capture("MixedMotionAndDemotion");
+            require(cacheOf(settling)[kVSMCacheDynamicCasters] == kPatchQuadCount + 1 &&
+                settling.workload[activeEntry(settling).baseLayer][kVSMWorkRasterStaticMergedPages] > 0 &&
+                cacheOf(settling)[kVSMCacheRestoredPages] > 0 && settling.shadows != patchMoved.shadows,
+                "Independent mover lost its shadow update while other casters demoted");
             const auto demoted = capture("DemoteExposedCluster");
             const auto& demotionWork = demoted.workload[activeEntry(demoted).baseLayer];
-            require(cacheOf(demoted)[kVSMCacheDynamicCasters] == 0 &&
-                cacheOf(demoted)[kVSMCacheStaticCasters] == cacheOf(patchMoved)[kVSMCacheStaticCasters] + cacheOf(patchMoved)[kVSMCacheDynamicCasters] &&
+            require(cacheOf(demoted)[kVSMCacheDynamicCasters] == 1 &&
+                cacheOf(demoted)[kVSMCacheStaticCasters] == cacheOf(settling)[kVSMCacheStaticCasters] + kPatchQuadCount &&
                 cacheOf(demoted)[kVSMCacheStaticInvalidatedResidentPages] == 0 &&
                 demotionWork[kVSMWorkRasterStaticMergedPages] > 0 && demotionWork[kVSMWorkRasterStaticMergedTriangles] > 0 &&
-                cacheOf(demoted)[kVSMCacheStaticHZBBuiltPages] > 0 && demoted.shadows == patchMoved.shadows,
+                cacheOf(demoted)[kVSMCacheStaticHZBBuiltPages] > 0 && demoted.shadows == settling.shadows,
                 "Stationary quads did not merge into retained static pages and refresh their HZB");
+            require(cacheOf(demoted)[kVSMCacheCompositeDirtyFinePages] == 0 &&
+                cacheOf(demoted)[kVSMCacheCompositeDirtyCoarsePages] == 0 &&
+                cacheOf(demoted)[kVSMCacheRestoredPages] == 0 &&
+                cacheOf(demoted)[kVSMCacheDynamicDecodedTriangles] == 0,
+                "Pure static merge redrew composite depth despite unchanged receivers and casters");
+            require(demotionWork[kVSMWorkBuildDecodedTriangles] <= 2 * kPatchQuadCount &&
+                demotionWork[kVSMWorkRasterCoarseGroups] > 0 && demotionWork[kVSMWorkRasterCoarseGroups] <= 64,
+                "Pure static merge enumerated geometry outside the transitioned cluster");
+            // Force composition to consume the merged depth. Simply keeping
+            // the old composite while omitting the static writes would now
+            // lose the patch's previously observed exposed shadow.
+            move(2, .15f);
+            const auto restoredPatch = capture("RevealMergedPatch");
+            require(cacheOf(restoredPatch)[kVSMCacheRestoredPages] > 0 &&
+                cacheOf(restoredPatch)[kVSMCacheStaticHZBBuiltPages] == 0 &&
+                restoredPatch.shadows == patchMoved.shadows && restoredPatch.shadows != demoted.shadows,
+                "Restoring from incrementally merged static depth lost the patch shadow");
             const auto warmDemoted = capture("WarmAfterDemotion");
             require(cacheOf(warmDemoted)[kVSMCacheStaticHZBBuiltPages] == 0 && cacheOf(warmDemoted)[kVSMCacheDynamicDecodedTriangles] == 0,
                 "Idle demoted geometry still generated shadow work");
@@ -3778,8 +3815,13 @@ public:
             const auto repromoted = capture("MoveDemotedCluster");
             require(cacheOf(repromoted)[kVSMCachePromotedCasters] == kPatchQuadCount &&
                 cacheOf(repromoted)[kVSMCacheDynamicCasters] == kPatchQuadCount &&
-                repromoted.shadows == roofMoved.shadows && repromoted.shadows != demoted.shadows,
+                repromoted.shadows == roofMoved.shadows && repromoted.shadows != restoredPatch.shadows,
                 "Moving demoted quads did not erase the merged shadow at their old position");
+            const auto& mixedWork = repromoted.workload[activeEntry(repromoted).baseLayer];
+            require(mixedWork[kVSMWorkRasterStaticMergedTriangles] > 0 &&
+                cacheOf(repromoted)[kVSMCacheStaticDirtyCoarsePages] > 0 &&
+                cacheOf(repromoted)[kVSMCacheStaticDecodedTriangles] > mixedWork[kVSMWorkRasterStaticMergedTriangles],
+                "Concurrent promotion and demotion did not exercise both full static redraw and incremental merge");
             for (const char* name : {"Cached","Compact"}) {
                 require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "physicalPageBudget", 8), "Limit HZB pool");
             }

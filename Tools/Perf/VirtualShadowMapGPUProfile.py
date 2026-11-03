@@ -328,6 +328,11 @@ def build_frame(frame, mode):
             not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
         raise ValueError("Missing GPU build diagnostic faces, counters or legacy face statistics")
     identities, summed = set(), dict.fromkeys(names, 0)
+    static_updates = {
+        (f["lightIndex"], f["face"]): integer_counter(f["counters"]["staticDirtyFinePages"], "staticDirtyFinePages") +
+                                    integer_counter(f["counters"]["staticDirtyCoarsePages"], "staticDirtyCoarsePages")
+        for f in shadow.get("cacheDiagnostics", {}).get("faces", [])
+    }
     for face in faces:
         if not isinstance(face, dict):
             raise ValueError("Malformed GPU build diagnostic face")
@@ -375,7 +380,10 @@ def build_frame(frame, mode):
         word_maximum = sum(count * min(bounds[1], 512) for count, bounds in zip(bitset_histogram, BUILD_HISTOGRAM_RANGES))
         if not word_minimum <= counters.get("clusterBitsetWordTests", 0) <= word_maximum:
             raise ValueError("Bitset word tests fall outside histogram bounds (maximum 512 per level)")
-        if (stats[10] == 0 or stats[14] != 0 or stats[16] == 0) and any(counters.values()):
+        # Fine composite work can be zero on a demotion frame. Build still
+        # visits transition clusters, including when only the coarse page is updated.
+        dirty = stats[16] or static_updates.get((light, side), 0)
+        if (stats[10] == 0 or stats[14] != 0 or not dirty) and any(counters.values()):
             raise ValueError("Inactive or zero-dirty face published nonzero GPU build diagnostics")
     for name in names:
         if summed[name] != integer_counter(totals[name], name):

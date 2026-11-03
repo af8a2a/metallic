@@ -49,6 +49,9 @@ static const uint32_t kVirtualShadowMapCacheDiagnosticSize = 128;
 // Private metadata following the public diagnostics. Valid on demotion frames.
 static const uint32_t kVSMCacheMergeRemap = 41;
 static const uint32_t kVSMCacheMergeGeometry = 42;
+static const uint32_t kVSMCacheMergeDrawOffset = 43; // Indirect argument triples, after draw and compact ranges.
+static const uint32_t kVSMCacheMergeClustersBase = 44; // uint4 records in the page changes buffer.
+static const uint32_t kVSMCacheMergeClusterCount = 45;
 
 static const uint32_t kVSMCacheReasonCacheDisabled = 1u << 0;
 static const uint32_t kVSMCacheReasonCold = 1u << 1;

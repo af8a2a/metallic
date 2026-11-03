@@ -7,6 +7,7 @@
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
@@ -88,6 +89,7 @@ public:
     bool receiverCoverageRecords = false;
     std::string hdrOutput, hdrPass;
     bool collectGPUWork = false;
+    bool captureCacheDiagnostics = false;
     bool completed = false;
     uint32_t actualRenderWidth = 0, actualRenderHeight = 0;
     std::string error;
@@ -117,6 +119,7 @@ public:
             const bool stats = binding.id == "Shadows.statistics" || binding.id == "Shadows.lights" || binding.id == "Shadows.memory" ||
                 binding.id == "Shadows.budgetDiagnostics" ||
                 binding.id == "Shadows.lodStatistics" ||
+                (captureCacheDiagnostics && binding.id == "Shadows.cacheDiagnostics") ||
                 (collectGPUWork && (binding.id == "Shadows.workload" || binding.id == "Shadows.buildDiagnostics" ||
                     binding.id == "Shadows.projectionGridDiagnostics"));
             const bool image = (captureImages && (binding.id == "VBuffer.depth" ||
@@ -190,6 +193,20 @@ public:
         std::memcpy(lodStatistics.data(), rawLOD.data(), sizeof(lodStatistics));
         requireAcceptance(lodStatistics[0] == 2, "Unsupported VSM LOD statistics version");
         result["lodStatistics"] = lodStatistics;
+        if (captureCacheDiagnostics) {
+            const auto cache = read("Shadows.cacheDiagnostics");
+            requireAcceptance(cache.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapCacheDiagnosticSize,
+                "Unexpected VSM cache diagnostics layout");
+            Json cacheFaces = Json::array();
+            for (size_t layer = 0; layer < uint64_t(header.capacity) * 6; ++layer) {
+                std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount> words;
+                std::memcpy(words.data(), cache.data() + layer * sizeof(words), sizeof(words));
+                Json counters = Json::object();
+                for (size_t i = 0; i < words.size(); ++i) { counters[std::string(kVirtualShadowMapCacheDiagnosticNames[i])] = words[i]; }
+                cacheFaces.push_back({{"lightIndex", layer / 6}, {"face", layer % 6}, {"counters", std::move(counters)}});
+            }
+            result["cacheDiagnostics"] = {{"faces", std::move(cacheFaces)}};
+        }
         result["gpuWork"] = {{"version", 6}, {"enabled", collectGPUWork}};
         result["gpuBuildDiagnostics"] = {{"version", 5}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
@@ -681,6 +698,9 @@ public:
                 for (const auto& event : spec.value("events", Json::array())) {
                     requireAcceptance(!event.value("reloadScene", false) || (worldBinding && !spec.at("scene").is_null()),
                         "reloadScene requires world scene binding and an explicit scene; asset graph reload is not scene handoff");
+                    requireAcceptance(!event.contains("casterTranslations") || (worldBinding && !spec.at("scene").is_null() &&
+                        event.at("casterTranslations").is_array() && event.at("frame").get<uint32_t>() < frames),
+                        "casterTranslations requires a bound world scene, an event array and an in-range frame");
                 }
                 requireAcceptance(!shadows->properties.value("forceRedraw", false), "Acceptance begins with ordinary caching");
                 const std::string displayOutput = spec.value("output", std::string("FinalBlit.color"));
@@ -693,6 +713,8 @@ public:
                 RenderGraphPreviewRenderer preview;
                 VSMAcceptanceReceipt receipt;
                 receipt.collectGPUWork = gpuWorkDiagnostics;
+                receipt.captureCacheDiagnostics = spec.value("captureCacheDiagnostics", false);
+                requireAcceptance(!receipt.captureCacheDiagnostics || diagnostic, "Cache readback requires diagnostic mode");
                 receipt.receiverCoverageRecords = receiverCoverageRecords;
                 receipt.hdrOutput = comparisonOutput;
                 receipt.hdrPass = comparisonOutput.substr(0, comparisonOutput.rfind('.'));
@@ -762,6 +784,7 @@ public:
                 bool noRayCapabilities = true, noRayTracingAllocations = true;
                 for (uint32_t frame = 0; frame < frames; ++frame) {
                     bool sceneHandoff = false;
+                    Json movedCasters;
                     for (const auto& event : spec.value("events", Json::array())) {
                         if (event.at("frame").get<uint32_t>() != frame) { continue; }
                         if (event.contains("width") || event.contains("height")) {
@@ -772,6 +795,25 @@ public:
                         if (event.contains("camera")) { camera = event.at("camera"); }
                         if (event.value("cameraCut", false)) { view.cameraCut(); }
                         if (event.value("reloadScene", false)) { loadScene(); setLighting(); graph.markDirty(); sceneHandoff = true; }
+                        if (event.contains("casterTranslations")) {
+                            auto& doc = *documents.back();
+                            for (const auto& edit : event.at("casterTranslations")) {
+                                const auto name = edit.at("name").get<std::string>();
+                                const auto& nodes = doc.nodes();
+                                const auto matches = [&](const auto& node) { return node.meshIndex >= 0 && node.name == name; };
+                                const auto it = std::find_if(nodes.begin(), nodes.end(), matches);
+                                requireAcceptance(it != nodes.end() && std::none_of(it + 1, nodes.end(), matches),
+                                    "Expected one mesh node named " + name);
+                                const int32_t nodeIndex = static_cast<int32_t>(it - nodes.begin());
+                                const auto target = edit.at("translation").get<std::array<float, 3>>();
+                                auto local = it->localMatrix;
+                                local.SetTranslation(float3(target[0], target[1], target[2]));
+                                requireAcceptance(doc.setNodeLocalMatrix(nodeIndex, local), "Move acceptance caster " + name);
+                                const auto& world = doc.nodes()[nodeIndex].worldMatrix;
+                                movedCasters.push_back({{"name", name}, {"nodeIndex", nodeIndex}, {"translation", target},
+                                    {"worldTranslation", {world.a[12], world.a[13], world.a[14]}}});
+                            }
+                        }
                     }
                     Json currentCamera = camera;
                     if (spec.contains("cameraMotion")) {
@@ -833,6 +875,7 @@ public:
                         }
                     }
                     auto row = frameStatistics(preview);
+                    if (!movedCasters.is_null()) { row["casterTranslations"] = std::move(movedCasters); }
                     row["frame"] = frame; row["warmup"] = frame < warmup; row["width"] = width; row["height"] = height;
                     row["requestedRenderWidth"] = renderWidth; row["requestedRenderHeight"] = renderHeight;
                     row["extentSnapshot"] = extentSnapshot;

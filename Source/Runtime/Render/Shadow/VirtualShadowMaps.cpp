@@ -756,6 +756,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     std::vector<scene::Bounds> dirtyBounds, staticDirtyBounds, mergeBounds;
     std::vector<uint64_t> lastChangedFrames(layered ? casters.states.size() : 0);
     std::vector<uint64_t> dynamicCasters, demotedCasters;
+    std::vector<std::array<uint32_t, 2>> mergeTriangleRanges;
     if (reuse) {
         if (!directional) {
             projections = cache_->projections;
@@ -804,6 +805,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                     cacheFrame - lastChanged >= settings.framesStaticThreshold) {
                     demotedCasters.push_back(next->id);
                     mergeBounds.push_back(next->bounds);
+                    mergeTriangleRanges.push_back({next->triangleFirst, next->triangleCount});
                     lastChanged = 0;
                 }
                 if (lastChanged != 0) {
@@ -887,6 +889,29 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 std::bit_cast<uint32_t>(bounds.max.z), 0u});
         }
     }
+    if (mergeStatic) {
+        // Build and coarse raster use original 64-slot cluster identities. Distinct
+        // casters can share a cluster, including under the selected shadow LOD.
+        std::ranges::sort(mergeTriangleRanges);
+        const size_t base = pageChanges.size();
+        for (const auto& [first, count] : mergeTriangleRanges) {
+            const uint32_t end = first + count;
+            for (uint32_t triangle = first; triangle < end;) {
+                const uint32_t lane = triangle & 63u;
+                const uint32_t clusterFirst = triangle - lane;
+                const uint32_t length = std::min(64u - lane, end - triangle);
+                const uint64_t mask = (UINT64_MAX >> (64u - length)) << lane;
+                if (pageChanges.size() == base || pageChanges.back()[0] != clusterFirst) {
+                    pageChanges.push_back({clusterFirst, 0u, 0u, 0u});
+                }
+                pageChanges.back()[1] |= uint32_t(mask);
+                pageChanges.back()[2] |= uint32_t(mask >> 32u);
+                triangle += length;
+            }
+        }
+        cacheDiagnostics[kVSMCacheMergeClustersBase] = uint32_t(base);
+        cacheDiagnostics[kVSMCacheMergeClusterCount] = uint32_t(pageChanges.size() - base);
+    }
     phase.work("remapBytes", pageChanges.size() * sizeof(pageChanges[0]));
     phase.work("denseRemapBytes", uint64_t(push.totalPages) * 8);
     phase.work("remapLevels", settings.clipmapCount);
@@ -922,6 +947,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint32_t compactBatches = compactBuild ? (clusterCapacity + kDrawBatchSize - 1) / kDrawBatchSize : 0u;
     const uint64_t compactWords = compactBuild ? 1u + uint64_t(clusterCapacity) * 2u : 0u;
     const uint64_t compactArgumentOffset = uint64_t(push.batchCount + push.coarseBatchCount) * 12u;
+    const uint32_t mergeDrawOffset = push.batchCount + push.coarseBatchCount + compactBatches;
+    cacheDiagnostics[kVSMCacheMergeDrawOffset] = mergeDrawOffset;
     // The original range is the allocator/cache ownership table. Projection
     // mappings are rebuilt into a disjoint tail after Finalize publishes validity.
     const uint64_t validReceiverMaskBytes = receiverMask ? ((uint64_t(push.totalPages) + 1u) / 2u) * 16u : 0u;
@@ -933,7 +960,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
                 kVSMReceiverCoverageRecordWords * sizeof(uint32_t) : 0u),
-        projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants), compactArgumentOffset + uint64_t(compactBatches) * 12u,
+        projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants),
+        uint64_t(mergeDrawOffset + (mergeStatic ? push.batchCount + push.coarseBatchCount : 0u)) * 12u,
         pageChanges.size() * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + receiverMaskWords + hierarchyWords + compactWords) * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, 8, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
@@ -1454,8 +1482,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                     if (auto r = barrier({3, 4}); !r) { return std::unexpected(r.error()); }
                 }
             }
-            // Finalize writes the original draw-argument prefix only. The
-            // indirect reads above address the disjoint appended dispatch tail.
+            // Finalize's draw arguments are disjoint from these compact dispatch arguments.
         }
     }
     buildGpu.next("VSM build finalize sync");
@@ -1519,11 +1546,12 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             }
             rasterGpu.next("VSM raster coarse");
             const uint32_t rasterLayer = staticPass ? 2u : (visibilityBatches ? 4u : 0u);
+            const uint32_t drawOffset = mergeStatic && !staticPass ? mergeDrawOffset : 0u;
             push.rasterCoarse = rasterLayer | 1u;
             for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
                 if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                auto args = state->resources->buffers[7]->slice({uint64_t(push.batchCount + batch) * 12, 12});
+                auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + push.batchCount + batch) * 12, 12});
                 if (!args) { return std::unexpected(args.error()); }
                 if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
             }
@@ -1532,7 +1560,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
                 if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                auto args = state->resources->buffers[7]->slice({uint64_t(batch) * 12, 12});
+                auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + batch) * 12, 12});
                 if (!args) { return std::unexpected(args.error()); }
                 if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
             }
