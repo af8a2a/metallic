@@ -558,5 +558,272 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPropagatedMappingTest);
+
+class VirtualShadowMapProjectedRayStateTest final : public RHITest
+{
+public:
+    VirtualShadowMapProjectedRayStateTest() { name = "virtual_shadow_map_projected_ray_state"; type = RHITestType::Rendering; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory / "VirtualShadowMapProjectedRayState");
+        std::filesystem::create_directories(directory);
+        Json report{{"passed", false}, {"cases", Json::array()},
+            {"scope", "Dyadic/shared-Z directional ray coordinates, integer page ancestry and constrained GPU SMRT samples inside Mark intervals; finite fixture coverage, not a universal floating-point certificate"}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapProjectedRayState.json") << report.dump(2) << '\n'; };
+        try {
+            auto created = createDevice({.applicationName = "VSM projected ray state",
+                .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+                .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
+                .enableRayTracingAccelerationStructure = false, .enableRayQuery = false,
+                .enableRayTracingPipeline = false, .enableClusterAccelerationStructure = false,
+                .validationSink = validation.sink()});
+            if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless and mesh shader module support"); }
+            check(created, "Projected ray device");
+            auto& device = **created;
+            MappingCommands gpu(device);
+            auto atlas = makeHeight(device, gpu, 16, false);
+            auto registry = ResourceRegistry::forDevice(device); check(registry, "Projected ray registry");
+            struct Push
+            {
+                uint32_t pages, projections, statistics, atlas, positions, output, count, axis;
+                uint32_t levels, pageSize, physicalPagesX, reserved;
+            };
+            struct Projection
+            {
+                std::array<float, 4> rowX, rowY, rowZ, rowW, metric;
+                std::array<uint32_t, 4> page;
+                std::array<float, 4> originNear;
+            };
+            struct Input
+            {
+                std::array<float, 4> position, endpoint, dither;
+                std::array<uint32_t, 4> control;
+            };
+            static_assert(sizeof(Projection) == 112 && sizeof(Input) == 64 && sizeof(Push) == 48);
+            constexpr uint64_t abi = 0x56534d5052415931ull;
+            constexpr uint32_t levels = 12, axis = 8, pageSize = 4, stride = axis * axis;
+            constexpr uint32_t totalPages = levels * stride + 1, rayCount = 6, samples = 11;
+            using Packet = std::array<std::array<uint32_t, 4>, 10>;
+            std::array<ComputeKernel, 2> kernels;
+            std::string log;
+            const std::array capabilities{"spvMeshShadingEXT"};
+            const std::array macros{SlangMacroDefine{"VSM_PROPAGATED_MAPPING_PROBE", "1"},
+                SlangMacroDefine{"VSM_PROJECTED_RAY_PROBE", "1"}, SlangMacroDefine{"VSM_DIRECTIONAL_PROJECTION", "1"},
+                SlangMacroDefine{"VSM_DIRECTIONAL_MARK", "1"}};
+            for (uint32_t index = 0; index < kernels.size(); ++index) {
+                auto shader = compileSlangShaderToSpirv({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
+                    .entryPointName = index == 0 ? "propagatedMappingBuildProbeMain" : "projectedRayStateProbeMain",
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .capabilities = capabilities, .macroDefines = macros}, log);
+                check(shader, "Projected ray compile: " + log);
+                check(kernels[index].initialize(device, {.spirv = shader->spirv,
+                    .parameters = parameterAbi<Push>(abi, ParameterTransport::InlinePush)}, log), "Projected ray pipeline: " + log);
+            }
+            const auto buffer = [&](uint64_t bytes, uint32_t elementSize, MemoryLocation location) {
+                auto result = device.createBuffer({.size = bytes, .structureStride = elementSize,
+                    .usage = BufferUsageBits::Storage, .memoryLocation = location});
+                check(result, "Projected ray buffer"); return std::move(*result);
+            };
+            auto pages = buffer(totalPages * 32u, 16, MemoryLocation::HostUpload);
+            auto projections = buffer((levels + 1u) * sizeof(Projection), sizeof(Projection), MemoryLocation::HostUpload);
+            auto statistics = buffer(32u * 4u, 4, MemoryLocation::HostUpload);
+            auto inputs = buffer(rayCount * sizeof(Input), sizeof(Input), MemoryLocation::HostUpload);
+            auto output = buffer(rayCount * samples * sizeof(Packet), 16, MemoryLocation::HostReadback);
+            const auto upload = [&](Buffer& destination, const void* data, size_t bytes) {
+                void* mapped = destination.map(); check(mapped != nullptr, "Projected ray upload");
+                std::memcpy(mapped, data, bytes); destination.flush(); destination.unmap();
+            };
+            struct Case { const char* name; uint32_t resident, first; int x, y; bool overflow, coarseValid; float offset; };
+            const std::array cases{
+                Case{"own",0,0,0,0,false,true,0}, Case{"nonzero-receiver-level",2,2,0,0,false,true,0},
+                Case{"ancestor",2,0,0,0,false,true,0}, Case{"negative-origin",2,0,-5,-3,false,true,0},
+                Case{"level-delta-eleven",11,0,0,0,false,true,0}, Case{"coarse",levels,0,0,0,false,true,0},
+                Case{"overflow",0,0,0,0,true,true,0}, Case{"coarse-invalid",levels,0,0,0,false,false,0},
+                Case{"outside-coarse",levels,0,0,0,true,true,300}};
+            uint64_t tested = 0, coverage = 0;
+            for (const auto& fixture : cases) {
+                validation.phase(fixture.name);
+                std::array<Projection, levels + 1> transforms{};
+                for (uint32_t level = 0; level <= levels; ++level) {
+                    const bool coarse = level == levels;
+                    const float scale = coarse ? 1.f / 64.f : std::ldexp(1.f, -int(level));
+                    const float x = coarse ? 0.f : std::floor(float(fixture.x) * std::ldexp(1.f, -int(level)));
+                    const float y = coarse ? 0.f : std::floor(float(fixture.y) * std::ldexp(1.f, -int(level)));
+                    const uint32_t pageAxis = coarse ? 1u : axis;
+                    transforms[level] = {{scale,0,0,coarse ? 0.f : -x * (2.f / axis)},
+                        {0,scale,0,coarse ? 0.f : -y * (2.f / axis)}, {0,0,1.f/32.f,.5f}, {0,0,0,1},
+                        {1.f/scale,2.f/(scale*pageAxis*pageSize),.001f,0},
+                        {coarse ? totalPages-1u : level*stride,pageAxis,level,coarse ? 1u : 0u}, {x,y,0,0}};
+                }
+                std::vector<std::array<uint32_t, 4>> table(totalPages * 2u, {UINT32_MAX,0,0,0});
+                for (uint32_t level = 0; level < levels; ++level) {
+                    for (uint32_t page = 0; page < stride; ++page) {
+                        if (level == fixture.resident) { table[level*stride+page] = {5u,2u,level,1u}; }
+                    }
+                }
+                table[totalPages-1u] = {0u,2u,levels,fixture.coarseValid ? 1u : 0u};
+                std::array<uint32_t, 32> stats{}; stats[5] = fixture.overflow;
+                std::array<Input, rayCount> rays{};
+                for (uint32_t ray = 0; ray < rayCount; ++ray) {
+                    const float x = fixture.x * (2.f/axis) + fixture.offset + (ray & 1u ? -.3125f : .28125f);
+                    const float y = fixture.y * (2.f/axis) + (ray & 2u ? -.21875f : .15625f);
+                    const float z = ray < 2 ? -2.f + ray : 0.f;
+                    rays[ray] = {{x,y,z,0}, {x+.375f,y-.25f,z+1.5f,0}, {.015625f,-.03125f,.0078125f,0},
+                        {fixture.first,ray < 2 ? 0u : ray-2u,ray*3u,ray < 2 ? 0u : 1u}};
+                }
+                upload(*pages, table.data(), table.size()*sizeof(table[0]));
+                upload(*projections, transforms.data(), sizeof(transforms)); upload(*statistics, stats.data(), sizeof(stats));
+                upload(*inputs, rays.data(), sizeof(rays));
+                gpu.begin(); gpu.commands->hostWriteBarrier();
+                const BufferBarrierDesc recycled{.buffer=pages.get(),
+                    .before={PipelineStageBits::AllCommands,AccessBits::MemoryRead|AccessBits::MemoryWrite},
+                    .after={PipelineStageBits::ComputeShader,AccessBits::ShaderRead|AccessBits::ShaderWrite}};
+                check(gpu.commands->synchronize({.buffers={&recycled,1}}), "Projected ray metadata recycle");
+                ParameterWriter writer(device, **registry);
+                const Push push{writer.buffer(pages.get()).index,writer.buffer(projections.get()).index,
+                    writer.buffer(statistics.get()).index,writer.sampledImage(atlas.view.get()).index,
+                    writer.buffer(inputs.get()).index,writer.buffer(output.get()).index,rayCount,axis,levels,pageSize,4,0};
+                auto parameters = writer.encode(push, abi, ParameterTransport::InlinePush); check(parameters, "Projected ray parameters");
+                check(kernels[0].dispatch(*gpu.commands, *parameters, (totalPages+63u)/64u), "Projected ray mapping");
+                const BufferBarrierDesc ready{.buffer=pages.get(), .before={PipelineStageBits::ComputeShader,AccessBits::ShaderWrite},
+                    .after={PipelineStageBits::ComputeShader,AccessBits::ShaderRead}};
+                check(gpu.commands->synchronize({.buffers={&ready,1}}), "Projected ray mapping ready");
+                check(kernels[1].dispatch(*gpu.commands, *parameters, 1), "Projected ray dispatch");
+                const BufferBarrierDesc host{.buffer=output.get(), .before={PipelineStageBits::ComputeShader,AccessBits::ShaderWrite},
+                    .after={PipelineStageBits::Host,AccessBits::HostRead}};
+                check(gpu.commands->synchronize({.buffers={&host,1}}), "Projected ray readback ready"); gpu.finish();
+                output->invalidate(); const void* mapped = output->map(); check(mapped != nullptr, "Projected ray map");
+                std::array<Packet, rayCount*samples> results{}; std::memcpy(results.data(), mapped, sizeof(results)); output->unmap();
+                double maximumError = 0;
+                uint64_t caseCoverage = 0;
+                const auto value = [](uint32_t bits) { return std::bit_cast<float>(bits); };
+                const auto close = [&](float actual, double expected, const std::string& label) {
+                    const double error = std::abs(double(actual)-expected);
+                    maximumError = std::max(maximumError,error);
+                    check(std::isfinite(actual) && error <= 16.0*std::numeric_limits<float>::epsilon()*std::max(1.0,std::abs(expected)),
+                        std::string(fixture.name)+": "+label+" exceeds the float coordinate bound");
+                };
+                for (uint32_t ray = 0; ray < rayCount; ++ray) {
+                    for (uint32_t step = 0; step < samples; ++step) {
+                        const auto& result = results[ray*samples+step];
+                        const auto& input = rays[ray];
+                        const double time = value(result[3][3]);
+                        check(time >= 0 && time <= 1 && (step != 0 || time == 0) && (step != 1 || time == 1) &&
+                            (step != samples-1 || time == 0), "Projected ray endpoints or sample time changed");
+                        std::array<double,3> endpoint{}, dither{}, point{}, lookup{};
+                        for (uint32_t component = 0; component < 3; ++component) {
+                            endpoint[component] = value(result[3][component]); dither[component] = value(result[4][component]);
+                            if (input.control[3] == 0) {
+                                check(endpoint[component] == input.endpoint[component] && dither[component] == input.dither[component],
+                                    "Synthetic projected ray input layout changed");
+                            }
+                            point[component] = double(input.position[component]) + time*(endpoint[component]-input.position[component]);
+                            lookup[component] = point[component]+dither[component];
+                        }
+                        const auto project = [&](const auto& position, uint32_t level) {
+                            std::array<double,3> p{};
+                            const auto& transform = transforms[level];
+                            const std::array rows{transform.rowX,transform.rowY,transform.rowZ};
+                            for (uint32_t component = 0; component < 3; ++component) {
+                                p[component] = rows[component][3];
+                                for (uint32_t axisIndex = 0; axisIndex < 3; ++axisIndex) { p[component] += double(rows[component][axisIndex])*position[axisIndex]; }
+                            }
+                            return p;
+                        };
+                        const auto contains = [&](const auto& p, uint32_t level, bool inset) {
+                            const double margin = inset ? 1.0/(transforms[level].page[1]*pageSize) : 0.0;
+                            return p[0] >= -1+margin && p[0] < 1-margin && p[1] >= -1+margin && p[1] < 1-margin && p[2] >= 0 && p[2] <= 1;
+                        };
+                        const auto baseLookup = project(lookup,fixture.first), baseCompare = project(point,fixture.first);
+                        for (uint32_t component = 0; component < 3; ++component) {
+                            close(value(result[5][component]),baseLookup[component],"lookup origin/step");
+                            close(value(result[6][component]),baseCompare[component],"undithered origin/step");
+                        }
+                        std::array<double,3> receiver{input.position[0],input.position[1],input.position[2]};
+                        const double receiverDepth = project(receiver,fixture.first)[2];
+                        close(value(result[4][3]),receiverDepth,"receiver depth");
+                        close(value(result[5][3]),1.0/32.0,"depth scale");
+                        close(value(result[2][3]),(.75-receiverDepth)*32.0,"linear ray depth");
+                        uint32_t first = levels;
+                        for (uint32_t level = fixture.first; level < levels; ++level) {
+                            if (contains(project(lookup,level),level,true)) { first=level; break; }
+                        }
+                        check(result[9][3] == first, std::string(fixture.name)+": first containing clipmap differs from the double oracle");
+                        uint32_t expectedLevel = levels;
+                        std::array<int64_t,2> parentPage{};
+                        if (!fixture.overflow && first < levels && fixture.resident >= first && fixture.resident < levels) {
+                            const auto& source = transforms[first];
+                            const auto& target = transforms[fixture.resident];
+                            const uint32_t delta = fixture.resident-first;
+                            for (uint32_t component = 0; component < 2; ++component) {
+                                const float projected = value(result[9][component]);
+                                const auto expected = project(lookup,first);
+                                close(projected,expected[component],"first clipmap position");
+                                const uint32_t texel = uint32_t(std::floor((projected*.5f+.5f)*float(axis*pageSize)));
+                                const int64_t worldPage = int64_t(texel/pageSize)+int64_t(source.originNear[component])-int64_t(axis/2u);
+                                parentPage[component] = int64_t(std::floor(double(worldPage)/std::ldexp(1.0,int(delta))))-
+                                    int64_t(target.originNear[component])+int64_t(axis/2u);
+                            }
+                            if (parentPage[0] >= 0 && parentPage[0] < axis && parentPage[1] >= 0 && parentPage[1] < axis) { expectedLevel=fixture.resident; }
+                        }
+                        const auto expectedLookup = project(lookup,expectedLevel), expectedCompare = project(point,expectedLevel);
+                        const bool expectedValid = expectedLevel < levels || (fixture.coarseValid && contains(expectedLookup,levels,false));
+                        check(result[0][0] == uint32_t(expectedValid) && result[0][1] == expectedLevel,
+                            std::string(fixture.name)+": lookup validity/level differs from integer ancestry oracle");
+                        for (uint32_t component = 0; component < 3; ++component) {
+                            close(value(result[2][component]),expectedCompare[component],"target undithered comparison");
+                            if (expectedValid) { close(value(result[1][component]),expectedLookup[component],"target lookup"); }
+                        }
+                        if (expectedValid) {
+                            const uint32_t resolution = transforms[expectedLevel].page[1]*pageSize;
+                            for (uint32_t component = 0; component < 2; ++component) {
+                                const double bound = 16.0*std::numeric_limits<float>::epsilon()*std::max(1.0,std::abs(expectedLookup[component]));
+                                const double lower = expectedLevel < levels ? double(parentPage[component]*pageSize) : 0.0;
+                                const double upper = expectedLevel < levels ? lower+pageSize-1u : double(resolution-1u);
+                                const uint32_t minimum = uint32_t(std::floor(std::clamp((expectedLookup[component]-bound)*.5*resolution+.5*resolution,lower,upper)));
+                                const uint32_t maximum = uint32_t(std::floor(std::clamp((expectedLookup[component]+bound)*.5*resolution+.5*resolution,lower,upper)));
+                                check(result[0][component+2u] >= minimum && result[0][component+2u] <= maximum,
+                                    std::string(fixture.name)+": texel is outside its rounded integer parent-page interval");
+                            }
+                            const uint32_t physical = expectedLevel < levels ? 5u : 0u;
+                            const uint32_t x = (physical%4u)*pageSize+result[0][2]%pageSize;
+                            const uint32_t y = (physical/4u)*pageSize+result[0][3]%pageSize;
+                            close(value(result[1][3]),double(y*16u+x)/255.0,"physical atlas address");
+                        }
+                        check(result[7][1] == 0, std::string(fixture.name)+": a generated projected sample lies outside the original Mark interval");
+                        check(result[7][2] == 1, "Projected lookup did not retain its filtered-query count");
+                        if (input.control[3] != 0) {
+                            double lengthSquared = 0;
+                            for (uint32_t component=0; component<3; ++component) { lengthSquared += std::pow(endpoint[component]-input.position[component],2); }
+                            const double length = std::sqrt(lengthSquared);
+                            check(std::abs(length-3.0) < 1e-4 && (endpoint[2]-input.position[2])/length >= std::cos(.08)-1e-5,
+                                "Mark coverage ray is outside the authored light cone");
+                            const double texel = transforms[fixture.first].metric[1];
+                            check(std::abs(dither[0]) <= texel*.5+1e-6 && std::abs(dither[1]) <= texel*.5+1e-6 && dither[2] == 0,
+                                "Mark coverage dither exceeds the receiver-selected texel");
+                            caseCoverage += result[7][0];
+                        }
+                        ++tested;
+                    }
+                }
+                coverage += caseCoverage;
+                report["cases"].push_back({{"name",fixture.name},{"samples",rayCount*samples},{"receiverLevel",fixture.first},
+                    {"residentLevel",fixture.resident},{"overflow",fixture.overflow},{"maximumCoordinateError",maximumError},
+                    {"markCoverageSamples",caseCoverage},{"zeroMarkCoverageMisses",true}}); save();
+            }
+            check(coverage > 0, "Projected ray Mark coverage fixture was empty");
+            report["testedRaySamples"] = tested; report["markCoverageSamples"] = coverage;
+            report["zeroMarkCoverageMisses"] = true; report["validation"] = validation.snapshot();
+            check(!validation.failed(), "Projected ray validation error"); report["passed"] = true; save();
+            return RHITestResult::pass("Projected directional rays match double coordinate/integer ancestry oracles and constrained SMRT samples remain inside Mark coverage");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectedRayStateTest);
 } // namespace
 } // namespace metallic::tests

@@ -1058,6 +1058,23 @@ ShadowProjection vsmLookupProjection(ShadowLookup sample)
     return projections[sample.level];
 }
 
+// The directional mapping producer certifies a dyadic ancestor and shared Z.
+// Preserve its integer page ownership while continuing the continuous ray XY.
+void vsmMapDirectionalAncestor(uint4 mapping, float2 sourceTranslation, inout float3 projected,
+    inout uint2 texel, StructuredBuffer<ShadowProjection> projections, ShadowPush push, uint level)
+{
+    uint targetLevel = mapping.y;
+    float scale = asfloat((127u - (targetLevel - level)) << 23u);
+    float2 translation = float2(projections[targetLevel].rowX.w, projections[targetLevel].rowY.w) -
+        sourceTranslation * scale;
+    projected.xy = projected.xy * scale + translation;
+    uint2 page = uint2(mapping.z & 0xffffu, mapping.z >> 16u);
+    uint2 firstTexel = page * push.pageSize;
+    float2 address = (projected.xy * 0.5 + 0.5) * float(projections[targetLevel].page.y * push.pageSize);
+    texel = uint2(clamp(address, float2(firstTexel), float2(firstTexel + push.pageSize - 1u)));
+    vsmWorkAdd(push, kVSMWorkProjectionMappedAncestors, 1u);
+}
+
 bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourcePage, inout float3 projected,
     inout uint2 texel, StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
     ShadowPush push, uint level, out uint physicalPage, out uint targetLevel)
@@ -1076,20 +1093,7 @@ bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourceP
     if (mapping.w == 1u) { return true; }
     if (targetLevel == push.clipmapCount) { return true; }
     if (mapping.w == 2u) {
-        float scale = asfloat((127u - (targetLevel - level)) << 23u);
-        float2 translation = float2(projections[targetLevel].rowX.w, projections[targetLevel].rowY.w) -
-            sourceTranslation * scale;
-        // The integer hierarchy owns the physical page. Keep continuous XY
-        // for receiver-plane depth correction, but clamp rounded addressing
-        // into that page instead of reprojecting/reselecting at its boundary.
-        projected.xy = projected.xy * scale + translation;
-        uint2 page = uint2(mapping.z & 0xffffu, mapping.z >> 16u);
-        uint2 firstTexel = page * push.pageSize;
-        float2 address = (projected.xy * 0.5 + 0.5) * float(projections[targetLevel].page.y * push.pageSize);
-        texel = uint2(clamp(address, float2(firstTexel), float2(firstTexel + push.pageSize - 1u)));
-        // makeProjections and cache reuse share rowZ across directional
-        // clipmaps: source depth remains in the target's depth space.
-        vsmWorkAdd(push, kVSMWorkProjectionMappedAncestors, 1u);
+        vsmMapDirectionalAncestor(mapping, sourceTranslation, projected, texel, projections, push, level);
         return true;
     }
     // Only local-light fallback needs a full target projection here.
@@ -1191,6 +1195,145 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
     return result;
 }
 
+#if VSM_DIRECTIONAL_PROJECTION
+// makeProjections owns this contract: fine XY axes are dyadic, every level
+// (including coarse) shares rowZ, and the separate coarse XY encloses the scene.
+// Keep both origins: lookup has texel dither; receiver-plane comparison does not.
+struct VSMDirectionalRayState
+{
+    float3 comparisonOrigin;
+    float3 lookupOrigin;
+    float3 step;
+    float2 coarseComparisonOrigin;
+    float2 coarseLookupOrigin;
+    float2 coarseStep;
+    float2 sourceTranslation;
+    uint receiverLevel;
+    uint coarseLevel;
+    float receiverDepth;
+    float depthScale;
+};
+
+VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endpoint, float3 dither,
+    StructuredBuffer<ShadowProjection> projections, ShadowPush push, uint receiverLevel)
+{
+    VSMDirectionalRayState ray;
+    ShadowProjection first = projections[receiverLevel];
+    ShadowProjection coarse = projections[push.clipmapCount];
+    float3 direction = endpoint - position;
+    ray.comparisonOrigin = vsmProjectPosition(position, first);
+    ray.lookupOrigin = vsmProjectPosition(position + dither, first);
+    ray.step = float3(dot(first.rowX.xyz, direction), dot(first.rowY.xyz, direction), dot(first.rowZ.xyz, direction));
+    ray.coarseComparisonOrigin = vsmProjectPosition(position, coarse).xy;
+    ray.coarseLookupOrigin = vsmProjectPosition(position + dither, coarse).xy;
+    ray.coarseStep = float2(dot(coarse.rowX.xyz, direction), dot(coarse.rowY.xyz, direction));
+    ray.sourceTranslation = float2(first.rowX.w, first.rowY.w);
+    ray.receiverLevel = receiverLevel;
+    ray.coarseLevel = push.clipmapCount;
+    ray.receiverDepth = ray.comparisonOrigin.z;
+    ray.depthScale = length(first.rowZ.xyz);
+    return ray;
+}
+
+float3 vsmDirectionalRayPosition(VSMDirectionalRayState ray, float time, uint level,
+    ShadowProjection projection, bool lookup)
+{
+    float3 position = (lookup ? ray.lookupOrigin : ray.comparisonOrigin) + time * ray.step;
+    if (level == ray.coarseLevel) {
+        position.xy = (lookup ? ray.coarseLookupOrigin : ray.coarseComparisonOrigin) + time * ray.coarseStep;
+    } else {
+        float scale = asfloat(uint(127 - (int(level) - int(ray.receiverLevel))) << 23u);
+        float2 translation = float2(projection.rowX.w, projection.rowY.w) - ray.sourceTranslation * scale;
+        position.xy = position.xy * scale + translation;
+    }
+    return position;
+}
+
+bool vsmDirectionalRayMapping(float2 sourceTranslation, uint sourcePage, inout float3 projected,
+    inout uint2 texel, StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
+    ShadowPush push, uint level, out uint physicalPage, out uint targetLevel)
+{
+    uint4 mapping = pages[push.totalPages + sourcePage];
+    vsmWorkAdd(push, kVSMWorkProjectionMappingLoads, 1u);
+    physicalPage = mapping.x;
+    targetLevel = mapping.y;
+    if (mapping.w == 0u) {
+        vsmWorkAdd(push, kVSMWorkProjectionMappingSlowPaths, 1u);
+        return false;
+    }
+    if (mapping.w == 1u || targetLevel == push.clipmapCount) { return true; }
+    // Directional propagation publishes only own/relative tags. Unsupported
+    // integer layouts publish tag zero and retain the explicit level search.
+    vsmMapDirectionalAncestor(mapping, sourceTranslation, projected, texel, projections, push, level);
+    return true;
+}
+
+ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
+    StructuredBuffer<ShadowProjection> projections, ShadowPush push, inout uint3 counts)
+{
+    ShadowLookup result;
+    result.projectionsHandle = push.projections;
+    result.valid = false;
+    result.storedDepth = 0.0;
+    result.level = push.clipmapCount;
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    uint physicalPage = 0xffffffffu;
+    ++counts.x;
+    if (statistics[5] == 0u) {
+        // A reverse march can re-enter finer clipmaps, so restart at the
+        // receiver-selected level rather than retaining a previous ancestor.
+        for (uint level = ray.receiverLevel; level < push.clipmapCount; ++level) {
+            ShadowProjection projection = projections[level];
+            float3 p = vsmDirectionalRayPosition(ray, time, level, projection, true);
+            if (!vsmContains(p, projection, push.pageSize, true)) { continue; }
+            uint2 texel = vsmVirtualTexel(p, projection, push.pageSize);
+            uint page = vsmVirtualPage(texel, projection, push.pageSize);
+            uint mappedPhysical, mappedLevel;
+            if (vsmDirectionalRayMapping(float2(projection.rowX.w, projection.rowY.w), page, p, texel,
+                    projections, pages, push, level, mappedPhysical, mappedLevel)) {
+                if (mappedLevel == push.clipmapCount) { break; }
+                physicalPage = mappedPhysical; result.level = mappedLevel;
+                result.projected = p; result.virtualTexel = texel;
+                break;
+            }
+            vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
+            uint4 entry = pages[page];
+            if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 1u) == 0u) { continue; }
+            physicalPage = entry.x; result.level = level;
+            result.projected = p; result.virtualTexel = texel;
+            break;
+        }
+    }
+    if (physicalPage == 0xffffffffu) {
+        ShadowProjection coarse = projections[push.clipmapCount];
+        result.projected = vsmDirectionalRayPosition(ray, time, push.clipmapCount, coarse, true);
+        if (!vsmContains(result.projected, coarse, push.pageSize, false)) { return result; }
+        vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
+        uint4 entry = pages[coarse.page.x];
+        if ((entry.y & 2u) == 0u || (entry.w & 1u) == 0u) {
+            ++counts.z;
+            return result;
+        }
+        physicalPage = entry.x;
+        result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
+        ++counts.y;
+    }
+    uint2 physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
+    uint2 texel = physical * push.pageSize + result.virtualTexel % push.pageSize;
+    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
+    result.storedDepth = atlas.Load(int3(texel, 0));
+    vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
+    result.valid = true;
+    return result;
+}
+
+float vsmDirectionalRayDepth(float depth, VSMDirectionalRayState ray)
+{
+    return (depth - ray.receiverDepth) / ray.depthScale;
+}
+#endif
+
 float vsmRayDepth(float depth, ShadowProjection projection, uint2 virtualTexel, float3 receiver, uint pageSize)
 {
 #if VSM_DIRECTIONAL_PROJECTION
@@ -1239,6 +1382,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, pixel);
         float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, pixel);
+#if VSM_DIRECTIONAL_PROJECTION
+        VSMDirectionalRayState rayState = vsmCreateDirectionalRayState(position, endpoint, dither, projections, push, receiverLevel);
+#endif
         float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
             1.0 / length(endpoint - projections[0].originNear.xyz) -
             1.0 / length(position - projections[0].originNear.xyz));
@@ -1250,15 +1396,29 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         // bounded slope through that gap instead of inventing an intersection.
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, pixel);
+#if VSM_DIRECTIONAL_PROJECTION
+            ShadowLookup sample = vsmDirectionalRayLookup(time, rayState, projections, push, filterCounts);
+#else
             float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
             ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
+#endif
             if (!sample.valid) { continue; }
             ShadowProjection projection = vsmLookupProjection(sample);
+#if VSM_DIRECTIONAL_PROJECTION
+            // Comparison follows the undithered ray in the selected level.
+            // The lookup's mapped/clamped projected coordinate is not that ray.
+            float3 projected = vsmDirectionalRayPosition(rayState, time, sample.level, projection, false);
+            // The world-position argument is unused by this directional permutation.
+            float compare = vsmComparisonDepth(position, normal, projected, sample.virtualTexel, projection, push.pageSize);
+            float reference = vsmDirectionalRayDepth(compare, rayState);
+            float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
+#else
             float compare = vsmComparisonDepth(point, normal, vsmProjectPosition(point, projection),
                 sample.virtualTexel, projection, push.pageSize);
             float reference = vsmRayDepth(compare, projection, sample.virtualTexel, position, push.pageSize);
             float depth = push.lightType != 0u && sample.storedDepth == 0.0 ? 0.0 :
                 vsmRayDepth(sample.storedDepth, projection, sample.virtualTexel, position, push.pageSize);
+#endif
             if (!hasHistory) {
                 // This ordinary comparison also retains blockers beyond the
                 // bounded search; there is no separate hard-shadow tail.

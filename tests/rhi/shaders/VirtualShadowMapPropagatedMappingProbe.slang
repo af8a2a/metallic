@@ -70,3 +70,91 @@ void propagatedMappingLookupProbeMain(uint3 id : SV_DispatchThreadID)
     output[id.x * 8u + 6u] = targetPosition;
     output[id.x * 8u + 7u] = targetAddress;
 }
+
+#if VSM_PROJECTED_RAY_PROBE
+struct ProjectedRayProbeInput
+{
+    float4 position;
+    float4 endpoint;
+    float4 dither;
+    uint4 control; // receiver level, ray, phase, generate a real SMRT ray
+};
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void projectedRayStateProbeMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= mappingProbe.count) { return; }
+    StructuredBuffer<ProjectedRayProbeInput> inputs = resolveUniform(ResourceHandle<StructuredBuffer<ProjectedRayProbeInput>>(mappingProbe.positions));
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(mappingProbe.projections));
+    RWStructuredBuffer<uint4> output = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(mappingProbe.output));
+    ProjectedRayProbeInput input = inputs[id.x];
+    ShadowPush push = propagatedMappingProbePush();
+    push.rayLength = 3.0;
+    push.angularRadius = 0.08;
+    push.rayCount = 4u;
+    push.samplesPerRay = 8u;
+    push.samplePhase = input.control.z;
+    uint2 pixel = uint2(id.x * 37u + 3u, input.control.z * 11u + 5u);
+    float3 position = input.position.xyz;
+    float3 endpoint = input.endpoint.xyz, dither = input.dither.xyz;
+    if (input.control.w != 0u) {
+        endpoint = vsmRayEndpoint(position, projections[0], push, input.control.y, pixel);
+        dither = vsmRayDither(position, projections[input.control.x], push, input.control.y, pixel);
+    }
+    VSMDirectionalRayState ray = vsmCreateDirectionalRayState(position, endpoint, dither,
+        projections, push, input.control.x);
+    float3 toLight = normalize(projections[0].rowZ.xyz);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    float texelSize = projections[input.control.x].metric.y;
+    float coneRadius = push.rayLength * sin(push.angularRadius);
+    for (uint sampleIndex = 0u; sampleIndex < 11u; ++sampleIndex) {
+        float time = sampleIndex == 0u ? 0.0 : sampleIndex == 1u ? 1.0 :
+            vsmRaySampleTime(sampleIndex - 2u, push, pixel);
+        uint3 counts = 0u;
+        ShadowLookup sample = vsmDirectionalRayLookup(time, ray, projections, push, counts);
+        float3 baseLookup = vsmDirectionalRayPosition(ray, time, input.control.x, projections[input.control.x], true);
+        float3 baseCompare = vsmDirectionalRayPosition(ray, time, input.control.x, projections[input.control.x], false);
+        float3 comparison = vsmDirectionalRayPosition(ray, time, sample.level, projections[sample.level], false);
+        uint firstLevel = push.clipmapCount, sourcePage = 0xffffffffu;
+        float3 firstPosition = 0.0;
+        uint checked = 0u, missing = 0u;
+        for (uint level = input.control.x; level < push.clipmapCount; ++level) {
+            ShadowProjection projection = projections[level];
+            float3 projected = vsmDirectionalRayPosition(ray, time, level, projection, true);
+            if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
+            uint2 texel = vsmVirtualTexel(projected, projection, push.pageSize);
+            if (firstLevel == push.clipmapCount) {
+                firstLevel = level; firstPosition = projected;
+                sourcePage = vsmVirtualPage(texel, projection, push.pageSize);
+            }
+            if (input.control.w == 0u) { continue; }
+            ++checked;
+            float2 x = vsmDirectionalFootprintRange(projection.rowX, position, toLight, right, up,
+                push.rayLength, coneRadius, texelSize);
+            float2 y = vsmDirectionalFootprintRange(projection.rowY, position, toLight, right, up,
+                push.rayLength, coneRadius, texelSize);
+            float resolution = float(projection.page.y * push.pageSize);
+            uint2 lower = uint2(clamp((clamp(float2(x.x, y.x), -1.0, 1.0) * 0.5 + 0.5) * resolution - 1.0,
+                0.0, resolution - 1.0));
+            uint2 upper = uint2(clamp((clamp(float2(x.y, y.y), -1.0, 1.0) * 0.5 + 0.5) * resolution + 1.0,
+                0.0, resolution - 1.0));
+            float2 depth = vsmDirectionalFootprintRange(projection.rowZ, position, toLight, right, up,
+                push.rayLength, coneRadius, texelSize);
+            missing += (any(texel < lower) || any(texel > upper) || depth.y < 0.0 || depth.x > 1.0) ? 1u : 0u;
+        }
+        uint offset = (id.x * 11u + sampleIndex) * 10u;
+        output[offset] = uint4(sample.valid ? 1u : 0u, sample.level, sample.valid ? sample.virtualTexel : uint2(0u));
+        output[offset + 1u] = uint4(asuint(sample.projected), asuint(sample.storedDepth));
+        output[offset + 2u] = uint4(asuint(comparison), asuint(vsmDirectionalRayDepth(0.75, ray)));
+        output[offset + 3u] = uint4(asuint(endpoint), asuint(time));
+        output[offset + 4u] = uint4(asuint(dither), asuint(ray.receiverDepth));
+        output[offset + 5u] = uint4(asuint(baseLookup), asuint(ray.depthScale));
+        output[offset + 6u] = uint4(asuint(baseCompare), 0u);
+        output[offset + 7u] = uint4(checked, missing, counts.xy);
+        output[offset + 8u] = uint4(counts.z, sourcePage, input.control.x, 0u);
+        output[offset + 9u] = uint4(asuint(firstPosition), firstLevel);
+    }
+}
+#endif
