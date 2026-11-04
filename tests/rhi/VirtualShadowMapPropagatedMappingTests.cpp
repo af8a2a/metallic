@@ -163,12 +163,11 @@ public:
             static_assert(sizeof(Projection) == 112);
             constexpr uint64_t abi = 0x56534d50524f5031ull;
             constexpr uint32_t levels = 12, pageSize = 4, count = 6, maxPages = levels * 64 + 1;
-            std::array<ComputeKernel, 3> kernels;
+            std::array<ComputeKernel, 2> kernels;
             std::string log;
             const std::array capabilities{"spvMeshShadingEXT"};
             for (uint32_t index = 0; index < kernels.size(); ++index) {
-                const std::array macros{SlangMacroDefine{"VSM_PROPAGATED_MAPPING", index == 1 ? "0" : "1"},
-                    SlangMacroDefine{"VSM_PROPAGATED_MAPPING_PROBE", "1"}};
+                const std::array macros{SlangMacroDefine{"VSM_PROPAGATED_MAPPING_PROBE", "1"}};
                 auto shader = compileSlangShaderToSpirv({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
                     .entryPointName = index == 0 ? "propagatedMappingBuildProbeMain" : "propagatedMappingLookupProbeMain",
                     .searchPath = PROJECT_SOURCE_DIR "/Shaders", .capabilities = capabilities,
@@ -187,8 +186,7 @@ public:
             auto projections = buffer((levels + 1u) * sizeof(Projection), sizeof(Projection), MemoryLocation::HostUpload);
             auto statistics = buffer(32u * 4u, 4, MemoryLocation::HostUpload);
             auto positions = buffer(count * 16u, 16, MemoryLocation::HostUpload);
-            std::array output{buffer(count * 128u, 16, MemoryLocation::HostReadback),
-                buffer(count * 128u, 16, MemoryLocation::HostReadback)};
+            auto output = buffer(count * 128u, 16, MemoryLocation::HostReadback);
             const auto upload = [&](Buffer& destination, const void* data, size_t bytes) {
                 void* mapped = destination.map(); check(mapped != nullptr, "Fallback upload map");
                 std::memcpy(mapped, data, bytes); destination.flush(); destination.unmap();
@@ -310,28 +308,21 @@ public:
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
                 check(gpu.commands->synchronize({.buffers = {&recycled, 1}}), "Fallback metadata recycle");
-                std::array<EncodedParameters, 2> encoded;
-                for (uint32_t arm = 0; arm < 2; ++arm) {
-                    ParameterWriter writer(device, **registry);
-                    const ProbePush push{writer.buffer(pages.get()).index, writer.buffer(projections.get()).index,
-                        writer.buffer(statistics.get()).index, writer.sampledImage(atlas.view.get()).index,
-                        writer.buffer(positions.get()).index, writer.buffer(output[arm].get()).index,
-                        count, fixture.axis, levels, pageSize, 4, fixture.lightType};
-                    auto parameters = writer.encode(push, abi, ParameterTransport::InlinePush);
-                    check(parameters, "Fallback parameters"); encoded[arm] = std::move(*parameters);
-                }
-                check(kernels[0].dispatch(*gpu.commands, encoded[0], (totalPages + 63u) / 64u), "Fallback metadata build");
+                ParameterWriter writer(device, **registry);
+                const ProbePush push{writer.buffer(pages.get()).index, writer.buffer(projections.get()).index,
+                    writer.buffer(statistics.get()).index, writer.sampledImage(atlas.view.get()).index,
+                    writer.buffer(positions.get()).index, writer.buffer(output.get()).index,
+                    count, fixture.axis, levels, pageSize, 4, fixture.lightType};
+                auto encoded = writer.encode(push, abi, ParameterTransport::InlinePush);
+                check(encoded, "Fallback parameters");
+                check(kernels[0].dispatch(*gpu.commands, *encoded, (totalPages + 63u) / 64u), "Fallback metadata build");
                 const BufferBarrierDesc ready{.buffer = pages.get(),
                     .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
                     .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
                 check(gpu.commands->synchronize({.buffers = {&ready, 1}}), "Fallback metadata ready");
-                for (uint32_t arm = 0; arm < 2; ++arm) {
-                    check(kernels[arm + 1].dispatch(*gpu.commands, encoded[arm], 1), "Fallback lookup");
-                }
+                check(kernels[1].dispatch(*gpu.commands, *encoded, 1), "Fallback lookup");
                 const std::array hostReady{
-                    BufferBarrierDesc{.buffer = output[0].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::Host, AccessBits::HostRead}},
-                    BufferBarrierDesc{.buffer = output[1].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                    BufferBarrierDesc{.buffer = output.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
                         .after = {PipelineStageBits::Host, AccessBits::HostRead}},
                     BufferBarrierDesc{.buffer = pages.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
                         .after = {PipelineStageBits::Host, AccessBits::HostRead}}};
@@ -345,12 +336,10 @@ public:
                     actualMappings.size() * sizeof(actualMappings[0]));
                 pages->unmap();
                 check(prefixUnchanged, std::string(fixture.name) + ": propagation changed residency/cache prefix");
-                std::array<std::array<std::array<uint32_t, 32>, count>, 2> results{};
-                for (uint32_t arm = 0; arm < 2; ++arm) {
-                    output[arm]->invalidate(); const void* mapped = output[arm]->map();
-                    check(mapped != nullptr, "Fallback readback map");
-                    std::memcpy(results[arm].data(), mapped, sizeof(results[arm])); output[arm]->unmap();
-                }
+                std::array<std::array<uint32_t, 32>, count> results{};
+                output->invalidate(); const void* mapped = output->map();
+                check(mapped != nullptr, "Fallback readback map");
+                std::memcpy(results.data(), mapped, sizeof(results)); output->unmap();
                 const auto resident = [](const auto& entry) {
                     return entry[0] != UINT32_MAX && (entry[1] & 2u) != 0u && (entry[3] & 1u) != 0u;
                 };
@@ -493,10 +482,10 @@ public:
                     const float spacing = std::abs(std::nextafter(expected,std::numeric_limits<float>::infinity())-expected);
                     return std::isfinite(actual) && std::abs(actual-expected) <= 4.f*spacing;
                 };
-                Json oldDifferences = Json::array(), oracleObservations = Json::array();
+                Json oracleObservations = Json::array();
                 uint32_t clampedSamples = 0;
                 for (uint32_t sample = 0; sample < count; ++sample) {
-                    const auto& actual = results[1][sample];
+                    const auto& actual = results[sample];
                     const auto expected = lookupOracle(samples[sample]);
                     const std::string label = std::string(fixture.name) + ": sample " + std::to_string(sample);
                     check(actual[0] == uint32_t(expected.valid) && actual[1] == expected.level, label + ": validity/level oracle mismatch");
@@ -518,55 +507,49 @@ public:
                             label + ": direct helper and lookup disagree");
                     }
                     clampedSamples += expected.clamped;
-                    if (!std::equal(results[0][sample].begin(),results[0][sample].begin()+12,actual.begin())) {
-                        oldDifferences.push_back({{"sample",sample},{"baseline",results[0][sample]},{"candidate",actual}});
-                    }
                     oracleObservations.push_back({{"valid",expected.valid},{"level",expected.level},{"physical",expected.physical},
                         {"projected",expected.projected},{"texel",expected.texel},{"clamped",expected.clamped}});
                 }
                 const uint32_t expectedLevel = fixture.overflow ? levels : fixture.mapped;
-                check(results[1][0][0] == (fixture.coarseValid ? 1u : 0u) && results[1][0][1] == expectedLevel,
+                check(results[0][0] == (fixture.coarseValid ? 1u : 0u) && results[0][1] == expectedLevel,
                     std::string(fixture.name) + ": wrong mapped level/validity");
-                check(results[1][0][12] == uint32_t(fixture.expectedDirect), std::string(fixture.name) + ": expected direct/slow path not exercised");
+                check(results[0][12] == uint32_t(fixture.expectedDirect), std::string(fixture.name) + ": expected direct/slow path not exercised");
                 if (fixture.expectedDirect) {
                     const uint32_t expectedPhysical = fixture.mapped == levels ? UINT32_MAX :
                         fixture.physical == UINT32_MAX ? fixture.mapped + 1u : fixture.physical;
-                    check(results[1][0][13] == expectedPhysical && results[1][0][14] == fixture.mapped,
+                    check(results[0][13] == expectedPhysical && results[0][14] == fixture.mapped,
                         std::string(fixture.name) + ": stale/wrong propagated physical address or target");
-                    check(results[1][0][15] == (fixture.mapped == 0u ? 1u : fixture.lightType != 0u ? 3u : 2u),
+                    check(results[0][15] == (fixture.mapped == 0u ? 1u : fixture.lightType != 0u ? 3u : 2u),
                         "Wrong own/ancestor mapping tag");
                 }
                 if (fixture.lightType != 0u && fixture.expectedDirect) {
                     for (uint32_t sample = 1; sample <= 3; ++sample) {
-                        check(results[1][sample][12] == 1u, "Dyadic local boundary failed direct mapping");
+                        check(results[sample][12] == 1u, "Dyadic local boundary failed direct mapping");
                     }
-                    check(results[1][4][0] == 0u && results[1][5][0] == 0u, "Local out-of-domain lookup became valid");
+                    check(results[4][0] == 0u && results[5][0] == 0u, "Local out-of-domain lookup became valid");
                 }
                 if (fixture.lightType == 0u && !fixture.border && !fixture.overflow && fixture.mapped != 0u && fixture.axis == 8 && fixture.x == 0) {
                     for (uint32_t sample = 1; sample <= 3; ++sample) {
-                        if (!fixture.differentZ) { check(results[1][sample][12] == 1u, "Integer page boundary did not use direct mapping"); }
+                        if (!fixture.differentZ) { check(results[sample][12] == 1u, "Integer page boundary did not use direct mapping"); }
                         if (splitHighDelta) {
-                            check(results[0][sample][1] == 11u && results[1][sample][1] == levels,
-                                "High-delta integer ancestry did not expose its documented difference from independent world projection");
+                            check(results[sample][1] == levels,
+                                "High-delta integer ancestry unexpectedly selected the independent world-projection page");
                         }
                     }
                 }
                 if (std::string_view(fixture.name) == "high-delta-resident-clamp") {
-                    check(clampedSamples >= 3u && !oldDifferences.empty(), "Target-page texel clamp was not exercised");
-                }
-                if (fixture.lightType != 0u || !fixture.expectedDirect || fixture.mapped == 0u || fixture.overflow) {
-                    check(oldDifferences.empty(), "Unchanged own/local/unsupported/overflow contract changed lookup bits");
+                    check(clampedSamples >= 3u, "Target-page texel clamp was not exercised");
                 }
                 report["cases"].push_back({{"name", fixture.name}, {"axis", fixture.axis}, {"lightType", fixture.lightType}, {"samples", samples},
-                    {"baseline", results[0]}, {"candidate", results[1]}, {"expectedLevel", expectedLevel},
+                    {"lookup", results}, {"expectedLevel", expectedLevel},
                     {"expectedDirect", fixture.expectedDirect},{"integerMappingOraclePages",totalPages},
-                    {"lookupOracle",oracleObservations},{"clampedSamples",clampedSamples},{"oldContractDifferences",oldDifferences}});
+                    {"lookupOracle",oracleObservations},{"clampedSamples",clampedSamples}});
             }
             report["validation"] = validation.snapshot(); check(!validation.failed(), "Fallback Vulkan validation error");
             report["passed"] = true; save();
-            report["contract"] = "Integer ancestor routing, relative directional XY, shared Z and mapped-page texel clamp; old boundary differences are explicit";
+            report["contract"] = "Integer ancestor routing, relative directional XY, shared Z and mapped-page texel clamp; boundary ownership is checked by the CPU oracle";
             save();
-            return RHITestResult::pass("Propagated mappings match the integer/relative projection oracle, including documented old boundary differences");
+            return RHITestResult::pass("Propagated mappings match the integer/relative projection oracle, including boundary texel ownership");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());

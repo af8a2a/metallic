@@ -1,6 +1,6 @@
 # VSM 方向光 Projection 正交计算专用编译
 
-2026-11-04 更新：同一开关已扩展为方向光资源访问与输出归属专用化，使用 uniform 描述符；采样数学继续保留与 Mark 共享的表达式。按用户决定默认开启，显式关闭仍可用。以下 2026-10-31 的结果属于旧版正交裁剪，不能作为新版本的性能证据；本次实现与测量见文末。
+2026-11-04 当前状态：方向光资源访问与输出归属专用化使用 uniform 描述符，现为按灯光类型选择的标准实现；已删除 `directionalProjection` 和 `benchmarkDirectionalProjection`。采样数学继续保留与 Mark 共享的表达式。下文开关协议、默认值提升和测量属于历史记录，不能用于当前二进制的新 A/B；2026-10-31 的旧版正交裁剪结果不能作为后续版本的性能证据。
 
 状态（2026-10-31）：已实现，`directionalProjection` 默认关闭。GPU 等价与 Sponza 图像检查通过；独立确认 Projection 收益 13.80%、Shadows 收益 4.33%。RenderGraph 收益区间下界为 −2.19%，未达到预定 −2% 保护门槛，判定为 `inconclusive / uncertain / retain_candidate`，不声明整图稳定加速。
 

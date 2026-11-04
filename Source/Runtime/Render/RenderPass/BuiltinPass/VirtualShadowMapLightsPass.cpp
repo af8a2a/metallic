@@ -173,8 +173,7 @@ public:
             reflection.addBufferOutput("receiverCoveragePages", "Actual directional page table after allocation and projection")
                 .buffer((uint64_t(levels) * axis * axis + 1) * 16, 4).transferWrite();
             const VirtualShadowMapSettings defaults;
-            if (properties().value("benchmarkReceiverMask", defaults.receiverMask) &&
-                properties().value("cacheEnabled", true) && properties().value("cacheLayering", defaults.cacheLayering)) {
+            if (properties().value("cacheEnabled", true) && properties().value("cacheLayering", defaults.cacheLayering)) {
                 reflection.addBufferOutput("receiverCoverageMask", "Current requested 8x8 receiver coverage for every virtual page")
                     .buffer((uint64_t(levels) * axis * axis + 1) * 8, 4).transferWrite();
             }
@@ -204,10 +203,7 @@ public:
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
             runtimeIntSetting("framesStaticThreshold", "Frames Before Caster Becomes Static (0 Off)", 100, 0, 65535),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
-            runtimeBoolSetting("shadowLODHierarchy", "Adaptive Shadow LOD Hierarchy", true),
-            runtimeBoolSetting("shadowLODDepthGuard", "Preserve Shadow LOD Depth Agreement", true),
             runtimeBoolSetting("shadowLODSmartBias", "Shadow LOD Screen Depth Bias", false),
-            runtimeBoolSetting("shadowLODSmartBiasRefine", "Refine Shadow LOD Receiver Bias", true),
             runtimeFloatSetting("shadowLODScreenRayLength", "Shadow LOD Screen Ray Length", .015f, 0, 1),
             runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
@@ -364,13 +360,11 @@ public:
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
         settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
-        settings.shadowLODHierarchy = boolProperty(&properties, "shadowLODHierarchy", settings.shadowLODHierarchy);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
         settings.shadowLODSmartBias = boolProperty(&properties, "shadowLODSmartBias", settings.shadowLODSmartBias);
-        settings.shadowLODSmartBiasRefine = boolProperty(&properties, "shadowLODSmartBiasRefine", settings.shadowLODSmartBiasRefine);
         settings.shadowLODScreenRayLength = properties.value("shadowLODScreenRayLength", settings.shadowLODScreenRayLength);
         VirtualShadowMapReceiverResources receiver{};
-        if (settings.shadowLOD && settings.shadowLODSmartBias && settings.shadowLODSmartBiasRefine &&
+        if (settings.shadowLOD && settings.shadowLODSmartBias &&
             visibility.valid() && (info.reserved & 1u) == 0) {
             if (visibility.desc().width != info.width || visibility.desc().height != info.height) {
                 return makeError(Error::InvalidArgument);
@@ -386,14 +380,7 @@ public:
         settings.collectReceiverCoverage = receiverCoverageRecords_;
         settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
         settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
-        settings.propagatedMapping = boolProperty(&properties, "benchmarkPropagatedMapping", settings.propagatedMapping);
         settings.dirtyPageHierarchy = boolProperty(&properties, "benchmarkDirtyPageHierarchy", settings.dirtyPageHierarchy);
-        settings.staticPageHZB = boolProperty(&properties, "benchmarkStaticPageHZB", settings.staticPageHZB);
-        settings.clusterHZBCulling = boolProperty(&properties, "benchmarkClusterHZBCulling", settings.clusterHZBCulling);
-        settings.receiverMask = boolProperty(&properties, "benchmarkReceiverMask", settings.receiverMask);
-        settings.aggregateReceiverMask = boolProperty(&properties, "benchmarkAggregateReceiverMask", settings.aggregateReceiverMask);
-        settings.onePassProjection = boolProperty(&properties, "benchmarkOnePassProjection",
-            boolProperty(&properties, "onePassProjection", settings.onePassProjection));
         VirtualShadowMapProjectionGridResources projectionGrid;
         if (!sources.empty()) {
             // The matching raster producer builds and retains this snapshot.
@@ -402,10 +389,6 @@ public:
             projectionGrid.grid = gpuScene->lightGrid({info.lightGridViewIndex, info.lightGridViewGeneration}, info.lightGridFrameSlot);
         }
         projectionGrid.diagnostics = collectGPUWork_ ? projectionGridDiagnostics.buffer() : nullptr;
-        settings.directionalProjection = boolProperty(&properties, "benchmarkDirectionalProjection",
-            boolProperty(&properties, "directionalProjection", settings.directionalProjection));
-        settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
-            boolProperty(&properties, "markRayPages", settings.markRayPages));
         settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
         settings.clusterPageRaster = boolProperty(&properties, "benchmarkClusterPageRaster", settings.clusterPageRaster);
         settings.pageWindowRaster = boolProperty(&properties, "benchmarkPageWindowRaster", settings.pageWindowRaster);
@@ -620,12 +603,12 @@ public:
             });
             if (admittedFaces != 1 || selected == lights.end() ||
                 selected->light.type != VirtualShadowMapLightType::Directional || !settings.enabled ||
-                settings.filter != VirtualShadowMapFilter::SMRT || settings.smrtRayCount != 2 || !settings.markRayPages) {
+                settings.filter != VirtualShadowMapFilter::SMRT || settings.smrtRayCount != 2) {
                 spdlog::error("Receiver coverage export requires one admitted enabled directional SMRT face with two rays and ray-page marking");
                 return makeError(Error::InvalidArgument);
             }
             const uint64_t recordBytes = uint64_t(info.width) * info.height * kVSMReceiverCoverageRecordWords * sizeof(uint32_t);
-            if (coverageMask.valid() != (settings.receiverMask && settings.cacheEnabled && settings.cacheLayering) ||
+            if (coverageMask.valid() != (settings.cacheEnabled && settings.cacheLayering) ||
                 (receiverCoverageRecords_ && coverageRecords.desc().size != recordBytes) ||
                 coverageProjections.desc().size != uint64_t(settings.clipmapCount + 1) * 112 ||
                 coveragePages.desc().size != (uint64_t(settings.clipmapCount) * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1) * 16) {
@@ -795,9 +778,7 @@ public:
                     lodStatistics[2] = uint32_t(lodProjections.size());
                     casters = casterCache_.prepareShadowLOD(*device_, commands, *scene,
                         scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
-                        lodProjections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy,
-                        boolProperty(&properties, "shadowLODDepthGuard", true) ?
-                            0.5f * settings.shadowBias : std::numeric_limits<float>::max());
+                        lodProjections, settings.shadowLODErrorTexels, log, 0.5f * settings.shadowBias);
                     if (!casters) { spdlog::error("VirtualShadowMapLightsPass shadow LOD: {}", log); return makeError(casters.error()); }
                 }
                 const auto& lod = casters->shadowLOD;
@@ -982,23 +963,9 @@ public:
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Project all faces");
                 std::string log;
-                if (!properties.value("benchmarkLegacyProjection", false)) {
-                    auto result = VirtualShadowMaps::projectShared(cmd, projections, log, cpu, projectionGpuProfiler,
-                        settings.onePassProjection, &projectionGrid);
-                    if (!result) { spdlog::error("VirtualShadowMapLightsPass projection: {}", log); }
-                    return result;
-                }
-                for (const auto& group : projections) {
-                    for (uint32_t face = 0; face < group.faceCount; ++face) {
-                        const auto pointFaces = group.filteredPoint ? std::span<const VirtualShadowMapResult>(group.results) :
-                            std::span<const VirtualShadowMapResult>{};
-                        if (auto r = group.faces[face]->project(cmd, pointFaces, log, cpu, gpuProfiler); !r) {
-                            spdlog::error("VirtualShadowMapLightsPass projection: {}", log);
-                            return r;
-                        }
-                    }
-                }
-                return {};
+                auto result = VirtualShadowMaps::projectShared(cmd, projections, log, cpu, projectionGpuProfiler, &projectionGrid);
+                if (!result) { spdlog::error("VirtualShadowMapLightsPass projection: {}", log); }
+                return result;
             }}, RenderGraphStage{"Publish VSM faces", publishUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Memory statistics and publication commands");

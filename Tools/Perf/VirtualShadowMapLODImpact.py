@@ -1,5 +1,6 @@
-"""Bounded, independently launched Off / Flat / Hierarchy shadow LOD GPU replay.
+"""Historical Off / Flat / Hierarchy shadow LOD evidence verification.
 
+Live run is retired: hierarchical traversal and depth agreement are standard.
 Diagnostic receipts and ordinary GPU timestamps are separate experiments. Timing
 uses exactly three ABCCBA blocks per selected workload; no adaptive expansion.
 """
@@ -13,7 +14,6 @@ from pathlib import Path
 import re
 import statistics
 import subprocess
-from types import SimpleNamespace
 
 import VirtualShadowMapAcceptance as acceptance
 import VirtualShadowMapGPUProfile as profile
@@ -332,109 +332,7 @@ def verify(source, diagnostic=None):
 
 
 def run(args):
-    workloads = [args.workload] if args.workload else list(WORKLOADS)
-    cases_dir, output = args.cases_dir.resolve(), args.output.resolve()
-    assets = acceptance.read(cases_dir / "Assets.json")
-    validate_assets(assets)
-    inputs, normalized = {}, {}
-    for workload in workloads:
-        for arm in ARMS:
-            cases = cases_dir / f"{args.phase.title()}-{workload}-{arm}Cases.json"
-            spec = acceptance.read(cases)
-            graph_path = (cases.parent / spec["cases"][0]["graph"]).resolve()
-            graph = acceptance.read(graph_path)
-            value = normalize(spec, graph, args.phase, workload, arm)
-            if workload in normalized and normalized[workload] != value:
-                raise ValueError("Prepared arm workloads differ beyond shadow LOD switches")
-            normalized[workload] = value
-            inputs[f"{workload}-{arm}"] = dict(cases=str(cases), graph=str(graph_path),
-                casesSHA256=acceptance.digest(cases), graphSHA256=acceptance.digest(graph_path))
-    prerequisite = None
-    if args.phase == "timing":
-        if args.diagnostic is None:
-            raise ValueError("Ordinary timing requires a verified --diagnostic experiment")
-        evidence = verify(args.diagnostic)
-        if evidence["phase"] != "diagnostic" or evidence["assets"] != assets:
-            raise ValueError("Invalid diagnostic prerequisite or asset mismatch")
-        if any(w not in evidence["workloads"] for w in workloads):
-            raise ValueError("Diagnostic prerequisite does not cover all selected workloads")
-        prerequisite = dict(path=str(args.diagnostic.resolve()), manifestSHA256=acceptance.digest(args.diagnostic / "Manifest.json"))
-    output.mkdir(parents=True, exist_ok=False)
-    plan = dict(protocol=PROTOCOL, phase=args.phase, workloads=workloads, created=utc(), inputs=inputs,
-                processes=schedule(args.phase, workloads), diagnostic=prerequisite, exe=str(args.exe.resolve()),
-                timeoutSeconds=args.timeout, frames=48 if args.phase == "diagnostic" else 96, warmupFrames=32,
-                statisticalUnit="Three predeclared independent symmetric ABCCBA blocks per workload; no adaptive samples",
-                cache="Existing disk caches retained; fresh process per sample; first 32 frames excluded",
-                gpuExclusivity="Not enforced; user applications are not stopped; GPU clocks are not changed",
-                toolSHA256=acceptance.digest(Path(__file__)))
-    acceptance.save(output / "Plan.json", plan)
-    acceptance.save(output / "Assets.json", assets)
-    # Keep declared graphs/specs reviewable even after the preparation directory changes.
-    archived = output / "Inputs"
-    archived.mkdir()
-    for key, item in inputs.items():
-        (archived / f"{key}Cases.json").write_bytes(Path(item["cases"]).read_bytes())
-        (archived / f"{key}Graph.json").write_bytes(Path(item["graph"]).read_bytes())
-    results, common, shaders, resolved, receipts, stream_inputs = [], None, None, {}, {}, {}
-    try:
-        for scheduled in plan["processes"]:
-            validate_assets(assets)
-            item = inputs[f"{scheduled['workload']}-{scheduled['arm']}"]
-            if any(acceptance.digest(item[k]) != item[f"{k}SHA256"] for k in ("cases", "graph")):
-                raise ValueError("Prepared case/graph input changed after plan creation")
-            row = {**scheduled, "started": utc(), "beforeGPU": telemetry(), "passed": False}
-            results.append(row)
-            acceptance.save(output / "Processes.json", results)
-            package = output / scheduled["package"]
-            try:
-                acceptance.run(SimpleNamespace(cases=Path(item["cases"]), exe=args.exe, output=package,
-                                               runs=1, timeout=args.timeout))
-                captured_spec, captures = acceptance.verify_package(package)
-                case = captures[0][1]["cases"][0]
-                workload, arm = scheduled["workload"], scheduled["arm"]
-                actual_workload = normalize(captured_spec, case["resolvedGraph"], args.phase, workload, arm, cross_mode=True)
-                if workload in resolved and resolved[workload] != actual_workload:
-                    raise ValueError("Resolved workload changed between arms")
-                if args.phase == "timing" and evidence["normalized"][workload] != actual_workload:
-                    raise ValueError("Actual timing workload differs from the diagnostic prerequisite")
-                resolved[workload] = actual_workload
-                current_streams = stream_input(case, args.phase)
-                if workload in stream_inputs and stream_inputs[workload] != current_streams:
-                    raise ValueError("Runtime geometry input changed across arms or processes")
-                if args.phase == "timing" and evidence["streamInputs"][workload] != current_streams:
-                    raise ValueError("Timing runtime geometry input differs from diagnostic")
-                stream_inputs[workload] = current_streams
-                current_shaders = shader_identity(package / "run-1/Process.log", args.phase)
-                if shaders is not None and shaders != current_shaders:
-                    raise ValueError("SPIR-V changed within the same instrumentation mode")
-                shaders = current_shaders
-                for frame in case["frames"]:
-                    profile_fixture_frame(frame)
-                if args.phase == "diagnostic":
-                    receipts[(workload, arm)] = diagnose(case, arm)
-                    if all((workload, a) in receipts for a in ARMS):
-                        compare_diagnostics(receipts, [workload])
-                current = identity(package)
-                if common is not None and current != common:
-                    raise ValueError("Sources or binaries changed during the fixed experiment")
-                if args.phase == "timing" and current != evidence["identity"]:
-                    raise ValueError("Sources or binaries differ from the diagnostic prerequisite")
-                common = current
-                validate_assets(assets)
-                row["passed"] = True
-            finally:
-                row.update(finished=utc(), afterGPU=telemetry())
-                acceptance.save(output / "Processes.json", results)
-        acceptance.save(output / "Completion.json", dict(passed=True, finished=utc()))
-        seal(output)
-        verify(output, args.diagnostic)
-    except Exception as error:
-        acceptance.save(output / "Completion.json", dict(passed=False, finished=utc(), error=str(error)))
-        if not (output / "Processes.json").exists():
-            acceptance.save(output / "Processes.json", results)
-        seal(output)
-        raise RuntimeError(f"LOD experiment stopped; evidence retained at {output}: {error}") from error
-    print(output)
+    raise ValueError("Retired VSM LOD reference experiment: hierarchy traversal, depth agreement and refined receiver bias are standard; use verify/report for historical evidence")
 
 
 def block_statistics(processes, workloads):

@@ -684,10 +684,10 @@ public:
                 const uint32_t shadowId = shadows->id;
                 output["shadowLODSettings"] = {
                     {"enabled", shadows->properties.value("shadowLOD", false)},
-                    {"hierarchy", shadows->properties.value("shadowLODHierarchy", true)},
-                    {"depthGuard", shadows->properties.value("shadowLODDepthGuard", true)},
+                    {"hierarchy", true},
+                    {"depthGuard", true},
                     {"smartBias", shadows->properties.value("shadowLODSmartBias", false)},
-                    {"smartBiasRefine", shadows->properties.value("shadowLODSmartBiasRefine", true)},
+                    {"smartBiasRefine", true},
                     {"screenRayLength", shadows->properties.value("shadowLODScreenRayLength", 0.015f)},
                     {"errorTexels", shadows->properties.value("shadowLODErrorTexels", 1.0f)}};
                 auto* raster = graph.findNode("VBuffer");

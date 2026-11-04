@@ -57,25 +57,14 @@ struct VirtualShadowMapSettings
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
     bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.
-    // Multi-face GPU projection; single faces and grouped projection statistics retain the original kernel.
-    bool onePassProjection = true;
-    bool directionalProjection = true; // Per-face directional type and uniform resources; mixed one-pass stays generic.
-    bool propagatedMapping = true; // Projection-only ancestor mapping; ownership pages remain intact.
-    bool markRayPages = true; // Directional SMRT Mark skips samples of rays that stay inside one page.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool pageWindowRaster = false; // Share directional fine geometry across bounded page windows.
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.
     bool instanceBuild = false; // Directional instance culling and indirect fine Build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.
-    bool receiverMask = true; // Persistent 8x8 coverage for layered directional SMRT.
-    bool aggregateReceiverMask = true; // Coalesce Mark's writes when persistent receiver masks are active.
-    bool staticPageHZB = true; // Incremental physical-page occluders for layered directional shadows.
-    bool clusterHZBCulling = true; // Cull dynamic raster work against the current static page hierarchy.
     bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
-    bool shadowLODHierarchy = true; // Cached adaptive traversal; false retains the flat reference for A/B.
     float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.
     bool shadowLODSmartBias = false; // Hard directional shadows: screen-depth constrained receiver bias.
-    bool shadowLODSmartBiasRefine = true; // Conservative receiver test; false retains the original experiment.
     float shadowLODScreenRayLength = 0.015f; // Fraction of vertical view extent at the receiver.
     uint32_t pageSize = 128;
     uint32_t virtualPagesPerAxis = 16;
@@ -207,11 +196,11 @@ public:
         CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr);
 
     // Shares CPU point-table preparation and its resource dependencies. The
-    // optional GPU batch requires a common view/depth and filter settings, as
-    // supplied by LightsPass. Empty input is valid; one face uses project().
+    // GPU batch requires a common view/depth and filter settings, as supplied
+    // by LightsPass. Empty input is valid; one face uses project().
     static Result<> projectShared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
         std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
-        bool onePassProjection = true, const VirtualShadowMapProjectionGridResources* grid = nullptr);
+        const VirtualShadowMapProjectionGridResources* grid = nullptr);
 
     // Logical resource bytes currently owned by this cache, recording and pool.
     // Native padding and retired recordings outside this cache/pool are excluded;

@@ -3303,7 +3303,7 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProfilingTest);
 
-enum class VirtualShadowMapEquivalenceMode { Production, MarkRayPages, DirectionalProjection, DirectionalProjectionRoom, CompactBuild };
+enum class VirtualShadowMapEquivalenceMode { Production, ProductionRoom, CompactBuild };
 
 class VirtualShadowMapEquivalenceTest : public RHITest
 {
@@ -3311,9 +3311,7 @@ public:
     explicit VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode mode) : mode_(mode)
     {
         name = mode == VirtualShadowMapEquivalenceMode::Production ? "virtual_shadow_map_production_coverage" :
-            mode == VirtualShadowMapEquivalenceMode::MarkRayPages ? "virtual_shadow_map_mark_ray_pages_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::DirectionalProjection ? "virtual_shadow_map_directional_projection_equivalence" :
-            mode == VirtualShadowMapEquivalenceMode::DirectionalProjectionRoom ? "virtual_shadow_map_directional_projection_room" :
+            mode == VirtualShadowMapEquivalenceMode::ProductionRoom ? "virtual_shadow_map_production_room" :
             "virtual_shadow_map_compact_build_equivalence";
         type = RHITestType::Rendering;
     }
@@ -3321,21 +3319,15 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         bench::ValidationRecorder validation;
-        const bool production = mode_ == VirtualShadowMapEquivalenceMode::Production;
-        const bool markRayPagesComparison = mode_ == VirtualShadowMapEquivalenceMode::MarkRayPages;
-        const bool focusedRoom = mode_ == VirtualShadowMapEquivalenceMode::DirectionalProjectionRoom;
-        const bool directionalProjectionComparison = mode_ == VirtualShadowMapEquivalenceMode::DirectionalProjection || focusedRoom;
+        const bool focusedRoom = mode_ == VirtualShadowMapEquivalenceMode::ProductionRoom;
         const bool compactBuildComparison = mode_ == VirtualShadowMapEquivalenceMode::CompactBuild;
-        const bool defaultCandidate = directionalProjectionComparison ? VirtualShadowMapSettings{}.directionalProjection :
-            VirtualShadowMapSettings{}.markRayPages;
-        const std::string reportName = production ? "VirtualShadowMapProductionCoverage" :
-            markRayPagesComparison ? "VirtualShadowMapMarkRayPagesEquivalence" :
-            focusedRoom ? "VirtualShadowMapDirectionalProjectionRoom" :
-            directionalProjectionComparison ? "VirtualShadowMapDirectionalProjectionEquivalence" : "VirtualShadowMapCompactBuildEquivalence";
+        const bool production = !compactBuildComparison;
+        const std::string reportName = focusedRoom ? "VirtualShadowMapProductionRoom" :
+            production ? "VirtualShadowMapProductionCoverage" : "VirtualShadowMapCompactBuildEquivalence";
         const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
         Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
             {"buildDiagnosticCounterNames", kVirtualShadowMapBuildDiagnosticCounterNames},
-            {"scope", focusedRoom ? "Focused resident/stream Room PCF Cold/Warm Generic versus Directional; no single-pass, switch-control or clipmap sweep coverage" :
+            {"scope", focusedRoom ? "Focused resident/stream Room PCF Cold/Warm production invariants" :
                 "Full production/experimental workload matrix"}};
         const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
         try {
@@ -3358,20 +3350,8 @@ public:
             require(scene::buildMeshletStreamAssetOffline({.sourcePath = offscreen.source, .outputPath = offscreen.cache,
                 .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log), "Cook optimization offscreen fixture: " + log);
 
-            if (directionalProjectionComparison || markRayPagesComparison) {
-                const char* property = directionalProjectionComparison ? "directionalProjection" : "markRayPages";
-                const char* benchmark = directionalProjectionComparison ? "benchmarkDirectionalProjection" : "benchmarkMarkRayPages";
-                if (!focusedRoom) {
-                    report["selectionControls"] = {
-                        {"Baseline",{{property,true},{benchmark,false}}}, {"Candidate",{{property,false},{benchmark,true}}},
-                        {"Default",Json::object()}, {"ProductionOff",{{property,false}}}, {"ProductionOn",{{property,true}}},
-                        {"Toggle",{{property,"frame % 2 != 0"}}}};
-                }
-                report["productionDefault"] = defaultCandidate;
-                require(defaultCandidate, "Expected the accepted VSM path to be enabled by default");
-            }
             constexpr uint32_t capacity = 4;
-            uint32_t states = 0, controlStates = 0, mixedStates = 0, unmappedStates = 0, reducedStates = 0, sweptStates = 0, compactAll = 0, compactPartial = 0, compactWarm = 0;
+            uint32_t states = 0, compactAll = 0, compactPartial = 0, compactWarm = 0;
             std::array<uint32_t, 12> clipmapStates{};
             std::array<uint32_t, 8> pageSizeStates{};
             std::array<uint64_t, 2> directionalReceivers{}, localReceivers{}, bitsetWords{};
@@ -3385,29 +3365,19 @@ public:
                     if (!compactBuildComparison && mainMatrix && !streamed) {
                         for (uint32_t count = 1; count <= 12; ++count) { filters.push_back("smrt-level-" + std::to_string(count)); }
                     }
-                    if (directionalProjectionComparison && mainMatrix) {
-                        filters.push_back("smrt-onepass");
-                        filters.push_back("smrt-unmapped");
-                    }
                     if (production && mainMatrix && !streamed) {
                         for (uint32_t shift = 0; shift < 8; ++shift) { filters.push_back("smrt-page-" + std::to_string(shift)); }
                     }
                     for (const auto& filter : filters) {
                         const bool single = filter.starts_with("single-");
-                        const bool mixedProjection = directionalProjectionComparison && filter == "smrt-onepass";
-                        const bool unmappedProjection = directionalProjectionComparison && filter == "smrt-unmapped";
                         const bool markClipmapSweep = filter.starts_with("smrt-level-");
                         const bool markPageSizeSweep = filter.starts_with("smrt-page-");
                         const uint32_t pageShift = markPageSizeSweep ? uint32_t(std::stoul(filter.substr(10))) : 7u;
                         const uint32_t pageSize = markPageSizeSweep ? 1u << pageShift : kPageSize;
                         const uint32_t clipmapCount = markClipmapSweep ? uint32_t(std::stoul(filter.substr(11))) :
                             filter == "smrt-max" ? 12u : kClipmapCount;
-                        const bool controls = !production && !compactBuildComparison && mainMatrix && !streamed &&
-                            (filter == "single-hard" || filter == "smrt");
-                        std::vector<const char*> arms = production ? std::vector<const char*>{"Production"} :
-                            compactBuildComparison ? std::vector<const char*>{"Direct", "Compact"} :
-                            markRayPagesComparison ? std::vector<const char*>{"Baseline", "RayPages"} : std::vector<const char*>{"Generic", "Directional"};
-                        if (controls) { arms.insert(arms.end(), {"Default", "ProductionOff", "ProductionOn", "Toggle"}); }
+                        const std::vector<const char*> arms = production ? std::vector<const char*>{"Production"} :
+                            std::vector<const char*>{"Direct", "Compact"};
                         const uint32_t pagesPerAxis = filter == "single-hard-31" ? 31 : filter == "single-hard-33" ? 33 : kPagesPerAxis;
                         const uint32_t faces = single ? 1 : capacity * 6, layers = single ? 1 : capacity;
                         const std::string label = std::string(streamed ? "Stream-" : "Resident-") +
@@ -3447,21 +3417,11 @@ public:
                                  {"pageSize", pageSize}, {"virtualPagesPerAxis", pagesPerAxis}, {"clipmapCount", clipmapCount},
                                  {"firstClipmapExtent", kFirstExtent}, {"maxWorkItems", 65535}, {"shadowBias", .002},
                                  {"cacheEnabled", true}, {"receiverFootprint", true},
-                                 {"filter", filter == "smrt-max" || filter == "smrt-one" || markClipmapSweep || markPageSizeSweep || mixedProjection || unmappedProjection ? "smrt" : single ? "hard" : filter}, {"pcfRadius", 1.5},
+                                 {"filter", filter == "smrt-max" || filter == "smrt-one" || markClipmapSweep || markPageSizeSweep ? "smrt" : single ? "hard" : filter}, {"pcfRadius", 1.5},
                                  {"nearPlane", nearCase ? .25 : .001}, {"smrtRayCount", filter == "smrt-one" ? 1 : 2},
                                  {"smrtSamplesPerRay", filter == "smrt-max" ? 32 : 8},
                                  {"smrtTemporalEnabled", false}, {"benchmarkGPUWork", true},
                                  {"demandDrivenBudget", false}};
-                            if (directionalProjectionComparison || markRayPagesComparison) {
-                                const char* property = directionalProjectionComparison ? "directionalProjection" : "markRayPages";
-                                const char* benchmark = directionalProjectionComparison ? "benchmarkDirectionalProjection" : "benchmarkMarkRayPages";
-                                if (arm < 2) {
-                                    settings[property] = arm == 0;
-                                    settings[benchmark] = arm == 1;
-                                } else if (arm != 2) { settings[property] = arm == 4; }
-                            }
-                            if (directionalProjectionComparison) { settings["onePassProjection"] = mixedProjection; }
-                            if (unmappedProjection) { settings["benchmarkPropagatedMapping"] = false; }
                             if (compactBuildComparison) { settings["benchmarkCompactBuild"] = arm == 1; }
                             graph.addNode(single ? "VirtualShadowMapPass" : "VirtualShadowMapLightsPass", name, settings);
                             graph.addEdge("Raster.depth", name + ".depth"); graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
@@ -3480,11 +3440,6 @@ public:
                         for (uint32_t frame = 0; frame < frameCount; ++frame) {
                             const std::string phase = std::array{"Cold", "Warm", "Dirty", "Overflow", "Recover"}[frame];
                             validation.phase(label + "-" + phase);
-                            if (controls) {
-                                require(graph.setNodeRuntimeProperty(graph.findNode("Toggle")->id,
-                                    directionalProjectionComparison ? "directionalProjection" : "markRayPages", (frame & 1u) != 0),
-                                    "Toggle retained experimental path on a persistent pass");
-                            }
                             if (frame == 2) {
                                 float4x4 translation; translation.SetupByTranslation(float3(.35f,0,.2f));
                                 require(scene.setNodeLocalMatrix(0, translation * original), "Move optimization caster");
@@ -3499,7 +3454,7 @@ public:
                             std::vector<ProfilingSnapshot> snapshots(arms.size());
                             std::vector<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>> work(arms.size());
                             report["frames"].push_back({{"variant", label}, {"phase", phase}, {"clipmapCount", clipmapCount}, {"pageSize",pageSize},
-                                {"propagatedMapping", !unmappedProjection}, {"arms", Json::object()}});
+                                {"arms", Json::object()}});
                             auto& entry = report["frames"].back();
                             for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                                 snapshots[arm] = profilingSnapshot(arms[arm], {layers, faces, true}, true);
@@ -3516,13 +3471,6 @@ public:
                                 require(snapshot.statistics[0][11] == clipmapCount,
                                     label + "-" + phase + ": GPU directional clipmap count differs from its compiled bound");
                                 requireBuildDiagnosticInvariants(snapshot, label + "-" + phase + "-" + arms[arm]);
-                                if (unmappedProjection) {
-                                    require(work[arm][kVSMWorkProjectionMappingLoads] == 0 &&
-                                        work[arm][kVSMWorkProjectionMappedAncestors] == 0 &&
-                                        work[arm][kVSMWorkProjectionMappingSlowPaths] == 0 &&
-                                        work[arm][kVSMWorkProjectionPageTableLoads] > 0,
-                                        label + ": mapping-disabled projection did not use the original page-table lookup");
-                                }
                                 for (uint32_t face = 0; face < faces; ++face) {
                                     const auto& counts = snapshot.workload[face];
                                     const auto& stats = snapshot.statistics[face];
@@ -3536,18 +3484,13 @@ public:
                                 }
                                 if (arm != 0) {
                                     const auto& baseline = snapshots[0];
-                                    const bool candidateControl = arm == 2 ? defaultCandidate :
-                                        arm == 4 || (arm == 5 && (frame & 1u) != 0);
-                                    const uint32_t referenceArm = arm >= 2 && candidateControl ? 1u : 0u;
-                                    const auto& workReference = snapshots[referenceArm];
-                                    entry["arms"][arms[arm]]["workReferenceArm"] = arms[referenceArm];
                                     if (snapshot.shadow != baseline.shadow) {
                                         const auto mismatch = std::mismatch(snapshot.shadow.begin(), snapshot.shadow.end(), baseline.shadow.begin());
                                         const size_t index = size_t(mismatch.first - snapshot.shadow.begin());
                                         const size_t pixel = index % kPixels;
                                         entry["arms"][arms[arm]]["firstShadowMismatch"] = {{"layer", index / kPixels},
                                             {"x", pixel % kWidth}, {"y", pixel / kWidth},
-                                            {"actual", *mismatch.first}, {"generic", *mismatch.second}};
+                                            {"actual", *mismatch.first}, {"direct", *mismatch.second}};
                                         save();
                                     }
                                     require(snapshot.shadow == baseline.shadow && snapshot.debug == baseline.debug &&
@@ -3557,19 +3500,7 @@ public:
                                     for (uint32_t face = 0; face < faces; ++face) {
                                         for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
                                             if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                            if (markRayPagesComparison && arm == 1 && face < 12 &&
-                                                (counter == kVSMWorkMarkSamplePositions || counter == kVSMWorkMarkLevelTests)) {
-                                                // A receiver certificate projects two endpoints per ray,
-                                                // then tests each level before retaining the old ray sweep.
-                                                const uint32_t receiverCertificateWork =
-                                                    (filter == "smrt-one" ? 2u : 4u) + clipmapCount;
-                                                require(snapshot.workload[face][counter] <= baseline.workload[face][counter] +
-                                                    baseline.workload[face][kVSMWorkMarkReceiverDispatches] *
-                                                        (2 * clipmapCount + receiverCertificateWork),
-                                                    label + ": Mark coverage exceeded certificate and sweep work bound");
-                                                continue;
-                                            }
-                                            require(snapshot.workload[face][counter] == workReference.workload[face][counter],
+                                            require(snapshot.workload[face][counter] == baseline.workload[face][counter],
                                                 label + ": experimental path or control selected unexpected deterministic work");
                                         }
                                     }
@@ -3595,14 +3526,7 @@ public:
                                     ++compactWarm;
                                 }
                             }
-                            if (markRayPagesComparison) {
-                                const auto& counts = candidate.workload[0];
-                                reducedStates += counts[kVSMWorkMarkSamplePositions] < snapshots[0].workload[0][kVSMWorkMarkSamplePositions];
-                                sweptStates += !single && counts[kVSMWorkMarkSamplePositions] > counts[kVSMWorkMarkReceiverDispatches] * (filter == "smrt-one" ? 1u : 2u);
-                            }
                             ++states;
-                            controlStates += controls; mixedStates += mixedProjection;
-                            unmappedStates += unmappedProjection;
                             if (markClipmapSweep) { ++clipmapStates[clipmapCount - 1]; }
                             if (markPageSizeSweep) { ++pageSizeStates[pageShift]; }
                             uint64_t dirty = 0, overflow = 0, nearRejected = 0;
@@ -3631,18 +3555,12 @@ public:
                 }
             }
             report["completedStates"] = states;
-            report["controlStates"] = controlStates; report["mixedOnePassStates"] = mixedStates;
-            report["mappingDisabledStates"] = unmappedStates;
-            require(controlStates == (production || compactBuildComparison || focusedRoom ? 0u : 10u) &&
-                mixedStates == (directionalProjectionComparison && !focusedRoom ? 10u : 0u) &&
-                unmappedStates == (directionalProjectionComparison && !focusedRoom ? 10u : 0u),
-                "Incomplete retained switch, mixed-onepass or mapping-disabled controls");
             report["clipmapSweepStatesByCount"] = clipmapStates;
             report["pageSizeSweepStatesByShift"] = pageSizeStates;
             report["directionalReceiversByPass"] = directionalReceivers;
             report["localReceiversByType"] = localReceivers;
             report["triangleBitsetWordsByPass"] = bitsetWords;
-            require(states == (focusedRoom ? 4u : production ? 122u : directionalProjectionComparison ? 126u : markRayPagesComparison ? 106u : 82u),
+            require(states == (focusedRoom ? 4u : production ? 122u : 82u),
                 "Incomplete production/experimental workload matrix");
             if (focusedRoom) {
                 require(directionalReceivers[1] > 0 && localReceivers[0] > 0 && localReceivers[1] > 0 && bitsetWords[1] > 0,
@@ -3654,12 +3572,8 @@ public:
             if (!compactBuildComparison && !focusedRoom) {
                 require(std::ranges::all_of(clipmapStates, [](uint32_t count) { return count == 2; }), "Incomplete clipmap bound sweep");
             }
-            if (production) {
+            if (production && !focusedRoom) {
                 require(std::ranges::all_of(pageSizeStates, [](uint32_t count) { return count == 2; }), "Incomplete page-size bound sweep");
-            }
-            if (markRayPagesComparison) {
-                report["reducedStates"] = reducedStates; report["sweptStates"] = sweptStates;
-                require(reducedStates > 0 && sweptStates > 0, "Mark ray pages did not exercise skipped and swept levels");
             }
             if (compactBuildComparison) {
                 report["allSurviveFaces"] = compactAll; report["partialSurviveFaces"] = compactPartial; report["warmFaces"] = compactWarm;
@@ -3667,7 +3581,7 @@ public:
             }
             activeEvidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
             return RHITestResult::pass(focusedRoom ?
-                "Directional Room PCF matches Generic for resident/stream Cold/Warm states" : production ?
+                "Production Room PCF covers resident/stream Cold/Warm states" : production ?
                 "Production VSM covers both passes, local lights, clipmap/page bounds, resident/stream geometry and cache/overflow transitions" :
                 "Experimental VSM path preserves production GPU results and deterministic work across the workload matrix");
         } catch (const std::exception& error) {
@@ -3687,29 +3601,13 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProductionCoverageTest);
 
-class VirtualShadowMapDirectionalProjectionEquivalenceTest final : public VirtualShadowMapEquivalenceTest
+class VirtualShadowMapProductionRoomTest final : public VirtualShadowMapEquivalenceTest
 {
 public:
-    VirtualShadowMapDirectionalProjectionEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::DirectionalProjection) {}
+    VirtualShadowMapProductionRoomTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::ProductionRoom) {}
 };
 
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalProjectionEquivalenceTest);
-
-class VirtualShadowMapDirectionalProjectionRoomTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapDirectionalProjectionRoomTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::DirectionalProjectionRoom) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDirectionalProjectionRoomTest);
-
-class VirtualShadowMapMarkRayPagesEquivalenceTest final : public VirtualShadowMapEquivalenceTest
-{
-public:
-    VirtualShadowMapMarkRayPagesEquivalenceTest() : VirtualShadowMapEquivalenceTest(VirtualShadowMapEquivalenceMode::MarkRayPages) {}
-};
-
-METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkRayPagesEquivalenceTest);
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProductionRoomTest);
 
 class VirtualShadowMapMarkClipmapMutationTest : public RHITest
 {

@@ -116,7 +116,7 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
     std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
-    bool hierarchical = true, float maxWorldError = std::numeric_limits<float>::max());
+    float maxWorldError = std::numeric_limits<float>::max());
 
 // Selects one layer from a complete producer snapshot. IDs are sorted and use
 // the source structural revision. Geometry slot IDs/capacity and complete scene
@@ -141,7 +141,7 @@ public:
         Device& device, CommandBuffer& commands, const scene::Scene& scene,
         const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
         const VirtualShadowMapCasterSettings& settings, std::span<const VirtualShadowMapLODProjection> projections,
-        float maxErrorTexels, std::string& log, bool hierarchical, float maxWorldError);
+        float maxErrorTexels, std::string& log, float maxWorldError);
 
 private:
     struct Resident;

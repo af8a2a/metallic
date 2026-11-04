@@ -1,4 +1,4 @@
-"""Prepare resident Bunny shadow LOD GPU replays without changing source assets."""
+"""Historical Bunny LOD fixture helpers; live A/B preparation is retired."""
 import argparse
 from collections import Counter
 from copy import deepcopy
@@ -102,7 +102,7 @@ def base_graph():
             properties.update(enabled=True, pageSize=128, virtualPagesPerAxis=16, clipmapCount=4,
                               maxWorkItems=1048576, firstClipmapExtent=4., physicalPageBudget=256,
                               shadowBias=.002, lightCapacity=2, filter="hard", cacheLayering=False,
-                              onePassProjection=True, smrtTemporalEnabled=False,
+                              smrtTemporalEnabled=False,
                               shadowLODErrorTexels=1., benchmarkGPUProfile=True,
                               benchmarkCPUProfile=False, benchmarkBuildSubstages=False,
                               compactOutputs=True, debugOutput=False)
@@ -110,57 +110,7 @@ def base_graph():
 
 
 def prepare(args):
-    assets, metrics = inspect_assets()
-    graph_template = base_graph()
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    manifests = []
-    for mode in ("Diagnostic", "Timing"):
-        diagnostic = mode == "Diagnostic"
-        for workload in ("Redraw", "Warm"):
-            for arm in ("Off", "Flat", "Hierarchy"):
-                name = f"{mode}-{workload}-{arm}"
-                graph = deepcopy(graph_template)
-                shadows = next(node["properties"] for node in graph["nodes"] if node["name"] == "Shadows")
-                shadows.update(cacheEnabled=workload == "Warm", benchmarkGPUWork=diagnostic,
-                               shadowLOD=arm != "Off", shadowLODHierarchy=arm == "Hierarchy")
-                save(output / f"{name}.json", graph)
-                # A fully loaded world scene retains resident shadow geometry. Its VBuffer
-                # uses the same prebuilt stream asset in all arms at fixed finest LOD.
-                case = dict(id=f"BunnyResident{workload}", graph=f"{name}.json",
-                            scene=SCENE_PATH.as_posix(), metadataOnly=False,
-                            enableStreamline=False, synchronizationValidation=diagnostic,
-                            requireNoRayCapabilities=True, temporalJitter=False,
-                            width=768, height=512, output="FinalBlit.color", comparisonOutput="Deferred.color",
-                            camera=deepcopy(CAMERA), requireShadow=True,
-                            lighting=dict(sun=dict(direction=[2, 0, -1], illuminance=3., angularRadius=.00465)),
-                            environment=dict(enabled=False), exposureEV100=0,
-                            captureFrames=[32, 47] if diagnostic else [], comparisonFrames=[],
-                            comparisonStartFrame=16, freezeStreamingFrame=16,
-                            events=[dict(frame=16, cameraCut=True)])
-                manifest_name = f"{name}Cases.json"
-                save(output / manifest_name,
-                     dict(version=1, mode=mode.lower(), frames=48 if diagnostic else 96,
-                          warmupFrames=32, cases=[case]))
-                manifests.append(manifest_name)
-    save(output / "Assets.json", assets)
-    save(output / "Preparation.json", dict(
-        protocol="virtual-shadow-map-lod-impact-preparation-v1", fixtureMetrics=metrics,
-        templateGraph=dict(path=GRAPH_PATH.as_posix(), sha256=digest(GRAPH_PATH)),
-        scene=SCENE_PATH.as_posix(), streamAsset=STREAM_PATH.as_posix(),
-        shadowBase="Resident full geometry: metadataOnly=false, sceneBinding=world",
-        rasterGeometry="Streamed prebuilt geometry with autoLod=false, lodLevel=0; frozen at frame 16",
-        workloadScope="Controlled multi-LOD Bunny plus receiver fixture; not a production-scene performance claim",
-        redrawCondition="cacheEnabled=false every frame; warmup still excludes shader and initial residency setup",
-        warmCondition="cacheEnabled=true and fixed camera; measures reused shadow pages",
-        sourceAssetsModified=False, gpuExecutionPerformed=False))
-    save(output / "Catalog.json", dict(caseManifests=manifests,
-                                      execution="One case manifest per independent process"))
-    print(f"Prepared {len(manifests)} cases in {output}")
-    print(f"Source triangles: {metrics['authoredPrimitiveTriangleCount']}; "
-          f"stream groups: {metrics['stream']['groupCount']}; "
-          f"maximum LOD: {metrics['stream']['maximumLOD']}; "
-          f"finest clusters: {metrics['stream']['finestClusterCount']}")
+    raise ValueError("Retired VSM LOD reference experiment: hierarchy traversal, depth agreement and refined receiver bias are standard; use verify/report for historical evidence")
 
 
 if __name__ == "__main__":

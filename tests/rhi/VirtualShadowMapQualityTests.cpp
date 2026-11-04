@@ -1132,28 +1132,18 @@ public:
             registerQualityEvidence();
             const auto floor = writeFixture(directory / "Floor", false);
             const auto room = writeFixture(directory / "Room", true);
-            constexpr std::array names{"Legacy", "Shared", "OnePass", "NoDebug", "StatisticsFallback"};
+            constexpr std::array names{"Standard", "NoDebug", "StatisticsFallback"};
             report["cacheLayering"] = layered_;
             if (refinedReceiver_) {
-                report["shadowLODSettings"] = {{"enabled",true},{"depthGuard",false},{"smartBias",true},
+                report["shadowLODSettings"] = {{"enabled",true},{"smartBias",true},
                     {"smartBiasRefine",true},{"screenRayLength",.015}};
             }
             if (layered_) { report["cacheDiagnosticNames"] = kVirtualShadowMapCacheDiagnosticNames; }
-            report["projectionStatisticsArms"] = {{"Legacy",false},{"Shared",false},{"OnePass",false},{"NoDebug",false},{"StatisticsFallback",true}};
-            report["selectionControls"] = {
-                {"Legacy",{{"onePassProjection",true},{"benchmarkOnePassProjection",true},{"benchmarkLegacyProjection",true}}},
-                {"SharedCold",{{"onePassProjection",false}}},
-                {"SharedWarmAndLater",{{"onePassProjection",true},{"benchmarkOnePassProjection",false}}},
-                {"OnePass",Json::object()},
-                {"NoDebug",{{"onePassProjection",false},{"benchmarkOnePassProjection",true},{"debugOutput",false}}},
-                {"StatisticsFallback",{{"onePassProjection",false},{"benchmarkOnePassProjection",true},{"benchmarkProjectionStatistics",true}}}};
-            report["statisticsCompatibilityControl"] = "Grouped projection statistics must retain the per-face kernel even when one-pass projection is requested";
+            report["projectionStatisticsArms"] = {{"Standard",false},{"NoDebug",false},{"StatisticsFallback",true}};
+            report["statisticsCompatibilityControl"] = "Grouped projection statistics retain the per-face kernel";
             report["counterNames"] = kVirtualShadowMapWorkCounterNames;
             report["buildDiagnosticCounterNames"] = kVirtualShadowMapBuildDiagnosticCounterNames;
             report["gpuTimingScope"] = "Diagnostic dispatch-path verification with workload counters; not ordinary performance acceptance";
-            report["gpuProfilingPolicy"] = layered_ ?
-                "Profile only layered OnePass; all five arms retain exact output/counter comparisons within the serial timestamp budget" :
-                "Always profile OnePass; secondary is Shared on Cold, Legacy on Warm, then alternating NoDebug/StatisticsFallback to stay within the serial timestamp budget";
             constexpr std::array phases{"Cold", "Warm", "Redraw", "JitterMotion", "TemporalContinue", "Reorder", "FiniteBudget",
                 "Disabled", "Overflow", "Recovered", "TwoPoints", "NearPlane", "ZeroBudget", "SingleFace"};
             for (const std::string filter : {"hard", "pcf", "smrt"}) {
@@ -1197,7 +1187,7 @@ public:
                         graph.addNode("VisibilityBufferPass", "Raster", raster.findNode("Raster")->properties);
                         for (uint32_t arm = 0; arm < names.size(); ++arm) {
                             const std::string node = names[arm], capture = node + "Evidence", deferred = node + "Deferred";
-                            const bool debug = arm != 3;
+                            const bool debug = arm != 1;
                             Json settings{{"lightCapacity",kCapacity},{"physicalPageBudget",512},{"pageSize",128},
                                 // Keep face pools fixed across the strict Cold/Warm projection comparison.
                                 {"demandDrivenBudget",false},
@@ -1207,21 +1197,13 @@ public:
                                 // Fixed ray phases are required for the strict warm-cache reuse gate.
                                 // Temporal phases can legitimately request previously unseen pages.
                                 {"smrtTemporalEnabled",false},{"smrtTemporalMaxFrames",32},{"compactOutputs",compact},
-                                {"debugOutput",debug},{"benchmarkLegacyProjection",arm==0},
-                                {"benchmarkProjectionStatistics",arm==4},
-                                {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",arm==2 || (!layered_ && arm==1)},{"benchmarkGPUWork",true}};
-                            if (arm == 1) {
-                                settings["onePassProjection"] = false;
-                            } else if (arm != 2) {
-                                settings["onePassProjection"] = arm == 0;
-                                settings["benchmarkOnePassProjection"] = true;
-                            }
-                            if (layered_) { settings["cacheLayering"] = arm == 2; }
+                                {"debugOutput",debug},
+                                {"benchmarkProjectionStatistics",arm==2},
+                                {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",arm==0},{"benchmarkGPUWork",true}};
+                            if (layered_) { settings["cacheLayering"] = true; }
                             if (refinedReceiver_) {
                                 settings["shadowLOD"] = true;
-                                settings["shadowLODDepthGuard"] = false;
                                 settings["shadowLODSmartBias"] = true;
-                                settings["shadowLODSmartBiasRefine"] = true;
                                 settings["shadowLODScreenRayLength"] = .015;
                             }
                             auto pass = createRenderGraphPass("VirtualShadowMapLightsPass");
@@ -1259,20 +1241,8 @@ public:
                         };
                         const bool fallbackControls = !isRoom && compact && filter == "hard";
                         for (uint32_t frame = 0; frame < (isRoom ? 2u : fallbackControls ? uint32_t(phases.size()) : 12u); ++frame) {
-                            const uint32_t secondaryTimingArm = frame == 0 ? 1u : frame == 1 ? 0u : frame % 2 == 0 ? 3u : 4u;
                             const std::string phase = label + "-" + phases[frame];
                             validation.phase(phase);
-                            for (uint32_t arm = 0; arm < names.size(); ++arm) {
-                                require(graph.setNodeRuntimeProperty(graph.findNode(names[arm])->id, "benchmarkGPUProfile",
-                                    arm == 2 || (!layered_ && arm == secondaryTimingArm)), "Set bounded projection GPU profiling controls");
-                            }
-                            if (frame == 1) {
-                                require(graph.setNodeRuntimeProperty(graph.findNode("Shared")->id, "onePassProjection", true) &&
-                                    graph.setNodeRuntimeProperty(graph.findNode("Shared")->id, "benchmarkOnePassProjection", false) &&
-                                    graph.setNodeRuntimeProperty(graph.findNode("Shared")->id, "benchmarkGPUProfile", false) &&
-                                    graph.setNodeRuntimeProperty(graph.findNode("Shared")->id, "benchmarkCPUProfile", true),
-                                    "Set explicit shared-projection override precedence");
-                            }
                             if (frame == 2) { all("forceRedraw", true); }
                             if (frame == 3) {
                                 all("forceRedraw", false);
@@ -1311,7 +1281,7 @@ public:
                                 require(preview.setLighting(scene.lighting()), "Publish near-plane projection sources");
                             }
                             if (frame == 12 || frame == 13) { all("physicalPageBudget", frame == 12 ? 0 : 1); }
-                            require(preview.render(graph, kWidth, kHeight, "LegacyEvidence.color"), "Projection equivalence render: " + preview.lastLog());
+                            require(preview.render(graph, kWidth, kHeight, "StandardEvidence.color"), "Projection equivalence render: " + preview.lastLog());
                             // Graph compilation initializes the preview subsystem host and its device.
                             const auto& caps = preview.subsystemHost()->device()->capabilities();
                             report["computeSubgroupBallotArithmetic"] = caps.computeSubgroupBallotArithmetic;
@@ -1324,13 +1294,13 @@ public:
                             require(completed->size() == 1 && completed->front().gpuTimingAvailable,
                                 "Missing one-pass projection timestamp frame");
                             const auto& timings = completed->front();
-                            const std::array images{snapshot("Legacy", true, true, true, layered_), snapshot("Shared", true, true, true, layered_),
-                                snapshot("OnePass", true, true, true, layered_), snapshot("NoDebug", false, true, true, layered_), snapshot("StatisticsFallback", true, true, true, layered_)};
+                            const std::array images{snapshot("Standard", true, true, true, layered_),
+                                snapshot("NoDebug", false, true, true, layered_), snapshot("StatisticsFallback", true, true, true, layered_)};
                             const auto& baseline = images[0];
                             report["frames"].push_back({{"name",phase},{"statistics",baseline.statistics},{"memory",Json::object()},
                                 {"admittedLights",baseline.header.admittedCount},{"budgetDroppedLights",baseline.header.budgetDroppedCount},
                                 {"totalFaces",baseline.header.totalFaces},
-                                {"gpuProfilingArms",layered_ ? Json::array({names[2]}) : Json::array({names[2],names[secondaryTimingArm]})},{"profilingOverflow",timings.profilingOverflow},
+                                {"gpuProfilingArms",Json::array({names[0]})},{"profilingOverflow",timings.profilingOverflow},
                                 {"smrtTemporalEnabled",filter=="smrt" && frame>=3}});
                             auto& frameReport = report["frames"].back();
                             if (refinedReceiver_) {
@@ -1353,13 +1323,13 @@ public:
                                     frameReport["cacheDiagnostics"][names[arm]] = image.cacheDiagnostics;
                                     for (uint32_t face = 0; face < kLayers; ++face) {
                                         if (image.statistics[face][11] == 0) { continue; }
-                                        require(image.cacheDiagnostics[face][kVSMCacheLayered] == (arm == 2 ? 1u : 0u),
+                                        require(image.cacheDiagnostics[face][kVSMCacheLayered] == 1u,
                                             phase + ": published cache layer selection disagrees with graph property");
                                     }
                                 }
                                 frameReport["matches"][names[arm]] = {{"shadow",image.shadows==baseline.shadows},
                                     {"depth",image.depth==baseline.depth},{"statistics",image.statistics==baseline.statistics},
-                                    {"debug",arm==3 || image.debug==baseline.debug},{"hdr",image.hdr==baseline.hdr},
+                                    {"debug",arm==1 || image.debug==baseline.debug},{"hdr",image.hdr==baseline.hdr},
                                     {"buildDiagnostics",image.buildDiagnostics==baseline.buildDiagnostics}};
                                 frameReport["workload"][names[arm]] = image.workload;
                                 frameReport["buildDiagnostics"][names[arm]] = image.buildDiagnostics;
@@ -1382,12 +1352,8 @@ public:
                                     require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests],
                                         phase + ": invalid shared Mark request count");
                                     for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
-                                        // Shared Mark hash collisions change only atomic issue counts.
-                                        if (counter == kVSMWorkMarkPageRequests) { continue; }
-                                        // Two depth layers intentionally change raster groups, clears and decoded work.
-                                        // Demand, allocation, full build and all projection work remain exact.
-                                        if (layered_ && arm == 2 && counter >= kVSMWorkRasterCoarseGroups &&
-                                            counter <= kVSMWorkRasterClearedPages) { continue; }
+                                        // Request and receiver-mask OR issue counts depend on wave scheduling.
+                                        if (counter == kVSMWorkMarkPageRequests || counter == kVSMWorkMarkReceiverMaskAtomicOrs) { continue; }
                                         require(counts[counter] == baseline.workload[face][counter],
                                             phase + ": one-pass projection changed deterministic GPU work");
                                     }
@@ -1397,12 +1363,12 @@ public:
                                     phase + ": projection scheduling changed the light publication table");
                                 require(image.hdrFormat == baseline.hdrFormat && image.hdr == baseline.hdr,
                                     phase + ": same-frame projection/debug toggle changed actual Deferred HDR");
-                                if (arm != 3) { require(image.debug == baseline.debug, phase + ": shared projection changed debug pixels"); }
+                                if (arm != 1) { require(image.debug == baseline.debug, phase + ": shared projection changed debug pixels"); }
                                 else { require(std::ranges::all_of(image.debug, [](const auto& pixels) { return pixels.empty(); }), phase + ": no-debug captured debug data"); }
                                 require(image.memory[1] == 0, phase + ": legacy or compact layout retained private face outputs");
                                 const uint64_t layers = compact ? kCapacity : kLayers;
-                                require(image.memory[3] == layers * kPixels * (arm == 3 ? 1 : 5), phase + ": public output allocation disagrees with optional debug");
-                                const uint64_t atlasMultiplier = layered_ && arm == 2 ? 2u : 1u;
+                                require(image.memory[3] == layers * kPixels * (arm == 1 ? 1 : 5), phase + ": public output allocation disagrees with optional debug");
+                                constexpr uint64_t atlasMultiplier = 1;
                                 require(image.memory[0] == baseline.memory[0] * atlasMultiplier && image.memory[4] == baseline.memory[4] &&
                                     image.memory[5] == baseline.memory[5] * atlasMultiplier,
                                     phase + ": output/projection optimization changed atlas allocation");
@@ -1411,7 +1377,7 @@ public:
                                 } else if (filter == "smrt" && frame <= 4) {
                                     require(image.memory[6] > 0, phase + ": temporal progression did not allocate light histories");
                                 }
-                                if (arm == 2 || (!layered_ && arm == secondaryTimingArm)) {
+                                if (arm == 0) {
                                     const auto node = std::ranges::find(timings.nodes, names[arm], &RenderGraphNodeExecutionStat::name);
                                     require(node != timings.nodes.end(), phase + ": projection GPU profiling node is missing");
                                     uint32_t onePassScopes = 0, faceScopes = 0;
@@ -1438,7 +1404,7 @@ public:
                                     }
                                     const uint32_t activeFaces = uint32_t(std::count_if(image.statistics.begin(), image.statistics.end(),
                                         [](const auto& stats) { return stats[11] != 0; }));
-                                    const bool onePass = (arm == 2 || arm == 3) && activeFaces > 1;
+                                    const bool onePass = arm != 2 && activeFaces > 1;
                                     frameReport["projectionGPU"][names[arm]] = {{"onePassScopes",onePassScopes},{"faceScopes",faceScopes},
                                         {"activeFaces",activeFaces},{"gpuMs",projectionMs}};
                                     save();
@@ -1446,43 +1412,6 @@ public:
                                         phase + ": projection did not select the requested GPU dispatch path");
                                 }
                             }
-                            const auto& execution = preview.executionStats();
-                            const auto sharedNode = std::find_if(execution.nodes.begin(), execution.nodes.end(),
-                                [](const auto& node) { return node.name == "Shared"; });
-                            require(sharedNode != execution.nodes.end(), phase + ": shared CPU profiling node is missing");
-                            const auto sharedScope = std::find_if(sharedNode->sections.begin(), sharedNode->sections.end(),
-                                [](const auto& section) { return section.name == "VSM shared projection"; });
-                            const uint64_t expectedPointTables = filter == "hard" ? 0 : std::count_if(baseline.entries.begin(),
-                                baseline.entries.begin() + baseline.header.count, [](const auto& entry) {
-                                    return entry.kind == 2 && entry.status == kVirtualShadowMapLightAdmitted;
-                                });
-                            if (frame == 0) {
-                                require(sharedScope == sharedNode->sections.end(), phase + ": cold default control enabled CPU profiling alongside GPU scopes");
-                                frameReport["sharedProjectionCPU"] = {{"available",false},{"reason",layered_ ? "Shared auxiliary CPU profiling disabled; layered default OnePass verified with GPU scopes" : "Cold default path verified with GPU scopes"}};
-                            } else if (sharedScope == sharedNode->sections.end()) {
-                                // The executor rejects a complete CPU metadata tree when it
-                                // exceeds 256 sections. Fourteen recorded faces exceed this
-                                // diagnostic budget; their output/face gates remain exact.
-                                require(frame >= 10 && execution.profilingOverflow,
-                                    phase + ": shared projection CPU scope is unexpectedly missing");
-                                frameReport["sharedProjectionCPU"] = {{"available",false},{"pointTables",nullptr},
-                                    {"expectedPointTables",expectedPointTables},{"sectionLimit",256},
-                                    {"reason","CPU profile tree exceeded the render graph section budget"}};
-                            } else {
-                                require(sharedScope->cpuOnly &&
-                                    std::count_if(sharedNode->sections.begin(), sharedNode->sections.end(),
-                                        [](const auto& section) { return section.name == "VSM shared projection"; }) == 1,
-                                    phase + ": shared projection must publish one CPU scope, including disabled frames");
-                                const auto pointTables = std::find_if(sharedScope->cpuWork.begin(), sharedScope->cpuWork.end(),
-                                    [](const auto& work) { return work.name == "pointTables"; });
-                                require(pointTables != sharedScope->cpuWork.end(), phase + ": shared point-table work counter is missing");
-                                frameReport["sharedProjectionCPU"] = {{"available",true},{"pointTables",pointTables->value},
-                                    {"expectedPointTables",expectedPointTables}};
-                                save();
-                                require(pointTables->value == expectedPointTables,
-                                    phase + ": shared projection must prepare one point table per admitted filtered point light");
-                            }
-                            save();
                             require(baseline.header.count == 4 && baseline.header.totalFaces == (frame >= 10 ? 14u : 9u),
                                 phase + ": mixed-light fixture lost a source/face");
                             if (frame == 10) {
@@ -1542,12 +1471,12 @@ public:
             }
             require(report["frames"].size() == expectedStates, refinedReceiver_ ?
                 "Refined receiver projection matrix did not complete 26 floor and four room states" :
-                "Projection matrix did not complete 84 equivalence states and two zero/single-face controls");
+                "Projection matrix did not complete 84 production compatibility states and two zero/single-face controls");
             evidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
             if (refinedReceiver_) {
-                return RHITestResult::pass("GPU refined receiver one-pass projection matches legacy/shared shadows, statistics, deterministic work and Deferred HDR across 30 hard-shadow states with valid primary stream publications");
+                return RHITestResult::pass("GPU refined receiver projection preserves debug/statistics equivalence and Deferred HDR across 30 hard-shadow states with valid primary stream publications");
             }
-            return RHITestResult::pass("GPU one-pass projection matches legacy/shared shadows, statistics, deterministic work and Deferred HDR across 84 states plus zero/single-face fallback controls");
+            return RHITestResult::pass("GPU standard projection preserves debug/statistics equivalence and Deferred HDR across 84 states plus zero/single-face fallback controls");
         } catch (const std::exception& error) {
             evidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());
@@ -2588,7 +2517,7 @@ public:
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapShadowLODSmartBiasQuality";
         Json report{{"passed", false}, {"frames", Json::array()}, {"cases", Json::array()}, {"qualityFailures", Json::array()},
             {"scope", "Directional smart-bias near-contact leak diagnostics on exact zero-thickness blocker geometry; not LOD performance evidence"},
-            {"contract", {{"shadowLOD", true}, {"shadowLODDepthGuard", false}, {"filter", "hard"},
+            {"contract", {{"shadowLOD", true}, {"filter", "hard"},
                 {"shadowBiasMetres", .002}, {"gapMetres", {.005, .01, .02, .04}},
                 {"nominalScreenRayLength", .015}, {"stressScreenRayLengthMetres", .12},
                 {"blockerThicknessMetres", 0}, {"oracleOriginOffsetMetres", 0}, {"triangleEpsilonMetres", 1e-7},
@@ -2626,7 +2555,7 @@ public:
                 evidence = std::make_shared<EvidenceState>();
                 auto graph = makeGraph(fixture.geometry, "hard", false, 128);
                 const Json fixtureSettings{{"physicalPageBudget", 1024}, {"firstClipmapExtent", .25},
-                    {"shadowLOD", true}, {"shadowLODDepthGuard", false}, {"shadowLODErrorTexels", 1}};
+                    {"shadowLOD", true}, {"shadowLODErrorTexels", 1}};
                 for (const char* node : {"Cached", "Redraw", "Hard"}) {
                     const uint32_t id = graph.findNode(node)->id;
                     for (const auto& [key, value] : fixtureSettings.items()) {
@@ -3340,20 +3269,12 @@ public:
                 const std::string type = lights ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass";
                 const auto pass = createRenderGraphPass(type);
                 require(pass != nullptr, "Create shadow LOD pass for default contract");
-                const auto settings = pass->runtimeSettings();
-                const auto guard = std::find_if(settings.begin(), settings.end(), [](const auto& setting) {
-                    return setting.key == "shadowLODDepthGuard";
-                });
-                require(guard != settings.end() && guard->defaultValue == true,
-                    type + ": shadow LOD depth guard is not enabled by default");
-                for (const std::string mode : {"Off", "Zero", "Flat", "Adaptive", "Legacy", "Guarded"}) {
+                for (const std::string mode : {"Off", "Zero", "Adaptive"}) {
                     const std::string name = std::string(lights ? "Lights" : "Single") + mode;
                     Json properties{{"lightCapacity", kCapacity}, {"physicalPageBudget", 256}, {"physicalPageCount", 128},
                             {"pageSize", 32}, {"virtualPagesPerAxis", 4}, {"clipmapCount", 4}, {"firstClipmapExtent", 4},
                             {"maxWorkItems", 131072}, {"shadowBias", .002}, {"cacheEnabled", true}, {"cacheLayering", true},
-                            {"filter", "hard"}, {"receiverFootprint", true}, {"shadowLOD", mode != "Off"}, {"shadowLODErrorTexels", mode == "Zero" ? 0 : 1},
-                            {"shadowLODHierarchy", mode != "Flat"}};
-                    if (mode == "Legacy" || mode == "Guarded") { properties["shadowLODDepthGuard"] = mode == "Guarded"; }
+                            {"filter", "hard"}, {"receiverFootprint", true}, {"shadowLOD", mode != "Off"}, {"shadowLODErrorTexels", mode == "Zero" ? 0 : 1}};
                     graph.addNode(type, name, std::move(properties));
                     graph.addEdge("Raster.depth", name + ".depth");
                     graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
@@ -3375,30 +3296,32 @@ public:
                 for (bool lights : {false, true}) {
                     const std::string prefix = lights ? "Lights" : "Single";
                     const auto off = readLODPass(prefix + "Off", lights), zero = readLODPass(prefix + "Zero", lights);
-                    const auto flat = readLODPass(prefix + "Flat", lights), adaptive = readLODPass(prefix + "Adaptive", lights);
-                    const auto legacy = readLODPass(prefix + "Legacy", lights), guarded = readLODPass(prefix + "Guarded", lights);
-                    require(guarded.shadows == adaptive.shadows && guarded.lod == adaptive.lod,
-                        prefix + ": default depth guard differs from explicit enabled path");
-                    // This fixture has no nonzero-error replacement. Explicit
-                    // legacy mode must preserve the same exact geometry here;
-                    // the real Bunny test exercises budget-dependent cuts.
-                    require(legacy.shadows == adaptive.shadows && legacy.lod[4] == adaptive.lod[4] && legacy.lod[5] == adaptive.lod[5],
-                        prefix + ": depth guard changed zero-error terminal geometry");
-                    require(flat.shadows == adaptive.shadows, prefix + ": adaptive traversal changed flat reference visibility");
-                    require(flat.lod[4] == adaptive.lod[4] && flat.lod[5] == adaptive.lod[5] &&
-                        flat.lod[6] == adaptive.lod[6] && flat.lod[7] == adaptive.lod[7],
-                        prefix + ": adaptive traversal changed selection or requests");
-                    require(flat.lod[12] == 0 && flat.lod[13] == 0, prefix + ": flat reference used hierarchical pruning");
+                    const auto adaptive = readLODPass(prefix + "Adaptive", lights);
                     if (!report["frames"].empty()) {
-                        require(adaptive.lod[14] == 0 && adaptive.lod[15] > 0,
-                            prefix + ": unchanged shadow hierarchy was rebuilt instead of reused");
+                        // An unchanged resident cut returns its retained geometry
+                        // without visiting metadata. A changed projection reuses
+                        // the hierarchy while selecting a new cut.
+                        const auto requireCachedSelection = [&](const std::array<uint32_t, 32>& lod, const char* key) {
+                            const auto& previous = report["frames"].back().at(prefix).at(key);
+                            const bool residentCutReused = lod[3] == 0 && lod[11] == 0 && lod[12] == 0 &&
+                                lod[13] == 0 && lod[15] == 0 && lod[4] == previous.at(4).get<uint32_t>() &&
+                                lod[5] == previous.at(5).get<uint32_t>();
+                            require(lod[14] == 0 && (residentCutReused || lod[15] > 0),
+                                prefix + ": unchanged resident cut or hierarchy was not reused: " + Json(lod).dump());
+                        };
+                        requireCachedSelection(adaptive.lod, "adaptiveLOD");
+                        requireCachedSelection(zero.lod, "zeroLOD");
+                    } else {
+                        require(zero.lod[3] > 0, prefix + ": initial zero-error cut did not exercise selection");
                     }
+                    require(adaptive.lod[0] == 2 && adaptive.lod[1] == 1 && adaptive.lod[4] > 0,
+                        prefix + ": adaptive LOD omitted its selected geometry");
                     require(off.shadows == zero.shadows, prefix + ": zero-error LOD changed exact final visibility");
                     require(off.lod[0] == 2 && off.lod[1] == 0 && off.lod[2] == 0,
                         prefix + ": disabled LOD readback ABI or activation differs");
                     require(zero.lod[0] == 2 && zero.lod[1] == 1 && zero.lod[2] == (lights ? expectedFaces : 1) * 5,
                         prefix + ": LOD projections do not match every admitted face and level");
-                    require(zero.lod[3] > 0 && zero.lod[4] > 0 && zero.lod[5] == off.lod[5] && zero.lod[5] == zero.lod[10],
+                    require(zero.lod[4] > 0 && zero.lod[5] == off.lod[5] && zero.lod[5] == zero.lod[10],
                         prefix + ": zero-error complete terminal fixture has wrong selection or slot accounting");
                     require(zero.lod[6] == 0 && zero.lod[7] == 0 && zero.lod[8] == 0 && zero.lod[9] == 0,
                         prefix + ": complete opaque terminal fixture unexpectedly requested, blocked or protected geometry");
@@ -3419,9 +3342,8 @@ public:
                         require(zero.header.version == kVirtualShadowMapLightsVersion && faces == expectedFaces &&
                             zero.header.admittedCount == (expectedFaces == 7 ? 2 : 1), "LOD multi-light admission evidence differs");
                     }
-                    frame[prefix] = {{"exactVisibility", true}, {"defaultDepthGuardMatchesExplicit", true},
-                        {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"flatLOD", flat.lod}, {"adaptiveLOD", adaptive.lod},
-                        {"legacyLOD", legacy.lod}, {"guardedLOD", guarded.lod}, {"shadowedPixels", shadowed}};
+                    frame[prefix] = {{"exactVisibility", true},
+                        {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"adaptiveLOD", adaptive.lod}, {"shadowedPixels", shadowed}};
                 }
                 report["frames"].push_back(std::move(frame));
                 save();
@@ -3486,7 +3408,6 @@ public:
             both("smrtMaxRayLength", 4); both("smrtRayLengthScale", 0);
             both("physicalPageBudget", 256); both("benchmarkGPUWork", true);
             property("Cached", "forceRedraw", true);
-            property("Cached", "benchmarkReceiverMask", false); // Full-page reference.
             property("Compact", "benchmarkInstanceBuild", true);
             property("Compact", "benchmarkClusterPageRaster", true);
             property("Compact", "benchmarkDirtyPageHierarchy", true);
@@ -3619,15 +3540,6 @@ public:
             capture("FixedBudgetReturn", CacheExpectation::Reallocated);
             both("physicalPageBudget", 1); capture("CoarseBudget", CacheExpectation::Any, true);
             both("physicalPageBudget", 256); capture("BudgetRestore"); capture("BudgetRestoreWarm", CacheExpectation::Clean);
-            property("Compact", "benchmarkReceiverMask", false);
-            const auto disabled = capture("DisableMask");
-            require((disabled.cacheDiagnostics[activeEntry(disabled).baseLayer][kVSMCacheReasons] & kVSMCacheReasonSettings) != 0,
-                "Disabling partial receiver masks did not invalidate the incomplete cache");
-            capture("DisabledWarm", CacheExpectation::Clean);
-            property("Compact", "benchmarkReceiverMask", true); capture("ReenableMask");
-            property("Compact", "benchmarkPropagatedMapping", false); capture("MappingTailDisabled");
-            capture("MappingTailDisabledWarm", CacheExpectation::Clean);
-            property("Compact", "benchmarkPropagatedMapping", true); capture("MappingTailRestored");
             both("filter", "hard"); capture("HardFallback"); capture("HardWarm", CacheExpectation::Clean);
             require(maskTests > 0, "Receiver-mask candidate performed no per-page intersection tests");
             require(maskRejects > 0, "Receiver-mask fixture did not exercise subpage caster rejection");
@@ -3686,16 +3598,15 @@ public:
             for (const char* name : {"Cached", "Compact"}) {
                 auto* node = graph.findNode(name);
                 auto properties = node->properties;
-                const bool useHZB = std::string_view(name) == "Compact";
-                properties.update(Json{{"physicalPageBudget", 128}, {"cacheLayering", true}, {"forceRedraw", !useHZB},
+                const bool incremental = std::string_view(name) == "Compact";
+                properties.update(Json{{"physicalPageBudget", 128}, {"cacheLayering", true}, {"forceRedraw", !incremental},
                     {"receiverFootprint", false}, {"compactOutputs", false},
-                    {"benchmarkGPUWork", useHZB}});
-                // Compare instance-driven Build against full redraw with occlusion disabled.
-                if (useHZB) {
+                    {"benchmarkGPUWork", incremental}});
+                // Compare instance-driven Build against a complete redraw.
+                if (incremental) {
                     properties["benchmarkInstanceBuild"] = true;
                     properties["benchmarkClusterPageRaster"] = true;
                 }
-                if (!useHZB) { properties["benchmarkStaticPageHZB"] = false; }
                 require(graph.setNodeProperties(node->id, std::move(properties)), "Set HZB arm properties");
             }
             auto* output = graph.findNode("CompactEvidence");

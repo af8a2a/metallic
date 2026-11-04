@@ -45,7 +45,6 @@ void propagatedMappingLookupProbeMain(uint3 id : SV_DispatchThreadID)
     output[id.x * 8u + 2u] = uint4(sample.valid ? asuint(sample.projected) : uint3(0u), 0u);
     uint4 mapping = 0u;
     uint4 sourcePosition = 0u, sourceAddress = 0u, targetPosition = 0u, targetAddress = 0u;
-#if VSM_PROPAGATED_MAPPING
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(mappingProbe.projections));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(mappingProbe.pages));
     StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(mappingProbe.statistics));
@@ -65,7 +64,6 @@ void propagatedMappingLookupProbeMain(uint3 id : SV_DispatchThreadID)
         targetPosition = uint4(asuint(projected), target);
         targetAddress = uint4(texel, physical, 0u);
     }
-#endif
     output[id.x * 8u + 3u] = mapping;
     output[id.x * 8u + 4u] = sourcePosition;
     output[id.x * 8u + 5u] = sourceAddress;

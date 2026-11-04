@@ -1,5 +1,6 @@
-"""Prepare, run and verify bounded shadow LOD depth-guard GPU comparisons.
+"""Verify historical shadow LOD depth-guard GPU comparisons.
 
+Live prepare/run is retired: hierarchy and depth agreement are standard.
 Off / Legacy / Guarded use the same resident Bunny and receiver inputs. Ordinary
 timing is exactly three ABCCBA blocks per workload; diagnostic images, software
 counters and same-projection cache comparisons are collected separately.
@@ -11,7 +12,6 @@ import copy
 import math
 from pathlib import Path
 import statistics
-from types import SimpleNamespace
 
 import PrepareVirtualShadowMapLODImpact as fixture
 import VirtualShadowMapAcceptance as acceptance
@@ -43,45 +43,7 @@ def comparison_frames(phase, workload, arm):
 
 
 def prepare(args):
-    assets, metrics = fixture.inspect_assets()
-    template = fixture.base_graph()
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    manifests = []
-    for phase in ("diagnostic", "timing"):
-        for workload in WORKLOADS:
-            for arm, (enabled, guard) in ARMS.items():
-                name = f"{phase.title()}-{workload}-{arm}"
-                graph = copy.deepcopy(template)
-                props = next(n["properties"] for n in graph["nodes"] if n["name"] == "Shadows")
-                props.update(shadowLOD=enabled, shadowLODHierarchy=True, shadowLODDepthGuard=guard,
-                             cacheEnabled=workload == "Warm", benchmarkGPUWork=phase == "diagnostic")
-                acceptance.save(output / f"{name}.json", graph)
-                case = dict(id=f"BunnyResident{workload}", graph=f"{name}.json",
-                            scene=fixture.SCENE_PATH.as_posix(), metadataOnly=False,
-                            enableStreamline=False, synchronizationValidation=phase == "diagnostic",
-                            requireNoRayCapabilities=True, temporalJitter=False,
-                            width=768, height=512, output="FinalBlit.color", comparisonOutput="Deferred.color",
-                            camera=copy.deepcopy(fixture.CAMERA), requireShadow=True,
-                            lighting=dict(sun=dict(direction=[2, 0, -1], illuminance=3., angularRadius=.00465)),
-                            environment=dict(enabled=False), exposureEV100=0,
-                            captureFrames=[32, 47] if phase == "diagnostic" else [],
-                            comparisonFrames=comparison_frames(phase, workload, arm),
-                            comparisonStartFrame=16, freezeStreamingFrame=16,
-                            events=[dict(frame=16, cameraCut=True)])
-                spec = dict(version=1, mode=phase, frames=48 if phase == "diagnostic" else 96,
-                            warmupFrames=32, cases=[case])
-                normalize(spec, graph, phase, workload, arm)
-                acceptance.save(output / f"{name}Cases.json", spec)
-                manifests.append(f"{name}Cases.json")
-    acceptance.save(output / "Assets.json", assets)
-    acceptance.save(output / "Preparation.json", dict(protocol=PROTOCOL, fixtureMetrics=metrics,
-        templateGraph=dict(path=fixture.GRAPH_PATH.as_posix(), sha256=acceptance.digest(fixture.GRAPH_PATH)),
-        scope="Resident full-geometry shadow source, fixed finest main view, one directional light",
-        limitation="Cache-disabled redraw changes projection padding; compare cache equality with in-frame forceRedraw",
-        sourceAssetsModified=False))
-    acceptance.save(output / "Catalog.json", dict(caseManifests=manifests))
-    print(output)
+    raise ValueError("Retired VSM LOD reference experiment: hierarchy traversal, depth agreement and refined receiver bias are standard; use verify/report for historical evidence")
 
 
 def normalize(spec, graph, phase, workload, arm):
@@ -309,81 +271,7 @@ def verify(source, diagnostic=None):
 
 
 def run(args):
-    workloads = [args.workload] if args.workload else list(WORKLOADS)
-    cases_dir, output = args.cases_dir.resolve(), args.output.resolve()
-    assets = acceptance.read(cases_dir / "Assets.json")
-    impact.validate_assets(assets)
-    inputs, normalized = {}, {}
-    for workload in workloads:
-        for arm in ARMS:
-            cases = cases_dir / f"{args.phase.title()}-{workload}-{arm}Cases.json"
-            spec = acceptance.read(cases)
-            graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
-            value = normalize(spec, acceptance.read(graph), args.phase, workload, arm)
-            if workload in normalized and normalized[workload] != value:
-                raise ValueError("Prepared inputs differ beyond LOD/depth-guard settings")
-            normalized[workload] = value
-            inputs[f"{workload}-{arm}"] = dict(cases=str(cases), graph=str(graph),
-                casesSHA256=acceptance.digest(cases), graphSHA256=acceptance.digest(graph))
-    evidence, prerequisite = None, None
-    if args.phase == "timing":
-        if args.diagnostic is None:
-            raise ValueError("Timing requires a verified diagnostic prerequisite")
-        evidence = verify(args.diagnostic)
-        if evidence["phase"] != "diagnostic" or evidence["assets"] != assets or any(w not in evidence["workloads"] for w in workloads):
-            raise ValueError("Diagnostic prerequisite does not cover timing inputs")
-        prerequisite = dict(path=str(args.diagnostic.resolve()), manifestSHA256=acceptance.digest(args.diagnostic / "Manifest.json"))
-    output.mkdir(parents=True, exist_ok=False)
-    tool_paths = (Path(__file__), Path(impact.__file__), Path(fixture.__file__), Path(acceptance.__file__),
-                  Path(profile.__file__), Path(impact.optimization.__file__))
-    tools = {str(p.resolve()): acceptance.digest(p) for p in tool_paths}
-    plan = dict(protocol=PROTOCOL, phase=args.phase, workloads=workloads, created=impact.utc(), inputs=inputs,
-                processes=schedule(args.phase, workloads), diagnostic=prerequisite, exe=str(args.exe.resolve()),
-                timeoutSeconds=args.timeout, toolsSHA256=tools,
-                statisticalUnit="Exactly three independent symmetric ABCCBA blocks per workload; no adaptive samples",
-                cache="Existing disk caches retained; fresh process per sample; first 32 frames excluded",
-                gpuExclusivity="Not enforced; user applications remain running and clocks unchanged")
-    acceptance.save(output / "Plan.json", plan)
-    acceptance.save(output / "Assets.json", assets)
-    (output / "Inputs").mkdir()
-    (output / "Tools").mkdir()
-    for key, item in inputs.items():
-        (output / "Inputs" / f"{key}Cases.json").write_bytes(Path(item["cases"]).read_bytes())
-        (output / "Inputs" / f"{key}Graph.json").write_bytes(Path(item["graph"]).read_bytes())
-    for path in tool_paths:
-        (output / "Tools" / path.name).write_bytes(path.read_bytes())
-    processes, records = [], []
-    try:
-        for scheduled in plan["processes"]:
-            impact.validate_assets(assets)
-            if any(acceptance.digest(path) != digest for path, digest in tools.items()):
-                raise ValueError("Experiment tools changed after plan creation")
-            item = inputs[f"{scheduled['workload']}-{scheduled['arm']}"]
-            if any(acceptance.digest(item[k]) != item[f"{k}SHA256"] for k in ("cases", "graph")):
-                raise ValueError("Prepared inputs changed after plan creation")
-            row = dict(**scheduled, started=impact.utc(), beforeGPU=impact.telemetry(), passed=False)
-            processes.append(row)
-            acceptance.save(output / "Processes.json", processes)
-            try:
-                acceptance.run(SimpleNamespace(cases=Path(item["cases"]), exe=args.exe,
-                                               output=output / scheduled["package"], runs=1, timeout=args.timeout))
-                records.append(read_package(output, plan, scheduled))
-                check_records(records, evidence)
-                impact.validate_assets(assets)
-                row["passed"] = True
-            finally:
-                row.update(finished=impact.utc(), afterGPU=impact.telemetry())
-                acceptance.save(output / "Processes.json", processes)
-        acceptance.save(output / "Completion.json", dict(passed=True, finished=impact.utc()))
-        impact.seal(output)
-        verify(output, args.diagnostic)
-    except Exception as error:
-        acceptance.save(output / "Completion.json", dict(passed=False, finished=impact.utc(), error=str(error)))
-        if not (output / "Processes.json").exists():
-            acceptance.save(output / "Processes.json", processes)
-        impact.seal(output)
-        raise RuntimeError(f"Experiment stopped; evidence retained at {output}: {error}") from error
-    print(output)
+    raise ValueError("Retired VSM LOD reference experiment: hierarchy traversal, depth agreement and refined receiver bias are standard; use verify/report for historical evidence")
 
 
 def block_statistics(records, workloads):

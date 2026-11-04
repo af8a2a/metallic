@@ -246,37 +246,13 @@ bool buildVirtualShadowMapLODHierarchy(std::span<const MeshletLODGroupRecord> gr
 
 VirtualShadowMapLODSelection selectVirtualShadowMapLOD(const VirtualShadowMapLODHierarchy& hierarchy,
     std::span<const uint8_t> drawableGroups, const GPUSceneGPUInstanceRecord& instance,
-    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold, bool hierarchical,
-    float maxWorldError)
+    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold, float maxWorldError)
 {
     VirtualShadowMapLODSelection result;
     const auto& groups = hierarchy.groups;
     if (drawableGroups.size() != groups.size()) {
         result.cut.valid = false;
         result.cut.reason = "shadow LOD drawable states disagree with cached topology";
-        return result;
-    }
-    if (!hierarchical) {
-        auto requirements = buildVirtualShadowMapLodRequirements(groups, instance, projections, pixelThreshold, maxWorldError);
-        result.metricGroups = uint32_t(hierarchy.metricGroupIDs.size());
-        if (pixelThreshold == 0) { std::fill(requirements.needsFine.begin(), requirements.needsFine.end(), uint8_t(1)); }
-        // Keep the original full closure and selector as the A/B oracle.
-        for (uint32_t owner = 0; owner < hierarchy.ranges.size(); ++owner) {
-            const auto& range = hierarchy.ranges[owner];
-            for (uint32_t cluster = range.clusterOffset; cluster < range.clusterOffset + range.clusterCount; ++cluster) {
-                const uint32_t child = hierarchy.refinedGroups[cluster];
-                if (child != kMeshletLODInvalidGroup) {
-                    requirements.needsFine[owner] |= requirements.needsFine[child];
-                    ++result.topologyEdges;
-                }
-            }
-        }
-        result.cut = selectStreamMeshletLodReference(groups, hierarchy.ranges, hierarchy.refinedGroups,
-            drawableGroups, instance, MeshletLODView{}, UINT32_MAX, UINT32_MAX, {}, {}, requirements.needsFine);
-        result.topologyGroups = result.cut.testedGroups;
-        for (uint32_t group = 0; group < groups.size(); ++group) {
-            if (result.cut.activeGroups[group] != 0) { result.clusterTests += hierarchy.ranges[group].clusterCount; }
-        }
         return result;
     }
     auto& cut = result.cut;

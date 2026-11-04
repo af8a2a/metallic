@@ -4,9 +4,10 @@ run --phase diagnostic|discovery|confirmation --cases-dir DIR --exe EXE --output
     [--diagnostic DIAGNOSTIC_SOURCE] [--reference DISCOVERY_SOURCE]
 report SOURCE NEW_REPORT [--diagnostic DIAGNOSTIC_SOURCE] [--reference DISCOVERY_SOURCE]
 
-Live experiments: compact-build, mark-ray-pages, directional-projection, one-pass-projection.
+Live experiments: compact-build.
 Retired live experiments: cluster-bitset, directional-build, directional-mark,
-mark-clipmaps, mark-page-size. Historical report/verification remains supported.
+mark-clipmaps, mark-page-size, mark-ray-pages, directional-projection,
+one-pass-projection. Historical report/verification remains supported.
 The switch descriptions below document historical evidence as well as live candidates.
 Cases are Diagnostic-ACases.json/Diagnostic-BCases.json or Timing-A/B counterparts.
 A disables benchmarkClusterPageBitset, B enables it; both use production mark/cluster.
@@ -69,13 +70,18 @@ DIRECTIONAL_PROJECTION_PROTOCOL = "virtual-shadow-map-directional-projection-v1"
 DIRECTIONAL_PROJECTION_SWITCH = "benchmarkDirectionalProjection"
 ONE_PASS_PROTOCOL = "virtual-shadow-map-one-pass-projection-v1"
 ONE_PASS_SWITCH = "benchmarkOnePassProjection"
-RETIRED_EXPERIMENTS = frozenset(("cluster-bitset", "directional-build", "directional-mark", "mark-clipmaps", "mark-page-size"))
-LIVE_EXPERIMENTS = frozenset(("compact-build", "mark-ray-pages", "directional-projection", "one-pass-projection"))
+RETIRED_EXPERIMENTS = frozenset(("cluster-bitset", "directional-build", "directional-mark", "mark-clipmaps", "mark-page-size",
+    "mark-ray-pages", "directional-projection", "one-pass-projection"))
+LIVE_EXPERIMENTS = frozenset(("compact-build",))
 RETIRED_PROPERTIES = frozenset(("benchmarkLegacyMark", "benchmarkMarkSamples",
     "benchmarkDirectionalMark", "directionalMark", "benchmarkMarkClipmapSpecialization", "markClipmapSpecialization",
     "benchmarkMarkPageSizeSpecialization", "markPageSizeSpecialization", "benchmarkDisableClusterCull",
     "benchmarkClusterPageBitset", "clusterPageBitset", "benchmarkTrianglePageBitset", "trianglePageBitset",
-    "benchmarkDirectionalBuild", "directionalBuild"))
+    "benchmarkDirectionalBuild", "directionalBuild", "onePassProjection", "benchmarkOnePassProjection", "benchmarkLegacyProjection",
+    "directionalProjection", "benchmarkDirectionalProjection", "propagatedMapping", "benchmarkPropagatedMapping",
+    "markRayPages", "benchmarkMarkRayPages", "receiverMask", "benchmarkReceiverMask",
+    "aggregateReceiverMask", "benchmarkAggregateReceiverMask", "staticPageHZB", "benchmarkStaticPageHZB",
+    "clusterHZBCulling", "benchmarkClusterHZBCulling", "shadowLODHierarchy", "shadowLODDepthGuard", "shadowLODSmartBiasRefine"))
 METRICS = optimization.METRICS
 POLICY = {"minimumGain": .03, "maximumGraphRegression": .02, "confidence": .95,
           "primaryMetric": "buildMs", "statisticalUnit": "independent four-process ABBA block",
@@ -204,16 +210,6 @@ def reject_retired_properties(graph):
 def prepare_plan(args):
     require_live_experiment(args)
     mode = "diagnostic" if args.phase == "diagnostic" else "timing"
-    directional = getattr(args, "experiment", "cluster-bitset") == "directional-build"
-    compact = getattr(args, "experiment", "cluster-bitset") == "compact-build"
-    directional_mark = getattr(args, "experiment", "cluster-bitset") == "directional-mark"
-    mark_clipmaps = getattr(args, "experiment", "cluster-bitset") == "mark-clipmaps"
-    mark_ray_pages = getattr(args, "experiment", "cluster-bitset") == "mark-ray-pages"
-    directional_mark = directional_mark or mark_ray_pages
-    one_pass = getattr(args, "experiment", "cluster-bitset") == "one-pass-projection"
-    directional_projection = getattr(args, "experiment", "cluster-bitset") == "directional-projection"
-    mark_page_size = getattr(args, "experiment", "cluster-bitset") == "mark-page-size"
-    protocol = MARK_PAGE_SIZE_PROTOCOL if mark_page_size else DIRECTIONAL_PROJECTION_PROTOCOL if directional_projection else MARK_RAY_PAGES_PROTOCOL if mark_ray_pages else MARK_CLIPMAPS_PROTOCOL if mark_clipmaps else ONE_PASS_PROTOCOL if one_pass else DIRECTIONAL_MARK_PROTOCOL if directional_mark else COMPACT_PROTOCOL if compact else DIRECTIONAL_PROTOCOL if directional else PROTOCOL
     inputs, previous = {}, None
     for arm in ARMS:
         cases = args.cases_dir.resolve() / f"{mode.title()}-{arm}Cases.json"
@@ -223,14 +219,14 @@ def prepare_plan(args):
         graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
         graph_data = acceptance.read(graph)
         reject_retired_properties(graph_data)
-        workload = normalized_workload(spec, graph_data, arm, directional, compact, directional_mark, one_pass, mark_clipmaps, mark_ray_pages, directional_projection, mark_page_size)
+        workload = normalized_workload(spec, graph_data, arm, compact=True)
         if previous is not None and workload != previous:
             raise ValueError("Cases/graphs differ beyond the declared experiment switch")
         previous = workload
         inputs[arm] = {"cases": str(cases), "casesSHA256": acceptance.digest(cases),
                        "graph": str(graph), "graphSHA256": acceptance.digest(graph)}
-    return {"protocol": protocol, "phase": args.phase, "mode": mode, "created": optimization.utc(),
-            "policy": experiment_policy(protocol, getattr(args, "role", "primary")), "blocks": BLOCKS[args.phase], "timeoutSeconds": 600, "runsPerPackage": 1,
+    return {"protocol": COMPACT_PROTOCOL, "phase": args.phase, "mode": mode, "created": optimization.utc(),
+            "policy": experiment_policy(COMPACT_PROTOCOL, getattr(args, "role", "primary")), "blocks": BLOCKS[args.phase], "timeoutSeconds": 600, "runsPerPackage": 1,
             "exe": str(args.exe.resolve()), "inputs": inputs, "comparisonStartFrame": 16,
             "processes": schedule(args.phase), "toolHashes": tool_hashes(),
             "cache": "Existing disk caches retained; fresh process per sample",

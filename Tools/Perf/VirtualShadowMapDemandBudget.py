@@ -26,6 +26,7 @@ from types import SimpleNamespace
 
 import ExperimentRunner as experiment
 import VirtualShadowMapAcceptance as acceptance
+import VirtualShadowMapBitset as bitset
 import VirtualShadowMapGPUProfile as profile
 import VirtualShadowMapLODSelfShadow as images
 import VirtualShadowMapOptimization as optimization
@@ -66,7 +67,7 @@ def schedule(phase):
 
 def tool_hashes():
     return {str(Path(module.__file__).resolve()): acceptance.digest(module.__file__)
-            for module in (sys.modules[__name__], acceptance, profile, images, optimization, experiment)}
+            for module in (sys.modules[__name__], acceptance, bitset, profile, images, optimization, experiment)}
 
 
 def asset_manifest():
@@ -104,10 +105,14 @@ def normalize(spec, graph, phase, workload, arm):
     expected = dict(demandDrivenBudget=arm == "Demand", physicalPageBudget=2048 if arm == "Reference" else WORKLOADS[workload],
                     benchmarkGPUProfile=True, benchmarkGPUWork=phase == "diagnostic", benchmarkCPUProfile=False,
                     benchmarkBuildSubstages=False, compactOutputs=True, debugOutput=False, cacheEnabled=True,
-                    smrtTemporalEnabled=False, onePassProjection=True, benchmarkOnePassProjection=True,
+                    smrtTemporalEnabled=False,
                     shadowLOD=False, shadowLODSmartBias=False, forceRedraw=False)
     if any(p.get(k) != v for k, v in expected.items()):
         raise ValueError("Unexpected allocator, cache, projection or instrumentation settings")
+    # Accept old sealed graphs with the then-standard true controls. New live
+    # planning rejects retired properties before reaching this historical reader.
+    if any(p.get(k, True) is not True for k in ("onePassProjection", "benchmarkOnePassProjection")):
+        raise ValueError("Expected the standard one-pass projection path")
     if case.get("scene") != SCENE.relative_to(ROOT).as_posix() or case.get("id") != f"MixedDemandBudget{workload}":
         raise ValueError("Changed fixed scene identity")
     if p.get("filter") != "smrt" or p.get("smrtRayCount") != 2 or p.get("smrtSamplesPerRay") != 16:
@@ -140,10 +145,12 @@ def prepare(args):
                 graph, spec = copy.deepcopy(template), copy.deepcopy(spec_template)
                 graph["name"] = "Mixed light demand budget"
                 p = next(n["properties"] for n in graph["nodes"] if n["name"] == "Shadows")
+                for key in bitset.RETIRED_PROPERTIES:
+                    p.pop(key, None)
                 p.update(demandDrivenBudget=arm == "Demand", physicalPageBudget=2048 if arm == "Reference" else WORKLOADS[workload],
                          benchmarkGPUProfile=True, benchmarkGPUWork=phase == "diagnostic", benchmarkCPUProfile=False,
                          benchmarkBuildSubstages=False, compactOutputs=True, debugOutput=False, cacheEnabled=True,
-                         smrtTemporalEnabled=False, onePassProjection=True, benchmarkOnePassProjection=True,
+                         smrtTemporalEnabled=False,
                          shadowLOD=False, shadowLODSmartBias=False, forceRedraw=False)
                 next(n["properties"] for n in graph["nodes"] if n["name"] == "VBuffer")["benchmarkCaptureSemanticSource"] = phase == "diagnostic"
                 spec.update(mode=phase, frames=64 if phase == "diagnostic" else 96, warmupFrames=32,
@@ -436,7 +443,9 @@ def run(args):
         case = cases / f"{args.phase.title()}-{key}Cases.json"
         spec = acceptance.read(case)
         graph = (case.parent / spec["cases"][0]["graph"]).resolve()
-        value = normalize(spec, acceptance.read(graph), args.phase, item["workload"], item["arm"])
+        graph_data = acceptance.read(graph)
+        bitset.reject_retired_properties(graph_data)
+        value = normalize(spec, graph_data, args.phase, item["workload"], item["arm"])
         if item["workload"] in normalized and normalized[item["workload"]] != value:
             raise ValueError("Planned arms differ beyond allocation policy/page budget")
         normalized[item["workload"]] = value

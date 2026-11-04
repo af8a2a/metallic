@@ -10,6 +10,9 @@ from unittest import mock
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Tools/Perf"))
 import VirtualShadowMapBitset as bitset
+import PrepareVirtualShadowMapLODImpact as lod_fixture
+import VirtualShadowMapLODImpact as lod_impact
+import VirtualShadowMapLODSelfShadow as lod_guard
 from TestVirtualShadowMapGPUProfile import frame, add_work, add_build
 import TestVirtualShadowMapOptimization as optimization_tests
 
@@ -1030,11 +1033,18 @@ class BitsetTests(unittest.TestCase):
                 read.assert_not_called()
             self.assertFalse(args.output.exists())
 
+    def test_retired_lod_replays_fail_before_inputs_or_launch(self):
+        args = SimpleNamespace(output=self.root / "retired-lod")
+        with mock.patch.object(a, "run") as launch, mock.patch.object(a, "read") as read:
+            for entry in (lod_fixture.prepare, lod_impact.run, lod_guard.prepare, lod_guard.run):
+                with self.assertRaisesRegex(ValueError, "Retired VSM LOD reference experiment"):
+                    entry(args)
+            launch.assert_not_called()
+            read.assert_not_called()
+        self.assertFalse(args.output.exists())
+
     def test_live_candidates_plan_and_reject_ignored_controls(self):
-        variants = (("compact-build", bitset.COMPACT_SWITCH, bitset.COMPACT_PROTOCOL),
-            ("mark-ray-pages", bitset.MARK_RAY_PAGES_SWITCH, bitset.MARK_RAY_PAGES_PROTOCOL),
-            ("directional-projection", bitset.DIRECTIONAL_PROJECTION_SWITCH, bitset.DIRECTIONAL_PROJECTION_PROTOCOL),
-            ("one-pass-projection", bitset.ONE_PASS_SWITCH, bitset.ONE_PASS_PROTOCOL))
+        variants = (("compact-build", bitset.COMPACT_SWITCH, bitset.COMPACT_PROTOCOL),)
         for name, switch, protocol in variants:
             cases = self.root / name
             cases.mkdir()

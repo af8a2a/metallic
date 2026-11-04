@@ -1,9 +1,12 @@
 # VSM Page HMip / Receiver Mask candidate
 
-Persistent receiver masks default on for directional SMRT with layered caching.
-The Sponza VSM sample enables layered caching. Set `benchmarkReceiverMask` to
-`false` on the lights pass for a full-page baseline. The dirty-page hierarchy
-remains opt-in through `benchmarkDirtyPageHierarchy`.
+As of 2026-11-04, persistent receiver masks and coalesced Mark writes are standard
+for directional SMRT with layered caching. The `receiverMask` and
+`aggregateReceiverMask` settings and their benchmark opt-outs have been removed.
+The Sponza VSM sample enables layered caching. Static-page HZB construction and
+dynamic cluster HZB culling are also automatic where layered directional caching
+applies. The dirty-page hierarchy remains opt-in through
+`benchmarkDirtyPageHierarchy`. Baseline switch instructions below are historical.
 
 ## Scope and contracts
 

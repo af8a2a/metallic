@@ -316,21 +316,16 @@ struct VirtualShadowMaps::Programs
     bool collectGPUWork = false;
     bool optimizeProjectionStatistics = false;
     bool directional = false;
-    bool directionalProjection = false;
     bool adaptiveRayCount = false;
-    bool propagatedMapping = false;
     uint32_t markCacheLevels = 12;
     int markPageShift = -1;
-    bool markRayPages = false;
     bool compactBuild = false;
     bool pageWindowRaster = false;
     bool clusterPageRaster = false;
     bool instanceBuild = false;
     bool dirtyPageHierarchy = false;
     bool receiverMask = false;
-    bool aggregateReceiverMask = false;
     bool staticPageHZB = false;
-    bool clusterHZBCulling = false;
     bool refinedReceiver = false;
     std::array<std::unique_ptr<ShaderModule>, 21> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 16> compute;
@@ -591,16 +586,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const bool directional = light.type == VirtualShadowMapLightType::Directional;
     const bool enabled = settings.enabled && light.enabled;
     if (settings.collectReceiverCoverage && (!directional || !enabled || !settings.collectGPUWork ||
-        settings.filter != VirtualShadowMapFilter::SMRT || settings.smrtRayCount != 2 || !settings.markRayPages)) {
+        settings.filter != VirtualShadowMapFilter::SMRT || settings.smrtRayCount != 2)) {
         log = "Receiver coverage diagnostics require enabled directional SMRT with two rays, ray-page marking and GPU work counters";
         return makeError(Error::InvalidArgument);
     }
-    const bool directionalProjection = directional && settings.directionalProjection;
     const bool adaptiveRayCount = device.capabilities().computeSubgroupBallotArithmetic;
     const uint32_t markCacheLevels = directional ? settings.clipmapCount : 12u;
     // validProjectionSettings guarantees a nonzero power-of-two page size, at most 128.
     const int markPageShift = directional ? std::countr_zero(settings.pageSize) : -1;
-    const bool markRayPages = directional && settings.markRayPages;
     const bool instanceBuild = directional && settings.instanceBuild && casters.instanceTable != UINT32_MAX;
     const bool compactBuild = settings.compactBuild || instanceBuild;
     // Keep scalar rasterization for nonbinary grids: window rasterization at
@@ -670,9 +663,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     auto& push = state->push;
     push.receiverGeometry = UINT32_MAX;
     state->externalOutput = output != nullptr;
-    // bit 0: canonical shared point-light layer; bit 1: refined receiver bias.
-    push.projectionFlags = (output && output->sharedPointLayer ? 1u : 0u) |
-        (settings.shadowLODSmartBiasRefine ? 2u : 0u);
+    // bit 0: canonical shared point-light layer.
+    push.projectionFlags = output && output->sharedPointLayer ? 1u : 0u;
     push.triangleCount = casters.triangleCapacity;
     push.clipmapCount = settings.clipmapCount;
     push.virtualPagesPerAxis = settings.virtualPagesPerAxis;
@@ -727,18 +719,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const auto origins = directional ? pageOrigins(view, direction, settings) :
         std::vector<std::array<int64_t, 2>>(settings.clipmapCount, {0, 0});
     const bool layered = settings.cacheEnabled && settings.cacheLayering;
-    const bool staticPageHZB = layered && directional && settings.staticPageHZB;
-    const bool clusterHZBCulling = staticPageHZB && settings.clusterHZBCulling;
-    // Enabling the hierarchy requires a cold static layer. Existing clean
-    // pages have no associated pyramid until their next static redraw.
-    const bool needsHZBInitialization = staticPageHZB && cache_ && !cache_->staticHZB;
-    const bool receiverMask = settings.receiverMask && layered && directional &&
+    const bool staticPageHZB = layered && directional;
+    const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    const bool aggregateReceiverMask = receiverMask && settings.aggregateReceiverMask;
-    // Persistent receiver coverage follows the optional propagated table.
-    // Changing that layout cannot reinterpret a previous cache allocation.
-    const bool receiverMaskLayoutChanged = cache_ && receiverMask &&
-        cache_->settings.propagatedMapping != settings.propagatedMapping;
     std::array<uint32_t, 50> cacheDiagnostics{};
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
@@ -749,7 +732,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     if (cache_) {
         if (cache_->device != &device) { reasons |= kVSMCacheReasonDevice; }
         if (!compatibleLight(cache_->light, light) || cache_->enabled != enabled) { reasons |= kVSMCacheReasonLight; }
-        if (!compatibleSettings(cache_->settings, settings) || cache_->receiverMask != receiverMask || receiverMaskLayoutChanged || needsHZBInitialization) { reasons |= kVSMCacheReasonSettings; }
+        if (!compatibleSettings(cache_->settings, settings) || cache_->receiverMask != receiverMask) { reasons |= kVSMCacheReasonSettings; }
         if (cache_->sceneIdentity != casters.sceneIdentity) { reasons |= kVSMCacheReasonScene; }
         if (cache_->structuralRevision != casters.structuralRevision) { reasons |= kVSMCacheReasonStructure; }
         if (cache_->geometryRevision != casters.geometryRevision) { reasons |= kVSMCacheReasonGeometryPublication; }
@@ -757,7 +740,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (cache_->tessellationKey != casters.tessellationKey) { reasons |= kVSMCacheReasonTessellation; }
         if (cache_->settings.cacheLayering != settings.cacheLayering) { reasons |= kVSMCacheReasonLayerMode; }
     }
-    bool reuse = cache_ && !needsHZBInitialization && cache_->receiverMask == receiverMask && !receiverMaskLayoutChanged && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
+    bool reuse = cache_ && cache_->receiverMask == receiverMask && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
         cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey;
     const bool compatibleCache = reuse;
@@ -964,7 +947,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint32_t hierarchyWords = dirtyPageHierarchy ?
         push.clipmapCount * (4u + (hierarchyAxis * hierarchyAxis - 1u) / 3u) : 0u;
     const uint32_t clusterCapacity = push.triangleCount / 64u + (push.triangleCount % 64u != 0u ? 1u : 0u);
-    const uint32_t visibilityBatches = clusterHZBCulling && enabled &&
+    const uint32_t visibilityBatches = staticPageHZB && enabled &&
         cacheDiagnostics[kVSMCacheDynamicCasters] && cacheDiagnostics[kVSMCacheStaticCasters] ?
         (clusterCapacity + kDrawBatchSize - 1u) / kDrawBatchSize : 0u;
     // Splitting an original cluster at each instance boundary adds at most one
@@ -985,7 +968,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint64_t physicalHistoryBytes = settings.cacheEnabled ? ((push.physicalPageCount + 1u) / 2u) * 16u : 0u;
     const uint64_t workBytes = pageWindowRaster ? windowBytes :
         clusterPageRaster ? (uint64_t(push.workCapacity) + 1u) * 16u : uint64_t(push.workCapacity) * 8u;
-    const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 16 * (settings.propagatedMapping ? 2u : 1u) + validReceiverMaskBytes + physicalHistoryBytes,
+    const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 32u + validReceiverMaskBytes + physicalHistoryBytes,
         coverage->inputBytes().size(), workBytes, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
@@ -1143,6 +1126,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     }
     if (staticPageHZB) {
         if (reuse) {
+            // Compatible layered directional snapshots always own the pyramid;
+            // it is allocated before the cache snapshot is published.
             state->resources->staticHZB = cache_->staticHZB;
         } else {
             const uint32_t wordsPerPage = std::max(1u, (push.pageSize * push.pageSize - 1u) / 3u);
@@ -1224,7 +1209,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         state->leases.push_back(*lease);
     }
     const bool refinedReceiver = push.receiverGeometry != UINT32_MAX;
-    if (settings.shadowLODSmartBias && settings.shadowLODSmartBiasRefine && !refinedReceiver) {
+    if (settings.shadowLODSmartBias && !refinedReceiver) {
         // Missing optional primary geometry must not enable the unrefined correction.
         push.lodScreenRayLength = 0.f;
     }
@@ -1241,17 +1226,13 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->collectReceiverCoverage != settings.collectReceiverCoverage ||
         programs_->optimizeProjectionStatistics != settings.optimizeProjectionStatistics ||
         programs_->directional != directional ||
-        programs_->directionalProjection != directionalProjection ||
         programs_->adaptiveRayCount != adaptiveRayCount ||
-        programs_->propagatedMapping != settings.propagatedMapping ||
-        programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift || programs_->markRayPages != markRayPages ||
+        programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift ||
         programs_->compactBuild != compactBuild || programs_->instanceBuild != instanceBuild || programs_->clusterPageRaster != clusterPageRaster ||
         programs_->pageWindowRaster != pageWindowRaster ||
         programs_->dirtyPageHierarchy != dirtyPageHierarchy ||
         programs_->receiverMask != receiverMask ||
-        programs_->aggregateReceiverMask != aggregateReceiverMask ||
         programs_->staticPageHZB != staticPageHZB ||
-        programs_->clusterHZBCulling != clusterHZBCulling ||
         programs_->refinedReceiver != refinedReceiver;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
@@ -1266,21 +1247,16 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->collectReceiverCoverage = settings.collectReceiverCoverage;
         programs->optimizeProjectionStatistics = settings.optimizeProjectionStatistics;
         programs->directional = directional;
-        programs->directionalProjection = directionalProjection;
         programs->adaptiveRayCount = adaptiveRayCount;
-        programs->propagatedMapping = settings.propagatedMapping;
         programs->markCacheLevels = markCacheLevels;
         programs->markPageShift = markPageShift;
-        programs->markRayPages = markRayPages;
         programs->compactBuild = compactBuild;
         programs->clusterPageRaster = clusterPageRaster;
         programs->pageWindowRaster = pageWindowRaster;
         programs->instanceBuild = instanceBuild;
         programs->dirtyPageHierarchy = dirtyPageHierarchy;
         programs->receiverMask = receiverMask;
-        programs->aggregateReceiverMask = aggregateReceiverMask;
         programs->staticPageHZB = staticPageHZB;
-        programs->clusterHZBCulling = clusterHZBCulling;
         programs->refinedReceiver = refinedReceiver;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
@@ -1301,10 +1277,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const std::string markPageShiftDefine = std::to_string(markPageShift);
         for (size_t index = 0; index < programs->shaders.size(); ++index) {
             if (index == 14 && !compactBuild) { continue; }
-            if (index == 15 && !settings.propagatedMapping) { continue; }
             if (index == 16 && !dirtyPageHierarchy) { continue; }
             if (index == 17 && !staticPageHZB) { continue; }
-            if (index == 18 && !clusterHZBCulling) { continue; }
+            if (index == 18 && !staticPageHZB) { continue; }
             if (index == 20 && !groupedFineRaster) { continue; }
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
@@ -1312,7 +1287,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (staticPageHZB && (index == 0 || buildEntry || index == 4 || index == 17 || index == 18 || index == 19)) {
                 entryMacros.push_back({"VSM_STATIC_PAGE_HZB", "1"});
             }
-            if (clusterHZBCulling && (index == 4 || index == 6 || index == 18 || index == 20)) {
+            if (staticPageHZB && (index == 4 || index == 6 || index == 18 || index == 20)) {
                 entryMacros.push_back({"VSM_CLUSTER_HZB", "1"});
             }
             if (groupedFineRaster && (index == 0 || index == 3 || index == 4 || index == 20)) {
@@ -1321,22 +1296,17 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (dirtyPageHierarchy && (compactEntry || index == 16)) {
                 entryMacros.push_back({"VSM_DIRTY_PAGE_HIERARCHY", "1"});
             }
-            if (index == 5 || index == 15 || (receiverMask && (index == 0 || index == 4 || index == 11 || index == 13))) {
-                entryMacros.push_back({"VSM_PROPAGATED_MAPPING", settings.propagatedMapping ? "1" : "0"});
-            }
             if (index == 1 && settings.collectReceiverCoverage) {
                 entryMacros.push_back({"VSM_RECEIVER_COVERAGE_DIAGNOSTICS", "1"});
             }
             if (index == 1) {
-                if (aggregateReceiverMask) { entryMacros.push_back({"VSM_AGGREGATE_RECEIVER_MASK", "1"}); }
                 entryMacros.push_back({"VSM_DIRECTIONAL_MARK", directional ? "1" : "0"});
                 entryMacros.push_back({"VSM_MARK_CACHE_LEVELS", markCacheLevelsDefine.c_str()});
                 entryMacros.push_back({"VSM_MARK_PAGE_SHIFT", markPageShiftDefine.c_str()});
-                entryMacros.push_back({"VSM_MARK_RAY_PAGES", markRayPages ? "1" : "0"});
             }
             if (index == 5) {
                 entryMacros.push_back({"VSM_REFINED_RECEIVER", refinedReceiver ? "1" : "0"});
-                entryMacros.push_back({"VSM_DIRECTIONAL_PROJECTION", directionalProjection ? "1" : "0"});
+                entryMacros.push_back({"VSM_DIRECTIONAL_PROJECTION", directional ? "1" : "0"});
                 entryMacros.push_back({"VSM_ADAPTIVE_RAY_COUNT", adaptiveRayCount ? "1" : "0"});
             }
             if (buildEntry) { entryMacros.push_back({"VSM_DIRECTIONAL_BUILD", directional ? "1" : "0"}); }
@@ -1356,18 +1326,18 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (receiverMask && (index == 0 || index == 4 || index == 11 || index == 13)) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
                 spdlog::info("[VSMReceiverMaskShader] entry={} persistentCoverage=true propagatedMapping={} spirvSHA256={}",
-                    entries[index], settings.propagatedMapping, debug::debugSha256(bytes));
+                    entries[index], true, debug::debugSha256(bytes));
             }
             if (index == 5 || index == 15) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
                 spdlog::info("[VSMMappingShader] entry={} propagatedMapping={} spirvSHA256={}",
-                    entries[index], settings.propagatedMapping, debug::debugSha256(bytes));
+                    entries[index], true, debug::debugSha256(bytes));
             }
             if (index == 1 || index == 3 || index == 5 || index == 6 || index == 7 || index == 14) {
                 const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
                 spdlog::info("[VSMShader] entry={} spirvSHA256={} optimizeMark={} clusterCull={} clusterPageBitset={} work={} markSamples={} lightType={} trianglePageBitset={} projectionStatistics={} directionalBuild={} compactBuild={} directionalMark={} refinedReceiver={} markCacheLevels={} markRayPages={} directionalProjection={} markPageShift={} adaptiveRayCount={} dirtyPageHierarchy={} receiverMask={} aggregateReceiverMask={}", entries[index],
                     debug::debugSha256(bytes), true,
-                    true, true, settings.collectGPUWork, !directional, uint32_t(light.type), true, settings.optimizeProjectionStatistics, buildEntry && directional, compactEntry && compactBuild, index == 1 && directional, index == 5 && refinedReceiver, index == 1 ? markCacheLevels : 12u, index == 1 && markRayPages, index == 5 && directionalProjection, index == 1 ? markPageShift : -1, index == 5 && adaptiveRayCount, dirtyPageHierarchy && compactEntry, receiverMask, index == 1 && aggregateReceiverMask);
+                    true, true, settings.collectGPUWork, !directional, uint32_t(light.type), true, settings.optimizeProjectionStatistics, buildEntry && directional, compactEntry && compactBuild, index == 1 && directional, index == 5 && refinedReceiver, index == 1 ? markCacheLevels : 12u, index == 1 && directional, index == 5 && directional, index == 1 ? markPageShift : -1, index == 5 && adaptiveRayCount, dirtyPageHierarchy && compactEntry, receiverMask, index == 1 && receiverMask);
             }
             if (index == 20) {
                 const auto bytes = std::as_bytes(std::span(shader->spirv));
@@ -1556,7 +1526,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         if (auto r = commands.synchronize({.buffers = {&jobsReady, 1}}); !r) { return std::unexpected(r.error()); }
     }
     if (auto r = dispatch(4, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63) / 64); !r) { return std::unexpected(r.error()); }
-    if (settings.propagatedMapping) {
+    {
         // Finalize may invalidate fine pages on work overflow. Read only its
         // completed ownership entries; no propagation thread consumes the tail.
         if (auto r = barrier({1}); !r) { return std::unexpected(r.error()); }
@@ -1898,7 +1868,7 @@ Result<> VirtualShadowMaps::projectPrepared(CommandBuffer& commands, CPUProfileR
 
 Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
     std::span<const VirtualShadowMapProjectionGroup> groups, std::string& log,
-    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler, bool onePassProjection,
+    CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
     const VirtualShadowMapProjectionGridResources* grid)
 {
     CPUProfileScope total(profiler, "VSM shared projection");
@@ -1926,7 +1896,7 @@ Result<> VirtualShadowMaps::projectShared(CommandBuffer& commands,
     // Grouped projection statistics retain the original per-face kernel: the
     // combined one-pass permutation does not preserve receiver ownership.
     const auto& programs = *groups.front().faces[0]->state_->programs;
-    const bool onePass = onePassProjection && !programs.optimizeProjectionStatistics &&
+    const bool onePass = !programs.optimizeProjectionStatistics &&
         programs.device->capabilities().computeSubgroupBallotArithmetic;
     total.work("onePass", onePass);
     total.work("dispatches", onePass ? 1u : faceCount);
@@ -1972,7 +1942,6 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     CPUProfileScope phase(profiler, "Prepare VSM one-pass pipeline");
     if (!programs.onePassComputes[variant]) {
         const std::array macros{SlangMacroDefine{"VSM_ONE_PASS_PROJECTION", "1"},
-            SlangMacroDefine{"VSM_PROPAGATED_MAPPING", programs.propagatedMapping ? "1" : "0"},
             SlangMacroDefine{"VSM_LIGHT_GRID_PROJECTION", lightGrid ? "1" : "0"},
             SlangMacroDefine{"VSM_ADAPTIVE_RAY_COUNT", programs.adaptiveRayCount ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", programs.collectGPUWork ? "1" : "0"},
@@ -1993,7 +1962,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
         programs.onePassComputes[variant] = std::move(*pipeline);
         const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader->spirv.data()), shader->spirv.size() * sizeof(uint32_t));
         spdlog::info("[VSMMappingShader] entry=vsmProjectOnePassMain propagatedMapping={} spirvSHA256={}",
-            programs.propagatedMapping, debug::debugSha256(bytes));
+            true, debug::debugSha256(bytes));
         spdlog::info("[VSMOnePassShader] entry=vsmProjectOnePassMain spirvSHA256={} work={} projectionStatistics={} refinedReceiver={} lightGrid={} adaptiveRayCount={}",
             debug::debugSha256(bytes), programs.collectGPUWork, programs.optimizeProjectionStatistics, programs.refinedReceiver, lightGrid, programs.adaptiveRayCount);
     }
@@ -2034,7 +2003,6 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             assert(state.programs->collectGPUWork == programs.collectGPUWork &&
                 state.programs->optimizeProjectionStatistics == programs.optimizeProjectionStatistics &&
                 state.programs->adaptiveRayCount == programs.adaptiveRayCount &&
-                state.programs->propagatedMapping == programs.propagatedMapping &&
                 state.programs->refinedReceiver == programs.refinedReceiver);
             assert(p.depth == push.depth && p.pageSize == push.pageSize && p.virtualPagesPerAxis == push.virtualPagesPerAxis && p.pcfRadius == push.pcfRadius &&
                 p.rayLength == push.rayLength && p.rayLengthScale == push.rayLengthScale && p.maxRayAngle == push.maxRayAngle &&

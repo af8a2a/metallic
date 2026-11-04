@@ -27,9 +27,6 @@ import Lighting;
 #ifndef VSM_RECEIVER_MASK
 #define VSM_RECEIVER_MASK 0
 #endif
-#ifndef VSM_AGGREGATE_RECEIVER_MASK
-#define VSM_AGGREGATE_RECEIVER_MASK 0
-#endif
 #ifndef VSM_RECEIVER_COVERAGE_DIAGNOSTICS
 #define VSM_RECEIVER_COVERAGE_DIAGNOSTICS 0
 #endif
@@ -64,12 +61,6 @@ import Lighting;
 // those expressions changes grazing-boundary samples in the Sponza replay.
 #ifndef VSM_ADAPTIVE_RAY_COUNT
 #define VSM_ADAPTIVE_RAY_COUNT 0
-#endif
-#ifndef VSM_PROPAGATED_MAPPING
-#define VSM_PROPAGATED_MAPPING 0
-#endif
-#ifndef VSM_MARK_RAY_PAGES
-#define VSM_MARK_RAY_PAGES 0
 #endif
 #ifndef VSM_MARK_PAGE_SHIFT
 #define VSM_MARK_PAGE_SHIFT -1
@@ -168,10 +159,10 @@ public uint vsmReceiverMaskOffset(ShadowPush push)
 #if VSM_RECEIVER_MASK
 uint vsmValidReceiverMaskByteOffset(ShadowPush push, uint page)
 {
-    // Persistent tail after residency and optional propagated mappings. Each
+    // Persistent tail after residency and propagated mappings. Each
     // page owns two uint words; byte addressing avoids uint4 read/modify/write
     // between adjacent pages. CPU allocation rounds the final size to 16 bytes.
-    return push.totalPages * (VSM_PROPAGATED_MAPPING ? 32u : 16u) + page * 8u;
+    return push.totalPages * 32u + page * 8u;
 }
 
 // Eight rows of eight subtiles, packed as two groups of four rows.
@@ -1046,13 +1037,9 @@ float vsmComparisonDepth(float3 position, float3 normal, float3 projected, uint2
 
 struct ShadowLookup
 {
-#if VSM_PROPAGATED_MAPPING
     // Point-light lookup may select another face. Carry its table identity,
     // not a complete projection through fine/ancestor/coarse control flow.
     uint projectionsHandle;
-#else
-    ShadowProjection projection;
-#endif
     float3 projected;
     uint2 virtualTexel;
     float storedDepth;
@@ -1060,7 +1047,6 @@ struct ShadowLookup
     bool valid;
 };
 
-#if VSM_PROPAGATED_MAPPING
 ShadowProjection vsmLookupProjection(ShadowLookup sample)
 {
 #if VSM_DIRECTIONAL_PROJECTION
@@ -1071,14 +1057,7 @@ ShadowProjection vsmLookupProjection(ShadowLookup sample)
         ResourceHandle<StructuredBuffer<ShadowProjection>>(sample.projectionsHandle));
     return projections[sample.level];
 }
-#else
-ShadowProjection vsmLookupProjection(ShadowLookup sample)
-{
-    return sample.projection;
-}
-#endif
 
-#if VSM_PROPAGATED_MAPPING
 bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourcePage, inout float3 projected,
     inout uint2 texel, StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
     ShadowPush push, uint level, out uint physicalPage, out uint targetLevel)
@@ -1126,7 +1105,6 @@ bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourceP
     vsmWorkAdd(push, kVSMWorkProjectionMappedAncestors, 1u);
     return true;
 }
-#endif
 
 ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, inout uint3 filterCounts)
 {
@@ -1150,9 +1128,7 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
 #else
     StructuredBuffer<ShadowProjection> projections = resolveNonUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(projectionsHandle));
 #endif
-#if VSM_PROPAGATED_MAPPING
     result.projectionsHandle = projectionsHandle;
-#endif
 #if VSM_DIRECTIONAL_PROJECTION
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(pagesHandle));
     StructuredBuffer<uint> faceStatistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
@@ -1169,7 +1145,6 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
             float3 p = vsmProjectPosition(position, projection);
             if (!vsmContains(p, projection, push.pageSize, true)) { continue; }
             uint2 texel = vsmVirtualTexel(p, projection, push.pageSize);
-#if VSM_PROPAGATED_MAPPING
             uint mappedPhysical, mappedLevel;
             if (vsmLookupPropagated(position, float2(projection.rowX.w, projection.rowY.w),
                     vsmVirtualPage(texel, projection, push.pageSize), p, texel, projections, pages, push, level,
@@ -1179,23 +1154,16 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
                 result.projected = p; result.virtualTexel = texel;
                 break;
             }
-#endif
             vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
             uint4 entry = pages[vsmVirtualPage(texel, projection, push.pageSize)];
             if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 1u) == 0u) { continue; }
             physicalPage = entry.x; result.level = level;
-#if !VSM_PROPAGATED_MAPPING
-            result.projection = projection;
-#endif
             result.projected = p; result.virtualTexel = texel;
             break;
         }
     }
     if (physicalPage == 0xffffffffu) {
         ShadowProjection coarse = projections[push.clipmapCount];
-#if !VSM_PROPAGATED_MAPPING
-        result.projection = coarse;
-#endif
         result.projected = vsmProjectPosition(position, coarse);
         // The complete coarse projection encloses all represented casters.
         // A trace segment outside that volume has no represented depth layer.
@@ -1390,12 +1358,11 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     }
 }
 
+#if !VSM_DIRECTIONAL_MARK
+// Directional SMRT uses vsmMarkDirectionalFootprint; only local/generic rays
+// retain the per-receiver last-page cache.
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts
-#if VSM_MARK_RAY_PAGES
-    , uint sweepLevels
-#endif
-)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts)
 {
     ++workCounts.x;
     if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
@@ -1403,17 +1370,7 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
     // the admission budget on pages the receiver will never sample.
     // The selected Mark permutation bounds clipmapCount by its cache size.
     // Constant indices keep the small per-receiver cache in registers across all SMRT rays.
-#if VSM_DIRECTIONAL_MARK
-    // makeProjections and cache reuse preserve one rowZ across all clipmaps.
-    float4 samplePosition = float4(position, 1.0);
-    float sampleZ = dot(projections[0].rowZ, samplePosition);
-    // Fine page grids share axis and stride across levels and cache reuse.
-    // Each light owns its pages/projections buffers, with no publication offset.
-    uint pageAxis = push.virtualPagesPerAxis;
-    uint pageStride = pageAxis * pageAxis;
-    float resolution = float(pageAxis * push.pageSize);
-    float margin = 1.0 / resolution;
-#elif VSM_LOCAL_MARK
+#if VSM_LOCAL_MARK
     ShadowProjection sharedProjection = projections[firstLevel];
     float3 sharedProjected = push.lightType == 0u ?
         float3(0.0, 0.0, dot(sharedProjection.rowZ, float4(position, 1.0))) :
@@ -1421,26 +1378,8 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 #endif
     [unroll]
     for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
-#if VSM_MARK_RAY_PAGES
-        // vsmMarkRayPages only sets bits in [firstLevel, clipmapCount).
-        if (((sweepLevels >> level) & 1u) == 0u) { continue; }
-#else
         if (level < firstLevel || level >= push.clipmapCount) { continue; }
-#endif
         ++workCounts.y;
-#if VSM_DIRECTIONAL_MARK
-        float2 projected = float2(dot(projections[level].rowX, samplePosition),
-            dot(projections[level].rowY, samplePosition));
-        if (!(all(projected >= -1.0 + margin) && all(projected < 1.0 - margin) &&
-            sampleZ >= 0.0 && sampleZ <= 1.0)) { continue; }
-        uint2 texel = uint2(floor((projected * 0.5 + 0.5) * resolution));
-#if VSM_MARK_PAGE_SHIFT >= 0
-        uint2 pageXY = texel >> VSM_MARK_PAGE_SHIFT;
-#else
-        uint2 pageXY = texel / push.pageSize;
-#endif
-        uint page = level * pageStride + pageXY.y * pageAxis + pageXY.x;
-#else
         ShadowProjection projection = projections[level];
 #if VSM_LOCAL_MARK
         float3 projected = sharedProjected;
@@ -1453,118 +1392,10 @@ void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> project
 #endif
         if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
         uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
-#endif
         if (lastPages[level] == page) { continue; }
         lastPages[level] = page;
         vsmMarkPage(pages, page, workCounts);
     }
-}
-
-#if VSM_MARK_RAY_PAGES
-#if VSM_DIRECTIONAL_MARK
-bool vsmMarkRayAlreadyCovered(float2 start, float2 end, float2 low, float2 high,
-    float3 rayPosition, float3 rayEndpoint, float3 rayDither, ShadowProjection projection,
-    ShadowPush push, uint lastPage)
-{
-    // Bound the original lerp(position, endpoint, t) + dither, not just the
-    // rounded origin/span representation. The allowance includes texel rounding.
-    float resolution = float(projection.page.y * push.pageSize);
-    float3 magnitude = abs(rayPosition) + abs(rayEndpoint) + abs(rayDither) + 1.0;
-    float projectedMagnitude = dot(max(abs(projection.rowX.xyz), abs(projection.rowY.xyz)), magnitude) +
-        max(abs(projection.rowX.w), abs(projection.rowY.w)) + 1.0;
-    float error = projectedMagnitude * (256.0 * 5.960464477539063e-8) * resolution;
-    float2 lower = low - error, upper = high + error;
-    if (!(projectedMagnitude >= 1.0 && isfinite(error) && all(isfinite(start)) && all(isfinite(end)) &&
-        all(isfinite(lower)) && all(isfinite(upper)))) { return false; }
-
-    // Every accepted sample has an integer texel in [0, resolution - 1].
-    // Clamping this enclosing interval preserves its valid integer texels.
-    uint2 firstTexel = uint2(clamp(lower, 0.0, resolution - 1.0));
-    uint2 lastTexel = uint2(clamp(upper, 0.0, resolution - 1.0));
-#if VSM_MARK_PAGE_SHIFT >= 0
-    uint2 firstPage = firstTexel >> VSM_MARK_PAGE_SHIFT;
-    uint2 lastPageXY = lastTexel >> VSM_MARK_PAGE_SHIFT;
-#else
-    uint2 firstPage = firstTexel / push.pageSize;
-    uint2 lastPageXY = lastTexel / push.pageSize;
-#endif
-    uint2 extent = lastPageXY - firstPage + 1u;
-    if (extent.x * extent.y > 4u) { return false; }
-    for (uint y = firstPage.y; y <= lastPageXY.y; ++y) {
-        for (uint x = firstPage.x; x <= lastPageXY.x; ++x) {
-            uint page = projection.page.x + y * projection.page.y + x;
-            if (page == lastPage) { continue; }
-            // A matching key promises an eventual OR by its inserting lane.
-            // Never insert queried pages: a miss must retain the original sweep.
-            uint observed;
-            InterlockedOr(gVsmMarkedPages[(page * 2654435761u) >> 24u], 0u, observed);
-            if (observed != page) { return false; }
-        }
-    }
-    return true;
-}
-#endif
-
-// Directional samples lie on origin..origin+span, so a level whose whole segment
-// stays inside one page requests only the page of the ray's t=0 sample. Returns
-// the levels that must retain the per-sample sweep. The one-texel margin absorbs
-// rounding, so requests match the sweep exactly; the depth range is tested only
-// at t=0 because that sample alone already requests the shared page.
-uint vsmMarkRayPages(float3 origin, float3 span, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint lastPages[VSM_MARK_CACHE_LEVELS], inout uint3 workCounts
-#if VSM_DIRECTIONAL_MARK
-    , float3 rayPosition, float3 rayEndpoint, float3 rayDither
-#endif
-)
-{
-    uint sweepLevels = 0u;
-    ++workCounts.x;
-#if VSM_DIRECTIONAL_MARK
-    float4 samplePosition = float4(origin, 1.0);
-    float sampleZ = dot(projections[0].rowZ, samplePosition);
-#endif
-    [unroll]
-    for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
-        if (level < firstLevel || level >= push.clipmapCount) { continue; }
-        ++workCounts.y;
-        ShadowProjection projection = projections[level];
-#if VSM_DIRECTIONAL_MARK
-        float3 projected = float3(dot(projection.rowX, samplePosition),
-            dot(projection.rowY, samplePosition), sampleZ);
-#else
-        float3 projected = vsmProjectPosition(origin, projection);
-#endif
-        float resolution = float(projection.page.y * push.pageSize);
-        float2 start = (projected.xy * 0.5 + 0.5) * resolution;
-        float2 end = start + float2(dot(projection.rowX.xyz, span), dot(projection.rowY.xyz, span)) * 0.5 * resolution;
-        float2 low = min(start, end) - 1.0, high = max(start, end) + 1.0;
-#if VSM_DIRECTIONAL_MARK
-        if (any(high < 0.0) || any(low > resolution)) {
-            // origin/span rounding differs from lerp(position, endpoint, t) + dither.
-            // Bound both evaluation paths before certifying an empty XY domain.
-            float3 magnitude = abs(rayPosition) + abs(rayEndpoint) + abs(rayDither) + 1.0;
-            float projectedMagnitude = dot(max(abs(projection.rowX.xyz), abs(projection.rowY.xyz)), magnitude) +
-                max(abs(projection.rowX.w), abs(projection.rowY.w)) + 1.0;
-            float error = projectedMagnitude * (256.0 * 5.960464477539063e-8) * resolution;
-            if (projectedMagnitude >= 1.0 && isfinite(error) && all(isfinite(start)) && all(isfinite(end)) &&
-                (any(high + error < 0.0) || any(low - error > resolution))) { continue; }
-        }
-#endif
-        if (any(low < 1.0) || any(high >= resolution - 1.0) || projected.z < 1e-4 || projected.z > 1.0 - 1e-4 ||
-            any(floor(low / float(push.pageSize)) != floor(high / float(push.pageSize)))) {
-#if VSM_DIRECTIONAL_MARK
-            if (vsmMarkRayAlreadyCovered(start, end, low, high, rayPosition, rayEndpoint, rayDither,
-                projection, push, lastPages[level])) { continue; }
-#endif
-            sweepLevels |= 1u << level;
-            continue;
-        }
-        uint page = vsmVirtualPage(vsmVirtualTexel(projected, projection, push.pageSize), projection, push.pageSize);
-        if (lastPages[level] == page) { continue; }
-        lastPages[level] = page;
-        vsmMarkPage(pages, page, workCounts);
-    }
-    return sweepLevels;
 }
 #endif
 
@@ -1833,7 +1664,6 @@ void vsmWriteReceiverMask(ShadowPush push, uint page, uint2 mask)
     vsmWorkAdd(push, kVSMWorkMarkReceiverMaskAtomicOrs, uint(mask.x != 0u) + uint(mask.y != 0u));
 }
 
-#if VSM_AGGREGATE_RECEIVER_MASK
 // One slot per 8x8 tile lane. A slot's key never changes during accumulation.
 groupshared uint gVsmReceiverPages[64];
 groupshared uint2 gVsmReceiverMasks[64];
@@ -1848,7 +1678,6 @@ bool vsmAccumulateReceiverMask(uint page, uint2 mask)
     if (mask.y != 0u) { InterlockedOr(gVsmReceiverMasks[slot].y, mask.y); }
     return true;
 }
-#endif
 #endif
 
 float2 vsmDirectionalFootprintRange(float4 row, float3 position, float3 toLight,
@@ -1914,11 +1743,7 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
 #if VSM_RECEIVER_MASK
                 // Page deduplication must not discard another receiver's subtiles.
                 uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel, uint2(x, y), push.pageSize);
-#if VSM_AGGREGATE_RECEIVER_MASK
                 if (!vsmAccumulateReceiverMask(page, mask)) { vsmWriteReceiverMask(push, page, mask); }
-#else
-                vsmWriteReceiverMask(push, page, mask);
-#endif
 #endif
                 vsmMarkPage(pages, page, workCounts);
             }
@@ -2036,33 +1861,6 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
             float3 endpoint = vsmRayEndpoint(position, projections[0], trace, ray, id.xy);
             float3 dither = vsmRayDither(position, projections[receiverLevel], trace, ray, id.xy);
 #endif
-#if VSM_MARK_RAY_PAGES
-            uint sweepLevels = vsmMarkRayPages(position + dither, endpoint - position, projections, pages, push, receiverLevel, lastPages, workCounts
-#if VSM_DIRECTIONAL_MARK
-                , position, endpoint, dither
-#endif
-            );
-#if VSM_RECEIVER_COVERAGE_DIAGNOSTICS
-            coverageData[coverageRecord + 6u + ray] = sweepLevels;
-            if (ray == 0u) {
-                // Evaluate the actual final sample expression, not a replacement
-                // receiver center. The original helper returns time zero here.
-                float3 witnessPosition = vsmRayPosition(position, endpoint,
-                    vsmRaySampleTime(push.samplesPerRay, push, id.xy), projections[0], push) + dither;
-                [unroll]
-                for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) {
-                    if (level < receiverLevel || level >= push.clipmapCount) { continue; }
-                    // Same-page certificates requested lastPages; empty-domain
-                    // certificates leave it invalid on ray zero. Residual levels
-                    // use their real t=0 sample domain/address.
-                    uint witness = ((sweepLevels >> level) & 1u) != 0u ?
-                        vsmReceiverCoveragePage(witnessPosition, projections, push, level) : lastPages[level];
-                    coverageData[coverageRecord + kVSMReceiverCoverageWitnessOffset + level] = witness;
-                }
-            }
-#endif
-            if (sweepLevels == 0u) { continue; }
-#endif
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
 #if VSM_LOCAL_MARK
                 float t = 1.0 - (float(step + 1u) - stepRandom) / float(push.samplesPerRay);
@@ -2073,11 +1871,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
                 float time = vsmRaySampleTime(step, push, id.xy);
                 float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
 #endif
-                vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages, workCounts
-#if VSM_MARK_RAY_PAGES
-                    , sweepLevels
-#endif
-                );
+                vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages, workCounts);
             }
         }
 #endif
@@ -2090,14 +1884,14 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
 {
     // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
     for (uint entry = lane; entry < 256u; entry += 64u) { gVsmMarkedPages[entry] = 0xffffffffu; }
-#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK && VSM_AGGREGATE_RECEIVER_MASK
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
     gVsmReceiverPages[lane] = 0xffffffffu;
     gVsmReceiverMasks[lane] = uint2(0u);
 #endif
     GroupMemoryBarrierWithGroupSync();
     uint3 counts;
     vsmMarkReceiver(id, push, counts);
-#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK && VSM_AGGREGATE_RECEIVER_MASK
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
     // Receiver rejection and divergent page loops have completed on all lanes.
     GroupMemoryBarrierWithGroupSync();
     uint page = gVsmReceiverPages[lane];
@@ -3810,7 +3604,6 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
             if (!vsmContains(p, projection, push.pageSize, true)) { continue; }
             if (firstLevel == 0xffffffffu) { firstLevel = level; }
             uint2 texel = vsmVirtualTexel(p, projection, push.pageSize);
-#if VSM_PROPAGATED_MAPPING
             uint mappedPhysical, mappedLevel;
             if (vsmLookupPropagated(position, float2(projection.rowX.w, projection.rowY.w),
                     vsmVirtualPage(texel, projection, push.pageSize), p, texel, projections, pages, push, level,
@@ -3820,7 +3613,6 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
                 projected = p; virtualTexel = texel;
                 break;
             }
-#endif
             uint page = vsmVirtualPage(texel, projection, push.pageSize);
             vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
             uint4 entry = pages[page];
@@ -3901,7 +3693,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         float offset = vsmLODScreenRayOffset(position, normal, linearDepth, normalize(projection.rowZ.xyz),
             view, depth, push.lodScreenRayLength, blockerDistance, bias);
 #if VSM_REFINED_RECEIVER
-        if ((push.projectionFlags & 2u) != 0u && compareDepth + offset * depthScale >= storedDepth &&
+        if (compareDepth + offset * depthScale >= storedDepth &&
             !vsmAllowLODReceiverCorrection(id.xy, position, linearDepth, normalize(projection.rowZ.xyz),
                 view, push.receiverGeometry, push.lodScreenRayLength)) { offset = 0.0; }
 #endif

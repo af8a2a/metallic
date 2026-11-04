@@ -70,16 +70,14 @@ struct VirtualShadowMapLODSelection
     uint32_t clusterTests = 0;
 };
 
-// Hierarchical and flat paths use the same group metric and residency rules.
-// The flat path is retained as an independent cut/reference and A/B control.
 // Dense activeGroups remains part of the result ABI; only demanded topology and
-// active cluster ranges are traversed by the hierarchical path.
+// active cluster ranges are traversed by the hierarchy.
 // The additional world-space replacement budget preserves depth agreement with
 // full-detail receivers. It refines geometry without increasing comparison bias;
 // missing streamed pages still use the complete resident ancestor cut.
 VirtualShadowMapLODSelection selectVirtualShadowMapLOD(const VirtualShadowMapLODHierarchy& hierarchy,
     std::span<const uint8_t> drawableGroups, const GPUSceneGPUInstanceRecord& instance,
     std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold,
-    bool hierarchical = true, float maxWorldError = std::numeric_limits<float>::max());
+    float maxWorldError = std::numeric_limits<float>::max());
 
 } // namespace metallic::render

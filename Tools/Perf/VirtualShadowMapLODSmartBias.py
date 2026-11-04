@@ -1,5 +1,6 @@
-"""Bounded Off/Legacy/Smart shadow-LOD experiment using native acceptance packages.
+"""Historical Off/Legacy/Smart shadow-LOD evidence using native acceptance packages.
 
+Live prepare/run is retired: depth agreement and refined receivers are standard.
 The original Bunny, reverse light and closer orthographic view share immutable
 geometry. Only the original view is eligible for the 36-process timing budget.
 Diagnostic quality and ordinary GPU timing are separate, sealed experiments.
@@ -11,7 +12,6 @@ import copy
 import math
 from pathlib import Path
 import statistics
-from types import SimpleNamespace
 
 import PrepareVirtualShadowMapLODImpact as fixture
 import VirtualShadowMapAcceptance as acceptance
@@ -77,45 +77,7 @@ def normalize(spec, graph, phase, workload, arm):
 
 
 def prepare(args):
-    assets, metrics = fixture.inspect_assets()
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    camera, direction = scenario_settings(args.scenario)
-    manifests = []
-    for phase in (("diagnostic", "timing") if args.scenario == "Baseline" else ("diagnostic",)):
-        for workload in WORKLOADS:
-            for arm, (enabled, smart) in ARMS.items():
-                name = f"{phase.title()}-{workload}-{arm}"
-                graph = fixture.base_graph()
-                graph["edges"] = [edge for edge in graph["edges"] if edge["dst"] != "Shadows.visibility"]
-                graph["view"]["camera"] = copy.deepcopy(camera)
-                props = next(n["properties"] for n in graph["nodes"] if n["name"] == "Shadows")
-                props.update(shadowLOD=enabled, shadowLODHierarchy=True, shadowLODDepthGuard=False,
-                             shadowLODSmartBias=smart, shadowLODScreenRayLength=RAY_LENGTH, shadowLODSmartBiasRefine=False,
-                             cacheEnabled=workload == "Warm", benchmarkGPUWork=phase == "diagnostic")
-                case = dict(id=f"BunnySmartBias{args.scenario}{workload}", graph=f"{name}.json",
-                            scene=fixture.SCENE_PATH.as_posix(), metadataOnly=False, enableStreamline=False,
-                            synchronizationValidation=phase == "diagnostic", requireNoRayCapabilities=True,
-                            temporalJitter=False, width=768, height=512, output="FinalBlit.color",
-                            comparisonOutput="Deferred.color", camera=copy.deepcopy(camera), requireShadow=True,
-                            lighting=dict(sun=dict(direction=direction, illuminance=3., angularRadius=.00465)),
-                            environment=dict(enabled=False), exposureEV100=0,
-                            captureFrames=[32, 47] if phase == "diagnostic" else [],
-                            comparisonFrames=previous.comparison_frames(phase, workload, arm),
-                            comparisonStartFrame=16, freezeStreamingFrame=16, events=[dict(frame=16, cameraCut=True)])
-                spec = dict(version=1, mode=phase, frames=48 if phase == "diagnostic" else 96,
-                            warmupFrames=32, cases=[case])
-                normalize(spec, graph, phase, workload, arm)
-                acceptance.save(output / f"{name}.json", graph)
-                acceptance.save(output / f"{name}Cases.json", spec)
-                manifests.append(f"{name}Cases.json")
-    acceptance.save(output / "Assets.json", assets)
-    acceptance.save(output / "Preparation.json", dict(protocol=PROTOCOL, scenario=args.scenario,
-        fixtureMetrics=metrics, screenRayLength=RAY_LENGTH, qualityCriteria=quality.CRITERIA,
-        templateGraph=dict(path=fixture.GRAPH_PATH.as_posix(), sha256=acceptance.digest(fixture.GRAPH_PATH)),
-        sourceAssetsModified=False, gpuExecutionPerformed=False))
-    acceptance.save(output / "Catalog.json", dict(caseManifests=manifests))
-    print(output)
+    raise ValueError("Retired VSM LOD reference experiment: hierarchy traversal, depth agreement and refined receiver bias are standard; use verify/report for historical evidence")
 
 
 def read_package(source, plan, scheduled):
@@ -237,88 +199,7 @@ def verify(source, diagnostic=None):
 
 
 def run(args):
-    workloads = [args.workload] if args.workload else list(WORKLOADS)
-    cases_dir, output = args.cases_dir.resolve(), args.output.resolve()
-    assets = acceptance.read(cases_dir / "Assets.json")
-    impact.validate_assets(assets)
-    preparation = acceptance.read(cases_dir / "Preparation.json")
-    if (preparation["protocol"] != PROTOCOL or preparation["qualityCriteria"] != quality.CRITERIA
-            or preparation["scenario"] != args.scenario):
-        raise ValueError("Prepared protocol/quality criteria changed")
-    if args.phase == "timing" and args.scenario != "Baseline":
-        raise ValueError("Only the Baseline scenario has a declared timing budget")
-    inputs, normalized = {}, {}
-    for workload in workloads:
-        for arm in ARMS:
-            cases = cases_dir / f"{args.phase.title()}-{workload}-{arm}Cases.json"
-            spec = acceptance.read(cases)
-            if spec["cases"][0]["id"] != f"BunnySmartBias{args.scenario}{workload}":
-                raise ValueError("Prepared cases differ from the requested scenario")
-            graph = (cases.parent / spec["cases"][0]["graph"]).resolve()
-            value = normalize(spec, acceptance.read(graph), args.phase, workload, arm)
-            if workload in normalized and normalized[workload] != value:
-                raise ValueError("Prepared inputs differ beyond the declared arm")
-            normalized[workload] = value
-            inputs[f"{workload}-{arm}"] = dict(cases=str(cases), graph=str(graph),
-                casesSHA256=acceptance.digest(cases), graphSHA256=acceptance.digest(graph))
-    evidence, prerequisite = None, None
-    if args.phase == "timing":
-        if args.diagnostic is None:
-            raise ValueError("Timing requires a verified diagnostic prerequisite")
-        evidence = verify(args.diagnostic)
-        if (evidence["phase"] != "diagnostic" or evidence["scenario"] != args.scenario
-                or evidence["assets"] != assets or not evidence["quality"]["passed"]
-                or any(w not in evidence["workloads"] for w in workloads)):
-            raise ValueError("Diagnostic prerequisite does not qualify these timing inputs")
-        prerequisite = dict(path=str(args.diagnostic.resolve()), manifestSHA256=acceptance.digest(args.diagnostic / "Manifest.json"))
-    output.mkdir(parents=True, exist_ok=False)
-    tool_paths = [Path(module.__file__) for module in (fixture, acceptance, profile, impact, previous, quality, impact.optimization)] + [Path(__file__)]
-    tools = {str(p.resolve()): acceptance.digest(p) for p in tool_paths}
-    plan = dict(protocol=PROTOCOL, phase=args.phase, scenario=args.scenario, workloads=workloads, created=impact.utc(), inputs=inputs,
-                processes=schedule(args.phase, workloads), diagnostic=prerequisite, exe=str(args.exe.resolve()),
-                qualityCriteria=quality.CRITERIA, timeoutSeconds=args.timeout, toolsSHA256=tools,
-                statisticalUnit="Three independent ABCCBA blocks per workload; no adaptive samples",
-                cache="Disk caches retained; fresh process per sample; first 32 frames excluded",
-                gpuExclusivity="Not enforced; applications and clocks unchanged")
-    acceptance.save(output / "Plan.json", plan)
-    acceptance.save(output / "Assets.json", assets)
-    (output / "Inputs").mkdir()
-    (output / "Tools").mkdir()
-    for key, item in inputs.items():
-        for source_key, suffix in (("cases", "Cases"), ("graph", "Graph")):
-            (output / "Inputs" / f"{key}{suffix}.json").write_bytes(Path(item[source_key]).read_bytes())
-    for path in tool_paths:
-        (output / "Tools" / path.name).write_bytes(path.read_bytes())
-    processes, records = [], []
-    try:
-        for scheduled in plan["processes"]:
-            impact.validate_assets(assets)
-            if any(acceptance.digest(path) != digest for path, digest in tools.items()):
-                raise ValueError("Experiment tools changed after plan creation")
-            item = inputs[f"{scheduled['workload']}-{scheduled['arm']}"]
-            if any(acceptance.digest(item[k]) != item[f"{k}SHA256"] for k in ("cases", "graph")):
-                raise ValueError("Prepared inputs changed after plan creation")
-            row = dict(**scheduled, started=impact.utc(), beforeGPU=impact.telemetry(), passed=False)
-            processes.append(row)
-            acceptance.save(output / "Processes.json", processes)
-            try:
-                acceptance.run(SimpleNamespace(cases=Path(item["cases"]), exe=args.exe,
-                    output=output / scheduled["package"], runs=1, timeout=args.timeout))
-                records.append(read_package(output, plan, scheduled))
-                check_records(records, evidence)
-                impact.validate_assets(assets)
-                row["passed"] = True
-            finally:
-                row.update(finished=impact.utc(), afterGPU=impact.telemetry())
-                acceptance.save(output / "Processes.json", processes)
-        acceptance.save(output / "Completion.json", dict(passed=True, finished=impact.utc()))
-        impact.seal(output)
-        result = verify(output, args.diagnostic)
-    except Exception as error:
-        acceptance.save(output / "Completion.json", dict(passed=False, finished=impact.utc(), error=str(error)))
-        impact.seal(output)
-        raise RuntimeError(f"Experiment stopped; evidence retained at {output}: {error}") from error
-    print(f"{output}\nOff-reference image gates passed: {result['quality']['passed']} (independent geometry acceptance is separate)")
+    raise ValueError("Retired VSM LOD reference experiment: hierarchy traversal, depth agreement and refined receiver bias are standard; use verify/report for historical evidence")
 
 
 def report(args):

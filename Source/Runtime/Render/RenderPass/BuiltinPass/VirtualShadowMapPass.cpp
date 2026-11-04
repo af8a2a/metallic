@@ -30,22 +30,14 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", false);
     settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
     settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
-    settings.staticPageHZB = boolProperty(&properties, "benchmarkStaticPageHZB", settings.staticPageHZB);
-    settings.clusterHZBCulling = boolProperty(&properties, "benchmarkClusterHZBCulling", settings.clusterHZBCulling);
     settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
-    settings.shadowLODHierarchy = boolProperty(&properties, "shadowLODHierarchy", settings.shadowLODHierarchy);
     settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
     settings.shadowLODSmartBias = boolProperty(&properties, "shadowLODSmartBias", settings.shadowLODSmartBias);
-    settings.shadowLODSmartBiasRefine = boolProperty(&properties, "shadowLODSmartBiasRefine", settings.shadowLODSmartBiasRefine);
     settings.shadowLODScreenRayLength = properties.value("shadowLODScreenRayLength", settings.shadowLODScreenRayLength);
     settings.forceRedraw = boolProperty(&properties, "forceRedraw", false);
     settings.collectGPUWork = boolProperty(&properties, "benchmarkGPUWork", false);
     settings.profileBuildSubstages = boolProperty(&properties, "benchmarkBuildSubstages", false);
     settings.optimizeProjectionStatistics = boolProperty(&properties, "benchmarkProjectionStatistics", settings.optimizeProjectionStatistics);
-    settings.directionalProjection = boolProperty(&properties, "benchmarkDirectionalProjection",
-        boolProperty(&properties, "directionalProjection", settings.directionalProjection));
-    settings.markRayPages = boolProperty(&properties, "benchmarkMarkRayPages",
-        boolProperty(&properties, "markRayPages", settings.markRayPages));
     settings.compactBuild = boolProperty(&properties, "benchmarkCompactBuild", settings.compactBuild);
     settings.clusterPageRaster = boolProperty(&properties, "benchmarkClusterPageRaster", settings.clusterPageRaster);
     settings.pageWindowRaster = boolProperty(&properties, "benchmarkPageWindowRaster", settings.pageWindowRaster);
@@ -120,10 +112,7 @@ public:
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
             runtimeIntSetting("framesStaticThreshold", "Frames Before Caster Becomes Static (0 Off)", 100, 0, 65535),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
-            runtimeBoolSetting("shadowLODHierarchy", "Adaptive Shadow LOD Hierarchy", true),
-            runtimeBoolSetting("shadowLODDepthGuard", "Preserve Shadow LOD Depth Agreement", true),
             runtimeBoolSetting("shadowLODSmartBias", "Shadow LOD Screen Depth Bias", false),
-            runtimeBoolSetting("shadowLODSmartBiasRefine", "Refine Shadow LOD Receiver Bias", true),
             runtimeFloatSetting("shadowLODScreenRayLength", "Shadow LOD Screen Ray Length", .015f, 0, 1),
             runtimeFloatSetting("shadowLODErrorTexels", "Shadow LOD Error (texels)", 1, 0, 16),
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
@@ -290,7 +279,7 @@ public:
         }
         const auto light = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[lightIndex];
         VirtualShadowMapReceiverResources receiver{};
-        if (settings.shadowLOD && settings.shadowLODSmartBias && settings.shadowLODSmartBiasRefine &&
+        if (settings.shadowLOD && settings.shadowLODSmartBias &&
             visibility.valid() && (info.reserved & 1u) == 0) {
             if (visibility.desc().width != info.width || visibility.desc().height != info.height) {
                 return makeError(Error::InvalidArgument);
@@ -317,9 +306,7 @@ public:
             lodStatistics[2] = uint32_t(projections->size());
             casters = casterCache_.prepareShadowLOD(*device_, commands, *scene,
                 scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
-                *projections, settings.shadowLODErrorTexels, log, settings.shadowLODHierarchy,
-                boolProperty(&context.properties(), "shadowLODDepthGuard", true) ?
-                    0.5f * settings.shadowBias : std::numeric_limits<float>::max());
+                *projections, settings.shadowLODErrorTexels, log, 0.5f * settings.shadowBias);
             if (!casters) {
                 spdlog::error("VirtualShadowMapPass shadow LOD: {}", log);
                 return makeError(casters.error());

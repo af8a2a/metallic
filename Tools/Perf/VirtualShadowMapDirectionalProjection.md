@@ -1,5 +1,10 @@
 # Directional Projection experiment
 
+Retired as of 2026-11-04: directional Projection is standard and its production
+and benchmark switches have been removed. New live plans/runs reject this
+experiment. The protocol below is retained only for sealed historical evidence
+verification and reports.
+
 `VirtualShadowMapBitset.py --experiment directional-projection` uses protocol
 `virtual-shadow-map-directional-projection-v1`. It compares the generic single-face
 Projection program against its orthographic-only compiled variant. The explicit

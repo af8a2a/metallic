@@ -2,9 +2,11 @@
 
 `VirtualShadowMap` 与 `VirtualShadowMapLights` 提供运行时属性 `shadowLOD`，默认 `false`；`shadowLODErrorTexels` 默认 `1.0`，界面范围为 0–16。误差单位为阴影虚拟纹理 texel，不是主相机屏幕像素。`0` 请求最细几何：resident 保留原始完整三角与顺序，stream 请求最细层级并在页到达前使用完整驻留回退 cut。
 
-开启 `shadowLOD` 后默认使用 `shadowLODHierarchy=true` 的自适应层级遍历；设置 `shadowLODHierarchy=false` 可使用原平铺选择作为 A/B 对照。两个路径的误差预算、稳定 cluster ID 和缺页回退契约相同。
+2026-11-04：开启 `shadowLOD` 后固定使用自适应层级遍历，删除 `shadowLODHierarchy` 的平铺 A/B 参考路径。可选 `shadowLODSmartBias` 固定采用匹配资源允许的 refined receiver，不再提供 `shadowLODSmartBiasRefine` 的旧实验旁路。
 
-`shadowLODDepthGuard=true` 默认开启，在 texel 预算之外增加世界空间替换误差指标预算 `0.5 × shadowBias`。超限 group 继续细化，GPU 深度写入、接收面位置和比较 bias 均不改变；`shadowLODDepthGuard=false` 保留旧选择用于 A/B。它可能要求恢复完整几何，不能假定仍保留旧 LOD 的 GPU 收益。
+深度保护是 LOD 选择的固定正确性约束，不再提供 `shadowLODDepthGuard`：在 texel 预算之外增加世界空间替换误差指标预算 `0.5 × shadowBias`。超限 group 继续细化，GPU 深度写入、接收面位置和比较 bias 均不改变。它可能要求恢复完整几何，不能假定仍保留旧 LOD 的 GPU 收益。
+
+本文后续 Flat/Legacy/Smart/Refined 的开关与测量是历史记录。对应旧 LOD A/B 的 prepare/run 已退役，verify/report 和离线质量分析保留；本次实现收敛不追加性能结论。
 
 本次加入独立的阴影几何选择，不改变现有 one-pass projection 的默认开启状态，也不改变静态/动态深度分层的默认关闭状态。入口见 [VirtualShadowMapCasters.h](../Source/Runtime/Render/Shadow/VirtualShadowMapCasters.h)，误差计算见 [VirtualShadowMapLOD.h](../Source/Runtime/Render/Shadow/VirtualShadowMapLOD.h)。
 

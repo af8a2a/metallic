@@ -1,5 +1,7 @@
 # VSM GPU one-pass projection
 
+2026-11-04 当前状态：one-pass 已收敛为多面 Projection 的标准调度，删除 `onePassProjection`、`benchmarkOnePassProjection` 和 `benchmarkLegacyProjection`。面数与统计模式决定内核选择，不提供旧实现 A/B。以下开关与实验协议是历史记录。
+
 **最终结论（2026-10-31）：正确性通过，性能证据有效但结论不确定。** 按用户后续要求默认开启，保留显式关闭；没有将 discovery 的正收益当作确认结果，也没有追加性能采样。默认值变更不代表已确认性能收益。
 
 本轮按用户要求撤掉空 receiver tile 实验，保留本机归档；方向光 Mark 默认启用不变。`VirtualShadowMapSettings::onePassProjection` 和 `projectShared()` 参数默认开启，LightsPass 可用 `onePassProjection=false` 关闭，显式 `benchmarkOnePassProjection` 优先。`benchmarkLegacyProjection=true` 保留最高优先级，用于原逐面路径对照。

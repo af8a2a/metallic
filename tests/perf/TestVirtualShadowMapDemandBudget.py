@@ -3,7 +3,9 @@ import copy
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Tools/Perf"))
@@ -11,6 +13,26 @@ import VirtualShadowMapDemandBudget as budget
 
 
 class DemandBudgetTests(unittest.TestCase):
+    def test_live_replay_rejects_retired_switch_before_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = SimpleNamespace(output=root / "output", cases_dir=root / "cases", phase="diagnostic",
+                                   exe=root / "fake.exe", diagnostic=None)
+            graph = {"nodes": [{"name": "Shadows", "type": "VirtualShadowMapLightsPass",
+                                "properties": {"benchmarkDirectionalProjection": False}}]}
+
+            def read(path):
+                if path.name == "Assets.json":
+                    return {}
+                return graph if path.name == "Graph.json" else {"cases": [{"graph": "Graph.json"}]}
+
+            with mock.patch.object(budget, "asset_manifest", return_value={}), \
+                    mock.patch.object(budget.acceptance, "read", side_effect=read), \
+                    mock.patch.object(budget.acceptance, "run") as launch:
+                with self.assertRaisesRegex(ValueError, "Retired VSM graph properties"):
+                    budget.run(args)
+                launch.assert_not_called()
+
     def test_fixed_independent_process_budget(self):
         diagnostic = budget.schedule("diagnostic")
         self.assertEqual(len(diagnostic), 5)

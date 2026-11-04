@@ -1,8 +1,9 @@
 # Propagated VSM projection mappings
 
-The compact-state implementation is enabled by default through
-`VirtualShadowMapSettings::propagatedMapping`. `benchmarkPropagatedMapping: false`
-on `VirtualShadowMapLightsPass` retains an explicit diagnostic opt-out.
+As of 2026-11-04, compact propagated mappings are the standard Projection
+implementation. The `propagatedMapping` setting and
+`benchmarkPropagatedMapping` opt-out have been removed. Old baseline measurements
+below describe historical evidence, not a selectable runtime path.
 The implementation prepares sampling mappings once
 per virtual page so a resident page or an integer-mapped ancestor can be resolved with
 one derived-table read. It does not change Mark, physical-page admission, raster

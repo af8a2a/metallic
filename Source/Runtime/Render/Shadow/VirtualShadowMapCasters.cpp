@@ -594,7 +594,7 @@ static Result<VirtualShadowMapCasterResources> selectShadowLOD(
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
     std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
-    bool hierarchical, float maxWorldError, const VirtualShadowMapCasterResources* previous)
+    float maxWorldError, const VirtualShadowMapCasterResources* previous)
 {
     if (!std::isfinite(maxErrorTexels) || maxErrorTexels < 0 || !std::isfinite(maxWorldError) || maxWorldError < 0) {
         log = "VSM shadow LOD errors must be finite and nonnegative";
@@ -627,7 +627,7 @@ static Result<VirtualShadowMapCasterResources> selectShadowLOD(
         GPUSceneGPUInstanceRecord instance;
         std::copy_n(node.worldMatrix.a, 16, instance.worldMatrix.begin());
         instance.identity[3] = GPUSceneGPUInstanceVisible;
-        auto selected = selectVirtualShadowMapLOD(hierarchy, drawable, instance, projections, maxErrorTexels, hierarchical, maxWorldError);
+        auto selected = selectVirtualShadowMapLOD(hierarchy, drawable, instance, projections, maxErrorTexels, maxWorldError);
         diagnostics.metricGroups += selected.metricGroups;
         diagnostics.hierarchyNodes += selected.hierarchyNodes;
         diagnostics.prunedGroups += selected.prunedGroups;
@@ -827,10 +827,10 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings,
     std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
-    bool hierarchical, float maxWorldError)
+    float maxWorldError)
 {
     return selectShadowLOD(device, commands, scene, stream, base, settings, projections, maxErrorTexels, log,
-        hierarchical, maxWorldError, nullptr);
+        maxWorldError, nullptr);
 }
 
 Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasterLayer(
@@ -904,7 +904,6 @@ struct VirtualShadowMapCasterCache::Resident
     {
         std::vector<VirtualShadowMapLODProjection> projections;
         float maxErrorTexels, maxWorldError;
-        bool hierarchical;
         VirtualShadowMapCasterResources geometry;
     };
     std::optional<Cut> cut;
@@ -914,16 +913,16 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepareShad
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings, std::span<const VirtualShadowMapLODProjection> projections,
-    float maxErrorTexels, std::string& log, bool hierarchical, float maxWorldError)
+    float maxErrorTexels, std::string& log, float maxWorldError)
 {
     // Stream cuts must re-evaluate residency and submit page requests on every recording.
     if (stream) {
         return prepareVirtualShadowMapShadowLOD(device, commands, scene, stream, base, settings, projections,
-            maxErrorTexels, log, hierarchical, maxWorldError);
+            maxErrorTexels, log, maxWorldError);
     }
     auto& cut = resident_->cut;
     if (cut && cut->maxErrorTexels == maxErrorTexels && cut->maxWorldError == maxWorldError &&
-        cut->hierarchical == hierarchical && std::ranges::equal(cut->projections, projections)) {
+        std::ranges::equal(cut->projections, projections)) {
         const auto& geometry = cut->geometry;
         auto registry = ResourceRegistry::forDevice(device);
         if (!registry) { return std::unexpected(registry.error()); }
@@ -933,13 +932,13 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepareShad
         }
         return geometry;
     }
-    const auto* previous = cut && cut->hierarchical == hierarchical ? &cut->geometry : nullptr;
+    const auto* previous = cut ? &cut->geometry : nullptr;
     auto selected = selectShadowLOD(device, commands, scene, nullptr, base, settings, projections,
-        maxErrorTexels, log, hierarchical, maxWorldError, previous);
+        maxErrorTexels, log, maxWorldError, previous);
     if (!selected) { return std::unexpected(selected.error()); }
     // The immutable host uploads are ready before submission. Replacing this entry
     // (or cancelling its first recording) does not affect per-command retention.
-    cut.emplace(Resident::Cut{{projections.begin(), projections.end()}, maxErrorTexels, maxWorldError, hierarchical, *selected});
+    cut.emplace(Resident::Cut{{projections.begin(), projections.end()}, maxErrorTexels, maxWorldError, *selected});
     auto& diagnostics = cut->geometry.shadowLOD;
     diagnostics.reusedResidentCut = true;
     diagnostics.testedGroups = diagnostics.metricGroups = diagnostics.hierarchyNodes = diagnostics.prunedGroups = 0;

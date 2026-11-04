@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -93,6 +92,28 @@ void compareLODSelection(const VirtualShadowMapLODSelection& actual, const Virtu
     check(actual.cut.activeGroups == reference.cut.activeGroups, "Adaptive active groups differ from flat reference");
 }
 
+// The test oracle evaluates every group and delegates topology to the independent
+// stream reference selector. Production only exposes hierarchical traversal.
+VirtualShadowMapLODSelection selectReferenceShadowLOD(const VirtualShadowMapLODHierarchy& hierarchy,
+    std::span<const uint8_t> drawableGroups, const GPUSceneGPUInstanceRecord& instance,
+    std::span<const VirtualShadowMapLODProjection> projections, float pixelThreshold,
+    float maxWorldError = std::numeric_limits<float>::max())
+{
+    VirtualShadowMapLODSelection result;
+    auto requirements = buildVirtualShadowMapLodRequirements(hierarchy.groups, instance, projections, pixelThreshold, maxWorldError);
+    if (pixelThreshold == 0) { std::ranges::fill(requirements.needsFine, uint8_t(1)); }
+    for (uint32_t owner = 0; owner < hierarchy.ranges.size(); ++owner) {
+        const auto& range = hierarchy.ranges[owner];
+        for (uint32_t cluster = range.clusterOffset; cluster < range.clusterOffset + range.clusterCount; ++cluster) {
+            const uint32_t child = hierarchy.refinedGroups[cluster];
+            if (child != kMeshletLODInvalidGroup) { requirements.needsFine[owner] |= requirements.needsFine[child]; }
+        }
+    }
+    result.cut = selectStreamMeshletLodReference(hierarchy.groups, hierarchy.ranges, hierarchy.refinedGroups,
+        drawableGroups, instance, MeshletLODView{}, UINT32_MAX, UINT32_MAX, {}, {}, requirements.needsFine);
+    return result;
+}
+
 void verifyMetricAndCoverage()
 {
     GPUSceneGPUInstanceRecord instance;
@@ -165,8 +186,8 @@ void verifyMetricAndCoverage()
             instance.worldMatrix[14] = transform & 4 ? -4.9f : 0.f;
             for (const float threshold : {0.f, .01f, .1f, 1.f, 4.f, 1e9f}) {
                 for (float budget : {std::numeric_limits<float>::max(), 0.f, .05f}) {
-                    const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, instance, views, threshold, false, budget);
-                    const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, views, threshold, true, budget);
+                    const auto flat = selectReferenceShadowLOD(hierarchy, drawable, instance, views, threshold, budget);
+                    const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, views, threshold, budget);
                     compareLODSelection(adaptive, flat);
                     uint32_t covered = 0;
                     for (uint32_t cluster : adaptive.cut.selectedClusters) {
@@ -189,8 +210,8 @@ void verifyMetricAndCoverage()
                 .rowY = {0,1,0,0}, .rowW = perspective ? std::array<float,4>{0,0,1,0} :
                     std::array<float,4>{0,0,0,1}, .resolution = 256, .nearPlane = perspective ? .1f : 0.f};
             for (float threshold : {.01f, 1.f, 16.f, 1e9f}) {
-                compareLODSelection(selectVirtualShadowMapLOD(hierarchy, resident, instance, {&translated,1}, threshold, true),
-                    selectVirtualShadowMapLOD(hierarchy, resident, instance, {&translated,1}, threshold, false));
+                compareLODSelection(selectVirtualShadowMapLOD(hierarchy, resident, instance, {&translated,1}, threshold),
+                    selectReferenceShadowLOD(hierarchy, resident, instance, {&translated,1}, threshold));
             }
         }
     }
@@ -217,8 +238,8 @@ uint32_t verifyDepthGuardMetricAndCoverage()
         // Deliberately allow the XY error. Only depth safety, near-plane
         // saturation, or residency may decide this fixture's refinement.
         const auto requirements = buildVirtualShadowMapLodRequirements(groups, instance, {&projection,1}, 1e9f, budget);
-        const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, instance, {&projection,1}, 1e9f, false, budget);
-        const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, {&projection,1}, 1e9f, true, budget);
+        const auto flat = selectReferenceShadowLOD(hierarchy, drawable, instance, {&projection,1}, 1e9f, budget);
+        const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, {&projection,1}, 1e9f, budget);
         compareLODSelection(adaptive, flat);
         check(requirements.needsFine == std::vector<uint8_t>{uint8_t(expectFine || expectRequest),1},
             "Depth guard requirement differs from the expected world-error boundary");
@@ -322,7 +343,7 @@ uint32_t fullyResidentFinestClusterCount(const scene::MeshletStreamAsset& asset)
     return count;
 }
 
-Json verifyAndBenchmarkHierarchy(const scene::MeshletStreamAsset& asset)
+Json verifyHierarchy(const scene::MeshletStreamAsset& asset)
 {
     const auto& primitive = asset.primitives().front();
     std::vector<MeshletLODGroupRecord> groups;
@@ -359,7 +380,7 @@ Json verifyAndBenchmarkHierarchy(const scene::MeshletStreamAsset& asset)
     const std::array<Workload, 5> workloads{{{"Ortho1Texel",{ortho}}, {"SpotNear",{near}},
         {"SpotFar",{far}}, {"MultipleLights",{ortho,near,opposite}}, {"Finest",{ortho},0}}};
     Json report{{"scope","CPU selector only; prebuilt metadata, resident snapshot, no geometry upload or GPU work"},
-        {"blocks",12},{"iterationsPerArm",128},{"equivalenceCases",0},{"workloads",Json::array()}};
+        {"equivalenceCases",0},{"workloads",Json::array()}};
     uint32_t cases = 0, guardedCases = 0;
     uint64_t randomState = 0x72ac4513u;
     const auto random = [&] {
@@ -380,57 +401,28 @@ Json verifyAndBenchmarkHierarchy(const scene::MeshletStreamAsset& asset)
         }
         const auto& work = workloads[trial % workloads.size()];
         const float threshold = trial % 16 == 0 ? 0.f : std::exp2(random() * 12 - 6);
-        const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, false);
-        const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, true);
+        const auto flat = selectReferenceShadowLOD(hierarchy, drawable, transformed, work.views, threshold);
+        const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold);
         compareLODSelection(adaptive, flat); ++cases;
         for (float budget : {0.f, .0005f, .001f, .01f}) {
-            compareLODSelection(selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, true, budget),
-                selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, false, budget));
+            compareLODSelection(selectVirtualShadowMapLOD(hierarchy, drawable, transformed, work.views, threshold, budget),
+                selectReferenceShadowLOD(hierarchy, drawable, transformed, work.views, threshold, budget));
             ++guardedCases;
         }
     }
     report["equivalenceCases"] = cases;
     report["depthGuardEquivalenceCases"] = guardedCases;
     std::ranges::fill(drawable, uint8_t(1));
-    uint64_t checksum = 0;
     for (const auto& work : workloads) {
-        const auto flat = selectVirtualShadowMapLOD(hierarchy, drawable, instance, work.views, work.threshold, false);
-        const auto adaptive = selectVirtualShadowMapLOD(hierarchy, drawable, instance, work.views, work.threshold, true);
-        compareLODSelection(adaptive, flat);
-        Json item{{"name",work.name},{"selectedClusters",adaptive.cut.selectedClusters.size()},
-            {"flatMetricGroups",flat.metricGroups},{"adaptiveMetricGroups",adaptive.metricGroups},
-            {"hierarchyNodes",adaptive.hierarchyNodes},{"prunedGroups",adaptive.prunedGroups},
-            {"flatTopologyGroups",flat.topologyGroups},{"adaptiveTopologyGroups",adaptive.topologyGroups},
-            {"timings",Json::array()}};
-        const auto measure = [&](bool hierarchical, uint32_t iterations) {
-            const auto start = std::chrono::steady_clock::now();
-            for (uint32_t iteration = 0; iteration < iterations; ++iteration) {
-                const auto result = selectVirtualShadowMapLOD(hierarchy, drawable, instance, work.views, work.threshold, hierarchical);
-                checksum += result.cut.selectedClusters.size() + result.cut.requestedGroups.size();
-            }
-            return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / iterations;
-        };
-        (void)measure(false, 32); (void)measure(true, 32);
-        for (uint32_t block = 0; block < 12; ++block) {
-            const double a1 = measure(false, 128), b1 = measure(true, 128), b2 = measure(true, 128), a2 = measure(false, 128);
-            item["timings"].push_back({{"block",block},{"flatFirstUs",a1},{"hierarchyFirstUs",b1},
-                {"hierarchySecondUs",b2},{"flatSecondUs",a2}});
-        }
-        report["workloads"].push_back(std::move(item));
+        const auto reference = selectReferenceShadowLOD(hierarchy, drawable, instance, work.views, work.threshold);
+        const auto selected = selectVirtualShadowMapLOD(hierarchy, drawable, instance, work.views, work.threshold);
+        compareLODSelection(selected, reference);
+        report["workloads"].push_back({{"name",work.name},{"selectedClusters",selected.cut.selectedClusters.size()},
+            {"metricGroups",selected.metricGroups},{"hierarchyNodes",selected.hierarchyNodes},
+            {"prunedGroups",selected.prunedGroups},{"topologyGroups",selected.topologyGroups}});
     }
     check(report["workloads"][2]["prunedGroups"].get<uint32_t>() > 0,
         "Far-light Bunny hierarchy did not prune any metric groups");
-    Json cold = Json::array();
-    for (uint32_t i = 0; i < 12; ++i) {
-        VirtualShadowMapLODHierarchy rebuilt;
-        const auto start = std::chrono::steady_clock::now();
-        const bool built = buildVirtualShadowMapLODHierarchy(groups, ranges, refined, rebuilt, reason);
-        const double elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
-        check(built, "Bunny cold hierarchy failed: " + reason);
-        cold.push_back(elapsed); checksum += rebuilt.groups.size();
-    }
-    report["metadataBuildUs"] = std::move(cold);
-    report["checksum"] = checksum;
     return report;
 }
 
@@ -588,7 +580,7 @@ public:
             const uint32_t expectedFinestClusters = fullyResidentFinestClusterCount(asset);
             report["asset"] = {{"pages",asset.pageCount()},{"groups",asset.groups().size()},{"levels",asset.lodLevels().size()}};
             report["asset"]["fullyResidentFinestClusters"] = expectedFinestClusters;
-            report["hierarchyCPU"] = verifyAndBenchmarkHierarchy(asset); save();
+            report["hierarchyCPU"] = verifyHierarchy(asset); save();
             auto deviceResult = createDevice({.applicationName = "VSM shadow LOD",
                 .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
@@ -657,7 +649,7 @@ public:
                 settings.cacheEnabled = true; settings.collectGPUWork = true; settings.maxWorkItems = 1u << 20;
                 VirtualShadowMapCasterSettings casterSettings;
                 VirtualShadowMapCasterCache casterCache;
-                std::array<VirtualShadowMaps, 5> maps;
+                std::array<VirtualShadowMaps, 4> maps;
                 const auto selectionJSON = [](const VirtualShadowMapCasterResources& selected) {
                     const auto& d = selected.shadowLOD;
                     Json identities = Json::array();
@@ -672,7 +664,7 @@ public:
                         {"metricGroups",d.metricGroups},{"hierarchyNodes",d.hierarchyNodes},
                         {"prunedGroups",d.prunedGroups},{"topologyGroups",d.topologyGroups}};
                 };
-                const auto prepare = [&](float threshold, bool freeze, bool pump, bool hierarchical, float maxWorldError, auto&& consume) {
+                const auto prepare = [&](float threshold, bool freeze, bool pump, float maxWorldError, auto&& consume) {
                     gpu.begin();
                     if (runtime) {
                         check(runtime->syncRuntimeScene(scene, log), "LOD synchronize stream: " + log);
@@ -703,13 +695,13 @@ public:
                     const auto projections = VirtualShadowMaps::makeShadowLODProjections(base->bounds, view, light, settings, log);
                     check(projections, "LOD light projections: " + log);
                     auto selected = casterCache.prepareShadowLOD(device, *gpu.commands, scene,
-                        runtime ? &stream : nullptr, *base, casterSettings, *projections, threshold, log, hierarchical, maxWorldError);
+                        runtime ? &stream : nullptr, *base, casterSettings, *projections, threshold, log, maxWorldError);
                     check(selected, "Select shadow LOD: " + log);
-                    if (!streamed && !hierarchical && threshold == 1e9f) {
+                    if (!streamed && threshold == 1e9f) {
                         // A wider error budget recomputes the same terminal cut. This
                         // must preserve the uploaded geometry even across a cache miss.
                         auto same = casterCache.prepareShadowLOD(device, *gpu.commands, scene, nullptr, *base, casterSettings,
-                            *projections, 2e9f, log, hierarchical, maxWorldError);
+                            *projections, 2e9f, log, maxWorldError);
                         check(same && selected->owner != base->owner && same->owner == selected->owner &&
                             !same->shadowLOD.reusedResidentCut && same->shadowLOD.selectedClusterIDs == selected->shadowLOD.selectedClusterIDs,
                             "Unchanged resident replacement cut repacked its geometry after a budget change");
@@ -719,7 +711,7 @@ public:
                     return result;
                 };
                 const auto probe = [&](float threshold, bool freeze) {
-                    return prepare(threshold, freeze, true, true, std::numeric_limits<float>::max(), [&](const auto&, const auto& selected, const auto&) {
+                    return prepare(threshold, freeze, true, std::numeric_limits<float>::max(), [&](const auto&, const auto& selected, const auto&) {
                         const auto result = selectionJSON(selected); gpu.finish(); return result;
                     });
                 };
@@ -755,7 +747,7 @@ public:
                 light = directional;
                 const auto record = [&](uint32_t arm, float threshold, bool cancel = false, bool baseReference = false,
                     float maxWorldError = std::numeric_limits<float>::max()) {
-                    return prepare(threshold, false, false, arm != 4, maxWorldError, [&](const auto& base, const auto& selected, const auto& view) {
+                    return prepare(threshold, false, false, maxWorldError, [&](const auto& base, const auto& selected, const auto& view) {
                         auto options = settings; options.cacheLayering = arm == 0; options.forceRedraw = arm >= 2;
                         auto result = maps[arm].record(device, *gpu.commands, *depthView, view, light,
                             baseReference ? base : selected, scene.materials(), {}, options, log);
@@ -769,14 +761,14 @@ public:
                     float maxWorldError = std::numeric_limits<float>::max()) {
                     report["activeState"] = label + "-" + state; validation.phase(label + "-" + state);
                     const auto layered = record(0, threshold, false, false, maxWorldError), single = record(1, threshold, false, false, maxWorldError),
-                        forced = record(2, threshold, false, false, maxWorldError), flat = record(4, threshold, false, false, maxWorldError);
+                        forced = record(2, threshold, false, false, maxWorldError);
                     const auto snapshot = [](const LODCapture& capture) {
                         return Json{{"pages",capture.pages},{"statistics",capture.statistics},{"diagnostics",capture.diagnostics},
                             {"selection",capture.selection},{"visibilitySHA256",debug::debugSha256(capture.visibility)}};
                     };
                     report["captureComparisons"].push_back({{"name",label + "-" + state},
-                        {"layered",snapshot(layered)},{"single",snapshot(single)},{"forced",snapshot(forced)},{"flat",snapshot(flat)}}); save();
-                    for (const auto* other : {&single, &forced, &flat}) {
+                        {"layered",snapshot(layered)},{"single",snapshot(single)},{"forced",snapshot(forced)}}); save();
+                    for (const auto* other : {&single, &forced}) {
                         for (const char* key : {"selectedClusters","triangleSlots","selectedLevels","selectedClusterIDs",
                             "requestedPages","blockedPages","fallbackCasters","protectedCasters","casterIdentities"}) {
                             check(layered.selection.at(key) == other->selection.at(key), std::string("A/B shadow cut differs: ") + key);
@@ -792,7 +784,7 @@ public:
                     }
                     report["captureComparisons"].back()["layeredVsSingle"] = compareSameCut(layered, single, settings.pageSize);
                     report["captureComparisons"].back()["layeredVsForced"] = compareSameCut(layered, forced, settings.pageSize);
-                    report["captureComparisons"].back()["hierarchyVsFlat"] = compareSameCut(layered, flat, settings.pageSize); save();
+                    save();
                     check(layered.statistics[5] == 0 && forced.statistics[5] == 0, "LOD correctness fixture overflowed build work");
                     check(layered.diagnostics[kVSMCacheDynamicCasters] == 0 && layered.diagnostics[kVSMCachePromotedCasters] == 0 &&
                         layered.diagnostics[kVSMCacheChangedCasters] == 0,
@@ -832,7 +824,7 @@ public:
             report["validation"] = validation.snapshot();
             check(!validation.failed(), "Shadow LOD Vulkan validation error");
             report["passed"] = true; save();
-            return RHITestResult::pass("Bunny shadow LOD: flat/hierarchy cut and D32/visibility equality, cached metadata, independent offscreen streaming, metric/DAG guards, cache/cancellation and bounded CPU ABBA selector measurements");
+            return RHITestResult::pass("Bunny shadow LOD: reference cut and D32/visibility checks, cached metadata, independent offscreen streaming, metric/DAG guards and cache/cancellation");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());
