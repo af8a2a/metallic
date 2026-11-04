@@ -3,6 +3,7 @@
 2026-11-04：继续将当前默认采用的实现固定为标准路径，删除生产设置、benchmark 切换及旧参考实现：
 
 - 方向光 Projection 正交计算、uniform 资源访问与接收点输出归属按真实灯光类型选择。
+- 方向光 per-face SMRT 使用[投影空间射线状态](VirtualShadowMapProjectedRay.md)；按用户决定固化到默认路径，不提供实现切换。
 - 多面 one-pass Projection 按活动面数和统计模式自动选择；单面与不兼容模式保留各自必要内核。
 - 方向光 SMRT Mark 固定使用 receiver footprint 覆盖，删除旧 ray-pages 开关和不可达 helper；Projection propagated mapping、持久 receiver mask 与聚合写入不再提供旧路径切换。
 - 分层方向光缓存自动维护静态页 HZB 并用于动态 cluster 剔除；资源和缓存条件仍决定适用范围。

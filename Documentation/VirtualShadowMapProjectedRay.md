@@ -1,6 +1,6 @@
 # VSM 方向光投影空间射线状态
 
-2026-11-04：已实现并验证原型，保存在 `codex/vsm-projected-ray-state` 分支。当前默认分支未采用该实现，没有新增生产或 benchmark 切换。固定 Sponza 工作负载的 Projection 收益点估计为 1.76%，未达到采集前声明的 3% 门槛。
+2026-11-04：按用户决定，已将 `codex/vsm-projected-ray-state` 的实现合入当前默认分支，作为方向光 per-face SMRT 的标准路径，没有新增生产或 benchmark 切换。固定 Sponza 工作负载的 Projection 收益点估计为 1.76%，仍未达到原先声明的 3% 门槛；本次采用决定不改变既有测量或证据范围。
 
 ## 参考与实现边界
 
@@ -10,7 +10,7 @@
 - `VirtualShadowMapProjectionCommon.ush:237–284` 的整数祖先归属、target texel clamp 和 fallback 深度基准。
 - `VirtualShadowMapSMRTTemplate.ush` 的采样时间和深度历史；本轮保留 Metallic 现有历史判定，不改成 UE 的不同命中边界表达式。
 
-Metallic 原型只用于真实方向光的 per-face SMRT，沿用既有 `VSM_DIRECTIONAL_PROJECTION` 类型排列。PCF、Hard、局部灯及 mixed one-pass 保持原路径。
+该标准实现只用于真实方向光的 per-face SMRT，沿用既有 `VSM_DIRECTIONAL_PROJECTION` 类型排列。PCF、Hard、局部灯及 mixed one-pass 保持原路径。
 
 `VSMDirectionalRayState` 每条射线初始化一次，缓存带 dither 的查页起点、不带 dither 的比较起点、投影方向增量，以及 coarse 的独立 XY 起点/增量。fine clipmap 按二进制比例和相对平移换基，每个样本仍从 `receiverLevel` 重新查找；不移植 UE 的 receiver 预映射选级。采样仍使用原 `vsmRaySampleTime`，不采用累加步进。
 
@@ -43,8 +43,10 @@ CPU `makeProjections` 与兼容缓存保证全部方向光 fine/coarse 共用 `r
 | Shadows pass | 3.944488 | 3.911824 | 0.83% |
 | RenderGraph | 9.657304 | 9.710088 | -0.54% |
 
-Projection 两个配对分别为 1.752% 和 1.764%。采集前采用门槛是 Projection 至少 3%、两个配对均正、Shadows 不退、Graph 回退不超过 2%；仅 Projection 最低收益门槛未满足。一个 ABBA 区组没有置信区间或独立确认，Graph 的负点估计也不作为已确认回退结论，不推断呈现 FPS。
+Projection 两个配对分别为 1.752% 和 1.764%。采集前采用门槛是 Projection 至少 3%、两个配对均正、Shadows 不退、Graph 回退不超过 2%；仅 Projection 最低收益门槛未满足。随后依据用户指令固化到默认路径。一个 ABBA 区组没有置信区间或独立确认，Graph 的负点估计也不作为已确认回退结论，不推断呈现 FPS。
 
 总共 8 个 GPU 进程，含两次基线夹具失败，没有追加性能样本。Sponza 正确性 A 复用已封存标准捕获，293 项 shader 源与原基线一致，旧 CPU/binary 身份差异明确只用于正确性参考；当前 scoped 回归 A、候选和全部普通计时严格使用同一最终二进制。
 
 证据在 `build/vsm-projected-ray-20261104/`：`Plan.json`、`UnrealEvidence.json`、`ReferenceRegressionA.json`、`Correctness.json`、`Summary.json`、`Measurement/` 和两次原始记录 `Attempt-01/`、`Attempt-02/`。生成捕获、源快照和构建输出不提交版本控制。
+
+默认路径合入沿用上述实现及验证，没有改动采样代码或资源布局。本轮仅核对合入内容、执行模块审计和 Release 构建，不追加 GPU 运行。
