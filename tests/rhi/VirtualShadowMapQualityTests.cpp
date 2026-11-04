@@ -1569,6 +1569,10 @@ public:
                     require(filtered == actualFiltered, name + ": filter oracle does not match the effective mode");
                     const uint64_t rays = settings.at("smrtRayCount").get<uint32_t>();
                     const uint64_t samples = settings.at("smrtSamplesPerRay").get<uint32_t>() + 1u;
+                    // Both projection kernels derive adaptive tracing from this capability.
+                    // A fully lit wave can finish after its first SMRT ray.
+                    const bool adaptiveRayCount = preview.subsystemHost()->device()->capabilities().computeSubgroupBallotArithmetic;
+                    const uint64_t minimumRays = adaptiveRayCount ? 1u : rays;
                     Json queryEvidence = Json::array();
                     for (const auto* image : {&cached, &redraw}) {
                         const auto& entry = activeEntry(*image);
@@ -1583,15 +1587,18 @@ public:
                                     (debugPixels[pixel * 4] == 0 && debugPixels[pixel * 4 + 2] != 0);
                             }
                             const auto& stats = image->statistics[layer];
-                            const uint64_t minimum = !actualFiltered ? 0 : receivers * (filter == "pcf" ? 9 : rays);
+                            const uint64_t minimum = !actualFiltered ? 0 : receivers * (filter == "pcf" ? 9 : minimumRays);
                             const uint64_t maximum = !actualFiltered ? 0 :
                                 receivers * (filter == "pcf" ? 9 : rays * samples);
                             require(stats[30] >= minimum && stats[30] <= maximum,
-                                name + ": incorrect filtered query count on receiver face " + std::to_string(face));
+                                name + ": incorrect filtered query count on receiver face " + std::to_string(face) +
+                                " (actual=" + std::to_string(stats[30]) + ", minimum=" + std::to_string(minimum) +
+                                ", maximum=" + std::to_string(maximum) + ")");
                             require(stats[31] <= stats[30], name + ": coarse taps exceed filtered queries");
                             if (image == &cached) {
                                 queryEvidence.push_back({{"face", face}, {"receivers", receivers},
                                     {"minimumQueries", minimum}, {"maximumQueries", maximum},
+                                    {"actualQueries", stats[30]}, {"adaptiveRayCount", actualFiltered && filter == "smrt" && adaptiveRayCount},
                                     {"shadowSha256", debug::debugSha256(image->shadows[layer])},
                                     {"debugSha256", debug::debugSha256(debugPixels)}});
                             }
