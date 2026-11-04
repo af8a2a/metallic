@@ -60,6 +60,8 @@ import Lighting;
 #ifndef VSM_DIRECTIONAL_PROJECTION
 #define VSM_DIRECTIONAL_PROJECTION 0
 #endif
+// Keep the sampling helpers' light-type arithmetic shared with Mark. Folding
+// those expressions changes grazing-boundary samples in the Sponza replay.
 #ifndef VSM_ADAPTIVE_RAY_COUNT
 #define VSM_ADAPTIVE_RAY_COUNT 0
 #endif
@@ -1061,7 +1063,11 @@ struct ShadowLookup
 #if VSM_PROPAGATED_MAPPING
 ShadowProjection vsmLookupProjection(ShadowLookup sample)
 {
+#if VSM_DIRECTIONAL_PROJECTION
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(
+#else
     StructuredBuffer<ShadowProjection> projections = resolveNonUniform(
+#endif
         ResourceHandle<StructuredBuffer<ShadowProjection>>(sample.projectionsHandle));
     return projections[sample.level];
 }
@@ -1129,6 +1135,7 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
     result.storedDepth = 0.0;
     uint atlasHandle = push.atlas, pagesHandle = push.pages, projectionsHandle = push.projections;
     uint statisticsHandle = push.statistics, physicalPagesX = push.physicalPagesX;
+#if !VSM_DIRECTIONAL_PROJECTION
     if (push.lightType == 2u) {
         StructuredBuffer<ShadowProjection> own = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
         StructuredBuffer<ShadowFace> faces = resolveUniform(ResourceHandle<StructuredBuffer<ShadowFace>>(push.pointFaces));
@@ -1136,12 +1143,23 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
         atlasHandle = face.atlas; pagesHandle = face.pages; projectionsHandle = face.projections;
         statisticsHandle = face.statistics; physicalPagesX = face.physicalPagesX;
     }
+#endif
+#if VSM_DIRECTIONAL_PROJECTION
+    // Per-face directional push descriptors stay uniform through fine/ancestor/coarse selection.
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(projectionsHandle));
+#else
     StructuredBuffer<ShadowProjection> projections = resolveNonUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(projectionsHandle));
+#endif
 #if VSM_PROPAGATED_MAPPING
     result.projectionsHandle = projectionsHandle;
 #endif
+#if VSM_DIRECTIONAL_PROJECTION
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(pagesHandle));
+    StructuredBuffer<uint> faceStatistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
+#else
     StructuredBuffer<uint4> pages = resolveNonUniform(ResourceHandle<StructuredBuffer<uint4>>(pagesHandle));
     StructuredBuffer<uint> faceStatistics = resolveNonUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
+#endif
     uint physicalPage = 0xffffffffu;
     result.level = push.clipmapCount;
     ++filterCounts.x;
@@ -1194,7 +1212,11 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
     }
     uint2 physical = uint2(physicalPage % physicalPagesX, physicalPage / physicalPagesX);
     uint2 texel = physical * push.pageSize + result.virtualTexel % push.pageSize;
+#if VSM_DIRECTIONAL_PROJECTION
+    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
+#else
     Texture2D<float> atlas = resolveNonUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
+#endif
     result.storedDepth = atlas.Load(int3(texel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
@@ -3735,7 +3757,11 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
     float3 position;
     float linearDepth;
+#if VSM_DIRECTIONAL_PROJECTION
+    const bool sharedPointLayer = false;
+#else
     bool sharedPointLayer = (push.projectionFlags & 1u) != 0u && push.lightType == 2u;
+#endif
     if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) {
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         if (push.filterMode != 0u) { projectionCounts |= 1u << 0u; }
@@ -3750,7 +3776,9 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
 #endif
     InterlockedAdd(statistics[6], 1u);
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+#if !VSM_DIRECTIONAL_PROJECTION
     if (sharedPointLayer && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return false; }
+#endif
     if (push.enabled == 0u) { return true; }
     bool nearPlane;
     if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) {

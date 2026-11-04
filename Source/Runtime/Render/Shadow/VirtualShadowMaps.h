@@ -59,7 +59,7 @@ struct VirtualShadowMapSettings
     bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.
     // Multi-face GPU projection; single faces and grouped projection statistics retain the original kernel.
     bool onePassProjection = true;
-    bool directionalProjection = false; // Per-face Projection orthographic calculations; one-pass stays generic.
+    bool directionalProjection = true; // Per-face directional type and uniform resources; mixed one-pass stays generic.
     bool propagatedMapping = true; // Projection-only ancestor mapping; ownership pages remain intact.
     bool markRayPages = true; // Directional SMRT Mark skips samples of rays that stay inside one page.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
