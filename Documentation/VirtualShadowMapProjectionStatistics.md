@@ -1,5 +1,31 @@
 # VSM 投影统计独立实验
 
+## 2026-11-04：单面 wave 过滤统计评估
+
+结论：正确性修正版通过精确对照，但普通计时未达到预先声明的采用门槛，未合入默认路径。实验代码和临时清理均已恢复，未新增生产或 benchmark 切换；下文 2026-10-30 的组内汇总实验仍是原有的默认关闭候选。
+
+修正版只将单面 PCF/SMRT 的三项 `filterCounts` 从 shared atomic 与两次组屏障改为 `WaveActiveSum`，由 wave leader 写入 stats32 的 30、31、9 槽。六项公共事件继续使用原 direct atomic，Hard 提前分支、采样 helper、stats32 ABI、按面归属和多面 one-pass 保持原表达式；无 subgroup arithmetic 的设备保留原实现。没有假定固定 wave 宽度。
+
+方向光/Spot、Hard/PCF/SMRT、193×129 尾部及 Cold/Warm/禁用 admission/近面/overflow/coarse 共 30 状态，完整每面 stats32 和 shadow/debug/depth/HDR 哈希精确一致。Sponza 第 16/47/79 帧 PNG/HDR/depth/shadow、16–79 帧 stats32、29 项稳定 Work、Build55 和 canonical 输入精确一致；非 Projection shader 不变，实际 Projection SHA 改变，validation 为 0。shader ownership audit 392 文件、Release 构建和两个相关工具入口回归通过。未实测不支持 subgroup arithmetic 的设备或 point per-face 路径。
+
+Sponza 1920×1080、SMRT 2×16、history32、分层缓存、2048 页；第 16 帧冻结 streaming 并 camera cut。普通计时每进程 96 帧，前 48 帧预热，关闭 validation、GPUWork、capture/readback 和 BuildSubstages，保留磁盘缓存且不锁频。A/B 两个独立进程严格使用相同二进制，除 entry shader 源快照外源码、场景、相机、质量及几何驻留输入均一致。每列为该进程预热后 48 帧中位数：
+
+| GPU 范围 | A：原实现（ms） | B：wave（ms） | 收益点估计 |
+| --- | ---: | ---: | ---: |
+| Projection | 1.835888 | 1.831488 | 0.24% |
+| Shadows pass | 3.943504 | 3.939344 | 0.11% |
+| RenderGraph | 9.879968 | 9.865168 | 0.15% |
+
+本轮仅一个按 A→B 顺序的普通计时配对，没有 ABBA 漂移平衡、置信区间或独立确认。性能数据采集前声明门槛为 Projection 至少 5%、Shadows 不回退、Graph 回退不超过 2%；Projection 仅减少 4.4 μs，不能据此确认可采用收益，也不推断呈现 FPS。
+
+总共执行 8 个 GPU 进程，没有追加样本。首次基线用例误把 compact 纹理层号用作统计块索引，修正测试后保留同二进制基线；完整公共事件 mask 的初版虽通过 Vulkan validation，却改变了 Spot PCF 输出及 Sponza 实际过滤查询路径，未进入普通计时。随后恢复原 helper 和公共 atomics，仅保留三项过滤计数归约，才通过上述精确对照。未将初版变化归因于已确认的编译器、驱动或硬件原因。
+
+为保持进程预算，Sponza 正确性基线复用 `build/vsm-standard-20261104/Capture`：全部 293 项 shader 源与原基线相同，旧 CPU/binary 身份单独记录，仅作为正确性参考；30 状态基线及最终两个普通计时均与修正版严格使用同一二进制。`markPageRequests` 和 `markReceiverMaskAtomicOrs` 沿用既定调度计数例外。
+
+证据位于 `build/vsm-wave-statistics-20261104/`：`Plan.json`、`Summary.json`、`Correctness.json`、`Measurement/`、两轮失败记录 `Attempt-01/` 和 `Attempt-02/`、候选快照与 `CandidateChanges.patch`。生成捕获与实验源码不提交版本控制。
+
+## 2026-10-30：组内公共统计汇总（历史）
+
 本轮只测试一个候选：将 PCF/SMRT 投影中逐像素更新的公共统计合并到已有线程组汇总。`VirtualShadowMapSettings::optimizeProjectionStatistics` 默认 false；两个 Pass 的 `benchmarkProjectionStatistics: true` 显式开启实验。保持生产默认关闭，不因本次测量自动推广。
 
 ## 实验边界
