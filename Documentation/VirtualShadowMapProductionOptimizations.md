@@ -1,5 +1,35 @@
 # VSM 已接受优化的生产路径
 
+## 2026-11-05 Mark 共享缓存原子读取修复
+
+候选 `6f0b3b7dcfe14fdd5dd2c498d9da4f0e94548b29` 的共享缓存预筛把普通 LDS 读取与其他 lane 的原子写入混用；首尾组屏障不能消除累积阶段的竞争。修复将 Mark 去重页、receiver key 和 mask word 定义为原址 `Atomic<uint>`，显式使用 relaxed load/store/exchange/compareExchange/or。保留 256 槽 receiver 缓存、先读预筛、矩形位并行计算和 row-base 外提，不增加资源绑定或 CPU ABI。
+
+Relaxed 的依据是现有算法：初始化在首个组屏障前完成；receiver key 在累积阶段只从空槽变为一个 page，冲突继续直接写全局 mask；mask 仅单调 OR，预筛读到旧值最多导致重复 OR；最后一个组屏障完成全部贡献后才汇出。Mark 页命中复用插入 lane 最终执行的全局 OR，allocator 在 dispatch 发布后读取结果。原子对象始终直接访问 Workgroup 存储，不复制为局部值。
+
+先尝试删除预筛、恢复无条件原子 RMW 的最小修复，正确性通过，但独立三组交错计时的 Mark 比优化前慢 5.06%（95% CI：4.64%–5.48%），因此未采用。该轮原始数据保留在 `build/vsm-mark-safe-v2-20261105/`，不与后续原子读取版本合并。
+
+验证还修复了 compact 测试的旧归属断言：grid 合法省略的点光面保持白色 shadow / 品红 debug 清除值，不代表该面拥有 receiver。仅从归属计数中排除此组合，仍逐像素比较全部 shadow/debug 输出，并保留真实彩色面的唯一归属断言；未解析投影的品红 debug 配合黑色 shadow，不在排除范围内。修改前 baseline 与原候选也在同一断言失败，失败记录保留在 `build/vsm-mark-safe-20261105/`。
+
+原子读取版本的正确性验证：
+
+- 重建 Release `MetallicRHITests`；页面层级/矩形 mask 独立 oracle 72 案、receiver-mask 缓存 27 帧、pageSize 持久切换 8 帧在三份 shader 上通过，修复版额外通过 compact 24 状态（193×129、方向/聚光/点光、Hard/PCF/SMRT、点光接缝/角点），validation 为 0。该用例分别测试各类灯光，不代表同时混合灯光矩阵。
+- Sponza 第 16/47/79 帧 PNG、HDR、depth、visibility 和 shadow 原始字节完全一致，已查看第 79 帧。第 16–79 帧 canonical 输入、stats32、Build60 和稳定工作量一致；仅保留既有 `markPageRequests`、`markReceiverMaskAtomicOrs` 两项调度计数例外。
+- 实际普通/诊断 Mark SPIR-V 均通过 Vulkan 1.4 `spirv-val` 及访问/控制流审计：4KB Workgroup 布局，19 个静态缓存访问点全为原子指令，无普通缓存读写；强 CAS 参数、两道组屏障及阶段顺序均通过。修复版相对原候选仅 Mark 产物不同，其他六个检查入口逐字节相同。
+
+计时为独立的三组 `A,U,G,G,U,A`（优化前、原候选、原子读取修复版）共 18 个进程；每进程 96 帧、预热 48 帧。Sponza 1920×1080、SMRT 2×16/history32、分层 2048 页、6 clipmaps、page128，第 16 帧冻结 streaming 并 cut、关闭 jitter；计时关闭 validation、图像捕获、读回、GPUWork、Build 子阶段和 CPUProfile。保留磁盘 shader/PSO 缓存，不锁频、不保证 GPU 独占。统计单位是每组进程中位数的 log 比值，三组采用 Student-t 95% CI（df=2），不把逐帧样本当独立实验。
+
+| 修复版相对优化前 | 耗时下降点估计 | 95% CI |
+| --- | --- | --- |
+| Mark | 7.78% | 7.14%–8.41% |
+| Shadows | 1.31% | −1.86%–4.39% |
+| RenderGraph GPU | −1.99% | −4.17%–0.14% |
+
+修复版相对原候选的 Mark 耗时下降 0.034%（95% CI：−0.012%–0.080%），在当前工作负载上保留了原候选的 Mark 收益。Shadows 总耗时的收益未确认，整图超过 2% 的回退未能排除，不能将本轮结果描述成整体性能提升。完整 24 个 GPU 进程（6 个正确性/诊断、18 个计时）按预定顺序完成，无追加样本；前轮失败和最小修复计时单独保留，不合并统计。
+
+原子读取版本的证据位于 `build/vsm-mark-atomic-20261105/`；生成的图像、SPIR-V 和计时不提交源码库。当前结论限定于本机 Slang 2026.18.2 直接生成的 Vulkan SPIR-V 和 RTX 5060，不推断其他编译目标、GPU 或 FPS 收益。
+
+## 2026-11-04 生产路径收敛
+
 2026-11-04：继续将当前默认采用的实现固定为标准路径，删除生产设置、benchmark 切换及旧参考实现：
 
 - 方向光 Projection 正交计算、uniform 资源访问与接收点输出归属按真实灯光类型选择。

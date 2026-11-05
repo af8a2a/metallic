@@ -1483,16 +1483,16 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
 #endif
 }
 
-groupshared uint gVsmMarkedPages[256];
+// Read-before-write filters must remain atomic with other lanes' updates.
+groupshared Atomic<uint> gVsmMarkedPages[256];
 
 void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCounts)
 {
     // A cache hit reuses an inserting lane's eventual OR. Hash collisions only
     // cause repeated requests; allocation observes this dispatch after all ORs.
     uint slot = (page * 2654435761u) >> 24u;
-    if (gVsmMarkedPages[slot] == page) { return; }
-    uint previous;
-    InterlockedExchange(gVsmMarkedPages[slot], page, previous);
+    if (gVsmMarkedPages[slot].load(MemoryOrder.Relaxed) == page) { return; }
+    uint previous = gVsmMarkedPages[slot].exchange(page, MemoryOrder.Relaxed);
     if (previous == page) { return; }
     InterlockedOr(pages[page].y, 1u);
     ++workCounts.z;
@@ -1845,25 +1845,29 @@ void vsmWriteReceiverMask(ShadowPush push, uint page, uint2 mask)
     vsmWorkAdd(push, kVSMWorkMarkReceiverMaskAtomicOrs, uint(mask.x != 0u) + uint(mask.y != 0u));
 }
 
-// 256 slots shared cache for directional receiver mask accumulation.
-groupshared uint gVsmReceiverPages[256];
-groupshared uint2 gVsmReceiverMasks[256];
+// The final group barrier completes all mask contributions before flush.
+groupshared Atomic<uint> gVsmReceiverPages[256];
+struct VSMReceiverMaskAtomic
+{
+    Atomic<uint> x;
+    Atomic<uint> y;
+};
+groupshared VSMReceiverMaskAtomic gVsmReceiverMasks[256];
 
 bool vsmAccumulateReceiverMask(uint page, uint2 mask)
 {
     uint slot = (page * 2654435761u) >> 24u;
-    uint current = gVsmReceiverPages[slot];
+    uint current = gVsmReceiverPages[slot].load(MemoryOrder.Relaxed);
     if (current != page) {
         if (current != 0xffffffffu) { return false; }
-        uint previous;
-        InterlockedCompareExchange(gVsmReceiverPages[slot], 0xffffffffu, page, previous);
+        uint previous = gVsmReceiverPages[slot].compareExchange(0xffffffffu, page, MemoryOrder.Relaxed, MemoryOrder.Relaxed);
         if (previous != 0xffffffffu && previous != page) { return false; }
     }
-    if (mask.x != 0u && (gVsmReceiverMasks[slot].x & mask.x) != mask.x) {
-        InterlockedOr(gVsmReceiverMasks[slot].x, mask.x);
+    if (mask.x != 0u && (gVsmReceiverMasks[slot].x.load(MemoryOrder.Relaxed) & mask.x) != mask.x) {
+        gVsmReceiverMasks[slot].x.or(mask.x, MemoryOrder.Relaxed);
     }
-    if (mask.y != 0u && (gVsmReceiverMasks[slot].y & mask.y) != mask.y) {
-        InterlockedOr(gVsmReceiverMasks[slot].y, mask.y);
+    if (mask.y != 0u && (gVsmReceiverMasks[slot].y.load(MemoryOrder.Relaxed) & mask.y) != mask.y) {
+        gVsmReceiverMasks[slot].y.or(mask.y, MemoryOrder.Relaxed);
     }
     return true;
 }
@@ -2074,10 +2078,11 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
 {
     // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
     for (uint entry = lane; entry < 256u; entry += 64u) {
-        gVsmMarkedPages[entry] = 0xffffffffu;
+        gVsmMarkedPages[entry].store(0xffffffffu, MemoryOrder.Relaxed);
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
-        gVsmReceiverPages[entry] = 0xffffffffu;
-        gVsmReceiverMasks[entry] = uint2(0u);
+        gVsmReceiverPages[entry].store(0xffffffffu, MemoryOrder.Relaxed);
+        gVsmReceiverMasks[entry].x.store(0u, MemoryOrder.Relaxed);
+        gVsmReceiverMasks[entry].y.store(0u, MemoryOrder.Relaxed);
 #endif
     }
     GroupMemoryBarrierWithGroupSync();
@@ -2087,9 +2092,11 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
     // Receiver rejection and divergent page loops have completed on all lanes.
     GroupMemoryBarrierWithGroupSync();
     for (uint entry = lane; entry < 256u; entry += 64u) {
-        uint page = gVsmReceiverPages[entry];
+        uint page = gVsmReceiverPages[entry].load(MemoryOrder.Relaxed);
         if (page != 0xffffffffu) {
-            vsmWriteReceiverMask(push, page, gVsmReceiverMasks[entry]);
+            uint2 mask = uint2(gVsmReceiverMasks[entry].x.load(MemoryOrder.Relaxed),
+                gVsmReceiverMasks[entry].y.load(MemoryOrder.Relaxed));
+            vsmWriteReceiverMask(push, page, mask);
         }
     }
 #endif

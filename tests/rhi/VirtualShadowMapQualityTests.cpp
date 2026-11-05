@@ -1023,7 +1023,7 @@ public:
                     name + ": direct array projection retained private face outputs");
                 require(legacy.memory[0] == compact.memory[0] && legacy.memory[4] == compact.memory[4] &&
                     legacy.memory[5] == compact.memory[5], name + ": compact projection changed atlas allocation");
-                uint64_t visibilityMismatches = 0, debugMismatches = 0;
+                uint64_t visibilityMismatches = 0, debugMismatches = 0, unavailableDebugFaces = 0;
                 for (uint32_t index = 0; index < legacy.header.count; ++index) {
                     const auto& a = legacy.entries[index];
                     const auto& b = compact.entries[index];
@@ -1038,8 +1038,14 @@ public:
                         for (uint32_t face = 0; face < faceCount; ++face) {
                             const auto layer = a.baseLayer + face;
                             expectedShadow = std::min(expectedShadow, legacy.shadows[layer][pixel]);
-                            coloredFaces += legacy.debug[layer][pixel * 4] || legacy.debug[layer][pixel * 4 + 1] ||
-                                legacy.debug[layer][pixel * 4 + 2];
+                            // Grid projection can leave an omitted job at the magenta/white
+                            // clear value. That sentinel does not establish face ownership.
+                            const bool unavailableDebug = legacy.shadows[layer][pixel] == 255 &&
+                                legacy.debug[layer][pixel * 4] == 255 && legacy.debug[layer][pixel * 4 + 1] == 0 &&
+                                legacy.debug[layer][pixel * 4 + 2] == 255;
+                            unavailableDebugFaces += unavailableDebug;
+                            coloredFaces += !unavailableDebug && (legacy.debug[layer][pixel * 4] ||
+                                legacy.debug[layer][pixel * 4 + 1] || legacy.debug[layer][pixel * 4 + 2]);
                             for (uint32_t channel = 0; channel < 4; ++channel) {
                                 expectedDebug[channel] = std::max(expectedDebug[channel], legacy.debug[layer][pixel * 4 + channel]);
                             }
@@ -1052,7 +1058,8 @@ public:
                     }}
                 }
                 report["frames"].push_back({{"name", name}, {"visibilityMismatches", visibilityMismatches},
-                    {"debugMismatches", debugMismatches}, {"legacyMemory", legacy.memory}, {"compactMemory", compact.memory}});
+                    {"debugMismatches", debugMismatches}, {"unavailableDebugFaces", unavailableDebugFaces},
+                    {"legacyMemory", legacy.memory}, {"compactMemory", compact.memory}});
                 require(visibilityMismatches == 0 && debugMismatches == 0, name + ": compact differs from canonical legacy face");
             };
             for (const std::string filter : {"hard", "pcf", "smrt"}) {
