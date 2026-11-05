@@ -1,0 +1,60 @@
+if(NOT DEFINED SOURCE_DIRECTORY OR NOT DEFINED TEST_DIRECTORY)
+    message(FATAL_ERROR "SOURCE_DIRECTORY and TEST_DIRECTORY are required")
+endif()
+
+foreach(header IN ITEMS NGFX_GraphicsCapture_Common.h NGFX_GraphicsCapture_Vulkan.h NGFX_Types.h)
+    set(root "${TEST_DIRECTORY}/${header}")
+    set(installation "${root}/installation")
+    set(old_sdk "${installation}/SDKs/NsightGraphicsSDK/0.9.2")
+    set(new_sdk "${installation}/SDKs/NsightGraphicsSDK/0.9.3")
+    file(MAKE_DIRECTORY "${old_sdk}/include" "${installation}/target/windows-desktop-nomad-x64")
+    foreach(sdk_header IN ITEMS NGFX_GraphicsCapture_Common.h NGFX_GraphicsCapture_Vulkan.h NGFX_Types.h)
+        file(WRITE "${old_sdk}/include/${sdk_header}" "NGFX_GraphicsCapture_WaitForCaptureFilePath\n")
+    endforeach()
+    foreach(dll IN ITEMS ngfx-api-bootstrap.dll ngfx-capture-injection.dll ngfx-capture-interception.dll)
+        file(WRITE "${installation}/target/windows-desktop-nomad-x64/${dll}" "")
+    endforeach()
+    file(WRITE "${root}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.27)
+project(NsightGraphicsFixture NONE)
+set(WIN32 TRUE)
+include("${SOURCE_DIRECTORY}/cmake/SetupNsightGraphicsCapture.cmake")
+if(NOT METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE)
+    message(FATAL_ERROR "Fixture SDK was not enabled")
+endif()
+get_target_property(includes metallic_nsight_graphics_capture INTERFACE_INCLUDE_DIRECTORIES)
+if(NOT includes STREQUAL "${METALLIC_NSIGHT_GRAPHICS_SDK_ROOT}/include")
+    message(FATAL_ERROR "Capture consumers received incorrect includes: ${includes}")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/selected-sdk.txt" "${METALLIC_NSIGHT_GRAPHICS_SDK_ROOT}")
+]=])
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -G Ninja -S "${root}" -B "${root}/build"
+            "-DSOURCE_DIRECTORY=${SOURCE_DIRECTORY}"
+            "-DMETALLIC_ENABLE_NSIGHT_GRAPHICS_CAPTURE=ON"
+            "-DMETALLIC_NSIGHT_GRAPHICS_SDK_ROOT=${old_sdk}"
+            "-DMETALLIC_NSIGHT_GRAPHICS_INSTALLATION_ROOT=${installation}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "${header} configure failed:\n${output}\n${errors}")
+    endif()
+    file(READ "${root}/build/selected-sdk.txt" selected_sdk)
+    if(NOT selected_sdk STREQUAL old_sdk)
+        message(FATAL_ERROR "Fixture did not initially select the old SDK: ${selected_sdk}")
+    endif()
+
+    # Install a replacement, then remove an old header without reconfiguring.
+    file(MAKE_DIRECTORY "${new_sdk}")
+    file(COPY "${old_sdk}/include" DESTINATION "${new_sdk}")
+    file(REMOVE "${old_sdk}/include/${header}")
+    execute_process(COMMAND "${CMAKE_COMMAND}" --build "${root}/build"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "${header} build failed:\n${output}\n${errors}")
+    endif()
+    file(READ "${root}/build/selected-sdk.txt" selected_sdk)
+    if(NOT selected_sdk STREQUAL new_sdk)
+        message(FATAL_ERROR "${header} removal did not rediscover the replacement SDK: ${selected_sdk}")
+    endif()
+endforeach()
+message(STATUS "Nsight Graphics SDK removal automatically triggers rediscovery")

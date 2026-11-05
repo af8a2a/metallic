@@ -166,6 +166,12 @@ if(WIN32)
             "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/nvidia-sdk-configuration"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/NVIDIASDKConfigurationTests.cmake")
     set_tests_properties(MetallicNVIDIASDKConfiguration PROPERTIES LABELS "build;nvidia")
+    add_test(NAME MetallicNsightGraphicsConfiguration
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/nsight-graphics-configuration"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/NsightGraphicsConfigurationTests.cmake")
+    set_tests_properties(MetallicNsightGraphicsConfiguration PROPERTIES LABELS "build;nvidia" TIMEOUT 60)
     if(METALLIC_HAS_NV_LOW_LATENCY)
         foreach(reflex_mode IN ITEMS off on boost)
             add_test(NAME MetallicEditorReflex.${reflex_mode}
