@@ -168,14 +168,21 @@ uint vsmValidReceiverMaskByteOffset(ShadowPush push, uint page)
 // Eight rows of eight subtiles, packed as two groups of four rows.
 public uint2 vsmReceiverRectangleMask(uint2 first, uint2 last)
 {
+    if (any(first > last)) { return uint2(0u); }
     uint row = (0xffu << first.x) & (0xffu >> (7u - last.x));
+    uint row4 = row * 0x01010101u;
     uint2 mask = uint2(0u);
-    [unroll]
-    for (uint y = 0u; y < 8u; ++y) {
-        if (y >= first.y && y <= last.y) {
-            if (y < 4u) { mask.x |= row << (y * 8u); }
-            else { mask.y |= row << ((y - 4u) * 8u); }
-        }
+    if (first.y <= 3u) {
+        uint shiftLo = first.y * 8u;
+        uint shiftHi = (3u - min(last.y, 3u)) * 8u;
+        mask.x = row4 & ((0xffffffffu << shiftLo) & (0xffffffffu >> shiftHi));
+    }
+    if (last.y >= 4u) {
+        uint firstY1 = max(first.y, 4u) - 4u;
+        uint lastY1 = last.y - 4u;
+        uint shiftLo = firstY1 * 8u;
+        uint shiftHi = (3u - lastY1) * 8u;
+        mask.y = row4 & ((0xffffffffu << shiftLo) & (0xffffffffu >> shiftHi));
     }
     return mask;
 }
@@ -1482,8 +1489,10 @@ void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCou
 {
     // A cache hit reuses an inserting lane's eventual OR. Hash collisions only
     // cause repeated requests; allocation observes this dispatch after all ORs.
+    uint slot = (page * 2654435761u) >> 24u;
+    if (gVsmMarkedPages[slot] == page) { return; }
     uint previous;
-    InterlockedExchange(gVsmMarkedPages[(page * 2654435761u) >> 24u], page, previous);
+    InterlockedExchange(gVsmMarkedPages[slot], page, previous);
     if (previous == page) { return; }
     InterlockedOr(pages[page].y, 1u);
     ++workCounts.z;
@@ -1836,18 +1845,26 @@ void vsmWriteReceiverMask(ShadowPush push, uint page, uint2 mask)
     vsmWorkAdd(push, kVSMWorkMarkReceiverMaskAtomicOrs, uint(mask.x != 0u) + uint(mask.y != 0u));
 }
 
-// One slot per 8x8 tile lane. A slot's key never changes during accumulation.
-groupshared uint gVsmReceiverPages[64];
-groupshared uint2 gVsmReceiverMasks[64];
+// 256 slots shared cache for directional receiver mask accumulation.
+groupshared uint gVsmReceiverPages[256];
+groupshared uint2 gVsmReceiverMasks[256];
 
 bool vsmAccumulateReceiverMask(uint page, uint2 mask)
 {
-    uint slot = (page * 2654435761u) >> 26u;
-    uint previous;
-    InterlockedCompareExchange(gVsmReceiverPages[slot], 0xffffffffu, page, previous);
-    if (previous != 0xffffffffu && previous != page) { return false; }
-    if (mask.x != 0u) { InterlockedOr(gVsmReceiverMasks[slot].x, mask.x); }
-    if (mask.y != 0u) { InterlockedOr(gVsmReceiverMasks[slot].y, mask.y); }
+    uint slot = (page * 2654435761u) >> 24u;
+    uint current = gVsmReceiverPages[slot];
+    if (current != page) {
+        if (current != 0xffffffffu) { return false; }
+        uint previous;
+        InterlockedCompareExchange(gVsmReceiverPages[slot], 0xffffffffu, page, previous);
+        if (previous != 0xffffffffu && previous != page) { return false; }
+    }
+    if (mask.x != 0u && (gVsmReceiverMasks[slot].x & mask.x) != mask.x) {
+        InterlockedOr(gVsmReceiverMasks[slot].x, mask.x);
+    }
+    if (mask.y != 0u && (gVsmReceiverMasks[slot].y & mask.y) != mask.y) {
+        InterlockedOr(gVsmReceiverMasks[slot].y, mask.y);
+    }
     return true;
 }
 #endif
@@ -1910,8 +1927,9 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
 #endif
         }
         for (uint y = firstPage.y; y <= lastPage.y; ++y) {
+            uint rowBasePage = projection.page.x + y * projection.page.y;
             for (uint x = firstPage.x; x <= lastPage.x; ++x) {
-                uint page = projection.page.x + y * projection.page.y + x;
+                uint page = rowBasePage + x;
 #if VSM_RECEIVER_MASK
                 // Page deduplication must not discard another receiver's subtiles.
                 uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel, uint2(x, y), push.pageSize);
@@ -2055,20 +2073,24 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
 void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
     // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
-    for (uint entry = lane; entry < 256u; entry += 64u) { gVsmMarkedPages[entry] = 0xffffffffu; }
+    for (uint entry = lane; entry < 256u; entry += 64u) {
+        gVsmMarkedPages[entry] = 0xffffffffu;
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
-    gVsmReceiverPages[lane] = 0xffffffffu;
-    gVsmReceiverMasks[lane] = uint2(0u);
+        gVsmReceiverPages[entry] = 0xffffffffu;
+        gVsmReceiverMasks[entry] = uint2(0u);
 #endif
+    }
     GroupMemoryBarrierWithGroupSync();
     uint3 counts;
     vsmMarkReceiver(id, push, counts);
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
     // Receiver rejection and divergent page loops have completed on all lanes.
     GroupMemoryBarrierWithGroupSync();
-    uint page = gVsmReceiverPages[lane];
-    if (page != 0xffffffffu) {
-        vsmWriteReceiverMask(push, page, gVsmReceiverMasks[lane]);
+    for (uint entry = lane; entry < 256u; entry += 64u) {
+        uint page = gVsmReceiverPages[entry];
+        if (page != 0xffffffffu) {
+            vsmWriteReceiverMask(push, page, gVsmReceiverMasks[entry]);
+        }
     }
 #endif
     vsmWorkAdd(push, kVSMWorkMarkSamplePositions, counts.x);
