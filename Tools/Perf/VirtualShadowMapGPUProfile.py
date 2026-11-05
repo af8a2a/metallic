@@ -135,7 +135,15 @@ INSTANCE_COUNTER_DEFINITIONS = {
     "instanceRejects": "Tested instance ranges with no eligible clipmap level.",
     "instanceClusterTickets": "Cluster workgroups submitted to indirect Build by the instance path.",
 }
-ALL_BUILD_COUNTERS = (*V5_BUILD_COUNTERS, *INSTANCE_COUNTER_DEFINITIONS)
+V6_BUILD_COUNTERS = (*V5_BUILD_COUNTERS, *INSTANCE_COUNTER_DEFINITIONS)
+LAYER_BUILD_COUNTER_DEFINITIONS = {
+    "layeredStaticDecodedTriangles": "Successful static-caster decodes in layered fine Build; excludes coarse raster.",
+    "layeredDynamicDecodedTriangles": "Successful dynamic-caster decodes in layered fine Build; excludes coarse raster.",
+    "staticRequiredFineTriangles": "Decoded static triangles with an accepted fine-page bound requiring static redraw or their incremental static merge.",
+    "staticCompositeOnlyTriangles": "Decoded static triangles with composite-only accepted fine pages and no required static fine page; potential layer-culling opportunity, not measured time saved.",
+    "staticNoFinePageTriangles": "Decoded static triangles with no accepted fine-page work for their layer or composite; separate from composite-only layer overhead.",
+}
+ALL_BUILD_COUNTERS = (*V6_BUILD_COUNTERS, *LAYER_BUILD_COUNTER_DEFINITIONS)
 
 
 def duration(value, label):
@@ -319,7 +327,7 @@ def build_frame(frame, mode):
         return result
     diagnostic = shadow["gpuBuildDiagnostics"]
     if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
-            diagnostic["version"] not in (1, 2, 3, 4, 5, 6) or not isinstance(diagnostic.get("enabled"), bool)):
+            diagnostic["version"] not in (1, 2, 3, 4, 5, 6, 7) or not isinstance(diagnostic.get("enabled"), bool)):
         raise ValueError("Unknown or malformed GPU build diagnostic schema")
     if not diagnostic["enabled"]:
         if "faces" in diagnostic or "totals" in diagnostic:
@@ -328,7 +336,8 @@ def build_frame(frame, mode):
         return result
     if mode != "diagnostic":
         raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
-    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: V4_BUILD_COUNTERS, 5: V5_BUILD_COUNTERS, 6: ALL_BUILD_COUNTERS}[diagnostic["version"]]
+    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: V4_BUILD_COUNTERS,
+             5: V5_BUILD_COUNTERS, 6: V6_BUILD_COUNTERS, 7: ALL_BUILD_COUNTERS}[diagnostic["version"]]
     faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
     if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(names) or
             not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
@@ -362,6 +371,9 @@ def build_frame(frame, mode):
             raise ValueError("GPU build group counts violate surviving <= valid <= groups")
         if counters.get("instanceRejects", 0) > counters.get("instanceTests", 0):
             raise ValueError("Instance rejection count exceeds tests")
+        if diagnostic["version"] >= 7 and counters["layeredStaticDecodedTriangles"] != sum(
+                counters[name] for name in ("staticRequiredFineTriangles", "staticCompositeOnlyTriangles", "staticNoFinePageTriangles")):
+            raise ValueError("Static Build decode categories do not partition static decoded triangles")
         levels = counters["clusterLevelTests"]
         if levels != valid * stats[11]:
             raise ValueError("GPU build level tests disagree with valid groups times clipmap count")

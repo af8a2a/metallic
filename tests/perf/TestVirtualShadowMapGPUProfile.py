@@ -455,10 +455,29 @@ class GPUProfileTests(unittest.TestCase):
         data = row["shadow"]["gpuBuildDiagnostics"]
         data["version"] = 6
         for face in data["faces"]:
-            face["counters"] = dict.fromkeys(profile.ALL_BUILD_COUNTERS, 0)
+            face["counters"] = dict.fromkeys(profile.V6_BUILD_COUNTERS, 0)
         data["faces"][0]["counters"]["instanceRejects"] = 1
         data["totals"] = dict(data["faces"][0]["counters"])
         with self.assertRaisesRegex(ValueError, "Instance rejection"):
+            profile.build_frame(row, "diagnostic")
+
+    def test_layered_static_build_categories_partition_decodes(self):
+        row = add_build(frame(1))
+        data = row["shadow"]["gpuBuildDiagnostics"]
+        data["version"] = 7
+        for face in data["faces"]:
+            counters = dict.fromkeys(profile.ALL_BUILD_COUNTERS, 0)
+            counters.update(face["counters"])
+            counters.update(layeredStaticDecodedTriangles=9, layeredDynamicDecodedTriangles=2,
+                staticRequiredFineTriangles=3, staticCompositeOnlyTriangles=4, staticNoFinePageTriangles=2)
+            face["counters"] = counters
+        def totals():
+            data["totals"] = {name: sum(face["counters"][name] for face in data["faces"]) for name in profile.ALL_BUILD_COUNTERS}
+        totals()
+        self.assertEqual(profile.build_frame(row, "diagnostic")["staticCompositeOnlyTriangles"], 8)
+        data["faces"][0]["counters"]["staticRequiredFineTriangles"] += 1
+        totals()
+        with self.assertRaisesRegex(ValueError, "Static Build decode categories"):
             profile.build_frame(row, "diagnostic")
 
     def test_static_hzb_reject_requires_a_tested_page(self):
@@ -516,7 +535,7 @@ class GPUProfileTests(unittest.TestCase):
         row["shadow"]["gpuBuildDiagnostics"]["enabled"] = False
         with self.assertRaisesRegex(ValueError, "stale"):
             profile.build_frame(row, "diagnostic")
-        for invalid in (None, {"version": True, "enabled": True}, {"version": 7, "enabled": True}):
+        for invalid in (None, {"version": True, "enabled": True}, {"version": 8, "enabled": True}):
             row["shadow"]["gpuBuildDiagnostics"] = invalid
             with self.subTest(schema=invalid), self.assertRaisesRegex(ValueError, "schema"):
                 profile.build_frame(row, "diagnostic")

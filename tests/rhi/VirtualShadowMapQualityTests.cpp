@@ -3642,6 +3642,11 @@ public:
                 const auto& build = candidate.buildDiagnostics[face];
                 const auto& work = candidate.workload[face];
                 const auto stats = searchStatistics(candidate);
+                const auto staticDecodes = build[kVSMBuildDiagnosticLayeredStaticDecodedTriangles];
+                const auto dynamicDecodes = build[kVSMBuildDiagnosticLayeredDynamicDecodedTriangles];
+                const auto staticRequired = build[kVSMBuildDiagnosticStaticRequiredFineTriangles];
+                const auto compositeOnly = build[kVSMBuildDiagnosticStaticCompositeOnlyTriangles];
+                const auto noFinePage = build[kVSMBuildDiagnosticStaticNoFinePageTriangles];
                 const bool exact = candidate.depth == reference.depth && candidate.shadows == reference.shadows;
                 clusterRejects += build[kVSMBuildDiagnosticHZBLevelRejects];
                 report["frames"].push_back({{"phase",phase},{"exact",exact},{"builtPages",cache[kVSMCacheStaticHZBBuiltPages]},
@@ -3652,12 +3657,22 @@ public:
                     {"rasterSkippedTriangles",work[kVSMWorkRasterHZBSkippedTriangles]},
                     {"staticMergedPages",work[kVSMWorkRasterStaticMergedPages]},
                     {"staticMergedTriangles",work[kVSMWorkRasterStaticMergedTriangles]},
+                    {"buildStaticDecodedTriangles",staticDecodes},{"buildDynamicDecodedTriangles",dynamicDecodes},
+                    {"buildStaticRequiredFineTriangles",staticRequired},{"buildStaticCompositeOnlyTriangles",compositeOnly},
+                    {"buildStaticNoFinePageTriangles",noFinePage},
                     {"coarseRasterGroups",work[kVSMWorkRasterCoarseGroups]},
                     {"cache",cache},{"statistics",stats},{"referenceHash",debug::debugSha256(reference.shadows[face])},
                     {"shadowHash",debug::debugSha256(candidate.shadows[face])}});
                 save();
                 require(exact, std::string(phase) + ": HZB differs from complete redraw");
                 require(stats[5] == 0 && stats[9] == 0, std::string(phase) + ": overflow or unresolved pages");
+                require(staticDecodes + dynamicDecodes == work[kVSMWorkBuildDecodedTriangles],
+                    std::string(phase) + ": layered Build counters do not partition successful decodes");
+                require(staticRequired + compositeOnly + noFinePage == staticDecodes,
+                    std::string(phase) + ": static Build page categories do not partition static decodes");
+                if (cache[kVSMCacheStaticDirtyFinePages] == 0) {
+                    require(staticRequired == 0, std::string(phase) + ": clean static fine pages counted as required Build work");
+                }
                 return candidate;
             };
             const auto cacheOf = [&](const Snapshot& s) { return s.cacheDiagnostics[activeEntry(s).baseLayer]; };
@@ -3666,6 +3681,10 @@ public:
             require(cacheOf(cold)[kVSMCacheStaticHZBBuiltPages] > 0, "Cold render built no HZB");
             require(coldBuild[kVSMBuildDiagnosticInstanceTests] > 0 &&
                 coldBuild[kVSMBuildDiagnosticInstanceClusterTickets] > 0, "Cold render bypassed instance-driven Build");
+            require(coldBuild[kVSMBuildDiagnosticLayeredStaticDecodedTriangles] > 0 &&
+                coldBuild[kVSMBuildDiagnosticStaticRequiredFineTriangles] > 0 &&
+                coldBuild[kVSMBuildDiagnosticStaticCompositeOnlyTriangles] == 0,
+                "Cold static redraw was misclassified as composite-only Build work");
             require(cacheOf(capture("Warm"))[kVSMCacheStaticHZBBuiltPages] == 0, "Clean frame rebuilt HZB");
             move(2, .05f); move(3, .05f); movePatch(.05f);
             const auto compactId = graph.findNode("Compact")->id;
@@ -3688,6 +3707,12 @@ public:
             move(3, .12f);
             const auto front = capture("FrontMotion");
             require(cacheOf(front)[kVSMCacheCompositeDirtyFinePages] > 0, "Unoccluded front caster did not dirty fine pages");
+            const auto& frontBuild = front.buildDiagnostics[activeEntry(front).baseLayer];
+            require(cacheOf(front)[kVSMCacheStaticDirtyFinePages] == 0 &&
+                frontBuild[kVSMBuildDiagnosticLayeredDynamicDecodedTriangles] > 0 &&
+                frontBuild[kVSMBuildDiagnosticStaticCompositeOnlyTriangles] > 0 &&
+                frontBuild[kVSMBuildDiagnosticStaticRequiredFineTriangles] == 0,
+                "Dynamic-only fine update did not quantify static composite-only Build decodes");
             move(2, 3.f);
             const auto exposed = capture("EmergeFromRoof");
             require(exposed.shadows != front.shadows, "Emerging caster produced no visible change");
@@ -3724,6 +3749,8 @@ public:
                 cacheOf(demoted)[kVSMCacheRestoredPages] == 0 &&
                 cacheOf(demoted)[kVSMCacheDynamicDecodedTriangles] == 0,
                 "Pure static merge redrew composite depth despite unchanged receivers and casters");
+            require(demoted.buildDiagnostics[activeEntry(demoted).baseLayer][kVSMBuildDiagnosticStaticCompositeOnlyTriangles] == 0,
+                "Pure static merge was misclassified as composite-only Build work");
             require(demotionWork[kVSMWorkBuildDecodedTriangles] <= 2 * kPatchQuadCount &&
                 demotionWork[kVSMWorkRasterCoarseGroups] > 0 && demotionWork[kVSMWorkRasterCoarseGroups] <= 64,
                 "Pure static merge enumerated geometry outside the transitioned cluster");

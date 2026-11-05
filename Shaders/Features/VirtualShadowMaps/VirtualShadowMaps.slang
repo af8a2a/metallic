@@ -185,7 +185,12 @@ public uint2 vsmReceiverTexelMask(uint2 first, uint2 last, uint2 page, uint page
     int2 origin = int2(page * pageSize);
     uint2 localFirst = uint2(clamp(int2(first) - origin, int2(0), int2(pageSize - 1u)));
     uint2 localLast = uint2(clamp(int2(last) - origin, int2(0), int2(pageSize - 1u)));
+#if VSM_MARK_PAGE_SHIFT >= 0
+    return vsmReceiverRectangleMask((localFirst * 8u) >> VSM_MARK_PAGE_SHIFT,
+        (localLast * 8u) >> VSM_MARK_PAGE_SHIFT);
+#else
     return vsmReceiverRectangleMask(localFirst * 8u / pageSize, localLast * 8u / pageSize);
+#endif
 }
 #endif
 
@@ -894,11 +899,17 @@ float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush p
     return vsmRayEndpoint(position, projection, push, toLight, right * disk.x + up * disk.y);
 }
 
+float vsmRaySampleTime(uint step, ShadowPush push, float stepRandom)
+{
+    if (step == push.samplesPerRay) { return 0.0; }
+    float t = 1.0 - (float(step + 1u) - stepRandom) / float(push.samplesPerRay);
+    return t * t;
+}
+
 float vsmRaySampleTime(uint step, ShadowPush push, uint2 pixel)
 {
     if (step == push.samplesPerRay) { return 0.0; }
-    float t = 1.0 - (float(step + 1u) - vsmSampleRandom(pixel, 2u, push.samplePhase)) / float(push.samplesPerRay);
-    return t * t;
+    return vsmRaySampleTime(step, push, vsmSampleRandom(pixel, 2u, push.samplePhase));
 }
 
 float3 vsmRayPosition(float3 position, float3 endpoint, float time, ShadowProjection projection, ShadowPush push)
@@ -1372,6 +1383,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         return sum / 9.0;
     }
     float visibility = 0.0;
+    float stepRandom = vsmSampleRandom(pixel, 2u, push.samplePhase);
 #if VSM_ADAPTIVE_RAY_COUNT
     uint tracedRays = push.rayCount;
 #endif
@@ -1395,7 +1407,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         // can expose only the front layer: continue the preceding surface with
         // bounded slope through that gap instead of inventing an intersection.
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
-            float time = vsmRaySampleTime(step, push, pixel);
+            float time = vsmRaySampleTime(step, push, stepRandom);
 #if VSM_DIRECTIONAL_PROJECTION
             ShadowLookup sample = vsmDirectionalRayLookup(time, rayState, projections, push, filterCounts);
 #else
@@ -2905,6 +2917,16 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     uint bitsetOffset = vsmClusterPageBitsetOffset(push);
 #if VSM_WORKLOAD_DIAGNOSTICS
     uint wordTests = 0u, pageHits = 0u;
+    bool layeredBuild = (push.cacheMode & 16u) != 0u;
+    bool dynamicTriangle = false;
+    bool staticFineRequired = false, compositeFineHit = false;
+    if (layeredBuild) {
+        // The dynamic layer descriptor has the same slot indices as full Build.
+        uint mask = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, 34u), triangleIndex >> 5u);
+        dynamicTriangle = ((mask >> (triangleIndex & 31u)) & 1u) != 0u;
+        vsmBuildDiagnosticAdd(push, dynamicTriangle ? kVSMBuildDiagnosticLayeredDynamicDecodedTriangles :
+            kVSMBuildDiagnosticLayeredStaticDecodedTriangles, 1u);
+    }
 #endif
 #if VSM_PAGE_WINDOW_RASTER
     uint geometrySlot = 0xffffffffu;
@@ -3023,6 +3045,15 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
                         }
                     }
 #endif
+#if VSM_WORKLOAD_DIAGNOSTICS
+                    if (layeredBuild && !dynamicTriangle) {
+                        uint flags = pages[page].w;
+                        // Incremental static merge consumes only the transition mask.
+                        staticFineRequired = staticFineRequired || ((flags & 8u) != 0u &&
+                            ((flags & kVSMPageMergeStatic) == 0u || mergeTriangle));
+                        compositeFineHit = compositeFineHit || (flags & 2u) != 0u;
+                    }
+#endif
 #if VSM_PAGE_WINDOW_RASTER
                     accepted |= 1u << (page - basePage);
 #elif VSM_CLUSTER_PAGE_RASTER
@@ -3070,6 +3101,11 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #if VSM_WORKLOAD_DIAGNOSTICS
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetWordTests, wordTests);
     vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetPageHits, pageHits);
+    if (layeredBuild && !dynamicTriangle) {
+        vsmBuildDiagnosticAdd(push, staticFineRequired ? kVSMBuildDiagnosticStaticRequiredFineTriangles :
+            (compositeFineHit ? kVSMBuildDiagnosticStaticCompositeOnlyTriangles :
+                kVSMBuildDiagnosticStaticNoFinePageTriangles), 1u);
+    }
 #endif
 }
 

@@ -1,5 +1,51 @@
 # VSM GPU 阶段计时与工作量
 
+2026-11-05：Build sidecar 升级为 **version 7 / 60 counters**，追加五项分层
+Build 诊断；workload version 6 / 31 counters 和公开 stats32 保持不变。解析器继续
+支持 Build version 1–6 的原字段集合，不为历史包补零。
+
+| 新 Build counter | 含义 |
+| --- | --- |
+| `layeredStaticDecodedTriangles` | 分层 fine Build 成功解码的当前静态三角数 |
+| `layeredDynamicDecodedTriangles` | 分层 fine Build 成功解码的当前动态三角数 |
+| `staticRequiredFineTriangles` | 静态解码中，至少一个接受的 fine-page 包围盒需要该三角参与静态完整重绘或增量 merge |
+| `staticCompositeOnlyTriangles` | 静态解码中，仅有 composite fine-page 工作、没有上述静态页需求 |
+| `staticNoFinePageTriangles` | 静态解码中，没有接受的 composite 或所需静态 fine-page 工作 |
+
+后三项严格分区 `layeredStaticDecodedTriangles`，未分层路径的五项均为零。
+页分类使用已有三角包围盒枚举、merge transition mask 和 receiver-mask 拒绝结果，
+不增加生产剔除，也不改变 work emission 或 stats32；动态/静态身份来自同槽位的
+动态 layer descriptor。`staticCompositeOnlyTriangles` 量化潜在层级前移机会，
+不是已省下的 raster 三角或毫秒，不能直接当作可回收百分比。分类不包含 coarse
+raster；完整三角解码已经发生，包围盒可能包含实际不覆盖页面的三角。
+
+`virtual_shadow_map_physical_hzb` 的 Cold、FrontMotion、静态失效和 demotion
+阶段记录这些字段，并继续逐帧对照完整重绘的 shadow/depth。计数只存在于
+`VSM_WORKLOAD_DIAGNOSTICS` 编译路径，普通计时必须关闭它。
+
+本轮该夹具17帧全部通过，validation为零；FrontMotion为60个静态、4个动态
+Build解码，静态fine需求为零。该臂开启instance-driven Build与packed cluster
+raster，不能直接代表默认Build。因此另外采集了默认direct Build的Roof动态场景：
+256²、32帧、Hard/noTemporal、layered128、page128/VPA8/4clipmaps/extent4，关闭
+instance/compact/packed/window/hierarchy，第8帧首次移动，第12/16帧再次移动。
+
+| 默认Build帧 | 静态解码 | 动态解码 | 静态fine必需 | 仅composite需要 | 静态dirty fine页 | composite dirty fine页 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0，冷帧 | 72 | 0 | 72 | 0 | 60 | 60 |
+| 8，首次promotion | 70 | 2 | 70 | 0 | 4 | 4 |
+| 12，后续移动 | 62 | 2 | 0 | 62 | 0 | 4 |
+| 16，再次移动 | 62 | 2 | 0 | 62 | 0 | 4 |
+
+第12/16帧cached与forceRedraw的shadow/HDR逐字节一致，depth/visibility和几何
+identity稳定，validation为零；已查看实际输出。62个composite-only静态解码说明
+这个夹具存在将层过滤前移的机会，不代表可回收96.9%的时间，也不能外推到大场景。
+本轮没有改变Build剔除策略。全部七个普通基线shader payload与旧归档字节相同。
+
+证据在 `build/vsm-single-reuse-20261105/Regression-A/VirtualShadowMapPhysicalHZB/`
+及 `DynamicDefault/` 的独立输入、预声明计划、Capture和Verification.json。
+相关Python解析/attribution共56项测试通过，Release编辑器/VSMSample/RHI构建与
+392文件shader ownership audit通过。生成物保留在忽略的build目录中。
+
 `VirtualShadowMapPass` 和 `VirtualShadowMapLightsPass` 提供两个默认关闭、相互独立的 graph properties：
 
 ```json

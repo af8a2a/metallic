@@ -71,3 +71,52 @@ Projection scope 增长是实测回退，不能因为 shader 未改就忽略。�
 本机证据目录为 `build/vsm-mark-page-size-20261031/`：`SummaryReport/report.md` 与 `Confirmation.png` 为汇总及图表；`PlotReport.py`、`PlotProvenance.json` 保留复现方式、输入哈希和版本；`Diagnostic/Discovery/Confirmation` 为原始密封包；对应 `*Report` 由当前 verifier 重新核验生成；`CompilerReport/InstructionAudit.json` 保留静态 IR 与原生查询边界。`FinalVerification.json` 确认 816 个源文件、20 个二进制、12 个确认进程 shader 身份及原始 trace 哈希。
 
 运行协议见 [VirtualShadowMapMarkPageSize.md](../Tools/Perf/VirtualShadowMapMarkPageSize.md)。原始 capture、生成图和实验包未加入源码。
+
+## Receiver-mask 页内寻址补全（2026-11-05）
+
+方向光 Mark 的 `vsmReceiverTexelMask` 现在复用已有 `VSM_MARK_PAGE_SHIFT`，
+将 `local * 8u / pageSize` 改为 `(local * 8u) >> VSM_MARK_PAGE_SHIFT`。
+这是默认实现，不新增生产或 benchmark 开关。宏只传给 Mark entry；Build 和通用
+probe 仍使用原除法。clamp、页原点、矩形 mask、资源、同步及 stats32 均不变。
+
+`validProjectionSettings` 保证运行时 pageSize 是非零二次幂且不超过 128；
+同次 record 生成的 shift 与 push 中 pageSize 一致。clamp 后 local 最大 127，
+乘 8 最大 1016，不溢出。保留先乘 8 再移位，可精确保留 pageSize 1/2/4 的
+subtile 分布。离线穷举全部八种页尺寸的 11,050 个单轴局部区间，结果一致。
+
+本轮固定执行七个 GPU 进程：一次集中回归、两次 Sponza 诊断、四次 ABBA 计时。
+receiver-mask/cache 生命周期测试通过，实际记录 210 次 mask 测试与 20 次剔除；
+page-hierarchy 通用 helper 探针的 67,212 次查询通过。Validation 为 0。
+Sponza 第 16/47/79 帧 PNG、HDR、depth、visibility、shadow 逐字节一致；
+第 16–79 帧 stats32、Build55、稳定工作量和 canonical 输入一致，保留已有
+`markPageRequests` / `markReceiverMaskAtomicOrs` 两项调度相关计数例外。
+查看了候选第 79 帧场景图像。模块审计 392 文件通过，未修改 C++ 或重建二进制；
+受影响 shader 由上述运行时路径编译并执行。
+
+普通计时实际 Mark SPIR-V 从 58,420 B 缩至 58,380 B：两条以 pageSize 为
+分母的向量 `OpUDiv` 消除，四条除以 32/256 的常量标量 `OpUDiv` 保留。
+A/B 模块通过 Vulkan 1.4 `spirv-val`；Build、Projection、raster mesh、
+depth fragment 的实际 SPIR-V 不变。此证据不代表原生寄存器或 occupancy 变化。
+
+相同 Sponza 1920×1080、SMRT 2×16、history32、分层缓存和 2048 页；
+第 16 帧冻结 streaming 并 camera cut。每个普通进程 96 帧、预热 48 帧，
+关闭 validation、readback、GPUWork 和 BuildSubstages；保留磁盘缓存、不锁频、
+不保证 GPU 独占。下表先取每进程中位数，再聚合两侧各两个进程，变化为
+`1 - B/A`：
+
+| GPU 范围 | A 原除法 ms | B 移位 ms | 耗时降低点估计 |
+| --- | ---: | ---: | ---: |
+| Mark | 1.339944 | 1.336128 | 0.28% |
+| Shadows | 4.507336 | 4.415936 | 2.03% |
+| RenderGraph | 10.792744 | 10.730784 | 0.57% |
+
+Mark 两个时间配对分别为 −5.39% 和 +5.92%，没有证实稳定性能收益。
+仅一个 ABBA 区组，无置信区间及独立确认，也不声明端到端 FPS 提升。
+保留精确整数简化，不因结果波动追加采样。
+
+本机证据位于 `build/vsm-receiver-mask-page-size-20261105/`：
+`Plan.json`、`Seal.json`、`Receipts.json`、`IntegerEquivalence.json`、
+`Correctness.json`、`InputVerification.json`、`InstructionAudit.json`、`Summary.json`。
+实际 B 模块在审计后被固定顺序的 A2 运行覆盖，未保留其原始缓存副本；
+审计记录区分当时实际观察和当前可重新检查的内容。源码 A/B 快照及运行日志保留。
+普通计时没有纹理语义哈希，只验证跨模式几何/驻留和普通计时之间可用的输入身份。

@@ -208,7 +208,7 @@ public:
             result["cacheDiagnostics"] = {{"faces", std::move(cacheFaces)}};
         }
         result["gpuWork"] = {{"version", 6}, {"enabled", collectGPUWork}};
-        result["gpuBuildDiagnostics"] = {{"version", 6}, {"enabled", collectGPUWork}};
+        result["gpuBuildDiagnostics"] = {{"version", 7}, {"enabled", collectGPUWork}};
         if (collectGPUWork) {
             const auto rawWorkload = read("Shadows.workload");
             requireAcceptance(rawWorkload.size() == uint64_t(header.capacity) * 6 * kVirtualShadowMapWorkloadSize,

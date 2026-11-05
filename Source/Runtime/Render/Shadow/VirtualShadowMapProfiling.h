@@ -74,7 +74,12 @@ static const uint32_t kVSMBuildDiagnosticHZBLevelRejects = 51;
 static const uint32_t kVSMBuildDiagnosticInstanceTests = 52;
 static const uint32_t kVSMBuildDiagnosticInstanceRejects = 53;
 static const uint32_t kVSMBuildDiagnosticInstanceClusterTickets = 54;
-static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 55;
+static const uint32_t kVSMBuildDiagnosticLayeredStaticDecodedTriangles = 55;
+static const uint32_t kVSMBuildDiagnosticLayeredDynamicDecodedTriangles = 56;
+static const uint32_t kVSMBuildDiagnosticStaticRequiredFineTriangles = 57;
+static const uint32_t kVSMBuildDiagnosticStaticCompositeOnlyTriangles = 58;
+static const uint32_t kVSMBuildDiagnosticStaticNoFinePageTriangles = 59;
+static const uint32_t kVirtualShadowMapBuildDiagnosticCounterCount = 60;
 static const uint32_t kVirtualShadowMapBuildDiagnosticSize = kVirtualShadowMapBuildDiagnosticCounterCount * 8;
 static const uint32_t kVirtualShadowMapBuildDiagnosticWordOffset = 32 + kVirtualShadowMapWorkCounterCount * 2;
 
@@ -98,6 +103,9 @@ static const uint32_t kVSMReceiverCoverageStatisticsWordOffset = 32 +
 // These replace fine triangle page-table reads, not cluster scan counters.
 // Page hits count enumerated bits before receiver rejection or capacity overflow.
 // Version 4 adds hierarchy queries (no scan histogram) and receiver-mask tests.
+// Version 7 partitions layered static Build decodes by accepted fine-page work:
+// required static redraw/merge, composite-only, or no fine page. These are Build
+// decodes, not raster submissions or time saved by a future culling strategy.
 #ifdef __cplusplus
 static_assert(kVirtualShadowMapBuildDiagnosticWordOffset == 32u + kVirtualShadowMapWorkCounterCount * 2u);
 static_assert(kVirtualShadowMapWorkloadSize == kVirtualShadowMapWorkCounterCount * sizeof(uint64_t));
@@ -105,7 +113,7 @@ static_assert(kVSMBuildDiagnosticClusterBitsetLevelTests == kVSMBuildDiagnosticC
     kVirtualShadowMapBuildDiagnosticHistogramCount);
 static_assert(kVSMBuildDiagnosticTriangleBitsetWordTests == kVSMBuildDiagnosticClusterBitsetScanHistogram +
     kVirtualShadowMapBuildDiagnosticHistogramCount);
-static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticInstanceClusterTickets + 1u);
+static_assert(kVirtualShadowMapBuildDiagnosticCounterCount == kVSMBuildDiagnosticStaticNoFinePageTriangles + 1u);
 static_assert(kVirtualShadowMapBuildDiagnosticSize == kVirtualShadowMapBuildDiagnosticCounterCount * sizeof(uint64_t));
 inline constexpr std::array<std::string_view, kVirtualShadowMapWorkCounterCount> kVirtualShadowMapWorkCounterNames{
     "markReceiverDispatches", "markSamplePositions", "markLevelTests", "markPageRequests",
@@ -132,6 +140,8 @@ inline constexpr std::array<std::string_view, kVirtualShadowMapBuildDiagnosticCo
     "triangleBitsetWordTests", "triangleBitsetPageHits",
     "clusterHierarchyLevelTests", "clusterHierarchyNodeTests", "clusterHierarchyBoundsRejects",
     "receiverMaskPageTests", "receiverMaskPageRejects", "hzbPageTests", "hzbLevelRejects",
-    "instanceTests", "instanceRejects", "instanceClusterTickets"};
+    "instanceTests", "instanceRejects", "instanceClusterTickets",
+    "layeredStaticDecodedTriangles", "layeredDynamicDecodedTriangles", "staticRequiredFineTriangles",
+    "staticCompositeOnlyTriangles", "staticNoFinePageTriangles"};
 } // namespace metallic::render
 #endif
