@@ -375,9 +375,24 @@ Select the activity before Vulkan initialization in the editor, LookDev or sampl
 and `--nsight-mode=capture` also work. Missing/invalid values and conflicting
 modes fail before graphics initialization. The Profiler export button displays
 the selected activity and exports the next full main-viewport frame under
-`Captures/NsightGraphics/`. GPU Trace produces only `.ngfx-gputrace`; Capture
+`Captures/NsightGraphics/` by default. GPU Trace produces only `.ngfx-gputrace`; Capture
 produces `.ngfx-capture` for replay and frame debugging. Switching activities
 requires restarting the process. RHI test captures keep their existing mode.
+
+Set `METALLIC_NSIGHT_OUTPUT_DIRECTORY` to choose a writable directory for metrics,
+host logs, captures and replay collections. Relative paths resolve against the
+process working directory. For example, run from the repository root:
+
+```powershell
+$env:METALLIC_NSIGHT_OUTPUT_DIRECTORY = '.cache/NsightGraphics'
+.\build-relwithdebinfo\Source\MetallicVSMSample.exe --nsight-gputrace
+```
+
+Remove the override to restore the default project capture directory:
+
+```powershell
+Remove-Item Env:METALLIC_NSIGHT_OUTPUT_DIRECTORY -ErrorAction SilentlyContinue
+```
 
 For a one-click collection, launch with `--nsight-capture` and press **Export
 View Capture + GPU Trace** in the Profiler. Metallic first saves the
@@ -456,7 +471,9 @@ The opt-in `METALLIC_NSIGHT_INTEGRATION_TESTS` CMake option registers
 `MetallicNsightGPUTrace.invalid-metrics`, plus
 `MetallicNsightGPUTrace.collection` for three complete capture/replay exports.
 Build `LookDev` first. The regression can also run against an existing binary
-without changing its build configuration:
+without changing its build configuration. Each run sets
+`METALLIC_NSIGHT_OUTPUT_DIRECTORY` to `<TEST_DIRECTORY>/Captures` and verifies
+that the reported export files exist there and are nonempty:
 
 ```powershell
 cmake -DEDITOR_EXECUTABLE=E:/metallic/build-release/Source/LookDev.exe -DTEST_DIRECTORY=E:/metallic/build/nsight-startup/export -DCASE=export -P tests/editor/RunNsightGPUTraceStartup.cmake

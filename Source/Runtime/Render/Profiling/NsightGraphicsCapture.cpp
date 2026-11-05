@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <fstream>
 #include <system_error>
@@ -144,9 +145,13 @@ std::wstring quoteArgument(const std::wstring& value)
     return result + L'"';
 }
 
-bool writeTraceMetrics(const std::filesystem::path& path)
+bool writeTraceMetrics(const std::filesystem::path& path, std::error_code& error)
 {
     std::ofstream metrics(path);
+    if (!metrics) {
+        error = std::error_code(errno, std::generic_category());
+        return false;
+    }
     metrics << R"([
   {"architecture":"Turing","metric-set-name":"Throughput Metrics","multi-pass-metrics":"false"},
   {"architecture":"Ampere GA10x","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"},
@@ -157,6 +162,9 @@ bool writeTraceMetrics(const std::filesystem::path& path)
   {"architecture":"T25x GB20x","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"}
 ])";
     metrics.close();
+    if (!metrics) {
+        error = std::error_code(errno, std::generic_category());
+    }
     return static_cast<bool>(metrics);
 }
 
@@ -490,8 +498,9 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
             // Names verified against ngfx --help-all (SDK 0.9.2). Every supported
             // architecture gets an explicit single-pass set, including Turing,
             // which does not expose Top-Level Triage. Numeric IDs are not stable.
-            if (!writeTraceMetrics(traceMetricsConfig_)) {
-                return fail("Cannot write GPU Trace metrics configuration", &error);
+            if (!writeTraceMetrics(traceMetricsConfig_, filesystemError)) {
+                return fail("Cannot write GPU Trace metrics configuration '" + pathToUtf8(traceMetricsConfig_) +
+                    "': " + filesystemError.message(), &error);
             }
         }
         traceMetricsConfig_ = std::filesystem::canonical(traceMetricsConfig_, filesystemError);
@@ -832,7 +841,10 @@ bool NsightGraphicsCapture::startReplayTrace(std::string& error)
     }
     traceMetricsConfig_ = replayTraceDirectory_ / "Metrics.json";
     traceHostLog_ = replayTraceDirectory_ / "GpuTraceHost.log";
-    if (!writeTraceMetrics(traceMetricsConfig_)) { return reject("Cannot write replay metrics configuration"); }
+    if (!writeTraceMetrics(traceMetricsConfig_, filesystemError)) {
+        return reject("Cannot write replay metrics configuration '" + pathToUtf8(traceMetricsConfig_) +
+            "': " + filesystemError.message());
+    }
     const std::wstring replayArgs = L"--present-hidden --vsync-off --no-present-blit "
         L"--no-block-on-incompatibility --inject-full-frame-perf-marker --loop-count 3 " +
         quoteArgument(capturePath_.wstring());

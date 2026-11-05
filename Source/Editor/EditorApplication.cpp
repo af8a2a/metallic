@@ -2322,6 +2322,10 @@ void EditorApplication::initializeNsightGraphicsCapture()
         render::profiling::NsightGraphicsCapture::defaultInstallationRoot();
     config.outputDirectory =
         std::filesystem::path(PROJECT_SOURCE_DIR) / "Captures" / "NsightGraphics";
+    if (const char* outputDirectory = std::getenv("METALLIC_NSIGHT_OUTPUT_DIRECTORY");
+        outputDirectory && outputDirectory[0] != '\0') {
+        config.outputDirectory = outputDirectory;
+    }
     config.showHud = true;
     config.mode = nsightMode_;
     config.enableReplayCollection = nsightMode_ == render::profiling::NsightCaptureMode::GraphicsCapture;
