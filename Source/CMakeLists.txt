@@ -25,6 +25,7 @@ endif()
 
 add_library(MetallicRuntimeTask STATIC
     Runtime/Task/TaskSystem.cpp
+    Runtime/Task/ParallelFor.cpp
 )
 
 target_include_directories(MetallicRuntimeTask PUBLIC
@@ -395,6 +396,9 @@ if(WIN32)
 endif()
 metallic_copy_openusd_runtime(MetallicResidentMeshletCook)
 metallic_copy_spdlog_runtime(MetallicResidentMeshletCook)
+
+# CPU measurements stay outside default editor/sample builds.
+add_subdirectory("${CMAKE_SOURCE_DIR}/Tools/CPUJobs" "${CMAKE_BINARY_DIR}/cpu-jobs" EXCLUDE_FROM_ALL)
 
 # Keep shader symbols independent of opt-in Nsight capture injection.
 add_executable(MetallicMaterialCompile EXCLUDE_FROM_ALL Tools/MaterialCompileMain.cpp)

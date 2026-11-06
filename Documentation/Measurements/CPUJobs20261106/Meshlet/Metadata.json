@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "startedUtc": "2026-11-06T15:41:59.917382+00:00",
+  "repositoryRevision": "75c890ea9e7e28f2137e28c872ab699e0b5972e0",
+  "sourceSHA256": {
+    "Tools/CPUJobs/MeshletSceneBench.cpp": "0b077891e26ad4c2c7cdf72cd4042d4e1dc073a103992e13de9f409d9202979d",
+    "Tools/CPUJobs/LegacyMeshletSceneAdapter.cpp": "983e70fe3f1971f7c3ba28f0a84395753b09c0c64ded9e58051c8a425115ccc8",
+    "Source/Runtime/Scene/scene.cpp": "a401ee7b17dd28f59aff91b78cd2a0e54e29751ad6488f887d753f6c56611e57",
+    "Source/Runtime/Scene/MeshletBuildParallel.cpp": "6e605017afbfd7ff177f6fcd2ba2e4c013cf6ecede7d977d9cdfbd474d6c4f98",
+    "Source/Runtime/Task/TaskSystem.cpp": "2dfef47c1dace2a266bee1a7ad3cd385241286bd5ca3274011337f1ca59959a5",
+    "Source/Runtime/Task/ParallelFor.cpp": "2c55fea95e52549746f510fd4618e54502ac7d53ced9ea8187231a7ae6ebf65c"
+  },
+  "platform": "Windows-11-10.0.26300-SP0",
+  "machine": "",
+  "processor": "",
+  "logicalProcessors": 16,
+  "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
+  "executables": {
+    "shared": {
+      "path": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73\\cpu-jobs\\MetallicMeshletSceneBench.exe",
+      "sha256": "520345e8e13ce217e7627e1d2675fca15cbff2c7e43eba3920e588d8beeef7ef"
+    },
+    "legacy": {
+      "path": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73\\cpu-jobs\\MetallicMeshletSceneBenchLegacy.exe",
+      "sha256": "d70a7d1a7b6a098607ac26aa5c246853000efcda8d5a61734868b21d1fd53c4c"
+    }
+  },
+  "rounds": 6,
+  "cells": [
+    64,
+    128
+  ],
+  "workers": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "configurations": [
+    "plain",
+    "attributes",
+    "seams"
+  ],
+  "protocol": {
+    "candidateOrder": "AB/BA alternates with outer round and configuration",
+    "workerOrder": "rotated/reversed between processes and within each executable",
+    "processWarmupRounds": 1,
+    "processSteadyRounds": 1,
+    "firstBuild": "Serial reference runs first in every process; retained separately",
+    "timing": "Full buildStreamMeshletsForPrimitive; input copy, hashing, runtime initialization and source generation excluded",
+    "cache": "Each process starts a new runtime and adapter; allocator and OS caches warm during serial references/warmup",
+    "correctness": "Full logical geometry/LOD hash must agree across every worker count, candidate, phase and repetition",
+    "scope": "Generated meshlet/LOD workload, not production scene rendering or FPS",
+    "quantiles": "Nearest rank; small sample P95/P99 commonly equal maximum, not a rare-tail estimate",
+    "externalLoad": "Not controlled by this script; record other activity separately"
+  }
+}

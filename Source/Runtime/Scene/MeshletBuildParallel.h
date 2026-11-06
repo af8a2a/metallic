@@ -6,8 +6,9 @@
 
 namespace metallic::scene {
 
-// Reuses workers across LOD levels and primitive builds. Worker indices are
-// stable, dense scratch-buffer indices; tasks may finish in any order.
+// Uses the shared TaskSystem workers across LOD levels and primitive builds.
+// Worker indices are dense, exclusive scratch slots within an invocation;
+// tasks may finish in any order. Slots do not imply OS thread affinity.
 class MeshletBuildParallel {
 public:
     using Task = std::function<void(size_t taskIndex, size_t workerIndex)>;
@@ -20,7 +21,7 @@ public:
     size_t workerCount() const noexcept;
     void forEach(size_t taskCount, const Task& task);
 
-    // Pools are retained for subsequent geometry builds with the same limit.
+    // Lightweight adapters are retained by worker limit; they own no threads.
     static MeshletBuildParallel& shared(size_t workerCount);
 
 private:

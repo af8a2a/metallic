@@ -282,3 +282,37 @@ single noisy result. M4 requires a repeatable bottleneck, configuration and
 oneTBB alternatives, and real workload evidence. Until those exist, retain
 stdexec and report performance limitations explicitly. This design does not
 claim a TaskSystem speedup, SIMD speedup or FPS improvement.
+
+## Generated meshlet workload A/B
+
+[MeshletSceneBench.cpp](../Tools/CPUJobs/MeshletSceneBench.cpp) calls the
+production meshlet builder on fresh 64/128-cell grids. Plain, attributed and
+protected-seam inputs exercise bounds, simplification, reclustering and ordered
+publication. Each build owns its output. The timer covers the complete
+buildStreamMeshletsForPrimitive call, excluding source generation, input
+copying, output hashing, runtime initialization and output destruction.
+
+The legacy executable links
+[LegacyMeshletSceneAdapter.cpp](../Tools/CPUJobs/LegacyMeshletSceneAdapter.cpp)
+directly instead of extracting the new adapter from the scene static library.
+This benchmark-only copy of the original 8e0d94587 implementation retains its
+old persistent pools and per-index atomic claim. Both executables initialize
+the same-size TaskSystem explicitly; the legacy adapter additionally owns its
+old worker pools. They run in separate processes.
+
+[MeasureMeshletScene.py](../Tools/CPUJobs/MeasureMeshletScene.py) alternates
+legacy/shared process order and rotates configurations and worker limits. It
+retains serial first-build and warmup records separately. Every result hashes
+all logical RenderPrimitive fields, including every meshlet/LOD field, using
+exact float bits and canonical integer bytes; padding and pointers are
+excluded. Serial, parallel, repeated and cross-executable hashes must agree
+before the script writes a successful summary.
+
+Run the script with --new and --legacy pointing to the two configured target
+executables, --rounds 6, and --output naming a fresh result directory. Its
+output contains executable/source SHA256 provenance, invocation order,
+original process JSONL and logs, all raw samples, and a summary. Nearest-rank
+P95/P99 with six observations are usually the maximum observation; these
+samples cannot characterize rare latency tails. This is a generated workload
+using the real meshlet algorithm, not a production-scene frame-time or FPS
+benchmark.
