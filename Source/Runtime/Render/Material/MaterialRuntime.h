@@ -4,6 +4,7 @@
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Material/MaterialFeatures.h"
+#include "Runtime/Scene/Scene.h"
 
 #include <memory>
 #include <span>
