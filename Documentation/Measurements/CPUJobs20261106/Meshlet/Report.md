@@ -32,7 +32,7 @@ normal desktop activity remained. Input generation/copy, hashing, runtime
 construction and destruction are outside the timed builder call. The first
 serial builds and warmup records are retained separately in [Raw.jsonl](Raw.jsonl).
 The machine, execution order, source/binary hashes and exact conditions are in
-[Metadata.json](Metadata.json). Original per-process records are under `Processes/`.
+[Metadata.json](Metadata.json). Original per-process records are in the `run-*` directories.
 
 ```powershell
 cmake --build build-issue73 --target MetallicMeshletSceneBench MetallicMeshletSceneBenchLegacy
