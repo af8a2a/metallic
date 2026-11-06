@@ -1912,6 +1912,13 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        if (properties().value("splitSubmission", false)) {
+            auto created = context.device->createSemaphore();
+            if (!created) { return std::unexpected(created.error()); }
+            submissionWait_ = std::move(*created);
+            auto signaled = submissionWait_->signal(1);
+            if (!signaled) { return signaled; }
+        }
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "FrameEnvironmentProbe",
             .entryPointName = "readEnvironment", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
@@ -1929,14 +1936,19 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         if (properties().value("failRecording", false)) { return render::makeError(render::Error::Failure); }
+        if (submissionWait_) {
+            const render::SemaphoreSubmitDesc wait{.semaphore = submissionWait_.get(), .value = 1};
+            auto result = context.commandBuffer().addDependency({&wait, 1});
+            if (!result) { return result; }
+        }
         const int previous = publicationCount++;
         auto publication = std::make_shared<render::SubmissionTransaction>([] {},
             [previous]() { publicationCount = previous; });
         auto publicationResult = context.commandBuffer().addSubmissionTransaction(publication);
         if (!publicationResult) { return publicationResult; }
         if (properties().value("failSubmission", false)) {
-            // An explicitly cancelled transaction makes just this segment invalid
-            // at the RHI boundary, after the graph prologue has been submitted.
+            // Reject this batch at acceptance. An explicit wait boundary keeps
+            // an accepted prefix; a merged batch must roll back every command.
             auto transaction = std::make_shared<render::SubmissionTransaction>([] {}, [] {});
             auto result = context.commandBuffer().addSubmissionTransaction(transaction);
             if (!result) { return result; }
@@ -1951,6 +1963,7 @@ public:
     }
 private:
     render::ComputeProgram program_;
+    std::unique_ptr<render::Semaphore> submissionWait_;
 };
 
 class FrameEnvironmentRecoveryTest final : public RHITest {
@@ -1969,12 +1982,13 @@ public:
         FRAME_REQUIRE(result);
         render::registerRenderGraphPassType("FrameEnvironmentProbePass", "Environment submission probe",
             [] { return std::make_unique<FrameEnvironmentProbePass>(); });
-        for (bool partialSubmission : {false, true}) {
+        for (const auto [failRecording, partialSubmission] :
+            {std::pair{true, false}, std::pair{false, false}, std::pair{false, true}}) {
             FrameEnvironmentProbePass::publicationCount = 0;
             render::RenderGraph graph;
             graph.addNode("FrameEnvironmentProbePass", "First");
             graph.addNode("FrameEnvironmentProbePass", "Probe",
-                {{"failRecording", !partialSubmission}, {"failSubmission", partialSubmission}});
+                {{"failRecording", failRecording}, {"failSubmission", !failRecording}, {"splitSubmission", partialSubmission}});
             graph.addNode("FrameEnvironmentProbePass", "Tail");
             graph.markOutput("First.data");
             graph.markOutput("Probe.data");

@@ -476,6 +476,7 @@ add_executable(MetallicRHITests
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorRenderGraphViewer.cpp"
     rhi/FrameContextTests.cpp
     rhi/ParallelRecordingTests.cpp
+    rhi/JoinedSubmissionTests.cpp
     rhi/SchedulingBenchmarkTests.cpp
     rhi/FinalBlitTests.cpp
     rhi/RTXDIPostProcessTests.cpp

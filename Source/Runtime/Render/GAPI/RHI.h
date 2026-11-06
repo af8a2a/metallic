@@ -1875,6 +1875,8 @@ class CommandBuffer {
     // Queue::submit merges these waits and the command buffer retains their
     // timeline lifetimes until its next recording. Call while recording.
     Result<> addDependency(std::span<const SemaphoreSubmitDesc> waits, std::shared_ptr<const void> lifetime = {});
+    // Inspect after the recording owner has joined; begin() invalidates this view.
+    std::span<const SemaphoreSubmitDesc> dependencyWaits() const { return dependencyWaits_; }
     Result<> addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
     // Local while recording. Queue acceptance transfers ownership to the
     // submission context; standalone callers retain until command reset.

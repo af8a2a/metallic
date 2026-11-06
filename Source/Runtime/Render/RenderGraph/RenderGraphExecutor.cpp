@@ -338,6 +338,7 @@ struct RenderGraphExecutor::Impl {
         CommandBuffer* commandBuffer = nullptr;
         std::vector<size_t> predecessors;
         GPUCompletionPoint completion;
+        uint64_t readyNs = 0;
         bool passWork = false;
     };
 
@@ -3787,7 +3788,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::sealNs);
         while (first < end) {
             size_t last = first + 1;
-            while (coalesce && last < end && segments[last].queue == segments[first].queue) { ++last; }
+            while (coalesce && last < end && segments[last].queue->sameQueue(*segments[first].queue)) { ++last; }
             std::vector<CommandBuffer*> commands;
             for (size_t i = first; i < last; ++i) { commands.push_back(segments[i].commandBuffer); }
             PendingBatch batch{.end = last, .readyNs = readyNs ? readyNs : schedulingCapture.elapsed()};
@@ -3808,6 +3809,68 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             first = last;
         }
         return {};
+    };
+    const auto finishRecordings = [&](size_t first, size_t end, bool coalesce = false, uint64_t readyNs = 0) -> Result<> {
+        const uint64_t recorded = readyNs ? readyNs : schedulingCapture.elapsed();
+        for (size_t index = first; index < end; ++index) {
+            segments[index].readyNs = recorded;
+            if (impl_->activeExecutionCapture) { impl_->activeExecutionCapture->segments[index].recorded = true; }
+        }
+        // Joined batches are planned over the entire frame, independently of
+        // recording lanes and worker waves. Pipelined keeps its early sealing.
+        return pipelined ? sealRange(first, end, coalesce, recorded) : Result<>{};
+    };
+    const auto sealJoinedRecordings = [&]() -> Result<> {
+        std::vector<Queue*> queues;
+        std::vector<size_t> queueIds;
+        for (const auto& segment : segments) {
+            const auto found = std::find_if(queues.begin(), queues.end(),
+                [&](Queue* queue) { return queue->sameQueue(*segment.queue); });
+            queueIds.push_back(size_t(found - queues.begin()));
+            if (found == queues.end()) { queues.push_back(segment.queue); }
+        }
+        std::vector<bool> signalBoundaries(segments.size(), false);
+        for (size_t index = 0; index < segments.size(); ++index) {
+            for (size_t predecessor : segments[index].predecessors) {
+                if (queueIds[predecessor] != queueIds[index]) { signalBoundaries[predecessor] = true; }
+            }
+        }
+        // An ALL_COMMANDS wait on a later producer covers earlier submissions
+        // on that actual queue, even when their Queue wrappers differ.
+        std::vector<std::vector<size_t>> waitedProducers(queues.size(), std::vector<size_t>(queues.size(), SIZE_MAX));
+        std::vector<std::unordered_map<Semaphore*, uint64_t>> waitedCommands(queues.size());
+        size_t first = 0;
+        uint64_t readyNs = 0;
+        for (size_t index = 0; index < segments.size(); ++index) {
+            const size_t queueId = queueIds[index];
+            bool newWait = false;
+            for (size_t predecessor : segments[index].predecessors) {
+                const size_t sourceQueue = queueIds[predecessor];
+                if (sourceQueue == queueId) { continue; }
+                auto& waited = waitedProducers[queueId][sourceQueue];
+                if (waited == SIZE_MAX || predecessor > waited) {
+                    newWait = true;
+                    waited = predecessor;
+                }
+            }
+            // Opaque uploads and private resources attach waits directly to
+            // commands. Do not hoist a new wait onto preceding independent work.
+            for (const auto& wait : segments[index].commandBuffer->dependencyWaits()) {
+                auto [found, inserted] = waitedCommands[queueId].try_emplace(wait.semaphore, wait.value);
+                if (inserted || wait.value > found->second) {
+                    newWait = true;
+                    found->second = wait.value;
+                }
+            }
+            if (index > first && (queueIds[index - 1] != queueId || signalBoundaries[index - 1] || newWait)) {
+                auto sealed = sealRange(first, index, true, readyNs);
+                if (!sealed) { return sealed; }
+                first = index;
+                readyNs = 0;
+            }
+            readyNs = std::max(readyNs, segments[index].readyNs);
+        }
+        return sealRange(first, segments.size(), true, readyNs);
     };
     // Stable graph order preserves actual-queue order even when queue wrappers
     // alias. A consumer is never submitted against a merely reserved signal.
@@ -3947,7 +4010,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!result) { return abort(result); }
     }
     std::vector<size_t> passCompletions(impl_->executionList.size(), SIZE_MAX);
-    result = sealRange(0, segments.size());
+    result = finishRecordings(0, segments.size());
     if (result && pipelined) { result = submitReady(); }
     if (!result) { return abort(result); }
     // Subsystem hooks can write private GPU resources, so their prologue is an
@@ -4011,7 +4074,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (!submitted) { return; }
             for (auto& batch : batches) {
                 if (!batch->sealed && batch->done.load(std::memory_order_acquire)) {
-                    submitted = sealRange(batch->first, batch->first + batch->nodes.size(), true, batch->readyNs);
+                    submitted = finishRecordings(batch->first, batch->first + batch->nodes.size(), true, batch->readyNs);
                     if (!submitted) { return; }
                     batch->sealed = true;
                 }
@@ -4176,7 +4239,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         passCompletions[passIndex] = completedIndex;
         result = segments[completedIndex].commandBuffer->end();
         if (!result) { return abort(result); }
-        result = sealRange(index, completedIndex + 1);
+        result = finishRecordings(index, completedIndex + 1);
         if (result && pipelined) { result = submitReady(); }
         if (!result) { return abort(result); }
     }
@@ -4213,8 +4276,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->historyResources = nullptr;
 
     phase.next("graph.submit", segments.size());
-    result = sealRange(epilogueBegin, segments.size());
+    result = finishRecordings(epilogueBegin, segments.size());
     scheduling.recordingEndNs = schedulingCapture.elapsed();
+    if (result && !pipelined) { result = sealJoinedRecordings(); }
     if (result) { result = slot.frame.sealRecording(); }
     if (result) { result = submitReady(); }
     if (!result) { return abort(result); }
