@@ -1116,22 +1116,28 @@ METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCompactTest);
 
 class VirtualShadowMapProjectionEquivalenceTest : public RHITest {
 public:
-    explicit VirtualShadowMapProjectionEquivalenceTest(bool layered = false, bool refinedReceiver = false)
-        : layered_(layered), refinedReceiver_(refinedReceiver)
+    explicit VirtualShadowMapProjectionEquivalenceTest(bool layered = false, bool refinedReceiver = false,
+        bool focusedPCFRoom = false, bool focusedSMRTRoom = false)
+        : layered_(layered), refinedReceiver_(refinedReceiver), focusedPCFRoom_(focusedPCFRoom), focusedSMRTRoom_(focusedSMRTRoom)
     {
         type = RHITestType::Rendering;
-        name = refinedReceiver_ ? "virtual_shadow_map_refined_receiver_projection_equivalence" :
+        name = focusedPCFRoom_ ? "virtual_shadow_map_projection_pcf_room" :
+            focusedSMRTRoom_ ? "virtual_shadow_map_projection_smrt_room" :
+            refinedReceiver_ ? "virtual_shadow_map_refined_receiver_projection_equivalence" :
             layered_ ? "virtual_shadow_map_cache_layer_projection_equivalence" : "virtual_shadow_map_projection_equivalence";
     }
 
     RHITestResult run(RHITestContext& context) override
     {
-        const std::string reportName = refinedReceiver_ ? "VirtualShadowMapRefinedReceiverProjectionEquivalence" :
+        const std::string reportName = focusedPCFRoom_ ? "VirtualShadowMapProjectionPCFRoom" :
+            focusedSMRTRoom_ ? "VirtualShadowMapProjectionSMRTRoom" :
+            refinedReceiver_ ? "VirtualShadowMapRefinedReceiverProjectionEquivalence" :
             layered_ ? "VirtualShadowMapCacheLayerProjectionEquivalence" : "VirtualShadowMapProjectionEquivalence";
         const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
-        const uint32_t expectedStates = refinedReceiver_ ? 30u : 86u;
+        const uint32_t expectedStates = focusedPCFRoom_ || focusedSMRTRoom_ ? 4u : refinedReceiver_ ? 30u : 86u;
         Json report{{"passed", false}, {"frames", Json::array()}, {"extent", {kWidth, kHeight}},
-            {"refinedReceiver",refinedReceiver_},{"expectedStates",expectedStates},{"completedStates",0}};
+            {"refinedReceiver",refinedReceiver_},{"focusedPCFRoom",focusedPCFRoom_},{"focusedSMRTRoom",focusedSMRTRoom_},
+            {"expectedStates",expectedStates},{"completedStates",0}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
         try {
@@ -1150,13 +1156,21 @@ public:
             report["statisticsCompatibilityControl"] = "Grouped projection statistics retain the per-face kernel";
             report["counterNames"] = kVirtualShadowMapWorkCounterNames;
             report["buildDiagnosticCounterNames"] = kVirtualShadowMapBuildDiagnosticCounterNames;
-            report["gpuTimingScope"] = "Diagnostic dispatch-path verification with workload counters; not ordinary performance acceptance";
+            report["gpuTimingScope"] = "Projection-only dispatch-path timestamps with workload counters; not ordinary performance acceptance";
+            report["comparisonContract"] = {
+                {"StandardNoDebug", "All 32 statistics and deterministic work counters are identical"},
+                {"StatisticsFallback", "Only active local-face receiver/background slots 6/8 may differ; every delta equals independently classified omitted clear-to-black debug pixels"},
+                {"debugOmission", "Grid magenta RGBA(255,0,255,255) versus per-face black RGBA(0,0,0,255), both shadow255; all other captured debug bytes identical"},
+                {"images", "Every mode has identical shadow/depth/HDR/Build/cache and light publication; per-mode complete hashes/statistics/work are retained for independent cross-build comparison"}};
             constexpr std::array phases{"Cold", "Warm", "Redraw", "JitterMotion", "TemporalContinue", "Reorder", "FiniteBudget",
                 "Disabled", "Overflow", "Recovered", "TwoPoints", "NearPlane", "ZeroBudget", "SingleFace"};
             for (const std::string filter : {"hard", "pcf", "smrt"}) {
+                if (focusedPCFRoom_ && filter != "pcf") { continue; }
+                if (focusedSMRTRoom_ && filter != "smrt") { continue; }
                 if (refinedReceiver_ && filter != "hard") { continue; }
                 for (bool compact : {false, true}) {
                     for (bool isRoom : {false, true}) {
+                        if ((focusedPCFRoom_ || focusedSMRTRoom_) && !isRoom) { continue; }
                         const auto& fixture = isRoom ? room : floor;
                         const std::string label = filter + (compact ? "-Compact" : "-LegacyLayout") + (isRoom ? "-Room" : "-Floor");
                         scene::SceneDocument scene;
@@ -1206,7 +1220,8 @@ public:
                                 {"smrtTemporalEnabled",false},{"smrtTemporalMaxFrames",32},{"compactOutputs",compact},
                                 {"debugOutput",debug},
                                 {"benchmarkProjectionStatistics",arm==2},
-                                {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",arm==0},{"benchmarkGPUWork",true}};
+                                {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",false},
+                                {"benchmarkProjectionProfile",arm==0},{"benchmarkGPUWork",true}};
                             if (layered_) { settings["cacheLayering"] = true; }
                             if (refinedReceiver_) {
                                 settings["shadowLOD"] = true;
@@ -1301,9 +1316,29 @@ public:
                             require(completed->size() == 1 && completed->front().gpuTimingAvailable,
                                 "Missing one-pass projection timestamp frame");
                             const auto& timings = completed->front();
+                            require(!timings.profilingOverflow, phase + ": projection-only timestamp budget overflowed");
                             const std::array images{snapshot("Standard", true, true, true, layered_),
                                 snapshot("NoDebug", false, true, true, layered_), snapshot("StatisticsFallback", true, true, true, layered_)};
                             const auto& baseline = images[0];
+                            require(((baseline.header.reserved[0] & 1u) != 0u) == compact,
+                                phase + ": projection layout publication disagrees with the requested layout");
+                            const uint32_t activeFaces = uint32_t(std::count_if(baseline.statistics.begin(), baseline.statistics.end(),
+                                [](const auto& stats) { return stats[11] != 0; }));
+                            const bool gridProjection = activeFaces > 1;
+                            const float clearDepth = baseline.camera.clipOrtho[3] > .5f ? 0.f : 1.f;
+                            const uint64_t backgroundPixels = uint64_t(std::count(baseline.depth.begin(), baseline.depth.end(), clearDepth));
+                            const uint64_t foregroundPixels = kPixels - backgroundPixels;
+                            std::array<bool, kLayers> localFaces{}, localLayers{};
+                            std::array<uint32_t, kLayers> publicLayers{};
+                            for (uint32_t entryIndex = 0; entryIndex < kCapacity; ++entryIndex) {
+                                const auto& entry = baseline.entries[entryIndex];
+                                for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                                    const uint32_t index = entryIndex * 6u + face;
+                                    publicLayers[index] = entry.baseLayer + (compact ? 0u : face);
+                                    localFaces[index] = entry.kind != 0u;
+                                    localLayers[publicLayers[index]] |= localFaces[index] && baseline.statistics[index][11] != 0u;
+                                }
+                            }
                             report["frames"].push_back({{"name",phase},{"statistics",baseline.statistics},{"memory",Json::object()},
                                 {"admittedLights",baseline.header.admittedCount},{"budgetDroppedLights",baseline.header.budgetDroppedCount},
                                 {"totalFaces",baseline.header.totalFaces},
@@ -1338,8 +1373,111 @@ public:
                                     {"depth",image.depth==baseline.depth},{"statistics",image.statistics==baseline.statistics},
                                     {"debug",arm==1 || image.debug==baseline.debug},{"hdr",image.hdr==baseline.hdr},
                                     {"buildDiagnostics",image.buildDiagnostics==baseline.buildDiagnostics}};
+                                Json shadowHashes = Json::array(), debugHashes = Json::array();
+                                for (uint32_t layer = 0; layer < kLayers; ++layer) {
+                                    shadowHashes.push_back(debug::debugSha256(image.shadows[layer]));
+                                    debugHashes.push_back(debug::debugSha256(image.debug[layer]));
+                                }
+                                auto& raw = frameReport["snapshots"][names[arm]];
+                                raw = {{"shadowSHA256", std::move(shadowHashes)}, {"debugSHA256", std::move(debugHashes)},
+                                    {"depthSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(image.depth.data()), image.depth.size() * sizeof(float)))},
+                                    {"hdrSHA256", debug::debugSha256(image.hdr)}, {"hdrFormat", uint32_t(image.hdrFormat)},
+                                    {"headerSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(&image.header), sizeof(image.header)))},
+                                    {"entriesSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(image.entries.data()), sizeof(image.entries)))},
+                                    {"statistics", image.statistics}, {"workload", image.workload}, {"buildDiagnostics", image.buildDiagnostics}};
+                                if (layered_) { raw["cacheDiagnostics"] = image.cacheDiagnostics; }
+                                Json lightEntries = Json::array();
+                                for (const auto& entry : image.entries) {
+                                    lightEntries.push_back({{"source", entry.source}, {"kind", entry.kind}, {"baseLayer", entry.baseLayer},
+                                        {"faceCount", entry.faceCount}, {"pageBudget", entry.pageBudget}, {"status", entry.status},
+                                        {"positionRange", {entry.positionRange[0], entry.positionRange[1], entry.positionRange[2], entry.positionRange[3]}}});
+                                }
+                                raw["publication"] = {{"header", {{"count", image.header.count}, {"totalFaces", image.header.totalFaces},
+                                    {"admittedCount", image.header.admittedCount}, {"budgetDroppedCount", image.header.budgetDroppedCount},
+                                    {"disabledCount", image.header.disabledCount}, {"physicalPageBudget", image.header.physicalPageBudget},
+                                    {"sourceSlotCount", image.header.sourceSlotCount}, {"compact", (image.header.reserved[0] & 1u) != 0u}}},
+                                    {"entries", std::move(lightEntries)}};
                                 frameReport["workload"][names[arm]] = image.workload;
                                 frameReport["buildDiagnostics"][names[arm]] = image.buildDiagnostics;
+                                std::array<uint64_t, kLayers> omittedForeground{}, omittedBackground{};
+                                uint64_t omittedSentinelPixels = 0;
+                                if (arm == 1) {
+                                    require(std::ranges::all_of(image.debug, [](const auto& pixels) { return pixels.empty(); }),
+                                        phase + ": no-debug captured debug data");
+                                } else {
+                                    for (uint32_t layer = 0; layer < kLayers; ++layer) {
+                                        require(image.debug[layer].size() == baseline.debug[layer].size(),
+                                            phase + ": captured debug layer size changed");
+                                        if (image.debug[layer].empty()) { continue; }
+                                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                            const auto* standard = baseline.debug[layer].data() + pixel * 4;
+                                            const auto* fallback = image.debug[layer].data() + pixel * 4;
+                                            if (std::memcmp(standard, fallback, 4) == 0) { continue; }
+                                            // Omitted grid jobs retain the clear sentinel. A real unresolved
+                                            // magenta receiver has shadow0 and is never accepted here.
+                                            const bool omitted = arm == 2 && gridProjection && localLayers[layer] &&
+                                                baseline.shadows[layer][pixel] == 255 && image.shadows[layer][pixel] == 255 &&
+                                                standard[0] == 255 && standard[1] == 0 && standard[2] == 255 && standard[3] == 255 &&
+                                                fallback[0] == 0 && fallback[1] == 0 && fallback[2] == 0 && fallback[3] == 255;
+                                            if (!omitted) {
+                                                frameReport["firstDebugMismatch"][names[arm]] = {{"layer", layer}, {"pixel", pixel},
+                                                    {"standard", {standard[0], standard[1], standard[2], standard[3]}},
+                                                    {"compared", {fallback[0], fallback[1], fallback[2], fallback[3]}},
+                                                    {"standardShadow", baseline.shadows[layer][pixel]}, {"comparedShadow", image.shadows[layer][pixel]}};
+                                            }
+                                            require(omitted, phase + ": projection changed a written debug receiver");
+                                            ++omittedSentinelPixels;
+                                            if (baseline.depth[pixel] == clearDepth) { ++omittedBackground[layer]; }
+                                            else { ++omittedForeground[layer]; }
+                                        }
+                                    }
+                                }
+                                frameReport["crossModeDebug"][names[arm]] = {{"exact", arm == 1 || image.debug == baseline.debug},
+                                    {"allowedOnly", true}, {"captured", arm != 1}, {"omittedSentinelPixels", omittedSentinelPixels},
+                                    {"omittedForegroundPixelsPerLayer", omittedForeground}, {"omittedBackgroundPixelsPerLayer", omittedBackground}};
+                                uint64_t receiverOmissions = 0, backgroundOmissions = 0;
+                                Json differingFaces = Json::array();
+                                for (uint32_t face = 0; face < kLayers; ++face) {
+                                    const auto& standard = baseline.statistics[face];
+                                    const auto& compared = image.statistics[face];
+                                    const bool active = standard[11] != 0u;
+                                    const bool omittedLocalFace = arm == 2 && gridProjection && localFaces[face] && active;
+                                    const uint32_t publicLayer = publicLayers[face];
+                                    if (arm == 2 || !gridProjection || !localFaces[face]) {
+                                        // Full-screen per-face dispatch counts every actual depth receiver
+                                        // before point ownership or domain rejection; derive both totals.
+                                        require(compared[6] == (active ? foregroundPixels : 0u) &&
+                                            compared[8] == (active ? backgroundPixels : 0u),
+                                            phase + ": per-face receiver/background statistics disagree with depth on face " + std::to_string(face));
+                                    } else {
+                                        require(compared[6] <= foregroundPixels && compared[8] == 0u,
+                                            phase + ": grid local receiver/background statistics exceed membership bounds");
+                                    }
+                                    for (uint32_t counter = 0; counter < 32u; ++counter) {
+                                        if (omittedLocalFace && (counter == 6u || counter == 8u)) {
+                                            require(standard[counter] <= compared[counter],
+                                                phase + ": grid added a local receiver/background count");
+                                            const uint64_t expected = counter == 6u ? omittedForeground[publicLayer] : omittedBackground[publicLayer];
+                                            require(uint64_t(compared[counter] - standard[counter]) == expected,
+                                                phase + ": local receiver/background delta lacks matching omitted debug pixels on face " +
+                                                std::to_string(face) + " slot " + std::to_string(counter));
+                                        } else {
+                                            require(compared[counter] == standard[counter],
+                                                phase + ": projection changed a non-omitted public statistic on face " +
+                                                std::to_string(face) + " slot " + std::to_string(counter));
+                                        }
+                                    }
+                                    if (omittedLocalFace && (compared[6] != standard[6] || compared[8] != standard[8])) {
+                                        const uint64_t receivers = compared[6] - standard[6], background = compared[8] - standard[8];
+                                        receiverOmissions += receivers; backgroundOmissions += background;
+                                        differingFaces.push_back({{"face", face}, {"publicLayer", publicLayer},
+                                            {"receiverSlot6Omitted", receivers}, {"backgroundSlot8Omitted", background}});
+                                    }
+                                }
+                                frameReport["crossModeStatistics"][names[arm]] = {{"exact", image.statistics == baseline.statistics},
+                                    {"allowedOnly", true}, {"foregroundPixels", foregroundPixels}, {"backgroundPixels", backgroundPixels},
+                                    {"receiverSlot6Omitted", receiverOmissions}, {"backgroundSlot8Omitted", backgroundOmissions},
+                                    {"differingFaces", std::move(differingFaces)}};
                                 if (image.shadows != baseline.shadows) {
                                     for (uint32_t layer = 0; layer < kLayers; ++layer) {
                                         const auto mismatch = std::mismatch(image.shadows[layer].begin(), image.shadows[layer].end(), baseline.shadows[layer].begin());
@@ -1351,9 +1489,11 @@ public:
                                     }
                                 }
                                 save();
-                                require(image.depth == baseline.depth && image.shadows == baseline.shadows && image.statistics == baseline.statistics,
-                                    phase + ": projection scheduling/statistics/debug toggle changed shadow, depth or 32-word face statistics");
+                                require(image.depth == baseline.depth && image.shadows == baseline.shadows,
+                                    phase + ": projection scheduling/statistics/debug toggle changed shadow or depth");
                                 require(image.buildDiagnostics == baseline.buildDiagnostics, phase + ": one-pass projection changed build diagnostics");
+                                require(!layered_ || image.cacheDiagnostics == baseline.cacheDiagnostics,
+                                    phase + ": one-pass projection changed cache diagnostics");
                                 for (uint32_t face = 0; face < kLayers; ++face) {
                                     const auto& counts = image.workload[face];
                                     require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests],
@@ -1370,8 +1510,6 @@ public:
                                     phase + ": projection scheduling changed the light publication table");
                                 require(image.hdrFormat == baseline.hdrFormat && image.hdr == baseline.hdr,
                                     phase + ": same-frame projection/debug toggle changed actual Deferred HDR");
-                                if (arm != 1) { require(image.debug == baseline.debug, phase + ": shared projection changed debug pixels"); }
-                                else { require(std::ranges::all_of(image.debug, [](const auto& pixels) { return pixels.empty(); }), phase + ": no-debug captured debug data"); }
                                 require(image.memory[1] == 0, phase + ": legacy or compact layout retained private face outputs");
                                 const uint64_t layers = compact ? kCapacity : kLayers;
                                 require(image.memory[3] == layers * kPixels * (arm == 1 ? 1 : 5), phase + ": public output allocation disagrees with optional debug");
@@ -1409,8 +1547,6 @@ public:
                                         faceScopes += section.name == "VSM projection";
                                         projectionMs += section.gpuMilliseconds;
                                     }
-                                    const uint32_t activeFaces = uint32_t(std::count_if(image.statistics.begin(), image.statistics.end(),
-                                        [](const auto& stats) { return stats[11] != 0; }));
                                     const bool onePass = arm != 2 && activeFaces > 1;
                                     frameReport["projectionGPU"][names[arm]] = {{"onePassScopes",onePassScopes},{"faceScopes",faceScopes},
                                         {"activeFaces",activeFaces},{"gpuMs",projectionMs}};
@@ -1450,8 +1586,6 @@ public:
                             if (frame == 8) { require(overflow > 0, phase + ": bounded work did not overflow"); }
                             if (frame == 9) { require(overflow == 0, phase + ": work overflow did not recover"); }
                             if (frame >= 12) {
-                                const uint32_t activeFaces = uint32_t(std::count_if(baseline.statistics.begin(), baseline.statistics.end(),
-                                    [](const auto& stats) { return stats[11] != 0; }));
                                 require(activeFaces == frame - 12 && baseline.header.admittedCount == frame - 12,
                                     phase + ": zero/single-face fallback did not exercise its admission limit");
                             }
@@ -1476,10 +1610,18 @@ public:
                     }
                 }
             }
-            require(report["frames"].size() == expectedStates, refinedReceiver_ ?
+            require(report["frames"].size() == expectedStates, focusedPCFRoom_ ?
+                "Focused PCF Room matrix did not complete legacy/compact Cold/Warm states" : focusedSMRTRoom_ ?
+                "Focused SMRT Room matrix did not complete legacy/compact Cold/Warm states" : refinedReceiver_ ?
                 "Refined receiver projection matrix did not complete 26 floor and four room states" :
                 "Projection matrix did not complete 84 production compatibility states and two zero/single-face controls");
             evidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
+            if (focusedPCFRoom_) {
+                return RHITestResult::pass("Focused mixed-light PCF Room preserves strict image/statistics/work equivalence across four legacy/compact Cold/Warm states");
+            }
+            if (focusedSMRTRoom_) {
+                return RHITestResult::pass("Focused mixed-light SMRT Room preserves strict image/statistics/work equivalence across four legacy/compact Cold/Warm states");
+            }
             if (refinedReceiver_) {
                 return RHITestResult::pass("GPU refined receiver projection preserves debug/statistics equivalence and Deferred HDR across 30 hard-shadow states with valid primary stream publications");
             }
@@ -1492,6 +1634,8 @@ public:
 private:
     bool layered_ = false;
     bool refinedReceiver_ = false;
+    bool focusedPCFRoom_ = false;
+    bool focusedSMRTRoom_ = false;
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionEquivalenceTest);
 
@@ -1508,6 +1652,24 @@ public:
     VirtualShadowMapRefinedReceiverProjectionEquivalenceTest() : VirtualShadowMapProjectionEquivalenceTest(false, true) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapRefinedReceiverProjectionEquivalenceTest);
+
+class VirtualShadowMapProjectionPCFRoomTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapProjectionPCFRoomTest() : VirtualShadowMapProjectionEquivalenceTest(false, false, true)
+    {
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionPCFRoomTest);
+
+class VirtualShadowMapProjectionSMRTRoomTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapProjectionSMRTRoomTest() : VirtualShadowMapProjectionEquivalenceTest(false, false, false, true)
+    {
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionSMRTRoomTest);
 
 class VirtualShadowMapFilterDemandTest final : public RHITest {
 public:

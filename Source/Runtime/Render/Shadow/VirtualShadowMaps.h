@@ -56,7 +56,7 @@ struct VirtualShadowMapSettings
     bool collectReceiverCoverage = false; // Diagnostic per-pixel records; requires GPU work diagnostics.
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
-    bool optimizeProjectionStatistics = false; // Experimental grouped PCF/SMRT projection statistics.
+    bool optimizeProjectionStatistics = false; // Request grouped statistics for compatible filters and per-face projection.
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool pageWindowRaster = false; // Share directional fine geometry across bounded page windows.
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.

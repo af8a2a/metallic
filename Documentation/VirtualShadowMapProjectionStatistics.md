@@ -1,5 +1,36 @@
 # VSM 投影统计独立实验
 
+## 2026-11-06：过滤统计排列兼容修复
+
+当前工具链下，混合光 Room 场景的分组统计排列会改变 PCF、SMRT 边界采样结果。
+`optimizeProjectionStatistics` 仍表示请求，并继续选择逐面投影；实际编译宏由
+`groupProjectionStatistics` 表示，有效过滤为 PCF 或 SMRT 时使用原逐像素统计。
+半径为零的 PCF 已归一为 Hard，仍沿用 Hard 的统计路径。请求值和实际值均进入
+Programs 缓存身份，`projectionStatistics` 日志记录实际宏值。
+Hard 保留宏值为 1 的编译身份，但提前分支不会执行分组统计，不能据此宣称统计优化收益。
+
+普通投影默认关闭该实验选项，原 one-pass/grid 调度和投影优化保持不变。
+定向回归已通过 Legacy/compact 的 PCF、SMRT Room Cold/Warm 共八状态。
+基线与候选各通过十项 GPU 回归：标准投影 86 状态、分层缓存 86 状态、refined
+receiver 的 Hard 30 状态、Compact 24 状态、两项八帧缓存切换、19 项映射及
+27 项射线用例。射线探针共 1782 个样本，其中 1188 个使用非二进制深度比例，
+保留独立 double 除法参考和相对误差门槛；不声称倒数乘法普遍逐位等同于除法。
+
+所有模式的阴影、深度及 HDR 严格相等；grid 省略局部光工作的统计/debug
+差异仅允许已逐像素核对的 receiver/background 槽 6/8。相同模式跨两臂的原始
+图像、stats32、Build60、缓存及确定性 Work 一致，Work 仅保留既有的
+`markPageRequests`、`markReceiverMaskAtomicOrs` 两项调度计数例外。
+
+两臂 Sponza 各运行 80 帧，第 16/47/79 帧 PNG、HDR、阴影、深度、visibility
+字节完全一致，第 16–79 帧 canonical 输入、stats32、Build60 和确定性 Work
+一致。Vulkan validation 为零；七份实际 shader payload 通过 SPIR-V 校验，
+跨臂仅 Projection 改变，同臂与此前有限验证的 diagnostic shader payload 完全相同。
+结果限于当前设备和这些场景，不包含 refined SMRT 或跨设备验证。
+
+完整证据保存在 `build/vsm-projection-filter-statistics-compat-20261106/` 的
+`Summary.json` 与 `Correctness.json`。此前 PCF、SMRT 的真实失败和中止记录
+保留原结论；本次修复没有新增性能采样。
+
 ## 2026-11-04：单面 wave 过滤统计评估
 
 结论：正确性修正版通过精确对照，但普通计时未达到预先声明的采用门槛，未合入默认路径。实验代码和临时清理均已恢复，未新增生产或 benchmark 切换；下文 2026-10-30 的组内汇总实验仍是原有的默认关闭候选。

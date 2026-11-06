@@ -65,6 +65,9 @@ import Lighting;
 #ifndef VSM_MARK_PAGE_SHIFT
 #define VSM_MARK_PAGE_SHIFT -1
 #endif
+#ifndef VSM_PROJECTION_PAGE_SHIFT
+#define VSM_PROJECTION_PAGE_SHIFT -1
+#endif
 #ifndef VSM_MARK_CACHE_LEVELS
 #define VSM_MARK_CACHE_LEVELS 12
 #endif
@@ -502,10 +505,21 @@ uint vsmVirtualPage(uint2 texel, ShadowProjection projection, uint pageSize)
 {
 #if VSM_MARK_PAGE_SHIFT >= 0
     uint2 page = texel >> VSM_MARK_PAGE_SHIFT;
+#elif VSM_PROJECTION_PAGE_SHIFT >= 0
+    uint2 page = texel >> VSM_PROJECTION_PAGE_SHIFT;
 #else
     uint2 page = texel / pageSize;
 #endif
     return projection.page.x + page.y * projection.page.y + page.x;
+}
+
+uint2 vsmPageLocalTexel(uint2 texel, uint pageSize)
+{
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+    return texel & ((1u << VSM_PROJECTION_PAGE_SHIFT) - 1u);
+#else
+    return texel % pageSize;
+#endif
 }
 
 float4 vsmPageBounds(uint virtualPage, ShadowProjection projection)
@@ -1201,7 +1215,7 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
         ++filterCounts.y;
     }
     uint2 physical = uint2(physicalPage % physicalPagesX, physicalPage / physicalPagesX);
-    uint2 texel = physical * push.pageSize + result.virtualTexel % push.pageSize;
+    uint2 texel = physical * push.pageSize + vsmPageLocalTexel(result.virtualTexel, push.pageSize);
 #if VSM_DIRECTIONAL_PROJECTION
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
 #else
@@ -1230,6 +1244,8 @@ struct VSMDirectionalRayState
     uint coarseLevel;
     float receiverDepth;
     float depthScale;
+    float invDepthScale;
+    bool allowClipmaps;
 };
 
 VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endpoint, float3 dither,
@@ -1250,6 +1266,9 @@ VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endp
     ray.coarseLevel = push.clipmapCount;
     ray.receiverDepth = ray.comparisonOrigin.z;
     ray.depthScale = length(first.rowZ.xyz);
+    ray.invDepthScale = 1.0 / ray.depthScale;
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    ray.allowClipmaps = statistics[5] == 0u;
     return ray;
 }
 
@@ -1295,10 +1314,9 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
     result.storedDepth = 0.0;
     result.level = push.clipmapCount;
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
     uint physicalPage = 0xffffffffu;
     ++counts.x;
-    if (statistics[5] == 0u) {
+    if (ray.allowClipmaps) {
         // A reverse march can re-enter finer clipmaps, so restart at the
         // receiver-selected level rather than retaining a previous ancestor.
         for (uint level = ray.receiverLevel; level < push.clipmapCount; ++level) {
@@ -1338,7 +1356,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
         ++counts.y;
     }
     uint2 physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
-    uint2 texel = physical * push.pageSize + result.virtualTexel % push.pageSize;
+    uint2 texel = physical * push.pageSize + vsmPageLocalTexel(result.virtualTexel, push.pageSize);
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     result.storedDepth = atlas.Load(int3(texel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
@@ -1348,7 +1366,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
 
 float vsmDirectionalRayDepth(float depth, VSMDirectionalRayState ray)
 {
-    return (depth - ray.receiverDepth) / ray.depthScale;
+    return (depth - ray.receiverDepth) * ray.invDepthScale;
 }
 #endif
 
@@ -1397,10 +1415,18 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     // A ray keeps its receiver's resolution. An angular footprint shrinks to
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
+    float3 toLight = push.lightType == 0u ? normalize(projections[0].rowZ.xyz) :
+        normalize(projections[0].originNear.xyz - position);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    float receiverTexelSize = vsmWorldTexelSize(position, projections[receiverLevel], push.pageSize, push.lightType);
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
-        float3 endpoint = vsmRayEndpoint(position, projections[0], push, ray, pixel);
-        float3 dither = vsmRayDither(position, projections[receiverLevel], push, ray, pixel);
+        float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
+        float3 endpoint = vsmRayEndpoint(position, projections[0], push, toLight, right * disk.x + up * disk.y);
+        float2 ditherOffset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
+            vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
+        float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
 #if VSM_DIRECTIONAL_PROJECTION
         VSMDirectionalRayState rayState = vsmCreateDirectionalRayState(position, endpoint, dither, projections, push, receiverLevel);
 #endif
@@ -3907,7 +3933,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         compareDepth = projected.z + correction + projection.metric.z;
     }
     uint2 physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
-    uint2 texel = physical * push.pageSize + virtualTexel % push.pageSize;
+    uint2 texel = physical * push.pageSize + vsmPageLocalTexel(virtualTexel, push.pageSize);
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     float storedDepth = atlas.Load(int3(texel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);

@@ -569,7 +569,7 @@ public:
         const auto directory = std::filesystem::absolute(context.outputDirectory / "VirtualShadowMapProjectedRayState");
         std::filesystem::create_directories(directory);
         Json report{{"passed", false}, {"cases", Json::array()},
-            {"scope", "Dyadic/shared-Z directional ray coordinates, integer page ancestry and constrained GPU SMRT samples inside Mark intervals; finite fixture coverage, not a universal floating-point certificate"}};
+            {"scope", "Dyadic XY/shared-Z directional rays with dyadic and non-dyadic depth scales, integer page ancestry and constrained GPU SMRT samples inside Mark intervals; finite fixture coverage, not a universal floating-point certificate"}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / "VirtualShadowMapProjectedRayState.json") << report.dump(2) << '\n'; };
         try {
@@ -611,6 +611,7 @@ public:
             const std::array capabilities{"spvMeshShadingEXT"};
             const std::array macros{SlangMacroDefine{"VSM_PROPAGATED_MAPPING_PROBE", "1"},
                 SlangMacroDefine{"VSM_PROJECTED_RAY_PROBE", "1"}, SlangMacroDefine{"VSM_DIRECTIONAL_PROJECTION", "1"},
+                SlangMacroDefine{"VSM_PROJECTION_PAGE_SHIFT", "2"},
                 SlangMacroDefine{"VSM_DIRECTIONAL_MARK", "1"}};
             for (uint32_t index = 0; index < kernels.size(); ++index) {
                 auto shader = compileSlangShaderToSpirv({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
@@ -634,14 +635,24 @@ public:
                 void* mapped = destination.map(); check(mapped != nullptr, "Projected ray upload");
                 std::memcpy(mapped, data, bytes); destination.flush(); destination.unmap();
             };
-            struct Case { const char* name; uint32_t resident, first; int x, y; bool overflow, coarseValid; float offset; };
-            const std::array cases{
+            struct Case { std::string name; uint32_t resident, first; int x, y; bool overflow, coarseValid; float offset; float depthScale = 1.f/32.f; };
+            std::vector cases{
                 Case{"own",0,0,0,0,false,true,0}, Case{"nonzero-receiver-level",2,2,0,0,false,true,0},
                 Case{"ancestor",2,0,0,0,false,true,0}, Case{"negative-origin",2,0,-5,-3,false,true,0},
                 Case{"level-delta-eleven",11,0,0,0,false,true,0}, Case{"coarse",levels,0,0,0,false,true,0},
                 Case{"overflow",0,0,0,0,true,true,0}, Case{"coarse-invalid",levels,0,0,0,false,false,0},
                 Case{"outside-coarse",levels,0,0,0,true,true,300}};
-            uint64_t tested = 0, coverage = 0;
+            const auto dyadicCases = cases;
+            for (float depthScale : {1.f/37.f, 1.f/19.3f}) {
+                for (auto fixture : dyadicCases) {
+                    fixture.name += "-DepthScale-" + std::to_string(depthScale);
+                    fixture.depthScale = depthScale;
+                    cases.push_back(std::move(fixture));
+                }
+            }
+            const std::array probeDepths{.75f, .25f, std::nextafter(.5f, 0.f), .5f, std::nextafter(.5f, 1.f), .9999f};
+            uint64_t tested = 0, coverage = 0, nonDyadicSamples = 0;
+            uint64_t positiveDepths = 0, negativeDepths = 0, zeroDepths = 0;
             for (const auto& fixture : cases) {
                 validation.phase(fixture.name);
                 std::array<Projection, levels + 1> transforms{};
@@ -652,7 +663,7 @@ public:
                     const float y = coarse ? 0.f : std::floor(float(fixture.y) * std::ldexp(1.f, -int(level)));
                     const uint32_t pageAxis = coarse ? 1u : axis;
                     transforms[level] = {{scale,0,0,coarse ? 0.f : -x * (2.f / axis)},
-                        {0,scale,0,coarse ? 0.f : -y * (2.f / axis)}, {0,0,1.f/32.f,.5f}, {0,0,0,1},
+                        {0,scale,0,coarse ? 0.f : -y * (2.f / axis)}, {0,0,fixture.depthScale,.5f}, {0,0,0,1},
                         {1.f/scale,2.f/(scale*pageAxis*pageSize),.001f,0},
                         {coarse ? totalPages-1u : level*stride,pageAxis,level,coarse ? 1u : 0u}, {x,y,0,0}};
                 }
@@ -669,7 +680,7 @@ public:
                     const float x = fixture.x * (2.f/axis) + fixture.offset + (ray & 1u ? -.3125f : .28125f);
                     const float y = fixture.y * (2.f/axis) + (ray & 2u ? -.21875f : .15625f);
                     const float z = ray < 2 ? -2.f + ray : 0.f;
-                    rays[ray] = {{x,y,z,0}, {x+.375f,y-.25f,z+1.5f,0}, {.015625f,-.03125f,.0078125f,0},
+                    rays[ray] = {{x,y,z,0}, {x+.375f,y-.25f,z+1.5f,probeDepths[ray]}, {.015625f,-.03125f,.0078125f,0},
                         {fixture.first,ray < 2 ? 0u : ray-2u,ray*3u,ray < 2 ? 0u : 1u}};
                 }
                 upload(*pages, table.data(), table.size()*sizeof(table[0]));
@@ -695,7 +706,7 @@ public:
                 check(gpu.commands->synchronize({.buffers={&host,1}}), "Projected ray readback ready"); gpu.finish();
                 output->invalidate(); const void* mapped = output->map(); check(mapped != nullptr, "Projected ray map");
                 std::array<Packet, rayCount*samples> results{}; std::memcpy(results.data(), mapped, sizeof(results)); output->unmap();
-                double maximumError = 0;
+                double maximumError = 0, maximumLinearDepthError = 0;
                 uint64_t caseCoverage = 0;
                 const auto value = [](uint32_t bits) { return std::bit_cast<float>(bits); };
                 const auto close = [&](float actual, double expected, const std::string& label) {
@@ -743,8 +754,21 @@ public:
                         std::array<double,3> receiver{input.position[0],input.position[1],input.position[2]};
                         const double receiverDepth = project(receiver,fixture.first)[2];
                         close(value(result[4][3]),receiverDepth,"receiver depth");
-                        close(value(result[5][3]),1.0/32.0,"depth scale");
-                        close(value(result[2][3]),(.75-receiverDepth)*32.0,"linear ray depth");
+                        close(value(result[5][3]),double(fixture.depthScale),"depth scale");
+                        check(value(result[6][3]) == input.endpoint[3], "Linear depth probe input changed");
+                        const double expectedLinearDepth = (double(input.endpoint[3])-receiverDepth)/double(fixture.depthScale);
+                        const float linearDepth = value(result[2][3]);
+                        const double linearError = std::abs(double(linearDepth)-expectedLinearDepth);
+                        maximumLinearDepthError = std::max(maximumLinearDepthError,linearError);
+                        // Relative error also constrains the adjacent-float samples around
+                        // receiver depth; a unit-scale absolute tolerance would hide them.
+                        check(std::isfinite(linearDepth) && linearError <=
+                            16.0*std::numeric_limits<float>::epsilon()*std::abs(expectedLinearDepth),
+                            fixture.name+": linear ray depth exceeds the relative float bound");
+                        positiveDepths += expectedLinearDepth > 0;
+                        negativeDepths += expectedLinearDepth < 0;
+                        zeroDepths += expectedLinearDepth == 0;
+                        nonDyadicSamples += fixture.depthScale != 1.f/32.f;
                         uint32_t first = levels;
                         for (uint32_t level = fixture.first; level < levels; ++level) {
                             if (contains(project(lookup,level),level,true)) { first=level; break; }
@@ -809,11 +833,14 @@ public:
                 }
                 coverage += caseCoverage;
                 report["cases"].push_back({{"name",fixture.name},{"samples",rayCount*samples},{"receiverLevel",fixture.first},
-                    {"residentLevel",fixture.resident},{"overflow",fixture.overflow},{"maximumCoordinateError",maximumError},
+                    {"residentLevel",fixture.resident},{"overflow",fixture.overflow},{"depthScale",fixture.depthScale},
+                    {"maximumCoordinateError",maximumError},{"maximumLinearDepthError",maximumLinearDepthError},
                     {"markCoverageSamples",caseCoverage},{"zeroMarkCoverageMisses",true}}); save();
             }
             check(coverage > 0, "Projected ray Mark coverage fixture was empty");
             report["testedRaySamples"] = tested; report["markCoverageSamples"] = coverage;
+            report["nonDyadicDepthSamples"] = nonDyadicSamples;
+            report["linearDepthSigns"] = {{"positive",positiveDepths},{"negative",negativeDepths},{"zero",zeroDepths}};
             report["zeroMarkCoverageMisses"] = true; report["validation"] = validation.snapshot();
             check(!validation.failed(), "Projected ray validation error"); report["passed"] = true; save();
             return RHITestResult::pass("Projected directional rays match double coordinate/integer ancestry oracles and constrained SMRT samples remain inside Mark coverage");

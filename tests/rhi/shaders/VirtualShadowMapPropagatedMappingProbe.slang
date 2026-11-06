@@ -75,7 +75,7 @@ void propagatedMappingLookupProbeMain(uint3 id : SV_DispatchThreadID)
 struct ProjectedRayProbeInput
 {
     float4 position;
-    float4 endpoint;
+    float4 endpoint; // XYZ ray endpoint, W independent linear-depth query.
     float4 dither;
     uint4 control; // receiver level, ray, phase, generate a real SMRT ray
 };
@@ -147,11 +147,11 @@ void projectedRayStateProbeMain(uint3 id : SV_DispatchThreadID)
         uint offset = (id.x * 11u + sampleIndex) * 10u;
         output[offset] = uint4(sample.valid ? 1u : 0u, sample.level, sample.valid ? sample.virtualTexel : uint2(0u));
         output[offset + 1u] = uint4(asuint(sample.projected), asuint(sample.storedDepth));
-        output[offset + 2u] = uint4(asuint(comparison), asuint(vsmDirectionalRayDepth(0.75, ray)));
+        output[offset + 2u] = uint4(asuint(comparison), asuint(vsmDirectionalRayDepth(input.endpoint.w, ray)));
         output[offset + 3u] = uint4(asuint(endpoint), asuint(time));
         output[offset + 4u] = uint4(asuint(dither), asuint(ray.receiverDepth));
         output[offset + 5u] = uint4(asuint(baseLookup), asuint(ray.depthScale));
-        output[offset + 6u] = uint4(asuint(baseCompare), 0u);
+        output[offset + 6u] = uint4(asuint(baseCompare), asuint(input.endpoint.w));
         output[offset + 7u] = uint4(checked, missing, counts.xy);
         output[offset + 8u] = uint4(counts.z, sourcePage, input.control.x, 0u);
         output[offset + 9u] = uint4(asuint(firstPosition), firstLevel);

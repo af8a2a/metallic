@@ -3835,6 +3835,229 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapMarkPageSizeMutationTest);
 
+class VirtualShadowMapProjectionStatisticsMutationTest final : public RHITest
+{
+public:
+    VirtualShadowMapProjectionStatisticsMutationTest()
+    {
+        type = RHITestType::Rendering;
+        name = "virtual_shadow_map_projection_statistics_mutation";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const std::string reportName = "VirtualShadowMapProjectionStatisticsMutation";
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
+        Json report{{"passed", false}, {"frames", Json::array()}, {"cacheEnabled", false},
+            {"scope", "Persistent Programs versus a fresh renderer through PCF radius and requested-statistics transitions; depth caching disabled to isolate program identity"}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerFixturePasses();
+            const auto fixture = writeLocalFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load projection-statistics mutation fixture");
+            environment::WorldEnvironment world;
+            world.sun.enabled = true; world.moon.enabled = false;
+            world.sun.direction = float3(1,-1,0); world.sun.illuminance = 3;
+            RenderView camera;
+            RenderGraphPreviewRenderer preview;
+            configureCachePreview(preview, scene, camera, context, validation, world);
+            activeEvidence = std::make_shared<EvidenceState>();
+            auto graph = makeGraph(fixture.source, fixture.cache, Case{});
+            renderAndRequire(preview, graph, "Evidence.color");
+            const auto receiver = snapshot(*activeEvidence);
+            require(std::count_if(receiver.rasterDepth.begin(), receiver.rasterDepth.end(), [](float value) { return value > 0; }) > 10000,
+                "Projection-statistics mutation fixture lacks real raster receivers");
+            auto& device = *preview.subsystemHost()->device();
+
+            std::unique_ptr<Texture> depth;
+            std::unique_ptr<TextureView> depthView;
+            require(device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
+                .format = Format::D32Sfloat, .width = kWidth, .height = kHeight})
+                .transform([&](auto value) { depth = std::move(value); }), "Create mutation receiver depth");
+            require(device.createTextureView(*depth, {.format = Format::D32Sfloat})
+                .transform([&](auto value) { depthView = std::move(value); }), "Create mutation receiver view");
+            auto upload = device.createBuffer({.size = kPixels * sizeof(float), .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload});
+            require(upload, "Create mutation depth upload");
+            auto* mapped = (*upload)->map();
+            require(mapped != nullptr, "Map mutation depth upload");
+            std::memcpy(mapped, receiver.rasterDepth.data(), kPixels * sizeof(float));
+            (*upload)->flush(); (*upload)->unmap();
+            const ProfilingReadbackLayout layout(1, 1, true);
+            auto readback = device.createBuffer({.size = layout.size, .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback});
+            require(readback, "Create mutation readback");
+            activeEvidence->namedReadbacks["MutationReadback"] = readback->get();
+
+            // Keep production state across all mutations. A fresh renderer at
+            // each step independently checks resource and program invalidation.
+            VirtualShadowMaps persistent;
+            CacheCommands gpu(device);
+            gpu.begin();
+            const TextureBarrierDesc uploadBegin{.texture = depth.get(), .oldLayout = TextureLayout::Undefined,
+                .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+            require(gpu.commands->synchronize({.textures = {&uploadBegin, 1}}), "Prepare mutation depth upload");
+            require((*upload)->slice().and_then([&](const auto& slice) {
+                return gpu.commands->copyBufferToTexture({.texture = depth.get(), .buffer = slice, .width = kWidth, .height = kHeight});
+            }), "Upload actual mutation receiver depth");
+            const TextureBarrierDesc uploadEnd{.texture = depth.get(), .oldLayout = TextureLayout::TransferDestination,
+                .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+            require(gpu.commands->synchronize({.textures = {&uploadEnd, 1}}), "Publish mutation receiver depth");
+            gpu.finish();
+
+            GPUCelestialLight light;
+            light.direction[0] = std::sqrt(.5f); light.direction[1] = -std::sqrt(.5f);
+            light.angularRadius = .01f;
+            light.flags = kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow;
+            light.irradiance[0] = light.irradiance[1] = light.irradiance[2] = 3;
+            VirtualShadowMapSettings settings;
+            settings.physicalPageCount = 512;
+            settings.firstClipmapExtent = kFirstExtent;
+            settings.cacheEnabled = false;
+            settings.collectGPUWork = true;
+            settings.filter = VirtualShadowMapFilter::PCF;
+            std::string log;
+            const auto record = [&](VirtualShadowMaps& renderer, uint32_t frameIndex) {
+                gpu.begin();
+                auto view = receiver.parameters.view;
+                view.frame[0] = frameIndex;
+                auto casters = prepareVirtualShadowMapCasters(device, *gpu.commands, scene, nullptr, log);
+                require(casters, "Prepare mutation casters: " + log);
+                CPUProfileRecorder cpu;
+                auto result = renderer.record(device, *gpu.commands, *depthView, view, light, *casters,
+                    scene.materials(), {}, settings, log, false, nullptr, &cpu);
+                require(result, "Record projection-statistics mutation: " + log);
+                uint32_t cacheCounters = 0;
+                uint64_t cacheMiss = 0;
+                for (const auto& section : cpu.sections) {
+                    if (section.name != "Prepare VSM pipeline cache") { continue; }
+                    for (const auto& work : section.cpuWork) {
+                        if (work.name == "cacheMiss") { ++cacheCounters; cacheMiss = work.value; }
+                    }
+                }
+                require(cacheCounters == 1, "Missing unique Programs cache-miss counter");
+                const std::array textures{result->texture, result->debugTexture, depth.get()};
+                std::array<TextureBarrierDesc, 3> textureReads;
+                for (uint32_t index = 0; index < textures.size(); ++index) {
+                    textureReads[index] = {.texture = textures[index], .oldLayout = TextureLayout::ShaderRead,
+                        .newLayout = TextureLayout::TransferSource, .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                }
+                const BufferBarrierDesc statsRead{.buffer = result->statistics,
+                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                require(gpu.commands->synchronize({.textures = textureReads, .buffers = {&statsRead, 1}}), "Prepare mutation readback");
+                const std::array textureOffsets{uint64_t(0), layout.debug, layout.depth};
+                for (uint32_t index = 0; index < textures.size(); ++index) {
+                    const uint64_t size = kPixels * (index == 0 ? 1 : 4);
+                    require((*readback)->slice({textureOffsets[index], size}).and_then([&](const auto& slice) {
+                        return gpu.commands->copyTextureToBuffer({.texture = textures[index], .buffer = slice, .width = kWidth, .height = kHeight});
+                    }), "Read mutation GPU image");
+                }
+                const std::array sizes{kVirtualShadowMapFaceStatisticsSize, kVirtualShadowMapWorkloadSize, kVirtualShadowMapBuildDiagnosticSize};
+                const std::array offsets{layout.statistics, layout.workload, layout.buildDiagnostics};
+                uint64_t sourceOffset = 0;
+                for (uint32_t index = 0; index < sizes.size(); ++index) {
+                    auto source = result->statistics->slice({sourceOffset, sizes[index]});
+                    auto destination = (*readback)->slice({offsets[index], sizes[index]});
+                    require(source, "Mutation counter source"); require(destination, "Mutation counter destination");
+                    require(gpu.commands->copyBuffer(*source, *destination), "Read mutation GPU counters");
+                    sourceOffset += sizes[index];
+                }
+                for (auto& barrier : textureReads) {
+                    barrier.oldLayout = TextureLayout::TransferSource; barrier.newLayout = TextureLayout::ShaderRead;
+                    barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferRead};
+                    barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
+                }
+                const BufferBarrierDesc statsRestore{.buffer = result->statistics,
+                    .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+                require(gpu.commands->synchronize({.textures = textureReads, .buffers = {&statsRestore, 1}}), "Restore mutation resource states");
+                gpu.finish();
+                return std::pair{profilingSnapshot("MutationReadback", layout, true), cacheMiss};
+            };
+            struct Configuration
+            {
+                bool requested;
+                float radius;
+                uint32_t effectiveFilter;
+                bool grouped;
+            };
+            // Only radius changes in the first three steps. It changes the
+            // effective PCF/Hard permutation without changing the requested flag.
+            // The last step isolates the requested key while grouping stays off.
+            const std::array configurations{
+                Configuration{true, 1.5f, 1u, false}, Configuration{true, 0.f, 0u, true},
+                Configuration{true, 1.5f, 1u, false}, Configuration{false, 1.5f, 1u, false}};
+            report["configurations"] = Json::array();
+            for (uint32_t step = 0; step < configurations.size(); ++step) {
+                const auto& configuration = configurations[step];
+                settings.optimizeProjectionStatistics = configuration.requested;
+                settings.pcfRadius = configuration.radius;
+                report["configurations"].push_back({{"requestedProjectionStatistics", configuration.requested},
+                    {"pcfRadius", configuration.radius}, {"expectedEffectiveFilter", configuration.effectiveFilter},
+                    {"expectedGroupedProjectionStatistics", configuration.grouped}});
+                VirtualShadowMaps fresh;
+                for (uint32_t frame = 0; frame < 2; ++frame) {
+                    const std::string label = "Step" + std::to_string(step) + "-" + (frame == 0 ? "Transition" : "Warm");
+                    validation.phase(label);
+                    const auto [a, persistentMiss] = record(persistent, step * 2 + frame);
+                    const auto [b, freshMiss] = record(fresh, step * 2 + frame);
+                    const bool exact = a.shadow == b.shadow && a.debug == b.debug && a.depth == b.depth &&
+                        a.statistics == b.statistics && a.buildDiagnostics == b.buildDiagnostics;
+                    report["frames"].push_back({{"phase", label}, {"step", step}, {"frame", frame},
+                        {"requestedProjectionStatistics", configuration.requested}, {"pcfRadius", configuration.radius},
+                        {"expectedEffectiveFilter", configuration.effectiveFilter}, {"expectedGroupedProjectionStatistics", configuration.grouped},
+                        {"persistentProgramCacheMiss", persistentMiss}, {"freshProgramCacheMiss", freshMiss}, {"exact", exact},
+                        {"persistentStatistics", a.statistics}, {"freshStatistics", b.statistics},
+                        {"persistentWork", a.workload}, {"freshWork", b.workload},
+                        {"persistentBuildDiagnostics", a.buildDiagnostics}, {"freshBuildDiagnostics", b.buildDiagnostics},
+                        {"persistentShadowSHA256", debug::debugSha256(a.shadow)}, {"freshShadowSHA256", debug::debugSha256(b.shadow)},
+                        {"persistentDebugSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(a.debug.data()), a.debug.size() * sizeof(uint32_t)))},
+                        {"freshDebugSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(b.debug.data()), b.debug.size() * sizeof(uint32_t)))},
+                        {"persistentDepthSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(a.depth.data()), a.depth.size() * sizeof(uint32_t)))},
+                        {"freshDepthSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(b.depth.data()), b.depth.size() * sizeof(uint32_t)))}});
+                    save();
+                    require(persistentMiss == uint64_t(frame == 0) && freshMiss == uint64_t(frame == 0),
+                        label + ": Programs did not invalidate on actual/requested specialization or reuse the unchanged key");
+                    require(exact && a.statistics[0][11] == settings.clipmapCount,
+                        label + ": projection-statistics mutation changed actual GPU output or public counters");
+                    // record() resets the depth cache when disabled. Its epoch
+                    // stays one while the independent Programs cache persists.
+                    require(a.statistics[0][23] == 1 && b.statistics[0][23] == 1,
+                        label + ": disabled depth cache retained an epoch");
+                    require(a.workload[0][kVSMWorkMarkReceiverDispatches] > 0 &&
+                        a.workload[0][kVSMWorkProjectionReceivers] > 0 && a.workload[0][kVSMWorkProjectionRays] == 0,
+                        label + ": mutation lacks real PCF/Hard receiver work");
+                    require(configuration.effectiveFilter == 0u ? a.statistics[0][30] == 0u : a.statistics[0][30] > 0u,
+                        label + ": zero-radius normalization or filtered queries did not execute");
+                    for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                        if (counter == kVSMWorkMarkPageRequests || counter == kVSMWorkMarkReceiverMaskAtomicOrs) { continue; }
+                        require(a.workload[0][counter] == b.workload[0][counter],
+                            label + ": specialization mutation changed deterministic GPU work");
+                    }
+                }
+            }
+            require(report["frames"].size() == 8, "Projection-statistics mutation did not complete four transitions and warm controls");
+            report["validation"] = validation.snapshot();
+            requireValidPreview(report["validation"]);
+            report["passed"] = true;
+            save();
+            activeEvidence.reset();
+            return RHITestResult::pass("Persistent and fresh production Programs preserve PCF/Hard outputs across radius and requested-statistics key transitions");
+        } catch (const std::exception& error) {
+            activeEvidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionStatisticsMutationTest);
+
 class VirtualShadowMapCompactBuildEquivalenceTest final : public VirtualShadowMapEquivalenceTest
 {
 public:
