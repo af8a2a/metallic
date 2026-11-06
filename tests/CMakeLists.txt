@@ -404,6 +404,8 @@ set_tests_properties(MetallicGPUPageTests PROPERTIES LABELS "scene;rhi")
 # Embed the offline report at build time; no server, Python or copied runtime assets.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html" METALLIC_REPORT_HTML)
+# Keep each raw literal below MSVC's 16 KiB limit while preserving HTML bytes.
+string(REPLACE "\n" "\n)METALLIC_REPORT\"\nR\"METALLIC_REPORT(" METALLIC_REPORT_HTML "${METALLIC_REPORT_HTML}")
 configure_file(rhi/harness/HtmlReportTemplate.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/HtmlReportTemplate.h" @ONLY)
 
 add_executable(MetallicRHITests
