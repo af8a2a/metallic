@@ -1,6 +1,7 @@
 include(${CMAKE_SOURCE_DIR}/cmake/SetupGDeflate.cmake)
 find_package(slang 2026.18.2 EXACT CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
 include("${CMAKE_SOURCE_DIR}/cmake/ShaderWarmup.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/CPUKernels.cmake")
 
 add_library(MetallicDebugCore STATIC
     Runtime/Debug/DebugTypes.cpp

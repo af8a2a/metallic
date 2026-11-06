@@ -75,6 +75,7 @@ set_tests_properties(MetallicShaderRequestsTests PROPERTIES LABELS "editor;shade
 
 
 add_subdirectory(perf)
+add_subdirectory(cpu)
 
 if(METALLIC_ENABLE_NRD)
     add_executable(MetallicNRDTests rhi/NRDTests.cpp)
