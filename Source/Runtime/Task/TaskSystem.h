@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <stop_token>
 
 namespace metallic::task {
 
@@ -88,6 +89,7 @@ void shutdownTaskSystem();
 
 namespace detail {
 
+std::stop_token taskCallbackStopToken() noexcept;
 std::shared_ptr<TaskSystem> tryAcquireTaskSystem() noexcept;
 
 } // namespace detail

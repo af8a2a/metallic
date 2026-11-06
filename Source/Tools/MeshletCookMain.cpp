@@ -1,5 +1,6 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/GeometryAttributes.h"
+#include "Runtime/Task/TaskSystem.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -318,6 +319,18 @@ int run(int argc, char** argv)
     if (memoryMiB > UINT64_MAX / (1024u * 1024u)) { throw std::runtime_error("Memory budget overflow"); }
     MemoryBudget budget;
     budget.apply(memoryMiB * 1024u * 1024u);
+    struct TaskSystemShutdown {
+        bool owns = false;
+        ~TaskSystemShutdown() { if (owns) { metallic::task::shutdownTaskSystem(); } }
+    } taskSystemShutdown;
+    if (!inspectOnly) {
+        const auto hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
+        const auto workers = desc.meshletOptions.maxWorkers != 0 ?
+            std::min(desc.meshletOptions.maxWorkers, hardwareThreads) : std::max(1u, hardwareThreads / 2u);
+        const auto initialized = metallic::task::initializeTaskSystem({.workerCount = workers});
+        if (!initialized) { throw std::runtime_error(initialized.error().message); }
+        taskSystemShutdown.owns = true;
+    }
     if (manifestPath.empty()) { manifestPath = desc.outputPath.string() + ".json"; }
     if (manifestPath.has_parent_path()) { std::filesystem::create_directories(manifestPath.parent_path()); }
     std::ofstream events(manifestPath.string() + ".events.jsonl", std::ios::app);

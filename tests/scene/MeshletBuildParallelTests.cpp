@@ -1,10 +1,10 @@
 #include "Runtime/Scene/MeshletBuildParallel.h"
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Task/TaskSystem.h"
 
 #include <gtest/gtest.h>
 #include <array>
 #include <atomic>
-#include <barrier>
 #include <cmath>
 #include <stdexcept>
 #include <thread>
@@ -14,28 +14,35 @@ namespace {
 
 using namespace metallic::scene;
 
-TEST(MeshletBuildParallel, ReusesDenseWorkerIndicesAndThreadsAcrossSubmissions)
+class MeshletBuildParallelTest : public testing::Test {
+protected:
+    void SetUp() override
+    {
+        ASSERT_TRUE(metallic::task::initializeTaskSystem({.workerCount = 4}));
+    }
+    void TearDown() override { metallic::task::shutdownTaskSystem(); }
+};
+
+TEST_F(MeshletBuildParallelTest, ReusesDenseExclusiveScratchSlotsAcrossSubmissions)
 {
     MeshletBuildParallel& pool = MeshletBuildParallel::shared(4);
     EXPECT_EQ(&pool, &MeshletBuildParallel::shared(4));
-    std::array<std::thread::id, 4> first{}, second{};
-    std::barrier start(4);
-    pool.forEach(4, [&](size_t, size_t worker) {
-        first.at(worker) = std::this_thread::get_id();
-        start.arrive_and_wait();
-    });
-    pool.forEach(4, [&](size_t, size_t worker) {
-        second.at(worker) = std::this_thread::get_id();
-        start.arrive_and_wait();
-    });
-    EXPECT_EQ(first, second);
-    for (size_t a = 0; a < first.size(); ++a) {
-        EXPECT_NE(first[a], std::thread::id{});
-        for (size_t b = a + 1; b < first.size(); ++b) { EXPECT_NE(first[a], first[b]); }
+    std::array<std::atomic_bool, 4> occupied{};
+    for (unsigned submission = 0; submission < 4; ++submission) {
+        std::array<std::atomic_uint32_t, 2049> visits{};
+        pool.forEach(visits.size(), [&](size_t index, size_t worker) {
+            if (worker >= occupied.size() || occupied[worker].exchange(true)) {
+                throw std::runtime_error("scratch slot is out of range or concurrently reused");
+            }
+            ++visits[index];
+            std::this_thread::yield();
+            occupied[worker].store(false);
+        });
+        for (const auto& count : visits) { EXPECT_EQ(count.load(), 1u); }
     }
 }
 
-TEST(MeshletBuildParallel, PropagatesFailureAndRemainsReusable)
+TEST_F(MeshletBuildParallelTest, PropagatesFailureAndRemainsReusable)
 {
     MeshletBuildParallel pool(4);
     EXPECT_THROW(pool.forEach(1024, [](size_t index, size_t) {
@@ -46,7 +53,7 @@ TEST(MeshletBuildParallel, PropagatesFailureAndRemainsReusable)
     for (const auto& count : visits) { EXPECT_EQ(count.load(), 1u); }
 }
 
-TEST(MeshletBuildParallel, ExecutesNestedSubmissionsWithoutPoolStarvation)
+TEST_F(MeshletBuildParallelTest, ExecutesNestedSubmissionsWithoutPoolStarvation)
 {
     for (size_t workers : {1u, 4u}) {
         MeshletBuildParallel pool(workers);
@@ -172,7 +179,7 @@ void expectLodEqual(const RenderPrimitive& a, const RenderPrimitive& b)
     }
 }
 
-TEST(MeshletBuildParallel, OneAndFourWorkersProduceIdenticalLODData)
+TEST_F(MeshletBuildParallelTest, OneAndFourWorkersProduceIdenticalLODData)
 {
     for (const auto settings : {std::array{false, false}, std::array{true, false}, std::array{true, true}}) {
         const RenderPrimitive source = makeGrid(settings[0], settings[1]);

@@ -318,6 +318,7 @@ set_tests_properties(MetallicDebugTests PROPERTIES LABELS "debug")
 
 add_executable(MetallicTaskTests
     task/TaskGraphTests.cpp
+    task/ParallelForTests.cpp
 )
 
 target_include_directories(MetallicTaskTests PRIVATE
