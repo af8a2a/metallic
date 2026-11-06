@@ -130,6 +130,7 @@ struct HistoryResourceManager::Impl {
     uint64_t frameIndex = 0;
     uint64_t invalidationRevision = 1;
     uint64_t reprojectionInvalidationRevision = 1;
+    uint64_t geometryReprojectionInvalidationRevision = 1;
     std::unordered_map<std::string, std::shared_ptr<Record>> records;
 
     void advanceInvalidationRevision()
@@ -300,6 +301,7 @@ HistoryResourceManager& HistoryResourceManager::operator=(HistoryResourceManager
 Result<> HistoryResourceManager::initialize(Device& device)
 {
     ++impl_->reprojectionInvalidationRevision;
+    ++impl_->geometryReprojectionInvalidationRevision;
     impl_->records.clear();
     impl_->device = &device;
     impl_->currentSlot = 0;
@@ -312,6 +314,7 @@ Result<> HistoryResourceManager::initialize(Device& device)
 void HistoryResourceManager::reset()
 {
     ++impl_->reprojectionInvalidationRevision;
+    ++impl_->geometryReprojectionInvalidationRevision;
     impl_->records.clear();
     impl_->device = nullptr;
     impl_->currentSlot = 0;
@@ -353,6 +356,9 @@ void HistoryResourceManager::invalidateAll(HistoryInvalidationReason reason)
     }
     impl_->advanceInvalidationRevision();
     if (reason != HistoryInvalidationReason::CameraMotion) { ++impl_->reprojectionInvalidationRevision; }
+    if (reason != HistoryInvalidationReason::CameraMotion && reason != HistoryInvalidationReason::LightingChange) {
+        ++impl_->geometryReprojectionInvalidationRevision;
+    }
 }
 
 uint64_t HistoryResourceManager::frameIndex() const
@@ -368,6 +374,11 @@ uint64_t HistoryResourceManager::invalidationRevision() const
 uint64_t HistoryResourceManager::reprojectionInvalidationRevision() const
 {
     return impl_->reprojectionInvalidationRevision;
+}
+
+uint64_t HistoryResourceManager::geometryReprojectionInvalidationRevision() const
+{
+    return impl_->geometryReprojectionInvalidationRevision;
 }
 
 Result<> HistoryResourceManager::ensureTexture(

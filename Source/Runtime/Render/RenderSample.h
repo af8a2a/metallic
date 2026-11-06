@@ -21,6 +21,7 @@ inline constexpr bool isGPUDrivenSceneSample(std::string_view id)
     return id == kDefaultGPUDrivenSampleId || id == kGPUDrivenZorahFullSampleId;
 }
 inline constexpr const char* kGPUDrivenVisibilitySampleId = "gpu-driven-visibility-buffer";
+inline constexpr const char* kVSMSponzaSampleId = "virtual-shadow-map-sponza";
 
 struct RenderSampleEnvironmentDesc {
     bool enabled = true;

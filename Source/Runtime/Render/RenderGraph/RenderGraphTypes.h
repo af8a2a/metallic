@@ -165,6 +165,9 @@ struct RenderGraphField {
     // dimension is explicit so volume resources receive real Texture3D views.
     TextureType textureType = TextureType::Texture2D;
     uint32_t depth = 1;
+    // Texture2D arrays use explicit layers; zero is input-only and accepts the
+    // producer's layer count. Ordinary Texture2D inputs remain single-layer.
+    uint32_t layerCount = 1;
     uint64_t size = 0;
     uint32_t structureStride = 0;
     // Output element schema registered by renderDebugLayouts(). Empty means raw;
@@ -544,7 +547,8 @@ private:
 // Scene dependencies are part of the pass contract, like texture/buffer inputs.
 // World follows the bound document, falling back to path only without a valid world.
 // An authored sceneBinding="asset" explicitly opts a World pass into a separate asset.
-// Input inherits one producer's scene; every listed input must come from that producer.
+// Input inherits one producer's scene; every connected listed input must come from it.
+// Unconnected inputs are allowed only when their reflection declares them optional.
 enum class RenderGraphSceneSource { None, World, Input };
 struct RenderGraphSceneDependency {
     RenderGraphSceneSource source = RenderGraphSceneSource::None;

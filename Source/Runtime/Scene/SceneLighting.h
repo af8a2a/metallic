@@ -3,8 +3,16 @@
 #include "Runtime/Scene/SceneComponents.h"
 
 #include <optional>
+#include <atomic>
+#include <unordered_set>
 
 namespace metallic::scene {
+
+inline uint64_t allocatePunctualLightIdentity()
+{
+    static std::atomic<uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
 
 struct ImportedLightBinding {
     // Persistent identity is per source node, not per shared glTF light definition.
@@ -18,6 +26,9 @@ struct ImportedLightBinding {
 };
 
 struct PunctualLight {
+    // Runtime identity is copied with edits/reordering, never serialized. Owners
+    // normalize duplicate identities when a copied light is inserted as new.
+    uint64_t stableId = allocatePunctualLightIdentity();
     // Production analytical lights are point/spot only. Infinite emission belongs
     // to WorldEnvironment Sun/Moon and cannot be authored through LightingSettings.
     std::string name = "Light";
@@ -68,6 +79,17 @@ struct LightingSettings {
     float exposureEV100 = 0.0f;
     AutoExposureSettings autoExposure;
 };
+
+inline void normalizePunctualLightIdentities(LightingSettings& settings)
+{
+    std::unordered_set<uint64_t> identities;
+    for (auto& light : settings.lights) {
+        if (light.stableId == 0 || !identities.insert(light.stableId).second) {
+            do { light.stableId = allocatePunctualLightIdentity(); }
+            while (!identities.insert(light.stableId).second);
+        }
+    }
+}
 
 inline bool validLightingSettings(const LightingSettings& settings)
 {

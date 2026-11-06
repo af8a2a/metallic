@@ -1,0 +1,97 @@
+{
+    "version": 3,
+    "source": "OpenPbrDefault.gltf",
+    "sceneIndex": 0,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": true,
+            "path": "san_giuseppe_bridge_split.hdr",
+            "intensity": 1.0,
+            "rotationDegrees": 0.0,
+            "visible": true,
+            "sun": {
+                "enabled": true,
+                "direction": [
+                    -0.711269,
+                    -0.479014,
+                    -0.514434
+                ],
+                "color": [
+                    1.0,
+                    0.894474,
+                    0.567234
+                ],
+                "illuminance": 2.52776,
+                "angularRadius": 0.00465
+            },
+            "moon": {
+                "enabled": true,
+                "direction": [
+                    0.68,
+                    -0.55,
+                    -0.48
+                ],
+                "color": [
+                    0.45,
+                    0.65,
+                    1.0
+                ],
+                "illuminance": 1.5,
+                "angularRadius": 0.0045
+            }
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {
+                "enabled": false,
+                "compensation": 0.0
+            },
+            "lights": [
+                {
+                    "name": "Warm Point",
+                    "type": "point",
+                    "color": [
+                        1.0,
+                        0.55,
+                        0.25
+                    ],
+                    "intensity": 32.0,
+                    "intensityUnit": "candela",
+                    "range": 8.0,
+                    "position": [
+                        -1.2,
+                        1.7,
+                        1.2
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Cool Spot",
+                    "type": "spot",
+                    "color": [
+                        0.25,
+                        0.55,
+                        1.0
+                    ],
+                    "intensity": 70.0,
+                    "intensityUnit": "candela",
+                    "range": 8.0,
+                    "innerConeAngle": 0.35,
+                    "outerConeAngle": 0.7,
+                    "position": [
+                        1.4,
+                        2.2,
+                        0.8
+                    ],
+                    "direction": [
+                        -0.45,
+                        -0.8,
+                        -0.35
+                    ],
+                    "enabled": true
+                }
+            ]
+        }
+    }
+}

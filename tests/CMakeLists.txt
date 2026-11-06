@@ -105,6 +105,23 @@ target_link_libraries(MetallicNsightLaunchOptionsTests PRIVATE GTest::gtest_main
 add_test(NAME MetallicNsightLaunchOptionsTests COMMAND MetallicNsightLaunchOptionsTests)
 set_tests_properties(MetallicNsightLaunchOptionsTests PROPERTIES LABELS "editor;profiling")
 
+if(WIN32)
+    add_executable(MetallicNsightCaptureLaunchProbe editor/NsightCaptureLaunchProbe.cpp)
+    add_executable(MetallicNsightCaptureLauncherTests editor/NsightCaptureLauncherTests.cpp)
+    target_include_directories(MetallicNsightCaptureLauncherTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+    target_compile_definitions(MetallicNsightCaptureLauncherTests PRIVATE
+        TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+        NSIGHT_LAUNCH_PROBE_EXECUTABLE="$<TARGET_FILE:MetallicNsightCaptureLaunchProbe>")
+    target_link_libraries(MetallicNsightCaptureLauncherTests PRIVATE GTest::gtest_main metallic::sdl3)
+    add_dependencies(MetallicNsightCaptureLauncherTests MetallicNsightCaptureLaunchProbe)
+    if(MSVC)
+        target_compile_options(MetallicNsightCaptureLaunchProbe PRIVATE /EHsc /utf-8)
+        target_compile_options(MetallicNsightCaptureLauncherTests PRIVATE /EHsc /utf-8)
+    endif()
+    add_test(NAME MetallicNsightCaptureLauncherTests COMMAND MetallicNsightCaptureLauncherTests)
+    set_tests_properties(MetallicNsightCaptureLauncherTests PROPERTIES LABELS "editor;profiling" TIMEOUT 20)
+endif()
+
 option(METALLIC_NSIGHT_INTEGRATION_TESTS "Run installed Nsight host/GPU integration regressions" OFF)
 if(WIN32 AND METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE AND METALLIC_NSIGHT_INTEGRATION_TESTS)
     foreach(nsight_case IN ITEMS disabled startup export collection invalid-metrics)
@@ -160,6 +177,18 @@ if(WIN32)
             "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/streamline-reflex-configuration"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StreamlineReflexTests.cmake")
     set_tests_properties(MetallicStreamlineReflexConfiguration PROPERTIES LABELS "build;reflex")
+    add_test(NAME MetallicNVIDIASDKConfiguration
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/nvidia-sdk-configuration"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/NVIDIASDKConfigurationTests.cmake")
+    set_tests_properties(MetallicNVIDIASDKConfiguration PROPERTIES LABELS "build;nvidia")
+    add_test(NAME MetallicNsightGraphicsConfiguration
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/nsight-graphics-configuration"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/NsightGraphicsConfigurationTests.cmake")
+    set_tests_properties(MetallicNsightGraphicsConfiguration PROPERTIES LABELS "build;nvidia" TIMEOUT 60)
     if(METALLIC_HAS_NV_LOW_LATENCY)
         foreach(reflex_mode IN ITEMS off on boost)
             add_test(NAME MetallicEditorReflex.${reflex_mode}
@@ -464,6 +493,7 @@ add_executable(MetallicRHITests
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorRenderGraphViewer.cpp"
     rhi/FrameContextTests.cpp
     rhi/ParallelRecordingTests.cpp
+    rhi/JoinedSubmissionTests.cpp
     rhi/SchedulingBenchmarkTests.cpp
     rhi/FinalBlitTests.cpp
     rhi/RTXDIPostProcessTests.cpp
@@ -499,6 +529,20 @@ add_executable(MetallicRHITests
     rhi/RealtimePipelineTests.cpp
     rhi/EnvironmentPrefilterTests.cpp
     rhi/HybridRasterTests.cpp
+    rhi/VirtualShadowMapTests.cpp
+    rhi/VirtualShadowMapSceneTests.cpp
+    rhi/VirtualShadowMapCompactBuildTests.cpp
+    rhi/VirtualShadowMapPageHierarchyTests.cpp
+    rhi/VirtualShadowMapAtomicRasterTests.cpp
+    rhi/VirtualShadowMapQualityTests.cpp
+    rhi/VirtualShadowMapTemporalTests.cpp
+    rhi/VirtualShadowMapAllocatorTests.cpp
+    rhi/VirtualShadowMapBudgetTests.cpp
+    rhi/VirtualShadowMapRemapTests.cpp
+    rhi/VirtualShadowMapContentTests.cpp
+    rhi/VirtualShadowMapPropagatedMappingTests.cpp
+    rhi/VirtualShadowMapLODTests.cpp
+    rhi/VirtualShadowMapAcceptanceTests.cpp
     rhi/StreamClusterCandidateTests.cpp
     rhi/StreamClusterClassificationTests.cpp
     rhi/StreamGroupRasterTests.cpp
@@ -663,6 +707,7 @@ if(WIN32)
         add_dependencies(MetallicTaskTests MetallicTestSDLRuntime)
         add_dependencies(MetallicSceneTests MetallicTestSDLRuntime)
         add_dependencies(MetallicRHITests MetallicTestSDLRuntime)
+        add_dependencies(MetallicNsightCaptureLauncherTests MetallicTestSDLRuntime)
         if(TARGET MetallicNRDTests)
             add_dependencies(MetallicNRDTests MetallicTestSDLRuntime)
         endif()

@@ -143,6 +143,7 @@ void expectLightProperties(
         << label << " innerConeAngle";
     EXPECT_NEAR(actual.outerConeAngle, expected.outerConeAngle, 0.000000001)
         << label << " outerConeAngle";
+    EXPECT_DOUBLE_EQ(actual.sourceRadius, expected.sourceRadius) << label << " sourceRadius";
 }
 
 void expectCameraSnapshot(
@@ -175,6 +176,7 @@ void expectLightSnapshot(
         << label << " innerConeAngle";
     EXPECT_NEAR(actual.outerConeAngle, expected.outerConeAngle, 0.000000001)
         << label << " outerConeAngle";
+    EXPECT_DOUBLE_EQ(actual.sourceRadius, expected.sourceRadius) << label << " sourceRadius";
 }
 
 void expectTextureInfo(
@@ -4076,6 +4078,7 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
     editedLight.range = 25.0;
     editedLight.innerConeAngle = 0.2;
     editedLight.outerConeAngle = 1.57079632679489661923;
+    editedLight.sourceRadius = 0.125;
 
     ASSERT_TRUE(document.setObjectCameraProperties(
         perspectiveObject.entity(),
@@ -4220,6 +4223,7 @@ void testSceneDocumentPropertyRoundTrip(const std::filesystem::path& baseDirecto
     EXPECT_FLOAT_EQ(savedLightProperties["color"][2].get<float>(), editedLight.color.z);
     EXPECT_DOUBLE_EQ(savedLightProperties.value("intensity", 0.0), editedLight.intensity);
     EXPECT_DOUBLE_EQ(savedLightProperties.value("range", 0.0), editedLight.range);
+    EXPECT_DOUBLE_EQ(savedLightProperties.value("sourceRadius", 0.0), editedLight.sourceRadius);
     EXPECT_DOUBLE_EQ(
         savedLightProperties.value("innerConeAngle", 0.0),
         editedLight.innerConeAngle);
@@ -5450,6 +5454,13 @@ TEST(Photometry, UnitsAndValidation)
     light.intensity = 100.0;
     light.intensityUnit = LightUnit::Lux;
     EXPECT_FALSE(validLightProperties(light));
+    light.intensityUnit = LightUnit::Candela;
+    light.sourceRadius = -0.01;
+    EXPECT_FALSE(validLightProperties(light));
+    light.sourceRadius = std::numeric_limits<double>::infinity();
+    EXPECT_FALSE(validLightProperties(light));
+    light.sourceRadius = 0.25;
+    EXPECT_TRUE(validLightProperties(light));
     LightingSettings settings;
     settings.lights.emplace_back().properties.type = "directional";
     settings.lights[0].direction = float3(0.0f);
@@ -5479,6 +5490,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         light.properties.type = type;
         light.properties.intensityUnit = LightUnit::EV100;
         light.properties.intensity = -1.0;
+        light.properties.sourceRadius = type == std::string_view("point") ? 0.25 : 0.5;
         light.position = float3(-1.0f, 2.0f, 3.0f);
         light.direction = float3(0.0f, -2.0f, -1.0f);
         light.enabled = light.properties.type != "point";
@@ -5515,6 +5527,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         EXPECT_EQ(light.properties.type, lighting.lights[i + 1].properties.type);
         EXPECT_EQ(light.properties.intensityUnit, LightUnit::EV100);
         EXPECT_DOUBLE_EQ(light.properties.intensity, -1.0);
+        EXPECT_DOUBLE_EQ(light.properties.sourceRadius, lighting.lights[i + 1].properties.sourceRadius);
         EXPECT_FLOAT_EQ(light.position.x, -1.0f);
         EXPECT_FLOAT_EQ(light.direction.y, -2.0f);
         EXPECT_EQ(light.enabled, lighting.lights[i + 1].enabled);

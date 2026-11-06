@@ -22,7 +22,7 @@ struct GPUPunctualLight {
     float positionRange[4] = {};
     float directionType[4] = {};
     float colorIntensity[4] = {};
-    float spot[4] = {};
+    float spot[4] = {}; // Inner/outer cone cosine, VSM source radius (m), reserved.
 };
 static_assert(sizeof(GPUPunctualLight) == 64);
 
@@ -33,6 +33,7 @@ static_assert(sizeof(GPUPunctualLight) == 64);
 // and visibility are resolved against the matching current RenderLight source.
 struct SceneLightRecord {
     GPUPunctualLight gpu;
+    uint64_t stableId = 0;
     int32_t sourceRenderLightIndex = scene::kInvalidSceneIndex;
     int32_t sourceVirtualLightIndex = scene::kInvalidSceneIndex;
     scene::SceneEntity sourceObject = scene::kNullSceneEntity;

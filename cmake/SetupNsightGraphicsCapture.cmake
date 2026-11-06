@@ -252,6 +252,16 @@ file(
     "${METALLIC_NSIGHT_GRAPHICS_RESOLVED_INSTALLATION_ROOT}"
     METALLIC_NSIGHT_GRAPHICS_INSTALLATION_ROOT_CMAKE
 )
+# SDK upgrades can remove the selected installation between builds. Rediscover
+# it before compiling with include paths cached in the generated build files.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${METALLIC_NSIGHT_GRAPHICS_RESOLVED_SDK_ROOT}/include/NGFX_GraphicsCapture_Vulkan.h"
+    "${METALLIC_NSIGHT_GRAPHICS_RESOLVED_SDK_ROOT}/include/NGFX_GraphicsCapture_Common.h"
+    "${METALLIC_NSIGHT_GRAPHICS_RESOLVED_SDK_ROOT}/include/NGFX_Types.h"
+    "${METALLIC_NSIGHT_GRAPHICS_RESOLVED_INSTALLATION_ROOT}/target/windows-desktop-nomad-x64/ngfx-api-bootstrap.dll"
+    "${METALLIC_NSIGHT_GRAPHICS_RESOLVED_INSTALLATION_ROOT}/target/windows-desktop-nomad-x64/ngfx-capture-injection.dll"
+    "${METALLIC_NSIGHT_GRAPHICS_RESOLVED_INSTALLATION_ROOT}/target/windows-desktop-nomad-x64/ngfx-capture-interception.dll"
+)
 metallic_set_nsight_graphics_capture_available(1)
 target_include_directories(
     metallic_nsight_graphics_capture

@@ -8,6 +8,21 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicVirtualShadowMapReceiverCoverageTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapReceiverCoverage.py")
+    set_tests_properties(MetallicVirtualShadowMapReceiverCoverageTests PROPERTIES LABELS "tools;perf" TIMEOUT 60)
+    add_test(NAME MetallicVirtualShadowMapBitsetTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapBitset.py")
+    set_tests_properties(MetallicVirtualShadowMapBitsetTests PROPERTIES LABELS "tools;perf" TIMEOUT 60)
+    add_test(NAME MetallicVirtualShadowMapOptimizationTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapOptimization.py")
+    set_tests_properties(MetallicVirtualShadowMapOptimizationTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
+    add_test(NAME MetallicVirtualShadowMapGPUProfileTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapGPUProfile.py")
+    set_tests_properties(MetallicVirtualShadowMapGPUProfileTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
+    add_test(NAME MetallicVirtualShadowMapBuildAttributionTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestVirtualShadowMapBuildAttribution.py")
+    set_tests_properties(MetallicVirtualShadowMapBuildAttributionTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
     add_test(NAME MetallicSPIRVComplexityTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestSPIRVComplexity.py")
     set_tests_properties(MetallicSPIRVComplexityTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)

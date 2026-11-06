@@ -1,0 +1,3975 @@
+#include "RHITest.h"
+#include "harness/ValidationRecorder.h"
+#include "Runtime/Debug/DebugHash.h"
+#include "Runtime/Render/GPUDrivenRaster.h"
+#include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Subsystem/RenderSubsystem.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/SceneDocument.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <map>
+#include <stdexcept>
+#include <tuple>
+#include <vector>
+
+namespace metallic::tests {
+namespace {
+using namespace render;
+using Json = nlohmann::json;
+using Point = std::array<double, 3>;
+constexpr uint32_t kWidth = 193, kHeight = 129;
+constexpr size_t kPixels = size_t(kWidth) * kHeight;
+constexpr uint32_t kCapacity = 4, kLayers = kCapacity * 6;
+constexpr double kPi = 3.14159265358979323846;
+
+void require(bool condition, const std::string& message)
+{
+    if (!condition) { throw std::runtime_error(message); }
+}
+
+template<class T>
+void require(const Result<T>& result, const std::string& message)
+{
+    require(bool(result), message + (result ? "" : ": " + std::string(resultToString(result))));
+}
+
+Point add(Point a, Point b)
+{
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+}
+
+Point scale(Point a, double amount)
+{
+    return {a[0] * amount, a[1] * amount, a[2] * amount};
+}
+
+double dot(Point a, Point b)
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+Point cross(Point a, Point b)
+{
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+Point normalized(Point value)
+{
+    return scale(value, 1 / std::sqrt(dot(value, value)));
+}
+
+Point point(const float* value)
+{
+    return {value[0], value[1], value[2]};
+}
+
+struct EvidenceState {
+    std::map<std::string, Buffer*> buffers;
+    VisibilityBufferFrameInfo camera;
+    std::map<std::string, uint32_t> layers;
+    std::map<std::string, Format> hdrFormats;
+};
+std::shared_ptr<EvidenceState> evidence;
+constexpr uint64_t kShadowStride = (kPixels + 3) & ~uint64_t(3);
+constexpr uint64_t kDepthOffset = kShadowStride * kLayers;
+constexpr uint64_t kStatsOffset = kDepthOffset + kPixels * 4;
+constexpr uint64_t kTableOffset = kStatsOffset + kLayers * kVirtualShadowMapFaceStatisticsSize;
+constexpr uint64_t kTableSize = sizeof(VirtualShadowMapLightsHeader) + kCapacity * sizeof(VirtualShadowMapLightEntry);
+constexpr uint64_t kMemoryOffset = kTableOffset + kTableSize;
+constexpr uint64_t kDebugOffset = kMemoryOffset + 8 * sizeof(uint64_t);
+constexpr uint64_t kReadbackSize = kDebugOffset + kPixels * 4 * kLayers;
+constexpr uint64_t kHDROffset = (kReadbackSize + 15) & ~uint64_t(15);
+constexpr uint64_t kWorkOffset = kHDROffset + kPixels * 16;
+constexpr uint64_t kBuildOffset = kWorkOffset + kLayers * kVirtualShadowMapWorkloadSize;
+constexpr uint64_t kWorkReadbackSize = kBuildOffset + kLayers * kVirtualShadowMapBuildDiagnosticSize;
+constexpr uint64_t kCacheOffset = kWorkReadbackSize;
+constexpr uint64_t kCacheReadbackSize = kCacheOffset + kLayers * kVirtualShadowMapCacheDiagnosticSize;
+
+class VSMQualityEvidencePass final : public UnsafePass {
+public:
+    explicit VSMQualityEvidencePass(std::shared_ptr<EvidenceState> state) : state_(std::move(state)) {}
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        auto& shadows = reflection.addTextureInput("shadows").transferRead();
+        shadows.format = Format::R8Unorm; shadows.layerCount = 0;
+        if (properties().value("debugInput", true)) {
+            auto& debug = reflection.addTextureInput("debug").transferRead();
+            debug.format = Format::RGBA8Unorm; debug.layerCount = 0;
+        }
+        const bool captureHDR = properties().value("captureHDR", false);
+        if (captureHDR) { reflection.addTextureInput("hdr").transferRead().format = Format::Unknown; }
+        reflection.addTextureInput("depth").transferRead().format = Format::D32Sfloat;
+        reflection.addBufferInput("statistics").buffer(kLayers * kVirtualShadowMapFaceStatisticsSize).transferRead();
+        reflection.addBufferInput("lights").buffer(kTableSize).transferRead();
+        reflection.addBufferInput("memory").buffer(8 * sizeof(uint64_t)).transferRead();
+        const bool captureWork = properties().value("captureWork", false);
+        if (captureWork) {
+            reflection.addBufferInput("workload").buffer(kLayers * kVirtualShadowMapWorkloadSize).transferRead();
+            reflection.addBufferInput("buildDiagnostics").buffer(kLayers * kVirtualShadowMapBuildDiagnosticSize).transferRead();
+        }
+        const bool captureCache = properties().value("captureCache", false);
+        if (captureCache) {
+            reflection.addBufferInput("cacheDiagnostics").buffer(kLayers * kVirtualShadowMapCacheDiagnosticSize).transferRead();
+        }
+        reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
+            .shaderRead().memoryLocation = MemoryLocation::HostUpload;
+        reflection.addBufferOutput("data").buffer(captureCache ? kCacheReadbackSize : captureWork ? kWorkReadbackSize : captureHDR ? kHDROffset + kPixels * 16 : kReadbackSize)
+            .transferWrite().hostReadback();
+        reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
+        return reflection;
+    }
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        auto& commands = context.commandBuffer();
+        auto* buffer = context.outputBuffer("data").buffer();
+        const auto name = context.properties().at("evidenceName").get<std::string>();
+        state_->buffers[name] = buffer;
+        const uint32_t layers = context.inputTexture("shadows").desc().layerCount;
+        state_->layers[name] = layers;
+        for (uint32_t layer = 0; layer < layers; ++layer) {
+            auto destination = buffer->slice({layer * kShadowStride, kPixels});
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("shadows").texture(),
+                .buffer = *destination, .width = kWidth, .height = kHeight, .baseLayer = layer}); !result) { return result; }
+            if (context.properties().value("captureDebug", false)) {
+                auto debugDestination = buffer->slice({kDebugOffset + uint64_t(layer) * kPixels * 4, kPixels * 4});
+                if (!debugDestination) { return std::unexpected(debugDestination.error()); }
+                if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("debug").texture(),
+                    .buffer = *debugDestination, .width = kWidth, .height = kHeight, .baseLayer = layer}); !result) { return result; }
+            }
+        }
+        auto depth = buffer->slice({kDepthOffset, kPixels * 4});
+        if (!depth) { return std::unexpected(depth.error()); }
+        if (auto result = commands.copyTextureToBuffer({.texture = context.inputTexture("depth").texture(),
+            .buffer = *depth, .width = kWidth, .height = kHeight}); !result) { return result; }
+        for (const auto& [name, offset, size] : {std::tuple{"statistics", kStatsOffset, uint64_t(kLayers * kVirtualShadowMapFaceStatisticsSize)},
+            std::tuple{"lights", kTableOffset, kTableSize}, std::tuple{"memory", kMemoryOffset, uint64_t(8 * sizeof(uint64_t))}}) {
+            auto source = context.inputBuffer(name).buffer()->slice({0, size});
+            auto destination = buffer->slice({offset, size});
+            if (!source) { return std::unexpected(source.error()); }
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        }
+        if (context.properties().value("captureWork", false)) {
+            for (const auto& [field, offset, size] : {
+                     std::tuple{"workload", kWorkOffset, uint64_t(kLayers * kVirtualShadowMapWorkloadSize)},
+                     std::tuple{"buildDiagnostics", kBuildOffset, uint64_t(kLayers * kVirtualShadowMapBuildDiagnosticSize)}}) {
+                auto source = context.inputBuffer(field).buffer()->slice({0, size});
+                auto destination = buffer->slice({offset, size});
+                if (!source) { return std::unexpected(source.error()); }
+                if (!destination) { return std::unexpected(destination.error()); }
+                if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+            }
+        }
+        if (context.properties().value("captureCache", false)) {
+            auto source = context.inputBuffer("cacheDiagnostics").buffer()->slice({0, kLayers * kVirtualShadowMapCacheDiagnosticSize});
+            auto destination = buffer->slice({kCacheOffset, kLayers * kVirtualShadowMapCacheDiagnosticSize});
+            if (!source) { return std::unexpected(source.error()); }
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        }
+        auto* info = context.inputBuffer("rasterInfo").buffer();
+        const void* mapped = info->map();
+        if (!mapped) { return makeError(Error::Failure); }
+        std::memcpy(&state_->camera, mapped, sizeof(state_->camera));
+        info->unmap();
+        if (context.properties().value("captureHDR", false)) {
+            const auto& hdr = context.inputTexture("hdr");
+            const Format format = hdr.desc().format;
+            require(format == Format::RGBA16Sfloat || format == Format::RGBA32Sfloat, "Quality HDR requires floating-point output");
+            state_->hdrFormats[name] = format;
+            auto destination = buffer->slice({kHDROffset, kPixels * (format == Format::RGBA16Sfloat ? 8 : 16)});
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyTextureToBuffer({.texture = hdr.texture(), .buffer = *destination,
+                .width = kWidth, .height = kHeight}); !result) { return result; }
+        }
+        if (!context.properties().value("debugInput", true)) {
+            return commands.clearColorTexture(*context.outputTexture("color").texture(), TextureLayout::TransferDestination, {0, 0, 0, 1});
+        }
+        return commands.copyTexture({.source = context.inputTexture("debug").texture(),
+            .destination = context.outputTexture("color").texture(), .width = kWidth, .height = kHeight});
+    }
+private:
+    std::shared_ptr<EvidenceState> state_;
+};
+
+struct Snapshot {
+    VirtualShadowMapLightsHeader header{};
+    std::array<VirtualShadowMapLightEntry, kCapacity> entries{};
+    std::array<std::array<uint32_t, 32>, kLayers> statistics{};
+    std::array<std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount>, kLayers> cacheDiagnostics{};
+    std::array<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>, kLayers> workload{};
+    std::array<std::array<uint64_t, kVirtualShadowMapBuildDiagnosticCounterCount>, kLayers> buildDiagnostics{};
+    std::array<std::vector<uint8_t>, kLayers> shadows;
+    std::array<std::vector<uint8_t>, kLayers> debug;
+    std::array<uint64_t, 8> memory{};
+    std::vector<float> depth;
+    std::vector<uint8_t> hdr;
+    Format hdrFormat = Format::Unknown;
+    VisibilityBufferFrameInfo camera;
+};
+Snapshot snapshot(const std::string& name, bool captureDebug = false, bool captureHDR = false, bool captureWork = false, bool captureCache = false)
+{
+    Snapshot result;
+    auto* buffer = evidence->buffers.at(name);
+    buffer->invalidate();
+    const auto* mapped = static_cast<const std::byte*>(buffer->map());
+    require(mapped != nullptr, "Map VSM quality evidence");
+    for (uint32_t layer = 0; layer < kLayers; ++layer) {
+        result.shadows[layer].resize(kPixels, 255);
+        if (layer < evidence->layers.at(name)) {
+            std::memcpy(result.shadows[layer].data(), mapped + layer * kShadowStride, kPixels);
+            if (captureDebug) {
+                result.debug[layer].resize(kPixels * 4);
+                std::memcpy(result.debug[layer].data(), mapped + kDebugOffset + uint64_t(layer) * kPixels * 4, kPixels * 4);
+            }
+        }
+    }
+    result.depth.resize(kPixels);
+    std::memcpy(result.depth.data(), mapped + kDepthOffset, kPixels * 4);
+    std::memcpy(result.statistics.data(), mapped + kStatsOffset, sizeof(result.statistics));
+    std::memcpy(&result.header, mapped + kTableOffset, sizeof(result.header));
+    std::memcpy(result.memory.data(), mapped + kMemoryOffset, sizeof(result.memory));
+    std::memcpy(result.entries.data(), mapped + kTableOffset + sizeof(result.header), sizeof(result.entries));
+    if (captureWork) {
+        std::memcpy(result.workload.data(), mapped + kWorkOffset, sizeof(result.workload));
+        std::memcpy(result.buildDiagnostics.data(), mapped + kBuildOffset, sizeof(result.buildDiagnostics));
+    }
+    if (captureCache) { std::memcpy(result.cacheDiagnostics.data(), mapped + kCacheOffset, sizeof(result.cacheDiagnostics)); }
+    if (captureHDR) {
+        result.hdrFormat = evidence->hdrFormats.at(name);
+        const uint32_t componentBytes = result.hdrFormat == Format::RGBA16Sfloat ? 2 : 4;
+        result.hdr.resize(kPixels * 4 * componentBytes);
+        std::memcpy(result.hdr.data(), mapped + kHDROffset, result.hdr.size());
+    }
+    buffer->unmap(); result.camera = evidence->camera;
+    for (size_t offset = 0; offset < result.hdr.size();) {
+        if (result.hdrFormat == Format::RGBA16Sfloat) {
+            uint16_t bits; std::memcpy(&bits, result.hdr.data() + offset, sizeof(bits)); offset += sizeof(bits);
+            require((bits & 0x7c00u) != 0x7c00u, "Quality consumer produced nonfinite half HDR");
+        } else {
+            float value; std::memcpy(&value, result.hdr.data() + offset, sizeof(value)); offset += sizeof(value);
+            require(std::isfinite(value), "Quality consumer produced nonfinite HDR");
+        }
+    }
+    require(result.header.version == kVirtualShadowMapLightsVersion && result.header.capacity == kCapacity,
+        "VSM quality publication ABI mismatch");
+    return result;
+}
+
+struct AuthoredTriangle { Point a, b, c; };
+struct Fixture {
+    std::vector<AuthoredTriangle> triangles;
+    std::filesystem::path source, cache;
+    uint32_t publishedPrimitives = 0, terminalTriangles = 0;
+};
+
+void addFixtureQuad(Fixture& fixture, Point center, Point u, Point v)
+{
+    const Point a = add(add(center, scale(u, -1)), scale(v, -1));
+    const Point b = add(add(center, u), scale(v, -1));
+    const Point c = add(add(center, u), v), d = add(add(center, scale(u, -1)), v);
+    fixture.triangles.push_back({a,b,c}); fixture.triangles.push_back({a,c,d});
+}
+
+Fixture writeFixture(const std::filesystem::path& directory, bool room, double blockerHeight = 1.5,
+    double blockerHalfExtent = .8, const Fixture* authored = nullptr, bool splitNodes = false)
+{
+    std::filesystem::create_directories(directory);
+    Fixture fixture;
+    if (authored) {
+        fixture = *authored;
+    } else if (!room) {
+        addFixtureQuad(fixture, {0,0,0}, {8,0,0}, {0,0,-8});
+        addFixtureQuad(fixture, {0,blockerHeight,0}, {blockerHalfExtent,0,0}, {0,0,blockerHalfExtent});
+    } else {
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            for (double sign : {-1., 1.}) {
+                Point center{}, u{}, v{}; center[axis] = sign * 6;
+                u[(axis + 1) % 3] = 6; v[(axis + 2) % 3] = 6;
+                addFixtureQuad(fixture, center, u, v);
+                center[axis] = sign * 2;
+                addFixtureQuad(fixture, center, scale(u, .1), scale(v, .1));
+            }
+        }
+        // Each cube seam has a blocker whose shadow crosses the face boundary.
+        // Its normal points away from the light, so both faces see the same quad.
+        for (uint32_t first = 0; first < 3; ++first) {
+            for (uint32_t second = first + 1; second < 3; ++second) {
+                for (double a : {-1., 1.}) { for (double b : {-1., 1.}) {
+                    Point center{}, u{}, v{}; center[first] = a * 2; center[second] = b * 2;
+                    u[first] = .45 * a; u[second] = -.45 * b; v[3 - first - second] = .65;
+                    addFixtureQuad(fixture, center, u, v);
+                }}
+            }
+        }
+    }
+    if (room) {
+        for (double x : {-1., 1.}) { for (double y : {-1., 1.}) { for (double z : {-1., 1.}) {
+            const Point center{2*x,2*y,2*z}, normal = normalized(center);
+            const Point tangent = normalized(cross(normal,Point{0,1,0}));
+            addFixtureQuad(fixture,center,scale(tangent,.6),scale(cross(normal,tangent),.6));
+        }}}
+    }
+    std::vector<float> positions, normals, uv;
+    std::vector<uint32_t> indices;
+    Point minimum{1e30,1e30,1e30}, maximum{-1e30,-1e30,-1e30};
+    for (const auto& triangle : fixture.triangles) {
+        const Point normal = normalized(cross(add(triangle.b, scale(triangle.a, -1)), add(triangle.c, scale(triangle.a, -1))));
+        for (Point vertex : {triangle.a, triangle.b, triangle.c}) {
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                positions.push_back(float(vertex[axis])); normals.push_back(float(normal[axis]));
+                minimum[axis] = std::min(minimum[axis], vertex[axis]); maximum[axis] = std::max(maximum[axis], vertex[axis]);
+            }
+            uv.insert(uv.end(), {0,0}); indices.push_back(uint32_t(indices.size()));
+        }
+    }
+    const uint64_t positionBytes = positions.size() * 4, normalBytes = normals.size() * 4, uvBytes = uv.size() * 4;
+    {
+        std::ofstream binary(directory / "Scene.bin", std::ios::binary);
+        for (const auto& values : {positions, normals, uv}) { binary.write(reinterpret_cast<const char*>(values.data()), values.size() * 4); }
+        binary.write(reinterpret_cast<const char*>(indices.data()), indices.size() * 4);
+        require(bool(binary), "Write local-light authored triangles");
+    }
+    Json gltf;
+    gltf["asset"] = {{"version", "2.0"}}; gltf["scene"] = 0;
+    gltf["scenes"] = Json::array({Json{{"nodes", {0}}}});
+    gltf["nodes"] = Json::array({Json{{"name", "AuthoredGeometry"}, {"mesh", 0}}});
+    gltf["buffers"] = Json::array({Json{{"uri", "Scene.bin"}, {"byteLength", positionBytes + normalBytes + uvBytes + indices.size() * 4}}});
+    gltf["bufferViews"] = Json::array();
+    uint64_t offset = 0;
+    for (uint64_t bytes : {positionBytes, normalBytes, uvBytes, uint64_t(indices.size() * 4)}) {
+        gltf["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", offset}, {"byteLength", bytes}}); offset += bytes;
+    }
+    gltf["accessors"] = Json::array({
+        Json{{"bufferView",0},{"componentType",5126},{"count",indices.size()},{"type","VEC3"},{"min",minimum},{"max",maximum}},
+        Json{{"bufferView",1},{"componentType",5126},{"count",indices.size()},{"type","VEC3"}},
+        Json{{"bufferView",2},{"componentType",5126},{"count",indices.size()},{"type","VEC2"}},
+        Json{{"bufferView",3},{"componentType",5125},{"count",indices.size()},{"type","SCALAR"}}});
+    Json primitive{{"attributes",{{"POSITION",0},{"NORMAL",1},{"TEXCOORD_0",2}}},{"indices",3},{"material",0}};
+    Json primitives=Json::array();
+    if (room || authored || splitNodes) {
+        // Keep each authored quad in its own primitive. The quality reference
+        // requires the complete geometry even on the locked stream terminal
+        // cut; combining all quads can introduce a simplified parent.
+        for (size_t quad=0; quad<fixture.triangles.size()/2; ++quad) {
+            primitive["indices"]=gltf["accessors"].size();
+            gltf["accessors"].push_back({{"bufferView",3},{"byteOffset",quad*6*sizeof(uint32_t)},
+                {"componentType",5125},{"count",6},{"type","SCALAR"}});
+            primitives.push_back(primitive);
+        }
+    } else { primitives.push_back(primitive); }
+    fixture.publishedPrimitives=static_cast<uint32_t>(primitives.size());
+    if (splitNodes) {
+        gltf["meshes"] = Json::array(); gltf["nodes"] = Json::array();
+        gltf["scenes"][0]["nodes"] = Json::array();
+        for (size_t index = 0; index < primitives.size(); ++index) {
+            gltf["meshes"].push_back({{"primitives", Json::array({primitives[index]})}});
+            gltf["nodes"].push_back({{"name", "AuthoredQuad" + std::to_string(index)}, {"mesh", index}});
+            gltf["scenes"][0]["nodes"].push_back(index);
+        }
+    } else { gltf["meshes"] = Json::array({Json{{"primitives",std::move(primitives)}}}); }
+    Json material{{"name","LocalShadowOpaque"},{"doubleSided",true}};
+    material["pbrMetallicRoughness"] = {{"baseColorFactor",{.7,.7,.7,1}},{"metallicFactor",0},{"roughnessFactor",1}};
+    gltf["materials"] = Json::array({material});
+    fixture.source = directory / "Scene.gltf"; fixture.cache = directory / "Scene.meshstream.bin";
+    std::ofstream(fixture.source) << gltf.dump(2) << '\n';
+    std::string log;
+    const auto cooked = scene::buildMeshletStreamAssetOffline({.sourcePath = fixture.source, .outputPath = fixture.cache,
+        .compressionMode = scene::MeshletStreamPayloadCompression::Reference}, log);
+    require(cooked, "Cook local-light fixture: " + log);
+    scene::MeshletStreamAsset asset;
+    require(asset.open(fixture.cache,log),"Open quality stream geometry: "+log);
+    require(asset.primitiveCount()==fixture.publishedPrimitives,"Quality primitive publication changed");
+    for (const auto& instance : asset.instances()) {
+        for (uint32_t group : asset.primitiveTerminalGroups(instance.primitiveIndex)) {
+            const uint32_t page=asset.groups()[group].pageIndex;
+            std::vector<uint8_t> scratch;
+            std::span<const uint8_t> payload;
+            require(scene::decodeMeshletStreamPayloadForDevice(asset.pages()[page],asset.pagePayload(page),scratch,payload,log),
+                "Decode quality terminal geometry: "+log);
+            scene::MeshletStreamPayloadHeader header;
+            require(payload.size()>=sizeof(header),"Quality terminal payload lacks header");
+            std::memcpy(&header,payload.data(),sizeof(header));
+            for (uint32_t cluster=0; cluster<header.clusterCount; ++cluster) {
+                scene::MeshletStreamPayloadCluster value;
+                const size_t offset=header.clusterOffsetBytes+cluster*sizeof(value);
+                require(offset+sizeof(value)<=payload.size(),"Quality terminal cluster is outside payload");
+                std::memcpy(&value,payload.data()+offset,sizeof(value));
+                fixture.terminalTriangles+=value.triangleCount;
+            }
+        }
+    }
+    require(fixture.terminalTriangles==fixture.triangles.size(),"Quality stream terminal cut differs from authored geometry");
+    return fixture;
+}
+
+double triangleDistance(Point origin, Point direction, const AuthoredTriangle& triangle)
+{
+    const Point e1 = add(triangle.b, scale(triangle.a, -1)), e2 = add(triangle.c, scale(triangle.a, -1));
+    const Point p = cross(direction, e2);
+    const double determinant = dot(e1, p);
+    if (std::abs(determinant) < 1e-12) { return 1e30; }
+    const Point t = add(origin, scale(triangle.a, -1));
+    const double u = dot(t, p) / determinant;
+    const Point q = cross(t, e1);
+    const double v = dot(direction, q) / determinant, distance = dot(e2, q) / determinant;
+    // A ray exactly on the room's shared edge can round u+v to
+    // 1.0000000000000002 for both adjacent walls. Keep that closed boundary;
+    // this tolerance is in double barycentrics, not a screen-pixel exclusion.
+    constexpr double kBarycentricRoundoff = 1e-12;
+    return u >= -kBarycentricRoundoff && v >= -kBarycentricRoundoff &&
+        u + v <= 1 + kBarycentricRoundoff && distance > 1e-7 ? distance : 1e30;
+}
+
+struct Hit { Point position{}, normal{}; double depth = 0; bool valid = false; size_t triangleIndex = 0; };
+
+Hit cameraHit(const VisibilityBufferFrameInfo& camera, uint32_t x, uint32_t y, const Fixture& fixture)
+{
+    const Point eye = point(camera.eye), forward = normalized(add(point(camera.center),scale(eye,-1)));
+    const Point right = normalized(cross(forward,point(camera.upProjection))), up = cross(right,forward);
+    const bool orthographic = camera.upProjection[3] > .5f;
+    const double halfHeight = orthographic ? camera.clipOrtho[2] * .5 : std::tan(camera.viewport[3] * .5);
+    const Point lateral = add(scale(right,(2 * (x + .5 + camera.jitter[0]) / kWidth - 1) * camera.viewport[0] * halfHeight),
+        scale(up,(1 - 2 * (y + .5 + camera.jitter[1]) / kHeight) * halfHeight));
+    const Point origin = orthographic ? add(eye,lateral) : eye, direction = orthographic ? forward : add(forward,lateral);
+    Hit result; double nearest = 1e30;
+    for (size_t triangleIndex = 0; triangleIndex < fixture.triangles.size(); ++triangleIndex) {
+        const auto& triangle = fixture.triangles[triangleIndex];
+        const double distance = triangleDistance(origin,direction,triangle);
+        const Point position = add(origin,scale(direction,distance));
+        const double viewZ = dot(add(position,scale(eye,-1)),forward);
+        if (distance >= nearest || viewZ < camera.clipOrtho[0] || viewZ > camera.clipOrtho[1]) { continue; }
+        nearest = distance; result.valid = true; result.position = position; result.triangleIndex = triangleIndex;
+        result.normal = normalized(cross(add(triangle.b,scale(triangle.a,-1)),add(triangle.c,scale(triangle.a,-1))));
+        const double n = camera.clipOrtho[0], f = camera.clipOrtho[1];
+        result.depth = orthographic ? (f-viewZ)/(f-n) : n*(f-viewZ)/(viewZ*(f-n));
+    }
+    return result;
+}
+
+uint32_t pointFace(Point direction)
+{
+    uint32_t axis = 0;
+    if (std::abs(direction[1]) > std::abs(direction[axis])) { axis = 1; }
+    if (std::abs(direction[2]) > std::abs(direction[axis])) { axis = 2; }
+    return axis * 2 + (direction[axis] < 0 ? 1 : 0);
+}
+
+struct Source {
+    std::string kind;
+    Point position{-2,4,0};
+    Point direction{.6,-1,0};
+    double size = .35;
+};
+
+RenderGraph makeGraph(const Fixture& fixture, const std::string& filter = "smrt", bool compactComparison = false,
+    uint32_t virtualPagesPerAxis = 16)
+{
+    RenderGraph graph;
+    graph.setName("VirtualShadowMapQuality");
+    graph.setViewProperties({{"temporalJitter",false},
+        {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
+    graph.addNode("VisibilityBufferPass", "Raster", {{"path",fixture.source.generic_string()},
+        {"streamAssetPath",fixture.cache.generic_string()},{"autoBuildStreamAsset",false},
+        {"maxResidentPages",128},{"maxLockedFallbackPages",128},{"maxActiveGroups",512},
+        {"maxGpuPageRequests",512},{"maxTraversalWorkers",64},{"maxTraversalWorkItems",1024},
+        {"autoLod",false},{"lodLevel",0},{"instanceFrustumCull",false},{"meshletFrustumCull",false},
+        {"instanceHzbCull",false},{"meshletHzbCull",false},
+        {"meshletNormalConeCull",false},{"hybridRaster",false},{"enableClas",false},{"enableClusterRtx",false}});
+    const std::vector<const char*> names = compactComparison ? std::vector<const char*>{"Cached", "Compact"} :
+        std::vector<const char*>{"Cached", "Redraw", "Hard"};
+    for (const char* name : names) {
+        graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kCapacity},{"physicalPageBudget",2048},
+            {"pageSize",128},{"virtualPagesPerAxis",virtualPagesPerAxis},{"clipmapCount",4},{"firstClipmapExtent",4},
+            {"maxWorkItems",131072},{"shadowBias",.002},{"cacheEnabled",true},
+            {"forceRedraw",std::string_view(name)=="Redraw"},{"filter",std::string_view(name)=="Hard" ? "hard" : filter},
+            {"pcfRadius",1.5},{"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},
+            {"receiverFootprint",true},{"compactOutputs",std::string_view(name)=="Compact"}});
+        graph.addEdge("Raster.depth",std::string(name)+".depth");
+        graph.addEdge("Raster.visibility",std::string(name)+".visibility");
+        graph.addEdge("Raster.rasterInfo",std::string(name)+".rasterInfo");
+        const std::string readback=std::string(name)+"Evidence";
+        graph.addNode("VSMQualityEvidencePass",readback,{{"evidenceName",name},{"captureDebug",compactComparison}});
+        for (const char* field : {"shadows","debug","lights","statistics","memory"}) {
+            graph.addEdge(std::string(name)+"."+field,readback+"."+field);
+        }
+        graph.addEdge("Raster.depth",readback+".depth");
+        graph.addEdge("Raster.rasterInfo",readback+".rasterInfo");
+        graph.markOutput(readback+".color");
+    }
+    return graph;
+}
+
+void setProperty(RenderGraph& graph, const char* property, const Json& value)
+{
+    for (const char* node : {"Cached","Redraw"}) {
+        require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,property,value),
+            std::string("Set VSM quality ")+property);
+    }
+}
+
+void publishSource(scene::SceneDocument& scene, RenderGraphPreviewRenderer& preview, const Source& source)
+{
+    environment::WorldEnvironment world;
+    world.sun.enabled=source.kind=="Directional"; world.moon.enabled=false;
+    world.sun.direction=float3(float(source.direction[0]),float(source.direction[1]),float(source.direction[2]));
+    world.sun.illuminance=3; world.sun.angularRadius=float(source.size);
+    require(environment::validWorldEnvironment(world),"Validate quality celestial source");
+    (void)preview.setWorldEnvironment(world);
+    auto lighting=scene.lighting(); lighting.autoExposure.enabled=false;
+    if (source.kind=="Directional") { lighting.lights.clear(); }
+    else {
+        if (lighting.lights.empty()) { lighting.lights.emplace_back(); }
+        auto& light=lighting.lights[0];
+        light.name=source.kind; light.properties.type=source.kind=="Point" ? "point" : "spot";
+        light.position=float3(float(source.position[0]),float(source.position[1]),float(source.position[2]));
+        light.direction=float3(0,-1,0); light.properties.range=30; light.properties.intensity=80;
+        light.properties.outerConeAngle=1.2; light.properties.innerConeAngle=.8;
+        light.properties.sourceRadius=source.size;
+    }
+    require(scene.setLighting(lighting),"Publish quality local source");
+    (void)preview.setLighting(scene.lighting());
+}
+
+void configurePreview(RenderGraphPreviewRenderer& preview, scene::SceneDocument& scene,
+    RenderView& view, RHITestContext& context, bench::ValidationRecorder& validation)
+{
+    preview.bindRuntimeScene(&scene);
+    require(view.setRenderResolution(kWidth,kHeight),"Set quality render extent");
+    require(view.setCamera({.eye={0,5,7},.center={0,0,0},.fovDegrees=52,
+        .nearPlane=.1f,.farPlane=100,.orthoHeight=7}),"Set quality camera");
+    preview.bindRenderView(&view);
+    require(preview.initialize(context.enableValidation,false,false,context.enableValidation,validation.sink()),
+        "Initialize quality preview without ray query");
+    preview.setEnvironment({.enabled=false});
+}
+
+const VirtualShadowMapLightEntry& activeEntry(const Snapshot& image)
+{
+    const VirtualShadowMapLightEntry* result=nullptr;
+    for (uint32_t index=0; index<image.header.count; ++index) {
+        if (image.entries[index].status==kVirtualShadowMapLightAdmitted) {
+            require(result==nullptr,"Quality fixture unexpectedly admitted multiple sources");
+            result=&image.entries[index];
+        }
+    }
+    require(result!=nullptr,"Quality fixture did not admit its source");
+    return *result;
+}
+
+std::vector<uint8_t> visibility(const Snapshot& image, const Fixture& fixture, const Source& source)
+{
+    const auto& entry=activeEntry(image);
+    std::vector<uint8_t> result(kPixels,255);
+    for (uint32_t y=0; y<kHeight; ++y) { for (uint32_t x=0; x<kWidth; ++x) {
+        const size_t pixel=size_t(y)*kWidth+x;
+        const auto hit=cameraHit(image.camera,x,y,fixture);
+        if (!hit.valid) { continue; }
+        const uint32_t face=entry.kind==2 ? pointFace(add(hit.position,scale(source.position,-1))) : 0;
+        result[pixel]=image.shadows[entry.baseLayer+face][pixel];
+    }}
+    return result;
+}
+
+void saveGray(const std::filesystem::path& path, const std::vector<uint8_t>& pixels)
+{
+    std::vector<uint8_t> rgba(kPixels*4,255);
+    for (size_t pixel=0; pixel<kPixels; ++pixel) {
+        rgba[pixel*4]=rgba[pixel*4+1]=rgba[pixel*4+2]=pixels[pixel];
+    }
+    std::string error;
+    require(saveRgba8Png(path,rgba.data(),kWidth,kHeight,error),"Save VSM quality image: "+error);
+}
+
+// Independent area-light reference: authored double triangles and a polar
+// 16x16 stratification, unrelated to the GPU's finite-ray sampling sequence or
+// virtual projections. It deliberately models geometric binary visibility,
+// without BRDF, irradiance or any GPU readback other than receiver depth.
+double referenceVisibility(const Hit& hit, const Fixture& fixture, const Source& source)
+{
+    const Point toLight=source.kind=="Directional" ? normalized(scale(source.direction,-1)) :
+        normalized(add(source.position,scale(hit.position,-1)));
+    const Point tangent=normalized(cross(toLight,std::abs(toLight[1])<.9 ? Point{0,1,0} : Point{1,0,0}));
+    const Point bitangent=cross(toLight,tangent);
+    // Keep the ground truth at the actual receiver. Moving it along the normal
+    // changes the penumbra rather than merely preventing numerical self hits;
+    // triangleDistance already rejects nonpositive/near-zero ray parameters.
+    const Point origin=hit.position;
+    const uint32_t count=source.size>0 ? 256 : 1;
+    uint32_t visible=0;
+    for (uint32_t sample=0; sample<count; ++sample) {
+        const double radius=std::sqrt((sample/16+.5)/16.);
+        const double angle=(sample%16+.5)*2*kPi/16;
+        const Point disk=add(scale(tangent,radius*std::cos(angle)),scale(bitangent,radius*std::sin(angle)));
+        Point direction; double maximum;
+        if (source.kind=="Directional") {
+            direction=normalized(add(toLight,scale(disk,std::tan(source.size)))); maximum=100;
+        } else {
+            const Point ray=add(add(source.position,scale(disk,source.size)),scale(origin,-1));
+            maximum=std::sqrt(dot(ray,ray)); direction=scale(ray,1/maximum);
+        }
+        bool blocked=false;
+        for (const auto& triangle : fixture.triangles) {
+            if (triangleDistance(origin,direction,triangle)<maximum-.001) { blocked=true; break; }
+        }
+        visible+=!blocked;
+    }
+    return double(visible)/count;
+}
+
+Json measureOracle(const Snapshot& image, const Fixture& fixture, const Source& source,
+    const std::filesystem::path& directory, const std::string& name, bool room, bool requirePenumbra = true)
+{
+    const auto actual=visibility(image,fixture,source);
+    std::vector<uint8_t> reference(kPixels,255),error(kPixels,0);
+    uint32_t checked=0,depthErrors=0,penumbra=0,interior=0,interiorErrors=0,softPixels=0,seams=0,corners=0;
+    uint32_t seamPenumbra=0,cornerPenumbra=0,seamSoftPixels=0,cornerSoftPixels=0;
+    uint32_t depthSamples=0,peripheralDepthDifferences=0;
+    double totalError=0,penumbraError=0,seamError=0,cornerError=0;
+    Json depthErrorDetails=Json::array();
+    const uint32_t stride=room ? 3 : 1;
+    for (uint32_t y=0; y<kHeight; y+=stride) { for (uint32_t x=0; x<kWidth; x+=stride) {
+        const size_t pixel=size_t(y)*kWidth+x;
+        const auto hit=cameraHit(image.camera,x,y,fixture);
+        // The planar visibility oracle is defined on |x|<=5, |z|<=4. Validate
+        // its receiver depth in the same region, including the blocker there.
+        // The finite floor's outer silhouette is outside that contract: exact
+        // double rays and hardware subpixel edge coverage need not agree there.
+        // Keep those differences in evidence instead of silently counting them
+        // as validated pixels. The room retains whole-image depth validation.
+        const bool depthRegion=room || (hit.valid && std::abs(hit.position[0])<=5 && std::abs(hit.position[2])<=4);
+        depthSamples+=depthRegion;
+        if (std::abs(image.depth[pixel]-hit.depth)>2e-5) {
+            if (depthRegion) { ++depthErrors; }
+            else { ++peripheralDepthDifferences; }
+            depthErrorDetails.push_back({{"pixel",{x,y}},{"actual",image.depth[pixel]},
+                {"expected",hit.depth},{"hitValid",hit.valid},{"insideOracleRegion",depthRegion},
+                {"position",hit.position},{"normal",hit.normal}});
+        }
+        if (!hit.valid || (!room && std::abs(hit.position[1])>.01)) { continue; }
+        if (!room && (std::abs(hit.position[0])>5 || std::abs(hit.position[2])>4)) { continue; }
+        // Spot source tests use the fully illuminated inner region. Outside the
+        // emitter's influence neutral visibility does not mean a failed trace.
+        if (source.kind=="Spot") {
+            const auto fromLight=normalized(add(hit.position,scale(source.position,-1)));
+            if (-fromLight[1]<std::cos(1.2)+.02) { continue; }
+        }
+        const double expected=referenceVisibility(hit,fixture,source), value=actual[pixel]/255.;
+        const double difference=std::abs(value-expected);
+        reference[pixel]=uint8_t(std::lround(expected*255)); error[pixel]=uint8_t(std::lround(difference*255));
+        ++checked; totalError+=difference; softPixels+=value>.05 && value<.95;
+        if (expected>.05 && expected<.95) { ++penumbra; penumbraError+=difference; }
+        if (expected==0 || expected==1) { ++interior; interiorErrors+=difference>.1; }
+        if (source.kind=="Point") {
+            auto delta=add(hit.position,scale(source.position,-1));
+            std::array<double,3> magnitude{std::abs(delta[0]),std::abs(delta[1]),std::abs(delta[2])};
+            std::sort(magnitude.begin(),magnitude.end());
+            if (magnitude[2]-magnitude[1]<.15) {
+                ++seams; seamError+=difference;
+                seamPenumbra+=expected>.05 && expected<.95; seamSoftPixels+=value>.05 && value<.95;
+            }
+            if (magnitude[2]-magnitude[0]<.3) {
+                ++corners; cornerError+=difference;
+                cornerPenumbra+=expected>.05 && expected<.95; cornerSoftPixels+=value>.05 && value<.95;
+            }
+        }
+    }}
+    saveGray(directory/(name+"-GPU.png"),actual); saveGray(directory/(name+"-CPU.png"),reference);
+    saveGray(directory/(name+"-Error.png"),error);
+    Json result{{"checked",checked},{"depthErrors",depthErrors},{"meanAbsoluteError",totalError/std::max(checked,1u)},
+        {"depthSamples",depthSamples},{"peripheralDepthDifferences",peripheralDepthDifferences},
+        {"penumbraSamples",penumbra},{"penumbraMeanAbsoluteError",penumbraError/std::max(penumbra,1u)},
+        {"interiorSamples",interior},{"interiorErrorsOverPointOne",interiorErrors},{"softPixels",softPixels},
+        {"seamSamples",seams},{"seamMeanAbsoluteError",seamError/std::max(seams,1u)},
+        {"cornerSamples",corners},{"cornerMeanAbsoluteError",cornerError/std::max(corners,1u)},
+        {"seamPenumbraSamples",seamPenumbra},{"cornerPenumbraSamples",cornerPenumbra},
+        {"seamSoftPixels",seamSoftPixels},{"cornerSoftPixels",cornerSoftPixels},
+        {"cpuLightSamples",source.size>0 ? 256 : 1},{"pixelStride",stride}};
+    Json failures=Json::array();
+    // Record all quality gates, then let the test finish its matrix before
+    // failing. Receiver depth, cache equality and validation stay immediate.
+    if (!room && source.size>0) {
+        if (totalError/checked>=.04) { failures.push_back("planar mean absolute error exceeds 0.04"); }
+        if ((requirePenumbra && penumbra<=20) || (penumbra>0 && penumbraError/penumbra>=.20)) {
+            failures.push_back("planar penumbra error exceeds 0.20 or separated fixture has no penumbra");
+        }
+        if (double(interiorErrors)/std::max(interior,1u)>=.01) { failures.push_back("planar lit/umbra interior error fraction exceeds 0.01"); }
+        if (requirePenumbra && softPixels<=20) { failures.push_back("finite emitter did not produce soft visibility"); }
+    }
+    result["qualityPassed"]=failures.empty(); result["qualityFailures"]=failures;
+    std::ofstream(directory/(name+"-Oracle.json")) << result.dump(2) << '\n';
+    if (!depthErrorDetails.empty()) {
+        Json triangles=Json::array();
+        for (const auto& triangle : fixture.triangles) { triangles.push_back({triangle.a,triangle.b,triangle.c}); }
+        std::ofstream(directory/(name+"-DepthErrors.json")) << Json{{"errors",depthErrorDetails},{"triangles",triangles},
+            {"eye",{image.camera.eye[0],image.camera.eye[1],image.camera.eye[2]}},
+            {"center",{image.camera.center[0],image.camera.center[1],image.camera.center[2]}},
+            {"upProjection",{image.camera.upProjection[0],image.camera.upProjection[1],image.camera.upProjection[2],image.camera.upProjection[3]}},
+            {"viewport",{image.camera.viewport[0],image.camera.viewport[1],image.camera.viewport[2],image.camera.viewport[3]}},
+            {"clipOrtho",{image.camera.clipOrtho[0],image.camera.clipOrtho[1],image.camera.clipOrtho[2],image.camera.clipOrtho[3]}}}.dump(2) << '\n';
+    }
+    require(checked>100 && depthErrors==0,name+": independent receiver depth mismatch");
+    return result;
+}
+
+void requireReused(const Snapshot& image, const std::string& name)
+{
+    const auto& entry=activeEntry(image);
+    for (uint32_t face=0; face<entry.faceCount; ++face) {
+        require(image.statistics[entry.baseLayer+face][16]==0 && image.statistics[entry.baseLayer+face][21]==0,
+            name+": stable cached face redrew depth");
+    }
+}
+
+Snapshot compareFrame(RenderGraphPreviewRenderer& preview, RenderGraph& graph,
+    const std::filesystem::path& directory, const std::string& name, Json& report, bool captureDebug = false)
+{
+    const auto rendered=preview.render(graph,kWidth,kHeight,"CachedEvidence.color");
+    require(rendered,"VSM quality render: "+preview.lastLog());
+    require(preview.lastLog().find("Initial material compilation failed")==std::string::npos,
+        "Quality scene rendered the error material");
+    auto cached=snapshot("Cached",captureDebug),redraw=snapshot("Redraw",captureDebug);
+    size_t mismatches=0;
+    for (uint32_t layer=0; layer<kLayers; ++layer) {
+        for (size_t pixel=0; pixel<kPixels; ++pixel) { mismatches+=cached.shadows[layer][pixel]!=redraw.shadows[layer][pixel]; }
+    }
+    report["frames"].push_back({{"name",name},{"cacheRedrawMismatches",mismatches},{"statistics",cached.statistics}});
+    std::ofstream(directory/"VirtualShadowMapQuality.json") << report.dump(2) << '\n';
+    require(mismatches==0 && cached.depth==redraw.depth,name+": cached soft shadows differ from forced redraw");
+    const auto& entry=activeEntry(cached);
+    for (uint32_t face=0; face<entry.faceCount; ++face) {
+        require(cached.statistics[entry.baseLayer+face][9]==0,name+": unresolved receiver/tap query");
+        require(cached.statistics[entry.baseLayer+face][5]==0,name+": unexpected caster work overflow");
+    }
+    return cached;
+}
+
+void verifyUnadmittedFrame(RenderGraphPreviewRenderer& preview, RenderGraph& graph,
+    const std::filesystem::path& directory, const std::string& name, Json& report)
+{
+    const auto rendered=preview.render(graph,kWidth,kHeight,"CachedEvidence.color");
+    require(rendered,"VSM unadmitted quality render: "+preview.lastLog());
+    const auto cached=snapshot("Cached"),redraw=snapshot("Redraw");
+    require(cached.shadows==redraw.shadows && cached.depth==redraw.depth,
+        name+": unadmitted cache/force outputs differ");
+    for (const auto* image : {&cached,&redraw}) {
+        require(image->header.admittedCount==0,name+": a shadow source was unexpectedly admitted");
+        for (uint32_t layer=0; layer<kLayers; ++layer) {
+            require(std::all_of(image->shadows[layer].begin(),image->shadows[layer].end(),
+                [](uint8_t value) { return value==255; }),name+": unadmitted layer is not neutral visibility");
+            require(std::all_of(image->statistics[layer].begin(),image->statistics[layer].end(),
+                [](uint32_t value) { return value==0; }),name+": unadmitted face recorded caster work");
+        }
+    }
+    report["frames"].push_back({{"name",name},{"cacheRedrawMismatches",0},{"admittedCount",0},
+        {"allVisibilityNeutral",true},{"allFaceStatisticsZero",true},{"statistics",cached.statistics}});
+    std::ofstream(directory/"VirtualShadowMapQuality.json") << report.dump(2) << '\n';
+}
+
+void registerQualityEvidence()
+{
+    static const bool registered = registerRenderGraphPassType("VSMQualityEvidencePass",
+        "Test-only filtered VSM publication readback", [] { return std::make_unique<VSMQualityEvidencePass>(evidence); });
+    require(registered, "Register VSM quality evidence pass");
+}
+
+class VirtualShadowMapQualityTest final : public RHITest {
+public:
+    VirtualShadowMapQualityTest() { type=RHITestType::Rendering; name="virtual_shadow_map_quality"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory=std::filesystem::absolute(context.outputDirectory)/"VirtualShadowMapQuality";
+        Json report{{"scope","P4 deterministic SMRT, independent area-source geometry oracle and cache equivalence"},
+            {"passed",false},{"frames",Json::array()},{"planarOracle",Json::array()},
+            {"qualityFailures",Json::array()},
+            {"settings",{{"width",kWidth},{"height",kHeight},{"pageSize",128},{"virtualPagesPerAxis",128},
+                {"clipmapCount",4},{"firstClipmapExtent",4},{"physicalPageBudget",2048},
+                {"smrtRayCount",32},{"smrtSamplesPerRay",32},{"smrtMaxRayLength",12},{"receiverFootprint",true},
+                {"shadowBiasMetres",.002},{"cpuAreaSamples",256},{"oracleOriginOffset",0},{"triangleEpsilon",1e-7},
+                {"receiverCullDisabled",true}}},
+            {"thresholds",{{"planarMeanAbsoluteError",.04},{"planarPenumbraMeanAbsoluteError",.20},
+                {"interiorFractionOverPointOne",.01},{"planarPointBoundaryMeanAbsoluteError",.20}}}};
+        bench::ValidationRecorder validation;
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto floor=writeFixture(directory/"Floor",false);
+            const auto contact=writeFixture(directory/"Contact",false,.15);
+            const auto cornerPlane=writeFixture(directory/"CornerPlane",false,1.5,.5);
+            const auto room=writeFixture(directory/"Room",true);
+            report["roomGeometry"]={{"authoredTriangles",room.triangles.size()},
+                {"publishedPrimitives",room.publishedPrimitives},{"decodedTerminalTriangles",room.terminalTriangles}};
+            auto oracle=[&](const Snapshot& image,const Fixture& fixture,const Source& source,
+                const std::string& name,bool isRoom,bool requirePenumbra=true) {
+                auto metric=measureOracle(image,fixture,source,directory,name,isRoom,requirePenumbra);
+                if (!metric["qualityPassed"].get<bool>()) {
+                    report["qualityFailures"].push_back({{"case",name},{"failures",metric["qualityFailures"]}});
+                }
+                return metric;
+            };
+            for (const std::string kind : {"Directional","Spot","Point"}) {
+                uint32_t farPenumbra=0,nearPenumbra=0;
+                for (bool nearContact : {false,true}) {
+                    const auto& authored=nearContact ? contact : floor;
+                    Fixture oracleFixture=authored;
+                    const std::string prefix=kind+(nearContact ? "-Contact" : "-Separated");
+                    validation.phase(prefix);
+                    scene::SceneDocument scene; require(scene.load(authored.source),"Load planar quality fixture");
+                    RenderView view; RenderGraphPreviewRenderer preview;
+                    configurePreview(preview,scene,view,context,validation);
+                    Source source{kind}; source.size=kind=="Directional" ? .08 : .35;
+                    publishSource(scene,preview,source);
+                    // Resolve the 24 mm directional contact penumbra even at
+                    // the receiver-selected mip. The old 16-page axis left a
+                    // 31 mm texel there and only looked sharp by requesting an
+                    // incorrectly finer mip for the first trace segment.
+                    evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(authored,"smrt",false,128);
+                    const auto first=compareFrame(preview,graph,directory,prefix+"-Initial",report);
+                    const auto metric=oracle(first,oracleFixture,source,prefix,false,!nearContact);
+                    report["planarOracle"].push_back({{"name",prefix},{"metrics",metric}});
+                    (nearContact ? nearPenumbra : farPenumbra)=metric["softPixels"].get<uint32_t>();
+                    const auto stable=compareFrame(preview,graph,directory,prefix+"-Stable",report);
+                    requireReused(stable,prefix+" stable");
+                    require(first.shadows==stable.shadows,prefix+": deterministic soft sampling changed between stable frames");
+                    if (nearContact) {
+                        require(view.setCamera({.eye={.9f,5,0},.center={.9f,0,0},.up={0,0,-1},
+                            .fovDegrees=52,.nearPlane=.1f,.farPlane=100,.orthoHeight=.8f,.orthographic=true}),
+                            "Resolve contact penumbra in a close-up view");
+                        const auto closeup=compareFrame(preview,graph,directory,prefix+"-Closeup",report);
+                        const auto closeupMetric=oracle(closeup,oracleFixture,source,prefix+"-Closeup",false);
+                        require(closeupMetric["penumbraSamples"].get<uint32_t>()>50,
+                            prefix+": close-up lacks independent penumbra sample coverage");
+                        report["planarOracle"].push_back({{"name",prefix+"-Closeup"},{"metrics",closeupMetric}});
+                        continue;
+                    }
+
+                    source.size*=.5; publishSource(scene,preview,source);
+                    const auto reduced=compareFrame(preview,graph,directory,prefix+"-HalfRadius",report);
+                    const auto& reducedEntry=activeEntry(reduced);
+                    for (uint32_t face=0; face<reducedEntry.faceCount; ++face) {
+                        require(reduced.statistics[reducedEntry.baseLayer+face][21]==0,
+                            prefix+": emitter size edit reset the entire depth cache");
+                    }
+                    source.size=0; publishSource(scene,preview,source);
+                    const auto zero=compareFrame(preview,graph,directory,prefix+"-ZeroRadius",report);
+                    require(zero.shadows==snapshot("Hard").shadows,prefix+": zero-size SMRT differs from hard shadow");
+                    source.size=kind=="Directional" ? .08 : .35; publishSource(scene,preview,source);
+                    (void)compareFrame(preview,graph,directory,prefix+"-RestoreRadius",report);
+
+                    ViewCamera movedCamera{.eye={.15f,5,7},.center={.15f,0,0},.fovDegrees=52,
+                        .nearPlane=.1f,.farPlane=100,.orthoHeight=7};
+                    require(view.setCamera(movedCamera),"Move quality camera");
+                    const auto moved=compareFrame(preview,graph,directory,prefix+"-CameraMove",report);
+                    report["planarOracle"].push_back({{"name",prefix+"-CameraMove"},
+                        {"metrics",oracle(moved,oracleFixture,source,prefix+"-CameraMove",false)}});
+                    if (kind=="Directional") { source.direction={.68,-1,.04}; }
+                    else { source.position[0]+=.2; }
+                    publishSource(scene,preview,source);
+                    const auto movedLight=compareFrame(preview,graph,directory,prefix+"-LightMove",report);
+                    report["planarOracle"].push_back({{"name",prefix+"-LightMove"},
+                        {"metrics",oracle(movedLight,oracleFixture,source,prefix+"-LightMove",false)}});
+
+                    const auto matrix=scene.nodes()[0].localMatrix;
+                    float4x4 translation; translation.SetupByTranslation(float3(.2f,0,.1f));
+                    require(scene.setNodeLocalMatrix(0,translation*matrix),"Move quality caster and receiver");
+                    for (auto& triangle : oracleFixture.triangles) {
+                        triangle.a=add(triangle.a,{.2,0,.1}); triangle.b=add(triangle.b,{.2,0,.1}); triangle.c=add(triangle.c,{.2,0,.1});
+                    }
+                    const auto movedCaster=compareFrame(preview,graph,directory,prefix+"-CasterMove",report);
+                    report["planarOracle"].push_back({{"name",prefix+"-CasterMove"},
+                        {"metrics",oracle(movedCaster,oracleFixture,source,prefix+"-CasterMove",false)}});
+
+                    setProperty(graph,"filter","pcf");
+                    const auto pcf=compareFrame(preview,graph,directory,prefix+"-PCF",report);
+                    const auto pcfPixels=visibility(pcf,oracleFixture,source);
+                    saveGray(directory/(prefix+"-PCF.png"),pcfPixels);
+                    require(std::any_of(pcfPixels.begin(),pcfPixels.end(),[](uint8_t value) { return value>0 && value<255; }),
+                        prefix+": PCF did not filter a shadow edge");
+                    setProperty(graph,"filter","smrt"); setProperty(graph,"physicalPageBudget",kind=="Point" ? 6 : 1);
+                    const auto coarse=compareFrame(preview,graph,directory,prefix+"-CoarseOnly",report);
+                    uint64_t coarseTaps=0;
+                    const auto& coarseEntry=activeEntry(coarse);
+                    for (uint32_t face=0; face<coarseEntry.faceCount; ++face) { coarseTaps+=coarse.statistics[coarseEntry.baseLayer+face][31]; }
+                    require(coarseTaps>0,prefix+": filtered coarse fallback was not observed");
+                    setProperty(graph,"physicalPageBudget",2048);
+                    (void)compareFrame(preview,graph,directory,prefix+"-PoolRecovery",report);
+                    if (kind=="Directional") {
+                        // Invalid caster-only settings must not be consumed
+                        // when admission leaves no depth work for this pass.
+                        setProperty(graph,"enabled",false); setProperty(graph,"tessellationFactor",0);
+                        verifyUnadmittedFrame(preview,graph,directory,prefix+"-DisabledSkipsCasters",report);
+                        setProperty(graph,"enabled",true); setProperty(graph,"physicalPageBudget",0);
+                        verifyUnadmittedFrame(preview,graph,directory,prefix+"-ZeroBudgetSkipsCasters",report);
+                        setProperty(graph,"tessellationFactor",4); setProperty(graph,"physicalPageBudget",2048);
+                    }
+                }
+                const bool narrowed=farPenumbra>nearPenumbra*1.3;
+                report["contactHardening"][kind]={{"separatedSoftPixels",farPenumbra},{"contactSoftPixels",nearPenumbra},{"passed",narrowed}};
+                if (!narrowed) { report["qualityFailures"].push_back({{"case",kind},{"failure","penumbra did not narrow near contact"}}); }
+            }
+
+            {
+                // Projection ratio 4/(4-1.5)=1.6 places this blocker's shadow
+                // at [0.4,2] x [0.4,2] on y=0. With the source at (-2,4,-2),
+                // its right/top edges are the X/Y and Z/Y face seams, and the
+                // corner (2,0,2) meets +X/-Y/+Z. The penumbra therefore crosses
+                // actual shadow edges at the face boundary in a single layer.
+                scene::SceneDocument scene; require(scene.load(cornerPlane.source),"Load planar point corner fixture");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview,scene,view,context,validation);
+                Source source{"Point",{-2,4,-2},{0,-1,0},.35}; publishSource(scene,preview,source);
+                evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(cornerPlane,"smrt",false,128);
+                const std::string name="PointCornerPlane"; validation.phase(name);
+                const auto image=compareFrame(preview,graph,directory,name,report);
+                const auto metric=oracle(image,cornerPlane,source,name,false);
+                report["planarPointBoundaryOracle"]=metric;
+                const bool boundarySamples=metric["seamPenumbraSamples"].get<uint32_t>()>0 && metric["cornerPenumbraSamples"].get<uint32_t>()>0 &&
+                    metric["seamSoftPixels"].get<uint32_t>()>0 && metric["cornerSoftPixels"].get<uint32_t>()>0;
+                const bool boundaryError=metric["seamMeanAbsoluteError"].get<double>()<.20 && metric["cornerMeanAbsoluteError"].get<double>()<.20;
+                report["planarPointBoundaryOracle"]["boundaryQualityPassed"]=boundarySamples && boundaryError;
+                if (!boundarySamples || !boundaryError) { report["qualityFailures"].push_back({{"case",name},
+                    {"failure",!boundarySamples ? "no soft seam/corner samples" : "seam/corner mean absolute error exceeds 0.20"}}); }
+                const auto stable=compareFrame(preview,graph,directory,name+"-Stable",report);
+                requireReused(stable,name);
+                require(image.shadows==stable.shadows,"Planar point seam/corner shadows are not stable");
+            }
+
+            // Room covers all twelve two-face seams and all eight three-face
+            // corners. Its multi-layer approximation metrics are evidence,
+            // while cache/force equality and resolved queries remain strict.
+            for (bool stream : {false,true}) {
+                scene::SceneDocument scene;
+                require(stream ? scene.loadStreamMetadata(room.source) : scene.load(room.source),"Load point corner quality fixture");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview,scene,view,context,validation);
+                Source source{"Point",{0,0,0},{0,-1,0},.2}; publishSource(scene,preview,source);
+                evidence=std::make_shared<EvidenceState>(); auto graph=makeGraph(room,"smrt",false,128);
+                const std::string prefix=stream ? "StreamRoom" : "ResidentRoom";
+                uint64_t seamSamples=0,cornerSamples=0;
+                uint32_t viewIndex=0;
+                auto renderView=[&](Point eye,Point target,Point up) {
+                    ViewCamera camera;
+                    for (uint32_t axis=0; axis<3; ++axis) {
+                        camera.eye[axis]=float(eye[axis]); camera.center[axis]=float(target[axis]); camera.up[axis]=float(up[axis]);
+                    }
+                    camera.fovDegrees=65; camera.nearPlane=.05f; camera.farPlane=30;
+                    require(view.setCamera(camera),"Set point seam/corner view");
+                    const std::string name=prefix+"-View"+std::to_string(viewIndex++);
+                    validation.phase(name);
+                    const auto image=compareFrame(preview,graph,directory,name,report);
+                    const auto metric=oracle(image,room,source,name,true);
+                    seamSamples+=metric["seamSamples"].get<uint32_t>(); cornerSamples+=metric["cornerSamples"].get<uint32_t>();
+                    report["pointBoundaryOracle"].push_back({{"name",name},{"metrics",metric}});
+                };
+                for (uint32_t first=0; first<3; ++first) { for (uint32_t second=first+1; second<3; ++second) {
+                    for (double a : {-1.,1.}) { for (double b : {-1.,1.}) {
+                        Point eye{},target{},up{}; const uint32_t third=3-first-second;
+                        eye[third]=3; target[first]=6*a; target[second]=6*b; up[third]=1;
+                        renderView(eye,target,up);
+                    }}
+                }}
+                for (double x : {-1.,1.}) { for (double y : {-1.,1.}) { for (double z : {-1.,1.}) {
+                    renderView({0,0,3*z},{6*x,6*y,6*z},{0,1,0});
+                }}}
+                require(seamSamples>100 && cornerSamples>20,prefix+": point boundary oracle lacked seam/corner samples");
+                report[prefix]={{"seamSamples",seamSamples},{"cornerSamples",cornerSamples},{"views",viewIndex}};
+            }
+            report["validation"]=validation.snapshot();
+            require(!validation.failed(),"VSM quality Vulkan validation reported an error");
+            report["qualityPassed"]=report["qualityFailures"].empty();
+            require(report["qualityPassed"].get<bool>(),"VSM quality thresholds failed; see the complete qualityFailures matrix");
+            report["passed"]=true;
+            std::ofstream(directory/"VirtualShadowMapQuality.json") << report.dump(2) << '\n';
+            return RHITestResult::pass("VSM SMRT/PCF planar area-light oracle, contact hardening, cache motion and point boundaries");
+        } catch (const std::exception& error) {
+            report["error"]=error.what(); report["validation"]=validation.snapshot();
+            std::ofstream(directory/"VirtualShadowMapQuality.json") << report.dump(2) << '\n';
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+class VirtualShadowMapCompactTest final : public RHITest {
+public:
+    VirtualShadowMapCompactTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_compact"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapCompact";
+        Json report{{"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto floor = writeFixture(directory / "Floor", false);
+            const auto room = writeFixture(directory / "Room", true);
+            const auto compare = [&](RenderGraphPreviewRenderer& preview, RenderGraph& graph, const std::string& name) {
+                validation.phase(name);
+                require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"),
+                    "Compact VSM render: " + preview.lastLog());
+                const auto legacy = snapshot("Cached", true), compact = snapshot("Compact", true);
+                require(legacy.depth == compact.depth, name + ": receiver depth mismatch");
+                require(legacy.header.reserved[0] == 0 && compact.header.reserved[0] == 1, name + ": layout flags");
+                require(legacy.memory[3] == compact.memory[3] * 6 && legacy.memory[1] == 0 && compact.memory[1] == 0,
+                    name + ": direct array projection retained private face outputs");
+                require(legacy.memory[0] == compact.memory[0] && legacy.memory[4] == compact.memory[4] &&
+                    legacy.memory[5] == compact.memory[5], name + ": compact projection changed atlas allocation");
+                uint64_t visibilityMismatches = 0, debugMismatches = 0, unavailableDebugFaces = 0;
+                for (uint32_t index = 0; index < legacy.header.count; ++index) {
+                    const auto& a = legacy.entries[index];
+                    const auto& b = compact.entries[index];
+                    require(a.source == b.source && a.faceCount == b.faceCount && a.status == b.status &&
+                        a.pageBudget == b.pageBudget && b.baseLayer == index, name + ": compact table identity");
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const auto pixel = size_t(y) * kWidth + x;
+                        const uint32_t faceCount = a.kind == 2 && a.status == kVirtualShadowMapLightAdmitted ? 6 : 1;
+                        uint8_t expectedShadow = 255;
+                        std::array<uint8_t, 4> expectedDebug{};
+                        uint32_t coloredFaces = 0;
+                        for (uint32_t face = 0; face < faceCount; ++face) {
+                            const auto layer = a.baseLayer + face;
+                            expectedShadow = std::min(expectedShadow, legacy.shadows[layer][pixel]);
+                            // Grid projection can leave an omitted job at the magenta/white
+                            // clear value. That sentinel does not establish face ownership.
+                            const bool unavailableDebug = legacy.shadows[layer][pixel] == 255 &&
+                                legacy.debug[layer][pixel * 4] == 255 && legacy.debug[layer][pixel * 4 + 1] == 0 &&
+                                legacy.debug[layer][pixel * 4 + 2] == 255;
+                            unavailableDebugFaces += unavailableDebug;
+                            coloredFaces += !unavailableDebug && (legacy.debug[layer][pixel * 4] ||
+                                legacy.debug[layer][pixel * 4 + 1] || legacy.debug[layer][pixel * 4 + 2]);
+                            for (uint32_t channel = 0; channel < 4; ++channel) {
+                                expectedDebug[channel] = std::max(expectedDebug[channel], legacy.debug[layer][pixel * 4 + channel]);
+                            }
+                        }
+                        require(coloredFaces <= 1, name + ": multiple point faces own the same receiver");
+                        visibilityMismatches += expectedShadow != compact.shadows[b.baseLayer][pixel];
+                        for (uint32_t channel = 0; channel < 4; ++channel) {
+                            debugMismatches += expectedDebug[channel] != compact.debug[b.baseLayer][pixel * 4 + channel];
+                        }
+                    }}
+                }
+                report["frames"].push_back({{"name", name}, {"visibilityMismatches", visibilityMismatches},
+                    {"debugMismatches", debugMismatches}, {"unavailableDebugFaces", unavailableDebugFaces},
+                    {"legacyMemory", legacy.memory}, {"compactMemory", compact.memory}});
+                require(visibilityMismatches == 0 && debugMismatches == 0, name + ": compact differs from canonical legacy face");
+            };
+            for (const std::string filter : {"hard", "pcf", "smrt"}) {
+                for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                    scene::SceneDocument scene; require(scene.load(floor.source), "Load compact VSM fixture");
+                    RenderView view; RenderGraphPreviewRenderer preview;
+                    configurePreview(preview, scene, view, context, validation);
+                    Source source{kind}; source.size = kind == "Directional" ? .08 : .35;
+                    publishSource(scene, preview, source);
+                    evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(floor, filter, true);
+                    const auto name = filter + "-" + kind;
+                    compare(preview, graph, name + "-Cold");
+                    compare(preview, graph, name + "-Warm");
+                    if (filter == "hard" && kind == "Directional") {
+                        for (const char* node : {"Cached", "Compact"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "enabled", false), "Disable compact shadows");
+                        }
+                        compare(preview, graph, name + "-Disabled");
+                        for (const char* node : {"Cached", "Compact"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "enabled", true), "Enable compact shadows");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "physicalPageBudget", 0), "Remove compact budget");
+                        }
+                        compare(preview, graph, name + "-ZeroBudget");
+                    }
+                }
+            }
+            {
+                scene::SceneDocument scene; require(scene.loadStreamMetadata(room.source), "Load compact Stream room");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                Source source{"Point", {0,0,0}, {0,-1,0}, .2}; publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(room, "smrt", true);
+                for (const auto target : {float3(6,6,0), float3(6,6,6)}) {
+                    require(view.setCamera({.eye={0,0,3}, .center={target.x,target.y,target.z}, .up={0,0,1},
+                        .fovDegrees=65, .nearPlane=.05f, .farPlane=30}), "Set compact seam/corner camera");
+                    const auto name = target.z == 0 ? "PointRoom-Seam" : "PointRoom-Corner";
+                    compare(preview, graph, std::string(name) + "-Cold");
+                    compare(preview, graph, std::string(name) + "-Warm");
+                }
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Compact VSM validation error");
+            report["passed"] = true;
+            std::ofstream(directory / "VirtualShadowMapCompact.json") << report.dump(2) << '\n';
+            return RHITestResult::pass("Compact VSM matches canonical legacy shadow/debug with no private screen outputs");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot();
+            std::ofstream(directory / "VirtualShadowMapCompact.json") << report.dump(2) << '\n';
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCompactTest);
+
+class VirtualShadowMapProjectionEquivalenceTest : public RHITest {
+public:
+    explicit VirtualShadowMapProjectionEquivalenceTest(bool layered = false, bool refinedReceiver = false,
+        bool focusedPCFRoom = false, bool focusedSMRTRoom = false)
+        : layered_(layered), refinedReceiver_(refinedReceiver), focusedPCFRoom_(focusedPCFRoom), focusedSMRTRoom_(focusedSMRTRoom)
+    {
+        type = RHITestType::Rendering;
+        name = focusedPCFRoom_ ? "virtual_shadow_map_projection_pcf_room" :
+            focusedSMRTRoom_ ? "virtual_shadow_map_projection_smrt_room" :
+            refinedReceiver_ ? "virtual_shadow_map_refined_receiver_projection_equivalence" :
+            layered_ ? "virtual_shadow_map_cache_layer_projection_equivalence" : "virtual_shadow_map_projection_equivalence";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const std::string reportName = focusedPCFRoom_ ? "VirtualShadowMapProjectionPCFRoom" :
+            focusedSMRTRoom_ ? "VirtualShadowMapProjectionSMRTRoom" :
+            refinedReceiver_ ? "VirtualShadowMapRefinedReceiverProjectionEquivalence" :
+            layered_ ? "VirtualShadowMapCacheLayerProjectionEquivalence" : "VirtualShadowMapProjectionEquivalence";
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / reportName;
+        const uint32_t expectedStates = focusedPCFRoom_ || focusedSMRTRoom_ ? 4u : refinedReceiver_ ? 30u : 86u;
+        Json report{{"passed", false}, {"frames", Json::array()}, {"extent", {kWidth, kHeight}},
+            {"refinedReceiver",refinedReceiver_},{"focusedPCFRoom",focusedPCFRoom_},{"focusedSMRTRoom",focusedSMRTRoom_},
+            {"expectedStates",expectedStates},{"completedStates",0}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / (reportName + ".json")) << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto floor = writeFixture(directory / "Floor", false);
+            const auto room = writeFixture(directory / "Room", true);
+            constexpr std::array names{"Standard", "NoDebug", "StatisticsFallback"};
+            report["cacheLayering"] = layered_;
+            if (refinedReceiver_) {
+                report["shadowLODSettings"] = {{"enabled",true},{"smartBias",true},
+                    {"smartBiasRefine",true},{"screenRayLength",.015}};
+            }
+            if (layered_) { report["cacheDiagnosticNames"] = kVirtualShadowMapCacheDiagnosticNames; }
+            report["projectionStatisticsArms"] = {{"Standard",false},{"NoDebug",false},{"StatisticsFallback",true}};
+            report["statisticsCompatibilityControl"] = "Grouped projection statistics retain the per-face kernel";
+            report["counterNames"] = kVirtualShadowMapWorkCounterNames;
+            report["buildDiagnosticCounterNames"] = kVirtualShadowMapBuildDiagnosticCounterNames;
+            report["gpuTimingScope"] = "Projection-only dispatch-path timestamps with workload counters; not ordinary performance acceptance";
+            report["comparisonContract"] = {
+                {"StandardNoDebug", "All 32 statistics and deterministic work counters are identical"},
+                {"StatisticsFallback", "Only active local-face receiver/background slots 6/8 may differ; every delta equals independently classified omitted clear-to-black debug pixels"},
+                {"debugOmission", "Grid magenta RGBA(255,0,255,255) versus per-face black RGBA(0,0,0,255), both shadow255; all other captured debug bytes identical"},
+                {"images", "Every mode has identical shadow/depth/HDR/Build/cache and light publication; per-mode complete hashes/statistics/work are retained for independent cross-build comparison"}};
+            constexpr std::array phases{"Cold", "Warm", "Redraw", "JitterMotion", "TemporalContinue", "Reorder", "FiniteBudget",
+                "Disabled", "Overflow", "Recovered", "TwoPoints", "NearPlane", "ZeroBudget", "SingleFace"};
+            for (const std::string filter : {"hard", "pcf", "smrt"}) {
+                if (focusedPCFRoom_ && filter != "pcf") { continue; }
+                if (focusedSMRTRoom_ && filter != "smrt") { continue; }
+                if (refinedReceiver_ && filter != "hard") { continue; }
+                for (bool compact : {false, true}) {
+                    for (bool isRoom : {false, true}) {
+                        if ((focusedPCFRoom_ || focusedSMRTRoom_) && !isRoom) { continue; }
+                        const auto& fixture = isRoom ? room : floor;
+                        const std::string label = filter + (compact ? "-Compact" : "-LegacyLayout") + (isRoom ? "-Room" : "-Floor");
+                        scene::SceneDocument scene;
+                        require(isRoom ? scene.loadStreamMetadata(fixture.source) : scene.load(fixture.source), "Load projection equivalence fixture");
+                        RenderView view; RenderGraphPreviewRenderer preview;
+                        configurePreview(preview, scene, view, context, validation);
+                        ViewCamera camera{.eye={0,5,7}, .center={0,0,0}, .fovDegrees=52, .nearPlane=.1f, .farPlane=100};
+                        if (isRoom) {
+                            camera = {.eye={0,0,3}, .center={6,6,6}, .up={0,0,1}, .fovDegrees=65, .nearPlane=.05f, .farPlane=30};
+                        }
+                        require(view.setCamera(camera), "Set projection equivalence camera");
+                        environment::WorldEnvironment world;
+                        world.sun.enabled = world.moon.enabled = true;
+                        world.sun.direction = float3(1, -1, 0); world.moon.direction = float3(-.6f, -1, .2f);
+                        world.sun.illuminance = 3; world.moon.illuminance = 2;
+                        world.sun.angularRadius = world.moon.angularRadius = .06f;
+                        require(preview.setWorldEnvironment(world), "Set mixed celestial lights");
+                        scene::LightingSettings lighting; lighting.autoExposure.enabled = false;
+                        for (bool spot : {false, true}) {
+                            scene::PunctualLight light;
+                            light.name = spot ? "Spot" : "Point"; light.properties.type = spot ? "spot" : "point";
+                            light.position = spot ? float3(1, 4, 0) : isRoom ? float3(0, 0, 0) : float3(-1, 4, 0);
+                            light.direction = float3(0, -1, 0); light.properties.intensity = 80; light.properties.range = 20;
+                            light.properties.outerConeAngle = 1.; light.properties.innerConeAngle = .5; light.properties.sourceRadius = .2;
+                            lighting.lights.push_back(light);
+                        }
+                        require(scene.setLighting(lighting), "Publish projection equivalence lights");
+                        lighting = scene.lighting();
+                        require(preview.setLighting(lighting), "Set projection equivalence lights");
+                        evidence = std::make_shared<EvidenceState>();
+                        RenderGraph graph;
+                        graph.setViewProperties({{"temporalJitter",false},
+                            {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
+                        const auto raster = makeGraph(fixture, filter);
+                        graph.addNode("VisibilityBufferPass", "Raster", raster.findNode("Raster")->properties);
+                        for (uint32_t arm = 0; arm < names.size(); ++arm) {
+                            const std::string node = names[arm], capture = node + "Evidence", deferred = node + "Deferred";
+                            const bool debug = arm != 1;
+                            Json settings{{"lightCapacity",kCapacity},{"physicalPageBudget",512},{"pageSize",128},
+                                // Keep face pools fixed across the strict Cold/Warm projection comparison.
+                                {"demandDrivenBudget",false},
+                                {"virtualPagesPerAxis",16},{"clipmapCount",4},{"firstClipmapExtent",4},{"maxWorkItems",131072},
+                                {"shadowBias",.002},{"nearPlane",.05},{"cacheEnabled",true},{"receiverFootprint",true},
+                                {"filter",filter},{"pcfRadius",1.5},{"smrtRayCount",2},{"smrtSamplesPerRay",8},{"smrtMaxRayLength",12},
+                                // Fixed ray phases are required for the strict warm-cache reuse gate.
+                                // Temporal phases can legitimately request previously unseen pages.
+                                {"smrtTemporalEnabled",false},{"smrtTemporalMaxFrames",32},{"compactOutputs",compact},
+                                {"debugOutput",debug},
+                                {"benchmarkProjectionStatistics",arm==2},
+                                {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",false},
+                                {"benchmarkProjectionProfile",arm==0},{"benchmarkGPUWork",true}};
+                            if (layered_) { settings["cacheLayering"] = true; }
+                            if (refinedReceiver_) {
+                                settings["shadowLOD"] = true;
+                                settings["shadowLODSmartBias"] = true;
+                                settings["shadowLODScreenRayLength"] = .015;
+                            }
+                            auto pass = createRenderGraphPass("VirtualShadowMapLightsPass");
+                            require(pass != nullptr, "Create projection reflection probe");
+                            pass->setProperties(settings);
+                            const auto reflection = pass->reflect({.width=kWidth, .height=kHeight});
+                            require((reflection.findField("debug", RenderGraphFieldVisibility::Output) != nullptr) == debug,
+                                label + ": optional debug output was still reflected or disappeared when enabled");
+                            graph.addNode("VirtualShadowMapLightsPass", node, settings);
+                            graph.addEdge("Raster.depth", node + ".depth"); graph.addEdge("Raster.rasterInfo", node + ".rasterInfo");
+                            if (refinedReceiver_) { graph.addEdge("Raster.visibility", node + ".visibility"); }
+                            graph.addNode("VisibilityBufferDeferredPass", deferred, {{"lightingMode","realtime"},{"debugView","final"},
+                                {"materialBinning",compact},{"shadow.enabled",false},{"accumulate",false},{"outputLinear",true}});
+                            for (const char* field : {"visibility","depth","rasterInfo"}) {
+                                graph.addEdge(std::string("Raster.") + field, deferred + "." + field);
+                            }
+                            graph.addEdge(node + ".shadows", deferred + ".virtualShadows");
+                            graph.addEdge(node + ".lights", deferred + ".virtualShadowLights");
+                            graph.addNode("VSMQualityEvidencePass", capture,
+                                {{"evidenceName",node},{"captureDebug",debug},{"debugInput",debug},{"captureHDR",true},{"captureWork",true},{"captureCache",layered_}});
+                            for (const char* field : {"shadows","lights","statistics","memory","workload","buildDiagnostics"}) {
+                                graph.addEdge(node + "." + field, capture + "." + field);
+                            }
+                            if (layered_) { graph.addEdge(node + ".cacheDiagnostics", capture + ".cacheDiagnostics"); }
+                            if (debug) { graph.addEdge(node + ".debug", capture + ".debug"); }
+                            graph.addEdge(deferred + ".color", capture + ".hdr");
+                            graph.addEdge("Raster.depth", capture + ".depth"); graph.addEdge("Raster.rasterInfo", capture + ".rasterInfo");
+                            graph.markOutput(capture + ".color");
+                        }
+                        const auto all = [&](const char* property, const Json& value) {
+                            for (const char* node : names) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, property, value),
+                                    std::string("Set projection equivalence ") + property);
+                            }
+                        };
+                        const bool fallbackControls = !isRoom && compact && filter == "hard";
+                        for (uint32_t frame = 0; frame < (isRoom ? 2u : fallbackControls ? uint32_t(phases.size()) : 12u); ++frame) {
+                            const std::string phase = label + "-" + phases[frame];
+                            validation.phase(phase);
+                            if (frame == 2) { all("forceRedraw", true); }
+                            if (frame == 3) {
+                                all("forceRedraw", false);
+                                all("smrtTemporalEnabled", filter == "smrt");
+                                view.setTemporalJitter(true);
+                                camera.eye[0] += .1f; camera.center[0] += .1f;
+                                require(view.setCamera(camera), "Move jittered projection camera");
+                            }
+                            if (frame == 5) {
+                                std::reverse(lighting.lights.begin(), lighting.lights.end());
+                                require(scene.setLighting(lighting), "Reorder projection source slots");
+                                require(preview.setLighting(scene.lighting()), "Publish reordered projection source slots");
+                            }
+                            if (frame == 6) { all("physicalPageBudget", 7); }
+                            if (frame == 7) { all("enabled", false); }
+                            if (frame == 8) {
+                                all("enabled", true); all("physicalPageBudget", 512); all("maxWorkItems", 1); all("forceRedraw", true);
+                            }
+                            if (frame == 9) { all("maxWorkItems", 131072); all("forceRedraw", false); }
+                            if (frame == 10) {
+                                const std::array ids{lighting.lights[0].stableId, lighting.lights[1].stableId};
+                                const auto spot = std::find_if(lighting.lights.begin(), lighting.lights.end(),
+                                    [](const auto& light) { return light.properties.type == "spot"; });
+                                require(spot != lighting.lights.end(), "Two-point phase requires the existing spot source");
+                                spot->properties.type = "point";
+                                require(scene.setLighting(lighting), "Convert the existing spot to a second point");
+                                require(scene.lighting().lights.size() == ids.size() &&
+                                    scene.lighting().lights[0].stableId == ids[0] && scene.lighting().lights[1].stableId == ids[1],
+                                    "Point conversion changed source identities or order");
+                                require(preview.setLighting(scene.lighting()), "Publish two point sources");
+                            }
+                            if (frame == 11) {
+                                all("nearPlane", 1.0);
+                                for (auto& light : lighting.lights) { light.position.y = .25f; }
+                                require(scene.setLighting(lighting), "Move local lights near the receiver plane");
+                                require(preview.setLighting(scene.lighting()), "Publish near-plane projection sources");
+                            }
+                            if (frame == 12 || frame == 13) { all("physicalPageBudget", frame == 12 ? 0 : 1); }
+                            require(preview.render(graph, kWidth, kHeight, "StandardEvidence.color"), "Projection equivalence render: " + preview.lastLog());
+                            // Graph compilation initializes the preview subsystem host and its device.
+                            const auto& caps = preview.subsystemHost()->device()->capabilities();
+                            report["computeSubgroupBallotArithmetic"] = caps.computeSubgroupBallotArithmetic;
+                            if (!caps.computeSubgroupBallotArithmetic || !caps.timestampQueries) {
+                                evidence.reset(); report["skipped"] = true; save();
+                                return RHITestResult::skip("GPU one-pass projection verification requires subgroup ballot/arithmetic and timestamp queries");
+                            }
+                            auto completed = preview.collectCompletedGpuExecutionStats();
+                            require(completed, "Read one-pass projection GPU scopes");
+                            require(completed->size() == 1 && completed->front().gpuTimingAvailable,
+                                "Missing one-pass projection timestamp frame");
+                            const auto& timings = completed->front();
+                            require(!timings.profilingOverflow, phase + ": projection-only timestamp budget overflowed");
+                            const std::array images{snapshot("Standard", true, true, true, layered_),
+                                snapshot("NoDebug", false, true, true, layered_), snapshot("StatisticsFallback", true, true, true, layered_)};
+                            const auto& baseline = images[0];
+                            require(((baseline.header.reserved[0] & 1u) != 0u) == compact,
+                                phase + ": projection layout publication disagrees with the requested layout");
+                            const uint32_t activeFaces = uint32_t(std::count_if(baseline.statistics.begin(), baseline.statistics.end(),
+                                [](const auto& stats) { return stats[11] != 0; }));
+                            const bool gridProjection = activeFaces > 1;
+                            const float clearDepth = baseline.camera.clipOrtho[3] > .5f ? 0.f : 1.f;
+                            const uint64_t backgroundPixels = uint64_t(std::count(baseline.depth.begin(), baseline.depth.end(), clearDepth));
+                            const uint64_t foregroundPixels = kPixels - backgroundPixels;
+                            std::array<bool, kLayers> localFaces{}, localLayers{};
+                            std::array<uint32_t, kLayers> publicLayers{};
+                            for (uint32_t entryIndex = 0; entryIndex < kCapacity; ++entryIndex) {
+                                const auto& entry = baseline.entries[entryIndex];
+                                for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                                    const uint32_t index = entryIndex * 6u + face;
+                                    publicLayers[index] = entry.baseLayer + (compact ? 0u : face);
+                                    localFaces[index] = entry.kind != 0u;
+                                    localLayers[publicLayers[index]] |= localFaces[index] && baseline.statistics[index][11] != 0u;
+                                }
+                            }
+                            report["frames"].push_back({{"name",phase},{"statistics",baseline.statistics},{"memory",Json::object()},
+                                {"admittedLights",baseline.header.admittedCount},{"budgetDroppedLights",baseline.header.budgetDroppedCount},
+                                {"totalFaces",baseline.header.totalFaces},
+                                {"gpuProfilingArms",Json::array({names[0]})},{"profilingOverflow",timings.profilingOverflow},
+                                {"smrtTemporalEnabled",filter=="smrt" && frame>=3}});
+                            auto& frameReport = report["frames"].back();
+                            if (refinedReceiver_) {
+                                const auto* gpuScene = preview.subsystemHost()->get<GPUSceneSubsystem>();
+                                require(gpuScene != nullptr && (baseline.camera.reserved & 1u) == 0,
+                                    phase + ": refined receiver requires an ordinary primary stream");
+                                const auto* receiverStream = gpuScene->visibilityStream(
+                                    {baseline.camera.lightGridViewIndex, baseline.camera.lightGridViewGeneration},
+                                    baseline.camera.frameIndex, baseline.camera.sceneIdentity);
+                                require(receiverStream != nullptr, phase + ": refined receiver publication is missing");
+                                frameReport["receiverGeometry"] = {{"recordCapacity",receiverStream->visibleRecordCapacity},
+                                    {"frame",baseline.camera.frameIndex},{"viewIndex",baseline.camera.lightGridViewIndex},
+                                    {"viewGeneration",baseline.camera.lightGridViewGeneration},{"sceneIdentity",baseline.camera.sceneIdentity}};
+                            }
+                            save();
+                            for (uint32_t arm = 0; arm < images.size(); ++arm) {
+                                const auto& image = images[arm];
+                                frameReport["memory"][names[arm]] = image.memory;
+                                if (layered_) {
+                                    frameReport["cacheDiagnostics"][names[arm]] = image.cacheDiagnostics;
+                                    for (uint32_t face = 0; face < kLayers; ++face) {
+                                        if (image.statistics[face][11] == 0) { continue; }
+                                        require(image.cacheDiagnostics[face][kVSMCacheLayered] == 1u,
+                                            phase + ": published cache layer selection disagrees with graph property");
+                                    }
+                                }
+                                frameReport["matches"][names[arm]] = {{"shadow",image.shadows==baseline.shadows},
+                                    {"depth",image.depth==baseline.depth},{"statistics",image.statistics==baseline.statistics},
+                                    {"debug",arm==1 || image.debug==baseline.debug},{"hdr",image.hdr==baseline.hdr},
+                                    {"buildDiagnostics",image.buildDiagnostics==baseline.buildDiagnostics}};
+                                Json shadowHashes = Json::array(), debugHashes = Json::array();
+                                for (uint32_t layer = 0; layer < kLayers; ++layer) {
+                                    shadowHashes.push_back(debug::debugSha256(image.shadows[layer]));
+                                    debugHashes.push_back(debug::debugSha256(image.debug[layer]));
+                                }
+                                auto& raw = frameReport["snapshots"][names[arm]];
+                                raw = {{"shadowSHA256", std::move(shadowHashes)}, {"debugSHA256", std::move(debugHashes)},
+                                    {"depthSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(image.depth.data()), image.depth.size() * sizeof(float)))},
+                                    {"hdrSHA256", debug::debugSha256(image.hdr)}, {"hdrFormat", uint32_t(image.hdrFormat)},
+                                    {"headerSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(&image.header), sizeof(image.header)))},
+                                    {"entriesSHA256", debug::debugSha256(std::span(reinterpret_cast<const uint8_t*>(image.entries.data()), sizeof(image.entries)))},
+                                    {"statistics", image.statistics}, {"workload", image.workload}, {"buildDiagnostics", image.buildDiagnostics}};
+                                if (layered_) { raw["cacheDiagnostics"] = image.cacheDiagnostics; }
+                                Json lightEntries = Json::array();
+                                for (const auto& entry : image.entries) {
+                                    lightEntries.push_back({{"source", entry.source}, {"kind", entry.kind}, {"baseLayer", entry.baseLayer},
+                                        {"faceCount", entry.faceCount}, {"pageBudget", entry.pageBudget}, {"status", entry.status},
+                                        {"positionRange", {entry.positionRange[0], entry.positionRange[1], entry.positionRange[2], entry.positionRange[3]}}});
+                                }
+                                raw["publication"] = {{"header", {{"count", image.header.count}, {"totalFaces", image.header.totalFaces},
+                                    {"admittedCount", image.header.admittedCount}, {"budgetDroppedCount", image.header.budgetDroppedCount},
+                                    {"disabledCount", image.header.disabledCount}, {"physicalPageBudget", image.header.physicalPageBudget},
+                                    {"sourceSlotCount", image.header.sourceSlotCount}, {"compact", (image.header.reserved[0] & 1u) != 0u}}},
+                                    {"entries", std::move(lightEntries)}};
+                                frameReport["workload"][names[arm]] = image.workload;
+                                frameReport["buildDiagnostics"][names[arm]] = image.buildDiagnostics;
+                                std::array<uint64_t, kLayers> omittedForeground{}, omittedBackground{};
+                                uint64_t omittedSentinelPixels = 0;
+                                if (arm == 1) {
+                                    require(std::ranges::all_of(image.debug, [](const auto& pixels) { return pixels.empty(); }),
+                                        phase + ": no-debug captured debug data");
+                                } else {
+                                    for (uint32_t layer = 0; layer < kLayers; ++layer) {
+                                        require(image.debug[layer].size() == baseline.debug[layer].size(),
+                                            phase + ": captured debug layer size changed");
+                                        if (image.debug[layer].empty()) { continue; }
+                                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                            const auto* standard = baseline.debug[layer].data() + pixel * 4;
+                                            const auto* fallback = image.debug[layer].data() + pixel * 4;
+                                            if (std::memcmp(standard, fallback, 4) == 0) { continue; }
+                                            // Omitted grid jobs retain the clear sentinel. A real unresolved
+                                            // magenta receiver has shadow0 and is never accepted here.
+                                            const bool omitted = arm == 2 && gridProjection && localLayers[layer] &&
+                                                baseline.shadows[layer][pixel] == 255 && image.shadows[layer][pixel] == 255 &&
+                                                standard[0] == 255 && standard[1] == 0 && standard[2] == 255 && standard[3] == 255 &&
+                                                fallback[0] == 0 && fallback[1] == 0 && fallback[2] == 0 && fallback[3] == 255;
+                                            if (!omitted) {
+                                                frameReport["firstDebugMismatch"][names[arm]] = {{"layer", layer}, {"pixel", pixel},
+                                                    {"standard", {standard[0], standard[1], standard[2], standard[3]}},
+                                                    {"compared", {fallback[0], fallback[1], fallback[2], fallback[3]}},
+                                                    {"standardShadow", baseline.shadows[layer][pixel]}, {"comparedShadow", image.shadows[layer][pixel]}};
+                                            }
+                                            require(omitted, phase + ": projection changed a written debug receiver");
+                                            ++omittedSentinelPixels;
+                                            if (baseline.depth[pixel] == clearDepth) { ++omittedBackground[layer]; }
+                                            else { ++omittedForeground[layer]; }
+                                        }
+                                    }
+                                }
+                                frameReport["crossModeDebug"][names[arm]] = {{"exact", arm == 1 || image.debug == baseline.debug},
+                                    {"allowedOnly", true}, {"captured", arm != 1}, {"omittedSentinelPixels", omittedSentinelPixels},
+                                    {"omittedForegroundPixelsPerLayer", omittedForeground}, {"omittedBackgroundPixelsPerLayer", omittedBackground}};
+                                uint64_t receiverOmissions = 0, backgroundOmissions = 0;
+                                Json differingFaces = Json::array();
+                                for (uint32_t face = 0; face < kLayers; ++face) {
+                                    const auto& standard = baseline.statistics[face];
+                                    const auto& compared = image.statistics[face];
+                                    const bool active = standard[11] != 0u;
+                                    const bool omittedLocalFace = arm == 2 && gridProjection && localFaces[face] && active;
+                                    const uint32_t publicLayer = publicLayers[face];
+                                    if (arm == 2 || !gridProjection || !localFaces[face]) {
+                                        // Full-screen per-face dispatch counts every actual depth receiver
+                                        // before point ownership or domain rejection; derive both totals.
+                                        require(compared[6] == (active ? foregroundPixels : 0u) &&
+                                            compared[8] == (active ? backgroundPixels : 0u),
+                                            phase + ": per-face receiver/background statistics disagree with depth on face " + std::to_string(face));
+                                    } else {
+                                        require(compared[6] <= foregroundPixels && compared[8] == 0u,
+                                            phase + ": grid local receiver/background statistics exceed membership bounds");
+                                    }
+                                    for (uint32_t counter = 0; counter < 32u; ++counter) {
+                                        if (omittedLocalFace && (counter == 6u || counter == 8u)) {
+                                            require(standard[counter] <= compared[counter],
+                                                phase + ": grid added a local receiver/background count");
+                                            const uint64_t expected = counter == 6u ? omittedForeground[publicLayer] : omittedBackground[publicLayer];
+                                            require(uint64_t(compared[counter] - standard[counter]) == expected,
+                                                phase + ": local receiver/background delta lacks matching omitted debug pixels on face " +
+                                                std::to_string(face) + " slot " + std::to_string(counter));
+                                        } else {
+                                            require(compared[counter] == standard[counter],
+                                                phase + ": projection changed a non-omitted public statistic on face " +
+                                                std::to_string(face) + " slot " + std::to_string(counter));
+                                        }
+                                    }
+                                    if (omittedLocalFace && (compared[6] != standard[6] || compared[8] != standard[8])) {
+                                        const uint64_t receivers = compared[6] - standard[6], background = compared[8] - standard[8];
+                                        receiverOmissions += receivers; backgroundOmissions += background;
+                                        differingFaces.push_back({{"face", face}, {"publicLayer", publicLayer},
+                                            {"receiverSlot6Omitted", receivers}, {"backgroundSlot8Omitted", background}});
+                                    }
+                                }
+                                frameReport["crossModeStatistics"][names[arm]] = {{"exact", image.statistics == baseline.statistics},
+                                    {"allowedOnly", true}, {"foregroundPixels", foregroundPixels}, {"backgroundPixels", backgroundPixels},
+                                    {"receiverSlot6Omitted", receiverOmissions}, {"backgroundSlot8Omitted", backgroundOmissions},
+                                    {"differingFaces", std::move(differingFaces)}};
+                                if (image.shadows != baseline.shadows) {
+                                    for (uint32_t layer = 0; layer < kLayers; ++layer) {
+                                        const auto mismatch = std::mismatch(image.shadows[layer].begin(), image.shadows[layer].end(), baseline.shadows[layer].begin());
+                                        if (mismatch.first == image.shadows[layer].end()) { continue; }
+                                        const size_t pixel = size_t(mismatch.first - image.shadows[layer].begin());
+                                        frameReport["firstShadowMismatch"][names[arm]] = {{"layer",layer},{"pixel",pixel},
+                                            {"actual",*mismatch.first},{"legacy",*mismatch.second}};
+                                        break;
+                                    }
+                                }
+                                save();
+                                require(image.depth == baseline.depth && image.shadows == baseline.shadows,
+                                    phase + ": projection scheduling/statistics/debug toggle changed shadow or depth");
+                                require(image.buildDiagnostics == baseline.buildDiagnostics, phase + ": one-pass projection changed build diagnostics");
+                                require(!layered_ || image.cacheDiagnostics == baseline.cacheDiagnostics,
+                                    phase + ": one-pass projection changed cache diagnostics");
+                                for (uint32_t face = 0; face < kLayers; ++face) {
+                                    const auto& counts = image.workload[face];
+                                    require(counts[kVSMWorkMarkPageRequests] <= counts[kVSMWorkMarkLevelTests],
+                                        phase + ": invalid shared Mark request count");
+                                    for (uint32_t counter = 0; counter < kVirtualShadowMapWorkCounterCount; ++counter) {
+                                        // Request and receiver-mask OR issue counts depend on wave scheduling.
+                                        if (counter == kVSMWorkMarkPageRequests || counter == kVSMWorkMarkReceiverMaskAtomicOrs) { continue; }
+                                        require(counts[counter] == baseline.workload[face][counter],
+                                            phase + ": one-pass projection changed deterministic GPU work");
+                                    }
+                                }
+                                require(std::memcmp(&image.header, &baseline.header, sizeof(image.header)) == 0 &&
+                                    std::memcmp(image.entries.data(), baseline.entries.data(), sizeof(image.entries)) == 0,
+                                    phase + ": projection scheduling changed the light publication table");
+                                require(image.hdrFormat == baseline.hdrFormat && image.hdr == baseline.hdr,
+                                    phase + ": same-frame projection/debug toggle changed actual Deferred HDR");
+                                require(image.memory[1] == 0, phase + ": legacy or compact layout retained private face outputs");
+                                const uint64_t layers = compact ? kCapacity : kLayers;
+                                require(image.memory[3] == layers * kPixels * (arm == 1 ? 1 : 5), phase + ": public output allocation disagrees with optional debug");
+                                constexpr uint64_t atlasMultiplier = 1;
+                                require(image.memory[0] == baseline.memory[0] * atlasMultiplier && image.memory[4] == baseline.memory[4] &&
+                                    image.memory[5] == baseline.memory[5] * atlasMultiplier,
+                                    phase + ": output/projection optimization changed atlas allocation");
+                                if (frame < 3) {
+                                    require(image.memory[6] == 0, phase + ": fixed-phase cache gate unexpectedly allocated temporal history");
+                                } else if (filter == "smrt" && frame <= 4) {
+                                    require(image.memory[6] > 0, phase + ": temporal progression did not allocate light histories");
+                                }
+                                if (arm == 0) {
+                                    const auto node = std::ranges::find(timings.nodes, names[arm], &RenderGraphNodeExecutionStat::name);
+                                    require(node != timings.nodes.end(), phase + ": projection GPU profiling node is missing");
+                                    uint32_t onePassScopes = 0, faceScopes = 0;
+                                    double projectionMs = 0;
+                                    for (const auto& section : node->sections) {
+                                        if (section.name != "VSM one-pass projection" && section.name != "VSM projection") { continue; }
+                                        const bool valid = !section.cpuOnly && section.gpuTimingAvailable &&
+                                            std::isfinite(section.gpuMilliseconds) && section.gpuMilliseconds >= 0;
+                                        if (!valid) {
+                                            frameReport["invalidProjectionScope"] = {{"arm",names[arm]},{"section",section.name},
+                                                {"cpuOnly",section.cpuOnly},{"gpuTimingAvailable",section.gpuTimingAvailable},
+                                                {"gpuMilliseconds",section.gpuMilliseconds},{"profilingOverflow",timings.profilingOverflow},
+                                                {"nodeSectionCount",node->sections.size()},{"nodeGpuTimingAvailable",node->gpuTimingAvailable}};
+                                            save();
+                                        }
+                                        require(valid, phase + ": " + names[arm] + "/" + section.name +
+                                            " invalid GPU scope: cpuOnly=" + std::to_string(section.cpuOnly) +
+                                            " gpuTimingAvailable=" + std::to_string(section.gpuTimingAvailable) +
+                                            " gpuMs=" + std::to_string(section.gpuMilliseconds) +
+                                            " profilingOverflow=" + std::to_string(timings.profilingOverflow));
+                                        onePassScopes += section.name == "VSM one-pass projection";
+                                        faceScopes += section.name == "VSM projection";
+                                        projectionMs += section.gpuMilliseconds;
+                                    }
+                                    const bool onePass = arm != 2 && activeFaces > 1;
+                                    frameReport["projectionGPU"][names[arm]] = {{"onePassScopes",onePassScopes},{"faceScopes",faceScopes},
+                                        {"activeFaces",activeFaces},{"gpuMs",projectionMs}};
+                                    save();
+                                    require(onePassScopes == (onePass ? 1u : 0u) && faceScopes == (onePass ? 0u : activeFaces),
+                                        phase + ": projection did not select the requested GPU dispatch path");
+                                }
+                            }
+                            require(baseline.header.count == 4 && baseline.header.totalFaces == (frame >= 10 ? 14u : 9u),
+                                phase + ": mixed-light fixture lost a source/face");
+                            if (frame == 10) {
+                                require(baseline.header.admittedCount == 4 &&
+                                    std::count_if(baseline.statistics.begin(), baseline.statistics.end(),
+                                        [](const auto& statistics) { return statistics[11] != 0; }) == 14,
+                                    phase + ": two-point dispatch did not record all fourteen faces");
+                                for (uint32_t source = 0; source < 2; ++source) {
+                                    const auto& entry = baseline.entries[source + 2];
+                                    const uint64_t id = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                                    require(entry.source == source && id == lighting.lights[source].stableId &&
+                                        entry.kind == 2 && entry.faceCount == 6 && entry.status == kVirtualShadowMapLightAdmitted,
+                                        phase + ": both point groups must retain their source identity and be admitted");
+                                }
+                            }
+                            if (frame >= 3) {
+                                require(baseline.camera.jitter[0] != 0 || baseline.camera.jitter[1] != 0, phase + ": temporal jitter was not exercised");
+                            }
+                            uint64_t overflow = 0, rasterWork = 0, nearPlanePixels = 0;
+                            for (const auto& statistics : baseline.statistics) {
+                                overflow += statistics[5]; rasterWork += statistics[16] + statistics[21]; nearPlanePixels += statistics[29];
+                            }
+                            frameReport["nearPlanePixels"] = nearPlanePixels;
+                            if (frame == 11) { require(nearPlanePixels > 0, phase + ": projection near-plane counter was not exercised"); }
+                            if (frame == 1) { require(rasterWork == 0, phase + ": fixed-phase warm cache unexpectedly redrew depth"); }
+                            if (frame == 2) { require(rasterWork > 0, phase + ": force redraw did no work"); }
+                            if (frame == 6) { require(baseline.header.budgetDroppedCount > 0, phase + ": finite budget omitted whole-light rejection"); }
+                            if (frame == 7) { require(baseline.header.admittedCount == 0, phase + ": disabled shadows admitted a light"); }
+                            if (frame == 8) { require(overflow > 0, phase + ": bounded work did not overflow"); }
+                            if (frame == 9) { require(overflow == 0, phase + ": work overflow did not recover"); }
+                            if (frame >= 12) {
+                                require(activeFaces == frame - 12 && baseline.header.admittedCount == frame - 12,
+                                    phase + ": zero/single-face fallback did not exercise its admission limit");
+                            }
+                            if (isRoom && frame == 0) {
+                                std::array<uint32_t, 6> facePixels{}; uint32_t seamPixels = 0;
+                                for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                                    const auto hit = cameraHit(baseline.camera, x, y, fixture);
+                                    if (!hit.valid) { continue; }
+                                    ++facePixels[pointFace(hit.position)];
+                                    std::array magnitudes{std::abs(hit.position[0]), std::abs(hit.position[1]), std::abs(hit.position[2])};
+                                    std::sort(magnitudes.begin(), magnitudes.end());
+                                    seamPixels += magnitudes[1] > .95 * magnitudes[2];
+                                }}
+                                require(std::count_if(facePixels.begin(), facePixels.end(), [](uint32_t n) { return n > 50; }) >= 3 && seamPixels > 50,
+                                    phase + ": point fixture did not exercise three canonical faces and cube seams");
+                                report["roomCoverage"] = {{"facePixels",facePixels},{"seamPixels",seamPixels}};
+                            }
+                            report["completedStates"] = report["frames"].size();
+                            save();
+                        }
+                        require(!validation.failed(), label + ": Vulkan validation error");
+                    }
+                }
+            }
+            require(report["frames"].size() == expectedStates, focusedPCFRoom_ ?
+                "Focused PCF Room matrix did not complete legacy/compact Cold/Warm states" : focusedSMRTRoom_ ?
+                "Focused SMRT Room matrix did not complete legacy/compact Cold/Warm states" : refinedReceiver_ ?
+                "Refined receiver projection matrix did not complete 26 floor and four room states" :
+                "Projection matrix did not complete 84 production compatibility states and two zero/single-face controls");
+            evidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
+            if (focusedPCFRoom_) {
+                return RHITestResult::pass("Focused mixed-light PCF Room preserves strict image/statistics/work equivalence across four legacy/compact Cold/Warm states");
+            }
+            if (focusedSMRTRoom_) {
+                return RHITestResult::pass("Focused mixed-light SMRT Room preserves strict image/statistics/work equivalence across four legacy/compact Cold/Warm states");
+            }
+            if (refinedReceiver_) {
+                return RHITestResult::pass("GPU refined receiver projection preserves debug/statistics equivalence and Deferred HDR across 30 hard-shadow states with valid primary stream publications");
+            }
+            return RHITestResult::pass("GPU standard projection preserves debug/statistics equivalence and Deferred HDR across 84 states plus zero/single-face fallback controls");
+        } catch (const std::exception& error) {
+            evidence.reset(); report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+private:
+    bool layered_ = false;
+    bool refinedReceiver_ = false;
+    bool focusedPCFRoom_ = false;
+    bool focusedSMRTRoom_ = false;
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionEquivalenceTest);
+
+class VirtualShadowMapCacheLayerProjectionEquivalenceTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapCacheLayerProjectionEquivalenceTest() : VirtualShadowMapProjectionEquivalenceTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapCacheLayerProjectionEquivalenceTest);
+
+class VirtualShadowMapRefinedReceiverProjectionEquivalenceTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapRefinedReceiverProjectionEquivalenceTest() : VirtualShadowMapProjectionEquivalenceTest(false, true) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapRefinedReceiverProjectionEquivalenceTest);
+
+class VirtualShadowMapProjectionPCFRoomTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapProjectionPCFRoomTest() : VirtualShadowMapProjectionEquivalenceTest(false, false, true)
+    {
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionPCFRoomTest);
+
+class VirtualShadowMapProjectionSMRTRoomTest final : public VirtualShadowMapProjectionEquivalenceTest
+{
+public:
+    VirtualShadowMapProjectionSMRTRoomTest() : VirtualShadowMapProjectionEquivalenceTest(false, false, false, true)
+    {
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapProjectionSMRTRoomTest);
+
+class VirtualShadowMapFilterDemandTest final : public RHITest {
+public:
+    VirtualShadowMapFilterDemandTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_filter_demand"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapFilterDemand";
+        Json report{{"passed", false}, {"scope", "Shared receiver LOD, demand admission and zero-size filter reductions"},
+            {"virtualPagesPerAxis", 128}, {"physicalPagesPerFace", 256}, {"orthographicHeight", 4},
+            {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapFilterDemand.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "Plane", false, 1.5, .5);
+            for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                scene::SceneDocument scene;
+                require(scene.load(fixture.source), "Load demand fixture");
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                const float center = kind == "Point" ? 2.0f : 0.0f;
+                ViewCamera camera{.eye = {center, 10, center}, .center = {center, 0, center}, .up = {0,0,-1},
+                    .fovDegrees = 52, .nearPlane = .1f, .farPlane = 30, .orthoHeight = 4, .orthographic = true};
+                require(view.setCamera(camera), "Set orthographic footprint camera");
+                Source source{kind, {-2,4,-2}, {.6,-1,0}, kind == "Directional" ? .2 : 1.0};
+                publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>();
+                auto graph = makeGraph(fixture, "pcf");
+                const uint32_t pageBudget = kind == "Point" ? 6 * 256 : 256;
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    const auto id = graph.findNode(node)->id;
+                    require(graph.setNodeRuntimeProperty(id, "virtualPagesPerAxis", 128), "Set demand virtual resolution");
+                    require(graph.setNodeRuntimeProperty(id, "physicalPageBudget", pageBudget), "Set demand physical budget");
+                    require(graph.setNodeRuntimeProperty(id, "smrtRayCount", 4), "Set demand ray count");
+                    require(graph.setNodeRuntimeProperty(id, "smrtSamplesPerRay", 1), "Set demand segment count");
+                    require(graph.setNodeRuntimeProperty(id, "smrtMaxRayLength", 1), "Set demand ray length");
+                    require(graph.setNodeRuntimeProperty(graph.findNode(std::string(node) + "Evidence")->id,
+                        "captureDebug", true), "Capture demand receiver levels");
+                }
+                const auto totalStatistics = [](const Snapshot& image) {
+                    std::array<uint64_t, 32> totals{};
+                    const auto& entry = activeEntry(image);
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        for (size_t index = 0; index < totals.size(); ++index) {
+                            totals[index] += image.statistics[entry.baseLayer + face][index];
+                        }
+                    }
+                    return totals;
+                };
+                const auto render = [&](const std::string& suffix, bool expectCompleteDemand, bool filtered = true,
+                    bool expectLastFineLevel = true) {
+                    const auto name = kind + "-" + suffix;
+                    validation.phase(name);
+                    require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"), "Demand render: " + preview.lastLog());
+                    const auto cached = snapshot("Cached", true), redraw = snapshot("Redraw", true), hard = snapshot("Hard", true);
+                    const auto totals = totalStatistics(cached), hardTotals = totalStatistics(hard);
+                    const bool equal = cached.shadows == redraw.shadows && cached.depth == redraw.depth;
+                    const auto& node = *graph.findNode("Cached");
+                    auto settings = node.properties;
+                    settings.merge_patch(node.runtimeProperties);
+                    const auto filter = settings.at("filter").get<std::string>();
+                    const bool actualFiltered = filter == "pcf" ? settings.at("pcfRadius").get<float>() > 0 :
+                        filter == "smrt" && source.size > 0;
+                    require(filtered == actualFiltered, name + ": filter oracle does not match the effective mode");
+                    const uint64_t rays = settings.at("smrtRayCount").get<uint32_t>();
+                    const uint64_t samples = settings.at("smrtSamplesPerRay").get<uint32_t>() + 1u;
+                    // Both projection kernels derive adaptive tracing from this capability.
+                    // A fully lit wave can finish after its first SMRT ray.
+                    const bool adaptiveRayCount = preview.subsystemHost()->device()->capabilities().computeSubgroupBallotArithmetic;
+                    const uint64_t minimumRays = adaptiveRayCount ? 1u : rays;
+                    Json queryEvidence = Json::array();
+                    for (const auto* image : {&cached, &redraw}) {
+                        const auto& entry = activeEntry(*image);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            const auto layer = entry.baseLayer + face;
+                            const auto& debugPixels = image->debug[layer];
+                            uint64_t receivers = 0;
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                // Fine green or valid coarse blue reaches filtering;
+                                // domain/near-plane rejects stay black, invalid coarse is magenta.
+                                receivers += debugPixels[pixel * 4 + 1] != 0 ||
+                                    (debugPixels[pixel * 4] == 0 && debugPixels[pixel * 4 + 2] != 0);
+                            }
+                            const auto& stats = image->statistics[layer];
+                            const uint64_t minimum = !actualFiltered ? 0 : receivers * (filter == "pcf" ? 9 : minimumRays);
+                            const uint64_t maximum = !actualFiltered ? 0 :
+                                receivers * (filter == "pcf" ? 9 : rays * samples);
+                            require(stats[30] >= minimum && stats[30] <= maximum,
+                                name + ": incorrect filtered query count on receiver face " + std::to_string(face) +
+                                " (actual=" + std::to_string(stats[30]) + ", minimum=" + std::to_string(minimum) +
+                                ", maximum=" + std::to_string(maximum) + ")");
+                            require(stats[31] <= stats[30], name + ": coarse taps exceed filtered queries");
+                            if (image == &cached) {
+                                queryEvidence.push_back({{"face", face}, {"receivers", receivers},
+                                    {"minimumQueries", minimum}, {"maximumQueries", maximum},
+                                    {"actualQueries", stats[30]}, {"adaptiveRayCount", actualFiltered && filter == "smrt" && adaptiveRayCount},
+                                    {"shadowSha256", debug::debugSha256(image->shadows[layer])},
+                                    {"debugSha256", debug::debugSha256(debugPixels)}});
+                            }
+                        }
+                    }
+                    report["frames"].push_back({{"name", name}, {"cacheRedrawEqual", equal},
+                        {"statistics", cached.statistics}, {"totals", totals}, {"hardTotals", hardTotals},
+                        {"queryEvidence", std::move(queryEvidence)},
+                        {"depthSha256", debug::debugSha256(std::span(
+                            reinterpret_cast<const uint8_t*>(cached.depth.data()), cached.depth.size() * sizeof(float)))},
+                        {"expectCompleteDemand", expectCompleteDemand}, {"filtered", filtered},
+                        {"expectLastFineLevel", expectLastFineLevel}});
+                    save();
+                    require(equal, name + ": cached and forced redraw differ");
+                    require(totals[5] == 0 && totals[9] == 0, name + ": raster overflow or unresolved coarse page");
+                    if (expectCompleteDemand) {
+                        // These orthographic receivers select coarse clipmap/mip
+                        // levels. Their useful demand fits the declared pool; an
+                        // unconditional level-zero request fills it first instead.
+                        require(totals[0] > 0 && totals[0] == totals[1] && totals[2] == 0,
+                            name + ": useful filtered demand was not fully admitted");
+                        require((!filtered || totals[30] > 0) && totals[31] == 0,
+                            name + ": filtered queries unexpectedly fell back to the complete coarse map");
+                        require(hardTotals[0] > 0 && hardTotals[0] == hardTotals[1] && hardTotals[2] == 0,
+                            name + ": Hard ignored the receiver footprint and exhausted the useful page budget");
+                        require(hardTotals[5] == 0 && hardTotals[7] == 0 && hardTotals[9] == 0 && hardTotals[13] == 0,
+                            name + ": Hard did not query its admitted receiver level");
+                        // At 128 virtual pages per axis and 4 m / 129 pixels,
+                        // every visible receiver selects the
+                        // last of these four fine levels, including local-light
+                        // receivers. Fine debug pixels encode (level + 1) / 4 in
+                        // red. Kernel expansion can change requested page sets,
+                        // but must not change the receiver's base resolution.
+                        for (const auto* image : {&cached, &hard}) {
+                            const auto& entry = activeEntry(*image);
+                            uint32_t finePixels = 0, wrongLevelPixels = 0;
+                            for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                                const auto& debug = image->debug[entry.baseLayer + face];
+                                for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                    if (debug[pixel * 4 + 1] == 0) { continue; }
+                                    ++finePixels;
+                                    wrongLevelPixels += debug[pixel * 4] != 255;
+                                }
+                            }
+                            require(finePixels > 100 && (!expectLastFineLevel || wrongLevelPixels == 0),
+                                name + ": receiver resolution changed with the filter");
+                        }
+                    }
+                    if (!filtered) {
+                        require(totals[30] == 0 && cached.shadows == hard.shadows && cached.debug == hard.debug,
+                            name + ": zero-size filter changed Hard visibility or receiver levels");
+                        const auto& entry = activeEntry(cached);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            for (uint32_t index : {0u, 1u, 2u, 7u, 13u}) {
+                                require(cached.statistics[entry.baseLayer + face][index] ==
+                                    hard.statistics[activeEntry(hard).baseLayer + face][index],
+                                    name + ": zero-size filter changed Hard demand or fallback");
+                            }
+                        }
+                    }
+                    return cached;
+                };
+                const auto pcf = render("PCF-Cold", true);
+                requireReused(render("PCF-Warm", true), kind + " PCF reuse");
+                saveGray(directory / (kind + "-PCF.png"), visibility(pcf, fixture, source));
+                if (kind == "Point") {
+                    uint32_t seams = 0, corners = 0;
+                    std::array<bool, 6> visibleFaces{};
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const auto hit = cameraHit(pcf.camera, x, y, fixture);
+                        if (!hit.valid || std::abs(hit.position[1]) > .01) { continue; }
+                        const auto delta = add(hit.position, scale(source.position, -1));
+                        visibleFaces[pointFace(delta)] = true;
+                        std::array<double, 3> magnitudes{std::abs(delta[0]), std::abs(delta[1]), std::abs(delta[2])};
+                        std::sort(magnitudes.begin(), magnitudes.end());
+                        seams += magnitudes[2] - magnitudes[1] < .15;
+                        corners += magnitudes[2] - magnitudes[0] < .3;
+                    }}
+                    const auto faces = std::count(visibleFaces.begin(), visibleFaces.end(), true);
+                    report["pointBoundaries"] = {{"seamSamples", seams}, {"cornerSamples", corners}, {"canonicalFaces", faces}};
+                    require(seams > 100 && corners > 20 && faces >= 3, "Demand fixture missed point seams/corner");
+                }
+                camera.eye[0] += .07f; camera.center[0] += .07f;
+                require(view.setCamera(camera), "Move demand camera across virtual page boundary");
+                (void)render("PCF-Move", true);
+                setProperty(graph, "pcfRadius", 0);
+                const auto zeroPCF = render("PCF-ZeroRadius", true, false);
+                require(zeroPCF.shadows == snapshot("Hard").shadows, kind + ": zero-radius PCF differs from Hard");
+                const auto& zeroEntry = activeEntry(zeroPCF);
+                for (uint32_t face = 0; face < zeroEntry.faceCount; ++face) {
+                    require(zeroPCF.statistics[zeroEntry.baseLayer + face][30] == 0, "Zero-radius PCF still issued filtered taps");
+                }
+                setProperty(graph, "pcfRadius", 1.5);
+                setProperty(graph, "filter", "smrt");
+                (void)render("SMRT-Cold", true);
+                requireReused(render("SMRT-Warm", true), kind + " SMRT reuse");
+                setProperty(graph, "physicalPageBudget", kind == "Point" ? 6 : 1);
+                const auto coarse = render("SMRT-CoarseOnly", false);
+                const auto& coarseEntry = activeEntry(coarse);
+                uint64_t coarseTaps = 0;
+                for (uint32_t face = 0; face < coarseEntry.faceCount; ++face) { coarseTaps += coarse.statistics[coarseEntry.baseLayer + face][31]; }
+                require(coarseTaps > 0, kind + ": coarse-only pool did not exercise filtered fallback");
+                setProperty(graph, "physicalPageBudget", pageBudget);
+                (void)render("SMRT-PoolRecovery", true);
+                requireReused(render("SMRT-RecoveryWarm", true), kind + " recovered cache reuse");
+                // A small source with the normal segment count must retain the
+                // receiver's useful mip. Shrinking demand to a ray's first
+                // angular stratum requests fine pages that exhaust this pool.
+                source.size = kind == "Directional" ? .00465 : .02;
+                publishSource(scene, preview, source);
+                setProperty(graph, "smrtSamplesPerRay", 16);
+                setProperty(graph, "smrtMaxRayLength", 10);
+                const auto matchedSMRT = render("SMRT-SmallSource", true);
+                requireReused(render("SMRT-SmallSourceWarm", true), kind + " small-source cache reuse");
+                source.size = 0; publishSource(scene, preview, source);
+                const auto zeroSMRT = render("SMRT-ZeroSource", true, false);
+                require(zeroSMRT.shadows == snapshot("Hard").shadows, kind + ": zero-source SMRT differs from Hard");
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "receiverFootprint", false),
+                        "Select explicit finest receiver resolution");
+                }
+                source.size = kind == "Directional" ? .00465 : .02;
+                publishSource(scene, preview, source);
+                setProperty(graph, "filter", "pcf");
+                const auto finestPCF = render("Finest-PCF", false);
+                require(totalStatistics(finestPCF)[0] > totalStatistics(pcf)[0],
+                    kind + ": disabling footprint matching did not restore finest PCF demand");
+                setProperty(graph, "pcfRadius", 0);
+                (void)render("Finest-PCF-ZeroRadius", false, false);
+                require(totalStatistics(snapshot("Hard"))[0] > totalStatistics(zeroSMRT)[0],
+                    kind + ": Hard ignored the explicit finest-resolution setting");
+                setProperty(graph, "filter", "smrt");
+                const auto finestSMRT = render("Finest-SMRT", false);
+                require(totalStatistics(finestSMRT)[0] > totalStatistics(matchedSMRT)[0],
+                    kind + ": disabling footprint matching did not restore finest SMRT demand");
+                source.size = 0; publishSource(scene, preview, source);
+                (void)render("Finest-SMRT-ZeroSource", false, false);
+                // Reduce virtual resolution so this same footprint selects an
+                // intermediate level instead of clamping to the last fine mip.
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    const auto id = graph.findNode(node)->id;
+                    require(graph.setNodeRuntimeProperty(id, "virtualPagesPerAxis", 16), "Set intermediate mip resolution");
+                    require(graph.setNodeRuntimeProperty(id, "receiverFootprint", true), "Restore receiver footprint matching");
+                }
+                source.size = kind == "Directional" ? .00465 : .02;
+                publishSource(scene, preview, source);
+                setProperty(graph, "pcfRadius", 1.5);
+                for (const char* filter : {"pcf", "smrt"}) {
+                    setProperty(graph, "filter", filter);
+                    const auto image = render(std::string("Intermediate-") + filter, true, true, false);
+                    const auto hard = snapshot("Hard", true);
+                    const auto& entry = activeEntry(image);
+                    uint32_t compared = 0, intermediate = 0, mismatches = 0;
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        const auto& actual = image.debug[entry.baseLayer + face];
+                        const auto& expected = hard.debug[activeEntry(hard).baseLayer + face];
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            if (actual[pixel * 4 + 1] == 0 || expected[pixel * 4 + 1] == 0) { continue; }
+                            ++compared;
+                            intermediate += expected[pixel * 4] < 255;
+                            mismatches += actual[pixel * 4] != expected[pixel * 4];
+                        }
+                    }
+                    report["frames"].back()["receiverLevelComparison"] = {{"pixels", compared},
+                        {"nonLastLevelPixels", intermediate}, {"mismatches", mismatches}};
+                    save();
+                    require(compared > 100 && intermediate > 100 && mismatches == 0,
+                        kind + ": filtered receiver level differs from Hard away from the last-mip clamp");
+                }
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Filtered demand validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("High-resolution filtered demand fits its pool with no coarse taps; cache, point boundaries and Hard reductions match");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapFilterDemandTest);
+
+class VirtualShadowMapSMRTDistanceTest final : public RHITest {
+public:
+    VirtualShadowMapSMRTDistanceTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_distance"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTDistance";
+        Json report{{"passed", false}, {"scope", "SMRT trace distance must not remove farther shadow casters"},
+            {"samplesPerRay", 16}, {"cpuAreaSamples", 256}, {"localLightHeight", 20},
+            {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTDistance.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto nearFixture = writeFixture(directory / "NearBlocker", false, 1.5);
+            const auto farFixture = writeFixture(directory / "FarBlocker", false, 12);
+            for (const auto& fixture : {nearFixture, farFixture}) {
+                const bool farBlocker = fixture.source == farFixture.source;
+                for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                    scene::SceneDocument scene;
+                    require(scene.load(fixture.source), "Load SMRT distance fixture");
+                    RenderView view;
+                    RenderGraphPreviewRenderer preview;
+                    configurePreview(preview, scene, view, context, validation);
+                    Source source{kind, {0,20,0}, {0,-1,0}, kind == "Directional" ? .00465 : .05};
+                    publishSource(scene, preview, source);
+                    evidence = std::make_shared<EvidenceState>();
+                    auto graph = makeGraph(fixture);
+                    setProperty(graph, "smrtSamplesPerRay", 16);
+                    const auto runCase = [&](uint32_t rays, uint32_t distance, const char* suffix) {
+                        setProperty(graph, "smrtRayCount", rays);
+                        setProperty(graph, "smrtMaxRayLength", distance);
+                        const std::string name = kind + (farBlocker ? "-Far" : "-Near") +
+                            "-Rays" + std::to_string(rays) + "-Distance" + std::to_string(distance) + suffix;
+                        validation.phase(name);
+                        require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"),
+                            name + ": render failed: " + preview.lastLog());
+                        const auto first = snapshot("Cached"), redraw = snapshot("Redraw"), hard = snapshot("Hard");
+                        require(first.shadows == redraw.shadows && first.depth == redraw.depth,
+                            name + ": cached shadow differs from forced redraw");
+                        const auto actual = visibility(first, fixture, source);
+                        const auto hardPixels = visibility(hard, fixture, source);
+                        uint32_t umbraSamples = 0, litSamples = 0, umbraErrors = 0, litErrors = 0;
+                        uint32_t receiverDepthErrors = 0, hardErrors = 0;
+                        for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                            const auto hit = cameraHit(first.camera, x, y, fixture);
+                            if (!hit.valid || std::abs(hit.position[1]) > .01) { continue; }
+                            // Interior patches avoid finite-texel silhouette ambiguity.
+                            // The independent area-source oracle still checks every
+                            // selected receiver against all authored triangles.
+                            const bool umbra = std::abs(hit.position[0]) < .35 && std::abs(hit.position[2]) < .35;
+                            const bool lit = std::abs(hit.position[0]) > 3 && std::abs(hit.position[0]) < 4 &&
+                                std::abs(hit.position[2]) < 1;
+                            if (!umbra && !lit) { continue; }
+                            const auto pixel = size_t(y) * kWidth + x;
+                            const double expected = referenceVisibility(hit, fixture, source);
+                            require(expected == (umbra ? 0.0 : 1.0), name + ": authored interior oracle is ambiguous");
+                            receiverDepthErrors += std::abs(first.depth[pixel] - hit.depth) > 2e-5;
+                            hardErrors += hardPixels[pixel] != (umbra ? 0 : 255);
+                            umbraSamples += umbra; litSamples += lit;
+                            umbraErrors += umbra && actual[pixel] != 0;
+                            litErrors += lit && actual[pixel] != 255;
+                        }}
+                        require(umbraSamples > 20 && litSamples > 100, name + ": insufficient independent receiver coverage");
+                        require(receiverDepthErrors == 0 && hardErrors == 0,
+                            name + ": primary geometry or Hard shadow disagrees with the interior oracle");
+                        saveGray(directory / (name + "-SMRT.png"), actual);
+                        saveGray(directory / (name + "-Hard.png"), hardPixels);
+                        require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"),
+                            name + ": stable render failed: " + preview.lastLog());
+                        const auto stable = snapshot("Cached");
+                        requireReused(stable, name);
+                        require(stable.shadows == first.shadows && stable.shadows == snapshot("Redraw").shadows,
+                            name + ": stable shadow or redraw changed");
+                        const auto& entry = activeEntry(stable);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            require(stable.statistics[entry.baseLayer + face][5] == 0 &&
+                                stable.statistics[entry.baseLayer + face][9] == 0,
+                                name + ": raster overflow or unresolved shadow query");
+                        }
+                        report["cases"].push_back({{"name", name}, {"blockerHeight", farBlocker ? 12.0 : 1.5},
+                            {"rayCount", rays}, {"traceDistance", distance}, {"sourceSize", source.size}, {"umbraSamples", umbraSamples},
+                            {"litSamples", litSamples}, {"umbraErrors", umbraErrors}, {"litErrors", litErrors},
+                            {"receiverDepthErrors", receiverDepthErrors}, {"hardErrors", hardErrors},
+                            {"stableCacheAndRedrawEqual", true}, {"statistics", stable.statistics}});
+                        if (umbraErrors || litErrors) {
+                            report["failures"].push_back({{"name", name}, {"umbraErrors", umbraErrors}, {"litErrors", litErrors}});
+                        }
+                        save();
+                    };
+                    for (const uint32_t rays : {1u, 8u}) {
+                        for (const uint32_t distance : {10u, 1u}) { runCase(rays, distance, ""); }
+                    }
+                    if (farBlocker) {
+                        // A positive source must exercise SMRT instead of its exact-zero Hard reduction.
+                        source.size = 1e-6;
+                        publishSource(scene, preview, source);
+                        runCase(1, 10, "-TinySource");
+                    }
+                }
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT distance Vulkan validation error");
+            require(report["failures"].empty(), "SMRT distance lost distant occlusion or shadowed the lit control; see failures");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Directional, spot and point SMRT retain distant umbra and lit controls with bounded tracing");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTDistanceTest);
+
+class VirtualShadowMapSMRTPenumbraTest final : public RHITest {
+public:
+    VirtualShadowMapSMRTPenumbraTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_penumbra"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTPenumbra";
+        Json report{{"passed", false}, {"scope", "Far-blocker penumbra and spatially unbiased one-ray sampling"},
+            {"blockerHeight", 12}, {"blockerHalfExtent", .8}, {"traceDistance", 32}, {"samplesPerRay", 32},
+            {"cpuAreaSamples", 256}, {"maximumOneRayBandMeanError", .18},
+            {"frames", Json::array()}, {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTPenumbra.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "FarBlocker", false, 12);
+            for (const std::string name : {"Directional-Sun", "Directional-Broad", "Spot", "Point"}) {
+                const bool directional = name.starts_with("Directional");
+                Source source{directional ? "Directional" : name, {0,20,0}, {0,-1,0},
+                    directional ? (name == "Directional-Sun" ? .00465 : .04) : .1};
+                // View a straight edge from below the elevated blocker. A
+                // close orthographic view resolves even a solar-size penumbra.
+                const double edge = directional ? .8 : 2.0;
+                const double radius = directional ? 12 * std::tan(source.size) : 1.5 * source.size;
+                const float height = directional ? (name == "Directional-Sun" ? 1.0f : 2.0f) : 1.5f;
+                scene::SceneDocument scene;
+                require(scene.load(fixture.source), "Load SMRT penumbra fixture");
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                require(view.setCamera({.eye={float(edge),5,0}, .center={float(edge),0,0}, .up={0,0,-1},
+                    .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=height, .orthographic=true}),
+                    "Set SMRT penumbra edge camera");
+                publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>();
+                auto graph = makeGraph(fixture);
+                setProperty(graph, "smrtMaxRayLength", 32);
+                validation.phase(name + "-ManyRays");
+                const auto many = compareFrame(preview, graph, directory, name + "-ManyRays", report);
+                const auto metric = measureOracle(many, fixture, source, directory, name + "-ManyRays", false);
+                if (!metric.at("qualityPassed").get<bool>()) {
+                    report["failures"].push_back({{"name", name}, {"qualityFailures", metric.at("qualityFailures")}});
+                }
+
+                setProperty(graph, "smrtRayCount", 1);
+                validation.phase(name + "-OneRay");
+                const auto one = compareFrame(preview, graph, directory, name + "-OneRay", report);
+                const auto pixels = visibility(one, fixture, source);
+                saveGray(directory / (name + "-OneRay.png"), pixels);
+                const auto stable = compareFrame(preview, graph, directory, name + "-OneRayStable", report);
+                requireReused(stable, name + " one-ray stable");
+                require(one.shadows == stable.shadows, name + ": fixed-frame spatial samples changed between renders");
+
+                // A single ray is binary; per-pixel soft visibility is not a
+                // valid assertion. Independent narrow bands across the edge
+                // should nevertheless estimate the area-source visibility.
+                // A globally shared disk point makes a shifted hard edge and
+                // fails the outer bands even when its full-image mean agrees.
+                Json bands = Json::array();
+                for (const double offset : {-.5, 0., .5}) {
+                    uint32_t samples = 0, depthErrors = 0;
+                    double actualSum = 0, expectedSum = 0;
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const auto hit = cameraHit(one.camera, x, y, fixture);
+                        if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[2]) > .25 ||
+                            std::abs((hit.position[0] - edge) / radius - offset) > .15) { continue; }
+                        const size_t pixel = size_t(y) * kWidth + x;
+                        ++samples;
+                        depthErrors += std::abs(one.depth[pixel] - hit.depth) > 2e-5;
+                        actualSum += pixels[pixel] / 255.;
+                        expectedSum += referenceVisibility(hit, fixture, source);
+                    }}
+                    require(samples > 50 && depthErrors == 0, name + ": insufficient independent edge-band coverage");
+                    const double actual = actualSum / samples, expected = expectedSum / samples;
+                    require(expected > .1 && expected < .9, name + ": edge band is not in the physical penumbra");
+                    const double error = std::abs(actual - expected);
+                    bands.push_back({{"offsetInPenumbraRadii", offset}, {"samples", samples},
+                        {"gpuMean", actual}, {"cpuMean", expected}, {"absoluteMeanError", error}});
+                    if (error > .18) {
+                        report["failures"].push_back({{"name", name}, {"offsetInPenumbraRadii", offset},
+                            {"error", "One-ray spatial mean differs from the geometric area-source oracle"},
+                            {"absoluteMeanError", error}});
+                    }
+                }
+                report["cases"].push_back({{"name", name}, {"sourceSize", source.size}, {"manyRayMetrics", metric},
+                    {"oneRayBands", bands}, {"stableOneRayAndRedrawEqual", true}});
+                save();
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT penumbra Vulkan validation error");
+            require(report["failures"].empty(), "SMRT penumbra or spatial sampling disagrees with the independent oracle");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Far SMRT penumbra matches area-source geometry; one-ray spatial bands remain unbiased");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTPenumbraTest);
+
+// This oracle accelerates authored double-precision triangles only. Neither
+// its bounds nor its leaves depend on a GPU depth sample or VSM projection.
+class ReceiverOracle
+{
+    struct Node {
+        Point low{1e30,1e30,1e30}, high{-1e30,-1e30,-1e30};
+        uint32_t first = 0, count = 0, left = 0, right = 0;
+    };
+    const Fixture& fixture_;
+    std::vector<uint32_t> indices_;
+    std::vector<Node> nodes_;
+
+    uint32_t build(uint32_t first, uint32_t count)
+    {
+        const uint32_t index = uint32_t(nodes_.size());
+        nodes_.emplace_back();
+        Node node; node.first = first; node.count = count;
+        for (uint32_t i = first; i < first + count; ++i) {
+            const auto& triangle = fixture_.triangles[indices_[i]];
+            for (Point p : {triangle.a, triangle.b, triangle.c}) {
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    node.low[axis] = std::min(node.low[axis], p[axis]);
+                    node.high[axis] = std::max(node.high[axis], p[axis]);
+                }
+            }
+        }
+        if (count > 4) {
+            uint32_t axis = 0;
+            for (uint32_t i = 1; i < 3; ++i) {
+                if (node.high[i] - node.low[i] > node.high[axis] - node.low[axis]) { axis = i; }
+            }
+            const uint32_t middle = first + count / 2;
+            std::nth_element(indices_.begin() + first, indices_.begin() + middle, indices_.begin() + first + count,
+                [&](uint32_t a, uint32_t b) {
+                    const auto& ta = fixture_.triangles[a]; const auto& tb = fixture_.triangles[b];
+                    return ta.a[axis] + ta.b[axis] + ta.c[axis] < tb.a[axis] + tb.b[axis] + tb.c[axis];
+                });
+            node.left = build(first, middle - first); node.right = build(middle, first + count - middle);
+            node.count = 0;
+        }
+        nodes_[index] = node;
+        return index;
+    }
+
+    bool occluded(Point origin, Point direction, double maximum) const
+    {
+        // Median splitting gives depth <= ceil(log2(triangle count)); these
+        // fixtures contain at most 66 triangles, including the blocker.
+        std::array<uint32_t, 64> stack{}; uint32_t size = 1;
+        while (size) {
+            const auto& node = nodes_[stack[--size]];
+            double near = 1e-7, far = maximum - .001;
+            bool intersects = true;
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                if (std::abs(direction[axis]) < 1e-12) {
+                    intersects &= origin[axis] >= node.low[axis] - 1e-9 && origin[axis] <= node.high[axis] + 1e-9;
+                } else {
+                    const double a = (node.low[axis] - 1e-9 - origin[axis]) / direction[axis];
+                    const double b = (node.high[axis] + 1e-9 - origin[axis]) / direction[axis];
+                    near = std::max(near, std::min(a,b)); far = std::min(far, std::max(a,b));
+                }
+            }
+            if (!intersects || far < near) { continue; }
+            if (node.count) {
+                for (uint32_t i = node.first; i < node.first + node.count; ++i) {
+                    if (triangleDistance(origin, direction, fixture_.triangles[indices_[i]]) < maximum - .001) { return true; }
+                }
+            } else { stack[size++] = node.left; stack[size++] = node.right; }
+        }
+        return false;
+    }
+public:
+    explicit ReceiverOracle(const Fixture& fixture) : fixture_(fixture)
+    {
+        for (uint32_t i = 0; i < fixture.triangles.size(); ++i) { indices_.push_back(i); }
+        build(0, uint32_t(indices_.size()));
+    }
+    double visibility(const Hit& hit, const Source& source) const
+    {
+        const Point toLight = source.kind == "Directional" ? normalized(scale(source.direction,-1)) :
+            normalized(add(source.position,scale(hit.position,-1)));
+        const Point tangent = normalized(cross(toLight,std::abs(toLight[1]) < .9 ? Point{0,1,0} : Point{1,0,0}));
+        const Point bitangent = cross(toLight,tangent);
+        const uint32_t samples = source.size > 0 ? 256 : 1;
+        uint32_t visible = 0;
+        for (uint32_t i = 0; i < samples; ++i) {
+            const double radius = std::sqrt((i / 16 + .5) / 16.);
+            const double angle = (i % 16 + .5) * 2 * kPi / 16;
+            const Point disk = add(scale(tangent,radius * std::cos(angle)),scale(bitangent,radius * std::sin(angle)));
+            Point direction; double maximum;
+            if (source.kind == "Directional") {
+                direction = normalized(add(toLight,scale(disk,std::tan(source.size)))); maximum = 100;
+            } else {
+                const Point ray = add(add(source.position,scale(disk,source.size)),scale(hit.position,-1));
+                maximum = std::sqrt(dot(ray,ray)); direction = scale(ray,1 / maximum);
+            }
+            visible += !occluded(hit.position,direction,maximum);
+        }
+        return double(visible) / samples;
+    }
+};
+
+constexpr double kReceiverBlockerHalfExtent = .6;
+
+struct ReceiverFixture {
+    Fixture geometry;
+    size_t receiverTriangles = 0;
+    Point tangent{1,0,0}, normal{0,1,0}, toLight{};
+    double blockerDistance = 0, viewHeight = 1.4;
+    bool grazing = false, planar = false;
+};
+
+ReceiverFixture writeReceiverFixture(const std::filesystem::path& directory, const std::string& shape, double gap)
+{
+    ReceiverFixture result; result.blockerDistance = gap; result.viewHeight = gap == .15 ? .4 : 1.4;
+    result.grazing = shape == "Grazing";
+    const bool curved = shape == "Convex" || shape == "Concave";
+    result.planar = !curved;
+    if (!curved) {
+        result.tangent = {std::sqrt(.75),.5,0}; result.normal = {-.5,std::sqrt(.75),0};
+        addFixtureQuad(result.geometry,{0,0,0},scale(result.tangent,8),{0,0,-8});
+    } else {
+        constexpr double radius = 3, halfWidth = 2.4;
+        const double sign = shape == "Convex" ? 1 : -1;
+        for (uint32_t segment = 0; segment < 32; ++segment) {
+            const double x0 = -halfWidth + 2 * halfWidth * segment / 32;
+            const double x1 = -halfWidth + 2 * halfWidth * (segment + 1) / 32;
+            const double y0 = sign * (std::sqrt(radius * radius - x0 * x0) - radius);
+            const double y1 = sign * (std::sqrt(radius * radius - x1 * x1) - radius);
+            const Point a{x0,y0,4}, b{x1,y1,4}, c{x1,y1,-4}, d{x0,y0,-4};
+            result.geometry.triangles.push_back({a,b,c}); result.geometry.triangles.push_back({a,c,d});
+        }
+    }
+    result.receiverTriangles = result.geometry.triangles.size();
+    const double cosine = result.grazing ? .1 : .8;
+    result.toLight = add(scale(result.normal,cosine),scale(result.tangent,std::sqrt(1 - cosine * cosine)));
+    if (gap > 0) {
+        addFixtureQuad(result.geometry,scale(result.toLight,gap),scale(result.tangent,kReceiverBlockerHalfExtent),{0,0,-1.5});
+    }
+    result.geometry = writeFixture(directory,false,1.5,.8,&result.geometry);
+    return result;
+}
+
+struct ReceiverReference {
+    std::vector<double> area, hard, ndotl;
+    std::vector<uint8_t> mask, faces;
+    uint32_t depthSamples = 0, depthErrors = 0;
+    bool hasAnalyticEdge = false;
+    double analyticEdgePixels = 0;
+    Json analyticEdgeValidation;
+};
+
+ReceiverReference receiverReference(const Snapshot& image, const ReceiverFixture& fixture, const Source& source)
+{
+    ReceiverReference reference;
+    reference.area.resize(kPixels,1); reference.hard.resize(kPixels,1);
+    reference.ndotl.resize(kPixels); reference.mask.resize(kPixels); reference.faces.resize(kPixels);
+    ReceiverOracle oracle(fixture.geometry);
+    Source pointSource = source; pointSource.size = 0;
+    if (fixture.planar && fixture.blockerDistance > 0) {
+        // The receiver and blocker are parallel planes. Their left-edge
+        // projection is u=-halfExtent for a directional source, and
+        // u=-halfExtent/(1-gap/sourceDistance) for a finite source. At that
+        // point the blocker edge splits the uniform disk through its center,
+        // giving exactly 50% visibility independent of a sampled CDF plateau.
+        const double distance = std::sqrt(dot(source.position,source.position));
+        const double u = -kReceiverBlockerHalfExtent /
+            (source.kind == "Directional" ? 1 : 1 - fixture.blockerDistance / distance);
+        const Point edgePoint = scale(fixture.tangent,u);
+        const Point eye = point(image.camera.eye);
+        const Point forward = normalized(add(point(image.camera.center),scale(eye,-1)));
+        const Point right = normalized(cross(forward,point(image.camera.upProjection)));
+        const double halfWidth = image.camera.clipOrtho[2] * .5 * image.camera.viewport[0];
+        reference.analyticEdgePixels = (dot(add(edgePoint,scale(eye,-1)),right) / halfWidth + 1) *
+            kWidth * .5 - .5 - image.camera.jitter[0];
+        reference.hasAnalyticEdge = true;
+        require(reference.analyticEdgePixels >= 0 && reference.analyticEdgePixels < kWidth - 1,
+            "Analytic receiver edge lies outside the configured camera");
+        Json checks = Json::array();
+        constexpr double epsilon = 1e-4;
+        for (double z : {-fixture.viewHeight * .35,0.,fixture.viewHeight * .35}) {
+            Hit center; center.position = add(edgePoint,{0,0,z}); center.normal = fixture.normal; center.valid = true;
+            Hit left = center, right = center;
+            left.position = add(center.position,scale(fixture.tangent,-epsilon));
+            right.position = add(center.position,scale(fixture.tangent,epsilon));
+            const double leftVisibility = referenceVisibility(left,fixture.geometry,pointSource);
+            const double rightVisibility = referenceVisibility(right,fixture.geometry,pointSource);
+            const double centerAreaVisibility = referenceVisibility(center,fixture.geometry,source);
+            checks.push_back({{"z",z},{"litSide",leftVisibility},{"shadowSide",rightVisibility},
+                {"diskCenterVisibility",centerAreaVisibility}});
+            require(leftVisibility == 1 && rightVisibility == 0 && centerAreaVisibility == .5,
+                "Analytic planar edge disagrees with independent authored-triangle rays");
+        }
+        reference.analyticEdgeValidation = {{"receiverU",u},{"pixel",reference.analyticEdgePixels},
+            {"centerRaySideOffsetMetres",epsilon},{"geometryChecks",checks},
+            {"reference","Parallel authored planes and a uniform source disk; no GPU visibility input"}};
+    }
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        const auto hit = cameraHit(image.camera,x,y,fixture.geometry);
+        if (!hit.valid || hit.triangleIndex >= fixture.receiverTriangles) { continue; }
+        const double u = dot(hit.position,fixture.tangent);
+        // At NdotL=0.1, the shallow directions from the 8 m local source stretch
+        // the separated left penumbra to about u=-1.85. Include a lit interior.
+        const double halfWidth = fixture.grazing && fixture.blockerDistance == 1.2 ? 1.35 :
+            fixture.blockerDistance == .15 ? .25 : .7;
+        if (std::abs(u + .6) > halfWidth || std::abs(hit.position[2]) > fixture.viewHeight * .4) { continue; }
+        ++reference.depthSamples;
+        reference.depthErrors += std::abs(image.depth[pixel] - hit.depth) > 2e-5;
+        const Point toLight = source.kind == "Directional" ? fixture.toLight :
+            normalized(add(source.position,scale(hit.position,-1)));
+        reference.ndotl[pixel] = dot(hit.normal,toLight);
+        // All source directions must lie above the local tangent hemisphere.
+        // Outside it, backface irradiance and geometric visibility differ.
+        if (reference.ndotl[pixel] <= .06) { continue; }
+        reference.mask[pixel] = 1;
+        reference.faces[pixel] = source.kind == "Point" ? uint8_t(pointFace(add(hit.position,scale(source.position,-1)))) : 0;
+        reference.area[pixel] = oracle.visibility(hit,source);
+        reference.hard[pixel] = oracle.visibility(hit,pointSource);
+        // Cross-check the independent BVH against the original brute-force
+        // triangle oracle on a fixed subset, including finite-source rays.
+        if (x % 31 == 0 && y % 29 == 0) {
+            require(reference.area[pixel] == referenceVisibility(hit,fixture.geometry,source),
+                "Receiver BVH and brute-force authored geometry disagree");
+        }
+    }}
+    return reference;
+}
+
+Json receiverMetrics(const std::vector<uint8_t>& actual, const ReceiverReference& reference,
+    const std::string& filter, bool blocker, bool grazing)
+{
+    const auto& expected = filter == "SMRT" ? reference.area : reference.hard;
+    uint32_t checked = 0, penumbra = 0, lit = 0, dark = 0, falseShadow = 0, leaks = 0, grazingSamples = 0;
+    double error = 0, penumbraError = 0;
+    std::array<std::array<uint32_t,4>,4> buckets{};
+    std::vector<double> edgeDistances;
+    std::vector<std::array<double,2>> discreteOracleEdges;
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        if (!reference.mask[pixel]) { continue; }
+        const double value = actual[pixel] / 255., difference = std::abs(value - expected[pixel]);
+        ++checked; error += difference;
+        grazingSamples += reference.ndotl[pixel] >= .06 && reference.ndotl[pixel] <= .15;
+        if (expected[pixel] > .05 && expected[pixel] < .95) { ++penumbra; penumbraError += difference; }
+        // Protect only the independently predicted transition band. PCF's
+        // radius is 1 texel; receiver matching bounds its world texel by one
+        // camera pixel here. Projecting the square kernel onto the receiver
+        // adds at most sqrt(2)/NdotL pixels, plus two raster coverage pixels.
+        const uint32_t radius = filter == "PCF" ? uint32_t(std::ceil(std::sqrt(2.) / reference.ndotl[pixel])) + 2 : 1;
+        bool stable = expected[pixel] == 0 || expected[pixel] == 1;
+        if (x < radius || y < radius || x + radius >= kWidth || y + radius >= kHeight) { stable = false; }
+        if (stable) {
+            for (int dy = -int(radius); dy <= int(radius) && stable; ++dy) {
+                for (int dx = -int(radius); dx <= int(radius); ++dx) {
+                    const size_t other = size_t(int(y) + dy) * kWidth + int(x) + dx;
+                    if (!reference.mask[other] || expected[other] != expected[pixel]) { stable = false; break; }
+                }
+            }
+        }
+        if (stable) {
+            const uint32_t bucket = reference.ndotl[pixel] <= .15 ? 0 : reference.ndotl[pixel] <= .35 ? 1 :
+                reference.ndotl[pixel] <= .65 ? 2 : 3;
+            if (expected[pixel] == 1) {
+                ++lit; falseShadow += value < .9; ++buckets[bucket][0]; buckets[bucket][1] += value < .9;
+            } else {
+                ++dark; leaks += value > .1; ++buckets[bucket][2]; buckets[bucket][3] += value > .1;
+            }
+        }
+        const bool discreteCrossing = blocker && x + 1 < kWidth && reference.mask[pixel + 1] &&
+            expected[pixel] >= .5 && expected[pixel + 1] < .5;
+        const double discreteEdge = discreteCrossing ?
+            x + (expected[pixel] - .5) / (expected[pixel] - expected[pixel + 1]) : 0;
+        if (discreteCrossing) { discreteOracleEdges.push_back({double(y),discreteEdge}); }
+        const bool edgeRow = reference.hasAnalyticEdge ?
+            blocker && x == uint32_t(std::floor(reference.analyticEdgePixels)) && reference.mask[pixel + 1] : discreteCrossing;
+        if (edgeRow) {
+            const double edge = reference.hasAnalyticEdge ? reference.analyticEdgePixels : discreteEdge;
+            double nearest = 16;
+            for (int offset = -16; offset <= 16; ++offset) {
+                const int xx = int(x) + offset;
+                if (xx < 0 || xx + 1 >= int(kWidth)) { continue; }
+                const size_t other = size_t(y) * kWidth + xx;
+                if (!reference.mask[other] || !reference.mask[other + 1]) { continue; }
+                const double a = actual[other] / 255., b = actual[other + 1] / 255.;
+                if (a >= .5 && b < .5) {
+                    nearest = std::min(nearest,std::abs(xx + (a - .5) / (a - b) - edge));
+                }
+            }
+            edgeDistances.push_back(nearest);
+        }
+    }}
+    std::sort(edgeDistances.begin(),edgeDistances.end());
+    const double edge95 = edgeDistances.empty() ? 0 : edgeDistances[size_t((edgeDistances.size() - 1) * .95)];
+    Json discreteDifference = Json::array();
+    if (reference.hasAnalyticEdge) {
+        for (const auto& sample : discreteOracleEdges) { discreteDifference.push_back({sample[0],sample[1] - reference.analyticEdgePixels}); }
+    }
+    Json failures = Json::array();
+    if (checked < 500 || lit < 100 || (blocker && filter != "PCF" && dark < 50)) { failures.push_back("insufficient receiver/interior coverage"); }
+    if (grazing && grazingSamples < 500) { failures.push_back("insufficient measured grazing-angle coverage"); }
+    if (filter != "PCF" && error / std::max(checked,1u) >= .04) { failures.push_back("receiver MAE >= 0.04"); }
+    if (filter == "SMRT" && blocker && (penumbra < 20 || penumbraError / std::max(penumbra,1u) >= .20)) {
+        failures.push_back("penumbra coverage < 20 or MAE >= 0.20");
+    }
+    if (double(falseShadow) / std::max(lit,1u) >= .01) { failures.push_back("false-shadow fraction >= 0.01"); }
+    if (double(leaks) / std::max(dark,1u) >= .01) { failures.push_back("light-leak fraction >= 0.01"); }
+    for (const auto& bucket : buckets) {
+        if ((bucket[0] >= 100 && double(bucket[1]) / bucket[0] >= .01) ||
+            (bucket[2] >= 100 && double(bucket[3]) / bucket[2] >= .01)) { failures.push_back("NdotL bucket interior error fraction >= 0.01"); }
+    }
+    if (blocker && (edgeDistances.size() < 20 || edge95 > 2)) { failures.push_back("edge coverage < 20 or 95th-percentile displacement > 2 pixels"); }
+    return {{"checked",checked},{"meanAbsoluteError",error / std::max(checked,1u)},
+        {"penumbraSamples",penumbra},{"penumbraMeanAbsoluteError",penumbraError / std::max(penumbra,1u)},
+        {"litInteriorSamples",lit},{"umbraInteriorSamples",dark},{"falseShadowSamples",falseShadow},{"lightLeakSamples",leaks},
+        {"grazingSamples",grazingSamples},{"NdotLBucketsLitFalseShadowUmbraLeak",buckets},
+        {"edgeSamples",edgeDistances.size()},{"edgeDisplacement95Pixels",edge95},
+        {"edgeReference",reference.hasAnalyticEdge ? "analytic planar disk median" : "authored-triangle visibility profile"},
+        {"analyticEdgePixels",reference.hasAnalyticEdge ? Json(reference.analyticEdgePixels) : Json()},
+        {"discreteOracleEdgesByRow",discreteOracleEdges},{"discreteOracleMinusAnalyticByRow",discreteDifference},
+        {"qualityPassed",failures.empty()},{"qualityFailures",failures}};
+}
+
+Json receiverRowAverageEdge(const std::vector<uint8_t>& actual, const ReceiverReference& reference,
+    const std::string& filter)
+{
+    const auto& expected = filter == "SMRT" ? reference.area : reference.hard;
+    std::array<double,kWidth> actualProfile{}, expectedProfile{};
+    std::array<uint32_t,kWidth> counts{};
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        if (!reference.mask[pixel]) { continue; }
+        actualProfile[x] += actual[pixel] / 255.; expectedProfile[x] += expected[pixel]; ++counts[x];
+    }}
+    for (uint32_t x = 0; x < kWidth; ++x) {
+        if (counts[x]) { actualProfile[x] /= counts[x]; expectedProfile[x] /= counts[x]; }
+    }
+    double discreteEdge = -1, actualEdge = -1;
+    for (uint32_t x = 0; x + 1 < kWidth; ++x) {
+        if (counts[x] < 20 || counts[x + 1] < 20) { continue; }
+        if (expectedProfile[x] >= .5 && expectedProfile[x + 1] < .5) {
+            discreteEdge = x + (expectedProfile[x] - .5) / (expectedProfile[x] - expectedProfile[x + 1]);
+            break;
+        }
+    }
+    const double expectedEdge = reference.hasAnalyticEdge ? reference.analyticEdgePixels : discreteEdge;
+    if (expectedEdge >= 0) {
+        double nearest = 1e30;
+        for (uint32_t x = 0; x + 1 < kWidth; ++x) {
+            if (counts[x] < 20 || counts[x + 1] < 20) { continue; }
+            if (actualProfile[x] >= .5 && actualProfile[x + 1] < .5) {
+                const double edge = x + (actualProfile[x] - .5) / (actualProfile[x] - actualProfile[x + 1]);
+                if (std::abs(edge - expectedEdge) < nearest) { nearest = std::abs(edge - expectedEdge); actualEdge = edge; }
+            }
+        }
+    }
+    const bool available = expectedEdge >= 0 && actualEdge >= 0;
+    // Diagnostic only: averaging rows separates a systematic edge displacement
+    // from per-pixel finite-ray noise. It never replaces the existing P95 gate.
+    return {{"diagnosticOnly",true},{"available",available},{"columnSamples",counts},
+        {"expectedProfile",expectedProfile},{"actualProfile",actualProfile},
+        {"expectedEdgePixels",expectedEdge >= 0 ? Json(expectedEdge) : Json()},
+        {"discreteOracleEdgePixels",discreteEdge >= 0 ? Json(discreteEdge) : Json()},
+        {"analyticEdgePixels",reference.hasAnalyticEdge ? Json(reference.analyticEdgePixels) : Json()},
+        {"discreteOracleMinusAnalyticPixels",reference.hasAnalyticEdge && discreteEdge >= 0 ?
+            Json(discreteEdge - reference.analyticEdgePixels) : Json()},
+        {"actualEdgePixels",actualEdge >= 0 ? Json(actualEdge) : Json()},
+        {"signedDisplacementPixels",available ? Json(actualEdge - expectedEdge) : Json()},
+        {"absoluteDisplacementPixels",available ? Json(std::abs(actualEdge - expectedEdge)) : Json()}};
+}
+
+class VirtualShadowMapReceiverQualityTest final : public RHITest {
+public:
+    VirtualShadowMapReceiverQualityTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_receiver_quality"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapReceiverQuality";
+        Json report{{"passed",false},{"frames",Json::array()},{"cases",Json::array()},{"qualityFailures",Json::array()},
+            {"contract",{{"receiverFootprint",true},{"virtualPagesPerAxis",128},{"clipmapCount",4},{"cpuAreaSamples",256},
+                {"triangleEpsilonMetres",1e-7},{"oracleOriginOffsetMetres",0},{"planeTiltDegrees",30},
+                {"grazingCenterNdotL",.1},{"curveRadiusMetres",3},{"curveSegments",32},
+                {"sourceAngularRadius",.04},{"localSourceDistanceMetres",8},{"cameraNormalDistanceMetres",2},
+                {"receiverMAE",.04},{"penumbraMAE",.20},
+                {"separateInteriorErrorFraction",.01},{"edgeDisplacement95Pixels",2},
+                {"minimumOracleNdotL",.06},{"NdotLBucketUpperBounds",{.15,.35,.65,1.0}},
+                {"pcfRadiusTexels",1},{"pcfInteriorGuardPixels","ceil(sqrt(2)/NdotL)+2"}}}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapReceiverQuality.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            for (const std::string shape : {"Tilted","Grazing","Convex","Concave"}) {
+                for (double gap : {0.,.15,1.2}) {
+                    const std::string geometryName = shape + (gap == 0 ? "-Clear" : gap == .15 ? "-Contact" : "-Separated");
+                    const auto fixture = writeReceiverFixture(directory / geometryName,shape,gap);
+                    for (const std::string kind : {"Directional","Spot","Point"}) {
+                        const std::string name = geometryName + "-" + kind; validation.phase(name);
+                        scene::SceneDocument scene; require(scene.load(fixture.geometry.source),"Load receiver quality geometry");
+                        RenderView view; RenderGraphPreviewRenderer preview;
+                        configurePreview(preview,scene,view,context,validation);
+                        // Translate the grazing separated view without changing
+                        // its pixel footprint or the selected shadow resolution.
+                        Point center = scale(fixture.tangent,fixture.grazing && gap == 1.2 ? -.95 : -.6);
+                        if (shape == "Convex" || shape == "Concave") {
+                            center[1] = (shape == "Convex" ? 1 : -1) * (std::sqrt(9 - .36) - 3);
+                        }
+                        const Point eye = add(center,scale(fixture.normal,2));
+                        require(view.setCamera({.eye={float(eye[0]),float(eye[1]),float(eye[2])},
+                            .center={float(center[0]),float(center[1]),float(center[2])},.up={0,0,-1},
+                            .fovDegrees=52,.nearPlane=.1f,.farPlane=100,.orthoHeight=float(fixture.viewHeight),.orthographic=true}),
+                            "Set receiver quality close-up camera");
+                        Source source{kind,scale(fixture.toLight,8),scale(fixture.toLight,-1),kind == "Directional" ? .04 : .32};
+                        publishSource(scene,preview,source);
+                        if (kind == "Spot") {
+                            auto lighting = scene.lighting(); auto& light = lighting.lights[0];
+                            light.direction = float3(float(source.direction[0]),float(source.direction[1]),float(source.direction[2]));
+                            light.properties.outerConeAngle = .6; light.properties.innerConeAngle = .4;
+                            require(scene.setLighting(lighting),"Aim receiver spot at the authored surface");
+                            require(preview.setLighting(scene.lighting()),"Publish aimed receiver spot");
+                        }
+                        evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture.geometry,"smrt",false,128);
+                        for (const char* node : {"Cached","Redraw","Hard"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"physicalPageBudget",kind == "Point" ? 6 * 1024 : 1024),
+                                "Set receiver quality page budget");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"smrtMaxRayLength",32),"Set receiver quality trace length");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id,"pcfRadius",1),"Set bounded receiver PCF kernel");
+                            require(graph.setNodeRuntimeProperty(graph.findNode(std::string(node) + "Evidence")->id,"captureDebug",true),
+                                "Capture receiver quality center levels");
+                        }
+                        const auto first = compareFrame(preview,graph,directory,name + "-SMRT",report,true);
+                        const auto reference = receiverReference(first,fixture,source);
+                        require(reference.depthSamples > 500 && reference.depthErrors == 0,name + ": authored receiver depth mismatch");
+                        const auto stable = compareFrame(preview,graph,directory,name + "-Warm",report,true);
+                        requireReused(stable,name); require(first.shadows == stable.shadows,name + ": stable visibility changed");
+                        Json item{{"name",name},{"receiverTriangles",fixture.receiverTriangles},{"blockerDistance",gap},
+                            {"viewHeight",fixture.viewHeight},{"depthSamples",reference.depthSamples},{"depthErrors",reference.depthErrors},
+                            {"cameraEye",eye},{"cameraCenter",center},{"receiverTangent",fixture.tangent},
+                            {"sourcePosition",source.position},{"sourceDirection",source.direction},{"sourceSize",source.size},
+                            {"analyticEdgeValidation",reference.analyticEdgeValidation},
+                            {"filters",Json::array()}};
+                        const auto measure = [&](const Snapshot& image, const std::string& filter) {
+                            const auto& entry = activeEntry(image);
+                            for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                                const auto& stats = image.statistics[entry.baseLayer + face];
+                                require(stats[2] == 0 && stats[5] == 0 && stats[7] == 0 && stats[9] == 0 && stats[31] == 0,
+                                    name + ": quality fixture has dropped pages, unresolved depth or coarse fallback");
+                            }
+                            const auto pixels = visibility(image,fixture.geometry,source);
+                            auto metric = receiverMetrics(pixels,reference,filter,gap > 0,fixture.grazing);
+                            std::array<uint32_t,4> levels{}; uint32_t coarse = 0, other = 0;
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (!reference.mask[pixel]) { continue; }
+                                const auto& debug = image.debug[entry.baseLayer + reference.faces[pixel]];
+                                if (debug[pixel * 4 + 1] > 100) {
+                                    const uint32_t level = (uint32_t(debug[pixel * 4]) * 4 + 127) / 255 - 1;
+                                    ++levels[level];
+                                } else if (debug[pixel * 4 + 2] > 200 && debug[pixel * 4] < 30) { ++coarse; }
+                                else { ++other; }
+                            }
+                            metric["centerLevelHistogram"] = levels;
+                            metric["centerCoarsePixels"] = coarse; metric["centerOtherPixels"] = other;
+                            if (fixture.grazing && gap == 1.2) {
+                                metric["rowAverageEdgeDiagnostic"] = receiverRowAverageEdge(pixels,reference,filter);
+                            }
+                            std::vector<uint8_t> cpu(kPixels,255), errors(kPixels,0);
+                            const auto& expected = filter == "SMRT" ? reference.area : reference.hard;
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (!reference.mask[pixel]) { continue; }
+                                cpu[pixel] = uint8_t(std::lround(expected[pixel] * 255));
+                                errors[pixel] = uint8_t(std::lround(std::abs(pixels[pixel] / 255. - expected[pixel]) * 255));
+                            }
+                            saveGray(directory / (name + "-" + filter + "-GPU.png"),pixels);
+                            saveGray(directory / (name + "-" + filter + "-CPU.png"),cpu);
+                            saveGray(directory / (name + "-" + filter + "-Error.png"),errors);
+                            item["filters"].push_back({{"filter",filter},{"metrics",metric}});
+                            if (!metric["qualityPassed"].get<bool>()) {
+                                report["qualityFailures"].push_back({{"case",name},{"filter",filter},{"failures",metric["qualityFailures"]}});
+                            }
+                        };
+                        measure(first,"SMRT"); measure(snapshot("Hard",true),"Hard");
+                        setProperty(graph,"filter","pcf");
+                        measure(compareFrame(preview,graph,directory,name + "-PCF",report,true),"PCF");
+                        if (gap > 0) {
+                            std::vector<uint8_t> allLit(kPixels,255), allDark(kPixels,0), shifted(kPixels,255);
+                            for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 4; x < kWidth; ++x) {
+                                shifted[size_t(y) * kWidth + x] = uint8_t(reference.hard[size_t(y) * kWidth + x - 4] * 255);
+                            }}
+                            const auto litControl = receiverMetrics(allLit,reference,"Hard",true,fixture.grazing);
+                            const auto darkControl = receiverMetrics(allDark,reference,"Hard",true,fixture.grazing);
+                            const auto shiftedControl = receiverMetrics(shifted,reference,"Hard",true,fixture.grazing);
+                            require(litControl["lightLeakSamples"].get<uint32_t>() > 0 &&
+                                darkControl["falseShadowSamples"].get<uint32_t>() > 0 &&
+                                shiftedControl["edgeDisplacement95Pixels"].get<double>() > 2,
+                                name + ": oracle negative controls did not reject missing, false or shifted shadows");
+                            item["negativeControls"] = {{"allLitRejected",!litControl["qualityPassed"].get<bool>()},
+                                {"allDarkRejected",!darkControl["qualityPassed"].get<bool>()},
+                                {"fourPixelShiftRejected",!shiftedControl["qualityPassed"].get<bool>()}};
+                        }
+                        report["cases"].push_back(item); save();
+                    }
+                }
+            }
+            report["validation"] = validation.snapshot(); save();
+            require(!validation.failed(),"Receiver quality Vulkan validation error");
+            require(report["qualityFailures"].empty(),"Receiver quality gates failed; see complete per-filter matrix");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Sloped, grazing, convex and concave receivers match independent geometry with separate leak, acne and edge gates");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapReceiverQualityTest);
+
+class VirtualShadowMapShadowLODSmartBiasQualityTest final : public RHITest
+{
+public:
+    VirtualShadowMapShadowLODSmartBiasQualityTest()
+    {
+        type = RHITestType::Rendering;
+        name = "virtual_shadow_map_shadow_lod_smart_bias_quality";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapShadowLODSmartBiasQuality";
+        Json report{{"passed", false}, {"frames", Json::array()}, {"cases", Json::array()}, {"qualityFailures", Json::array()},
+            {"scope", "Directional smart-bias near-contact leak diagnostics on exact zero-thickness blocker geometry; not LOD performance evidence"},
+            {"contract", {{"shadowLOD", true}, {"filter", "hard"},
+                {"shadowBiasMetres", .002}, {"gapMetres", {.005, .01, .02, .04}},
+                {"nominalScreenRayLength", .015}, {"stressScreenRayLengthMetres", .12},
+                {"blockerThicknessMetres", 0}, {"oracleOriginOffsetMetres", 0}, {"triangleEpsilonMetres", 1e-7},
+                {"separateInteriorErrorFraction", .01}, {"edgeDisplacement95Pixels", 2},
+                {"geometry", "Independent authored receiver and blocker quads retain exact terminal geometry in every arm"}}}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() {
+            std::ofstream(directory / "VirtualShadowMapShadowLODSmartBiasQuality.json") << report.dump(2) << '\n';
+        };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            for (double gap : {.005, .01, .02, .04}) {
+                const std::string name = "Directional-ThinBlocker-" + std::to_string(int(std::lround(gap * 1000))) + "mm";
+                auto fixture = writeReceiverFixture(directory / name, "Tilted", gap);
+                // The normal-facing camera exposes the narrow strip between the
+                // real shadow edge and the blocker silhouette. Keep even 5 mm
+                // contact resolvable, while the stress trace remains 120 mm long.
+                fixture.viewHeight = std::max(4 * gap, .12);
+                const Point center = scale(fixture.tangent, -kReceiverBlockerHalfExtent);
+                const Point eye = add(center, scale(fixture.normal, 2));
+                scene::SceneDocument scene;
+                require(scene.load(fixture.geometry.source), "Load smart-bias contact geometry");
+                RenderView view;
+                RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                require(view.setCamera({.eye={float(eye[0]), float(eye[1]), float(eye[2])},
+                    .center={float(center[0]), float(center[1]), float(center[2])}, .up={0, 0, -1},
+                    .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=float(fixture.viewHeight), .orthographic=true}),
+                    "Set smart-bias near-contact close-up camera");
+                // receiverReference also checks its analytic area-source edge;
+                // every GPU arm and the leak gates below use the hard source.
+                Source source{"Directional", scale(fixture.toLight, 8), scale(fixture.toLight, -1), .04};
+                publishSource(scene, preview, source);
+                evidence = std::make_shared<EvidenceState>();
+                auto graph = makeGraph(fixture.geometry, "hard", false, 128);
+                const Json fixtureSettings{{"physicalPageBudget", 1024}, {"firstClipmapExtent", .25},
+                    {"shadowLOD", true}, {"shadowLODErrorTexels", 1}};
+                for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                    const uint32_t id = graph.findNode(node)->id;
+                    for (const auto& [key, value] : fixtureSettings.items()) {
+                        require(graph.setNodeRuntimeProperty(id, key, value), "Set smart-bias fixture " + key);
+                    }
+                }
+                Json item{{"name", name}, {"blockerDistanceMetres", gap}, {"viewHeightMetres", fixture.viewHeight},
+                    {"receiverTriangles", fixture.receiverTriangles}, {"blockerTriangles", fixture.geometry.triangles.size() - fixture.receiverTriangles},
+                    {"cameraEye", eye}, {"cameraCenter", center}, {"sourceDirection", source.direction}, {"arms", Json::array()}};
+                const size_t caseIndex = report["cases"].size();
+                report["cases"].push_back(item);
+                ReceiverReference reference;
+                Snapshot baseline;
+                std::vector<uint8_t> baselinePixels;
+                for (const std::string arm : {"Baseline", "Nominal", "Stress", "ZeroLength"}) {
+                    const bool smart = arm != "Baseline";
+                    const double screenLengthScale = arm == "ZeroLength" ? 0 : arm == "Stress" ? .12 / fixture.viewHeight : .015;
+                    const std::string phase = name + "-" + arm;
+                    validation.phase(phase);
+                    for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                        const uint32_t id = graph.findNode(node)->id;
+                        require(graph.setNodeRuntimeProperty(id, "shadowLODSmartBias", smart), "Set smart-bias diagnostic arm");
+                        require(graph.setNodeRuntimeProperty(id, "shadowLODScreenRayLength", screenLengthScale), "Set smart-bias diagnostic length");
+                    }
+                    const auto first = compareFrame(preview, graph, directory, phase + "-Cold", report);
+                    const auto warm = compareFrame(preview, graph, directory, phase + "-Warm", report);
+                    requireReused(warm, phase);
+                    require(first.shadows == warm.shadows && first.depth == warm.depth, phase + ": stable cached visibility changed");
+                    const auto& entry = activeEntry(first);
+                    const auto& stats = first.statistics[entry.baseLayer];
+                    require(stats[2] == 0 && stats[5] == 0 && stats[7] == 0 && stats[9] == 0 && stats[31] == 0,
+                        phase + ": fixture has dropped pages, unresolved depth or coarse fallback");
+                    const auto pixels = visibility(first, fixture.geometry, source);
+                    if (arm == "Baseline") {
+                        baseline = first;
+                        baselinePixels = pixels;
+                        reference = receiverReference(first, fixture, source);
+                        require(reference.depthSamples > 500 && reference.depthErrors == 0, name + ": independent receiver depth mismatch");
+                        item["depthSamples"] = reference.depthSamples;
+                        item["depthErrors"] = reference.depthErrors;
+                        item["analyticEdgeValidation"] = reference.analyticEdgeValidation;
+                        std::vector<uint8_t> cpu(kPixels, 255);
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            if (reference.mask[pixel]) { cpu[pixel] = uint8_t(std::lround(reference.hard[pixel] * 255)); }
+                        }
+                        saveGray(directory / (name + "-CPU.png"), cpu);
+                        const auto litControl = receiverMetrics(std::vector<uint8_t>(kPixels, 255), reference, "Hard", true, false);
+                        const auto darkControl = receiverMetrics(std::vector<uint8_t>(kPixels, 0), reference, "Hard", true, false);
+                        require(litControl["lightLeakSamples"].get<uint32_t>() > 0 && !litControl["qualityPassed"].get<bool>() &&
+                            darkControl["falseShadowSamples"].get<uint32_t>() > 0 && !darkControl["qualityPassed"].get<bool>(),
+                            name + ": independent oracle did not reject missing or false contact shadows");
+                        item["negativeControls"] = {{"allLitRejected", true}, {"allDarkRejected", true}};
+                    } else {
+                        require(first.depth == baseline.depth, phase + ": smart bias changed primary receiver depth");
+                    }
+                    if (arm == "ZeroLength") {
+                        require(first.shadows == baseline.shadows, phase + ": zero-length smart bias changed baseline visibility");
+                    }
+                    auto metrics = receiverMetrics(pixels, reference, "Hard", true, false);
+                    uint32_t addedLeaks = 0, addedFalseShadows = 0, repairedFalseShadows = 0;
+                    std::vector<uint8_t> errors(kPixels, 0);
+                    for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                        if (!reference.mask[pixel]) { continue; }
+                        const bool oldLit = baselinePixels[pixel] >= 128, lit = pixels[pixel] >= 128;
+                        addedLeaks += reference.hard[pixel] == 0 && !oldLit && lit;
+                        addedFalseShadows += reference.hard[pixel] == 1 && oldLit && !lit;
+                        repairedFalseShadows += reference.hard[pixel] == 1 && !oldLit && lit;
+                        errors[pixel] = uint8_t(std::lround(std::abs(pixels[pixel] / 255. - reference.hard[pixel]) * 255));
+                    }
+                    metrics["addedLeakPixelsVsBaseline"] = addedLeaks;
+                    metrics["addedFalseShadowPixelsVsBaseline"] = addedFalseShadows;
+                    metrics["repairedFalseShadowPixelsVsBaseline"] = repairedFalseShadows;
+                    saveGray(directory / (phase + "-GPU.png"), pixels);
+                    saveGray(directory / (phase + "-Error.png"), errors);
+                    item["arms"].push_back({{"name", arm}, {"shadowLODSmartBias", smart}, {"shadowLODScreenRayLength", screenLengthScale},
+                        {"screenRayLengthMetres", screenLengthScale * fixture.viewHeight},
+                        {"rayLongerThanBlockerGap", screenLengthScale * fixture.viewHeight > gap},
+                        {"cacheMatchesRedraw", true}, {"warmVisibilityStable", true}, {"metrics", metrics}});
+                    if (!metrics["qualityPassed"].get<bool>()) {
+                        report["qualityFailures"].push_back({{"case", name}, {"arm", arm}, {"failures", metrics["qualityFailures"]}});
+                    }
+                    report["cases"][caseIndex] = item;
+                    save();
+                }
+            }
+            report["validation"] = validation.snapshot();
+            save();
+            require(!validation.failed(), "Smart-bias contact Vulkan validation error");
+            require(report["qualityFailures"].empty(), "Smart-bias near-contact leak gates failed; see per-arm diagnostics");
+            report["passed"] = true;
+            save();
+            return RHITestResult::pass("Directional smart bias preserves independently predicted thin-blocker contact at 5/10/20/40 mm");
+        } catch (const std::exception& error) {
+            report["error"] = error.what();
+            report["validation"] = validation.snapshot();
+            save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapShadowLODSmartBiasQualityTest);
+
+struct TemporalOracle
+{
+    std::vector<Hit> hits;
+    std::vector<double> area;
+    std::vector<uint8_t> mask;
+    uint32_t receivers = 0, penumbra = 0;
+};
+
+TemporalOracle temporalOracle(const Snapshot& image, const Fixture& fixture, const Source& source)
+{
+    TemporalOracle result;
+    result.hits.resize(kPixels); result.area.resize(kPixels, 1); result.mask.resize(kPixels);
+    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+        const size_t pixel = size_t(y) * kWidth + x;
+        auto& hit = result.hits[pixel]; hit = cameraHit(image.camera, x, y, fixture);
+        if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[0]) > 5 || std::abs(hit.position[2]) > 4) { continue; }
+        require(std::abs(image.depth[pixel] - hit.depth) <= 2e-5, "Temporal independent receiver depth mismatch");
+        result.mask[pixel] = 1; ++result.receivers;
+        result.area[pixel] = referenceVisibility(hit, fixture, source);
+        result.penumbra += result.area[pixel] > .05 && result.area[pixel] < .95;
+    }}
+    require(result.receivers > 500 && result.penumbra > 100, "Temporal fixture lacks receiver/penumbra coverage");
+    return result;
+}
+
+std::array<double, 2> temporalPixel(const VisibilityBufferFrameInfo& camera, Point position)
+{
+    const Point eye = point(camera.eye), forward = normalized(add(point(camera.center), scale(eye, -1)));
+    const Point right = normalized(cross(forward, point(camera.upProjection))), up = cross(right, forward);
+    const Point delta = add(position, scale(eye, -1));
+    const double halfHeight = camera.upProjection[3] > .5 ? camera.clipOrtho[2] * .5 :
+        dot(delta, forward) * std::tan(camera.viewport[3] * .5);
+    return {(dot(delta, right) / (halfHeight * camera.viewport[0]) + 1) * .5 * kWidth - .5 - camera.jitter[0],
+        (1 - dot(delta, up) / halfHeight) * .5 * kHeight - .5 - camera.jitter[1]};
+}
+
+std::map<uint64_t, std::vector<uint8_t>> temporalLightPixels(const Snapshot& image, const Fixture& fixture)
+{
+    std::map<uint64_t, std::vector<uint8_t>> result;
+    for (uint32_t index = 0; index < image.header.count; ++index) {
+        const auto& entry = image.entries[index];
+        if (entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+        auto& pixels = result[uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32)];
+        pixels.resize(kPixels,255);
+        for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+            const auto hit = cameraHit(image.camera,x,y,fixture);
+            if (!hit.valid) { continue; }
+            const uint32_t face = entry.kind == 2 && (image.header.reserved[0] & 1u) == 0 ?
+                pointFace(add(hit.position,scale(point(entry.positionRange),-1))) : 0;
+            pixels[size_t(y) * kWidth + x] = image.shadows[entry.baseLayer + face][size_t(y) * kWidth + x];
+        }}
+    }
+    return result;
+}
+
+class VirtualShadowMapSMRTTemporalTest final : public RHITest
+{
+public:
+    VirtualShadowMapSMRTTemporalTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_temporal"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTTemporal";
+        Json report{{"passed", false}, {"cpuAreaSamples", 256}, {"historyFrames", 32},
+            {"frames", Json::array()}, {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTTemporal.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                const double edge = kind == "Directional" ? .8 : 2.0;
+                Fixture authored;
+                addFixtureQuad(authored, {0,0,0}, {8,0,0}, {0,0,-8});
+                addFixtureQuad(authored, {0,12,0}, {.8,0,0}, {0,0,.8});
+                // This independent foreground object creates real depth disocclusion
+                // under perspective camera motion; the distant shadow caster is above the camera.
+                addFixtureQuad(authored, {edge + .9,1,0}, {.18,0,0}, {0,0,.6});
+                const auto fixture = writeFixture(directory / kind, false, 12, .8, &authored, true);
+                for (uint32_t rays : {1u, 2u}) {
+                    const std::string label = kind + "-Rays" + std::to_string(rays);
+                    scene::SceneDocument scene; require(scene.load(fixture.source), "Load temporal fixture");
+                    require(scene.nodes().size() == 3, "Temporal floor and casters must have independent nodes");
+                    Fixture oracleFixture = fixture;
+                    RenderView view; RenderGraphPreviewRenderer preview;
+                    configurePreview(preview, scene, view, context, validation);
+                    ViewCamera camera{.eye={float(edge),5,0}, .center={float(edge),0,0}, .up={0,0,-1},
+                        .fovDegrees=22.619865f, .nearPlane=.1f, .farPlane=100, .orthoHeight=2};
+                    require(view.setCamera(camera), "Set temporal perspective camera");
+                    Source source{kind, {0,20,0}, {0,-1,0}, kind == "Directional" ? .04 : .1};
+                    publishSource(scene, preview, source);
+                    evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture, "smrt", false, 128);
+                    const auto all = [&](const char* property, const Json& value) {
+                        for (const char* node : {"Cached", "Redraw", "Hard"}) {
+                            require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, property, value),
+                                std::string("Set temporal property ") + property);
+                        }
+                    };
+                    all("filter", "smrt"); all("smrtTemporalEnabled", true); all("smrtTemporalMaxFrames", 32);
+                    all("smrtRayCount", rays); all("smrtSamplesPerRay", 32); all("smrtMaxRayLength", 32);
+                    all("smrtRayLengthScale", 0); all("smrtMaxRayAngle", .03);
+                    require(graph.setNodeRuntimeProperty(graph.findNode("Hard")->id, "smrtTemporalMaxFrames", 1), "Set raw same-phase control");
+                    Snapshot last, previous;
+                    std::vector<uint8_t> pixels, rawPixels, previousPixels, previousRaw;
+                    const auto render = [&](const std::string& phase, bool expectReset = false) {
+                        validation.phase(label + "-" + phase);
+                        require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"), "Temporal render: " + preview.lastLog());
+                        last = snapshot("Cached"); const auto redraw = snapshot("Redraw"), raw = snapshot("Hard");
+                        require(last.shadows == redraw.shadows && last.depth == redraw.depth, label + ": cache/redraw temporal histories diverged");
+                        pixels = visibility(last, oracleFixture, source); rawPixels = visibility(raw, oracleFixture, source);
+                        const auto& entry = activeEntry(last);
+                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                            require(last.statistics[entry.baseLayer + face][5] == 0 && last.statistics[entry.baseLayer + face][9] == 0,
+                                label + ": temporal raster overflow or unresolved query");
+                        }
+                        report["frames"].push_back({{"name", label + "-" + phase}, {"frameIndex", last.camera.frameIndex},
+                            {"reset", expectReset}, {"shadowSha256", debug::debugSha256(pixels)}, {"rawSha256", debug::debugSha256(rawPixels)}});
+                        save();
+                        if (expectReset) { require(pixels == rawPixels, label + "-" + phase + ": stale history survived invalidation"); }
+                    };
+                    TemporalOracle oracle;
+                    double error = 0, rawError = 0, penError = 0, rawPenError = 0, temporalDelta = 0, rawDelta = 0;
+                    uint64_t checked = 0, penChecked = 0, deltaChecked = 0;
+                    for (uint32_t frame = 0; frame < 32; ++frame) {
+                        render("Static-" + std::to_string(frame), frame == 0);
+                        if (frame == 0) { oracle = temporalOracle(last, oracleFixture, source); }
+                        if (frame >= 16) {
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (!oracle.mask[pixel]) { continue; }
+                                const double actualError = std::abs(pixels[pixel] / 255. - oracle.area[pixel]);
+                                const double controlError = std::abs(rawPixels[pixel] / 255. - oracle.area[pixel]);
+                                error += actualError; rawError += controlError; ++checked;
+                                if (oracle.area[pixel] <= .05 || oracle.area[pixel] >= .95) { continue; }
+                                penError += actualError; rawPenError += controlError; ++penChecked;
+                                temporalDelta += std::pow((double(pixels[pixel]) - previousPixels[pixel]) / 255., 2);
+                                rawDelta += std::pow((double(rawPixels[pixel]) - previousRaw[pixel]) / 255., 2); ++deltaChecked;
+                            }
+                        }
+                        previous = last; previousPixels = pixels; previousRaw = rawPixels;
+                    }
+                    const double mae = error / checked, penMae = penError / penChecked;
+                    const double noise = std::sqrt(temporalDelta / deltaChecked), rawNoise = std::sqrt(rawDelta / deltaChecked);
+                    Json metrics{{"name", label}, {"receiverSamples", checked}, {"penumbraSamples", penChecked},
+                        {"meanAbsoluteError", mae}, {"penumbraMeanAbsoluteError", penMae},
+                        {"rawMeanAbsoluteError", rawError / checked}, {"rawPenumbraMeanAbsoluteError", rawPenError / penChecked},
+                        {"frameDifferenceRMS", noise}, {"rawFrameDifferenceRMS", rawNoise}};
+                    if (mae > .04 || penMae > .14 || penError > .65 * rawPenError || noise > .35 * rawNoise || rawNoise < .05) {
+                        report["failures"].push_back({{"name", label}, {"error", "Static temporal accuracy/convergence/stability gate"}, {"metrics", metrics}});
+                    }
+                    saveGray(directory / (label + "-Stable.png"), pixels); saveGray(directory / (label + "-Raw.png"), rawPixels);
+                    std::vector<uint8_t> reference(kPixels,255);
+                    for (size_t pixel = 0; pixel < kPixels; ++pixel) { reference[pixel] = uint8_t(std::lround(oracle.area[pixel] * 255)); }
+                    saveGray(directory / (label + "-Reference.png"), reference);
+                    double motionError = 0, motionDelta = 0, motionRawDelta = 0;
+                    uint64_t motionPenumbra = 0, correspondences = 0;
+                    for (uint32_t frame = 0; frame < 16; ++frame) {
+                        const auto oldOracle = oracle;
+                        camera.eye[0] += .02f; camera.center[0] += .02f; require(view.setCamera(camera), "Move temporal camera");
+                        render("Motion-" + std::to_string(frame)); oracle = temporalOracle(last, oracleFixture, source);
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            if (!oracle.mask[pixel] || oracle.area[pixel] <= .05 || oracle.area[pixel] >= .95) { continue; }
+                            motionError += std::abs(pixels[pixel] / 255. - oracle.area[pixel]); ++motionPenumbra;
+                            const auto location = temporalPixel(previous.camera, oracle.hits[pixel].position);
+                            const int x = int(std::floor(location[0])), y = int(std::floor(location[1]));
+                            if (x < 0 || y < 0 || x + 1 >= int(kWidth) || y + 1 >= int(kHeight)) { continue; }
+                            double oldValue = 0, oldRaw = 0, oldExpected = 0;
+                            bool valid = true;
+                            for (int dy = 0; dy < 2; ++dy) { for (int dx = 0; dx < 2; ++dx) {
+                                const auto index = size_t(y + dy) * kWidth + x + dx;
+                                if (!oldOracle.mask[index]) { valid = false; continue; }
+                                const double weight = (dx ? location[0] - x : 1 - (location[0] - x)) *
+                                    (dy ? location[1] - y : 1 - (location[1] - y));
+                                oldValue += weight * previousPixels[index] / 255.; oldRaw += weight * previousRaw[index] / 255.;
+                                oldExpected += weight * oldOracle.area[index];
+                            }}
+                            if (!valid) { continue; }
+                            const double expectedChange = oracle.area[pixel] - oldExpected;
+                            motionDelta += std::pow(pixels[pixel] / 255. - oldValue - expectedChange, 2);
+                            motionRawDelta += std::pow(rawPixels[pixel] / 255. - oldRaw - expectedChange, 2); ++correspondences;
+                        }
+                        previous = last; previousPixels = pixels; previousRaw = rawPixels;
+                    }
+                    require(correspondences > 100 && motionPenumbra > 100, "Temporal motion lacks independent correspondence coverage");
+                    metrics["motionPenumbraMAE"] = motionError / motionPenumbra;
+                    metrics["motionReprojectedRMS"] = std::sqrt(motionDelta / correspondences);
+                    metrics["motionRawReprojectedRMS"] = std::sqrt(motionRawDelta / correspondences);
+                    metrics["motionCorrespondences"] = correspondences;
+                    if (motionError / motionPenumbra > .16 || motionDelta > .36 * motionRawDelta) {
+                        report["failures"].push_back({{"name", label}, {"error", "Motion temporal accuracy/reprojection gate"}, {"metrics", metrics}});
+                    }
+                    // A larger perspective translation uncovers a full four-tap
+                    // history footprint behind the foreground object, not just an edge pixel.
+                    const auto oldOracle = oracle;
+                    camera.eye[0] += .35f; camera.center[0] += .35f; require(view.setCamera(camera), "Reveal temporal receiver");
+                    render("Disocclusion"); oracle = temporalOracle(last, oracleFixture, source);
+                    uint32_t disoccluded = 0, ghosted = 0;
+                    for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                        if (!oracle.mask[pixel]) { continue; }
+                        const auto location = temporalPixel(previous.camera, oracle.hits[pixel].position);
+                        const int x = int(std::floor(location[0])), y = int(std::floor(location[1]));
+                        if (x < 0 || y < 0 || x + 1 >= int(kWidth) || y + 1 >= int(kHeight)) { continue; }
+                        bool hidden = true;
+                        for (int dy = 0; dy < 2; ++dy) { for (int dx = 0; dx < 2; ++dx) {
+                            const auto& hit = oldOracle.hits[size_t(y + dy) * kWidth + x + dx];
+                            hidden &= hit.valid && hit.position[1] > .5;
+                        }}
+                        if (!hidden) { continue; }
+                        ++disoccluded; ghosted += std::abs(int(pixels[pixel]) - int(rawPixels[pixel])) > 1;
+                    }
+                    metrics["disoccludedPixels"] = disoccluded; metrics["ghostedDisoccludedPixels"] = ghosted;
+                    require(disoccluded > 50 && ghosted == 0, label + ": disoccluded receivers reused foreground history");
+                    view.cameraCut(); render("CameraCut", true);
+                    source.size *= 1.25; publishSource(scene, preview, source); render("SourceSize", true);
+                    if (kind == "Directional") { source.direction = {.08,-1,0}; } else { source.position[0] += .3; }
+                    publishSource(scene, preview, source); render("LightMove", true);
+                    float4x4 shift; shift.SetupByTranslation(float3(.4f,0,0));
+                    require(scene.setNodeLocalMatrix(1, shift * scene.nodes()[1].localMatrix), "Move independent temporal shadow caster");
+                    for (size_t triangle = 2; triangle < 4; ++triangle) {
+                        auto& value = oracleFixture.triangles[triangle];
+                        value.a = add(value.a,{.4,0,0}); value.b = add(value.b,{.4,0,0}); value.c = add(value.c,{.4,0,0});
+                    }
+                    render("CasterMove", true);
+                    all("smrtSamplesPerRay", 1); render("OneSample", true);
+                    all("smrtSamplesPerRay", 32); render("RestoreSamples", true);
+                    all("smrtTemporalEnabled", false); render("Disabled", true);
+                    const auto disabled = pixels; render("DisabledStable", true);
+                    require(pixels == disabled, label + ": disabled temporal mode lost deterministic legacy sampling");
+                    all("smrtTemporalEnabled", true); render("Reenabled", true);
+                    const double sourceSize = source.size;
+                    source.size = 0; publishSource(scene, preview, source); render("ZeroSource", true);
+                    source.size = sourceSize; publishSource(scene, preview, source); render("RestoreSource", true);
+                    report["cases"].push_back(std::move(metrics)); save();
+                }
+            }
+            {
+                const auto room = writeFixture(directory / "PointRoom", true);
+                scene::SceneDocument scene; require(scene.load(room.source), "Load temporal point room");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                require(view.setCamera({.eye={0,0,3}, .center={6,6,0}, .up={0,0,1},
+                    .fovDegrees=65, .nearPlane=.05f, .farPlane=30}), "Set temporal cube seam view");
+                Source source{"Point", {0,0,0}, {0,-1,0}, .2}; publishSource(scene, preview, source);
+                auto lighting = scene.lighting(); auto second = lighting.lights.front();
+                second.stableId = scene::allocatePunctualLightIdentity(); second.position = float3(2,0,0);
+                second.name = "Temporal second point"; lighting.lights.push_back(second);
+                require(scene.setLighting(lighting), "Publish temporal identity controls"); (void)preview.setLighting(scene.lighting());
+                evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(room, "smrt", true, 128);
+                const Json pointControls{{"smrtTemporalEnabled",true},{"smrtTemporalMaxFrames",32},
+                    {"smrtRayCount",1},{"smrtSamplesPerRay",16},{"physicalPageBudget",4096}};
+                for (const char* node : {"Cached", "Compact"}) {
+                    const auto id = graph.findNode(node)->id;
+                    for (const auto& [key, value] : pointControls.items()) {
+                        require(graph.setNodeRuntimeProperty(id,key,value), "Set temporal point publication controls");
+                    }
+                }
+                std::map<uint64_t, std::vector<uint8_t>> previous;
+                std::map<uint64_t, std::pair<uint32_t, uint32_t>> previousSlots;
+                uint32_t seamSoft = 0, seamSamples = 0;
+                for (uint32_t frame = 0; frame <= 32; ++frame) {
+                    if (frame == 32) {
+                        std::swap(lighting.lights[0],lighting.lights[1]);
+                        require(scene.setLighting(lighting), "Reorder temporal light source slots"); (void)preview.setLighting(scene.lighting());
+                    }
+                    validation.phase("PointRoom-" + std::to_string(frame));
+                    require(preview.render(graph,kWidth,kHeight,"CachedEvidence.color"), "Temporal point publication: " + preview.lastLog());
+                    const auto legacy = snapshot("Cached"), compact = snapshot("Compact");
+                    auto current = temporalLightPixels(legacy,room);
+                    require(current.size() == 2 && current == temporalLightPixels(compact,room),
+                        "Temporal point compact/legacy visibility differs across cube faces");
+                    if (frame == 31) {
+                        previous = current;
+                        uint64_t originId = 0;
+                        for (uint32_t index = 0; index < legacy.header.count; ++index) {
+                            const auto& entry = legacy.entries[index];
+                            if (entry.status == kVirtualShadowMapLightAdmitted) {
+                                const uint64_t id = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                                previousSlots[id] = {entry.source, entry.baseLayer};
+                            }
+                            if (entry.status == kVirtualShadowMapLightAdmitted && entry.positionRange[0] == 0) {
+                                originId = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                            }
+                        }
+                        require(current.contains(originId), "Temporal seam light identity missing");
+                        for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                            const auto hit = cameraHit(legacy.camera,x,y,room); if (!hit.valid) { continue; }
+                            std::array<double,3> magnitude{std::abs(hit.position[0]),std::abs(hit.position[1]),std::abs(hit.position[2])};
+                            std::sort(magnitude.begin(),magnitude.end());
+                            if (magnitude[2] - magnitude[1] > .3) { continue; }
+                            const double expected = referenceVisibility(hit,room,source);
+                            if (expected <= .05 || expected >= .95) { continue; }
+                            ++seamSamples; const auto value = current.at(originId)[size_t(y) * kWidth + x];
+                            seamSoft += value > 12 && value < 243;
+                        }}
+                        require(seamSamples > 20 && seamSoft > 20, "Temporal point fixture did not accumulate cube-seam penumbra");
+                    }
+                    if (frame == 32) {
+                        uint32_t checked = 0, jumps = 0;
+                        uint32_t remappedLights = 0;
+                        Json mappingChanges = Json::array();
+                        for (uint32_t index = 0; index < legacy.header.count; ++index) {
+                            const auto& entry = legacy.entries[index];
+                            if (entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                            const uint64_t id = uint64_t(entry.stableId[0]) | (uint64_t(entry.stableId[1]) << 32);
+                            require(previousSlots.contains(id), "Reordered light has no preceding publication identity");
+                            const auto before = previousSlots.at(id);
+                            remappedLights += before.first != entry.source || before.second != entry.baseLayer;
+                            mappingChanges.push_back({{"stableId",id},{"previousSourceSlot",before.first},
+                                {"sourceSlot",entry.source},{"previousBaseLayer",before.second},{"baseLayer",entry.baseLayer}});
+                        }
+                        for (const auto& [id, pixels] : current) {
+                            require(previous.contains(id), "Light source reorder changed stable identity");
+                            const auto& old = previous.at(id);
+                            for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                                if (old[pixel] <= 16 || old[pixel] >= 239) { continue; }
+                                ++checked;
+                                // A 32-frame un-clamped history can move at most
+                                // 1/32 in one static frame, plus R8 quantization.
+                                jumps += std::abs(int(pixels[pixel]) - int(old[pixel])) > 13;
+                            }
+                        }
+                        report["publication"] = {{"seamPenumbraSamples",seamSamples},{"seamSoftPixels",seamSoft},
+                            {"reorderedSoftPixels",checked},{"historyJumps",jumps},{"compactLegacyEqual",true},
+                            {"remappedLights",remappedLights},{"mappingChanges",std::move(mappingChanges)}}; save();
+                        require(remappedLights > 0, "Temporal reorder fixture did not change a source slot or published layer");
+                        require(checked > 100 && jumps == 0, "Source-slot reorder reset or exchanged temporal light histories");
+                    }
+                }
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT temporal Vulkan validation error");
+            require(report["failures"].empty(), "SMRT temporal quality/stability gates failed; see report");
+            report["passed"] = true; save();
+            return RHITestResult::pass("One/two-ray SMRT converges against geometry, reprojects moving receivers and rejects stale history");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTTemporalTest);
+
+std::array<uint64_t, 32> searchStatistics(const Snapshot& image)
+{
+    std::array<uint64_t, 32> totals{};
+    for (const auto& face : image.statistics) {
+        for (size_t index = 0; index < totals.size(); ++index) { totals[index] += face[index]; }
+    }
+    return totals;
+}
+
+class VirtualShadowMapSMRTSearchTest final : public RHITest
+{
+public:
+    VirtualShadowMapSMRTSearchTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_smrt_search"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapSMRTSearch";
+        Json report{{"passed", false}, {"cases", Json::array()}, {"failures", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&]() { std::ofstream(directory / "VirtualShadowMapSMRTSearch.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            const auto fixture = writeFixture(directory / "FarBlocker", false, 12);
+            for (const std::string kind : {"Directional", "Spot", "Point"}) {
+                scene::SceneDocument scene; require(scene.load(fixture.source), "Load SMRT search fixture");
+                RenderView view; RenderGraphPreviewRenderer preview;
+                configurePreview(preview, scene, view, context, validation);
+                Source source{kind, {0,20,0}, {0,-1,0}, kind == "Directional" ? .08 : .5};
+                publishSource(scene, preview, source);
+                ViewCamera camera{.eye={kind == "Directional" ? .8f : 2.0f,5,0},
+                    .center={kind == "Directional" ? .8f : 2.0f,0,0}, .up={0,0,-1},
+                    .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=2, .orthographic=true};
+                require(view.setCamera(camera), "Set orthographic search control camera");
+                evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture, "smrt", false, 128);
+                setProperty(graph, "smrtTemporalEnabled", false); setProperty(graph, "smrtRayCount", 32);
+                setProperty(graph, "smrtSamplesPerRay", 32); setProperty(graph, "smrtMaxRayAngle", .35);
+                const auto property = [&](const char* node, const char* key, const Json& value) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, key, value), "Set search control property");
+                };
+                const auto capture = [&](const std::string& phase, bool equivalent) {
+                    const std::string label = kind + "-" + phase; validation.phase(label);
+                    require(preview.render(graph, kWidth, kHeight, "CachedEvidence.color"), "Search render: " + preview.lastLog());
+                    const auto cached = snapshot("Cached"), control = snapshot("Redraw");
+                    const auto a = searchStatistics(cached), b = searchStatistics(control);
+                    require(a[5] == 0 && a[9] == 0 && b[5] == 0 && b[9] == 0, label + ": overflow or unresolved query");
+                    if (equivalent) {
+                        require(cached.shadows == control.shadows && cached.depth == control.depth,
+                            label + ": scaled search disagrees with the equivalent explicit world limit");
+                        for (uint32_t index : {0u,1u,2u,7u,9u,13u,30u,31u}) {
+                            require(a[index] == b[index], label + ": demand/query range differs between equivalent controls");
+                        }
+                    }
+                    report["cases"].push_back({{"name", label}, {"equivalent", equivalent},
+                        {"statistics", a}, {"controlStatistics", b},
+                        {"shadowSha256", debug::debugSha256(visibility(cached, fixture, source))},
+                        {"controlSha256", debug::debugSha256(visibility(control, fixture, source))}});
+                    save(); return std::pair{cached, control};
+                };
+                for (const auto& [name, height, scale, maximum, effective] : {
+                    std::tuple{"Near",5.f,.2f,32.f,1.f}, std::tuple{"Far",10.f,.2f,32.f,2.f},
+                    std::tuple{"WorldCap",5.f,8.f,3.f,3.f}}) {
+                    camera.eye[1] = height; require(view.setCamera(camera), "Change search receiver distance");
+                    property("Cached", "smrtRayLengthScale", scale); property("Cached", "smrtMaxRayLength", maximum);
+                    property("Redraw", "smrtRayLengthScale", 0); property("Redraw", "smrtMaxRayLength", effective);
+                    (void)capture(name, true);
+                }
+                camera.eye[1] = 5; require(view.setCamera(camera), "Restore search camera");
+                setProperty(graph, "smrtRayLengthScale", 0);
+                if (kind == "Directional") {
+                    // This broad emitter has enough angular support to expose
+                    // the request cost and penumbra cap of the bounded search.
+                    property("Cached", "smrtMaxRayLength", 1); property("Redraw", "smrtMaxRayLength", 32);
+                    const auto [shortSearch, fullSearch] = capture("ShortVersusFull", false);
+                    const auto shortPixels = visibility(shortSearch, fixture, source), fullPixels = visibility(fullSearch, fixture, source);
+                    uint32_t shortSoft = 0, fullSoft = 0, outsideBound = 0, boundedReceivers = 0;
+                    for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                        const size_t pixel = size_t(y) * kWidth + x;
+                        const auto hit = cameraHit(shortSearch.camera, x, y, fixture);
+                        if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[2]) > .25) { continue; }
+                        shortSoft += shortPixels[pixel] > 12 && shortPixels[pixel] < 243;
+                        fullSoft += fullPixels[pixel] > 12 && fullPixels[pixel] < 243;
+                        // A one-metre ray cannot spread a straight shadow edge
+                        // farther than tan(angle), plus two screen pixels for
+                        // finite texels and the independent texel dither.
+                        const double margin = std::tan(source.size) + 2 * camera.orthoHeight / kHeight;
+                        if (std::abs(hit.position[0] - .8) > margin) {
+                            ++boundedReceivers;
+                            outsideBound += shortPixels[pixel] != (hit.position[0] < .8 ? 0 : 255);
+                        }
+                    }}
+                    const auto shortStats = searchStatistics(shortSearch), fullStats = searchStatistics(fullSearch);
+                    require(fullSoft > 100 && shortSoft < fullSoft / 2 && boundedReceivers > 100 && outsideBound == 0,
+                        "Directional bounded search lost its geometric penumbra-width limit");
+                    require(shortStats[0] * 10 < fullStats[0] * 9, "Broad search fixture did not reduce requested pages by at least ten percent");
+                    report["cases"].back()["widthControl"] = {{"shortSoftPixels",shortSoft},{"fullSoftPixels",fullSoft},
+                        {"boundedReceivers",boundedReceivers},{"outsideBoundErrors",outsideBound}};
+                    saveGray(directory / "Directional-Short.png", shortPixels); saveGray(directory / "Directional-Full.png", fullPixels);
+                } else {
+                    setProperty(graph, "smrtMaxRayLength", 32);
+                    property("Cached", "smrtMaxRayAngle", .001); property("Redraw", "smrtMaxRayAngle", .35);
+                    const auto [limited, broad] = capture("AngularLimit", false);
+                    require(searchStatistics(limited)[0] < searchStatistics(broad)[0],
+                        kind + ": local angular search limit did not reduce broad-source page demand");
+                    property("Redraw", "smrtMaxRayAngle", .001); (void)capture("AngularLimitRedraw", true);
+                }
+                // A cap changes the representable penumbra, never the existence
+                // of a distant occluder or a clearly lit geometric control.
+                source.size = kind == "Directional" ? .00465 : .05; publishSource(scene, preview, source);
+                camera.eye = {0,5,0}; camera.center = {0,0,0}; camera.orthoHeight = 7;
+                require(view.setCamera(camera), "Set distant-umbra search control view");
+                setProperty(graph, "smrtRayLengthScale", .02); setProperty(graph, "smrtMaxRayLength", 32);
+                setProperty(graph, "smrtMaxRayAngle", .001);
+                const auto [bounded, redraw] = capture("DistantUmbra", true);
+                const auto pixels = visibility(bounded, fixture, source);
+                uint32_t umbra = 0, lit = 0, errors = 0;
+                for (uint32_t y = 0; y < kHeight; ++y) { for (uint32_t x = 0; x < kWidth; ++x) {
+                    const auto hit = cameraHit(bounded.camera, x, y, fixture);
+                    if (!hit.valid || std::abs(hit.position[1]) > .01 || std::abs(hit.position[2]) > .35) { continue; }
+                    const bool shadowed = std::abs(hit.position[0]) < .35;
+                    const bool clear = std::abs(hit.position[0]) > 3 && std::abs(hit.position[0]) < 4;
+                    if (!shadowed && !clear) { continue; }
+                    require(referenceVisibility(hit, fixture, source) == (shadowed ? 0. : 1.), "Search interior geometry is ambiguous");
+                    umbra += shadowed; lit += clear;
+                    errors += pixels[size_t(y) * kWidth + x] != (shadowed ? 0 : 255);
+                }}
+                require(umbra > 20 && lit > 50 && errors == 0, kind + ": range/angle cap removed distant umbra or darkened a lit control");
+                report["cases"].back()["interiorControl"] = {{"umbraPixels",umbra},{"litPixels",lit},{"errors",errors}}; save();
+            }
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "SMRT search Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("SMRT view/world/angular search controls agree, bound demand and preserve distant shadow interiors");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSMRTSearchTest);
+
+constexpr uint64_t kLODPassStatisticsOffset = kShadowStride * kLayers;
+constexpr uint64_t kLODPassFacesOffset = kLODPassStatisticsOffset + 32 * sizeof(uint32_t);
+constexpr uint64_t kLODPassTableOffset = kLODPassFacesOffset + kLayers * kVirtualShadowMapFaceStatisticsSize;
+constexpr uint64_t kLODPassReadbackSize = kLODPassTableOffset + kTableSize;
+std::shared_ptr<EvidenceState> lodPassEvidence;
+
+class VSMLODPassEvidence final : public UnsafePass
+{
+public:
+    explicit VSMLODPassEvidence(std::shared_ptr<EvidenceState> state) : state_(std::move(state)) {}
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        auto& shadows = reflection.addTextureInput("shadows").transferRead();
+        shadows.format = Format::R8Unorm;
+        shadows.layerCount = 0;
+        reflection.addBufferInput("lodStatistics").buffer(32 * sizeof(uint32_t)).transferRead();
+        reflection.addBufferInput("statistics").buffer(properties().value("lights", false) ?
+            kLayers * kVirtualShadowMapFaceStatisticsSize : kVirtualShadowMapFaceStatisticsSize).transferRead();
+        if (properties().value("lights", false)) { reflection.addBufferInput("lights").buffer(kTableSize).transferRead(); }
+        reflection.addBufferOutput("data").buffer(kLODPassReadbackSize).transferWrite().hostReadback();
+        reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
+        return reflection;
+    }
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        auto& commands = context.commandBuffer();
+        const auto shadows = context.inputTexture("shadows");
+        auto* buffer = context.outputBuffer("data").buffer();
+        const auto name = context.properties().at("evidenceName").get<std::string>();
+        state_->buffers[name] = buffer;
+        state_->layers[name] = shadows.desc().layerCount;
+        for (uint32_t layer = 0; layer < shadows.desc().layerCount; ++layer) {
+            auto destination = buffer->slice({layer * kShadowStride, kPixels});
+            if (!destination) { return makeError(destination.error()); }
+            if (auto r = commands.copyTextureToBuffer({.texture = shadows.texture(), .buffer = *destination,
+                .width = kWidth, .height = kHeight, .baseLayer = layer}); !r) { return r; }
+        }
+        std::vector<std::pair<const char*, uint64_t>> fields{{"lodStatistics", kLODPassStatisticsOffset},
+            {"statistics", kLODPassFacesOffset}};
+        if (context.properties().value("lights", false)) { fields.emplace_back("lights", kLODPassTableOffset); }
+        for (const auto& [field, offset] : fields) {
+            const auto input = context.inputBuffer(field);
+            auto source = input.buffer()->slice({0, input.desc().size});
+            auto destination = buffer->slice({offset, input.desc().size});
+            if (!source) { return makeError(source.error()); }
+            if (!destination) { return makeError(destination.error()); }
+            if (auto r = commands.copyBuffer(*source, *destination); !r) { return r; }
+        }
+        return commands.clearColorTexture(*context.outputTexture("color").texture(), TextureLayout::TransferDestination, {0, 0, 0, 1});
+    }
+private:
+    std::shared_ptr<EvidenceState> state_;
+};
+
+struct LODPassSnapshot
+{
+    std::array<uint32_t, 32> lod{};
+    std::vector<std::vector<uint8_t>> shadows;
+    std::vector<std::array<uint32_t, 32>> statistics;
+    VirtualShadowMapLightsHeader header{};
+    std::array<VirtualShadowMapLightEntry, kCapacity> entries{};
+};
+
+LODPassSnapshot readLODPass(const std::string& name, bool lights)
+{
+    LODPassSnapshot result;
+    auto* buffer = lodPassEvidence->buffers.at(name);
+    buffer->invalidate();
+    const auto* mapped = static_cast<const std::byte*>(buffer->map());
+    require(mapped != nullptr, "Map shadow LOD pass evidence");
+    result.shadows.resize(lodPassEvidence->layers.at(name));
+    result.statistics.resize(lights ? kLayers : 1);
+    for (size_t layer = 0; layer < result.shadows.size(); ++layer) {
+        result.shadows[layer].resize(kPixels);
+        std::memcpy(result.shadows[layer].data(), mapped + layer * kShadowStride, kPixels);
+    }
+    std::memcpy(result.lod.data(), mapped + kLODPassStatisticsOffset, sizeof(result.lod));
+    std::memcpy(result.statistics.data(), mapped + kLODPassFacesOffset,
+        result.statistics.size() * kVirtualShadowMapFaceStatisticsSize);
+    if (lights) {
+        std::memcpy(&result.header, mapped + kLODPassTableOffset, sizeof(result.header));
+        std::memcpy(result.entries.data(), mapped + kLODPassTableOffset + sizeof(result.header), sizeof(result.entries));
+    }
+    buffer->unmap();
+    return result;
+}
+
+class VirtualShadowMapLODPassTest final : public RHITest
+{
+public:
+    VirtualShadowMapLODPassTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_shadow_lod_pass"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapLODPass";
+        Json report{{"scope", "Real single/multi-light RenderGraph shadow LOD properties, readback and admitted-face aggregation"},
+            {"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapLODPass.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            static const bool registered = registerRenderGraphPassType("VSMLODPassEvidence",
+                "Test-only shadow LOD pass output readback", [] { return std::make_unique<VSMLODPassEvidence>(lodPassEvidence); });
+            require(registered, "Register shadow LOD pass evidence");
+            const auto fixture = writeFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load shadow LOD pass fixture");
+            RenderView view;
+            RenderGraphPreviewRenderer preview;
+            configurePreview(preview, scene, view, context, validation);
+            publishSource(scene, preview, Source{"Point"});
+            environment::WorldEnvironment world;
+            world.sun.enabled = true;
+            world.moon.enabled = false;
+            world.sun.direction = float3(.6f, -1, 0);
+            world.sun.illuminance = 3;
+            (void)preview.setWorldEnvironment(world);
+            lodPassEvidence = std::make_shared<EvidenceState>();
+            RenderGraph graph;
+            graph.setName("VirtualShadowMapLODPass");
+            graph.setViewProperties({{"temporalJitter", false},
+                {"renderResolution", {{"width", kWidth}, {"height", kHeight}, {"adaptive", false}}}});
+            graph.addNode("VisibilityBufferPass", "Raster", {{"path", fixture.source.generic_string()},
+                {"streamAssetPath", fixture.cache.generic_string()}, {"autoBuildStreamAsset", false},
+                {"maxResidentPages", 128}, {"maxLockedFallbackPages", 128}, {"maxActiveGroups", 512},
+                {"maxGpuPageRequests", 512}, {"maxTraversalWorkers", 64}, {"maxTraversalWorkItems", 1024},
+                {"autoLod", false}, {"lodLevel", 0}, {"instanceFrustumCull", false}, {"meshletFrustumCull", false},
+                {"instanceHzbCull", false}, {"meshletHzbCull", false}, {"meshletNormalConeCull", false},
+                {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
+            for (bool lights : {false, true}) {
+                const std::string type = lights ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass";
+                const auto pass = createRenderGraphPass(type);
+                require(pass != nullptr, "Create shadow LOD pass for default contract");
+                for (const std::string mode : {"Off", "Zero", "Adaptive"}) {
+                    const std::string name = std::string(lights ? "Lights" : "Single") + mode;
+                    Json properties{{"lightCapacity", kCapacity}, {"physicalPageBudget", 256}, {"physicalPageCount", 128},
+                            {"pageSize", 32}, {"virtualPagesPerAxis", 4}, {"clipmapCount", 4}, {"firstClipmapExtent", 4},
+                            {"maxWorkItems", 131072}, {"shadowBias", .002}, {"cacheEnabled", true}, {"cacheLayering", true},
+                            {"filter", "hard"}, {"receiverFootprint", true}, {"shadowLOD", mode != "Off"}, {"shadowLODErrorTexels", mode == "Zero" ? 0 : 1}};
+                    graph.addNode(type, name, std::move(properties));
+                    graph.addEdge("Raster.depth", name + ".depth");
+                    graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
+                    const std::string readback = name + "Evidence";
+                    graph.addNode("VSMLODPassEvidence", readback, {{"evidenceName", name}, {"lights", lights}});
+                    graph.addEdge(name + (lights ? ".shadows" : ".shadow"), readback + ".shadows");
+                    for (const char* field : {"lodStatistics", "statistics"}) { graph.addEdge(name + "." + field, readback + "." + field); }
+                    if (lights) { graph.addEdge(name + ".lights", readback + ".lights"); }
+                    graph.markOutput(readback + ".color");
+                }
+            }
+            const auto capture = [&](const char* phase, uint32_t expectedFaces) {
+                validation.phase(phase);
+                require(preview.render(graph, kWidth, kHeight, "LightsZeroEvidence.color"),
+                    "Render shadow LOD pass graph: " + preview.lastLog());
+                require(preview.lastLog().find("Initial material compilation failed") == std::string::npos,
+                    "Shadow LOD pass graph used the error material");
+                Json frame{{"phase", phase}};
+                for (bool lights : {false, true}) {
+                    const std::string prefix = lights ? "Lights" : "Single";
+                    const auto off = readLODPass(prefix + "Off", lights), zero = readLODPass(prefix + "Zero", lights);
+                    const auto adaptive = readLODPass(prefix + "Adaptive", lights);
+                    if (!report["frames"].empty()) {
+                        // An unchanged resident cut returns its retained geometry
+                        // without visiting metadata. A changed projection reuses
+                        // the hierarchy while selecting a new cut.
+                        const auto requireCachedSelection = [&](const std::array<uint32_t, 32>& lod, const char* key) {
+                            const auto& previous = report["frames"].back().at(prefix).at(key);
+                            const bool residentCutReused = lod[3] == 0 && lod[11] == 0 && lod[12] == 0 &&
+                                lod[13] == 0 && lod[15] == 0 && lod[4] == previous.at(4).get<uint32_t>() &&
+                                lod[5] == previous.at(5).get<uint32_t>();
+                            require(lod[14] == 0 && (residentCutReused || lod[15] > 0),
+                                prefix + ": unchanged resident cut or hierarchy was not reused: " + Json(lod).dump());
+                        };
+                        requireCachedSelection(adaptive.lod, "adaptiveLOD");
+                        requireCachedSelection(zero.lod, "zeroLOD");
+                    } else {
+                        require(zero.lod[3] > 0, prefix + ": initial zero-error cut did not exercise selection");
+                    }
+                    require(adaptive.lod[0] == 2 && adaptive.lod[1] == 1 && adaptive.lod[4] > 0,
+                        prefix + ": adaptive LOD omitted its selected geometry");
+                    require(off.shadows == zero.shadows, prefix + ": zero-error LOD changed exact final visibility");
+                    require(off.lod[0] == 2 && off.lod[1] == 0 && off.lod[2] == 0,
+                        prefix + ": disabled LOD readback ABI or activation differs");
+                    require(zero.lod[0] == 2 && zero.lod[1] == 1 && zero.lod[2] == (lights ? expectedFaces : 1) * 5,
+                        prefix + ": LOD projections do not match every admitted face and level");
+                    require(zero.lod[4] > 0 && zero.lod[5] == off.lod[5] && zero.lod[5] == zero.lod[10],
+                        prefix + ": zero-error complete terminal fixture has wrong selection or slot accounting");
+                    require(zero.lod[6] == 0 && zero.lod[7] == 0 && zero.lod[8] == 0 && zero.lod[9] == 0,
+                        prefix + ": complete opaque terminal fixture unexpectedly requested, blocked or protected geometry");
+                    uint64_t histogram = 0;
+                    for (size_t index = 16; index < zero.lod.size(); ++index) { histogram += zero.lod[index]; }
+                    require(histogram == zero.lod[4], prefix + ": selected-level histogram does not account for selected clusters");
+                    uint64_t shadowed = 0;
+                    for (const auto& layer : zero.shadows) {
+                        shadowed += std::count_if(layer.begin(), layer.end(), [](uint8_t value) { return value < 128; });
+                    }
+                    require(shadowed > 0, prefix + ": exact comparison did not exercise any shadowed receivers");
+                    for (const auto& stats : zero.statistics) { require(stats[5] == 0 && stats[9] == 0, prefix + ": work overflow or unresolved receiver"); }
+                    if (lights) {
+                        uint32_t faces = 0;
+                        for (const auto& entry : zero.entries) {
+                            if (entry.status == kVirtualShadowMapLightAdmitted) { faces += entry.faceCount; }
+                        }
+                        require(zero.header.version == kVirtualShadowMapLightsVersion && faces == expectedFaces &&
+                            zero.header.admittedCount == (expectedFaces == 7 ? 2 : 1), "LOD multi-light admission evidence differs");
+                    }
+                    frame[prefix] = {{"exactVisibility", true},
+                        {"offLOD", off.lod}, {"zeroLOD", zero.lod}, {"adaptiveLOD", adaptive.lod}, {"shadowedPixels", shadowed}};
+                }
+                report["frames"].push_back(std::move(frame));
+                save();
+            };
+            capture("DirectionalAndPointInitial", 7);
+            capture("DirectionalAndPointCached", 7);
+            publishSource(scene, preview, Source{"Directional"});
+            capture("RemovedPointAdmission", 1);
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Shadow LOD graph Vulkan validation error");
+            report["passed"] = true;
+            save();
+            return RHITestResult::pass("Single and multi-light shadow LOD graph paths preserve zero-error visibility and publish complete face/selection counters");
+        } catch (const std::exception& error) {
+            report["error"] = error.what();
+            report["validation"] = validation.snapshot();
+            save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapLODPassTest);
+
+class VirtualShadowMapReceiverMaskCacheTest final : public RHITest
+{
+public:
+    VirtualShadowMapReceiverMaskCacheTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_receiver_mask_cache"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapReceiverMaskCache";
+        Json report{{"passed", false}, {"scope", "Two-arm persistent directional receiver-mask coverage/cache lifecycle"},
+            {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "VirtualShadowMapReceiverMaskCache.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory); registerQualityEvidence();
+            Fixture authored;
+            addFixtureQuad(authored, {0,0,0}, {8,0,0}, {0,0,-8});
+            addFixtureQuad(authored, {0,1.5,0}, {.8,0,0}, {0,0,.8});
+            // This small independent caster shares coarse fine-page cells with
+            // the narrow receiver, but lies outside its marked subtiles.
+            addFixtureQuad(authored, {0,1.5,2.6}, {.06,0,0}, {0,0,.06});
+            const auto fixture = writeFixture(directory / "Floor", false, 1.5, .8, &authored, true);
+            scene::SceneDocument scene; require(scene.load(fixture.source), "Load receiver-mask split-caster fixture");
+            RenderView view; RenderGraphPreviewRenderer preview;
+            configurePreview(preview, scene, view, context, validation);
+            Source source{"Directional", {0,4,0}, {.3,-1,0}, .015};
+            publishSource(scene, preview, source);
+            ViewCamera camera{.eye={.8f,5,0}, .center={.8f,0,0}, .up={0,0,-1},
+                .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=1, .orthographic=true};
+            require(view.setCamera(camera), "Set narrow receiver-mask camera");
+            evidence = std::make_shared<EvidenceState>(); auto graph = makeGraph(fixture, "smrt", true, 8);
+            const auto property = [&](const char* node, const char* key, const Json& value) {
+                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, key, value),
+                    std::string("Set receiver-mask ") + key);
+            };
+            const auto both = [&](const char* key, const Json& value) {
+                property("Cached", key, value); property("Compact", key, value);
+            };
+            both("compactOutputs", false); both("cacheLayering", true);
+            both("smrtTemporalEnabled", false); both("smrtRayCount", 2); both("smrtSamplesPerRay", 8);
+            both("smrtMaxRayLength", 4); both("smrtRayLengthScale", 0);
+            both("physicalPageBudget", 256); both("benchmarkGPUWork", true);
+            property("Cached", "forceRedraw", true);
+            property("Compact", "benchmarkInstanceBuild", true);
+            property("Compact", "benchmarkClusterPageRaster", true);
+            property("Compact", "benchmarkDirtyPageHierarchy", true);
+            for (const char* name : {"Cached", "Compact"}) {
+                const std::string capture = std::string(name) + "Evidence";
+                // Reflection reads authored properties, not runtime overrides.
+                // Declare the optional outputs/inputs before adding their edges.
+                auto* shadowNode = graph.findNode(name);
+                auto shadowProperties = shadowNode->properties;
+                shadowProperties["benchmarkGPUWork"] = true;
+                shadowProperties["compactOutputs"] = false;
+                require(graph.setNodeProperties(shadowNode->id, std::move(shadowProperties)), "Declare receiver-mask workload outputs");
+                auto* captureNode = graph.findNode(capture);
+                auto captureProperties = captureNode->properties;
+                captureProperties["captureWork"] = true;
+                captureProperties["captureCache"] = true;
+                require(graph.setNodeProperties(captureNode->id, std::move(captureProperties)), "Declare receiver-mask workload/cache inputs");
+                for (const char* field : {"workload", "buildDiagnostics", "cacheDiagnostics"}) {
+                    graph.addEdge(std::string(name) + "." + field, capture + "." + field);
+                }
+            }
+            enum class CacheExpectation { Any, Clean, PartialRedraw, CoverageGrowth, Remapped, Reallocated };
+            uint64_t maskTests = 0, maskRejects = 0;
+            const auto capture = [&](const char* phase, CacheExpectation expected = CacheExpectation::Any, bool lowBudget = false) {
+                validation.phase(phase);
+                const auto rendered = preview.render(graph, kWidth, kHeight, "CompactEvidence.color");
+                require(rendered, "Render receiver mask: " + preview.lastLog());
+                const auto baseline = snapshot("Cached", true, false, true, true);
+                const auto candidate = snapshot("Compact", true, false, true, true);
+                const auto& entry = activeEntry(candidate); const uint32_t face = entry.baseLayer;
+                const auto& cache = candidate.cacheDiagnostics[face];
+                const auto& counters = candidate.buildDiagnostics[face];
+                const auto stats = searchStatistics(candidate);
+                const bool exactVisibility = baseline.depth == candidate.depth && baseline.shadows == candidate.shadows;
+                maskTests += counters[kVSMBuildDiagnosticReceiverMaskPageTests];
+                maskRejects += counters[kVSMBuildDiagnosticReceiverMaskPageRejects];
+                report["frames"].push_back({{"phase",phase},{"exactVisibility",exactVisibility},
+                    {"cache",cache},{"build",counters},{"statistics",stats},{"workload",candidate.workload[face]},
+                    {"shadowSha256",debug::debugSha256(candidate.shadows[face])},
+                    {"baselineShadowSha256",debug::debugSha256(baseline.shadows[face])}});
+                save();
+                require(exactVisibility,
+                    std::string(phase) + ": receiver-mask visibility differs from complete redraw");
+                require(stats[5] == 0 && stats[9] == 0,
+                    std::string(phase) + ": work overflow or unresolved query");
+                if (expected == CacheExpectation::Clean) {
+                    require(cache[kVSMCacheReused] != 0 && stats[16] == 0 && stats[17] > 0 &&
+                        cache[kVSMCacheCompositeDirtyFinePages] == 0 && cache[kVSMCacheStaticReusedFinePages] > 0,
+                        std::string(phase) + ": contained receiver coverage did not reuse clean fine depth");
+                    require(candidate.workload[face][kVSMWorkBuildDecodedTriangles] == 0 &&
+                        candidate.workload[face][kVSMWorkRasterFineGroups] == 0,
+                        std::string(phase) + ": clean coverage still decoded or rasterized fine geometry");
+                }
+                if (expected == CacheExpectation::PartialRedraw) {
+                    require(cache[kVSMCacheDynamicCasters] > 0 && cache[kVSMCacheStaticCasters] > 0,
+                        "Receiver-mask fixture lacks mixed static/dynamic casters");
+                    require(cache[kVSMCacheStaticDirtyFinePages] == 0 && cache[kVSMCacheStaticReusedFinePages] > 0 &&
+                        cache[kVSMCacheCompositeDirtyFinePages] > 0,
+                        std::string(phase) + ": dynamic change did not rebuild partial composition over cached static depth");
+                }
+                if (expected == CacheExpectation::CoverageGrowth) {
+                    require(cache[kVSMCacheChangedCasters] == 0 && cache[kVSMCacheReused] != 0 &&
+                        cache[kVSMCacheCompositeDirtyFinePages] > cache[kVSMCacheStaticDirtyFinePages],
+                        std::string(phase) + ": receiver growth did not redraw an existing partially covered page");
+                }
+                if (expected == CacheExpectation::Remapped) {
+                    require(cache[kVSMCacheReused] != 0 && stats[19] > 0,
+                        std::string(phase) + ": camera scroll did not exercise cached virtual-page remapping");
+                }
+                if (expected == CacheExpectation::Reallocated) {
+                    require(cache[kVSMCacheReused] != 0 && stats[20] > 0 && stats[1] == 7 && stats[2] > 0,
+                        std::string(phase) + ": fixed seven-fine-page pool did not reuse physical slots for newly admitted pages");
+                }
+                if (lowBudget) {
+                    require(stats[7] > 0, "Receiver-mask low budget did not exercise coarse fallback");
+                }
+                return candidate;
+            };
+            capture("Cold"); capture("WarmStatic", CacheExpectation::Clean);
+            float4x4 shift; shift.SetupByTranslation(float3(.15f,0,0));
+            const auto moveCasters = [&] {
+                for (uint32_t node : {1u, 2u}) {
+                    require(scene.setNodeLocalMatrix(node, shift * scene.nodes()[node].localMatrix), "Move independent dynamic caster");
+                }
+            };
+            moveCasters(); capture("CasterPromotion");
+            // Promotion invalidates the complete static page. A subsequent
+            // dynamic-only edit is needed to produce a genuinely partial page.
+            moveCasters(); capture("NarrowDynamicRedraw", CacheExpectation::PartialRedraw);
+            capture("NarrowPartialWarm", CacheExpectation::Clean);
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Expand receiver coverage in cached pages");
+            capture("CoverageExpansion", CacheExpectation::CoverageGrowth);
+            capture("ExpandedWarm", CacheExpectation::Clean);
+            camera.orthoHeight = 1; require(view.setCamera(camera), "Shrink receiver coverage");
+            capture("CoverageShrink", CacheExpectation::Clean);
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Revisit already valid receiver coverage");
+            capture("ReexpandWithinValidCoverage", CacheExpectation::Clean);
+            camera.orthoHeight = 1; require(view.setCamera(camera), "Narrow before dynamic replacement");
+            capture("ShrinkBeforeDynamicRedraw", CacheExpectation::Clean);
+            moveCasters(); capture("ReplaceWithNarrowDynamicCoverage", CacheExpectation::PartialRedraw);
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Revisit coverage replaced by narrow redraw");
+            capture("ReexpandAfterCoverageReplacement", CacheExpectation::CoverageGrowth);
+            capture("ReplacementWarm", CacheExpectation::Clean);
+            camera.orthoHeight = 1; require(view.setCamera(camera), "Narrow receiver before demotion");
+            moveCasters(); capture("NarrowDynamicBeforeDemotion", CacheExpectation::PartialRedraw);
+            property("Compact", "framesStaticThreshold", 1);
+            const auto merged = capture("DemoteWithNarrowCompositeCoverage");
+            const auto mergedFace = activeEntry(merged).baseLayer;
+            const auto& mergeCache = merged.cacheDiagnostics[mergedFace];
+            require(merged.workload[mergedFace][kVSMWorkRasterStaticMergedPages] > 0 &&
+                mergeCache[kVSMCacheDynamicCasters] == 0 && mergeCache[kVSMCacheCompositeDirtyFinePages] > 0 &&
+                mergeCache[kVSMCacheCompositeInvalidatedResidentPages] >= mergeCache[kVSMCacheCompositeDirtyFinePages] &&
+                mergeCache[kVSMCacheRestoredPages] == mergeCache[kVSMCacheCompositeDirtyFinePages] &&
+                mergeCache[kVSMCacheCompositeDirtyCoarsePages] == 0,
+                "Demotion did not restore partially covered fine pages and retain the complete coarse page");
+            camera.orthoHeight = 3; require(view.setCamera(camera), "Expand receivers after merging partially covered pages");
+            capture("ReexpandAfterMaskedDemotion");
+            camera.eye[2] = 1.25f; camera.center[2] = 1.25f; require(view.setCamera(camera), "Scroll clipmap page origins");
+            capture("PageRemap", CacheExpectation::Remapped);
+            capture("RemappedWarm", CacheExpectation::Clean);
+            camera.eye[2] = 0; camera.center[2] = 0; require(view.setCamera(camera), "Return clipmap page origins");
+            capture("PageRemapReturn", CacheExpectation::Remapped);
+            both("physicalPageBudget", 8);
+            const auto smallBudget = searchStatistics(capture("SmallBudgetCold"));
+            require(smallBudget[1] == 7 && smallBudget[2] > 0,
+                "Receiver-mask eviction fixture did not fill its seven-fine-page pool");
+            camera.eye[2] = 3.25f; camera.center[2] = 3.25f; require(view.setCamera(camera), "Move receivers under fixed budget");
+            capture("FixedBudgetEviction", CacheExpectation::Reallocated);
+            camera.eye[2] = 0; camera.center[2] = 0; require(view.setCamera(camera), "Revisit evicted receiver pages");
+            capture("FixedBudgetReturn", CacheExpectation::Reallocated);
+            both("physicalPageBudget", 1); capture("CoarseBudget", CacheExpectation::Any, true);
+            both("physicalPageBudget", 256); capture("BudgetRestore"); capture("BudgetRestoreWarm", CacheExpectation::Clean);
+            both("filter", "hard"); capture("HardFallback"); capture("HardWarm", CacheExpectation::Clean);
+            require(maskTests > 0, "Receiver-mask candidate performed no per-page intersection tests");
+            require(maskRejects > 0, "Receiver-mask fixture did not exercise subpage caster rejection");
+            report["maskPageTests"] = maskTests; report["maskPageRejects"] = maskRejects;
+            report["validation"] = validation.snapshot(); require(!validation.failed(), "Receiver-mask Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Persistent receiver coverage reuses clean depth and matches complete redraw through coverage, dynamic, remap, eviction and mode transitions");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapReceiverMaskCacheTest);
+
+class VirtualShadowMapPhysicalHZBTest final : public RHITest
+{
+public:
+    VirtualShadowMapPhysicalHZBTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_physical_hzb"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapPhysicalHZB";
+        Json report{{"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "PhysicalHZB.json") << report.dump(2) << '\n'; };
+        try {
+            std::filesystem::create_directories(directory);
+            registerQualityEvidence();
+            Fixture authored;
+            addFixtureQuad(authored, {0,0,0}, {8,0,0}, {0,0,-8});          // Receivers
+            addFixtureQuad(authored, {0,3,0}, {2.5,0,0}, {0,0,2.5});      // Static roof
+            addFixtureQuad(authored, {.45,1,.45}, {.20,0,0}, {0,0,.20}); // Behind the roof
+            addFixtureQuad(authored, {.45,4,.45}, {.16,0,0}, {0,0,.16}); // In front of the roof
+            // Resident Build groups span 64 triangle slots across mesh boundaries.
+            // Fill the first group, then put four movable quads behind the roof
+            // in their own group so all eight of its triangles are dynamic.
+            for (uint32_t tile = 0; tile < 28; ++tile) {
+                addFixtureQuad(authored, {.35 + .025*(tile%8),1.3,.40 + .025*(tile/8)}, {.0125,0,0}, {0,0,.0125});
+            }
+            const auto patchFirstNode = static_cast<uint32_t>(authored.triangles.size() / 2);
+            constexpr uint32_t kPatchQuadCount = 4;
+            for (uint32_t quad = 0; quad < kPatchQuadCount; ++quad) {
+                addFixtureQuad(authored, {.30 + .10*quad,1.3,.45}, {.05,0,0}, {0,0,.05});
+            }
+            const auto fixture = writeFixture(directory / "Roof", false, 1.5, .8, &authored, true);
+            scene::SceneDocument scene; require(scene.load(fixture.source), "Load physical HZB fixture");
+            RenderView view; RenderGraphPreviewRenderer preview;
+            configurePreview(preview, scene, view, context, validation);
+            publishSource(scene, preview, Source{"Directional", {0,5,0}, {0,-1,0}, 0.});
+            // Look down from beneath all three blockers so the actual floor shadow is visible.
+            ViewCamera camera{.eye={0,.75f,0}, .center={0,0,0}, .up={0,0,-1},
+                .fovDegrees=52, .nearPlane=.1f, .farPlane=100, .orthoHeight=6, .orthographic=true};
+            require(view.setCamera(camera), "Set HZB receiver view");
+            evidence = std::make_shared<EvidenceState>();
+            auto graph = makeGraph(fixture, "hard", true, 8);
+            for (const char* name : {"Cached", "Compact"}) {
+                auto* node = graph.findNode(name);
+                auto properties = node->properties;
+                const bool incremental = std::string_view(name) == "Compact";
+                properties.update(Json{{"physicalPageBudget", 128}, {"cacheLayering", true}, {"forceRedraw", !incremental},
+                    {"receiverFootprint", false}, {"compactOutputs", false},
+                    {"benchmarkGPUWork", incremental}});
+                // Compare instance-driven Build against a complete redraw.
+                if (incremental) {
+                    properties["benchmarkInstanceBuild"] = true;
+                    properties["benchmarkClusterPageRaster"] = true;
+                }
+                require(graph.setNodeProperties(node->id, std::move(properties)), "Set HZB arm properties");
+            }
+            auto* output = graph.findNode("CompactEvidence");
+            auto properties = output->properties;
+            properties["captureWork"] = true; properties["captureCache"] = true;
+            require(graph.setNodeProperties(output->id, std::move(properties)), "Declare HZB readback");
+            for (const char* field : {"workload", "buildDiagnostics", "cacheDiagnostics"}) {
+                graph.addEdge(std::string("Compact.") + field, std::string("CompactEvidence.") + field);
+            }
+            const auto move = [&](uint32_t node, float x) {
+                float4x4 transform; transform.SetupByTranslation(float3(x,0,0));
+                require(scene.setNodeLocalMatrix(node, transform), "Move HZB fixture caster");
+            };
+            const auto movePatch = [&](float x) {
+                for (uint32_t quad = 0; quad < kPatchQuadCount; ++quad) { move(patchFirstNode + quad, x); }
+            };
+            uint64_t clusterRejects = 0;
+            const auto capture = [&](const char* phase) {
+                validation.phase(phase);
+                const auto rendered = preview.render(graph, kWidth, kHeight, "CompactEvidence.color");
+                require(rendered, "Render physical HZB: " + preview.lastLog());
+                auto candidate = snapshot("Compact", false, false, true, true);
+                const auto reference = snapshot("Cached");
+                const auto face = activeEntry(candidate).baseLayer;
+                const auto& cache = candidate.cacheDiagnostics[face];
+                const auto& build = candidate.buildDiagnostics[face];
+                const auto& work = candidate.workload[face];
+                const auto stats = searchStatistics(candidate);
+                const auto staticDecodes = build[kVSMBuildDiagnosticLayeredStaticDecodedTriangles];
+                const auto dynamicDecodes = build[kVSMBuildDiagnosticLayeredDynamicDecodedTriangles];
+                const auto staticRequired = build[kVSMBuildDiagnosticStaticRequiredFineTriangles];
+                const auto compositeOnly = build[kVSMBuildDiagnosticStaticCompositeOnlyTriangles];
+                const auto noFinePage = build[kVSMBuildDiagnosticStaticNoFinePageTriangles];
+                const bool exact = candidate.depth == reference.depth && candidate.shadows == reference.shadows;
+                clusterRejects += build[kVSMBuildDiagnosticHZBLevelRejects];
+                report["frames"].push_back({{"phase",phase},{"exact",exact},{"builtPages",cache[kVSMCacheStaticHZBBuiltPages]},
+                    {"savedInvalidations",cache[kVSMCacheHZBSavedInvalidations]},{"clusterPageTests",build[kVSMBuildDiagnosticHZBPageTests]},
+                    {"clusterLevelRejects",build[kVSMBuildDiagnosticHZBLevelRejects]},{"decodedTriangles",work[kVSMWorkBuildDecodedTriangles]},
+                    {"rasterClusterLevelTests",work[kVSMWorkRasterHZBClusterLevelTests]},
+                    {"rasterRejectedLevels",work[kVSMWorkRasterHZBRejectedLevels]},
+                    {"rasterSkippedTriangles",work[kVSMWorkRasterHZBSkippedTriangles]},
+                    {"staticMergedPages",work[kVSMWorkRasterStaticMergedPages]},
+                    {"staticMergedTriangles",work[kVSMWorkRasterStaticMergedTriangles]},
+                    {"buildStaticDecodedTriangles",staticDecodes},{"buildDynamicDecodedTriangles",dynamicDecodes},
+                    {"buildStaticRequiredFineTriangles",staticRequired},{"buildStaticCompositeOnlyTriangles",compositeOnly},
+                    {"buildStaticNoFinePageTriangles",noFinePage},
+                    {"coarseRasterGroups",work[kVSMWorkRasterCoarseGroups]},
+                    {"cache",cache},{"statistics",stats},{"referenceHash",debug::debugSha256(reference.shadows[face])},
+                    {"shadowHash",debug::debugSha256(candidate.shadows[face])}});
+                save();
+                require(exact, std::string(phase) + ": HZB differs from complete redraw");
+                require(stats[5] == 0 && stats[9] == 0, std::string(phase) + ": overflow or unresolved pages");
+                require(staticDecodes + dynamicDecodes == work[kVSMWorkBuildDecodedTriangles],
+                    std::string(phase) + ": layered Build counters do not partition successful decodes");
+                require(staticRequired + compositeOnly + noFinePage == staticDecodes,
+                    std::string(phase) + ": static Build page categories do not partition static decodes");
+                if (cache[kVSMCacheStaticDirtyFinePages] == 0) {
+                    require(staticRequired == 0, std::string(phase) + ": clean static fine pages counted as required Build work");
+                }
+                return candidate;
+            };
+            const auto cacheOf = [&](const Snapshot& s) { return s.cacheDiagnostics[activeEntry(s).baseLayer]; };
+            const auto cold = capture("Cold");
+            const auto& coldBuild = cold.buildDiagnostics[activeEntry(cold).baseLayer];
+            require(cacheOf(cold)[kVSMCacheStaticHZBBuiltPages] > 0, "Cold render built no HZB");
+            require(coldBuild[kVSMBuildDiagnosticInstanceTests] > 0 &&
+                coldBuild[kVSMBuildDiagnosticInstanceClusterTickets] > 0, "Cold render bypassed instance-driven Build");
+            require(coldBuild[kVSMBuildDiagnosticLayeredStaticDecodedTriangles] > 0 &&
+                coldBuild[kVSMBuildDiagnosticStaticRequiredFineTriangles] > 0 &&
+                coldBuild[kVSMBuildDiagnosticStaticCompositeOnlyTriangles] == 0,
+                "Cold static redraw was misclassified as composite-only Build work");
+            require(cacheOf(capture("Warm"))[kVSMCacheStaticHZBBuiltPages] == 0, "Clean frame rebuilt HZB");
+            move(2, .05f); move(3, .05f); movePatch(.05f);
+            const auto compactId = graph.findNode("Compact")->id;
+            // Rebuild every static page on promotion. Any dynamic rejection on
+            // this frame must use the newly rasterized static depth.
+            require(graph.setNodeRuntimeProperty(compactId, "forceRedraw", true), "Force fresh HZB on promotion");
+            const auto promotion = capture("PromoteMovers");
+            require(graph.setNodeRuntimeProperty(compactId, "forceRedraw", false), "Resume incremental HZB updates");
+            require(cacheOf(promotion)[kVSMCachePromotedCasters] >= 2 + kPatchQuadCount && cacheOf(promotion)[kVSMCacheStaticHZBBuiltPages] > 0,
+                "Moving casters did not refresh the affected static pages");
+            const auto& promotionWork = promotion.workload[activeEntry(promotion).baseLayer];
+            require(promotion.buildDiagnostics[activeEntry(promotion).baseLayer][kVSMBuildDiagnosticHZBLevelRejects] == 0,
+                "Build accepted retained HZB occlusion on a full static redraw");
+            require(promotionWork[kVSMWorkRasterHZBRejectedLevels] > 0 && promotionWork[kVSMWorkRasterHZBSkippedTriangles] > 0,
+                "The rebuilt static HZB did not skip a dynamic cluster before mesh decode");
+            move(2, .10f);
+            const auto hidden = capture("HiddenMotion");
+            require(cacheOf(hidden)[kVSMCacheHZBSavedInvalidations] > 0 && cacheOf(hidden)[kVSMCacheStaticHZBBuiltPages] == 0,
+                "Hidden motion did not suppress invalidation using retained static depth");
+            move(3, .12f);
+            const auto front = capture("FrontMotion");
+            require(cacheOf(front)[kVSMCacheCompositeDirtyFinePages] > 0, "Unoccluded front caster did not dirty fine pages");
+            const auto& frontBuild = front.buildDiagnostics[activeEntry(front).baseLayer];
+            require(cacheOf(front)[kVSMCacheStaticDirtyFinePages] == 0 &&
+                frontBuild[kVSMBuildDiagnosticLayeredDynamicDecodedTriangles] > 0 &&
+                frontBuild[kVSMBuildDiagnosticStaticCompositeOnlyTriangles] > 0 &&
+                frontBuild[kVSMBuildDiagnosticStaticRequiredFineTriangles] == 0,
+                "Dynamic-only fine update did not quantify static composite-only Build decodes");
+            move(2, 3.f);
+            const auto exposed = capture("EmergeFromRoof");
+            require(exposed.shadows != front.shadows, "Emerging caster produced no visible change");
+            move(2, .10f);
+            const auto hiddenAgain = capture("ReturnBehindRoof");
+            require(hiddenAgain.shadows == front.shadows, "Old exposed caster shadow survived its return behind the roof");
+            move(2, .15f);
+            move(1, 5.f);
+            const auto roofMoved = capture("MoveStaticRoofAndHiddenCaster");
+            require(cacheOf(roofMoved)[kVSMCacheStaticHZBBuiltPages] > 0 && roofMoved.shadows != hiddenAgain.shadows,
+                "Removing the roof did not refresh static occlusion and reveal the floor");
+            movePatch(1.f);
+            const auto patchMoved = capture("MoveExposedCluster");
+            require(patchMoved.shadows != roofMoved.shadows, "Previously occluded cluster cast no moving shadow after roof removal");
+            require(graph.setNodeRuntimeProperty(compactId, "framesStaticThreshold", 2), "Shorten static demotion threshold");
+            // The separate mover covers the patch on the floor. Other stationary
+            // casters demote on this same frame, but its motion still needs composition.
+            move(2, 1.f);
+            const auto settling = capture("MixedMotionAndDemotion");
+            require(cacheOf(settling)[kVSMCacheDynamicCasters] == kPatchQuadCount + 1 &&
+                settling.workload[activeEntry(settling).baseLayer][kVSMWorkRasterStaticMergedPages] > 0 &&
+                cacheOf(settling)[kVSMCacheRestoredPages] > 0 && settling.shadows != patchMoved.shadows,
+                "Independent mover lost its shadow update while other casters demoted");
+            const auto demoted = capture("DemoteExposedCluster");
+            const auto& demotionWork = demoted.workload[activeEntry(demoted).baseLayer];
+            require(cacheOf(demoted)[kVSMCacheDynamicCasters] == 1 &&
+                cacheOf(demoted)[kVSMCacheStaticCasters] == cacheOf(settling)[kVSMCacheStaticCasters] + kPatchQuadCount &&
+                cacheOf(demoted)[kVSMCacheStaticInvalidatedResidentPages] == 0 &&
+                demotionWork[kVSMWorkRasterStaticMergedPages] > 0 && demotionWork[kVSMWorkRasterStaticMergedTriangles] > 0 &&
+                cacheOf(demoted)[kVSMCacheStaticHZBBuiltPages] > 0 && demoted.shadows == settling.shadows,
+                "Stationary quads did not merge into retained static pages and refresh their HZB");
+            require(cacheOf(demoted)[kVSMCacheCompositeDirtyFinePages] == 0 &&
+                cacheOf(demoted)[kVSMCacheCompositeDirtyCoarsePages] == 0 &&
+                cacheOf(demoted)[kVSMCacheRestoredPages] == 0 &&
+                cacheOf(demoted)[kVSMCacheDynamicDecodedTriangles] == 0,
+                "Pure static merge redrew composite depth despite unchanged receivers and casters");
+            require(demoted.buildDiagnostics[activeEntry(demoted).baseLayer][kVSMBuildDiagnosticStaticCompositeOnlyTriangles] == 0,
+                "Pure static merge was misclassified as composite-only Build work");
+            require(demotionWork[kVSMWorkBuildDecodedTriangles] <= 2 * kPatchQuadCount &&
+                demotionWork[kVSMWorkRasterCoarseGroups] > 0 && demotionWork[kVSMWorkRasterCoarseGroups] <= 64,
+                "Pure static merge enumerated geometry outside the transitioned cluster");
+            // Force composition to consume the merged depth. Simply keeping
+            // the old composite while omitting the static writes would now
+            // lose the patch's previously observed exposed shadow.
+            move(2, .15f);
+            const auto restoredPatch = capture("RevealMergedPatch");
+            require(cacheOf(restoredPatch)[kVSMCacheRestoredPages] > 0 &&
+                cacheOf(restoredPatch)[kVSMCacheStaticHZBBuiltPages] == 0 &&
+                restoredPatch.shadows == patchMoved.shadows && restoredPatch.shadows != demoted.shadows,
+                "Restoring from incrementally merged static depth lost the patch shadow");
+            const auto warmDemoted = capture("WarmAfterDemotion");
+            require(cacheOf(warmDemoted)[kVSMCacheStaticHZBBuiltPages] == 0 && cacheOf(warmDemoted)[kVSMCacheDynamicDecodedTriangles] == 0,
+                "Idle demoted geometry still generated shadow work");
+            movePatch(.05f);
+            const auto repromoted = capture("MoveDemotedCluster");
+            require(cacheOf(repromoted)[kVSMCachePromotedCasters] == kPatchQuadCount &&
+                cacheOf(repromoted)[kVSMCacheDynamicCasters] == kPatchQuadCount &&
+                repromoted.shadows == roofMoved.shadows && repromoted.shadows != restoredPatch.shadows,
+                "Moving demoted quads did not erase the merged shadow at their old position");
+            const auto& mixedWork = repromoted.workload[activeEntry(repromoted).baseLayer];
+            require(mixedWork[kVSMWorkRasterStaticMergedTriangles] > 0 &&
+                cacheOf(repromoted)[kVSMCacheStaticDirtyCoarsePages] > 0 &&
+                cacheOf(repromoted)[kVSMCacheStaticDecodedTriangles] > mixedWork[kVSMWorkRasterStaticMergedTriangles],
+                "Concurrent promotion and demotion did not exercise both full static redraw and incremental merge");
+            for (const char* name : {"Cached","Compact"}) {
+                require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, "physicalPageBudget", 8), "Limit HZB pool");
+            }
+            capture("SmallPool");
+            camera.eye[0] = 6; camera.center[0] = 6; require(view.setCamera(camera), "Scroll HZB pages");
+            const auto scroll = capture("ReusePhysicalSlots");
+            require(searchStatistics(scroll)[20] > 0, "Small pool did not exercise physical-page eviction");
+            camera.eye[0] = 0; camera.center[0] = 0; require(view.setCamera(camera), "Revisit HZB pages");
+            capture("RevisitPhysicalSlots");
+            require(clusterRejects > 0, "Occluded clusters did not exercise HZB rejection");
+            report["validation"] = validation.snapshot();
+            require(!validation.failed(), "Physical HZB Vulkan validation error");
+            report["passed"] = true; save();
+            return RHITestResult::pass("Incremental static page HZB saved invalidations and rejected occluded clusters with exact floor shadows");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPhysicalHZBTest);
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapQualityTest);
+
+} // namespace
+} // namespace metallic::tests
+

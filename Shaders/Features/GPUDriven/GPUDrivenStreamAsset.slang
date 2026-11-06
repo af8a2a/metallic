@@ -602,7 +602,7 @@ float3 transformStreamDirection(
         group.world2.xyz * localDirection.z;
 }
 
-float3 transformStreamNormal(
+public float3 transformStreamNormal(
     GPUDrivenStreamAssetActiveGroup group,
     float3 localNormal,
     float3 fallback)
@@ -610,11 +610,14 @@ float3 transformStreamNormal(
     float3 cofactor0 = cross(group.world1.xyz, group.world2.xyz);
     float3 cofactor1 = cross(group.world2.xyz, group.world0.xyz);
     float3 cofactor2 = cross(group.world0.xyz, group.world1.xyz);
-    return safeNormalize(
-        cofactor0 * localNormal.x +
-            cofactor1 * localNormal.y +
-            cofactor2 * localNormal.z,
-        fallback);
+    float3 normal = cofactor0 * localNormal.x +
+        cofactor1 * localNormal.y + cofactor2 * localNormal.z;
+    // Cofactors scale quadratically: Sponza's 0.008 scale produces a valid
+    // normal below safeNormalize's length threshold. Normalize the direction
+    // independently of that scale, preserving the cofactor winding sign.
+    float maxComponent = max(abs(normal.x), max(abs(normal.y), abs(normal.z)));
+    return maxComponent > 0.0 && isfinite(maxComponent)
+        ? normalize(normal / maxComponent) : fallback;
 }
 
 float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)

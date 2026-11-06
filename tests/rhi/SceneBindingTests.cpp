@@ -9,6 +9,7 @@
 namespace metallic::tests {
 namespace {
 struct SceneProbeState {
+    uint32_t prepares = 0;
     uint32_t compiles = 0;
     uint32_t executions = 0;
     bool failConsumer = false;
@@ -30,7 +31,7 @@ public:
     render::RenderGraphSceneDependency sceneDependency() const override
     {
         return consumer_
-            ? render::RenderGraphSceneDependency{render::RenderGraphSceneSource::Input, {"first", "second"}}
+            ? render::RenderGraphSceneDependency{render::RenderGraphSceneSource::Input, {"first", "second", "third"}}
             : render::RenderGraphSceneDependency{render::RenderGraphSceneSource::World};
     }
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
@@ -39,9 +40,15 @@ public:
         if (consumer_) {
             reflection.addBufferInput("first").buffer(16, 4).shaderRead();
             reflection.addBufferInput("second").buffer(16, 4).shaderRead();
+            reflection.addBufferInput("third").buffer(16, 4).shaderRead().setOptional();
         }
         reflection.addBufferOutput("value").buffer(16, 4).shaderRead();
         return reflection;
+    }
+    render::Result<> prepare(const render::RenderGraphCompileContext&, std::string&) override
+    {
+        ++probe.prepares;
+        return {};
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
@@ -120,6 +127,9 @@ public:
             graph.addNode("SceneBindingProbeConsumer", "ViewportConsumer", {});
             graph.addEdge("ViewportAsset.value", "ViewportConsumer.first");
             graph.addEdge("ViewportAsset.value", "ViewportConsumer.second");
+            // Exercise both optional contracts in each execution API: this
+            // consumer connects the same producer, while Consumer leaves it absent.
+            graph.addEdge("ViewportAsset.value", "ViewportConsumer.third");
             graph.markOutput("ViewportConsumer.value");
             graph.addNode("SceneBindingProbeConsumer", "Consumer", {{"path", "deliberately-missing-asset.glb"}});
             graph.addEdge("Root.value", "Consumer.first");
@@ -228,9 +238,32 @@ public:
             render::RenderGraphExecutor rejected;
             rejected.bindRuntimeScene(&first);
             const uint32_t beforeInvalid = probe.compiles;
+            const uint32_t beforeInvalidPrepares = probe.prepares;
             result = rejected.compile(context.device, invalid, 8, 8, log);
-            if (result || probe.compiles != beforeInvalid || log.find("same scene producer") == std::string::npos) {
+            if (result || probe.compiles != beforeInvalid || probe.prepares != beforeInvalidPrepares ||
+                log.find("same scene producer") == std::string::npos) {
                 return RHITestResult::fail("Mixed scene input bundle was not rejected before preparation: " + log);
+            }
+            auto invalidOptional = graph;
+            invalidOptional.addEdge("Independent.value", "Consumer.third");
+            render::RenderGraphExecutor rejectedOptional;
+            rejectedOptional.bindRuntimeScene(&first);
+            log.clear();
+            result = rejectedOptional.compile(context.device, invalidOptional, 8, 8, log);
+            if (result || probe.compiles != beforeInvalid || probe.prepares != beforeInvalidPrepares ||
+                log.find("same scene producer") == std::string::npos) {
+                return RHITestResult::fail("Mixed optional scene input was not rejected before preparation: " + log);
+            }
+            auto missingRequired = graph;
+            for (const auto edge : missingRequired.edges()) {
+                if (edge.dstPass == "Consumer" && edge.dstField == "first") { missingRequired.removeEdge(edge.id); break; }
+            }
+            render::RenderGraphExecutor rejectedRequired;
+            rejectedRequired.bindRuntimeScene(&first);
+            log.clear();
+            result = rejectedRequired.compile(context.device, missingRequired, 8, 8, log);
+            if (result || probe.compiles != beforeInvalid || probe.prepares != beforeInvalidPrepares) {
+                return RHITestResult::fail("Missing required scene input was not rejected before preparation: " + log);
             }
             auto assetView = graph;
             for (const auto edge : graph.edges()) {
@@ -243,7 +276,7 @@ public:
                 return RHITestResult::fail("Scene inputs must inherit the independent asset view: " + log);
             }
         }
-        return RHITestResult::pass("Both execute APIs: generation refresh, independent asset, inherited inputs, stable handles and preparation failure recovery");
+        return RHITestResult::pass("Both execute APIs: generation refresh, independent asset, optional input ownership, required inputs, stable handles and preparation failure recovery");
     }
 };
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneBindingContractTest);

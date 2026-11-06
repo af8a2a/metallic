@@ -70,6 +70,7 @@ bool lightUnsupportedPropertiesUnchanged(
 {
     if (current.type == "directional") {
         return current.range == next.range &&
+            current.sourceRadius == next.sourceRadius &&
             current.innerConeAngle == next.innerConeAngle &&
             current.outerConeAngle == next.outerConeAngle;
     }
@@ -189,6 +190,7 @@ bool validLightProperties(const LightProperties& properties)
     if (!validLightColor(properties.color) ||
         !std::isfinite(intensitySI) || intensitySI < 0.0 || intensitySI > 1e12 ||
         !std::isfinite(properties.range) ||
+        !std::isfinite(properties.sourceRadius) || properties.sourceRadius < 0.0 || properties.sourceRadius > 10000.0 ||
         !std::isfinite(properties.innerConeAngle) ||
         !std::isfinite(properties.outerConeAngle)) {
         return false;
@@ -229,6 +231,7 @@ bool lightPropertiesNearlyEqual(
         propertyValuesNearlyEqual(lhs.color.z, rhs.color.z) &&
         propertyValuesNearlyEqual(lhs.intensity, rhs.intensity) &&
         propertyValuesNearlyEqual(lhs.range, rhs.range) &&
+        propertyValuesNearlyEqual(lhs.sourceRadius, rhs.sourceRadius) &&
         propertyValuesNearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
         propertyValuesNearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
 }

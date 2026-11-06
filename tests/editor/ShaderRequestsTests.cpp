@@ -939,8 +939,9 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
     studio["id"] = "studio-white-test";
     write(root / "build/MaterialValidation/WhiteStudio02/Catalog.json", {{"version", 1}, {"samples", {studio}}});
     const auto requests = metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR);
-    // One CLAS path trace request plus deferred render and deferred material-kernel requests.
-    ASSERT_EQ(requests.size(), 3u);
+    // One CLAS path trace request and one flat Deferred request. Deferred's
+    // global/local camera choice is a runtime flag, so both catalog views deduplicate.
+    ASSERT_EQ(requests.size(), 2u);
     metallic::scene::RenderMaterial material;
     material.valueProgram = valueProgram;
     std::string diagnostics;
@@ -1231,7 +1232,7 @@ TEST(ShaderRequests, DLSSRRWarmupContainsCompleteDefaultGuideRequests)
         for (const auto& defines : permutations) {
             auto expected = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
             expected.defines.emplace_back("METALLIC_INLINE_COMPUTE_ROOT", "1");
-            expected.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "392");
+            expected.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "408");
             const auto runtime = makePathTraceShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
             EXPECT_EQ(runtime, expected);
             EXPECT_EQ(std::count(catalog.begin(), catalog.end(), runtime), 1);
@@ -1486,9 +1487,16 @@ TEST(ShaderRequests, PrimaryGuideSplitIsOptInAndKeepsSingleSourcePolicy)
     EXPECT_EQ(continuation.defines, fused.defines);
     EXPECT_EQ(primary.searchPaths, fused.searchPaths);
     EXPECT_EQ(continuation.capabilities, fused.capabilities);
-    EXPECT_EQ(sizeof(SceneResourceParameters), 392u);
-    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, primaryHits), 392u);
-    EXPECT_EQ(sizeof(ScenePrimarySplitResourceParameters), 400u);
+    EXPECT_EQ(sizeof(SceneResourceParameters), 408u);
+    EXPECT_EQ(offsetof(SceneResourceParameters, moonShadowParameters), 392u);
+    EXPECT_EQ(offsetof(SceneResourceParameters, moonShadowVisibility), 396u);
+    EXPECT_EQ(offsetof(SceneResourceParameters, virtualShadows), 400u);
+    EXPECT_EQ(offsetof(SceneResourceParameters, virtualShadowLights), 404u);
+    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, primaryHits), 408u);
+    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, reserved), 412u);
+    EXPECT_EQ(sizeof(ScenePrimarySplitResourceParameters), 416u);
+    EXPECT_EQ(offsetof(ScenePathDiagnosticResourceParameters, pathDiagnostics), 408u);
+    EXPECT_EQ(sizeof(ScenePathDiagnosticResourceParameters), 416u);
     EXPECT_EQ(kOpenPBRPrimaryHitStride, 100u);
 }
 
@@ -1656,7 +1664,7 @@ TEST(ShaderRequests, DeferredRuntimeGuidesKeepPushAndPacketLayout)
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
     static_assert(offsetof(ScenePathTracePush, textureFeedbackEnabled) == 252);
     EXPECT_EQ(ScenePathTracePush{}.textureFeedbackEnabled, 0u);
-    static_assert(sizeof(metallic::render::SceneResourceParameters) == 392);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 408);
     static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
     static_assert((kScenePathTraceExportUpscalerGuides & ((1u << 26u) - 1u)) == 0);
     const auto binPush = kScenePathTraceExportUpscalerGuides | 4u;
@@ -1735,7 +1743,7 @@ TEST(ShaderRequests, DeferredRuntimeGlobalViewKeepsPushPacketRootAndIndependentF
     using metallic::render::builtin_pass::kScenePathTraceUseGlobalView;
     static_assert(sizeof(ScenePathTracePush) == 256);
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
-    static_assert(sizeof(metallic::render::SceneResourceParameters) == 392);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 408);
     static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);
     static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
     static_assert(kScenePathTraceUseGlobalView == (1u << 27u));
@@ -1918,7 +1926,7 @@ TEST(ShaderRequests, DeferredRuntimePrecisionKeepsPushPacketRootAndAllHighFlags)
     using metallic::render::builtin_pass::kScenePathTraceUseFP16Precision;
     static_assert(sizeof(ScenePathTracePush) == 256);
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
-    static_assert(sizeof(metallic::render::SceneResourceParameters) == 392);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 408);
     static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);
     static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
     static_assert(kScenePathTraceUseGlobalView == (1u << 27u));

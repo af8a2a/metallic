@@ -136,6 +136,8 @@ struct StreamMeshletLODReference {
 // is active. This keeps missing intermediate pages from exposing descendants
 // underneath a coarser fallback. Requests advance the same reachable frontier.
 // Capacity is the number of nonempty active groups, matching stream GPU output.
+// Optional per-group needsFineOverride supplies an independent consumer metric;
+// terminal groups remain active and raster-view BVH pruning is bypassed.
 StreamMeshletLODReference selectStreamMeshletLodReference(
     std::span<const MeshletLODGroupRecord> groups,
     std::span<const MeshletLODGroupRange> ranges,
@@ -144,7 +146,8 @@ StreamMeshletLODReference selectStreamMeshletLodReference(
     const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view,
     uint32_t manualLevel = UINT32_MAX, uint32_t capacity = UINT32_MAX,
     std::span<const uint8_t> availableGroups = {},
-    std::span<const MeshletLODBVHNode> bvh = {});
+    std::span<const MeshletLODBVHNode> bvh = {},
+    std::span<const uint8_t> needsFineOverride = {});
 
 std::vector<MeshletLODSelection> selectMeshletLodReference(
     std::span<const MeshletLODGroupRecord> groups,

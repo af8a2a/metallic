@@ -117,7 +117,7 @@ public:
     std::string_view category() const override { return "Lighting"; }
     std::string_view description() const override
     {
-        return "Raster visibility, clustered OpenPBR lighting, SH diffuse and filtered HDRI reflections, screen-space main-light shadows with NRD SIGMA, auto exposure and DLSS-SR. Optional DLSS-NR.";
+        return "Raster visibility, clustered OpenPBR lighting, SH diffuse and filtered HDRI reflections, ray-traced main-light shadows with NRD SIGMA, auto exposure and DLSS-SR. Optional DLSS-NR.";
     }
     std::string scenePath() const override { return "Asset/meet_mat.glb"; }
     std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting.metallic_graph.json"; }
@@ -128,6 +128,154 @@ public:
     }
     std::string previewOutput() const override { return "FinalBlit.color"; }
     bool requiresStreamline() const override { return true; }
+};
+
+class RealtimeLightingVSMSample final : public RealtimeLightingSample {
+public:
+    std::string_view id() const override { return "realtime-lighting-vsm"; }
+    std::string_view name() const override { return "Real-time / VSM Candidate"; }
+    std::string_view description() const override
+    {
+        return "Realtime template with cached PCF virtual shadows and no shadow acceleration structures. "
+            "Candidate pending representative scene, memory and performance acceptance; the RT template remains available.";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/realtime_lighting_vsm.metallic_graph.json"; }
+};
+
+class GPUDrivenVSMSample final : public RealtimeLightingSample {
+public:
+    std::string_view id() const override { return "gpu-driven-vsm"; }
+    std::string_view name() const override { return "GPUDriven / MiniZorah VSM Candidate"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "MiniZorah VSM acceptance candidate using the existing adaptive primary visibility settings. "
+            "The shadow caster uses the complete resident terminal cut; no CLAS or shadow TLAS is built.";
+    }
+    std::string scenePath() const override { return "Asset/MiniZorah/zorah_main_public.v2.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_realtime_vsm.metallic_graph.json"; }
+};
+
+class GPUDrivenZorahFullVSMSample final : public RealtimeLightingSample {
+public:
+    std::string_view id() const override { return "gpu-driven-zorah-full-vsm"; }
+    std::string_view name() const override { return "GPUDriven / ZorahFull VSM Candidate"; }
+    std::string_view category() const override { return "GPUDriven"; }
+    std::string_view description() const override
+    {
+        return "Full Zorah VSM acceptance candidate with bounded geometry and texture streaming. "
+            "Requires the completed Z5 cook; the shadow caster uses the complete resident terminal cut.";
+    }
+    std::string scenePath() const override { return "Asset/ZorahFull/zorah_textured_public.v1.gltf"; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_zorah_full_vsm.metallic_graph.json"; }
+};
+
+class GPUDrivenTessellationVSMSample final : public RealtimeLightingSample {
+public:
+    std::string_view id() const override { return "gpu-driven-tessellation-vsm"; }
+    std::string_view name() const override { return "GPU Driven / Displacement VSM Candidate"; }
+    std::string_view category() const override { return "GPU Driven"; }
+    std::string_view description() const override
+    {
+        return "Adaptive displaced primary geometry with independent factor-8, two-level shadow tessellation "
+            "and 16K virtual resolution. This quality candidate has 16 times the factor-8 caster microtriangles.";
+    }
+    std::string scenePath() const override { return "Asset/Tessellation/DisplacedPlane.gltf"; }
+    std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_tessellation_vsm.metallic_graph.json"; }
+};
+
+class VirtualShadowMapSponzaSample final : public RenderSample {
+public:
+    std::string_view id() const override { return kVSMSponzaSampleId; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Sponza"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Sponza courtyard with GPU-driven raster visibility and cached virtual shadows, "
+            "framed to compare shadow detail from foreground to distance.";
+    }
+    std::string scenePath() const override { return "Asset/Sponza/SponzaVSM.metallic_scene.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_sponza.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Shadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
+class VirtualShadowMapSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "virtual-shadow-map-p1"; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Sun Clipmaps"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Experimental single-Sun hard shadows with receiver-driven virtual pages, camera-centered clipmaps "
+            "and complete coarse fallback. Pages rebuild each frame; no ray tracing or temporal shadow cache.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_p1.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Shadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
+class VirtualShadowMapCacheSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "virtual-shadow-map-p2"; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Sun and Moon Cache"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Experimental Sun and Moon hard shadows with independent page caches and budgets. "
+            "The fixed LOD 0 receiver matches full resident casters; no ray tracing or default pipeline changes.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/OpenPbrDefault/OpenPbrVSMCache.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_p2.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "SunShadows", "MoonShadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
+class VirtualShadowMapLightsSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "virtual-shadow-map-p3"; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Local Lights"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "Experimental cached Sun, Moon, spot and six-face point shadows with a shared page budget. "
+            "Uses fixed LOD 0 receivers and full scene casters; existing default pipelines are unchanged.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/OpenPbrDefault/OpenPbrVSMLights.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_p3.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Shadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
+class VirtualShadowMapQualitySample final : public RenderSample {
+public:
+    std::string_view id() const override { return "virtual-shadow-map-p4"; }
+    std::string_view name() const override { return "Virtual Shadow Maps / Soft Shadows"; }
+    std::string_view category() const override { return "Lighting"; }
+    std::string_view description() const override
+    {
+        return "SMRT soft shadows for Sun, Moon, spot and six-face point lights. "
+            "Hard and PCF controls provide comparison baselines; local emitter radii use meters.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/OpenPbrDefault/OpenPbrVSMQuality.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/virtual_shadow_map_p4.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"VBuffer", "Shadows", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
 class GPUDrivenTessellationSample final : public RealtimeLightingSample {
@@ -843,6 +991,15 @@ std::vector<LocalLookDevSample> loadLocalLookDevSamples(const char* path, const 
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
+    static const RealtimeLightingVSMSample realtimeLightingVSM;
+    static const GPUDrivenVSMSample gpuDrivenVSM;
+    static const GPUDrivenZorahFullVSMSample gpuDrivenZorahFullVSM;
+    static const GPUDrivenTessellationVSMSample gpuDrivenTessellationVSM;
+    static const VirtualShadowMapSponzaSample virtualShadowMapSponza;
+    static const VirtualShadowMapSample virtualShadowMap;
+    static const VirtualShadowMapCacheSample virtualShadowMapCache;
+    static const VirtualShadowMapLightsSample virtualShadowMapLights;
+    static const VirtualShadowMapQualitySample virtualShadowMapQuality;
     static const NativeStrandSample nativeStrands;
     static const GPUDrivenTessellationSample gpuDrivenTessellation;
     static const LightGridDebugSample lightGridDebug;
@@ -860,6 +1017,15 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
     std::vector<const RenderSample*> samples{
         &realtimeLighting,
+        &realtimeLightingVSM,
+        &gpuDrivenVSM,
+        &gpuDrivenZorahFullVSM,
+        &gpuDrivenTessellationVSM,
+        &virtualShadowMapSponza,
+        &virtualShadowMap,
+        &virtualShadowMapCache,
+        &virtualShadowMapLights,
+        &virtualShadowMapQuality,
         &nativeStrands,
         &gpuDrivenTessellation,
         &lightGridDebug,

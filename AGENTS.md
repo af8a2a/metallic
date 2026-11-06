@@ -10,6 +10,8 @@ Metallic is a C++23 / Slang Vulkan renderer with an SDL3 / ImGui editor. Use the
 - Shader modules and interop conventions: `Shaders/README.md`. Programs live in `Shaders/Features/`, shared modules in `Shaders/Modules/`, and GPU test probes in `tests/rhi/shaders/`.
 - Render graph assets: `Pipelines/`; sample content: `Asset/`; test targets and registration: `tests/CMakeLists.txt`.
 - Codex Only: For complex tasks that can be independently split, please use sub agents for parallel analysis, implementation, or validation as needed, without requiring Ultra thinking intensity. The main agent is responsible for integrating the results and final verification; Simple tasks do not require splitting.
+- Codex Only:When computer use is required, delegate the UI interaction phase to a sub-agent using `gpt-6.1-terra`. The main agent is responsible for providing the necessary context, coordinating the work, integrating the results, and performing final verification.
+
 
 
 ## Build and Test

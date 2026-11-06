@@ -132,6 +132,9 @@ public:
     const std::vector<TextureView*>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot() const;
+    // Changes on every immutable physical image/mip publication, including
+    // reloads. Direct texture consumers do not depend on sampling-floor fades.
+    uint64_t materialTexturePublicationRevision() const;
     // Source-image indexed KTX tail selection; non-KTX entries are zero.
     const std::vector<uint32_t>& materialTextureFirstMips() const;
     // Same-process identity for a publication-frozen diagnostic, including exact sampling metadata.

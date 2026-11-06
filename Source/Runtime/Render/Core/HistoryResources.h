@@ -17,6 +17,7 @@ enum class HistorySlot : uint8_t {
 enum class HistoryInvalidationReason : uint8_t {
     Discontinuity,
     CameraMotion,
+    LightingChange,
 };
 
 struct HistoryTextureRef {
@@ -55,6 +56,9 @@ public:
     void invalidateAll(HistoryInvalidationReason reason = HistoryInvalidationReason::Discontinuity);
     uint64_t invalidationRevision() const;
     uint64_t reprojectionInvalidationRevision() const;
+    // Reprojected visibility can validate light changes independently. Such
+    // consumers still own their camera, light and geometry content signatures.
+    uint64_t geometryReprojectionInvalidationRevision() const;
 
     Result<> ensureTexture(
         std::string_view name,

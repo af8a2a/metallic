@@ -100,6 +100,32 @@ architecture 和 metric-set，再按 `DeepProfile.md` 运行。默认保持 cloc
 但扩展名为 `.xls`。两个同名列含义不明时保留列号与原值，不任选或相加。
 通用 software triangles 不等于 WorkControl；此模式也不完成 Source/IL 导出。
 
+## MCP 诊断与实验衔接
+
+已有 `.ngfx-capture` 先用官方 Native 的 `graphics_debugging_replay.open_capture`
+离线检查元数据、事件和 Shader；已有 `.ngfx-gputrace` 可直接用 `gpu_trace.open_trace`
+分析，无需先导出 `.xls`。仅需已有文件的查询时，不重新采集或启动目标。
+
+- Native 使用渐进发现：先读 family/group/tool details 的实际 Schema，再调用对应
+  工具。本机 2026.4 的初始五个入口不表示其余工具缺失；不要将 Native 与 Workflow
+  的工具名、ID 和会话语义混用。可用工具与字段以当前安装包实际返回为准。
+- 纹理、Buffer、几何和 GPU 计时等需要在线回放；先完成 `go_online` 及其返回的
+  确认流程，取得实际输出后再判断可回放性。内嵌的 capture 截图不证明在线输出正确。
+- 由 MCP 负责外部注入 Metallic 时，不再传入应用的 `--nsight-capture` 自注入开关。
+  只有需要源码关联/Shader 性能归因时才按当前编译入口启用
+  `METALLIC_SHADER_CAPTURE_SYMBOLS=1`；保留优化，不用 unoptimized shader-debug 计时验收。
+- `get_shader_profile(query="function_scope_tree")` 可读 Top-down/Bottom-up 函数及内联
+  作用域的 Self/Total PC samples 和 stall；`line_performance` 支持 `source` / `intermediate`
+  逐行归因。编译内联和调试关联会影响归因，样本不等于调用次数或独立函数耗时。
+- `get_shader_analysis(query="instruction_mix")` 是 Shader 级类别统计，不能直接按函数
+  筛选，也不能把其 count 当动态执行次数。本机 Public Schema 未开放 SASS 查询；
+  `sass_counters.available=false` 时把相关数值保留为缺失，类别名称为空时保留原始 ID，
+  不猜测 ALU/TEX 等标签。不要从工具名或 UI 能力推断 MCP 也能导出完整 SASS。
+- 将诊断发现映射到当前生产 Shader、entrypoint、绑定 SPIR-V、dispatch 和具体范围，
+  再按已声明候选进入 `WorkloadCase` / `ExperimentRunner` 的正确性与 A/B 验收。
+  MCP 的回放 Shader 编译/替换不能绕过候选、事务和恢复流程；一次回放或 profiler
+  诊断不能证明普通运行收益，也不能代替这些 runner 的接受判定。
+
 ## 中断、失败与恢复
 
 保留失败包。先检查 `Process.json`、stdout/stderr、SDK 状态与 artifact freshness；

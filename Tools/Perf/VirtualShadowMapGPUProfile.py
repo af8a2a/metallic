@@ -1,0 +1,682 @@
+"""Report VSM GPU stages from verified acceptance-v2 packages.
+
+Usage: python -B Tools/Perf/VirtualShadowMapGPUProfile.py SOURCE OUTPUT
+       [--diagnostic DIAGNOSTIC_PACKAGE]
+
+The five stages are mark, allocator, build, raster and projection; reset is
+reported separately. Per-face stage spans are summed once. Independent process
+medians, rather than pooled frames, are the summary unit.
+"""
+import argparse
+import collections
+import csv
+import math
+from pathlib import Path
+import statistics
+import sys
+
+import VirtualShadowMapAcceptance as acceptance
+
+
+STAGES = ("reset", "mark", "allocator", "build", "raster", "projection")
+SECTION_NAMES = {f"VSM {stage}": stage for stage in STAGES}
+ONE_PASS_PROJECTION_SECTION = "VSM one-pass projection"
+SECTION_NAMES[ONE_PASS_PROJECTION_SECTION] = "projection"
+BUILD_SUBSTAGES = {
+    "VSM build page hierarchy": "hierarchyMs",
+    "VSM build direct": "directMs",
+    "VSM build compact": "compactMs",
+    "VSM build compact sync": "compactSyncMs",
+    "VSM build indirect": "indirectMs",
+    "VSM build finalize sync": "finalizeSyncMs",
+    "VSM build finalize": "finalizeMs",
+}
+BUILD_SUBSTAGE_PATTERNS = {
+    "direct": ("directMs", "finalizeSyncMs", "finalizeMs"),
+    "compact": ("compactMs", "compactSyncMs", "indirectMs", "finalizeSyncMs", "finalizeMs"),
+}
+ROOT_PARENT = 0xffffffff
+WORK_COUNTERS = (
+    "markReceiverDispatches", "markSamplePositions", "markLevelTests", "markPageRequests",
+    "buildActiveTriangleSlots", "buildDecodedTriangles", "buildLevelTests", "buildPageTests",
+    "rasterCoarseGroups", "rasterFineGroups", "rasterDecodedTriangles", "rasterOutputPrimitives",
+    "rasterClearedPages", "projectionReceivers", "projectionRays", "projectionAtlasLoads",
+)
+ADAPTIVE_WORK_COUNTERS = (
+    "projectionAdaptiveLitReceivers", "projectionAdaptiveUmbraReceivers", "projectionAdaptiveSavedRays",
+)
+MAPPING_WORK_COUNTERS = (
+    "projectionPageTableLoads", "projectionMappingLoads", "projectionMappedAncestors", "projectionMappingSlowPaths",
+)
+V2_WORK_COUNTERS = WORK_COUNTERS + ADAPTIVE_WORK_COUNTERS
+V3_WORK_COUNTERS = V2_WORK_COUNTERS + MAPPING_WORK_COUNTERS
+V4_WORK_COUNTERS = V3_WORK_COUNTERS + ("markReceiverMaskAtomicOrs",)
+V5_WORK_COUNTERS = V4_WORK_COUNTERS + ("rasterHZBClusterLevelTests", "rasterHZBRejectedLevels", "rasterHZBSkippedTriangles")
+ALL_WORK_COUNTERS = V5_WORK_COUNTERS + ("rasterStaticMergedPages", "rasterStaticMergedTriangles",
+                                        "allocatorLRUEvictions", "allocatorLRUEvictionAgeFrames")
+WORK_COUNTERS_BY_VERSION = {1: WORK_COUNTERS, 2: V2_WORK_COUNTERS, 3: V3_WORK_COUNTERS,
+                            4: V4_WORK_COUNTERS, 5: V5_WORK_COUNTERS, 6: ALL_WORK_COUNTERS}
+COUNTER_DEFINITIONS = {
+    "markReceiverDispatches": "Threads with a depth receiver in the light/face domain; point-light face dispatches may repeat receivers.",
+    "markSamplePositions": "Calls to markPosition, including samples subsequently rejected by the point-face check.",
+    "markLevelTests": "Actual level-projection tests after face matching.",
+    "markPageRequests": "Executed page-request InterlockedOr operations; not unique requested pages.",
+    "markReceiverMaskAtomicOrs": "Executed global 32-bit InterlockedOr writes to receiver-mask words during Mark.",
+    "buildActiveTriangleSlots": "Slots reaching triangle decode after range, enabled, dirty-count and optional cluster coarse-cull exits; not slot capacity.",
+    "buildDecodedTriangles": "Successful triangle decodes in build.",
+    "buildLevelTests": "Actual triangle level iterations after optional cluster level-mask rejection; cluster prechecks are excluded.",
+    "buildPageTests": "Candidate pages in exact triangle projected bounds before dirty/admission checks; cluster precheck page probes are excluded.",
+    "rasterCoarseGroups": "Mesh shader groups entering the coarse raster path.",
+    "rasterFineGroups": "Mesh shader groups entering the fine raster path.",
+    "rasterDecodedTriangles": "Raster mesh groups with a successful triangle decode.",
+    "rasterStaticMergedPages": "Admitted fine or coarse pages completing an incremental update to existing static depth after caster demotion.",
+    "allocatorLRUEvictions": "Previously owned fine slots evicted to admit a missing page, excluding allocations from free slots.",
+    "allocatorLRUEvictionAgeFrames": "Sum of eviction ages in committed cache frames since last request (uint32 frame differences). Divide by allocatorLRUEvictions for mean age when nonzero.",
+    "rasterStaticMergedTriangles": "Successful demoted-caster triangle decodes on incremental static page updates, counted per triangle/page submission.",
+    "rasterHZBClusterLevelTests": "Dynamic cluster/level queries against current static depth with participating pages, including coarse.",
+    "rasterHZBRejectedLevels": "Tested cluster levels for which every participating page proved occlusion.",
+    "rasterHZBSkippedTriangles": "Dynamic triangle raster work items skipped before decode. A triangle submitted to multiple pages counts once per item.",
+    "rasterOutputPrimitives": "Triangles emitted after clipping; not fragments or covered samples.",
+    "rasterClearedPages": "Pages cleared by the hot-cache clear shader; cold attachment clears are excluded.",
+    "projectionReceivers": "Receivers passing canonical-face, enabled and domain checks.",
+    "projectionRays": "Actual SMRT ray-loop iterations; hard/PCF paths do not execute these rays.",
+    "projectionAtlasLoads": "Executed hard/filtered atlas.Load calls, including coarse/cross-face loads; failed lookups excluded.",
+    "projectionAdaptiveLitReceivers": "Receiver-light evaluations exiting after the first ray because all participating lanes missed, with rays remaining.",
+    "projectionAdaptiveUmbraReceivers": "Receiver-light evaluations exiting after at least two rays because no participating lane has missed, with rays remaining.",
+    "projectionAdaptiveSavedRays": "Ray iterations omitted by adaptive early exits relative to the configured ray count.",
+    "projectionPageTableLoads": "Raw page-table reads in receiver and filter fine-level searches or coarse fallback; propagation reads are excluded.",
+    "projectionMappingLoads": "Projection reads of the derived mapping table; propagation writes are excluded.",
+    "projectionMappedAncestors": "Direct mapped fine-ancestor resolutions with target level greater than the source level; own-page and coarse fallback resolutions are excluded.",
+    "projectionMappingSlowPaths": "Derived mapping unavailable or its certificate rejected, requiring the original page-table search.",
+}
+PAGE_STATISTICS = {0: "requestedFinePages", 1: "admittedFinePages", 2: "unadmittedFinePages",
+                   16: "admittedDirtyFinePages", 17: "admittedCleanFinePages", 18: "invalidatedMappedPages",
+                   19: "remappedPages", 20: "newlyAllocatedFinePages", 24: "validMappedFinePages"}
+BUILD_COUNTER_DEFINITIONS = {
+    "clusterGroups": "64-slot build groups passing enabled/range/nonzero-dirty exits; not triangle count.",
+    "clusterBoundsValidGroups": "Groups that successfully load conservative cluster bounds.",
+    "clusterSurvivingGroups": "Valid groups with a nonzero level mask after cluster screening.",
+    "clusterLevelTests": "Actual fine-level checks across groups with valid bounds.",
+    "clusterPageTests": "Actual page-entry reads in cluster screening, including the first successful hit.",
+    "clusterPageHits": "Level checks ending at the first dirty/admitted/physically mapped page.",
+    "clusterNearPlaneKeeps": "Level checks conservatively kept at the perspective near plane, before reading pages.",
+    "clusterOutsideLevels": "Level checks rejected outside the guarded projected bounds, before reading pages.",
+    "clusterEmptyLevels": "Level checks whose scanned pages contain no eligible page.",
+}
+BUILD_HISTOGRAM_RANGES = ((0, 0), (1, 1), *[(1 << power, (1 << (power + 1)) - 1) for power in range(1, 14)], (16384, 16384))
+BUILD_HISTOGRAM_COUNTERS = ("clusterPageScan0", "clusterPageScan1",
+    *[f"clusterPageScan{low}To{high}" for low, high in BUILD_HISTOGRAM_RANGES[2:-1]], "clusterPageScan16384Plus")
+BUILD_COUNTERS = (*BUILD_COUNTER_DEFINITIONS, *BUILD_HISTOGRAM_COUNTERS)
+BITSET_HISTOGRAM_COUNTERS = tuple(name.replace("clusterPageScan", "clusterBitsetScan") for name in BUILD_HISTOGRAM_COUNTERS)
+BITSET_COUNTERS = ("clusterBitsetLevelTests", "clusterBitsetWordTests", *BITSET_HISTOGRAM_COUNTERS)
+V2_BUILD_COUNTERS = (*BUILD_COUNTERS, *BITSET_COUNTERS)
+TRIANGLE_BITSET_COUNTER_DEFINITIONS = {
+    "triangleBitsetWordTests": "Actual uint dirty-page word loads during exact triangle page enumeration.",
+    "triangleBitsetPageHits": "Set bits enumerated for exact triangle/page work emission; not page metadata loads.",
+}
+TRIANGLE_BITSET_COUNTERS = tuple(TRIANGLE_BITSET_COUNTER_DEFINITIONS)
+V3_BUILD_COUNTERS = (*V2_BUILD_COUNTERS, *TRIANGLE_BITSET_COUNTERS)
+HIERARCHY_COUNTER_DEFINITIONS = {
+    "clusterHierarchyLevelTests": "Cluster level checks using hierarchy mode, including early near/outside exits.",
+    "clusterHierarchyNodeTests": "Actual hierarchy node or mip-zero bitset reads; at most four per level check.",
+    "clusterHierarchyBoundsRejects": "Cluster level checks rejected by empty or disjoint tight dirty-page bounds.",
+    "receiverMaskPageTests": "Fine triangle/page mask intersections; static-dirty and coarse work bypass this test.",
+    "receiverMaskPageRejects": "Fine triangle/page work rejected by an empty receiver-mask intersection.",
+}
+HIERARCHY_COUNTERS = tuple(HIERARCHY_COUNTER_DEFINITIONS)
+V4_BUILD_COUNTERS = (*V3_BUILD_COUNTERS, *HIERARCHY_COUNTERS)
+HZB_COUNTER_DEFINITIONS = {
+    "hzbPageTests": "Cluster occlusion tests against static physical-page depth pyramids.",
+    "hzbLevelRejects": "Cluster levels skipped after static HZB occlusion.",
+}
+V5_BUILD_COUNTERS = (*V4_BUILD_COUNTERS, *HZB_COUNTER_DEFINITIONS)
+INSTANCE_COUNTER_DEFINITIONS = {
+    "instanceTests": "Instance ranges screened against dirty fine-page bounds.",
+    "instanceRejects": "Tested instance ranges with no eligible clipmap level.",
+    "instanceClusterTickets": "Cluster workgroups submitted to indirect Build by the instance path.",
+}
+V6_BUILD_COUNTERS = (*V5_BUILD_COUNTERS, *INSTANCE_COUNTER_DEFINITIONS)
+LAYER_BUILD_COUNTER_DEFINITIONS = {
+    "layeredStaticDecodedTriangles": "Successful static-caster decodes in layered fine Build; excludes coarse raster.",
+    "layeredDynamicDecodedTriangles": "Successful dynamic-caster decodes in layered fine Build; excludes coarse raster.",
+    "staticRequiredFineTriangles": "Decoded static triangles with an accepted fine-page bound requiring static redraw or their incremental static merge.",
+    "staticCompositeOnlyTriangles": "Decoded static triangles with composite-only accepted fine pages and no required static fine page; potential layer-culling opportunity, not measured time saved.",
+    "staticNoFinePageTriangles": "Decoded static triangles with no accepted fine-page work for their layer or composite; separate from composite-only layer overhead.",
+}
+ALL_BUILD_COUNTERS = (*V6_BUILD_COUNTERS, *LAYER_BUILD_COUNTER_DEFINITIONS)
+
+
+def duration(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"Missing or invalid GPU timestamp: {label}")
+    return value
+
+
+def describe(values):
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("No post-warmup samples; missing data cannot be reported as zero")
+
+    def percentile(fraction):
+        position = (len(ordered) - 1) * fraction
+        low = int(position)
+        high = min(low + 1, len(ordered) - 1)
+        return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+    return {"count": len(ordered), "mean": statistics.mean(ordered), "median": statistics.median(ordered),
+            "p95": percentile(.95), "p99": percentile(.99), "minimum": ordered[0], "maximum": ordered[-1]}
+
+
+def profile_frame(frame, allow_disabled=False):
+    nodes = [node for node in frame["nodes"] if node["name"] == "Shadows"]
+    if len(nodes) != 1 or nodes[0]["type"] != "VirtualShadowMapLightsPass":
+        raise ValueError("Expected exactly one production Shadows VSM Lights pass")
+    node = nodes[0]
+    sections = node["sections"]
+    spans = {stage: [] for stage in STAGES}
+    one_pass_count = 0
+    selected = set()
+    for index, section in enumerate(sections):
+        parent = section["parent"]
+        if parent != ROOT_PARENT and (isinstance(parent, bool) or not isinstance(parent, int) or parent < 0 or parent >= index):
+            raise ValueError("Invalid GPU section parent ordering")
+        stage = SECTION_NAMES.get(section["name"])
+        if stage is None:
+            continue
+        if section.get("cpuOnly", False):
+            raise ValueError(f"CPU-only section cannot supply GPU timing: {section['name']}")
+        ancestor = parent
+        while ancestor != ROOT_PARENT:
+            if ancestor in selected:
+                raise ValueError("Nested VSM stage spans would double count GPU work")
+            ancestor = sections[ancestor]["parent"]
+        selected.add(index)
+        spans[stage].append(duration(section["gpuMs"], section["name"]))
+        one_pass_count += section["name"] == ONE_PASS_PROJECTION_SECTION
+    counts = {stage: len(values) for stage, values in spans.items()}
+    face_counts = {value for stage, value in counts.items() if stage != "projection"}
+    if len(face_counts) != 1:
+        raise ValueError(f"Missing or inconsistent per-face VSM stage spans: {counts}")
+    face_count = counts["reset"]
+    if face_count == 0 and allow_disabled and counts["projection"] == 0:
+        projection_mode = "disabled"
+    elif one_pass_count:
+        if face_count <= 1 or one_pass_count != 1 or counts["projection"] != 1:
+            raise ValueError(f"Invalid one-pass projection spans: {counts}, onePass={one_pass_count}")
+        projection_mode = "one-pass"
+    elif face_count > 0 and counts["projection"] == face_count:
+        projection_mode = "per-face"
+    else:
+        raise ValueError(f"Missing or inconsistent per-face VSM stage spans: {counts}")
+    totals = {stage: sum(values) for stage, values in spans.items()}
+    shadow_ms = duration(node["gpuMs"], "Shadows")
+    measured = sum(totals.values())
+    # Timestamp quantization permits a tiny discrepancy, not overlapping scopes.
+    if measured > shadow_ms + max(1e-5, shadow_ms * 1e-5):
+        raise ValueError("Summed VSM stages exceed the owning Shadows GPU span")
+    return {"frame": frame["frame"], "warmup": frame["warmup"], "graphMs": frame["graphMs"],
+            "shadowsMs": shadow_ms, "stageSumMs": measured, "otherShadowsMs": max(0., shadow_ms - measured),
+            "faceCount": face_count, "projectionCount": counts["projection"], "projectionMode": projection_mode,
+            **{f"{stage}Ms": value for stage, value in totals.items()}}
+
+
+def load_package(source):
+    source = Path(source).resolve()
+    _, captures = acceptance.verify_package(source)
+    # Older report verification did not reject an empty collection or compare
+    # completedRuns. Stage statistics need actual completed process samples.
+    integrity = acceptance.read(source / "Integrity.json")
+    processes = acceptance.read(source / "Processes.json")
+    if not captures or len(captures) != integrity["completedRuns"] or any(p.get("timedOut") for p in processes):
+        raise ValueError("Incomplete evidence cannot be reported as accepted measurements")
+    return source, [(index, path, data) for index, (path, data) in enumerate(captures, 1)]
+
+
+def build_substage_frame(frame, required=False):
+    """Read optional children without adding them to inclusive build/stage totals."""
+    aggregate = profile_frame(frame)
+    sections = next(node for node in frame["nodes"] if node["name"] == "Shadows")["sections"]
+    builds = {index: [] for index, section in enumerate(sections) if section["name"] == "VSM build"}
+    for section in sections:
+        name = section["name"]
+        if not name.startswith("VSM build "):
+            continue
+        if name not in BUILD_SUBSTAGES:
+            raise ValueError(f"Unknown build substage: {name}")
+        if section["parent"] not in builds:
+            raise ValueError("Build substages require an immediate VSM build parent")
+        if section.get("cpuOnly", False):
+            raise ValueError("CPU-only build substage cannot supply GPU timing")
+        builds[section["parent"]].append((BUILD_SUBSTAGES[name], duration(section.get("gpuMs"), name)))
+    result = {"frame": frame["frame"], "warmup": frame["warmup"], "buildSubstagesAvailable": False}
+    if not any(builds.values()):
+        if required:
+            raise ValueError("Required build substages are missing")
+        return result
+    faces, totals = [], {}
+    for index, children in builds.items():
+        names = tuple(name for name, _ in children)
+        remaining = names[1:] if names[:1] == ("hierarchyMs",) else names
+        branch = next((name for name, expected in BUILD_SUBSTAGE_PATTERNS.items() if remaining == expected), None)
+        if names == ("hierarchyMs",):
+            branch = "hierarchyOnly"
+        if branch is None:
+            raise ValueError("Missing, duplicated, reordered or inconsistent per-face build substages")
+        parent_ms = duration(sections[index]["gpuMs"], "VSM build")
+        measured = sum(value for _, value in children)
+        if measured > parent_ms + max(1e-5, parent_ms * 1e-5):
+            raise ValueError("Build substage sum exceeds its owning build span")
+        values = dict(children, buildUnattributedMs=max(0., parent_ms - measured))
+        faces.append({"buildSection": index, "branch": branch, "buildMs": parent_ms, **values})
+        for name, value in values.items():
+            totals[name] = totals.get(name, 0.) + value
+    return {**result, "buildSubstagesAvailable": True, "faceCount": aggregate["faceCount"],
+            "buildMs": aggregate["buildMs"], "faces": faces, **totals}
+
+
+def integer_counter(value, label):
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 0xffffffffffffffff:
+        raise ValueError(f"Invalid unsigned GPU counter: {label}")
+    return value
+
+
+def work_frame(frame, mode):
+    shadow = frame.get("shadow", {})
+    work = shadow.get("gpuWork")
+    result = {"frame": frame["frame"], "warmup": frame["warmup"], "gpuWorkAvailable": False}
+    if work is not None:
+        if (not isinstance(work, dict) or type(work.get("version")) is not int or
+                work["version"] not in WORK_COUNTERS_BY_VERSION or not isinstance(work.get("enabled"), bool)):
+            raise ValueError("Unknown or malformed GPU work schema")
+        counter_names = WORK_COUNTERS_BY_VERSION[work["version"]]
+        if work["enabled"]:
+            if mode != "diagnostic":
+                raise ValueError("GPU work instrumentation cannot enter ordinary timing evidence")
+            faces, totals = work["faces"], work["totals"]
+            if not faces or set(totals) != set(counter_names):
+                raise ValueError("Missing GPU work faces or counters")
+            face_ids = set()
+            summed = dict.fromkeys(counter_names, 0)
+            for face in faces:
+                identity = (integer_counter(face["lightIndex"], "lightIndex"), integer_counter(face["face"], "face"))
+                if identity in face_ids or identity[1] >= 6 or set(face["counters"]) != set(counter_names):
+                    raise ValueError("Duplicated or malformed GPU work face")
+                face_ids.add(identity)
+                for name in counter_names:
+                    summed[name] += integer_counter(face["counters"][name], name)
+            for name in counter_names:
+                if summed[name] != integer_counter(totals[name], name):
+                    raise ValueError(f"GPU work face totals disagree: {name}")
+            result.update(gpuWorkAvailable=True, **totals)
+        elif "faces" in work or "totals" in work:
+            raise ValueError("Disabled GPU work must not publish stale counters")
+    if mode == "diagnostic" and "totals" in shadow:
+        totals = shadow["totals"]
+        if len(totals) != 32:
+            raise ValueError("Invalid legacy page-statistics ABI")
+        result.update({name: integer_counter(totals[index], name) for index, name in PAGE_STATISTICS.items()})
+    return result
+
+
+def build_frame(frame, mode):
+    """Parse the independent sidecar; old packages need not contain this field."""
+    shadow = frame.get("shadow", {})
+    result = {"frame": frame["frame"], "warmup": frame["warmup"],
+              "gpuBuildDiagnosticsAvailable": False, "gpuBuildDiagnosticsState": "missing"}
+    if "gpuBuildDiagnostics" not in shadow:
+        return result
+    diagnostic = shadow["gpuBuildDiagnostics"]
+    if (not isinstance(diagnostic, dict) or type(diagnostic.get("version")) is not int or
+            diagnostic["version"] not in (1, 2, 3, 4, 5, 6, 7) or not isinstance(diagnostic.get("enabled"), bool)):
+        raise ValueError("Unknown or malformed GPU build diagnostic schema")
+    if not diagnostic["enabled"]:
+        if "faces" in diagnostic or "totals" in diagnostic:
+            raise ValueError("Disabled GPU build diagnostics must not publish stale counters")
+        result["gpuBuildDiagnosticsState"] = "disabled"
+        return result
+    if mode != "diagnostic":
+        raise ValueError("GPU build diagnostics cannot enter ordinary timing evidence")
+    names = {1: BUILD_COUNTERS, 2: V2_BUILD_COUNTERS, 3: V3_BUILD_COUNTERS, 4: V4_BUILD_COUNTERS,
+             5: V5_BUILD_COUNTERS, 6: V6_BUILD_COUNTERS, 7: ALL_BUILD_COUNTERS}[diagnostic["version"]]
+    faces, totals, statistics_rows = diagnostic.get("faces"), diagnostic.get("totals"), shadow.get("statistics")
+    if (not isinstance(faces, list) or not faces or not isinstance(totals, dict) or set(totals) != set(names) or
+            not isinstance(statistics_rows, list) or len(statistics_rows) != len(faces)):
+        raise ValueError("Missing GPU build diagnostic faces, counters or legacy face statistics")
+    identities, summed = set(), dict.fromkeys(names, 0)
+    static_updates = {
+        (f["lightIndex"], f["face"]): integer_counter(f["counters"]["staticDirtyFinePages"], "staticDirtyFinePages") +
+                                    integer_counter(f["counters"]["staticDirtyCoarsePages"], "staticDirtyCoarsePages")
+        for f in shadow.get("cacheDiagnostics", {}).get("faces", [])
+    }
+    for face in faces:
+        if not isinstance(face, dict):
+            raise ValueError("Malformed GPU build diagnostic face")
+        light = integer_counter(face.get("lightIndex"), "lightIndex")
+        side = integer_counter(face.get("face"), "face")
+        index = light * 6 + side
+        counters = face.get("counters")
+        if side >= 6 or index >= len(statistics_rows) or index in identities or not isinstance(counters, dict) or set(counters) != set(names):
+            raise ValueError("Duplicated or malformed GPU build diagnostic face")
+        identities.add(index)
+        stats = statistics_rows[index]
+        if not isinstance(stats, list) or len(stats) != 32 or any(type(value) is not int or not 0 <= value <= 0xffffffff for value in stats):
+            raise ValueError("Invalid legacy face statistics for GPU build diagnostics")
+        for name in names:
+            value = integer_counter(counters[name], name)
+            summed[name] += value
+            if summed[name] > 0xffffffffffffffff:
+                raise ValueError("GPU build diagnostic face totals overflow uint64")
+        groups, valid, surviving = (counters[name] for name in ("clusterGroups", "clusterBoundsValidGroups", "clusterSurvivingGroups"))
+        if not surviving <= valid <= groups:
+            raise ValueError("GPU build group counts violate surviving <= valid <= groups")
+        if counters.get("instanceRejects", 0) > counters.get("instanceTests", 0):
+            raise ValueError("Instance rejection count exceeds tests")
+        if diagnostic["version"] >= 7 and counters["layeredStaticDecodedTriangles"] != sum(
+                counters[name] for name in ("staticRequiredFineTriangles", "staticCompositeOnlyTriangles", "staticNoFinePageTriangles")):
+            raise ValueError("Static Build decode categories do not partition static decoded triangles")
+        levels = counters["clusterLevelTests"]
+        if levels != valid * stats[11]:
+            raise ValueError("GPU build level tests disagree with valid groups times clipmap count")
+        outcomes = sum(counters[name] for name in ("clusterPageHits", "clusterNearPlaneKeeps", "clusterOutsideLevels", "clusterEmptyLevels"))
+        histogram = [counters[name] for name in BUILD_HISTOGRAM_COUNTERS]
+        bitset_levels = counters.get("clusterBitsetLevelTests", 0)
+        hierarchy_levels = counters.get("clusterHierarchyLevelTests", 0)
+        bitset_histogram = [counters.get(name, 0) for name in BITSET_HISTOGRAM_COUNTERS]
+        if outcomes != levels or sum(histogram) + bitset_levels + hierarchy_levels != levels or sum(bitset_histogram) != bitset_levels:
+            raise ValueError("GPU build level outcomes/histogram do not partition level tests")
+        if not hierarchy_levels and histogram[0] + bitset_histogram[0] != counters["clusterNearPlaneKeeps"] + counters["clusterOutsideLevels"]:
+            raise ValueError("GPU build zero-scan histogram disagrees with near/outside exits")
+        if counters.get("clusterHierarchyBoundsRejects", 0) > hierarchy_levels or counters.get("clusterHierarchyNodeTests", 0) > 4 * hierarchy_levels:
+            raise ValueError("Hierarchy query counters exceed four nodes per tested level")
+        if counters.get("receiverMaskPageRejects", 0) > counters.get("receiverMaskPageTests", 0):
+            raise ValueError("Receiver mask rejects exceed tests")
+        if counters.get("hzbLevelRejects", 0) > min(counters.get("hzbPageTests", 0), counters["clusterPageHits"]):
+            raise ValueError("Static HZB level rejects exceed tested pages or dirty-level hits")
+        minimum = sum(count * bounds[0] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
+        maximum = sum(count * bounds[1] for count, bounds in zip(histogram, BUILD_HISTOGRAM_RANGES))
+        if not minimum <= counters["clusterPageTests"] <= maximum:
+            raise ValueError("GPU build page tests fall outside histogram scan-length bounds (maximum 16384 per level)")
+        word_minimum = sum(count * bounds[0] for count, bounds in zip(bitset_histogram, BUILD_HISTOGRAM_RANGES))
+        word_maximum = sum(count * min(bounds[1], 512) for count, bounds in zip(bitset_histogram, BUILD_HISTOGRAM_RANGES))
+        if not word_minimum <= counters.get("clusterBitsetWordTests", 0) <= word_maximum:
+            raise ValueError("Bitset word tests fall outside histogram bounds (maximum 512 per level)")
+        # Fine composite work can be zero on a demotion frame. Build still
+        # visits transition clusters, including when only the coarse page is updated.
+        dirty = stats[16] or static_updates.get((light, side), 0)
+        if (stats[10] == 0 or stats[14] != 0 or not dirty) and any(counters.values()):
+            raise ValueError("Inactive or zero-dirty face published nonzero GPU build diagnostics")
+    for name in names:
+        if summed[name] != integer_counter(totals[name], name):
+            raise ValueError(f"GPU build diagnostic face totals disagree: {name}")
+    result.update(gpuBuildDiagnosticsAvailable=True, gpuBuildDiagnosticsState="enabled", **totals)
+    return result
+
+
+def summarize_package(source):
+    source, captures = load_package(source)
+    rows, work_rows, work_faces, build_rows, build_faces, processes = [], [], [], [], [], []
+    for index, path, data in captures:
+        if data["mode"] == "timing" and data.get("gpuWorkDiagnostics", False):
+            raise ValueError("GPU work instrumentation cannot enter ordinary timing evidence")
+        for case in data["cases"]:
+            if case.get("gpuWorkDiagnostics", False) and data["mode"] != "diagnostic":
+                raise ValueError("GPU work instrumentation cannot enter ordinary timing evidence")
+            frames = [profile_frame(frame) for frame in case["frames"]]
+            work = [work_frame(frame, data["mode"]) for frame in case["frames"]]
+            build = [build_frame(frame, data["mode"]) for frame in case["frames"]]
+            present = ["gpuBuildDiagnostics" in frame.get("shadow", {}) for frame in case["frames"]]
+            if any(present) and not all(present):
+                raise ValueError("GPU build diagnostics are missing declared frame readback")
+            declared_build = case.get("gpuBuildDiagnostics", data.get("gpuBuildDiagnostics"))
+            if declared_build is not None:
+                if not isinstance(declared_build, bool):
+                    raise ValueError("Malformed GPU build diagnostic declaration")
+                if declared_build and (data["mode"] != "diagnostic" or not all(row["gpuBuildDiagnosticsAvailable"] for row in build)):
+                    raise ValueError("Declared GPU build diagnostics are missing frame readback or marked as ordinary timing")
+                if not declared_build and any(row["gpuBuildDiagnosticsAvailable"] for row in build):
+                    raise ValueError("Enabled GPU build diagnostics disagree with the disabled declaration")
+            if case.get("gpuWorkDiagnostics", False) and not all(row["gpuWorkAvailable"] for row in work):
+                raise ValueError("Declared GPU work instrumentation is missing frame readback")
+            for raw, row in zip(case["frames"], work):
+                if row["gpuWorkAvailable"]:
+                    work_faces.extend({"case": case["id"], "process": index, "frame": raw["frame"],
+                                       "warmup": raw["warmup"], "lightIndex": face["lightIndex"],
+                                       "face": face["face"], **face["counters"]}
+                                      for face in raw["shadow"]["gpuWork"]["faces"])
+            for raw, row in zip(case["frames"], build):
+                if row["gpuBuildDiagnosticsAvailable"]:
+                    build_faces.extend({"case": case["id"], "process": index, "frame": raw["frame"],
+                        "warmup": raw["warmup"], "lightIndex": face["lightIndex"], "face": face["face"], **face["counters"]}
+                        for face in raw["shadow"]["gpuBuildDiagnostics"]["faces"])
+            valid = [frame for frame in frames if not frame["warmup"]]
+            columns = ["graphMs", "shadowsMs", "stageSumMs", "otherShadowsMs", *[f"{stage}Ms" for stage in STAGES]]
+            metrics = {column: describe([frame[column] for frame in valid]) for column in columns}
+            counter_names = list(ALL_WORK_COUNTERS) + list(PAGE_STATISTICS.values())
+            counters = {name: describe([row[name] for row in work if not row["warmup"] and name in row])
+                        for name in counter_names if any(not row["warmup"] and name in row for row in work)}
+            build_counters = {name: describe([row[name] for row in build if not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] and name in row])
+                              for name in ALL_BUILD_COUNTERS if any(not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] and name in row for row in build)}
+            processes.append({"case": case["id"], "process": index, "mode": data["mode"],
+                              "source": str(path), "metrics": metrics, "counters": counters,
+                              "buildDiagnosticCounters": build_counters,
+                              "buildDiagnosticFrames": sum(not row["warmup"] and row["gpuBuildDiagnosticsAvailable"] for row in build),
+                              "workCounterFrames": sum(not row["warmup"] and row["gpuWorkAvailable"] for row in work)})
+            rows.extend({"case": case["id"], "process": index, "mode": data["mode"], **frame} for frame in frames)
+            work_rows.extend({"case": case["id"], "process": index, "mode": data["mode"], **frame} for frame in work)
+            build_rows.extend({"case": case["id"], "process": index, "mode": data["mode"], **frame} for frame in build)
+    grouped = collections.defaultdict(list)
+    for process in processes:
+        grouped[(process["case"], process["mode"])].append(process)
+    cases = []
+    for (case, mode), entries in grouped.items():
+        counter_names = sorted(set().union(*(entry["counters"] for entry in entries)))
+        build_names = [name for name in ALL_BUILD_COUNTERS if any(name in entry["buildDiagnosticCounters"] for entry in entries)]
+        cases.append({"case": case, "mode": mode, "independentProcesses": len(entries),
+                      "processMedianSummary": {column: describe([entry["metrics"][column]["median"] for entry in entries])
+                                               for column in entries[0]["metrics"]},
+                      "counterProcessMedianSummary": {name: describe([entry["counters"][name]["median"] for entry in entries
+                                                                       if name in entry["counters"]]) for name in counter_names},
+                      "buildDiagnosticProcessMedianSummary": {name: describe([entry["buildDiagnosticCounters"][name]["median"]
+                          for entry in entries if name in entry["buildDiagnosticCounters"]]) for name in build_names}})
+    return {"source": str(source), "manifestSHA256": acceptance.digest(source / "Manifest.json"),
+            "cases": cases, "processes": processes, "frames": rows, "workFrames": work_rows, "workFaces": work_faces,
+            "buildDiagnosticFrames": build_rows, "buildDiagnosticFaces": build_faces}
+
+
+def write_csv(path, rows):
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def plot_package(package, output, prefix):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    images = []
+    for ordinal, case in enumerate(package["cases"], 1):
+        frames = [row for row in package["frames"] if row["case"] == case["case"]]
+        processes = [row for row in package["processes"] if row["case"] == case["case"]]
+        figure, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
+        positions = list(range(len(processes)))
+        for offset, stage in enumerate(STAGES):
+            values = [process["metrics"][f"{stage}Ms"]["median"] for process in processes]
+            axes[0].bar([position + offset * .12 for position in positions], values, width=.12, label=stage)
+        axes[0].set_xticks([position + .3 for position in positions], [f"process {p['process']}" for p in processes])
+        axes[0].set(ylabel="Median per-frame GPU span (ms)",
+                    title=f"{case['case']}: {case['mode']} — {len(processes)} independent processes")
+        axes[0].legend(ncol=3)
+        axes[0].set_ylim(top=axes[0].get_ylim()[1] * 1.22)
+        for process in processes:
+            subset = [row for row in frames if row["process"] == process["process"]]
+            axes[1].plot([row["frame"] for row in subset], [row["shadowsMs"] for row in subset],
+                         linewidth=.8, label=f"Shadows, process {process['process']}")
+            warmup = [row["frame"] for row in subset if row["warmup"]]
+            if warmup:
+                axes[1].axvspan(min(warmup), max(warmup) + .5, color="grey", alpha=.08)
+        axes[1].set(xlabel="Frame (shading marks warmup)", ylabel="Shadows GPU span (ms)")
+        axes[1].legend()
+        for axis in axes:
+            axis.grid(axis="y", alpha=.25)
+        filename = f"{prefix}-{ordinal}.png"
+        figure.savefig(output / filename, dpi=150)
+        plt.close(figure)
+        images.append(filename)
+    return images, matplotlib.__version__
+
+
+def plot_work(case, output, filename):
+    import matplotlib.pyplot as plt
+
+    values = case["counterProcessMedianSummary"]
+    names = [name for name in ALL_WORK_COUNTERS if name in values]
+    if not names:
+        return None
+    figure, axis = plt.subplots(figsize=(12, 7), constrained_layout=True)
+    axis.barh(names, [values[name]["median"] for name in names], color="#386cb0")
+    axis.invert_yaxis()
+    axis.set_xscale("symlog", linthresh=1)
+    axis.set(xlabel="Count per frame (median of diagnostic process medians; symlog scale)",
+             title=f"{case['case']}: instrumented GPU work, separate from ordinary timings")
+    axis.grid(axis="x", alpha=.25)
+    figure.savefig(output / filename, dpi=150)
+    plt.close(figure)
+    return filename
+
+
+def plot_build_histogram(case, output, filename, bitset=False):
+    import matplotlib.pyplot as plt
+
+    values = case["buildDiagnosticProcessMedianSummary"]
+    if case["mode"] != "diagnostic" or not values:
+        return None
+    names = BITSET_HISTOGRAM_COUNTERS if bitset else BUILD_HISTOGRAM_COUNTERS
+    if bitset and not any(values.get(name, {}).get("median", 0) for name in names):
+        return None
+    labels = [str(low) if low == high else f"{low}–{high}" for low, high in BUILD_HISTOGRAM_RANGES]
+    labels[-1] = "16384+"
+    figure, axis = plt.subplots(figsize=(12, 6), constrained_layout=True)
+    axis.bar(range(len(labels)), [values[name]["median"] for name in names], color="#65952d")
+    axis.set_xticks(range(len(labels)), labels, rotation=45, ha="right")
+    axis.set_yscale("symlog", linthresh=1)
+    axis.set(xlabel=("Actual bitset uint reads per cluster-level check" if bitset else "Actual page-entry reads per cluster-level check (includes the first hit)"),
+             ylabel="Checks / frame (median of diagnostic process medians; symlog)",
+             title=f"{case['case']}: cluster {'bitset' if bitset else 'page'} scan length (diagnostic)")
+    axis.grid(axis="y", alpha=.25)
+    figure.savefig(output / filename, dpi=150)
+    plt.close(figure)
+    return filename
+
+
+def report(args):
+    package = summarize_package(args.source)
+    diagnostic = summarize_package(args.diagnostic) if args.diagnostic else None
+    if diagnostic and any(case["mode"] != "diagnostic" for case in diagnostic["cases"]):
+        raise ValueError("--diagnostic must reference a diagnostic acceptance package")
+    output = args.output.resolve()
+    for source in (package, diagnostic):
+        if source and (Path(source["source"]) == output or Path(source["source"]) in output.parents):
+            raise ValueError("Report output must be outside the sealed source package")
+    output.mkdir(parents=True, exist_ok=False)
+    packages = [("Primary", package)] + ([("Diagnostic", diagnostic)] if diagnostic else [])
+    text = ["# VSM GPU stage profile", "",
+            "Five stages: mark, allocator, build, raster and projection. Reset is reported separately.",
+            "Each frame sums matching spans across faces once; inclusive parent sections are excluded.",
+            "Summary cells are medians of independent process medians. Frames are not independent experiments.",
+            "Other Shadows includes work outside these spans (publication, temporal stabilization and intervening commands); it is not CPU time.",
+            "Diagnostic timestamps include validation/readback/instrumentation overhead and are not ordinary performance measurements.",
+            "Counter values come only from diagnostic readback. Missing counters remain unavailable, never zero.",
+            "Page statistics describe allocation/cache state; capacities and page counts are not executed triangle/ray counts.",
+            "Separate packages are shown separately; this report does not establish that their workloads or source/binary identities match.",
+            "No RT/VSM speedup or end-to-end FPS is inferred. Input assets may only be identified by path in the source package.", ""]
+    for label, item in packages:
+        images, version = plot_package(item, output, label)
+        acceptance.save(output / f"{label}.json", item)
+        write_csv(output / f"{label}Frames.csv", item["frames"])
+        write_csv(output / f"{label}Work.csv", item["workFrames"])
+        if item["workFaces"]:
+            write_csv(output / f"{label}WorkFaces.csv", item["workFaces"])
+        text.extend([f"## {label} package", "", f"Source: `{item['source']}`", "",
+                     f"Manifest SHA256: `{item['manifestSHA256']}`", ""])
+        for ordinal, (case, filename) in enumerate(zip(item["cases"], images), 1):
+            text.extend([f"### {case['case']} ({case['mode']})", "",
+                         "| Scope | Median of process medians (ms) | Process median range (ms) |",
+                         "| --- | ---: | ---: |"])
+            for column, values in case["processMedianSummary"].items():
+                text.append(f"| {column} | {values['median']:.4f} | {values['minimum']:.4f}–{values['maximum']:.4f} |")
+            text.extend(["", f"Independent processes: {case['independentProcesses']}. Reset is excluded from the five-stage definition.",
+                         "", f"![VSM GPU stages]({filename})", ""])
+            counters = case["counterProcessMedianSummary"]
+            if counters:
+                text.extend(["| Diagnostic counter | Median of process medians | Processes with evidence |",
+                             "| --- | ---: | ---: |"])
+                for name, values in counters.items():
+                    text.append(f"| {name} | {values['median']:.1f} | {values['count']} |")
+                text.extend(["", "Per-process sample counts and ranges are preserved in JSON; individual frames are in the Work CSV.", ""])
+            if not any(name in counters for name in WORK_COUNTERS):
+                text.extend(["GPU execution counters: **unavailable** (instrumentation disabled or no diagnostic readback).", ""])
+            work_image = plot_work(case, output, f"{label}-{ordinal}-work.png")
+            if work_image:
+                text.extend([f"![Diagnostic GPU work]({work_image})", ""])
+            build_counters = case["buildDiagnosticProcessMedianSummary"]
+            if build_counters:
+                text.extend(["| Independent build diagnostic | Median of process medians | Processes with evidence |",
+                             "| --- | ---: | ---: |"])
+                for name in (*BUILD_COUNTER_DEFINITIONS, *TRIANGLE_BITSET_COUNTERS, *HIERARCHY_COUNTERS, *HZB_COUNTER_DEFINITIONS, *INSTANCE_COUNTER_DEFINITIONS):
+                    if name not in build_counters:
+                        continue
+                    values = build_counters[name]
+                    text.append(f"| {name} | {values['median']:.1f} | {values['count']} |")
+                text.extend(["", "All counters present in the recorded schema are retained independently in BuildDiagnosticFrames.csv/JSON and the per-face CSV.",
+                    "The histogram counts actual page reads, including early hits; zero represents near-plane keeps or outside rejection.", ""])
+            else:
+                text.extend(["Build diagnostics: **unavailable** (disabled or absent in older evidence); missing values are not zero.", ""])
+            build_image = plot_build_histogram(case, output, f"{label}-{ordinal}-build-histogram.png")
+            if build_image:
+                text.extend([f"![Diagnostic cluster page scan histogram]({build_image})", ""])
+            bitset_image = plot_build_histogram(case, output, f"{label}-{ordinal}-bitset-histogram.png", bitset=True)
+            if bitset_image:
+                text.extend([f"![Diagnostic bitset word scan histogram]({bitset_image})", ""])
+    build_frames = [{"package": label, **row} for label, item in packages for row in item["buildDiagnosticFrames"] if row["mode"] == "diagnostic"]
+    build_faces = [{"package": label, **row} for label, item in packages for row in item["buildDiagnosticFaces"]]
+    acceptance.save(output / "BuildDiagnosticFrames.json", build_frames)
+    write_csv(output / "BuildDiagnosticFrames.csv", build_frames)
+    if build_faces:
+        write_csv(output / "BuildDiagnosticFaces.csv", build_faces)
+    text.extend(["## GPU counter definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
+    text.extend(f"| {name} | {definition} |" for name, definition in COUNTER_DEFINITIONS.items())
+    text.extend(["", "## Independent build diagnostic definitions", "", "| Counter | Measured quantity |", "| --- | --- |"])
+    text.extend(f"| {name} | {definition} |" for name, definition in (*BUILD_COUNTER_DEFINITIONS.items(), *TRIANGLE_BITSET_COUNTER_DEFINITIONS.items(), *HIERARCHY_COUNTER_DEFINITIONS.items(), *HZB_COUNTER_DEFINITIONS.items(), *INSTANCE_COUNTER_DEFINITIONS.items()))
+    text.extend(["", "`clusterPageScan0/1/2To3/.../8192To16383/16384Plus` record one observation per level check, using actual reads before return.",
+                 "The current maximum is 16384 reads per level. Counts are checked per face against legacy clipmap/enabled/dirty statistics, outcome partitions, histogram totals and weighted scan bounds.",
+                 "Build diagnostic data is diagnostic-only and never enters ordinary timing or the four-arm performance policy. Cluster culling disabled can legitimately publish all-zero available diagnostics."])
+    text.extend(["", "Legacy requested/admitted/dirty/clean/remapped/allocated/valid page statistics are separate state counters.",
+                 "`validMappedFinePages` includes cached pages not requested this frame; `invalidatedMappedPages` may include coarse and unrequested pages.",
+                 "No triangle capacity, dispatch upper bound, or allocation size is substituted for executed work.", ""])
+    acceptance.save(output / "ReportIdentity.json", {"python": sys.version, "matplotlib": version,
+                    "toolSHA256": acceptance.digest(Path(__file__)),
+                    "sources": {label: item["manifestSHA256"] for label, item in packages}})
+    diagnostic_args = ["--diagnostic", str(args.diagnostic.resolve())] if args.diagnostic else []
+    (output / "Reproduce.py").write_text(
+        "\"\"\"Recreate this report: python -B Reproduce.py NEW_OUTPUT_DIRECTORY\"\"\"\n"
+        "import subprocess\nimport sys\n\n"
+        f"command = [sys.executable, '-B', {str(Path(__file__).resolve())!r}, {str(args.source.resolve())!r}, sys.argv[1]]\n"
+        f"command.extend({diagnostic_args!r})\nsubprocess.run(command, check=True)\n", encoding="utf-8")
+    (output / "report.md").write_text("\n".join(text) + "\n", encoding="utf-8")
+    print(output / "report.md")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", type=Path, help="Verified acceptance-v2 package")
+    parser.add_argument("output", type=Path, help="New output directory")
+    parser.add_argument("--diagnostic", type=Path, help="Separate diagnostic package; never pooled with timing")
+    args = parser.parse_args()
+    report(args)
+
+
+if __name__ == "__main__":
+    main()

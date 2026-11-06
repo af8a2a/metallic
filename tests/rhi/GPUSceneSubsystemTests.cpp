@@ -1933,6 +1933,7 @@ public:
         std::vector<scene::RenderLight> imported(2);
         imported[0].type = "point";
         imported[0].intensity = 4.0;
+        imported[0].sourceRadius = 0.125;
         imported[0].intensityUnit = scene::LightUnit::Candela;
         imported[0].object = static_cast<scene::SceneEntity>(42);
         imported[1].type = "point";
@@ -1944,6 +1945,7 @@ public:
             makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 2.0),
         };
         virtualLights[0].properties.intensity = 25.0;
+        virtualLights[0].properties.sourceRadius = 0.25;
         virtualLights[0].properties.intensityUnit = scene::LightUnit::Candela;
         virtualLights[1].properties.intensity = 0.0;
         virtualLights[2].enabled = false;
@@ -1965,6 +1967,7 @@ public:
             records[2].source.sourceRenderLightIndex != scene::kInvalidSceneIndex ||
             records[2].source.sourceVirtualLightIndex != 0 ||
             records[0].source.gpu.colorIntensity[3] != 4.0f ||
+            records[0].source.gpu.spot[2] != 0.125f || records[2].source.gpu.spot[2] != 0.25f ||
             records[2].source.gpu.colorIntensity[3] != 25.0f ||
             records[1].source.enabled || records[3].source.enabled ||
             records[4].source.enabled) {

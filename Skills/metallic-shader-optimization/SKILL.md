@@ -22,13 +22,15 @@ description: "Run Metallic's evidence-driven shader optimization workflow on Win
 | WorkControl early/late 硬件指标、无 UI 采集 | `Tools/Perf/NvPerf.py`、`NvPerf.md` |
 | 实际寄存器/共享内存等编译资源 | `Tools/Perf/DeepProfile.py run --mode resources`、`DeepProfile.md` |
 | 需要 Nsight 阶段级计数器 | `DeepProfile.py run --mode triage`、`DeepProfile.md`；先核实本机 ngfx 能力 |
+| 已有 capture/trace、Shader 函数/源码/IL 热点、绑定、纹理与在线回放 | 官方 Nsight Native MCP；见 [MCP 诊断与实验衔接](references/workflows.md#mcp-诊断与实验衔接) |
 | 中断后 shader 恢复 | 有事务 journal 时用 `ExperimentRunner.py recover` |
 
 读取 [运行与恢复](references/workflows.md) 中所选模式的段落。只执行请求需要的模式，
 不要因为存在 M0–M4 就全部重跑。一般优化请求但尚无候选时，先检查已有证据，
 提出可检验的单一假设，再选择必要诊断或实验。不要自动复测历史上已拒绝的示例候选。
-本 skill 不要求 `cua-child`，上述 runner 不使用分析器 UI。源码/IL/SASS 导出需求
-另查仓库 `Documentation/` 中 Nsight source 工作流；NvPerf 不是该导出的替代品。
+本 skill 不要求 `cua-child`，上述 runner 不使用分析器 UI。MCP 诊断优先使用可用的
+`cli-anything-nsight-graphics` skill；不可用时依据安装包 `docs/ngfx-mcp/` 和实际工具
+Schema。NvPerf 与 `triage` 不提供源码/IL 查询，不能把它们当作该能力的替代品。
 
 ## 实验的不变量
 

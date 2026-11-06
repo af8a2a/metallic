@@ -937,7 +937,8 @@ bool GPUScene::syncLights(std::span<const scene::RenderLight> renderLights,
         for (size_t index = 0; index < sources.size(); ++index) {
             const SceneLightRecord& previous = lights_[index].source;
             const SceneLightRecord& current = sources[index];
-            topologyChanged |= previous.sourceRenderLightIndex != current.sourceRenderLightIndex ||
+            topologyChanged |= previous.stableId != current.stableId ||
+                previous.sourceRenderLightIndex != current.sourceRenderLightIndex ||
                 previous.sourceVirtualLightIndex != current.sourceVirtualLightIndex ||
                 previous.sourceObject != current.sourceObject;
             changed |= topologyChanged || previous.enabled != current.enabled ||

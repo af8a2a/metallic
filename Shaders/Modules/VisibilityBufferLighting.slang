@@ -17,6 +17,8 @@ import OpenPBR;
 import OpenPBRClosure;
 import OpenPBRMaterialParameters;
 import SurfaceLighting;
+import VirtualShadowMapCommon;
+#include "../../Source/Runtime/Render/Shadow/VirtualShadowMapLights.h"
 using Metallic.SceneOpenPBR;
 using Metallic.SceneSurface;
 using Metallic.ScenePath;
@@ -76,6 +78,8 @@ float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
 
 #define gRealtimeShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
 #define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
+#define gRealtimeMoonShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneMoonShadowVisibilityOffset))
+#define gRealtimeMoonShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMoonShadowParametersOffset))
 #define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kScenePreviousEnvironmentIrradianceSHOffset))
 
 public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
@@ -134,11 +138,35 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
     }
     public float3 visibility(SurfaceLightSample light)
     {
+        if (openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)) { return float3(1); }
+        let tableHandle = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
+        if (tableHandle.index != 0xffffffffu) {
+            let table = resolveUniform(tableHandle);
+            VirtualShadowMapLightsHeader header = table.Load<VirtualShadowMapLightsHeader>(0);
+            // A connected multi-light publication owns this domain, including
+            // explicit disabled/budget-rejected entries; legacy pins are ignored.
+            uint index = (light.source & kCelestialSourceBit) != 0u
+                ? light.source & ~kCelestialSourceBit : light.source + kCelestialLightCount;
+            if (index >= header.count) { return float3(1); }
+            VirtualShadowMapLightEntry entry = table.Load<VirtualShadowMapLightEntry>(64u + index * 64u);
+            if (entry.status != 1u) { return float3(1); }
+            uint face = entry.kind == 2u && (header.reserved[0] & 1u) == 0u ? Metallic.Shadow::virtualShadowMapPointFace(
+                position - float3(entry.positionRange[0], entry.positionRange[1], entry.positionRange[2])) : 0u;
+            let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
+                ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
+            return float3(shadows.Load(int4(uint2(pixel), entry.baseLayer + face, 0)));
+        }
         ShadowParameters shadow = gRealtimeShadowParameters[0];
-        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
-            shadow.control.x != 0u && light.source == shadow.control.z) {
+        if (shadow.control.x != 0u && light.source == shadow.control.z) {
             float encoded = gRealtimeShadow.Load(int3(uint2(pixel), 0));
             return float3(encoded * encoded);
+        }
+        if (light.source == celestialSourceIdentity(1u)) {
+            ShadowParameters moon = gRealtimeMoonShadowParameters[0];
+            if (moon.control.x != 0u && moon.control.z == celestialSourceIdentity(1u)) {
+                float encoded = gRealtimeMoonShadow.Load(int3(uint2(pixel), 0));
+                return float3(encoded * encoded);
+            }
         }
         return float3(1);
     }

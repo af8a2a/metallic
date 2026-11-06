@@ -5,6 +5,7 @@ using Metallic;
 #include "../TestResourceParameters.h"
 import GPUDriven;
 using Metallic.GPUDriven;
+import GPUDrivenStreamAsset;
 import Material;
 using Metallic.Material;
 
@@ -12,10 +13,10 @@ using Metallic.Material;
 [numthreads(32, 1, 1)]
 void gpuDrivenConeProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= 16u) { return; }
+    if (id.x >= 32u) { return; }
     const float scales[8] = {1.0, 0.008, 0.001, 0.0001, 0.1, 10.0, 1000.0, 100000.0};
     float scale = scales[id.x % 8u];
-    bool rotated = id.x >= 8u;
+    bool rotated = (id.x % 16u) >= 8u;
     float3 expected = rotated ? float3(-0.70710678118, 0.70710678118, 0.0) : float3(0, 1, 0);
     SceneTransform transform = {};
     transform.world0 = float4((rotated ? float3(0.70710678118, 0.70710678118, 0.0) : float3(1, 0, 0)) * scale, 0);
@@ -29,7 +30,18 @@ void gpuDrivenConeProbeMain(uint3 id : SV_DispatchThreadID)
     bool front = meshletVisible(meshlet, 0, transform, params);
     params.eye = float4(-expected, 0);
     bool back = meshletVisible(meshlet, 0, transform, params);
+    float3 axis = transformNormal(transform, float3(0, 1, 0));
+    if (id.x >= 16u) {
+        // Exercise the transform used by production streamed cluster culling.
+        GPUDrivenStreamAssetActiveGroup group = {};
+        group.world0 = transform.world0;
+        group.world1 = transform.world1;
+        group.world2 = transform.world2;
+        axis = transformStreamNormal(group, float3(0, 1, 0), float3(0, 0, 1));
+        front = dot(-expected, axis) < meshlet.coneApexCutoff.w;
+        back = dot(expected, axis) < meshlet.coneApexCutoff.w;
+    }
     resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<GPUDrivenConeProbeResources>().output)[id.x * 2u] =
-        float4(transformNormal(transform, float3(0, 1, 0)), front ? 1.0 : 0.0);
+        float4(axis, front ? 1.0 : 0.0);
     resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<GPUDrivenConeProbeResources>().output)[id.x * 2u + 1u] = float4(expected, back ? 1.0 : 0.0);
 }

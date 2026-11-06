@@ -1,0 +1,48 @@
+{
+    "version": 4,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": true,
+            "path": "../ABeautifulGame/environment.hdr",
+            "intensity": 0.25,
+            "rotationDegrees": 0.0,
+            "visible": true,
+            "sun": {
+                "enabled": true,
+                "direction": [
+                    -0.3,
+                    -0.94,
+                    -0.16
+                ],
+                "color": [
+                    1.0,
+                    0.93,
+                    0.82
+                ],
+                "illuminance": 6.0,
+                "angularRadius": 0.00465
+            },
+            "moon": {
+                "enabled": false
+            }
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {
+                "enabled": false,
+                "compensation": 0.0
+            }
+        }
+    },
+    "sources": [
+        {
+            "id": "sponza",
+            "path": "glTF/Sponza.gltf"
+        },
+        {
+            "id": "view",
+            "path": "SponzaVSMCamera.gltf"
+        }
+    ]
+}

@@ -37,6 +37,7 @@ struct LightProperties {
     double innerConeAngle = 0.0;
     double outerConeAngle = 0.7853981633974483;
     LightUnit intensityUnit = LightUnit::SI;
+    double sourceRadius = 0.0; // VSM shadow emitter radius in meters; analytical intensity is unchanged.
 };
 
 bool validCameraProperties(const CameraProperties& properties);

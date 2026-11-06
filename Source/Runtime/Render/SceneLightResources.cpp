@@ -226,6 +226,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         light.colorIntensity[3] = static_cast<float>(intensity);
         light.spot[0] = static_cast<float>(std::cos(properties.innerConeAngle));
         light.spot[1] = static_cast<float>(std::cos(properties.outerConeAngle));
+        light.spot[2] = static_cast<float>(properties.sourceRadius);
         record.gpu = light;
         record.enabled = true;
     };
@@ -235,6 +236,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         SceneLightRecord& record = records.emplace_back();
         record.sourceRenderLightIndex = static_cast<int32_t>(index);
         record.sourceObject = light.object;
+        record.stableId = (uint64_t(2) << 62) | uint64_t(entt::to_integral(light.object));
         if (light.virtualLightSceneIdentity != 0) {
             importedSources.emplace(light.object, &light);
         } else if (light.visible) {
@@ -243,6 +245,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
                 .type = light.type, .color = light.color, .intensity = light.intensity,
                 .range = light.range, .innerConeAngle = light.innerConeAngle,
                 .outerConeAngle = light.outerConeAngle, .intensityUnit = light.intensityUnit,
+                .sourceRadius = light.sourceRadius,
             }, float3(m.a03, m.a13, m.a23), light.type == "point"
                 ? float3(0.0f, -1.0f, 0.0f) : float3(-m.a02, -m.a12, -m.a22));
         }
@@ -252,6 +255,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         if (light.properties.type != "point" && light.properties.type != "spot") { continue; }
         SceneLightRecord& record = records.emplace_back();
         record.sourceVirtualLightIndex = static_cast<int32_t>(index);
+        record.stableId = light.stableId;
         if (light.imported) {
             const scene::ImportedLightBinding& binding = *light.imported;
             if (binding.sceneIdentity == 0 || binding.object == scene::kNullSceneEntity) { continue; }

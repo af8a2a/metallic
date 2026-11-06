@@ -104,6 +104,7 @@ public:
     Result<> recordPreGraph(
         const RenderSubsystemFrameContext& context,
         std::string& log) override;
+    void endFrame(const RenderSubsystemFrameContext& context) override;
     [[nodiscard]] Result<std::unique_ptr<RenderSubsystemShaderReload>> prepareShaderReload(
         const RenderSubsystemInitContext& context,
         std::string& log) override;
@@ -169,6 +170,10 @@ public:
     void publishVisibilityStream(GPUSceneViewId view, uint64_t frameIndex,
         uint64_t sceneIdentity, MeshletStreamDeferredGPUResourcesView resources);
     const MeshletStreamDeferredGPUResourcesView* visibilityStream(
+        GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const;
+    void publishShadowGeometry(GPUSceneViewId view, uint64_t frameIndex,
+        uint64_t sceneIdentity, MeshletStreamShadowGeometryView resources);
+    const MeshletStreamShadowGeometryView* shadowGeometry(
         GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const;
     Result<> ensureViewGpuResources(
         GPUSceneViewId view,
@@ -323,6 +328,12 @@ private:
         MeshletStreamDeferredGPUResourcesView resources;
     };
     std::unordered_map<uint64_t, VisibilityStreamSnapshot> visibilityStreams_;
+    struct ShadowGeometrySnapshot {
+        uint64_t frameIndex = 0;
+        uint64_t sceneIdentity = 0;
+        MeshletStreamShadowGeometryView resources;
+    };
+    std::unordered_map<uint64_t, ShadowGeometrySnapshot> shadowGeometry_;
     std::unordered_map<uint64_t, std::vector<std::shared_ptr<ClusterLightGrid>>> lightGrids_;
     uint64_t nextViewGpuResourceAllocationId_ = 1;
     GPUSceneGPUUploadStats gpuUploadStats_;

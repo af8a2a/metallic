@@ -58,6 +58,7 @@ bool lightPropertiesNearlyEqualForDocument(
         std::abs(lhs.color.z - rhs.color.z) <= kColorEpsilon &&
         nearlyEqual(lhs.intensity, rhs.intensity) &&
         nearlyEqual(lhs.range, rhs.range) &&
+        nearlyEqual(lhs.sourceRadius, rhs.sourceRadius) &&
         nearlyEqual(lhs.innerConeAngle, rhs.innerConeAngle) &&
         nearlyEqual(lhs.outerConeAngle, rhs.outerConeAngle);
 }
@@ -181,14 +182,15 @@ bool parseLightProperties(
         return false;
     }
     if (current.type == "directional") {
-        if (value.contains("range") || value.contains("innerConeAngle") ||
+        if (value.contains("range") || value.contains("sourceRadius") || value.contains("innerConeAngle") ||
             value.contains("outerConeAngle")) {
-            reason = "directional lights do not support range or cone angles";
+            reason = "directional lights do not support range, sourceRadius or cone angles";
             return false;
         }
         return true;
     }
-    if (!readOptionalFiniteNumber(value, "range", properties.range, reason)) {
+    if (!readOptionalFiniteNumber(value, "range", properties.range, reason) ||
+        !readOptionalFiniteNumber(value, "sourceRadius", properties.sourceRadius, reason)) {
         return false;
     }
     if (current.type == "spot") {
@@ -347,6 +349,7 @@ nlohmann::json serializeLightProperties(const LightProperties& properties)
     };
     if (properties.type != "directional") {
         value["range"] = properties.range;
+        value["sourceRadius"] = properties.sourceRadius;
     }
     if (properties.type == "spot") {
         value["innerConeAngle"] = properties.innerConeAngle;
@@ -1233,6 +1236,7 @@ bool SceneDocument::setLighting(LightingSettings lighting)
     if (!validLightingSettings(lighting)) {
         return false;
     }
+    normalizePunctualLightIdentities(lighting);
     // Validate and resolve every binding before publishing any edits. The UI
     // edits world poses; only changed poses need an inverse source transform.
     const auto& current = this->lighting();
@@ -1548,6 +1552,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         }
                     }
                 }
+                normalizePunctualLightIdentities(lighting_);
                 if (!validLightingSettings(lighting_)) {
                     documentWarning_ = "Invalid world.lighting physical values or light direction.";
                     return false;

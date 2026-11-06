@@ -404,7 +404,7 @@ VisibilityBufferMaterialPass 直接填写 `VisibilityMaterialResourceParameters`
 
 仍按 workload 与 queue 分批，每波有界派发到独占 context。worker 完成整批、释放 context 后发布结果；coordinator 在其他 worker 仍录制时收取完成批次并提交。为保留实际 queue 顺序（包括别名队列），当前按图顺序推进已封口前缀，不做跨越未完成前批的乱序调度。跨队列 waits 只引用已接收 producer 的 receipt，无 wait-before-signal 预留。
 
-只把同一显式工作量批次的连续同队列命令合成一次 native submit；不会跨队列间隔合并，也保留串行 pass 内 GPU fork/join 的原有提交边界，避免把硬件分支并入 join 的 compute 等待。prologue、serial island、后续 wave 和 epilogue 均可在各自完成后推进提交。单 worker 或 TaskSystem 内嵌调用仍内联录制，并可在安全的 pass 边界流水提交；没有额外提交线程。
+Pipelined 只把同一显式工作量批次的连续同队列命令合成一次 native submit；不会跨队列间隔合并，也保留串行 pass 内 GPU fork/join 的原有提交边界，避免把硬件分支并入 join 的 compute 等待。prologue、serial island、后续 wave 和 epilogue 均可在各自完成后推进提交。单 worker 或 TaskSystem 内嵌调用仍内联录制，并可在安全的 pass 边界流水提交；没有额外提交线程。Joined 的全帧合批见第 18 节。
 
 worker Result 失败、异常或队列拒绝时停止接收新批次，先汇合全部已启动 worker，再逆序取消未接收录制。已接收前缀的资源和 pools 不会重置，取消操作发布覆盖前缀的 frame completion，后续重编译/销毁仍等待它。任务系统提前取消未启动任务时，有界等待会检查 graph run 完成状态，不依赖每个任务一定发出完成通知。
 
@@ -439,3 +439,39 @@ TaskSystem/NRD 两个 CTest 目标和编辑器 smoke 通过。实际 VisibilityB
 测量发现批次完成通知可能发生在 coordinator 无条件定时等待之前。现以 mutex 保护的完成计数和等待谓词保存通知；全部 batch 完成后直接 join，仍保留任务取消路径的有界检查。64-pass、4-worker 流水基准中，等待均值从 4.38–4.69 ms 降到 0.11–0.34 ms；这是小型基准的阶段耗时，不是生产帧率收益。
 
 MiniZorah 实际仍走 Joined，MaterialResolve 的 overlap 契约触发 prior-frame drain；原生提交每帧约 0.07–0.08 ms，单 rendering scope 只有几微秒且最多一个 native draw。独立提交线程、跨调用异步录制和 scope 分片均暂不引入，保留现有回调线程、资源所有权与 frame completion 契约。后续需要证明可隐藏的关键路径工作及稳定的跨调用快照，具体启用前提见测量记录。
+
+## 18. Joined 全帧提交合批
+
+Joined 在所有录制 worker 汇合后统一规划并 seal 提交批次，CPU recording workload、serial island 和 worker wave 不再决定 GPU submit 粒度。连续命令按 `sameQueue()` 识别实际队列；等待依赖兼容时，prologue、Pass 和 epilogue 的多个 command buffer 可合成一次提交。Pipelined 保留原有提前 seal / 提交路径。
+
+合批不跨队列间隔，也不跨过被其他实际队列消费的 producer 信号点。每个实际队列分别跟踪已等待的远端 producer 和 command-local timeline value；新增等待或更高 value 在首次消费者之前切分，避免把 Join 的 compute wait 提前到独立 graphics 分支。前沿仅由已录制依赖决定，不查询 semaphore 当前完成值。frame 级共同依赖、资源保活、事务发布和取消仍由既有 tracker / frame completion 管理。
+
+`submittedBatchCount` 和 Execution viewer 的 batches 反映合并后的实际提交，segments 与逐 Pass GPU 时间戳保持原有粒度。合并批次以最晚 command 的录制完成时间计算 ready delay。批次被拒绝时整批回滚；若前面的独立批次已接收，其 completion 和资源继续保留到 GPU 完成。
+
+新增 `joined_submission_*` 回归覆盖串行/worker 混合链、Pipelined 对照、远端 producer 信号、跨队列与命令局部 wait，以及真实 GPU gate 下的 fork/join 并行和 buffer 数据。`frame_environment_submission_recovery` 同时覆盖录制失败、合并批次全部拒绝和显式等待边界之后的部分提交恢复。
+
+2026-11-06 复用 `build-release` 的 Windows x64 / MSVC Release 配置构建 `Metallic`、`MetallicRHITests`，仅开启原先关闭的测试选项；GPU 为 RTX 5060，驱动 621.01。新增 4 项及环境恢复测试通过；4 项新增测试另以 testbench 的显式 synchronization validation 运行，全部通过，无 skip。扩大回归 40 项，39 通过，`render_graph_bunny_wireframe_preview` 因亮像素为 0 失败；保留的改动前二进制复现相同失败。VisibilityBuffer 准备测试的 96 帧像素对照通过，输出 PNG 与改动前 SHA256 相同；已查看输出。编辑器 smoke 完成 acquire / graph / submit / present。
+
+相同 32×32 ClearColor / CopyColor 链的 Release A/B，关闭验证，已有 shader / PSO / OS 缓存，每种配置预热 30 帧、计时 120 帧、重复 3 次并轮换配置顺序。下表的提交数包含图计时前后段；原生提交时间为图内 `nativeSubmitNs` 的每帧均值，不含 UI / present / 后台上传，不是整场景帧率收益。
+
+| Joined 配置 | 每帧 submit 改动前 → 后 | 每帧原生提交 CPU 时间 ms 改动前 → 后 |
+| --- | ---: | ---: |
+| 16 Pass / 1 worker / workload 4 | 18 → 1 | 0.1924 → 0.0172 |
+| 16 Pass / 4 worker / workload 4 | 6 → 1 | 0.0933 → 0.0269 |
+| 64 Pass / 1 worker / workload 4 | 66 → 1 | 0.7431 → 0.0357 |
+| 64 Pass / 4 worker / workload 4 | 18 → 1 | 0.2373 → 0.0577 |
+
+Pipelined 对照的提交数保持一致，包括 64 Pass 的 66 / 18 / 6 次三种配置；全部配置均通过真实像素读回。没有据此推导完整 realtime / DLSS 场景或长时间 streaming 的性能、时序与峰值内存结论。
+
+```powershell
+cmake --build build-release --target MetallicRHITests Metallic --parallel 8
+.\build-release\tests\MetallicRHITests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*joined_submission*:*frame_environment_submission_recovery' --output-dir build-release/joined-focused
+.\build-release\tests\MetallicRHITests.exe --tb-run --tb-suite sync --tb-filter '*joined_submission*' --tb-validation sync --tb-require-all --output-dir build-release/joined-sync-validation
+.\build-release\tests\MetallicRHITests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*pipelined_*:*parallel_recording_*:*frame_*:*render_graph_multi_queue_submit:*render_graph_execution_viewer:*render_graph_stages_explicit_unsafe_fork_join:*render_graph_texture_aliasing*:*render_graph_buffer_aliasing*:*visibility_preparation_serial_parallel_pixels:*render_graph_streamed_async_acceleration_structure' --output-dir build-release/joined-regression
+$env:METALLIC_TEST_SCHEDULING_BENCHMARK = '1'
+.\build-release\tests\MetallicRHITests.exe --rhi-no-validation --rhi-bindless --rhi-async-compute '--gtest_filter=*scheduling_diagnostics_and_benchmark' --output-dir build-release/joined-after
+Remove-Item Env:METALLIC_TEST_SCHEDULING_BENCHMARK
+.\build-release\Source\Metallic.exe --smoke-test
+```
+
+本地证据保存在被忽略的 `build-release/joined-*` 目录与日志中，包括 `joined-comparison.json`，以及 `tests/MetallicRHITests-before-joined.exe`；未将生成图像或捕获加入源码。

@@ -2322,6 +2322,10 @@ void EditorApplication::initializeNsightGraphicsCapture()
         render::profiling::NsightGraphicsCapture::defaultInstallationRoot();
     config.outputDirectory =
         std::filesystem::path(PROJECT_SOURCE_DIR) / "Captures" / "NsightGraphics";
+    if (const char* outputDirectory = std::getenv("METALLIC_NSIGHT_OUTPUT_DIRECTORY");
+        outputDirectory && outputDirectory[0] != '\0') {
+        config.outputDirectory = outputDirectory;
+    }
     config.showHud = true;
     config.mode = nsightMode_;
     config.enableReplayCollection = nsightMode_ == render::profiling::NsightCaptureMode::GraphicsCapture;
@@ -3315,6 +3319,9 @@ void EditorApplication::drawDockspace()
             if (ImGui::MenuItem(gpuDrivenScenesOnly_ ? "Reset Scene" : "New Render Graph")) {
                 resetDefaultRenderGraph();
             }
+            if (!gpuDrivenScenesOnly_ && ImGui::MenuItem("New Realtime Graph (VSM Candidate)")) {
+                loadBuiltInSample("realtime-lighting-vsm");
+            }
             if (!gpuDrivenScenesOnly_ && ImGui::MenuItem("Load Render Graph")) {
                 loadRenderGraph();
             }
@@ -3542,6 +3549,7 @@ void EditorApplication::drawPanels()
             .capturePath = reinterpret_cast<const char*>(capturePath.c_str()),
             .replayTracePath = reinterpret_cast<const char*>(replayTracePath.c_str()),
             .replayTraceError = replayTraceError.c_str(),
+            .nsightInstallationRoot = nsightGraphicsCapture_.installationRoot(),
         };
         if (profiler_.drawWindow(&profilerOpen_, captureControls)) {
             requestNsightGraphicsCapture();
@@ -4943,6 +4951,9 @@ void EditorApplication::drawLightingControls()
                 const double minRange = 0.0;
                 changed |= ImGui::DragScalar("Range (m; 0 = infinite)", ImGuiDataType_Double,
                     &p.range, 0.1f, &minRange, nullptr, "%.2f");
+                const double maxSourceRadius = 10000.0;
+                changed |= ImGui::DragScalar("Shadow source radius (m)", ImGuiDataType_Double,
+                    &p.sourceRadius, 0.01f, &minRange, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
             }
             if (spot) {
                 float direction[] = {light.direction.x, light.direction.y, light.direction.z};
@@ -6121,6 +6132,11 @@ void EditorApplication::drawSelectedLightComponentInspector()
     changed = intensityChanged || changed;
 
     if (point || spot) {
+        const double maxSourceRadius = 10000.0;
+        const bool radiusChanged = ImGui::DragScalar("Shadow source radius (m)", ImGuiDataType_Double,
+            &edited.sourceRadius, kSmallStep, &kMinimumValue, &maxSourceRadius, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        trackEditItem();
+        changed = radiusChanged || changed;
         const bool rangeChanged = ImGui::DragScalar(
             "Range",
             ImGuiDataType_Double,

@@ -202,35 +202,39 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     }
     if (!prepared->state || prepared->state->desc != desc || prepared->state->sceneIdentity != identity ||
         prepared->state->structuralRevision != structural || prepared->state->debugReadback != debugReadback) {
-        scene::MeshletStreamAsset asset;
         std::string reason;
-        bool compatible = asset.open(desc.streamAssetPath, reason) &&
-            asset.isRuntimeCompatibleForSource(desc.sourcePath, reason);
-        if (compatible) {
-            // Node edits can change instances without changing the source file.
-            compatible = asset.instanceCount() == scene->renderNodes().size();
-            for (const auto& instance : asset.instances()) {
-                if (!compatible) { break; }
-                compatible = instance.renderNodeIndex < scene->renderNodes().size() &&
-                    instance.primitiveIndex < asset.primitives().size();
-                // Offline cooks use canonical source geometry ordinals; stream
-                // metadata creates a primitive per instance. Their indices are
-                // not comparable. Source dependencies and the structural
-                // revision above establish that metadata retains source topology.
-                if (compatible && !scene->hasStreamGeometry()) {
-                    compatible = asset.primitives()[instance.primitiveIndex].renderPrimitiveIndex ==
-                        uint32_t(scene->renderNodes()[instance.renderNodeIndex].renderPrimitiveIndex);
+        const auto compatibleStreamAsset = [&]() {
+            scene::MeshletStreamAsset asset;
+            bool compatible = asset.open(desc.streamAssetPath, reason) &&
+                asset.isRuntimeCompatibleForSource(desc.sourcePath, reason);
+            if (compatible) {
+                // Node edits can change instances without changing the source file.
+                compatible = asset.instanceCount() == scene->renderNodes().size();
+                for (const auto& instance : asset.instances()) {
+                    if (!compatible) { break; }
+                    compatible = instance.renderNodeIndex < scene->renderNodes().size() &&
+                        instance.primitiveIndex < asset.primitives().size();
+                    // Offline cooks use canonical source geometry ordinals; stream
+                    // metadata creates a primitive per instance. Their indices are
+                    // not comparable. Source dependencies and the structural
+                    // revision above establish that metadata retains source topology.
+                    if (compatible && !scene->hasStreamGeometry()) {
+                        compatible = asset.primitives()[instance.primitiveIndex].renderPrimitiveIndex ==
+                            uint32_t(scene->renderNodes()[instance.renderNodeIndex].renderPrimitiveIndex);
+                    }
                 }
             }
+            return compatible;
+        };
+        bool compatible = compatibleStreamAsset();
+        if (!compatible && std::filesystem::exists(desc.streamAssetPath)) {
+            // A graph rebuild can select an already-cooked runtime identity.
+            // Validate that replacement before attempting to rewrite its mapped file.
+            const auto result = selectRuntimeCache();
+            if (!result) { return result; }
+            compatible = compatibleStreamAsset();
         }
-        asset.close();
         if (!compatible) {
-            // A previous session can still map this file. Cook replacements to
-            // a separate identity rather than truncating its live backing file.
-            if (std::filesystem::exists(desc.streamAssetPath)) {
-                const auto result = selectRuntimeCache();
-                if (!result) { return result; }
-            }
             const scene::Scene* geometryScene = scene;
             scene::SceneDocument importedGeometry;
             if (scene->hasStreamGeometry()) {

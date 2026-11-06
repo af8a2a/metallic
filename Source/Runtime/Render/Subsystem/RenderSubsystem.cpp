@@ -215,7 +215,9 @@ Result<> RenderSubsystemHost::beginFrame(
     }
     if (historyResources_ != nullptr) {
         if (hasRenderChange(lastChanges_, RenderChangeBits::InvalidateTemporalHistory)) {
-            historyResources_->invalidateAll();
+            const auto lightingOnly = RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+            historyResources_->invalidateAll(lastChanges_ == lightingOnly ? HistoryInvalidationReason::LightingChange :
+                HistoryInvalidationReason::Discontinuity);
         }
     }
     return {};

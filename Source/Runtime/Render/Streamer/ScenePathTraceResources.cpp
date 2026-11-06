@@ -1070,6 +1070,7 @@ struct ScenePathTraceResources::Impl {
     using TextureGeneration = std::vector<TextureImageOwner>;
     std::shared_ptr<TextureGeneration> textureGeneration;
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot;
+    uint64_t materialTexturePublicationRevision = 0;
     GPUCompletionPoint texturePublication;
     struct TextureFeedbackBuffers {
         std::vector<TextureSamplingMetadata> metadata;
@@ -1145,6 +1146,8 @@ struct ScenePathTraceResources::Impl {
         for (const auto& image : *generation) { snapshot->views.push_back(image.view); }
         textureGeneration = std::move(generation);
         materialTextureSnapshot = std::move(snapshot);
+        static std::atomic<uint64_t> nextPublicationRevision{1};
+        materialTexturePublicationRevision = nextPublicationRevision.fetch_add(1, std::memory_order_relaxed);
     }
 
     void initializeTextureStreaming()
@@ -1173,6 +1176,7 @@ struct ScenePathTraceResources::Impl {
         emptyTextureFeedback = {};
         textureGeneration.reset();
         materialTextureSnapshot.reset();
+        materialTexturePublicationRevision = 0;
         texturePublication = {};
         baseTextureMips.clear(); desiredTextureMips.clear(); textureHits.clear();
         textureLastSeen.clear(); textureLastChanged.clear(); pinnedImages.clear();
@@ -3006,6 +3010,11 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
 std::shared_ptr<const ComputeSampledImageSnapshot> ScenePathTraceResources::materialTextureSnapshot() const
 {
     return impl_->materialTextureSnapshot;
+}
+
+uint64_t ScenePathTraceResources::materialTexturePublicationRevision() const
+{
+    return impl_->materialTexturePublicationRevision;
 }
 
 Result<> ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuffer)

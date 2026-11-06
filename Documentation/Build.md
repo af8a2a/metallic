@@ -15,6 +15,17 @@ commits. Existing checkouts are preserved. Git and network access are required
 for the first download. Optional SDKs retain their own setup policies; licensed
 RTXCR reference assets are not downloaded by this bootstrap.
 
+NVIDIA SDK integrations are optional. Missing Streamline, Aftermath, NVTX,
+Nsight Graphics, NvPerf, NTC or RTXCR installations disable the corresponding
+integration with a configure status message, without blocking ordinary builds.
+To disable all of these integrations (including NRD and experimental DLSS-NR)
+regardless of installed SDKs, configure with `-DMETALLIC_ENABLE_NVIDIA_SDKS=OFF`.
+Individual `METALLIC_ENABLE_*` cache choices are preserved when this master
+switch is off; turning it back on restores them. RTXCR discovery can also be
+disabled independently with `-DMETALLIC_ENABLE_RTXCR=OFF`.
+Bundled shader sources such as SHaRC, RTXDI and RTXTF remain part of the renderer;
+this switch controls optional SDK integrations, not Vulkan device requirements.
+
 For pre-provisioned/offline builds, set `METALLIC_SLANG_AUTO_DOWNLOAD=OFF` and
 `METALLIC_SUBMODULE_AUTO_DOWNLOAD=OFF`. Streamline has a separate
 `METALLIC_STREAMLINE_AUTO_DOWNLOAD` option. Missing required dependencies then
@@ -35,6 +46,10 @@ All build presets enable parallel builds by default ("jobs": 0), equivalent to
 passing `-j` without a job count. Ninja chooses its default parallelism. To limit
 concurrency for a particular build, pass an explicit count, for example
 `cmake --build --preset metallic-dev -j 8`.
+
+MSVC/Ninja builds track the compiler binary in the configure dependencies and
+compile command fingerprint. Updating Visual Studio in place therefore rebuilds
+objects and precompiled headers, avoiding reuse of incompatible PCH files (C1853).
 
 ## Daily development
 
@@ -57,6 +72,10 @@ ctest --preset metallic-ci
 USD tests skip when USD is disabled; a separate test checks the disabled importer.
 Closing optional integrations changes which render passes can run. Use the full
 profile when working on those integrations.
+
+For the Sponza virtual shadow map showcase, build `MetallicVSMSample` explicitly
+in the configured tree. Camera, lighting, controls and validation commands are
+documented in [Sponza VSM Sample](VSMSponzaSample.md).
 
 ## Runtime shader cache and warmup
 
@@ -356,9 +375,24 @@ Select the activity before Vulkan initialization in the editor, LookDev or sampl
 and `--nsight-mode=capture` also work. Missing/invalid values and conflicting
 modes fail before graphics initialization. The Profiler export button displays
 the selected activity and exports the next full main-viewport frame under
-`Captures/NsightGraphics/`. GPU Trace produces only `.ngfx-gputrace`; Capture
+`Captures/NsightGraphics/` by default. GPU Trace produces only `.ngfx-gputrace`; Capture
 produces `.ngfx-capture` for replay and frame debugging. Switching activities
 requires restarting the process. RHI test captures keep their existing mode.
+
+Set `METALLIC_NSIGHT_OUTPUT_DIRECTORY` to choose a writable directory for metrics,
+host logs, captures and replay collections. Relative paths resolve against the
+process working directory. For example, run from the repository root:
+
+```powershell
+$env:METALLIC_NSIGHT_OUTPUT_DIRECTORY = '.cache/NsightGraphics'
+.\build-relwithdebinfo\Source\MetallicVSMSample.exe --nsight-gputrace
+```
+
+Remove the override to restore the default project capture directory:
+
+```powershell
+Remove-Item Env:METALLIC_NSIGHT_OUTPUT_DIRECTORY -ErrorAction SilentlyContinue
+```
 
 For a one-click collection, launch with `--nsight-capture` and press **Export
 View Capture + GPU Trace** in the Profiler. Metallic first saves the
@@ -437,7 +471,9 @@ The opt-in `METALLIC_NSIGHT_INTEGRATION_TESTS` CMake option registers
 `MetallicNsightGPUTrace.invalid-metrics`, plus
 `MetallicNsightGPUTrace.collection` for three complete capture/replay exports.
 Build `LookDev` first. The regression can also run against an existing binary
-without changing its build configuration:
+without changing its build configuration. Each run sets
+`METALLIC_NSIGHT_OUTPUT_DIRECTORY` to `<TEST_DIRECTORY>/Captures` and verifies
+that the reported export files exist there and are nonempty:
 
 ```powershell
 cmake -DEDITOR_EXECUTABLE=E:/metallic/build-release/Source/LookDev.exe -DTEST_DIRECTORY=E:/metallic/build/nsight-startup/export -DCASE=export -P tests/editor/RunNsightGPUTraceStartup.cmake

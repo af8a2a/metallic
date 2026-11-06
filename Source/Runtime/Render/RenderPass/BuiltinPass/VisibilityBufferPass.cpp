@@ -176,7 +176,10 @@ public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
         return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,
-            .geometry = true};
+            .geometry = true,
+            // Semantic capture consumes the current sampling metadata in scene
+            // end, so its producer must publish it before raster execution.
+            .textureFeedback = properties().value("benchmarkCaptureSemanticSource", false)};
     }
 
     bool supportsFrameOverlap() const override
@@ -770,8 +773,12 @@ public:
         info.jitter[0] = previousParams_.renderEye[3];
         info.jitter[1] = previousParams_.renderCenter[3];
         info.frameIndex = context.frameIndex();
-        if (rasterSettingsRevision_ == 0 || rasterHistoryProperties_ != context.properties()) {
-            rasterHistoryProperties_ = context.properties();
+        auto rasterProperties = context.properties();
+        // The actual camera is published above. Normal camera motion must not
+        // masquerade as a change to geometry/LOD/displacement configuration.
+        rasterProperties.erase("camera");
+        if (rasterSettingsRevision_ == 0 || rasterHistoryProperties_ != rasterProperties) {
+            rasterHistoryProperties_ = std::move(rasterProperties);
             ++rasterSettingsRevision_;
         }
         info.rasterSettingsRevision = rasterSettingsRevision_;
@@ -1006,6 +1013,10 @@ public:
         }
         gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
             streamEnabled_ ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGPUResourcesView{});
+        auto shadowGeometry = streamEnabled_ ? streamRuntime_->shadowGeometryResources() : MeshletStreamShadowGeometryView{};
+        shadowGeometry.owner = streamEnabled_ ? streamRuntime_ : nullptr;
+        gpuSceneSubsystem->publishShadowGeometry(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
+            std::move(shadowGeometry));
         ++frameIndex_;
         gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 1, 0u);
         return {};

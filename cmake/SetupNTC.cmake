@@ -5,6 +5,7 @@ set(RTXNTC_ROOT "" CACHE PATH
     "RTXNTC checkout or RTXNTC-Library directory used by Metallic")
 
 set(METALLIC_NTC_LIBRARY_ROOT "")
+set(METALLIC_NTC_SHADER_INCLUDE_DIR "")
 if(METALLIC_ENABLE_NTC)
     set(_METALLIC_NTC_CANDIDATES)
     if(RTXNTC_ROOT)
@@ -43,8 +44,10 @@ if(METALLIC_NTC_LIBRARY_ROOT)
             HINTS "$ENV{VULKAN_SDK}"
             PATH_SUFFIXES Include include)
         if(NOT METALLIC_NTC_VULKAN_HEADERS_DIR)
-            message(FATAL_ERROR
-                "RTXNTC cooperative-vector support requires Vulkan SDK headers (vulkan/vulkan.hpp)")
+            message(STATUS
+                "RTXNTC disabled: Vulkan SDK headers (vulkan/vulkan.hpp) were not found")
+            set(METALLIC_NTC_LIBRARY_ROOT "")
+            return()
         endif()
         add_library(MetallicNTCVulkanHeaders INTERFACE)
         target_include_directories(MetallicNTCVulkanHeaders INTERFACE

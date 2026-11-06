@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdlib>
@@ -1195,6 +1196,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
     phase.next("streamInit.boundsAndBudget");
     asset_ = std::move(openedAsset);
+    static std::atomic<uint64_t> nextShadowGeometryRevision{1};
+    shadowGeometryRevision_ = nextShadowGeometryRevision.fetch_add(1, std::memory_order_relaxed);
     if (desc.compactShadingAttributes && !asset_.compactShadingForDevice(reason)) {
         log = "MeshletStreamRuntime compact shading: " + reason;
         return makeError(Error::InvalidArgument);
@@ -2666,6 +2669,7 @@ void MeshletStreamRuntime::reset()
     residency_.reset();
     asset_.close();
     drawBounds_.reset();
+    shadowGeometryRevision_ = 0;
     sceneTransformRevision_ = 0;
     sceneVisibilityRevision_ = 0;
     sceneResourceIdentity_ = 0;
@@ -3746,6 +3750,57 @@ Result<> MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
         ResourceState::ShaderRead,
         true); !commandResult) { return commandResult; }
     return {};
+}
+
+MeshletStreamShadowGeometryView MeshletStreamRuntime::shadowGeometryResources() const
+{
+    return {.instanceBuffer = instanceBuffer_.get(), .pageBuffer = pageBuffer_.get(),
+        .pageTableBuffer = pageTableBuffer_.get(), .asset = &asset_,
+        .pageBufferBytes = static_cast<uint32_t>(residency_.pageBufferSize()),
+        .runtimeRenderNodeIndices = runtimeRenderNodeIndices_, .geometryRevision = shadowGeometryRevision_};
+}
+
+MeshletStreamRuntime::ShadowPageRequests MeshletStreamRuntime::requestShadowPages(
+    std::span<const uint32_t> pageIndices)
+{
+    ShadowPageRequests result;
+    // Refresh all resident readers before admitting requests that may trigger
+    // budget eviction. The recording already owns their geometry-use fence.
+    if (!sourceResidencyFrozen_ && !rasterSnapshotFrozen_) {
+        for (const uint32_t page : pageIndices) {
+            if (residency_.pageResident(page)) { residency_.requestPage(page); }
+        }
+    }
+    for (const uint32_t page : pageIndices) {
+        if (residency_.pageResident(page)) { continue; }
+        if (sourceResidencyFrozen_ || rasterSnapshotFrozen_) {
+            ++result.blockedPages;
+            continue;
+        }
+        // requestPage returns false for a newly queued upload as well as a
+        // rejection. Allocation/state, rather than that bool, owns admission.
+        residency_.requestPage(page);
+        const bool admitted = residency_.pageAllocated(page) &&
+            residency_.pageState(page) != MeshletStreamPageResidencyState::PendingUnload;
+        result.requestedPages += admitted ? 1u : 0u;
+        result.blockedPages += admitted ? 0u : 1u;
+    }
+    return result;
+}
+
+Result<> MeshletStreamRuntime::cmdPrepareShadowGeometry(CommandBuffer& commandBuffer)
+{
+    if (!ready()) { return makeError(Error::InvalidArgument); }
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
+    auto* frame = RenderFrameContext::from(commandBuffer);
+    if (!frame || !frame->recording()) { return makeError(Error::InvalidArgument); }
+    residency_.trackGeometryUse(frame->completion());
+    for (const auto& lease : {pageHandle_, pageTableHandle_, instanceHandle_}) {
+        if (auto result = registry_->retain(commandBuffer, lease); !result) { return result; }
+    }
+    if (auto result = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead);
+        !result) { return result; }
+    return transitionBuffer(commandBuffer, *pageTableBuffer_, pageTableState_, ResourceState::ShaderRead);
 }
 
 MeshletStreamDeferredGPUResourcesView MeshletStreamRuntime::deferredGpuResources() const
