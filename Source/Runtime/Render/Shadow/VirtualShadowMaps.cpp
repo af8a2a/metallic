@@ -33,27 +33,6 @@ namespace {
 
 constexpr uint32_t kDrawBatchSize = 65535;
 
-struct ShadowPush
-{
-    uint32_t geometry, materials, pages, coverageInputs;
-    uint32_t workItems, statistics, projections, atlas;
-    uint32_t depth, shadow, debug, view;
-    uint32_t arguments, triangleCount, clipmapCount, virtualPagesPerAxis;
-    uint32_t physicalPagesX, physicalPagesY, physicalPageCount, pageSize;
-    uint32_t workCapacity, batchCount, workBase, rasterCoarse;
-    uint32_t sampler, enabled, totalPages, lightType;
-    uint32_t previousPages, reuse, owners, cacheMode;
-    uint32_t coarseBatchCount, cancelledCount, cacheEpoch, dirtyBoundsCount;
-    float lightRange;
-    uint32_t projectionFace, filterMode, pointFaces;
-    float pcfRadius, rayLength, sourceRadius, angularRadius;
-    uint32_t rayCount, samplesPerRay, receiverFootprint, projectionFlags;
-    float rayLengthScale, maxRayAngle;
-    uint32_t samplePhase, sampleReserved;
-    float lodScreenRayLength;
-    uint32_t receiverGeometry;
-};
-static_assert(sizeof(ShadowPush) == 216);
 
 struct ShadowProjectionJob
 {

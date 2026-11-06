@@ -48,6 +48,12 @@ bool graphicsEntry(const ShaderRequest& request)
         {"Features/GPUDriven/GPUDrivenStreamAsset", "streamTessellationMesh"},
         {"Features/GPUDriven/GPUDrivenStreamAsset", "streamTessellationFragment"},
         {"Features/GPUDriven/GPUDrivenStreamAsset", "streamTessellationTask"},
+        {"Features/VirtualShadowMaps/VirtualShadowMaps", "vsmRasterMeshMain"},
+        {"Features/VirtualShadowMaps/VirtualShadowMaps", "vsmDepthFragmentMain"},
+        {"Features/VirtualShadowMaps/VirtualShadowMaps", "vsmClearMeshMain"},
+        {"Features/VirtualShadowMaps/VirtualShadowMaps", "vsmClearFragmentMain"},
+        {"Features/VirtualShadowMaps/VirtualShadowMaps", "vsmRasterWindowMeshMain"},
+        {"Features/VirtualShadowMaps/VirtualShadowMaps", "vsmRasterPackedMeshMain"},
     };
     return std::find(entries.begin(), entries.end(),
         std::pair<std::string_view, std::string_view>{request.module, request.entry}) != entries.end();
@@ -105,6 +111,8 @@ TEST(NativeShaderWarmupRequests, InlineLayoutsMatchRuntimeTypesIncludingSPDPipel
         {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetInitializePageTableMain", sizeof(MeshletStreamUserPush)},
         {"Features/GPUDriven/GPUDrivenStreamWorkRaster", "streamClusterRasterWorkControlMain", sizeof(MeshletStreamUserPush)},
         {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridRasterMain", VisibilityHybridRasterizer::pipelineUserPushDataSize()},
+        {"Features/VirtualShadowMaps/VirtualShadowMaps", "vsmResetMain", sizeof(ShadowPush)},
+        {"Features/VirtualShadowMaps/VirtualShadowMapTemporal", "vsmTemporalMain", sizeof(VirtualShadowMapTemporalParams)},
     };
     for (const auto& test : cases) {
         SCOPED_TRACE(test.entry);

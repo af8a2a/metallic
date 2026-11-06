@@ -822,6 +822,7 @@ TEST(ShaderRequests, OrdinaryShadersExcludeNeuralTextureVariants)
     EXPECT_TRUE(contains(catalog, makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI)));
     EXPECT_TRUE(contains(catalog, makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization)));
     EXPECT_TRUE(contains(catalog, makeShadowShaderRequest()));
+    EXPECT_TRUE(contains(catalog, makeVirtualShadowMapTemporalRequest()));
     for (const auto& request : catalog) {
         EXPECT_EQ(std::count(request.capabilities.begin(), request.capabilities.end(), "spvCooperativeVectorNV"), 0);
         for (const auto& define : request.defines) {

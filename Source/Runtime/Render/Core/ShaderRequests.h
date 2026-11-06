@@ -4,6 +4,7 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
+#include <bit>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -516,6 +517,105 @@ inline ShaderRequest makeShadowShaderRequest()
     ShaderRequest request{.module = "Features/Lighting/ScreenSpaceShadows", .entry = "rayTracedShadowsMain",
         .capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"}};
     return request;
+}
+
+struct VirtualShadowMapShaderOptions {
+    bool directional = true;
+    bool receiverMask = true;
+    bool staticPageHZB = true;
+    bool compactBuild = false;
+    bool instanceBuild = false;
+    bool dirtyPageHierarchy = false;
+    bool groupedFineRaster = false;
+    bool pageWindowRaster = false;
+    bool refinedReceiver = true;
+    bool adaptiveRayCount = true;
+    uint32_t clipmapCount = 8;
+    uint32_t pageSize = 128;
+    std::string coverageInclude;
+};
+
+inline std::vector<ShaderRequest> makeVirtualShadowMapRequests(const VirtualShadowMapShaderOptions& options)
+{
+    const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
+        "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
+        "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
+        "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
+        options.pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain"};
+
+    const std::vector<std::string> capabilities{"spvMeshShadingEXT"};
+    std::vector<std::string> searchPaths;
+    if (!options.coverageInclude.empty()) {
+        searchPaths.push_back(options.coverageInclude);
+    }
+
+    const std::vector<std::pair<std::string, std::string>> baseMacros{
+        {"METALLIC_CUSTOM_COVERAGE", "0"},
+        {"VSM_WORKLOAD_DIAGNOSTICS", "0"},
+        {"VSM_OPTIMIZE_PROJECTION_STATISTICS", "0"},
+        {"VSM_LOCAL_MARK", options.directional ? "0" : "1"},
+        {"VSM_RECEIVER_MASK", options.receiverMask ? "1" : "0"},
+        {"VSM_CLUSTER_PAGE_BITSET", "1"}};
+
+    const uint32_t markCacheLevels = options.directional ? options.clipmapCount : 12u;
+    const int markPageShift = options.directional ? std::countr_zero(options.pageSize) : -1;
+    const std::string markCacheLevelsDefine = std::to_string(markCacheLevels);
+    const std::string markPageShiftDefine = std::to_string(markPageShift);
+
+    std::vector<ShaderRequest> requests;
+    for (size_t index = 0; index < 21; ++index) {
+        if (index == 14 && !options.compactBuild) { continue; }
+        if (index == 16 && !options.dirtyPageHierarchy) { continue; }
+        if (index == 17 && !options.staticPageHZB) { continue; }
+        if (index == 18 && !options.staticPageHZB) { continue; }
+        if (index == 20 && !options.groupedFineRaster) { continue; }
+
+        const bool buildEntry = index == 3 || index == 14;
+        const bool compactEntry = index == 0 || buildEntry;
+        std::vector<std::pair<std::string, std::string>> entryMacros = baseMacros;
+
+        if (options.staticPageHZB && (index == 0 || buildEntry || index == 4 || index == 17 || index == 18 || index == 19)) {
+            entryMacros.emplace_back("VSM_STATIC_PAGE_HZB", "1");
+        }
+        if (options.staticPageHZB && (index == 4 || index == 6 || index == 18 || index == 20)) {
+            entryMacros.emplace_back("VSM_CLUSTER_HZB", "1");
+        }
+        if (options.groupedFineRaster && (index == 0 || index == 3 || index == 4 || index == 20)) {
+            entryMacros.emplace_back(options.pageWindowRaster ? "VSM_PAGE_WINDOW_RASTER" : "VSM_CLUSTER_PAGE_RASTER", "1");
+        }
+        if (options.dirtyPageHierarchy && (compactEntry || index == 16)) {
+            entryMacros.emplace_back("VSM_DIRTY_PAGE_HIERARCHY", "1");
+        }
+        if (index == 1) {
+            entryMacros.emplace_back("VSM_DIRECTIONAL_MARK", options.directional ? "1" : "0");
+            entryMacros.emplace_back("VSM_MARK_CACHE_LEVELS", markCacheLevelsDefine);
+            entryMacros.emplace_back("VSM_MARK_PAGE_SHIFT", markPageShiftDefine);
+        }
+        if (index == 5) {
+            entryMacros.emplace_back("VSM_REFINED_RECEIVER", options.refinedReceiver ? "1" : "0");
+            entryMacros.emplace_back("VSM_DIRECTIONAL_PROJECTION", options.directional ? "1" : "0");
+            entryMacros.emplace_back("VSM_PROJECTION_PAGE_SHIFT", markPageShiftDefine);
+            entryMacros.emplace_back("VSM_ADAPTIVE_RAY_COUNT", options.adaptiveRayCount ? "1" : "0");
+        }
+        if (buildEntry) { entryMacros.emplace_back("VSM_DIRECTIONAL_BUILD", options.directional ? "1" : "0"); }
+        if (options.instanceBuild && compactEntry) { entryMacros.emplace_back("VSM_INSTANCE_BUILD", "1"); }
+        if (compactEntry) { entryMacros.emplace_back("VSM_COMPACT_BUILD", options.compactBuild ? "1" : "0"); }
+
+        requests.push_back({
+            .module = "Features/VirtualShadowMaps/VirtualShadowMaps",
+            .entry = entries[index],
+            .capabilities = capabilities,
+            .defines = std::move(entryMacros),
+            .searchPaths = searchPaths,
+        });
+    }
+    return requests;
+}
+
+inline ShaderRequest makeVirtualShadowMapTemporalRequest()
+{
+    return {.module = "Features/VirtualShadowMaps/VirtualShadowMapTemporal",
+            .entry = "vsmTemporalMain"};
 }
 
 } // namespace metallic::render

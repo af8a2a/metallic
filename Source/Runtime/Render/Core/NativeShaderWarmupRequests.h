@@ -12,6 +12,8 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
+#include "Runtime/Render/Shadow/VirtualShadowMaps.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 
 #include <optional>
 
@@ -110,6 +112,15 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
     }
     if (matches("Features/PathTracing/OpenPBRPrimaryGuides", {"openPbrPrimaryGuidesMain"}) ||
         matches("Features/PathTracing/OpenPBRPathContinuation", {"openPbrPathContinuationMain"})) { return static_cast<uint32_t>(sizeof(GPUBufferSpan)); }
+    if (matches("Features/VirtualShadowMaps/VirtualShadowMaps", {
+            "vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
+            "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
+            "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain"})) {
+        return static_cast<uint32_t>(sizeof(ShadowPush));
+    }
+    if (matches("Features/VirtualShadowMaps/VirtualShadowMapTemporal", {"vsmTemporalMain"})) {
+        return static_cast<uint32_t>(sizeof(VirtualShadowMapTemporalParams));
+    }
     return std::nullopt;
 }
 
