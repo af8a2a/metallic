@@ -1050,6 +1050,19 @@ float3 vsmPCFPosition(float3 position, float3 normal, ShadowProjection projectio
     return position + offset;
 }
 
+#if VSM_DIRECTIONAL_PROJECTION
+float vsmDirectionalComparisonDepth(float3 normal, float3 projected, uint2 texel,
+    float extent, uint pagesPerAxis, uint pageSize, float3 normX, float3 normY,
+    float invDenom, float biasZ)
+{
+    float2 sampleNDC = (float2(texel) + 0.5) * (2.0 / float(pagesPerAxis * pageSize)) - 1.0;
+    float2 offset = (sampleNDC - projected.xy) * extent;
+    float3 delta = normX * offset.x + normY * offset.y;
+    float correction = -dot(normal, delta) * invDenom;
+    return projected.z + correction + biasZ;
+}
+#endif
+
 float vsmComparisonDepth(float3 position, float3 normal, float3 projected, uint2 texel,
     ShadowProjection projection, uint pageSize)
 {
@@ -1420,6 +1433,14 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
     float3 up = cross(toLight, right);
     float receiverTexelSize = vsmWorldTexelSize(position, projections[receiverLevel], push.pageSize, push.lightType);
+#if VSM_DIRECTIONAL_PROJECTION
+    float receiverExtent = projections[receiverLevel].metric.x;
+    float3 normX = normalize(projections[0].rowX.xyz);
+    float3 normY = normalize(projections[0].rowY.xyz);
+    float denominator = dot(normal, toLight);
+    float invDenom = abs(denominator) > 1e-5 ? length(projections[0].rowZ.xyz) / denominator : 0.0;
+    float biasZ = projections[0].metric.z;
+#endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
@@ -1448,16 +1469,28 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
 #endif
             if (!sample.valid) { continue; }
-            ShadowProjection projection = vsmLookupProjection(sample);
 #if VSM_DIRECTIONAL_PROJECTION
             // Comparison follows the undithered ray in the selected level.
             // The lookup's mapped/clamped projected coordinate is not that ray.
-            float3 projected = vsmDirectionalRayPosition(rayState, time, sample.level, projection, false);
-            // The world-position argument is unused by this directional permutation.
-            float compare = vsmComparisonDepth(position, normal, projected, sample.virtualTexel, projection, push.pageSize);
+            float3 projected;
+            float extent;
+            uint pagesPerAxis;
+            if (sample.level == rayState.receiverLevel) {
+                projected = rayState.comparisonOrigin + time * rayState.step;
+                extent = receiverExtent;
+                pagesPerAxis = push.virtualPagesPerAxis;
+            } else {
+                ShadowProjection projection = vsmLookupProjection(sample);
+                projected = vsmDirectionalRayPosition(rayState, time, sample.level, projection, false);
+                extent = projection.metric.x;
+                pagesPerAxis = projection.page.y;
+            }
+            float compare = vsmDirectionalComparisonDepth(normal, projected, sample.virtualTexel,
+                extent, pagesPerAxis, push.pageSize, normX, normY, invDenom, biasZ);
             float reference = vsmDirectionalRayDepth(compare, rayState);
             float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
 #else
+            ShadowProjection projection = vsmLookupProjection(sample);
             float compare = vsmComparisonDepth(point, normal, vsmProjectPosition(point, projection),
                 sample.virtualTexel, projection, push.pageSize);
             float reference = vsmRayDepth(compare, projection, sample.virtualTexel, position, push.pageSize);
