@@ -1,10 +1,9 @@
 #include "Editor/EditorProfiler.h"
+#include "Editor/NsightCaptureLauncher.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "imgui.h"
-#include <SDL3/SDL_error.h>
-#include <SDL3/SDL_misc.h>
 
 #include <algorithm>
 #include <cmath>
@@ -1203,14 +1202,16 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         ImGui::PushID(path);
         if (ImGui::SmallButton("Open in Nsight")) {
             captureOpenError_.clear();
-            if (!SDL_OpenURL(path)) {
+            std::string error;
+            if (!openNsightCapture(graphicsCapture.nsightInstallationRoot,
+                    std::filesystem::path(std::u8string_view(reinterpret_cast<const char8_t*>(path))), error)) {
                 captureOpenError_ = "Could not open capture in Nsight: ";
-                captureOpenError_ += SDL_GetError();
+                captureOpenError_ += error;
             }
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
-            ImGui::SetTooltip("Open this file using its registered Nsight Graphics application.");
+            ImGui::SetTooltip("Open this file in the Nsight Graphics installation used for capture.");
         }
         ImGui::PopID();
     };

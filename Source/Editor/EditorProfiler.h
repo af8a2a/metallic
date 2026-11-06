@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 
 #include <chrono>
+#include <filesystem>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -28,6 +29,7 @@ public:
         const char* capturePath = "";
         const char* replayTracePath = "";
         const char* replayTraceError = "";
+        std::filesystem::path nsightInstallationRoot;
     };
 
     struct Node {

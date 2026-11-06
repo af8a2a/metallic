@@ -1061,10 +1061,10 @@ float3 vsmPCFPosition(float3 position, float3 normal, ShadowProjection projectio
 
 #if VSM_DIRECTIONAL_PROJECTION
 float vsmDirectionalComparisonDepth(float3 normal, float3 projected, uint2 texel,
-    float extent, uint pagesPerAxis, uint pageSize, float3 normX, float3 normY,
+    float extent, float invResolution, float3 normX, float3 normY,
     float invDenom, float biasZ)
 {
-    float2 sampleNDC = (float2(texel) + 0.5) * (2.0 / float(pagesPerAxis * pageSize)) - 1.0;
+    float2 sampleNDC = (float2(texel) + 0.5) * invResolution - 1.0;
     float2 offset = (sampleNDC - projected.xy) * extent;
     float3 delta = normX * offset.x + normY * offset.y;
     float correction = -dot(normal, delta) * invDenom;
@@ -1331,15 +1331,14 @@ bool vsmDirectionalRayMapping(float2 sourceTranslation, uint sourcePage, inout f
 }
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
-    StructuredBuffer<ShadowProjection> projections, ShadowPush push, inout uint3 counts)
+    StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
+    Texture2D<float> atlas, ShadowPush push, inout uint3 counts)
 {
     ShadowLookup result;
     result.projectionsHandle = push.projections;
     result.valid = false;
     result.storedDepth = 0.0;
     result.level = push.clipmapCount;
-    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     uint physicalPage = 0xffffffffu;
     ++counts.x;
     if (ray.allowClipmaps) {
@@ -1349,7 +1348,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
         bool mappedToCoarse = false;
         if (inBounds) {
             uint resolution = push.virtualPagesPerAxis * push.pageSize;
-            uint2 texel = uint2(floor((p.xy * 0.5 + 0.5) * float(resolution)));
+            uint2 texel = uint2((p.xy * 0.5 + 0.5) * float(resolution));
 #if VSM_PROJECTION_PAGE_SHIFT >= 0
             uint2 pageCoord = texel >> VSM_PROJECTION_PAGE_SHIFT;
 #else
@@ -1429,6 +1428,14 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
     return result;
 }
 
+ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
+    StructuredBuffer<ShadowProjection> projections, ShadowPush push, inout uint3 counts)
+{
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
+    return vsmDirectionalRayLookup(time, ray, projections, pages, atlas, push, counts);
+}
+
 float vsmDirectionalRayDepth(float depth, VSMDirectionalRayState ray)
 {
     return (depth - ray.receiverDepth) * ray.invDepthScale;
@@ -1492,6 +1499,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float denominator = dot(normal, toLight);
     float invDenom = abs(denominator) > 1e-5 ? length(projections[0].rowZ.xyz) / denominator : 0.0;
     float biasZ = projections[0].metric.z;
+    float receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
 #endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
@@ -1515,7 +1525,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom);
 #if VSM_DIRECTIONAL_PROJECTION
-            ShadowLookup sample = vsmDirectionalRayLookup(time, rayState, projections, push, filterCounts);
+            ShadowLookup sample = vsmDirectionalRayLookup(time, rayState, projections, pages, atlas, push, filterCounts);
 #else
             float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
             ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
@@ -1526,19 +1536,19 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             // The lookup's mapped/clamped projected coordinate is not that ray.
             float3 projected;
             float extent;
-            uint pagesPerAxis;
+            float invResolution;
             if (sample.level == rayState.receiverLevel) {
                 projected = rayState.comparisonOrigin + time * rayState.step;
                 extent = receiverExtent;
-                pagesPerAxis = push.virtualPagesPerAxis;
+                invResolution = receiverInvResolution;
             } else {
-                ShadowProjection projection = vsmLookupProjection(sample);
+                ShadowProjection projection = projections[sample.level];
                 projected = vsmDirectionalRayPosition(rayState, time, sample.level, projection, false);
                 extent = projection.metric.x;
-                pagesPerAxis = projection.page.y;
+                invResolution = 2.0 / float(projection.page.y * push.pageSize);
             }
             float compare = vsmDirectionalComparisonDepth(normal, projected, sample.virtualTexel,
-                extent, pagesPerAxis, push.pageSize, normX, normY, invDenom, biasZ);
+                extent, invResolution, normX, normY, invDenom, biasZ);
             float reference = vsmDirectionalRayDepth(compare, rayState);
             if (!hasHistory) {
                 float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
@@ -1596,8 +1606,8 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             // Vote only among this light's active receivers. This heuristic
             // assumes full light after one miss, or umbra after two hits in
             // every participating lane; it is not the fixed-ray estimator.
-            uint keepTracing = ray == 0u ? (blocked ? 1u : 0u) : (visibility > 0.0 ? 1u : 0u);
-            if (WaveActiveSum(keepTracing) == 0u) {
+            bool keepTracing = ray == 0u ? blocked : (visibility > 0.0);
+            if (!WaveActiveAnyTrue(keepTracing)) {
                 tracedRays = ray + 1u;
                 vsmWorkAdd(push, ray == 0u ? kVSMWorkProjectionAdaptiveLitReceivers :
                     kVSMWorkProjectionAdaptiveUmbraReceivers, 1u);
@@ -4090,6 +4100,14 @@ static const uint kVsmProjectionCounterCount = 8u;
 #else
 static const uint kVsmProjectionCounterCount = 3u;
 #endif
+uint2 vsmMortonPixel(uint2 dispatchPixel)
+{
+    uint lane = (dispatchPixel.x & 7u) + ((dispatchPixel.y & 7u) << 3u);
+    uint2 xy = uint2((lane & 1u) | ((lane >> 1u) & 2u) | ((lane >> 2u) & 4u),
+        ((lane >> 1u) & 1u) | ((lane >> 2u) & 2u) | ((lane >> 3u) & 4u));
+    return (dispatchPixel & ~7u) + xy;
+}
+
 #if !VSM_ONE_PASS_PROJECTION
 groupshared uint gVsmFilterCounts[kVsmProjectionCounterCount];
 
@@ -4097,6 +4115,7 @@ groupshared uint gVsmFilterCounts[kVsmProjectionCounterCount];
 [numthreads(8, 8, 1)]
 void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
+    id.xy = vsmMortonPixel(id.xy);
     uint3 counts;
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     uint projectionCounts;
@@ -4256,6 +4275,7 @@ uint2 vsmProjectionLocalMask(uint2 pixel, VSMProjectionReceiver receiver, Virtua
 [numthreads(8, 8, 1)]
 void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush common)
 {
+    id.xy = vsmMortonPixel(id.xy);
     StructuredBuffer<ShadowProjectionJob> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjectionJob>>(common.geometry));
 #if VSM_LIGHT_GRID_PROJECTION
     StructuredBuffer<VirtualShadowMapProjectionGrid> contexts = resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments));
@@ -4307,7 +4327,7 @@ void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush co
         VirtualShadowMapProjectionGrid context = resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments))[0];
         ViewConstants view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(common.view))[0];
         bool inViewport = all(id.xy < uint2(view.current.viewport.yz));
-        bool activeWave = WaveActiveSum(inViewport ? 1u : 0u) != 0u;
+        bool activeWave = WaveActiveAnyTrue(inViewport);
         vsmProjectionGridAdd(context.diagnostics, kVSMGridWaveLocalJobs, WaveIsFirstLane() && activeWave ? context.localJobCount : 0u);
         vsmProjectionGridAdd(context.diagnostics, kVSMGridProjectedLaneJobs, inViewport ? context.localJobCount : 0u);
         vsmProjectionGridAdd(context.diagnostics, kVSMGridPossibleLaneJobs, inViewport ? context.localJobCount : 0u);

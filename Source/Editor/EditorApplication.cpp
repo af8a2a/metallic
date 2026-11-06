@@ -3549,6 +3549,7 @@ void EditorApplication::drawPanels()
             .capturePath = reinterpret_cast<const char*>(capturePath.c_str()),
             .replayTracePath = reinterpret_cast<const char*>(replayTracePath.c_str()),
             .replayTraceError = replayTraceError.c_str(),
+            .nsightInstallationRoot = nsightGraphicsCapture_.installationRoot(),
         };
         if (profiler_.drawWindow(&profilerOpen_, captureControls)) {
             requestNsightGraphicsCapture();

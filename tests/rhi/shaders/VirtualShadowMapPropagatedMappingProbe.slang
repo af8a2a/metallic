@@ -109,11 +109,13 @@ void projectedRayStateProbeMain(uint3 id : SV_DispatchThreadID)
     float3 up = cross(toLight, right);
     float texelSize = projections[input.control.x].metric.y;
     float coneRadius = push.rayLength * sin(push.angularRadius);
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     for (uint sampleIndex = 0u; sampleIndex < 11u; ++sampleIndex) {
         float time = sampleIndex == 0u ? 0.0 : sampleIndex == 1u ? 1.0 :
             vsmRaySampleTime(sampleIndex - 2u, push, pixel);
         uint3 counts = 0u;
-        ShadowLookup sample = vsmDirectionalRayLookup(time, ray, projections, push, counts);
+        ShadowLookup sample = vsmDirectionalRayLookup(time, ray, projections, pages, atlas, push, counts);
         float3 baseLookup = vsmDirectionalRayPosition(ray, time, input.control.x, projections[input.control.x], true);
         float3 baseCompare = vsmDirectionalRayPosition(ray, time, input.control.x, projections[input.control.x], false);
         float3 comparison = vsmDirectionalRayPosition(ray, time, sample.level, projections[sample.level], false);

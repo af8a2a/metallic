@@ -94,6 +94,7 @@ public:
     const std::filesystem::path& replayTracePath() const { return replayTracePath_; }
     const std::string& replayTraceError() const { return replayTraceError_; }
     NsightCaptureMode mode() const { return mode_; }
+    const std::filesystem::path& installationRoot() const { return installationRoot_; }
 
     NsightGraphicsCaptureState state() const;
     const char* statusText() const;
