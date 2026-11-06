@@ -19,6 +19,7 @@
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Task/TaskSystem.h"
 
 #include <spdlog/spdlog.h>
@@ -2993,18 +2994,78 @@ Result<> RenderGraphExecutor::compile(
         return makeError(Error::Unsupported);
     }
 
-    for (Impl::CompiledNode& node : impl_->executionList) {
+    auto cacheSaveDeferral = ShaderRegistry::instance().deferPipelineCacheSaves(device);
+
+    struct NodeCompileWork {
+        Impl::CompiledNode* node = nullptr;
+        RenderGraphCompileContext context;
         Result<> result;
-        {
+        std::string log;
+    };
+
+    std::vector<NodeCompileWork> compileWorks;
+    compileWorks.reserve(impl_->executionList.size());
+    for (Impl::CompiledNode& node : impl_->executionList) {
+        compileWorks.push_back(NodeCompileWork{
+            .node = &node,
+            .context = impl_->contextForScene(compileContext, node.sceneBinding, node.preparedScene),
+            .result = {},
+            .log = {},
+        });
+    }
+
+    const auto taskSystem = task::detail::tryAcquireTaskSystem();
+    const bool parallelCompile = taskSystem != nullptr &&
+        !task::isInsideTaskCallback() &&
+        compileWorks.size() > 1;
+
+    if (parallelCompile) {
+        task::TaskGraph compileGraph("RenderGraph compile passes");
+        for (auto& work : compileWorks) {
+            compileGraph.addTask({
+                .name = "Compile " + work.node->name,
+                .category = "Render compilation",
+            }, [&work] {
+                RenderGraphLogScope scope(
+                    "compile pass '" + work.node->name + "' (" + work.node->type + ")");
+                work.result = work.node->pass->compile(work.context, work.log);
+            });
+        }
+        auto run = taskSystem->submit(std::move(compileGraph));
+        if (run) {
+            auto joined = run->wait();
+            if (!joined || joined->status != task::TaskGraphStatus::Succeeded) {
+                for (auto& work : compileWorks) {
+                    if (work.result) {
+                        work.result = makeError(Error::Failure);
+                        if (work.log.empty()) {
+                            work.log = "task graph execution failed or was interrupted";
+                        }
+                    }
+                }
+            }
+        } else {
+            for (auto& work : compileWorks) {
+                RenderGraphLogScope scope(
+                    "compile pass '" + work.node->name + "' (" + work.node->type + ")");
+                work.result = work.node->pass->compile(work.context, work.log);
+            }
+        }
+    } else {
+        for (auto& work : compileWorks) {
             RenderGraphLogScope scope(
-                "compile pass '" + node.name + "' (" + node.type + ")");
-            result = node.pass->compile(impl_->contextForScene(compileContext, node.sceneBinding, node.preparedScene), log);
+                "compile pass '" + work.node->name + "' (" + work.node->type + ")");
+            work.result = work.node->pass->compile(work.context, work.log);
         }
-        if (!result) {
+    }
+
+    for (auto& work : compileWorks) {
+        if (!work.result) {
+            log = "RenderGraph compile failed for pass '" + work.node->name + "': " + work.log;
             impl_->isCompiled = false;
-            return result;
+            return work.result;
         }
-        node.pass->setProperties(node.effectiveProperties);
+        work.node->pass->setProperties(work.node->effectiveProperties);
     }
 
     Result<> resourceResult;
