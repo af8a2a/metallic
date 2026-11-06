@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include <chrono>
@@ -30,7 +31,6 @@ class Scene;
 namespace metallic::render {
 
 class IRenderDebugObserver;
-struct DebugResourceBinding;
 struct RenderGraphExecutionPassSnapshot;
 struct RenderGraphExecutionResourceSnapshot;
 
