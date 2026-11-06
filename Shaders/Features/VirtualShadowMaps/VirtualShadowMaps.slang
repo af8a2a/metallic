@@ -1346,9 +1346,16 @@ bool vsmDirectionalRayMapping(float2 sourceTranslation, uint sourcePage, inout f
     return true;
 }
 
+struct VSMDirectionalRayCache
+{
+    uint lastPage;
+    uint4 lastMapping;
+    uint2 lastPhysicalCoord;
+};
+
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, bool useGroupCache = false)
+    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
 {
     ShadowLookup result;
     result.projectionsHandle = push.projections;
@@ -1356,6 +1363,8 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
     result.storedDepth = 0.0;
     result.level = push.clipmapCount;
     uint physicalPage = 0xffffffffu;
+    uint2 physical = uint2(0u);
+    bool hasPhysicalCoord = false;
     ++counts.x;
     if (ray.allowClipmaps) {
         float3 p = ray.lookupOrigin + time * ray.step;
@@ -1371,10 +1380,20 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
             uint2 pageCoord = texel / push.pageSize;
 #endif
             uint page = ray.receiverPageOffset + pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
-            uint4 mapping = pages[push.totalPages + page];
             vsmWorkAdd(push, kVSMWorkProjectionMappingLoads, 1u);
+            uint4 mapping;
+            if (page == cache.lastPage) {
+                mapping = cache.lastMapping;
+            } else {
+                mapping = pages[push.totalPages + page];
+                cache.lastPage = page;
+                cache.lastMapping = mapping;
+                cache.lastPhysicalCoord = uint2(mapping.x % push.physicalPagesX, mapping.x / push.physicalPagesX);
+            }
             if (mapping.w == 1u) {
                 physicalPage = mapping.x;
+                physical = cache.lastPhysicalCoord;
+                hasPhysicalCoord = true;
                 result.level = ray.receiverLevel;
                 result.projected = p;
                 result.virtualTexel = texel;
@@ -1397,6 +1416,8 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
                 result.projected = p;
                 result.virtualTexel = texel;
             }
+        } else {
+            cache.lastPage = 0xffffffffu;
         }
         if (physicalPage == 0xffffffffu && !mappedToCoarse) {
             for (uint level = ray.receiverLevel + 1u; level < push.clipmapCount; ++level) {
@@ -1436,12 +1457,25 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
         result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
         ++counts.y;
     }
-    uint2 physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
+    if (!hasPhysicalCoord) {
+        physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
+    }
     uint2 texel = vsmAtlasTexel(physical, vsmPageLocalTexel(result.virtualTexel, push.pageSize), push.pageSize);
     result.storedDepth = atlas.Load(int3(texel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
+}
+
+ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
+    StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
+    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, bool useGroupCache = false)
+{
+    VSMDirectionalRayCache localCache;
+    localCache.lastPage = 0xffffffffu;
+    localCache.lastMapping = uint4(0u);
+    localCache.lastPhysicalCoord = uint2(0u);
+    return vsmDirectionalRayLookup(time, ray, projections, pages, atlas, push, counts, localCache, useGroupCache);
 }
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
@@ -1540,10 +1574,16 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         // Trace back toward the receiver, including t=0. Depth discontinuities
         // can expose only the front layer: continue the preceding surface with
         // bounded slope through that gap instead of inventing an intersection.
+#if VSM_DIRECTIONAL_PROJECTION
+        VSMDirectionalRayCache rayCache;
+        rayCache.lastPage = 0xffffffffu;
+        rayCache.lastMapping = uint4(0u);
+        rayCache.lastPhysicalCoord = uint2(0u);
+#endif
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom);
 #if VSM_DIRECTIONAL_PROJECTION
-            ShadowLookup sample = vsmDirectionalRayLookup(time, rayState, projections, pages, atlas, push, filterCounts, useGroupCache);
+            ShadowLookup sample = vsmDirectionalRayLookup(time, rayState, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
 #else
             float3 point = vsmRayPosition(position, endpoint, time, proj0, push);
             ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
