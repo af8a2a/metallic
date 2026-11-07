@@ -134,6 +134,34 @@ class ProductionCPUJobsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             effective_identity(value, 4, strict_conditions=True)
 
+    def test_core_only_validation_accepts_disabled_sync_and_rejects_native_mismatch(self):
+        value = capture()
+        value.update(validationRequested=True, validationEnabled=True, validationMessengerActive=True,
+                     config={"synchronizationValidation": False}, synchronizationValidationRequested=False,
+                     synchronizationValidationEnabled=False, diagnostics=True, graphicsCaptureInjected=False,
+                     shaderDebugMode="disabled", vsyncRequested=False,
+                     reflex={"requestedMode": 0, "frameLimitUs": 0, "available": True})
+        identity = effective_identity(value, 4, purpose="validation", diagnostics=True, strict_conditions=True)
+        self.assertFalse(identity["synchronizationValidationEnabled"])
+        value["synchronizationValidationEnabled"] = True
+        with self.assertRaises(ValueError):
+            effective_identity(value, 4, purpose="validation", diagnostics=True, strict_conditions=True)
+
+    def test_sync_validation_request_must_match_config_and_performance_must_disable_it(self):
+        value = capture()
+        value.update(validationRequested=True, validationEnabled=True, validationMessengerActive=True,
+                     config={"synchronizationValidation": True}, synchronizationValidationRequested=False,
+                     synchronizationValidationEnabled=False, diagnostics=True, graphicsCaptureInjected=False,
+                     shaderDebugMode="disabled", vsyncRequested=False,
+                     reflex={"requestedMode": 0, "frameLimitUs": 0, "available": True})
+        with self.assertRaises(ValueError):
+            effective_identity(value, 4, purpose="validation", diagnostics=True, strict_conditions=True)
+        value.update(synchronizationValidationRequested=True, synchronizationValidationEnabled=True)
+        self.assertTrue(effective_identity(value, 4, purpose="validation", diagnostics=True, strict_conditions=True)["synchronizationValidationEnabled"])
+        value.update(validationRequested=False, validationEnabled=False, validationMessengerActive=False)
+        with self.assertRaises(ValueError):
+            effective_identity(value, 4, purpose="performance", diagnostics=True, strict_conditions=True)
+
     def test_null_scheduling_is_valid_when_diagnostics_are_off(self):
         result = summarize_frames([{"frame": 1, "frameMs": 1, "scheduling": None}], capture())
         self.assertEqual(result["schedulingNs"], {})

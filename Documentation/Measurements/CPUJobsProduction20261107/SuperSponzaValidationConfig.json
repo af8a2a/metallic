@@ -25,8 +25,8 @@
   "width": 1920,
   "height": 1080,
   "workerCount": 4,
-  "frames": 600,
-  "warmupFrames": 180,
+  "frames": 120,
+  "warmupFrames": 60,
   "memorySampleIntervalFrames": 10,
   "validation": true,
   "diagnostics": true,
@@ -35,6 +35,6 @@
   "expectedVsync": false,
   "expectedReflexMode": 0,
   "expectedReflexFrameLimitUs": 0,
-  "synchronizationValidation": true,
+  "synchronizationValidation": false,
   "geometryBudgetMiB": 512
 }

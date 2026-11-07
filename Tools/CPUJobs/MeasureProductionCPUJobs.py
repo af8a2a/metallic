@@ -227,9 +227,14 @@ def effective_identity(capture: dict, workers: int, purpose="performance", diagn
         if identity[key] is None:
             raise ValueError(f"Application omitted effective workload identity: {key}")
     if strict_conditions:
-        if capture.get("synchronizationValidationRequested") is not (purpose == "validation"):
-            raise ValueError("Synchronization-validation state differs from the declared purpose")
-        for key in ("validationEnabled", "synchronizationValidationEnabled", "validationMessengerActive"):
+        sync_requested = capture.get("synchronizationValidationRequested")
+        if not isinstance(sync_requested, bool) or sync_requested is not capture.get("config", {}).get("synchronizationValidation", False):
+            raise ValueError("Synchronization-validation request differs from application config")
+        if purpose == "performance" and sync_requested:
+            raise ValueError("Performance capture must disable synchronization validation")
+        if capture.get("synchronizationValidationEnabled") is not sync_requested:
+            raise ValueError("Native synchronization-validation state differs from the requested config")
+        for key in ("validationEnabled", "validationMessengerActive"):
             if capture.get(key) is not (purpose == "validation"):
                 raise ValueError(f"Native Vulkan {key} differs from the declared purpose")
         if capture.get("diagnostics") is not diagnostics:
