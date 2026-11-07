@@ -1476,12 +1476,13 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
                 }
             }
             if (mapping.w == 1u) {
+                uint2 atlasTexel = vsmAtlasTexel(cache.lastPhysicalCoord, vsmPageLocalTexel(texel, push.pageSize), push.pageSize);
+                float storedDepth = atlas.Load(int3(atlasTexel, 0));
+                vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
                 result.level = ray.receiverLevel;
                 result.projected = p;
                 result.virtualTexel = texel;
-                uint2 atlasTexel = vsmAtlasTexel(cache.lastPhysicalCoord, vsmPageLocalTexel(texel, push.pageSize), push.pageSize);
-                result.storedDepth = atlas.Load(int3(atlasTexel, 0));
-                vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
+                result.storedDepth = storedDepth;
                 result.valid = true;
                 return result;
             } else if (mapping.w == 0u) {
@@ -1703,17 +1704,18 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             float compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
                 extent, invResolution, normalSlope, biasZ);
             float reference = vsmDirectionalRayDepth(compare, rayState);
-            float tolerance = abs(reference - previousReference) * 1.05;
-            float timeDelta = time - historyTime;
-            float predicted = historyDepth + historySlope * timeDelta;
-            float predictedSeparation = predicted - reference;
-            float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
             if (!hasHistory) {
+                float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
                 blocked = depth > reference;
                 historyDepth = depth;
                 historyTime = time;
                 hasHistory = true;
             } else {
+                float tolerance = abs(reference - previousReference) * 1.05;
+                float timeDelta = time - historyTime;
+                float predicted = historyDepth + historySlope * timeDelta;
+                float predictedSeparation = predicted - reference;
+                float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
                 float diff = depth - reference;
                 float separation = (diff > tolerance) ? predictedSeparation : diff;
                 if (diff <= tolerance && depth != historyDepth) {
