@@ -1761,17 +1761,19 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         // Trace back toward the receiver, including t=0. Depth discontinuities
         // can expose only the front layer: continue the preceding surface with
         // bounded slope through that gap instead of inventing an intersection.
+#if VSM_DIRECTIONAL_PROJECTION
+        float time = vsmRaySampleTime(0u, push, stepRandom);
+        float3 stepOffset = time * dirRay.step;
+        ShadowLookup sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
-            float time = vsmRaySampleTime(step, push, stepRandom);
-#if VSM_DIRECTIONAL_PROJECTION
-            float3 stepOffset = time * dirRay.step;
-            ShadowLookup sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
-#else
-            float3 point = vsmRayPosition(position, endpoint, time, proj0, push);
-            ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
-#endif
-            if (!sample.valid) { continue; }
-#if VSM_DIRECTIONAL_PROJECTION
+            if (!sample.valid) {
+                if (step < push.samplesPerRay) {
+                    time = vsmRaySampleTime(step + 1u, push, stepRandom);
+                    stepOffset = time * dirRay.step;
+                    sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
+                }
+                continue;
+            }
             // Comparison follows the undithered ray in the selected level.
             // The lookup's mapped/clamped projected coordinate is not that ray.
             float3 projected;
@@ -1811,7 +1813,20 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                 }
                 blocked = separation > 0.0 && separation <= tolerance;
             }
+            if (blocked) { break; }
+            previousReference = reference;
+            if (step < push.samplesPerRay) {
+                time = vsmRaySampleTime(step + 1u, push, stepRandom);
+                stepOffset = time * dirRay.step;
+                sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
+            }
+        }
 #else
+        for (uint step = 0u; step <= push.samplesPerRay; ++step) {
+            float time = vsmRaySampleTime(step, push, stepRandom);
+            float3 point = vsmRayPosition(position, endpoint, time, proj0, push);
+            ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
+            if (!sample.valid) { continue; }
             ShadowProjection projection = vsmLookupProjection(sample);
             float compare = vsmComparisonDepth(point, normal, vsmProjectPosition(point, projection),
                 sample.virtualTexel, projection, push.pageSize);
@@ -1836,10 +1851,10 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                 float separation = reconstructed - reference;
                 blocked = separation > 0.0 && separation <= tolerance;
             }
-#endif
             if (blocked) { break; }
             previousReference = reference;
         }
+#endif
         visibility += blocked ? 0.0 : 1.0;
 #if VSM_ADAPTIVE_RAY_COUNT
         if (ray + 1u < push.rayCount) {
