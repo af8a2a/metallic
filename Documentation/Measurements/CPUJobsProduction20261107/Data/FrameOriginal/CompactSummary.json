@@ -1,0 +1,1234 @@
+{
+  "schema": "metallic-production-compact-summary-v1",
+  "bundle": "FrameOriginal",
+  "sourceStatus": "running",
+  "definition": "Per-run scalar/aggregate subset of original records; not the original Raw/Summary and not sufficient for frame-level replotting. Restore the release asset for full data.",
+  "originalRawLineHashDefinition": "SHA256 of each original UTF-8 JSONL record excluding its line terminator",
+  "originalFiles": {
+    "Metadata.json": {
+      "bytes": 5541,
+      "sha256": "5f8eddd1533942fd55dad52f7f700fd0f04c3bd1ebaf06bf7065287414159f5c"
+    },
+    "Raw.jsonl": {
+      "bytes": 858669,
+      "sha256": "1e806de693222aa6990ab0584157dc20e682e3bd3384872625cfd21f4fc749f7"
+    }
+  },
+  "population": {
+    "completeRecords": 13,
+    "measuredRecords": 5,
+    "prewarmRecords": 8
+  },
+  "processes": [
+    {
+      "runId": 0,
+      "candidate": "legacy",
+      "workers": 1,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 0,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 5.758787166666667,
+        "p50": 5.7442,
+        "p95": 6.4694,
+        "p99": 6.8032,
+        "min": 5.0422,
+        "max": 8.0969
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 3.9603070933333333,
+        "p50": 3.863456,
+        "p95": 4.518784,
+        "p99": 4.729312,
+        "min": 3.539744,
+        "max": 4.87104
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 405,
+        "processWallNs": 40240970600,
+        "observedLaunchToReapWallNs": 40325324400,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 37500000000,
+        "averageCpuCores": 0.9318860713563405,
+        "lifetimePeakPrivateBytes": 8798277632,
+        "lifetimePeakWorkingSetBytes": 748216320,
+        "sampledPeakPrivateBytes": 8786571264,
+        "sampledPeakWorkingSetBytes": 681689088,
+        "sampledPeakThreads": 51,
+        "lastMemorySampleBeforeExitMs": 10.8269,
+        "samplerQueryWallNs": 5137329300,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258682880,
+        "minimumAvailableBytes": 3355680768,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-000-legacy-w1-prewarm\\Capture.json",
+        "frames": "run-000-legacy-w1-prewarm\\Frames.jsonl",
+        "osResources": "run-000-legacy-w1-prewarm\\OSResources.jsonl",
+        "console": "run-000-legacy-w1-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "6311550c2816813a3acd3e84e779e5d5da1f4cbea979b3a2a01915f9ccf5d41a",
+        "frames": "97eb4fa8f9ed1791c61d939ee02c112a192ec5cceb43e478caa5e809e9a635b1",
+        "osResources": "85c06ef2725f99fb7f70b327fffcf74147b6302ae988a71277847469846e35d1",
+        "console": "adca6c19ead163688187b467144c75a912500959ea617d870e0ab9e7bc08fffd"
+      },
+      "originalRawLineSHA256": "3249a8fa035b553fa3fea97df370470537106d857fb17235621e43ae252b4372"
+    },
+    {
+      "runId": 1,
+      "candidate": "shared",
+      "workers": 1,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 1,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 6.4235895,
+        "p50": 6.332,
+        "p95": 7.7674,
+        "p99": 8.0127,
+        "min": 5.062,
+        "max": 8.3749
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.63393904,
+        "p50": 4.60144,
+        "p95": 5.722432,
+        "p99": 5.893376,
+        "min": 3.577568,
+        "max": 6.245504
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 412,
+        "processWallNs": 40953778000,
+        "observedLaunchToReapWallNs": 41023693300,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 38500000000,
+        "averageCpuCores": 0.9400842090807837,
+        "lifetimePeakPrivateBytes": 8812924928,
+        "lifetimePeakWorkingSetBytes": 747339776,
+        "sampledPeakPrivateBytes": 8812924928,
+        "sampledPeakWorkingSetBytes": 729632768,
+        "sampledPeakThreads": 48,
+        "lastMemorySampleBeforeExitMs": 9.582699999999999,
+        "samplerQueryWallNs": 5539565200,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258748416,
+        "minimumAvailableBytes": 2238812160,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-001-shared-w1-prewarm\\Capture.json",
+        "frames": "run-001-shared-w1-prewarm\\Frames.jsonl",
+        "osResources": "run-001-shared-w1-prewarm\\OSResources.jsonl",
+        "console": "run-001-shared-w1-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "249287a597fa1fe3f333473da89bcc585e560ec36a146ff6d6d8198264855d40",
+        "frames": "e49b59b8857d2861dec5c96c36d7f8ebeb33a8606e75a7d360a01fb992ea31f7",
+        "osResources": "c2280d82af6a1f419933f472b9e3c78ca80cc3b194a503ec53f33dde9576a2ac",
+        "console": "0158b31a2c7570100c763920f43d43c9789491a6f9dc4b496b8c86a58e1b6a6c"
+      },
+      "originalRawLineSHA256": "96e52f8140944ea1345d13df1ab4d2fccfcdba5781380f36e15b6b659a52e874"
+    },
+    {
+      "runId": 2,
+      "candidate": "legacy",
+      "workers": 2,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 0,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 6.2287143333333335,
+        "p50": 6.0209,
+        "p95": 7.2981,
+        "p99": 10.685,
+        "min": 4.9171,
+        "max": 36.4036
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.1005997333333335,
+        "p50": 3.913184,
+        "p95": 4.897152,
+        "p99": 5.48816,
+        "min": 3.543136,
+        "max": 6.233504
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 388,
+        "processWallNs": 38546961300,
+        "observedLaunchToReapWallNs": 38626805400,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 37187500000,
+        "averageCpuCores": 0.9647323354642743,
+        "lifetimePeakPrivateBytes": 8807006208,
+        "lifetimePeakWorkingSetBytes": 748335104,
+        "sampledPeakPrivateBytes": 8800006144,
+        "sampledPeakWorkingSetBytes": 727146496,
+        "sampledPeakThreads": 49,
+        "lastMemorySampleBeforeExitMs": 12.5718,
+        "samplerQueryWallNs": 5230700400,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258682880,
+        "minimumAvailableBytes": 1934299136,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-002-legacy-w2-prewarm\\Capture.json",
+        "frames": "run-002-legacy-w2-prewarm\\Frames.jsonl",
+        "osResources": "run-002-legacy-w2-prewarm\\OSResources.jsonl",
+        "console": "run-002-legacy-w2-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "738f3515a7f1ae3657277842c177c4a676a66e4f9a91e3bcaf917bca963a2bb4",
+        "frames": "210869d1ce24c737af8535fbe728ed65340caa57eccaad279a14c482e07ee0a1",
+        "osResources": "e5660cd5d067fb62e08e137fe4bbddec469242c60aeb70b79ebef4091a77be96",
+        "console": "bccef35fab6f65c8dd707ab8f2c18915eccf3bc1eb4f28e2511fbe0370ea15b2"
+      },
+      "originalRawLineSHA256": "628495712a049d9df9605c44b80788b130bd8b283bdb07b249e4caca16390285"
+    },
+    {
+      "runId": 3,
+      "candidate": "shared",
+      "workers": 2,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 1,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 6.0281635,
+        "p50": 5.9697,
+        "p95": 6.8416,
+        "p99": 7.6715,
+        "min": 4.9259,
+        "max": 10.641
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.006599253333333,
+        "p50": 3.907488,
+        "p95": 4.539072,
+        "p99": 4.755744,
+        "min": 3.569344,
+        "max": 5.169664
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 459,
+        "processWallNs": 45631985900,
+        "observedLaunchToReapWallNs": 45724890600,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 42859375000,
+        "averageCpuCores": 0.9392397493706274,
+        "lifetimePeakPrivateBytes": 8792231936,
+        "lifetimePeakWorkingSetBytes": 748580864,
+        "sampledPeakPrivateBytes": 8789995520,
+        "sampledPeakWorkingSetBytes": 724094976,
+        "sampledPeakThreads": 52,
+        "lastMemorySampleBeforeExitMs": 10.5536,
+        "samplerQueryWallNs": 7767126700,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258682880,
+        "minimumAvailableBytes": 2371301376,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-003-shared-w2-prewarm\\Capture.json",
+        "frames": "run-003-shared-w2-prewarm\\Frames.jsonl",
+        "osResources": "run-003-shared-w2-prewarm\\OSResources.jsonl",
+        "console": "run-003-shared-w2-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "5287f6941e549cd114a50e26424846f48f6821eb25f2ba0be79f1c3bda867540",
+        "frames": "dabc1500ce848f0cbd4ff1b2212b4a0677e799b27ec805de6af707ab7246dd03",
+        "osResources": "8f942e4e1c358c6642ee5acf67d37919016356472e8b72e5962db807059304cd",
+        "console": "4544f58ebadc60d54a0fd145d91331a1c2cd8b75429d61aac1b2727469e809fe"
+      },
+      "originalRawLineSHA256": "a76184a4af0d15a76f0bed06b2df852556343dbfc6f45f9fa927a033b879d99f"
+    },
+    {
+      "runId": 4,
+      "candidate": "legacy",
+      "workers": 4,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 0,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 6.816008,
+        "p50": 7.0238,
+        "p95": 8.179,
+        "p99": 8.7422,
+        "min": 4.9221,
+        "max": 9.1925
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.9364434133333335,
+        "p50": 5.139552,
+        "p95": 6.053888,
+        "p99": 6.523744,
+        "min": 3.497376,
+        "max": 6.80432
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 423,
+        "processWallNs": 42033759900,
+        "observedLaunchToReapWallNs": 42124459800,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 39093750000,
+        "averageCpuCores": 0.9300559857839412,
+        "lifetimePeakPrivateBytes": 8803131392,
+        "lifetimePeakWorkingSetBytes": 749191168,
+        "sampledPeakPrivateBytes": 8795860992,
+        "sampledPeakWorkingSetBytes": 708718592,
+        "sampledPeakThreads": 51,
+        "lastMemorySampleBeforeExitMs": 10.6695,
+        "samplerQueryWallNs": 6563716800,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258682880,
+        "minimumAvailableBytes": 2034638848,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-004-legacy-w4-prewarm\\Capture.json",
+        "frames": "run-004-legacy-w4-prewarm\\Frames.jsonl",
+        "osResources": "run-004-legacy-w4-prewarm\\OSResources.jsonl",
+        "console": "run-004-legacy-w4-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "433a7c0b795361d9467e837277078d2cdddb8d16e5dfe5d37aaaaaf73602e32a",
+        "frames": "5790f68fe0d5ff7fce9013c72ee0c76f9a3c69ef8a03e19c28ea3c255517a3a4",
+        "osResources": "abfda885c4d19b9a9c7e57e96948cc8ba302e3b3410fca5ecec0f3baf8e01669",
+        "console": "c39555ce913106c9eb3567193a96b70f161d448d54939f5bf2164339c0eb09ca"
+      },
+      "originalRawLineSHA256": "07944a9aef88d02fbd765124a7943185f458217c30f7ba284952816392e06e73"
+    },
+    {
+      "runId": 5,
+      "candidate": "shared",
+      "workers": 4,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 1,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 5.908659666666667,
+        "p50": 5.6919,
+        "p95": 7.442,
+        "p99": 8.557,
+        "min": 5.1274,
+        "max": 9.4546
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.12510096,
+        "p50": 3.888416,
+        "p95": 5.534016,
+        "p99": 6.020224,
+        "min": 3.567488,
+        "max": 6.775616
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 437,
+        "processWallNs": 43405016600,
+        "observedLaunchToReapWallNs": 43528766300,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 41156250000,
+        "averageCpuCores": 0.9481910899672367,
+        "lifetimePeakPrivateBytes": 8858107904,
+        "lifetimePeakWorkingSetBytes": 773206016,
+        "sampledPeakPrivateBytes": 8858066944,
+        "sampledPeakWorkingSetBytes": 773152768,
+        "sampledPeakThreads": 51,
+        "lastMemorySampleBeforeExitMs": 13.5054,
+        "samplerQueryWallNs": 6982709100,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258682880,
+        "minimumAvailableBytes": 1675706368,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-005-shared-w4-prewarm\\Capture.json",
+        "frames": "run-005-shared-w4-prewarm\\Frames.jsonl",
+        "osResources": "run-005-shared-w4-prewarm\\OSResources.jsonl",
+        "console": "run-005-shared-w4-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "334e1923e14c359c555600c6d0fea5e3952e183a1248812926268e455685b5c1",
+        "frames": "8c02f0730cebe30c2337228ea3bf0a3b2d8c13d80cec91ec60c26e20d4028fbd",
+        "osResources": "c41cbd40a7f5fe0d80128c45d1bcd11f89f8b89fac3c85177b7b8902206a1c9e",
+        "console": "63e0c70cda74ff08f2b1a098c640f113863d9a5f8ac65feb2abf108d9433b8e5"
+      },
+      "originalRawLineSHA256": "f5512fa0f7f5ff28d3ff2cb459fa703ca67139d58cd61ce98a6142bbc6a950f5"
+    },
+    {
+      "runId": 6,
+      "candidate": "legacy",
+      "workers": 8,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 0,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 6.792778833333333,
+        "p50": 6.7893,
+        "p95": 8.5134,
+        "p99": 9.3789,
+        "min": 5.219,
+        "max": 10.2065
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.89618576,
+        "p50": 5.031904,
+        "p95": 6.31744,
+        "p99": 7.104864,
+        "min": 3.601248,
+        "max": 7.353088
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 434,
+        "processWallNs": 43174244000,
+        "observedLaunchToReapWallNs": 43225669500,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 39515625000,
+        "averageCpuCores": 0.9152592226050328,
+        "lifetimePeakPrivateBytes": 8791625728,
+        "lifetimePeakWorkingSetBytes": 746831872,
+        "sampledPeakPrivateBytes": 8786198528,
+        "sampledPeakWorkingSetBytes": 726908928,
+        "sampledPeakThreads": 55,
+        "lastMemorySampleBeforeExitMs": 11.8803,
+        "samplerQueryWallNs": 6755063400,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258682880,
+        "minimumAvailableBytes": 1187016704,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-006-legacy-w8-prewarm\\Capture.json",
+        "frames": "run-006-legacy-w8-prewarm\\Frames.jsonl",
+        "osResources": "run-006-legacy-w8-prewarm\\OSResources.jsonl",
+        "console": "run-006-legacy-w8-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "0b47bb749a5ee2a21113df269ac4f32f27368969cfbbda5b27b6b0b3b0172a2f",
+        "frames": "e14d90a44193b58d6c90bc247e5d27d8457d9a85138a0e6a43bc970ac4a2960b",
+        "osResources": "039b61208028f2e96d1e3018747a5a62258dd76a845caac6288cda746b813146",
+        "console": "a68c3b46ecccc1e73a5987d29a6b154914b13603841503fabdfeb2029e74388f"
+      },
+      "originalRawLineSHA256": "85a46149fdf66b414db739ec2914a05e023531f737f65d13d966ee3fed19dd35"
+    },
+    {
+      "runId": 7,
+      "candidate": "shared",
+      "workers": 8,
+      "phase": "prewarm",
+      "block": -1,
+      "ordinal": 1,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 6.340026833333333,
+        "p50": 6.0751,
+        "p95": 8.0389,
+        "p99": 11.0352,
+        "min": 4.0072,
+        "max": 20.8337
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.11264592,
+        "p50": 4.08208,
+        "p95": 4.580384,
+        "p99": 4.749856,
+        "min": 3.51632,
+        "max": 5.35712
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 415,
+        "processWallNs": 41213114200,
+        "observedLaunchToReapWallNs": 41329509200,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 39609375000,
+        "averageCpuCores": 0.9610866775993356,
+        "lifetimePeakPrivateBytes": 8811565056,
+        "lifetimePeakWorkingSetBytes": 749076480,
+        "sampledPeakPrivateBytes": 8805670912,
+        "sampledPeakWorkingSetBytes": 747634688,
+        "sampledPeakThreads": 55,
+        "lastMemorySampleBeforeExitMs": 12.9833,
+        "samplerQueryWallNs": 7623139200,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258748416,
+        "minimumAvailableBytes": 1576562688,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-007-shared-w8-prewarm\\Capture.json",
+        "frames": "run-007-shared-w8-prewarm\\Frames.jsonl",
+        "osResources": "run-007-shared-w8-prewarm\\OSResources.jsonl",
+        "console": "run-007-shared-w8-prewarm\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "3513fff2ca9621231ec6c8f6b76390586ef6aa3999147678263d836b92dadb77",
+        "frames": "0d17d41c0f4a1ac369b805a484bacbeafd3d6290d6e143faea26c83c62b297a8",
+        "osResources": "44c9f7e16c0318bfc03e400bf76493b8c48327b43c9d7daea78db41a1e8db5a5",
+        "console": "3353561c737025fa181d070b70ec9a6fe4ce24e6777833a94a5b2515e59059c1"
+      },
+      "originalRawLineSHA256": "b9ef33208a0e6467f59f5ca2821ddc40d085337fe8cd5361dbd3e1279dc797a2"
+    },
+    {
+      "runId": 8,
+      "candidate": "legacy",
+      "workers": 1,
+      "phase": "measured",
+      "block": 0,
+      "ordinal": 0,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 5.587092,
+        "p50": 5.5279,
+        "p95": 6.1239,
+        "p99": 6.4502,
+        "min": 4.9427,
+        "max": 7.3299
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 3.8960802666666665,
+        "p50": 3.854784,
+        "p95": 4.188256,
+        "p99": 4.485984,
+        "min": 3.543904,
+        "max": 5.918208
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 419,
+        "processWallNs": 41645819500,
+        "observedLaunchToReapWallNs": 41726545300,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 38781250000,
+        "averageCpuCores": 0.9312159171222456,
+        "lifetimePeakPrivateBytes": 8800231424,
+        "lifetimePeakWorkingSetBytes": 750096384,
+        "sampledPeakPrivateBytes": 8794935296,
+        "sampledPeakWorkingSetBytes": 683188224,
+        "sampledPeakThreads": 48,
+        "lastMemorySampleBeforeExitMs": 11.9644,
+        "samplerQueryWallNs": 6603665300,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8256913408,
+        "minimumAvailableBytes": 1871761408,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-008-legacy-w1-measured\\Capture.json",
+        "frames": "run-008-legacy-w1-measured\\Frames.jsonl",
+        "osResources": "run-008-legacy-w1-measured\\OSResources.jsonl",
+        "console": "run-008-legacy-w1-measured\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "a504efa93dca14d8213bb76eaabda8ec3e878e4a17f657647f4bc379264ba0aa",
+        "frames": "c2cbcd7da8fa7f4a23930ac2521542a10199959ccf9bf6ec9b4b5a2e12e9cc28",
+        "osResources": "7d73e2bbf4261b9e1f8fdb5d5744a6d5340246b6df651dcc09c8871ada955f0e",
+        "console": "ded70c405d7a92be7de29fd0c0d0aedd0c3705c40b34f634737ff46007b54a80"
+      },
+      "originalRawLineSHA256": "847b4eacd4993b1954eaa61a44cd1b079cd4c191a3a685f9cca50d26111062dc"
+    },
+    {
+      "runId": 9,
+      "candidate": "shared",
+      "workers": 1,
+      "phase": "measured",
+      "block": 0,
+      "ordinal": 1,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 5.840521833333334,
+        "p50": 5.713,
+        "p95": 6.6274,
+        "p99": 7.0597,
+        "min": 4.9135,
+        "max": 37.0446
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.05312672,
+        "p50": 3.900128,
+        "p95": 4.649248,
+        "p99": 4.849472,
+        "min": 3.531424,
+        "max": 5.819104
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 408,
+        "processWallNs": 40581451700,
+        "observedLaunchToReapWallNs": 40625009000,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 38906250000,
+        "averageCpuCores": 0.9587200154301035,
+        "lifetimePeakPrivateBytes": 8800686080,
+        "lifetimePeakWorkingSetBytes": 748486656,
+        "sampledPeakPrivateBytes": 8775868416,
+        "sampledPeakWorkingSetBytes": 714981376,
+        "sampledPeakThreads": 48,
+        "lastMemorySampleBeforeExitMs": 10.982299999999999,
+        "samplerQueryWallNs": 6277995400,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258748416,
+        "minimumAvailableBytes": 1891405824,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-009-shared-w1-measured\\Capture.json",
+        "frames": "run-009-shared-w1-measured\\Frames.jsonl",
+        "osResources": "run-009-shared-w1-measured\\OSResources.jsonl",
+        "console": "run-009-shared-w1-measured\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "8d49d64b631412a1f144fa6e55d1026be8035960b6f38793fe1aafac84a700ef",
+        "frames": "1aeb79482968d8b67911d8e6b81c57c13247ee70b3a608223affe7e680f3acb7",
+        "osResources": "41204004ccf8c8ade03536a9c41dde0ebcf4ee6893812f95e749e18bfad6d8f4",
+        "console": "e5b9a8e1b997a6bd2319c6912dac7ef73ff4fd69bd6ac6e1676ebb25ce008e17"
+      },
+      "originalRawLineSHA256": "3e531685ca1ac0e5e501227f39655b95e125f6d8a21b0260a081595bb15719f4"
+    },
+    {
+      "runId": 10,
+      "candidate": "shared",
+      "workers": 1,
+      "phase": "measured",
+      "block": 0,
+      "ordinal": 2,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 5.9967535,
+        "p50": 5.829,
+        "p95": 7.1159,
+        "p99": 8.0692,
+        "min": 4.5723,
+        "max": 12.4824
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 4.11098464,
+        "p50": 4.108256,
+        "p95": 4.49632,
+        "p99": 4.861184,
+        "min": 3.58368,
+        "max": 5.65216
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 407,
+        "processWallNs": 40419561600,
+        "observedLaunchToReapWallNs": 40527962600,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 38593750000,
+        "averageCpuCores": 0.9548285155076991,
+        "lifetimePeakPrivateBytes": 8807374848,
+        "lifetimePeakWorkingSetBytes": 748134400,
+        "sampledPeakPrivateBytes": 8806334464,
+        "sampledPeakWorkingSetBytes": 723251200,
+        "sampledPeakThreads": 48,
+        "lastMemorySampleBeforeExitMs": 13.2381,
+        "samplerQueryWallNs": 5905690100,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8258682880,
+        "minimumAvailableBytes": 1414397952,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-010-shared-w1-measured\\Capture.json",
+        "frames": "run-010-shared-w1-measured\\Frames.jsonl",
+        "osResources": "run-010-shared-w1-measured\\OSResources.jsonl",
+        "console": "run-010-shared-w1-measured\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "f89bd1fc422ad6b932faace90e8c8de0b77c653ce626f70157710f85bba62a03",
+        "frames": "ceba389dae68388075f213d0d950ff3f67fec2c5a6cfb84b4aef2449674497a7",
+        "osResources": "bdbca5f5894fde67a88288b4bbf968023f881d3a814f712dcdc940a51ed83e5a",
+        "console": "e01a1f1251fc345f7e54b9c229fe30bdcf033f4f406465969e7cf755a3419a6d"
+      },
+      "originalRawLineSHA256": "ad917a22b100526d1c1a191c99f73c87884a99fda336306472bc98147d8d1863"
+    },
+    {
+      "runId": 11,
+      "candidate": "legacy",
+      "workers": 1,
+      "phase": "measured",
+      "block": 0,
+      "ordinal": 3,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 17.634375333333335,
+        "p50": 6.5399,
+        "p95": 59.1116,
+        "p99": 71.166,
+        "min": 4.9603,
+        "max": 75.7122
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 12.601914986666667,
+        "p50": 4.36064,
+        "p95": 45.051968,
+        "p99": 61.944448,
+        "min": 3.551104,
+        "max": 68.610464
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 483,
+        "processWallNs": 48068859600,
+        "observedLaunchToReapWallNs": 48128113300,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 37968750000,
+        "averageCpuCores": 0.7898824793421977,
+        "lifetimePeakPrivateBytes": 8793141248,
+        "lifetimePeakWorkingSetBytes": 748572672,
+        "sampledPeakPrivateBytes": 8788254720,
+        "sampledPeakWorkingSetBytes": 706543616,
+        "sampledPeakThreads": 48,
+        "lastMemorySampleBeforeExitMs": 13.0244,
+        "samplerQueryWallNs": 7298145600,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8256913408,
+        "minimumAvailableBytes": 860680192,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-011-legacy-w1-measured\\Capture.json",
+        "frames": "run-011-legacy-w1-measured\\Frames.jsonl",
+        "osResources": "run-011-legacy-w1-measured\\OSResources.jsonl",
+        "console": "run-011-legacy-w1-measured\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "5d1e37f41fcbfacc74b22653eccddc0cfa31f1317c2e6babc8b34d37c1ceab56",
+        "frames": "345048ad6222883cebe02b797813a0fecc7282ba32a14b2ac3bb440e1a43a5df",
+        "osResources": "b6ac43685539df1e262c8dd61b7c90ee3744d19f3a79db9637f7fb4a915bf16c",
+        "console": "aa4ae7d5e8214834eebeceb62eb71d69fee235f8a5a2027692ad1edb68515aba"
+      },
+      "originalRawLineSHA256": "0264b0c4d3cfd02365358e3441ad40d1f464fa55425e1b10eb57e0dcabbe58d9"
+    },
+    {
+      "runId": 12,
+      "candidate": "legacy",
+      "workers": 2,
+      "phase": "measured",
+      "block": 0,
+      "ordinal": 0,
+      "status": "passed",
+      "purpose": "performance",
+      "diagnostics": false,
+      "frameCount": 600,
+      "measuredFrameRange": {
+        "first": 181,
+        "last": 780
+      },
+      "frameMs": {
+        "samples": 600,
+        "mean": 8.174985166666668,
+        "p50": 8.1042,
+        "p95": 9.8892,
+        "p99": 11.0271,
+        "min": 5.0597,
+        "max": 13.4064
+      },
+      "gpuFrameMs": {
+        "samples": 600,
+        "mean": 6.1475299733333335,
+        "p50": 6.3048,
+        "p95": 7.11088,
+        "p99": 8.659264,
+        "min": 3.554976,
+        "max": 9.520512
+      },
+      "missing": [
+        "Scheduling diagnostics disabled or not exported"
+      ],
+      "processResources": {
+        "samples": 436,
+        "processWallNs": 43332662800,
+        "observedLaunchToReapWallNs": 43425821700,
+        "processWallSource": "GetProcessTimes creation/exit FILETIME",
+        "processCpuNs": 38687500000,
+        "averageCpuCores": 0.8928022766235358,
+        "lifetimePeakPrivateBytes": 8795865088,
+        "lifetimePeakWorkingSetBytes": 840232960,
+        "sampledPeakPrivateBytes": 8791998464,
+        "sampledPeakWorkingSetBytes": 840232960,
+        "sampledPeakThreads": 49,
+        "lastMemorySampleBeforeExitMs": 11.4056,
+        "samplerQueryWallNs": 6267713300,
+        "missing": [
+          "Process was absent from the Toolhelp process snapshot"
+        ]
+      },
+      "deviceMemory": {
+        "deviceLocalAllocatedSampledPeakBytes": 7632450464,
+        "deviceLocalBlockSampledPeakBytes": 7736194192,
+        "deviceLocalUsageSampledPeakBytes": 8256913408,
+        "minimumAvailableBytes": 634404864,
+        "domainAllocationPeakBytes": {
+          "Other": 110613472,
+          "Geometry": 537743104,
+          "CLAS": 67108864,
+          "CLASScratch": 152096656,
+          "RayTracing": 18311168,
+          "MaterialTextures": 6442574336,
+          "FrameResources": 250740992,
+          "Upload": 246590144
+        },
+        "trackedAllocationBytes": 7637927616,
+        "trackedDeviceLocalBytes": 7632450464,
+        "peakTrackedAllocationBytes": 7637927616,
+        "peakTrackedDeviceLocalBytes": 7632450464,
+        "snapshotCount": 64,
+        "missing": []
+      },
+      "validationMessages": {
+        "scanned": false
+      },
+      "artifacts": {
+        "capture": "run-012-legacy-w2-measured\\Capture.json",
+        "frames": "run-012-legacy-w2-measured\\Frames.jsonl",
+        "osResources": "run-012-legacy-w2-measured\\OSResources.jsonl",
+        "console": "run-012-legacy-w2-measured\\Console.log"
+      },
+      "artifactSha256": {
+        "capture": "89272e5c0723c5ebc36c37c6435abf987d15308e9ccdf652e81b7eb36f43b6b3",
+        "frames": "cbf1ae557ff229b5f49b0c636473018c73c68e10fc07fbcfded8eda2c2583b0f",
+        "osResources": "5b7919ab8a2d7231090fb4069fc9cd1404fe327153126feac954cc680601717f",
+        "console": "dc7a0522e25fcdfc04a9dee59c4c4986eeb5760236c8a5fcef62453c863d8921"
+      },
+      "originalRawLineSHA256": "1a571a1e429aa1c9dea11902d57a42b253c2c23ca8dfd428cc9a2d023b53d25c"
+    }
+  ],
+  "comparisons": []
+}

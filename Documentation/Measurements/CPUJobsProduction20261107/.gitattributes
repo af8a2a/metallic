@@ -1,0 +1,2 @@
+# Preserve exact measurement and as-run snapshot bytes for recorded SHA256s.
+* -text whitespace=trailing-space,space-before-tab,cr-at-eol

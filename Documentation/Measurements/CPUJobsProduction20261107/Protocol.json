@@ -73,5 +73,15 @@
     "validation": false,
     "captureImage": "Untimed final readback after last drain, for late fixed-view output inspection",
     "scope": "Fixed authored camera; resource plateau and stream-error checks, no claim of camera-route or per-frame image/video validation"
+  },
+  "userRequestedFrameBudgetReduction": {
+    "recordedUtc": "2026-11-07T01:59:10.785114+00:00",
+    "request": "Fewer test repetitions to avoid a long task",
+    "originalPlanCompleted": false,
+    "originalRecords": "Data/FrameOriginal",
+    "curatedPopulation": "Data/FrameReduced: eight excluded prewarm plus one complete W1 ABBA (four measured processes, two per backend)",
+    "excludedLaterRecords": "Completed W2 legacy run12 has no matched shared process; interrupted run13 is not a completed sample",
+    "stopCause": "External user time budget, before comparative outcomes were inspected; no outcome-dependent retries or replacement samples",
+    "remainingPolicy": "No additional renderer, cooker or test runs; existing records only"
   }
 }

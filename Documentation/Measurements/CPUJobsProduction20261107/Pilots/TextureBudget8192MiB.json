@@ -1,0 +1,2027 @@
+{
+  "camera": {
+    "center": [
+      -7.84351921081543,
+      1.786533236503601,
+      -0.6762740612030029
+    ],
+    "eye": [
+      -8.807430267333984,
+      1.5922194719314575,
+      -0.8582578301429749
+    ],
+    "fovDegrees": 58.51197814941406,
+    "orthoHeight": 2.0,
+    "projection": "perspective",
+    "up": [
+      -0.19094055891036987,
+      0.9809394478797913,
+      -0.03604902699589729
+    ],
+    "zfar": 10000.0,
+    "znear": 0.10000000149011612
+  },
+  "config": {
+    "camera": {
+      "center": [
+        -7.843519222198665,
+        1.786533203681289,
+        -0.6762740633110123
+      ],
+      "eye": [
+        -8.80743,
+        1.59221947,
+        -0.85825783
+      ],
+      "fovDegrees": 58.5119763983259,
+      "up": [
+        -0.1909405528670367,
+        0.980939433087972,
+        -0.03604902728223164
+      ],
+      "zfar": 10000.0,
+      "znear": 0.1
+    },
+    "captureImage": true,
+    "diagnostics": false,
+    "frames": 12,
+    "height": 1080,
+    "materialTextureBudgetMiB": 8192,
+    "memorySampleIntervalFrames": 10,
+    "sample": "gpu-driven-zorah-full",
+    "scenePath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+    "streamAssetPath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf.meshstream.bin",
+    "validation": false,
+    "warmupFrames": 12,
+    "width": 1920,
+    "workerCount": 4
+  },
+  "cpuFramePathContract": "nonoverlapping-coordinator-wall-segments-v1",
+  "deviceMemoryAfterCapture": {
+    "availableBytes": 1022996480,
+    "deniedAllocations": 0,
+    "domains": [
+      {
+        "allocationBytes": 88217008,
+        "allocationCount": 75,
+        "deviceLocalBytes": 88217008,
+        "peakAllocationBytes": 110613472
+      },
+      {
+        "allocationBytes": 3758968576,
+        "allocationCount": 3,
+        "deviceLocalBytes": 3758968576,
+        "peakAllocationBytes": 3758968576
+      },
+      {
+        "allocationBytes": 67108864,
+        "allocationCount": 1,
+        "deviceLocalBytes": 67108864,
+        "peakAllocationBytes": 67108864
+      },
+      {
+        "allocationBytes": 152096656,
+        "allocationCount": 48,
+        "deviceLocalBytes": 151310224,
+        "peakAllocationBytes": 152096656
+      },
+      {
+        "allocationBytes": 18307840,
+        "allocationCount": 7,
+        "deviceLocalBytes": 18307840,
+        "peakAllocationBytes": 18311168
+      },
+      {
+        "allocationBytes": 6442574336,
+        "allocationCount": 73,
+        "deviceLocalBytes": 6442574336,
+        "peakAllocationBytes": 6442574336
+      },
+      {
+        "allocationBytes": 233046272,
+        "allocationCount": 43,
+        "deviceLocalBytes": 232292864,
+        "peakAllocationBytes": 250740992
+      },
+      {
+        "allocationBytes": 22254368,
+        "allocationCount": 72,
+        "deviceLocalBytes": 18317056,
+        "peakAllocationBytes": 246590144
+      }
+    ],
+    "driverBudget": true,
+    "heaps": [
+      {
+        "allocationBytes": 10777096768,
+        "allocationCount": 310,
+        "blockBytes": 10872589232,
+        "blockCount": 227,
+        "budgetBytes": 12420456448,
+        "deviceLocal": true,
+        "sizeBytes": 16771973120,
+        "usageBytes": 11397459968
+      },
+      {
+        "allocationBytes": 5477152,
+        "allocationCount": 12,
+        "blockBytes": 33554432,
+        "blockCount": 1,
+        "budgetBytes": 16161691648,
+        "deviceLocal": false,
+        "sizeBytes": 16966998016,
+        "usageBytes": 119775232
+      }
+    ],
+    "primaryDeviceLocalHeap": 0,
+    "reservedBytes": 0
+  },
+  "deviceMemoryAfterLoad": {
+    "availableBytes": 940548096,
+    "deniedAllocations": 0,
+    "domains": [
+      {
+        "allocationBytes": 110613472,
+        "allocationCount": 91,
+        "deviceLocalBytes": 110613472,
+        "peakAllocationBytes": 110613472
+      },
+      {
+        "allocationBytes": 3758968576,
+        "allocationCount": 3,
+        "deviceLocalBytes": 3758968576,
+        "peakAllocationBytes": 3758968576
+      },
+      {
+        "allocationBytes": 67108864,
+        "allocationCount": 1,
+        "deviceLocalBytes": 67108864,
+        "peakAllocationBytes": 67108864
+      },
+      {
+        "allocationBytes": 152096656,
+        "allocationCount": 48,
+        "deviceLocalBytes": 151310224,
+        "peakAllocationBytes": 152096656
+      },
+      {
+        "allocationBytes": 18307840,
+        "allocationCount": 7,
+        "deviceLocalBytes": 18307840,
+        "peakAllocationBytes": 18311168
+      },
+      {
+        "allocationBytes": 6442574336,
+        "allocationCount": 73,
+        "deviceLocalBytes": 6442574336,
+        "peakAllocationBytes": 6442574336
+      },
+      {
+        "allocationBytes": 250740992,
+        "allocationCount": 45,
+        "deviceLocalBytes": 249987584,
+        "peakAllocationBytes": 250740992
+      },
+      {
+        "allocationBytes": 58742352,
+        "allocationCount": 78,
+        "deviceLocalBytes": 54805040,
+        "peakAllocationBytes": 246590144
+      }
+    ],
+    "driverBudget": true,
+    "heaps": [
+      {
+        "allocationBytes": 10853675936,
+        "allocationCount": 334,
+        "blockBytes": 10957419664,
+        "blockCount": 246,
+        "budgetBytes": 12420456448,
+        "deviceLocal": true,
+        "sizeBytes": 16771973120,
+        "usageBytes": 11479908352
+      },
+      {
+        "allocationBytes": 5477152,
+        "allocationCount": 12,
+        "blockBytes": 33554432,
+        "blockCount": 1,
+        "budgetBytes": 16161691648,
+        "deviceLocal": false,
+        "sizeBytes": 16966998016,
+        "usageBytes": 112304128
+      }
+    ],
+    "primaryDeviceLocalHeap": 0,
+    "reservedBytes": 0
+  },
+  "deviceMemoryAfterWarmup": {
+    "availableBytes": 884563968,
+    "deniedAllocations": 0,
+    "domains": [
+      {
+        "allocationBytes": 88217008,
+        "allocationCount": 75,
+        "deviceLocalBytes": 88217008,
+        "peakAllocationBytes": 110613472
+      },
+      {
+        "allocationBytes": 3758968576,
+        "allocationCount": 3,
+        "deviceLocalBytes": 3758968576,
+        "peakAllocationBytes": 3758968576
+      },
+      {
+        "allocationBytes": 67108864,
+        "allocationCount": 1,
+        "deviceLocalBytes": 67108864,
+        "peakAllocationBytes": 67108864
+      },
+      {
+        "allocationBytes": 152096656,
+        "allocationCount": 48,
+        "deviceLocalBytes": 151310224,
+        "peakAllocationBytes": 152096656
+      },
+      {
+        "allocationBytes": 18307840,
+        "allocationCount": 7,
+        "deviceLocalBytes": 18307840,
+        "peakAllocationBytes": 18311168
+      },
+      {
+        "allocationBytes": 6442574336,
+        "allocationCount": 73,
+        "deviceLocalBytes": 6442574336,
+        "peakAllocationBytes": 6442574336
+      },
+      {
+        "allocationBytes": 233046272,
+        "allocationCount": 43,
+        "deviceLocalBytes": 232292864,
+        "peakAllocationBytes": 250740992
+      },
+      {
+        "allocationBytes": 22263152,
+        "allocationCount": 73,
+        "deviceLocalBytes": 18325840,
+        "peakAllocationBytes": 246590144
+      }
+    ],
+    "driverBudget": true,
+    "heaps": [
+      {
+        "allocationBytes": 10777105552,
+        "allocationCount": 311,
+        "blockBytes": 10872589232,
+        "blockCount": 227,
+        "budgetBytes": 12282023936,
+        "deviceLocal": true,
+        "sizeBytes": 16771973120,
+        "usageBytes": 11397459968
+      },
+      {
+        "allocationBytes": 5477152,
+        "allocationCount": 12,
+        "blockBytes": 33554432,
+        "blockCount": 1,
+        "budgetBytes": 16161691648,
+        "deviceLocal": false,
+        "sizeBytes": 16966998016,
+        "usageBytes": 119775232
+      }
+    ],
+    "primaryDeviceLocalHeap": 0,
+    "reservedBytes": 0
+  },
+  "diagnostics": false,
+  "frameTimeDefinition": "start-to-start editor loop including frame-slot wait, rendering, submission, Present and telemetry; no per-frame GPU drain/readback",
+  "frames": 12,
+  "gpuAfterLoad": [
+    {
+      "device": "NVIDIA GeForce RTX 5070 Ti",
+      "driver": "621.01",
+      "gpuLoadPercent": 0.0,
+      "graphicsClockMHz": 397,
+      "powerMilliwatts": 35676,
+      "temperatureC": 45,
+      "throttleReasons": 1024,
+      "wholeDeviceMemoryUsedBytes": 16487100416
+    }
+  ],
+  "graph": [
+    {
+      "name": "VBuffer",
+      "properties": {
+        "asyncSoftwareRaster": false,
+        "autoBuildStreamAsset": false,
+        "autoLod": true,
+        "clasEmptyChunkRetentionFrames": 30,
+        "coldPageRetentionFrames": 120,
+        "compactClas": true,
+        "compactShadingAttributes": true,
+        "distributedDemandMinGroups": 65536,
+        "distributedPageDemand": true,
+        "enableClas": true,
+        "enableClusterRtx": true,
+        "growClasBytes": 67108864,
+        "hybridRaster": true,
+        "instanceFrustumCull": true,
+        "instanceHzbCull": true,
+        "lodPixelError": 1.5,
+        "materialTextureBudgetMiB": 8192,
+        "materialTextureColdFrames": 180,
+        "materialTextureMaskMaxDimension": 512,
+        "materialTextureMaxDimension": 128,
+        "materialTextureRefineDimension": 512,
+        "maxActiveGroups": 1048575,
+        "maxBlasBytes": 536870912,
+        "maxClasBuildClusters": 8192,
+        "maxClasBytes": 2147483648,
+        "maxGpuPageRequests": 65536,
+        "maxGpuPageUnloadRequests": 65536,
+        "maxLockedFallbackPages": 65536,
+        "maxPageLoadsInFlight": 1024,
+        "maxPageUploadsPerFrame": 256,
+        "maxRasterCandidates": 8388608,
+        "maxResidentBytes": 3758096384,
+        "maxResidentPages": 0,
+        "maxTraversalWorkItems": 1048576,
+        "maxTraversalWorkers": 4096,
+        "maxUploadBytesPerFrame": 8388608,
+        "meshletFrustumCull": true,
+        "meshletNormalConeCull": false,
+        "pageLoadConcurrency": 4,
+        "path": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+        "persistentClasGrowBytes": 33554432,
+        "sceneBinding": "asset",
+        "startClasBytes": 0,
+        "streamAssetPath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf.meshstream.bin",
+        "viewBinding": "global",
+        "visualization": "none"
+      },
+      "type": "VisibilityBufferPass"
+    },
+    {
+      "name": "Shadows",
+      "properties": {
+        "materialTextureBudgetMiB": 8192,
+        "materialTextureColdFrames": 180,
+        "materialTextureMaskMaxDimension": 512,
+        "materialTextureMaxDimension": 128,
+        "materialTextureRefineDimension": 512,
+        "path": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+        "rayTracedShadows": true,
+        "shadowBias": 0.01,
+        "shadowLightIndex": -1,
+        "shadowLightRadius": 0.05,
+        "shadowRayLength": 100000.0,
+        "sigmaDenoise": true,
+        "sigmaHistoryLength": 5
+      },
+      "type": "RayTracedShadowPass"
+    },
+    {
+      "name": "Deferred",
+      "properties": {
+        "exportUpscalerGuides": true,
+        "materialBinning": true,
+        "materialTextureBudgetMiB": 8192,
+        "materialTextureColdFrames": 180,
+        "materialTextureMaskMaxDimension": 512,
+        "materialTextureMaxDimension": 128,
+        "materialTextureRefineDimension": 512,
+        "outputLinear": true,
+        "path": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"
+      },
+      "type": "VisibilityBufferDeferredPass"
+    },
+    {
+      "name": "DLSSSR",
+      "properties": {
+        "exportOutputGuides": true,
+        "mode": "Quality"
+      },
+      "type": "StreamlineDLSSSRPass"
+    },
+    {
+      "name": "AutoExposure",
+      "properties": {},
+      "type": "AutoExposurePass"
+    },
+    {
+      "name": "DLSSNR",
+      "properties": {
+        "enabled": false,
+        "fallbackToInput": true,
+        "intensity": 1.0,
+        "preset": 0,
+        "style": 0
+      },
+      "type": "DLSSNRPass"
+    },
+    {
+      "name": "FinalBlit",
+      "properties": {},
+      "type": "FinalBlitPass"
+    },
+    {
+      "name": "ColorGrading",
+      "properties": {
+        "toneCurve": "aces2"
+      },
+      "type": "ColorGradingLUTPass"
+    }
+  ],
+  "hiddenWindow": true,
+  "image": {
+    "bytes": 16588800,
+    "colorEncoding": 2,
+    "file": "FinalColor.bin",
+    "format": "RGBA16Sfloat",
+    "height": 1080,
+    "width": 1920
+  },
+  "loadingFrames": 1,
+  "loadingSeconds": 104.2290902,
+  "measuredSeconds": 0.0696934,
+  "missingGpuFrames": 0,
+  "outputExtent": [
+    1920,
+    1080
+  ],
+  "protocol": "metallic-cpu-jobs-production-v1",
+  "recordingWorkerLimit": 4,
+  "renderExtent": [
+    1280,
+    720
+  ],
+  "resourceDefinition": "VMA/driver budget snapshots after selected frames; domain peaks are independent lifetime highs and must not be summed; OS monitor spans process lifetime",
+  "scene": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+  "scopes": [
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 0,
+      "path": "Frame"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": true,
+      "cpuOnly": true,
+      "id": 1,
+      "path": "Frame/Idle / Wait Frame Slot Before Input"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 2,
+      "path": "Frame/Streamer maintenance before pacing"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 3,
+      "path": "Frame/Streamer maintenance before pacing/Residency completion"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 4,
+      "path": "Frame/Streamer maintenance before pacing/Residency completion/Reset / latency tracking"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 5,
+      "path": "Frame/Streamer maintenance before pacing/Residency completion/Complete update tasks"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 6,
+      "path": "Frame/Streamer maintenance before pacing/Residency completion/Complete storage tasks"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 7,
+      "path": "Frame/Streamer maintenance before pacing/Residency completion/Complete unload tasks"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 8,
+      "path": "Frame/Streamer maintenance before pacing/Residency completion/Consume queued requests"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 9,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 10,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Map feedback"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 11,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 12,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Deduplicate loads"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 13,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Deduplicate loads/Prepare load containers"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 14,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Deduplicate loads/Validate / merge loads"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 15,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Deduplicate loads/Track merged demand"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 16,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Deduplicate unloads"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 17,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Deduplicate unloads/Prepare unused-page set"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 18,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Deduplicate unloads/Validate / insert unused pages"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 19,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Update resident demand"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 20,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Admit request batch"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 21,
+      "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Unmap feedback"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 22,
+      "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 23,
+      "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim/Credit pending frees"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 24,
+      "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim/Evaluate budget pressure"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 25,
+      "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim/Prepare cold candidates"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 26,
+      "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim/Prepare cold candidates/Scan resident candidates"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 27,
+      "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim/Prepare cold candidates/Sort cold candidates"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 28,
+      "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim/Schedule cold evictions"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 29,
+      "path": "Frame/Streamer maintenance before pacing/Discard obsolete CLAS plans"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 30,
+      "path": "Frame/Poll Events"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 31,
+      "path": "Frame/Render Frame"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 32,
+      "path": "Frame/Render Frame/Poll Nsight Capture"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 33,
+      "path": "Frame/Render Frame/Begin Frame Slot"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": true,
+      "cpuOnly": true,
+      "id": 34,
+      "path": "Frame/Render Frame/Begin Frame Slot/Idle / Wait Slot Completion"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 35,
+      "path": "Frame/Render Frame/Begin Frame Slot/Resolve GPU Queries"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 36,
+      "path": "Frame/Render Frame/Begin Frame Slot/Update GPU Profiler"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 37,
+      "path": "Frame/Render Frame/Shader Hot Reload"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 38,
+      "path": "Frame/Render Frame/ImGui NewFrame"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 39,
+      "path": "Frame/Render Frame/Dockspace"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 40,
+      "path": "Frame/Render Frame/Panels"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 41,
+      "path": "Frame/Render Frame/Panels/Streamline Debug Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 42,
+      "path": "Frame/Render Frame/Panels/Scene Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 43,
+      "path": "Frame/Render Frame/Panels/Runtime Settings Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 44,
+      "path": "Frame/Render Frame/Panels/Inspector Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 45,
+      "path": "Frame/Render Frame/Panels/Statistics Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 46,
+      "path": "Frame/Render Frame/Panels/Viewport Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 47,
+      "path": "Frame/Render Frame/Panels/Render Graph Editor"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 48,
+      "path": "Frame/Render Frame/Panels/Assets Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 49,
+      "path": "Frame/Render Frame/Panels/Console Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 50,
+      "path": "Frame/Render Frame/Panels/Profiler Panel"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 51,
+      "path": "Frame/Render Frame/Panels/NVML Monitor"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 52,
+      "path": "Frame/Render Frame/ImGui Render"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 53,
+      "path": "Frame/Render Frame/Acquire Swapchain Image"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 54,
+      "path": "Frame/Render Frame/Begin Command Buffer"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 55,
+      "path": "Frame/Render Frame/Record RenderGraph"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 56,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 57,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Refresh scene bindings"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 58,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 59,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Validate queue contracts"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 60,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Compile resource access plan"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 61,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Append incoming waits"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 62,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Poll / retire external completions"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 63,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Copy external dependencies"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 64,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Read scene revisions"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 65,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Preflight/Check frame overlap contracts"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 66,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Prior frame drain"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 67,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Submission slot wait"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 68,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Command pool reset"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 69,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Frame begin"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 70,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/Graph preparation / Frame setup"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 71,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 72,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 73,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 74,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 75,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Residency completion"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 76,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/CLAS completion / expiry"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 77,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/CLAS completion / expiry/Collect GPU CLAS page outcomes"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 78,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Retire unloaded CLAS"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 79,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Prepare page uploads"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 80,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Prepare page uploads/Sort queued loads"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 81,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Prepare page uploads/Schedule page I/O"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 82,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Prepare page uploads/Collect decoded pages"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 83,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Prepare page uploads/Sort ready uploads"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 84,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Prepare page uploads/Prepare transfer batch"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 85,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Queue resident CLAS"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 86,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Streamer prepare/Stream Begin/Publish resident pages"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 87,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility prepare"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 88,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility prepare/Visibility camera parameters"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 89,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility prepare/Visibility resource packet"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 90,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 91,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/Traversal setup"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 92,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/Page updates"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 93,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/Priority clear"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 94,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/LOD clear / demand seed"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 95,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/CLAS build"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 96,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/CLAS build/CLAS preparation"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 97,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/Fallback BLAS"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 98,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/Detail demand"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 99,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/LOD frontier"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 100,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/LOD mask"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 101,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/LOD prefix"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 102,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/LOD emit"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 103,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/Prefetch"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 104,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/Traversal finalize"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 105,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/RT representation classify"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 106,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/RT representation cut"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 107,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS reset"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 108,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS count"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 109,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS cut compare"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 110,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS setup"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 111,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS prepare allocation"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 112,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS insert"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 113,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS build"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 114,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS GPU allocate"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 115,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS move"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 116,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS publish"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 117,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 118,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Initialize / light grid"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 119,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Early instance cull"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 120,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Early instance cull/Async TLAS build"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 121,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Clear visibility"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 122,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Clear visibility/Clear visibility"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 123,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 124,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 125,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Candidates"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 126,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Cluster cull"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 127,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Soft/hard classification"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 128,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Stable bins"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 129,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Software raster"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 130,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Hardware raster"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 131,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Raster merge"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 132,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Early HZB"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 133,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Late instance cull"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 134,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 135,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 136,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Candidates"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 137,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Cluster cull"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 138,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Soft/hard classification"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 139,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Stable bins"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 140,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Software raster"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 141,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Hardware raster"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 142,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Raster merge"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 143,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Late HZB"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 144,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Debug composite"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 145,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream End"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 146,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Upload flush"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 147,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 148,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 149,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 150,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Consume texture feedback"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 151,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Texture migration"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 152,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Texture migration/Poll migration completion"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 153,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Retire texture generations"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 154,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Schedule texture migration"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 155,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Schedule texture migration/Candidates and allocation queries"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 156,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Schedule texture migration/Sort and admit candidates"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 157,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Prepare texture feedback"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 158,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Streamer prepare/Texture streaming/Initialize Device texture feedback"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 159,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Shadow setup"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 160,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Shadow trace"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 161,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Shadow finalize"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 162,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Publish shadow"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 163,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Validate inputs and camera"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 164,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Build light records"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 165,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Resolve stream resources"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 166,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 167,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Validate shadow resources"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 168,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Prepare trace pipeline"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 169,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Prepare shadow images"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 170,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Prepare shadow parameters"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 171,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Plan shadow accesses"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 172,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Prepare dispatch bindings"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 173,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Prepare dispatch bindings/Prepare material textures"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 174,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Record trace dispatch"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 175,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Record trace dispatch/Encode compute parameters"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 176,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Record trace dispatch/Record dispatch commands"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 177,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Record denoising"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 178,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Prepare and record shadows/Finalize shadow state"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 179,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Publish shadow image"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 180,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Publish shadow parameters"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 181,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Publish camera history"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 182,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Shadows (RayTracedShadowPass)/Upload flush"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 183,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 184,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Streamer prepare"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 185,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Material classification"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 186,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Deferred shading"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 187,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Validate scene and environment"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 188,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare lights and sampling"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 189,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare output and shading parameters"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 190,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare visibility resources"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 191,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare camera and history"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 192,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare material textures and LUTs"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 193,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 194,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare dispatch bindings/Record material binning"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 195,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Prepare radiance cache parameters"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 196,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 197,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Encode compute parameters"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 198,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Record shading dispatch/Record dispatch commands"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 199,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Publish shading history"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 200,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Upload flush"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 201,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSSR (StreamlineDLSSSRPass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 202,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSSR (StreamlineDLSSSRPass)/DLSS depth export"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 203,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSSR (StreamlineDLSSSRPass)/DLSS super resolution"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 204,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSSR (StreamlineDLSSSRPass)/DLSS alpha resolve"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 205,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSSR (StreamlineDLSSSRPass)/DLSS output guides"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 206,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSSR (StreamlineDLSSSRPass)/Upload flush"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 207,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/AutoExposure (AutoExposurePass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 208,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/AutoExposure (AutoExposurePass)/Histogram"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 209,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/AutoExposure (AutoExposurePass)/Reduce"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 210,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/AutoExposure (AutoExposurePass)/Apply"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 211,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/AutoExposure (AutoExposurePass)/Upload flush"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 212,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSNR (DLSSNRPass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 213,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSNR (DLSSNRPass)/DLSS NR pass through"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 214,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DLSSNR (DLSSNRPass)/Upload flush"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 215,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/ColorGrading (ColorGradingLUTPass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 216,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/ColorGrading (ColorGradingLUTPass)/Upload flush"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 217,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/FinalBlit (FinalBlitPass)"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 218,
+      "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/FinalBlit (FinalBlitPass)/Upload flush"
+    },
+    {
+      "cpuEditor": true,
+      "cpuIdle": false,
+      "cpuOnly": true,
+      "id": 219,
+      "path": "Frame/Render Frame/Record ImGui Draw"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 220,
+      "path": "Frame/Render Frame/End Command Buffer"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 221,
+      "path": "Frame/Render Frame/Submit Frame"
+    },
+    {
+      "cpuEditor": false,
+      "cpuIdle": false,
+      "cpuOnly": false,
+      "id": 222,
+      "path": "Frame/Render Frame/Present"
+    }
+  ],
+  "status": "passed",
+  "validationRequested": false,
+  "workerCount": 4
+}

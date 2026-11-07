@@ -1,0 +1,14 @@
+{
+  "contextSuppliedByCaller": "SuperSponza fixed scene/camera/effective graph/extents; 60 warmup plus 120 captured frames (61..180), final export after frame 180; core validation on, synchronization validation off. Raw-coordinate differences are diagnostic and compared with same-backend repeats; no bitwise equality preset or independent proof of all temporal state.",
+  "sourceSHA256": [
+    "0a4bae9d6cf98e79b243e601c1c3198b8e26f24755017db0496fff2dc89ee94e",
+    "b6a3db2bf9a43674ad173668298a299022c3d001fd919b2aefedfcbb86bfe4d5"
+  ],
+  "rawBytesEqual": false,
+  "rgbMeanAbsoluteDifference": 4.2759171694731764e-05,
+  "rgbMaximumAbsoluteDifference": 0.3046875,
+  "rgbRootMeanSquareDifference": 0.00034667068453949463,
+  "fractionOfPixelsWithAnyRGBDifference": 0.15575135030864198,
+  "maximumAlphaDifference": 0.0,
+  "definition": "Differences in the raw image's coordinate encoding; RGBA8 is normalized to [0,1]. No automatic pass/fail threshold or temporal-equivalence claim."
+}

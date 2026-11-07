@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "generatedUtc": "2026-11-07T01:52:05.593188+00:00",
+  "plottingPlatform": "Windows-11-10.0.26300-SP0",
+  "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
+  "matplotlib": "3.10.9",
+  "scriptSnapshot": "PlotProductionCPUJobs.py",
+  "plotterSHA256": "c981e76a872dcf68a543b5a6e7f68306549c375676d5e3be5ee48f4f88cc343f",
+  "inputsSHA256": {
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\cold-cook-final-super-sponza\\Metadata.json": "5abcf2f476b2ef40d0e93aff87081ba1ce59fa0e585c90591677f343a5482f6f",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\cold-cook-final-super-sponza\\Raw.jsonl": "f5941a5980982fc5b85f936eae55cbce0dc5f797732a03c4d00bd51cba2a4aab",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\Metadata.json": "280bb82d42cae9ae83983565c082c330eeca2ab2cd7d6eda553e4bf0d389d29a",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\Raw.jsonl": "64f8a69a49a9d5fd0d010b7167bd599ef9374c3f11b892904e569ec572e00348",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-008-legacy-w1-measured\\Console.log": "ded70c405d7a92be7de29fd0c0d0aedd0c3705c40b34f634737ff46007b54a80",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-009-shared-w1-measured\\Console.log": "e5b9a8e1b997a6bd2319c6912dac7ef73ff4fd69bd6ac6e1676ebb25ce008e17",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-010-shared-w1-measured\\Console.log": "e01a1f1251fc345f7e54b9c229fe30bdcf033f4f406465969e7cf755a3419a6d",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-011-legacy-w1-measured\\Console.log": "aa4ae7d5e8214834eebeceb62eb71d69fee235f8a5a2027692ad1edb68515aba",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-008-legacy-w1-measured\\Frames.jsonl": "c2cbcd7da8fa7f4a23930ac2521542a10199959ccf9bf6ec9b4b5a2e12e9cc28",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-009-shared-w1-measured\\Frames.jsonl": "1aeb79482968d8b67911d8e6b81c57c13247ee70b3a608223affe7e680f3acb7",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-010-shared-w1-measured\\Frames.jsonl": "ceba389dae68388075f213d0d950ff3f67fec2c5a6cfb84b4aef2449674497a7",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-011-legacy-w1-measured\\Frames.jsonl": "345048ad6222883cebe02b797813a0fecc7282ba32a14b2ac3bb440e1a43a5df",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-008-legacy-w1-measured\\Capture.json": "a504efa93dca14d8213bb76eaabda8ec3e878e4a17f657647f4bc379264ba0aa",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-009-shared-w1-measured\\Capture.json": "8d49d64b631412a1f144fa6e55d1026be8035960b6f38793fe1aafac84a700ef",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-010-shared-w1-measured\\Capture.json": "f89bd1fc422ad6b932faace90e8c8de0b77c653ce626f70157710f85bba62a03",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\frame-perf-reduced-super-sponza\\run-011-legacy-w1-measured\\Capture.json": "5d1e37f41fcbfacc74b22653eccddc0cfa31f1317c2e6babc8b34d37c1ceab56"
+  },
+  "budgets": {
+    "frameMs": null,
+    "cpuMemoryMiB": null,
+    "vramMiB": null
+  },
+  "notes": [
+    "P50/P95/P99 summarize the recorded sample population, not confidence intervals. Missing data is never replaced with zero.",
+    "Budgets: frameMs=not supplied; cpuMemoryMiB=not supplied; vramMiB=not supplied",
+    "Production input purpose=performance; scheduling diagnostics=off; app diagnostic sink=False. Validation and performance populations are not mixed.",
+    "Production: 4 passed measured processes; 8 prewarm/failed/incomplete records excluded from latency comparisons. Frames are correlated within a process; per-process quantiles are plotted individually, never pooled as independent experiments.",
+    "Production worker limits: [1]; W labels identify each limit. No results are averaged across different worker limits, blocks or executable candidates.",
+    "SceneLoad console step durations are independent producer-owned envelopes; order is console occurrence, not a shared-clock timeline. They may include nested or overlapping work and are not summed into total loading. Separate PNG decode, mip generation and upload boundaries are NA: the available logs do not establish complete independent intervals for these stages.",
+    "A TaskGraph/DAG critical path is unavailable unless dependency-linked task intervals are separately recorded. Inclusive profiler scope durations alone do not establish that path.",
+    "No dependency-linked TaskGraph intervals inside a measured frame window: DAG completion-chain plots unavailable. Diagnostic sink runs are separate from performance-off captures."
+  ],
+  "figures": [
+    {
+      "file": "ProductionCookProcesses.png",
+      "title": "Production cooker process samples",
+      "caption": "CPU-ONLY PRODUCTION COOK \u2014 new output each process; OS/source caches retained; not frames/FPS. 48 passed cook processes, shown separately in source order. Worker counts are not pooled. Cook process wall and application elapsed have different boundaries; all-page/source-attribute validation is a separate process and excluded. Fresh output does not imply a flushed OS file cache."
+    },
+    {
+      "file": "ProductionCookResources.png",
+      "title": "Production cooker process resources",
+      "caption": "CPU-ONLY PRODUCTION COOK \u2014 new output each process; OS/source caches retained; not frames/FPS. Only cook-process OS counters are plotted, through the last successful sample. Separate validation-process peaks are not merged. The cooker is CPU-only; aligned device-payload byte counts are storage/accounting estimates, not measured VRAM."
+    },
+    {
+      "file": "ProductionLoadingScopes.png",
+      "title": "Production initialization, loading and process lifetime",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. Each marker is one process and one independently owned wall-duration scope. Editor initialization is the explicit console duration; capture loadingSeconds begins after Editor initialization and ends at scene ready, including shader compilation and uploads within that envelope. OS process lifetime covers launch to exit, including initialization, loading, warmup, capture and shutdown. These scopes are not stacked or subtracted to infer a warmup duration. Missing observations are unavailable, not zero."
+    },
+    {
+      "file": "ProductionFrameBlocks.png",
+      "title": "Production frame distributions by process/block",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. legacy: 2 processes, shared: 2 processes. Every marker is one process quantile of its measured frames; P95/P99 are not confidence bounds. Missing GPU data is unavailable, not zero. No frame budget was supplied."
+    },
+    {
+      "file": "ProductionFrameSeries01.png",
+      "title": "Production recorded frame time series, page 1",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. Every recorded frame is shown in its own process, with common y limits across all pages; no smoothing, interpolation, rebasing or cross-process concatenation. Shading uses the runner's explicit measuredFrameRange when available; absent windows are not guessed. The per-process Raw.frameMs distribution remains the measured-window authority."
+    },
+    {
+      "file": "ProductionCPUScopes.png",
+      "title": "Production CPU scope wall durations",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. legacy: 2 processes, shared: 2 processes; each dot is one process's scope-occurrence median, which may have a different sample count than frameCount. Top 16 paths ranked by their largest process median. Nested, parallel and idle scopes can overlap; no scope durations are summed, subtracted into CPU work, or relabeled as a critical path."
+    },
+    {
+      "file": "ProductionCoordinatorPath.png",
+      "title": "Production non-overlapping coordinator frame path",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. Only explicit producer-contracted intervals are used, with non-overlap/envelope validation. Stacks use means from the same complete frames, not sums of P50s. Unattributed frame envelope is a measured duration difference, not worker idle or useful CPU work. This is not a reconstructed TaskGraph longest path."
+    },
+    {
+      "file": "ProductionResourcePeaks.png",
+      "title": "Production memory and process-thread peaks",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. legacy: 2 processes, shared: 2 processes; one marker per available process metric. OS high-waters include startup only through the last successful sample; current-value sampled peaks depend on poll cadence/window. Device-local allocated/block/usage measures are not additive or automatically process-private. Missing values remain absent. No RAM/VRAM budget is assumed when none is supplied; whole-device capacity is not an application budget."
+    },
+    {
+      "file": "ProductionRHIHighWaters.png",
+      "title": "Production RHI allocation high-waters",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. Event high-waters are simultaneous totals maintained at RHI allocation/free events, through the last queried snapshot. They cover RHI-tracked allocations, excluding untracked external SDK/driver memory. Current-value sampled maxima are separate. Host+device totals are not VRAM-only; domains and these totals are not added together. Missing counters remain unavailable."
+    },
+    {
+      "file": "ProductionCPUOccupancy.png",
+      "title": "Production CPU occupancy",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. Each available marker is process CPU time divided by lifetime wall time, across all process threads. It includes loading/warmup when those fall in the producer's process window. It is neither worker utilization nor a CPU usage peak. No host-wide CPU utilization or peak CPU usage is synthesized."
+    },
+    {
+      "file": "ProductionMemoryDomains.png",
+      "title": "Production domain allocation peaks",
+      "caption": "PERFORMANCE run \u2014 per-process/block units; warmup/prewarm excluded. Each point is one process's reported peak for that allocation domain. Peaks can occur on different frames. RHI domains may include host and device allocations; this is not a VRAM-only partition. Domain definitions and ownership come from the producer; they are not summed into a simultaneous total or a memory budget."
+    }
+  ],
+  "figureSHA256": {
+    "ProductionCookProcesses.png": "3734d0d617ea85862e1ef24484fbf93f78cf7bcfe9c93512ee41e8dc22c9cf9b",
+    "ProductionCookResources.png": "aa81896ea052f1dcba92405583dd60e13246b2a671107ab656ee9234f8721414",
+    "ProductionLoadingScopes.png": "3fe97877a5fd2853ac4c7d1fe08937e88924da5e3b8e4782d0c6edd5505abdaf",
+    "ProductionFrameBlocks.png": "a45d73a2c669776d1f9bcf5918b78046b134dbf7c8e1fa76c05f0b3870d28367",
+    "ProductionFrameSeries01.png": "33f97fa941712a063e017fc013c05cc8569b87a68f8124f0ff91b652f55404ce",
+    "ProductionCPUScopes.png": "a61dd6c4a42f0fbf4f73f99a015674fdedd1a021839d164cabbca8b8393d0c8c",
+    "ProductionCoordinatorPath.png": "c4d467f24d1ee3eff592bcdf0fb612e86f49da02ae016b7e46eb76b866f5f546",
+    "ProductionResourcePeaks.png": "8062b0ebc8ed6fd75bec4ded6af36933cd25408333005ff1c2a98bcb54045b35",
+    "ProductionRHIHighWaters.png": "3ae9ef42aefdff0fede112a18723237ed6575ab11869d92d910706f62c120202",
+    "ProductionCPUOccupancy.png": "bcaf9a70ac1715723180edf6b2fdcf7eb46cf6894eaac0d6395186634c9122d8",
+    "ProductionMemoryDomains.png": "a0306d5c75986715d129093c70aa7588be931854e9656712a05e743eee92f508"
+  }
+}

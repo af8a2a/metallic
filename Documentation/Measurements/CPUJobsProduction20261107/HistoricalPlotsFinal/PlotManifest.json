@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "generatedUtc": "2026-11-07T01:52:35.120583+00:00",
+  "plottingPlatform": "Windows-11-10.0.26300-SP0",
+  "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
+  "matplotlib": "3.10.9",
+  "scriptSnapshot": "PlotProductionCPUJobs.py",
+  "plotterSHA256": "c981e76a872dcf68a543b5a6e7f68306549c375676d5e3be5ee48f4f88cc343f",
+  "inputsSHA256": {
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Baseline\\Metadata.json": "196922a1816bc2d31f2c619e635c581165bad55a3b23a07d98fef9fa243a361b",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Baseline\\Raw.jsonl": "db518790d53b67d853ef2616c91a7042e6a5e57941f4ebebe5e5c68d27a86593",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\SmallTasks\\Metadata.json": "99c98d51d835eb9a205ec636fa396e4f2aa672e4b7208eacd127cfbaceda2c14",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\SmallTasks\\Raw.jsonl": "1e07b799b58e97a45d118830f3e6d8ee1f3a8b03454615483e3c6908c3d7a030",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Range\\Metadata.json": "508270b85ca0968f3acf07ac9af8e2cb249389e63a6ec841efd47343219abf48",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Range\\Raw.jsonl": "fd610ad16167d19592bad97b3507cbc8da52dee924e4d48c69d97a02c923e69b",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Kernels\\Metadata.json": "a47408b6781d9617b38e56a96cd72be4bd063b04538cc56ba2519382f959c4c8",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Kernels\\Raw.csv": "a2accc196cfada9a0052e523b4557bade4a5d366b96417f4faa9175f4f017996",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Meshlet\\Metadata.json": "e92adefce754becc8679fcd5453a9788ef61412887f63795d82085c4575db1a7",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106\\Meshlet\\Raw.jsonl": "08af667898234a03709eb1b4d6cc76683e9fd9d5edffd8afcb14b83b566507af"
+  },
+  "budgets": {
+    "frameMs": null,
+    "cpuMemoryMiB": null,
+    "vramMiB": null
+  },
+  "notes": [
+    "P50/P95/P99 summarize the recorded sample population, not confidence intervals. Missing data is never replaced with zero.",
+    "Budgets: frameMs=not supplied; cpuMemoryMiB=not supplied; vramMiB=not supplied",
+    "Historical plots use archived 2026-11-06 evidence from C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Documentation\\Measurements\\CPUJobs20261106; they are separate workloads and binaries from production A/B."
+  ],
+  "figures": [
+    {
+      "file": "HistoricalScheduler.png",
+      "title": "Archived scheduler baseline",
+      "caption": "P50 lines and P50-P95 bands; 20 warm invocations per point, diagnostics off, grain 64. Raw stdexec and TaskGraph have different graph bookkeeping; these are not deque-only costs. Archived floor-index quantiles are retained. Invocations are not independent fresh processes."
+    },
+    {
+      "file": "HistoricalRange.png",
+      "title": "Archived range strategies",
+      "caption": "P50 lines and P50-P95 bands; grain 64, 20 warm invocations per point, diagnostics off. Uniform/long-tail contain 65,536 elements; bandwidth contains 16,777,216 uint32 values. Identical kernels within each workload; useful work, scheduling and join are timed together. No FPS inference."
+    },
+    {
+      "file": "HistoricalSIMD.png",
+      "title": "Archived SIMD kernel isolation",
+      "caption": "Bars show warm P50, whiskers P95; each bar has 93 warm samples from 3 processes x 31 invocations. Same interval algorithm and SoA input; allocation/repacking/scheduling excluded. Multi-target selects AVX2 on this host. The 31-element timer-quantized case is retained in raw evidence, omitted from this scale comparison."
+    },
+    {
+      "file": "HistoricalPacking.png",
+      "title": "Archived layout-conversion cost",
+      "caption": "Runtime-dispatch configuration, 93 warm samples per point. Dots show P50, whiskers P95 on a log axis. Simple AoS-to-SoA packing is timed separately from kernels; values must not be added into an asserted end-to-end scene speedup. Optimized packing and production SoA lifetime were not measured."
+    },
+    {
+      "file": "HistoricalMeshlets.png",
+      "title": "Archived generated geometry cooker",
+      "caption": "P50 lines and P50-P95 bands; 6 process samples per point, complete logical geometry hashes checked by the original runner. Generated grids with cold process/warmup protocol documented in the source evidence; this is not SuperSponza or a renderer frame."
+    }
+  ],
+  "figureSHA256": {
+    "HistoricalScheduler.png": "2773ad50623b27dc3a52db94356e8ea2a9eaa1ad6cfe48a2307b2eaf0fcb18ac",
+    "HistoricalRange.png": "4ad3956727355c051f57664deac47a89082b730e038c148088b3bb6e00d4901b",
+    "HistoricalSIMD.png": "d9cd66a27cae65b145d02904578c06a4c02962cf0516a0905d01d355f1ad69eb",
+    "HistoricalPacking.png": "50e8feef879884929255d03bbe8f9b0b82e2088adde34023603fc6b1a23e7ac9",
+    "HistoricalMeshlets.png": "14603a60cea50b82c5dee567e647ebf385281eb1f62debf265fd86874a9f535c"
+  }
+}
