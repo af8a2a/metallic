@@ -25,5 +25,22 @@
   ],
   "quality": "Same production preset; RT shadow + SIGMA + DLSS Quality, 1920x1080 output / 1280x720 render. 8192MiB material budget for 72 full 4K PNG images; upload concurrency and quality unchanged.",
   "revisionBeforeAcceptanceSamplingUtc": "2026-11-07T01:00:27.970481+00:00",
-  "geometryCapacity": "512 MiB, same both arms; all 3781 cooked pages require 314864384 aligned device bytes and fit together. Replaces unrelated Zorah 3.5GiB capacity without changing page payload, LOD pixel error, traversal or quality. Pre-sampling pilot showed global desktop VRAM baseline 6452MiB and near-full whole-device usage with the oversized capacity."
+  "geometryCapacity": "512 MiB, same both arms; all 3781 cooked pages require 314864384 aligned device bytes and fit together. Replaces unrelated Zorah 3.5GiB capacity without changing page payload, LOD pixel error, traversal or quality. Pre-sampling pilot showed global desktop VRAM baseline 6452MiB and near-full whole-device usage with the oversized capacity.",
+  "validationCompatibility": {
+    "observedUtc": "2026-11-07T01:07:08.253800+00:00",
+    "failedAttempt": "build-issue73-production/validation-super-sponza/run-000-legacy-w4-measured",
+    "reason": "Streamline vkCreateInstance wrapper rejects VK_EXT_layer_settings; device creation Unsupported before rendering",
+    "fullProduction": "Core validation with DLSS+SIGMA retained. Synchronization validation evaluated separately where supported; no downgrade of the full workload."
+  },
+  "correctnessBudget": {
+    "declaredUtc": "2026-11-07T01:10:58.468429+00:00",
+    "workers": [
+      4
+    ],
+    "blocks": 1,
+    "warmupFrames": 60,
+    "measuredFrames": 120,
+    "purpose": "Core validation/image output only, no performance inference",
+    "pilot": "Earlier complete 600-frame core-validation capture passed in app with zero validation messages but old runner rejected core-only sync=false schema; preserve separately. Core validation averaged ~130ms/frame, so shorten independent correctness population before final comparative captures."
+  }
 }
