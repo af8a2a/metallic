@@ -2322,46 +2322,66 @@ bool vsmAccumulateReceiverMask(uint page, uint2 mask)
 }
 #endif
 
-float2 vsmDirectionalFootprintRange(float4 row, float3 position, float3 toLight,
-    float3 right, float3 up, float rayLength, float coneRadius, float texelSize)
+struct VSMDirectionalFootprintContext
+{
+    float3 toLight;
+    float3 right;
+    float3 up;
+    float rayLength;
+    float coneRadius;
+    float texelSize;
+    float3 commonPos;
+};
+
+float2 vsmDirectionalFootprintRange(float4 row, float3 position, VSMDirectionalFootprintContext ctx)
 {
     float center = dot(row, float4(position, 1.0));
-    float axial = rayLength * dot(row.xyz, toLight);
-    float transverse = coneRadius * length(row.xyz);
-    float dither = 0.5 * texelSize * (abs(dot(row.xyz, right)) + abs(dot(row.xyz, up)));
+    float axial = ctx.rayLength * dot(row.xyz, ctx.toLight);
+    float transverse = ctx.coneRadius * length(row.xyz);
+    float dither = 0.5 * ctx.texelSize * (abs(dot(row.xyz, ctx.right)) + abs(dot(row.xyz, ctx.up)));
     // Include the original endpoint, world-space lerp and texel dither paths.
     // The axial term also retains finite-precision XY/light-axis nonorthogonality.
-    float magnitude = dot(abs(row.xyz), abs(position) + rayLength + texelSize + 1.0) + abs(row.w) + 1.0;
+    float magnitude = dot(abs(row.xyz), ctx.commonPos) + abs(row.w) + 1.0;
     float error = magnitude * (256.0 * 5.960464477539063e-8);
     return float2(center + min(0.0, axial) - transverse - dither - error,
         center + max(0.0, axial) + transverse + dither + error);
 }
 
 void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint3 workCounts)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel,
+    float3 toLight, float3 right, float3 up, float sinAngularRadius, inout uint3 workCounts)
 {
     ++workCounts.x;
-    float3 toLight = normalize(projections[0].rowZ.xyz);
-    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
-    float3 up = cross(toLight, right);
     // The receiver-selected texel sets dither for every sampled clipmap.
     float texelSize = projections[firstLevel].metric.y;
-    float coneRadius = push.rayLength * sin(push.angularRadius);
-    float2 depthRange = vsmDirectionalFootprintRange(projections[0].rowZ, position,
-        toLight, right, up, push.rayLength, coneRadius, texelSize);
+    float coneRadius = push.rayLength * sinAngularRadius;
+    VSMDirectionalFootprintContext ctx;
+    ctx.toLight = toLight;
+    ctx.right = right;
+    ctx.up = up;
+    ctx.rayLength = push.rayLength;
+    ctx.coneRadius = coneRadius;
+    ctx.texelSize = texelSize;
+    ctx.commonPos = abs(position) + (push.rayLength + texelSize + 1.0);
+
+    float2 depthRange = vsmDirectionalFootprintRange(projections[0].rowZ, position, ctx);
     if (all(isfinite(depthRange)) && (depthRange.y < 0.0 || depthRange.x > 1.0)) { return; }
 
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
         ShadowProjection projection = projections[level];
-        float2 xRange = vsmDirectionalFootprintRange(projection.rowX, position,
-            toLight, right, up, push.rayLength, coneRadius, texelSize);
-        float2 yRange = vsmDirectionalFootprintRange(projection.rowY, position,
-            toLight, right, up, push.rayLength, coneRadius, texelSize);
+        float2 xRange = vsmDirectionalFootprintRange(projection.rowX, position, ctx);
+        float2 yRange = vsmDirectionalFootprintRange(projection.rowY, position, ctx);
         float2 low = float2(xRange.x, yRange.x), high = float2(xRange.y, yRange.y);
         uint2 firstPage = uint2(0u), lastPage = uint2(projection.page.y - 1u);
+#if VSM_MARK_PAGE_SHIFT >= 0
+        uint axisTexels = projection.page.y << VSM_MARK_PAGE_SHIFT;
+        float resolution = float(axisTexels);
+        uint2 firstTexel = uint2(0u), lastTexel = uint2(axisTexels - 1u);
+#else
         float resolution = float(projection.page.y * push.pageSize);
         uint2 firstTexel = uint2(0u), lastTexel = uint2(projection.page.y * push.pageSize - 1u);
+#endif
         // Unbounded numerical ranges retain the full grid, never an empty request.
         if (all(isfinite(low)) && all(isfinite(high)) && all(low <= high)) {
             if (any(high < -1.0) || any(low > 1.0)) { continue; }
@@ -2429,9 +2449,12 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
     if (push.receiverFootprint != 0u || push.filterMode == 1u || push.lightType == 0u) {
         normal = vsmReceiverNormal(int2(id.xy), basis, depth, position, linearDepth);
     }
+    float3 toLight = float3(0.0);
+    float sinAngularRadius = 0.0;
     if (push.lightType == 0u) {
-        float3 toLight = normalize(projections[0].rowZ.xyz);
-        float sinAlpha = max(sin(push.angularRadius), 0.1);
+        toLight = normalize(projections[0].rowZ.xyz);
+        sinAngularRadius = sin(push.angularRadius);
+        float sinAlpha = max(sinAngularRadius, 0.1);
         if (dot(normal, toLight) < -sinAlpha) { return; }
     }
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
@@ -2467,7 +2490,10 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         coverageData[coverageRecord] = 1u;
 #endif
 #if VSM_DIRECTIONAL_MARK
-        vsmMarkDirectionalFootprint(position, projections, pages, trace, receiverLevel, workCounts);
+        float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+        float3 up = cross(toLight, right);
+        vsmMarkDirectionalFootprint(position, projections, pages, trace, receiverLevel,
+            toLight, right, up, sinAngularRadius, workCounts);
 #else
         uint lastPages[VSM_MARK_CACHE_LEVELS];
         [unroll]
