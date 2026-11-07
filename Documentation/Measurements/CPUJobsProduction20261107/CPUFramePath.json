@@ -1,0 +1,74 @@
+{
+  "definition": "Arithmetic means of disjoint wall intervals over each process's same measured frames; includes waits, not OS CPU running time",
+  "processes": [
+    {
+      "runId": 8,
+      "candidate": "legacy",
+      "frames": 600,
+      "frameMeanMs": 5.587092,
+      "segmentMeanMs": {
+        "Profiler begin": 0.00026883333333333306,
+        "Frame-slot wait": 0.03129600000000007,
+        "Streamline begin": 0.01706133333333333,
+        "Poll events": 0.0038518333333333486,
+        "Render/submit/Present": 5.268223500000004,
+        "Streamline end": 0.00265850000000002,
+        "Profiler end": 0.2566770000000002,
+        "Telemetry/bookkeeping": 0.007055000000000011
+      },
+      "framesSHA256": "c2cbcd7da8fa7f4a23930ac2521542a10199959ccf9bf6ec9b4b5a2e12e9cc28"
+    },
+    {
+      "runId": 9,
+      "candidate": "shared",
+      "frames": 600,
+      "frameMeanMs": 5.840521833333334,
+      "segmentMeanMs": {
+        "Profiler begin": 0.00025383333333333334,
+        "Frame-slot wait": 0.03153549999999999,
+        "Streamline begin": 0.017440833333333326,
+        "Poll events": 0.0037680000000000157,
+        "Render/submit/Present": 5.4951645000000005,
+        "Streamline end": 0.002710000000000005,
+        "Profiler end": 0.2822108333333335,
+        "Telemetry/bookkeeping": 0.007438333333333358
+      },
+      "framesSHA256": "1aeb79482968d8b67911d8e6b81c57c13247ee70b3a608223affe7e680f3acb7"
+    },
+    {
+      "runId": 10,
+      "candidate": "shared",
+      "frames": 600,
+      "frameMeanMs": 5.9967535,
+      "segmentMeanMs": {
+        "Profiler begin": 0.0002665000000000003,
+        "Frame-slot wait": 0.03523916666666668,
+        "Streamline begin": 0.022436500000000026,
+        "Poll events": 0.0045198333333333375,
+        "Render/submit/Present": 5.524810999999995,
+        "Streamline end": 0.0022656666666666836,
+        "Profiler end": 0.3987213333333332,
+        "Telemetry/bookkeeping": 0.008493499999999984
+      },
+      "framesSHA256": "ceba389dae68388075f213d0d950ff3f67fec2c5a6cfb84b4aef2449674497a7"
+    },
+    {
+      "runId": 11,
+      "candidate": "legacy",
+      "frames": 600,
+      "frameMeanMs": 17.634375333333335,
+      "segmentMeanMs": {
+        "Profiler begin": 0.0002731666666666667,
+        "Frame-slot wait": 0.05328049999999997,
+        "Streamline begin": 0.029263000000000018,
+        "Poll events": 0.007078833333333338,
+        "Render/submit/Present": 16.989653499999996,
+        "Streamline end": 0.002502000000000025,
+        "Profiler end": 0.5349738333333324,
+        "Telemetry/bookkeeping": 0.017350499999999935
+      },
+      "framesSHA256": "345048ad6222883cebe02b797813a0fecc7282ba32a14b2ac3bb440e1a43a5df"
+    }
+  ],
+  "scriptSHA256": "b5aae02f17fa61113c85e2c80529355da90b125f58a4728e3dd0999206995ad3"
+}

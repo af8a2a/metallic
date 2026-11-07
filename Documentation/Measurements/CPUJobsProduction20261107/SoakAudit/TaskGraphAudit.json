@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "scriptSHA256": "45b3bad11e101afb0a4a1e6d65bdd13e0c06873ebe1987d49e4100f4addff759",
+  "definition": "Overlap uses actual DAG submit/completion clocks against first measured frame origin through last measured frame end; names/counts do not imply a CPU critical path.",
+  "runtimeIdentityGuard": "Source/Editor/EditorCPUJobBenchmark.cpp:408 checks every captured draw for viewport output width/height and stable graph generation; thrown violations prevent passed status. Per-frame extent fields are not exported.",
+  "processes": [
+    {
+      "runId": 0,
+      "candidate": "legacy",
+      "firstFrame": 181,
+      "lastFrame": 6180,
+      "startSteadyNs": 4453246723400,
+      "endSteadyNs": 4487884504800.0,
+      "graphNamesAll": {
+        "MeshletStreamPageLoad": 1683,
+        "Prepare VBuffer": 6181
+      },
+      "graphNamesOverlappingMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "graphNamesContainedInMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "taskGraphsSHA256": "60cc9365b13845572221532825a0ad783dc98bfc5aaa2cf5617796a86d7e5f17"
+    },
+    {
+      "runId": 1,
+      "candidate": "shared",
+      "firstFrame": 181,
+      "lastFrame": 6180,
+      "startSteadyNs": 4529069956900,
+      "endSteadyNs": 4562576696800.0,
+      "graphNamesAll": {
+        "MeshletStreamPageLoad": 1683,
+        "Prepare VBuffer": 6181
+      },
+      "graphNamesOverlappingMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "graphNamesContainedInMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "taskGraphsSHA256": "dbecbe50bce7461282ffd9fe2c19855393733663bbbef2a34a7ab5f68bb06891"
+    },
+    {
+      "runId": 2,
+      "candidate": "shared",
+      "firstFrame": 181,
+      "lastFrame": 6180,
+      "startSteadyNs": 4600178585500,
+      "endSteadyNs": 4633599093200.0,
+      "graphNamesAll": {
+        "MeshletStreamPageLoad": 1683,
+        "Prepare VBuffer": 6181
+      },
+      "graphNamesOverlappingMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "graphNamesContainedInMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "taskGraphsSHA256": "b15228783d629c593fd5fde1804c2ac84e112c9fb464a4505f6620ffd560e19b"
+    },
+    {
+      "runId": 3,
+      "candidate": "legacy",
+      "firstFrame": 181,
+      "lastFrame": 6180,
+      "startSteadyNs": 4671596883300,
+      "endSteadyNs": 4705241332500.0,
+      "graphNamesAll": {
+        "MeshletStreamPageLoad": 1683,
+        "Prepare VBuffer": 6181
+      },
+      "graphNamesOverlappingMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "graphNamesContainedInMeasuredEnvelope": {
+        "Prepare VBuffer": 6000
+      },
+      "taskGraphsSHA256": "a907d05454ff1e7b83bbe0c848c7834a924e469e3ee32133d00d2f7ea50bf6a9"
+    }
+  ]
+}

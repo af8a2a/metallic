@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <stop_token>
 
 namespace metallic::task {
 
@@ -88,6 +89,15 @@ void shutdownTaskSystem();
 
 namespace detail {
 
+struct TaskCallbackIdentity {
+    uint64_t executionId = 0;
+    TaskNodeHandle node;
+};
+
+// Empty outside a TaskGraph callback. Inline child work borrows the parent
+// identity; it does not create a scheduled node or a separate queue interval.
+TaskCallbackIdentity taskCallbackIdentity() noexcept;
+std::stop_token taskCallbackStopToken() noexcept;
 std::shared_ptr<TaskSystem> tryAcquireTaskSystem() noexcept;
 
 } // namespace detail

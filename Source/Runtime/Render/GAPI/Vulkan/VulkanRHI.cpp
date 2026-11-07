@@ -1784,6 +1784,8 @@ struct MemoryBudgetState {
     std::mutex mutex;
     MemoryBudgetPolicy policy;
     std::array<MemoryDomainBudget, size_t(MemoryBudgetDomain::Count)> domains{};
+    uint64_t trackedAllocationBytes = 0, trackedDeviceLocalBytes = 0;
+    uint64_t peakTrackedAllocationBytes = 0, peakTrackedDeviceLocalBytes = 0;
     uint64_t reservedBytes = 0, deniedAllocations = 0;
 };
 
@@ -2184,6 +2186,10 @@ DeviceMemoryBudget DeviceImpl::memoryBudgetLocked() const
     result.reservedBytes = state.reservedBytes;
     result.deniedAllocations = state.deniedAllocations;
     result.domains = state.domains;
+    result.trackedAllocationBytes = state.trackedAllocationBytes;
+    result.trackedDeviceLocalBytes = state.trackedDeviceLocalBytes;
+    result.peakTrackedAllocationBytes = state.peakTrackedAllocationBytes;
+    result.peakTrackedDeviceLocalBytes = state.peakTrackedDeviceLocalBytes;
     result.driverBudget = memoryBudgetExtension;
     VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
     // VMA otherwise refreshes only after enough allocation operations; external
@@ -2246,16 +2252,23 @@ bool DeviceImpl::admitMemoryLocked(uint32_t memoryType, uint64_t bytes, MemoryBu
 
 void DeviceImpl::trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add)
 {
-    auto& stats = memoryBudgetState->domains[size_t(domain)];
+    auto& state = *memoryBudgetState;
+    auto& stats = state.domains[size_t(domain)];
     if (add) {
         stats.allocationBytes += bytes;
         if (local) { stats.deviceLocalBytes += bytes; }
         ++stats.allocationCount;
         stats.peakAllocationBytes = std::max(stats.peakAllocationBytes, stats.allocationBytes);
+        state.trackedAllocationBytes += bytes;
+        if (local) { state.trackedDeviceLocalBytes += bytes; }
+        state.peakTrackedAllocationBytes = std::max(state.peakTrackedAllocationBytes, state.trackedAllocationBytes);
+        state.peakTrackedDeviceLocalBytes = std::max(state.peakTrackedDeviceLocalBytes, state.trackedDeviceLocalBytes);
     } else {
         stats.allocationBytes -= bytes;
         if (local) { stats.deviceLocalBytes -= bytes; }
         --stats.allocationCount;
+        state.trackedAllocationBytes -= bytes;
+        if (local) { state.trackedDeviceLocalBytes -= bytes; }
     }
 }
 

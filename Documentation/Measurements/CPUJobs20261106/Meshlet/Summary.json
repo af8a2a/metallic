@@ -1,0 +1,1308 @@
+{
+  "schema": 1,
+  "scope": "Generated meshlet/LOD workload, not production scene rendering or FPS",
+  "quantiles": "Nearest rank; small sample P95/P99 commonly equal maximum, not a rare-tail estimate",
+  "correctness": "All full logical geometry hashes agree across both executables and all worker counts/repetitions",
+  "steadySampleCount": 288,
+  "processCount": 36,
+  "results": [
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 9932783.333333334,
+        "p50": 9594400,
+        "p95": 11690700,
+        "p99": 11690700,
+        "min": 9219700,
+        "max": 11690700,
+        "standardDeviation": 900693.6824840433
+      },
+      "sourceTrianglesPerSecond": 824743.6519136126,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 9397916.666666666,
+        "p50": 9535900,
+        "p95": 9982500,
+        "p99": 9982500,
+        "min": 8452200,
+        "max": 9982500,
+        "standardDeviation": 549824.3298242327
+      },
+      "sourceTrianglesPerSecond": 871682.5537574817,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7424350,
+        "p50": 7271300,
+        "p95": 8522700,
+        "p99": 8522700,
+        "min": 6807100,
+        "max": 8522700,
+        "standardDeviation": 600397.0877677539
+      },
+      "sourceTrianglesPerSecond": 1103396.2569113795,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7907783.333333333,
+        "p50": 7473800,
+        "p95": 8974400,
+        "p99": 8974400,
+        "min": 7020000,
+        "max": 8974400,
+        "standardDeviation": 742937.5489680588
+      },
+      "sourceTrianglesPerSecond": 1035941.3826462114,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 6762000,
+        "p50": 6755500,
+        "p95": 7268500,
+        "p99": 7268500,
+        "min": 6357700,
+        "max": 7268500,
+        "standardDeviation": 329324.0228103623
+      },
+      "sourceTrianglesPerSecond": 1211475.8947057084,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7094366.666666667,
+        "p50": 6937900,
+        "p95": 7763700,
+        "p99": 7763700,
+        "min": 6149100,
+        "max": 7763700,
+        "standardDeviation": 610338.8621631976
+      },
+      "sourceTrianglesPerSecond": 1154719.002400966,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 6610616.666666667,
+        "p50": 6456700,
+        "p95": 7342000,
+        "p99": 7342000,
+        "min": 6344200,
+        "max": 7342000,
+        "standardDeviation": 366057.9157273705
+      },
+      "sourceTrianglesPerSecond": 1239218.7314849598,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7056933.333333333,
+        "p50": 6805300,
+        "p95": 8102400,
+        "p99": 8102400,
+        "min": 6355200,
+        "max": 8102400,
+        "standardDeviation": 615303.0462029801
+      },
+      "sourceTrianglesPerSecond": 1160844.1816086308,
+      "geometryHash": "0d9dc9974c0fa9d9"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 40812366.666666664,
+        "p50": 39293900,
+        "p95": 47312400,
+        "p99": 47312400,
+        "min": 37625400,
+        "max": 47312400,
+        "standardDeviation": 3487580.267558966
+      },
+      "sourceTrianglesPerSecond": 802893.8940892916,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 42036750,
+        "p50": 40981400,
+        "p95": 46762300,
+        "p99": 46762300,
+        "min": 38120300,
+        "max": 46762300,
+        "standardDeviation": 3480674.2213255176
+      },
+      "sourceTrianglesPerSecond": 779508.4063349331,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 28724233.333333332,
+        "p50": 28369100,
+        "p95": 30412600,
+        "p99": 30412600,
+        "min": 27414300,
+        "max": 30412600,
+        "standardDeviation": 1104183.906179884
+      },
+      "sourceTrianglesPerSecond": 1140778.9241836453,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 31144116.666666668,
+        "p50": 29721500,
+        "p95": 37812500,
+        "p99": 37812500,
+        "min": 29507000,
+        "max": 37812500,
+        "standardDeviation": 3284708.983405785
+      },
+      "sourceTrianglesPerSecond": 1052140.9340554958,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 23846650,
+        "p50": 23156000,
+        "p95": 25875800,
+        "p99": 25875800,
+        "min": 22851200,
+        "max": 25875800,
+        "standardDeviation": 1169902.957941384
+      },
+      "sourceTrianglesPerSecond": 1374113.3450610463,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 24610466.666666668,
+        "p50": 24994500,
+        "p95": 26975500,
+        "p99": 26975500,
+        "min": 22434600,
+        "max": 26975500,
+        "standardDeviation": 1671316.1982900384
+      },
+      "sourceTrianglesPerSecond": 1331466.0158144096,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 21132033.333333332,
+        "p50": 20578900,
+        "p95": 24085700,
+        "p99": 24085700,
+        "min": 19846200,
+        "max": 24085700,
+        "standardDeviation": 1552882.8103455415
+      },
+      "sourceTrianglesPerSecond": 1550631.663461948,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 23272033.333333332,
+        "p50": 22366700,
+        "p95": 26697700,
+        "p99": 26697700,
+        "min": 20337900,
+        "max": 26697700,
+        "standardDeviation": 2233031.159358657
+      },
+      "sourceTrianglesPerSecond": 1408041.9845852174,
+      "geometryHash": "53b63bb7dcef3513"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7456666.666666667,
+        "p50": 7431400,
+        "p95": 8041300,
+        "p99": 8041300,
+        "min": 6873300,
+        "max": 8041300,
+        "standardDeviation": 380319.74267274985
+      },
+      "sourceTrianglesPerSecond": 1098614.2154671433,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7612566.666666667,
+        "p50": 7064700,
+        "p95": 9406200,
+        "p99": 9406200,
+        "min": 6801700,
+        "max": 9406200,
+        "standardDeviation": 1011149.3453821086
+      },
+      "sourceTrianglesPerSecond": 1076115.3706371482,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5724183.333333333,
+        "p50": 5554700,
+        "p95": 6895700,
+        "p99": 6895700,
+        "min": 5040800,
+        "max": 6895700,
+        "standardDeviation": 689520.0081699346
+      },
+      "sourceTrianglesPerSecond": 1431121.1788581195,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 6271016.666666667,
+        "p50": 5888300,
+        "p95": 8059700,
+        "p99": 8059700,
+        "min": 5217900,
+        "max": 8059700,
+        "standardDeviation": 991627.660801506
+      },
+      "sourceTrianglesPerSecond": 1306327.2568775397,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5511266.666666667,
+        "p50": 5340600,
+        "p95": 6504400,
+        "p99": 6504400,
+        "min": 4944800,
+        "max": 6504400,
+        "standardDeviation": 524399.1596738754
+      },
+      "sourceTrianglesPerSecond": 1486409.657791917,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 6150833.333333333,
+        "p50": 5635400,
+        "p95": 7536300,
+        "p99": 7536300,
+        "min": 5169700,
+        "max": 7536300,
+        "standardDeviation": 931954.4166249048
+      },
+      "sourceTrianglesPerSecond": 1331852.0525674028,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5363850,
+        "p50": 5299200,
+        "p95": 5600200,
+        "p99": 5600200,
+        "min": 5188400,
+        "max": 5600200,
+        "standardDeviation": 140728.45838706542
+      },
+      "sourceTrianglesPerSecond": 1527261.2023080436,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5968433.333333333,
+        "p50": 5805200,
+        "p95": 7276700,
+        "p99": 7276700,
+        "min": 5087600,
+        "max": 7276700,
+        "standardDeviation": 791248.1422832325
+      },
+      "sourceTrianglesPerSecond": 1372554.4950377822,
+      "geometryHash": "68656325b554ce83"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 32558450,
+        "p50": 31120300,
+        "p95": 41152700,
+        "p99": 41152700,
+        "min": 29352600,
+        "max": 41152700,
+        "standardDeviation": 4415709.977681958
+      },
+      "sourceTrianglesPerSecond": 1006436.1171984539,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 33800166.666666664,
+        "p50": 31253500,
+        "p95": 46621900,
+        "p99": 46621900,
+        "min": 29782000,
+        "max": 46621900,
+        "standardDeviation": 6361399.207616722
+      },
+      "sourceTrianglesPerSecond": 969462.6752333569,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 24223483.333333332,
+        "p50": 23950500,
+        "p95": 26554100,
+        "p99": 26554100,
+        "min": 23157200,
+        "max": 26554100,
+        "standardDeviation": 1202110.073856245
+      },
+      "sourceTrianglesPerSecond": 1352736.9102571954,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 27048933.333333332,
+        "p50": 25154500,
+        "p95": 35290600,
+        "p99": 35290600,
+        "min": 22878500,
+        "max": 35290600,
+        "standardDeviation": 4617972.331518095
+      },
+      "sourceTrianglesPerSecond": 1211434.092287065,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 19800833.333333332,
+        "p50": 19460700,
+        "p95": 21029100,
+        "p99": 21029100,
+        "min": 18604500,
+        "max": 21029100,
+        "standardDeviation": 861750.9794985247
+      },
+      "sourceTrianglesPerSecond": 1654879.8451243637,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 21918600,
+        "p50": 20515000,
+        "p95": 26806300,
+        "p99": 26806300,
+        "min": 18464700,
+        "max": 26806300,
+        "standardDeviation": 3286706.087255141
+      },
+      "sourceTrianglesPerSecond": 1494985.9936309801,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 18542083.333333332,
+        "p50": 18165600,
+        "p95": 20619300,
+        "p99": 20619300,
+        "min": 16693900,
+        "max": 20619300,
+        "standardDeviation": 1383173.1943855283
+      },
+      "sourceTrianglesPerSecond": 1767223.2084672255,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 19596133.333333332,
+        "p50": 18402700,
+        "p95": 23723700,
+        "p99": 23723700,
+        "min": 17817300,
+        "max": 23723700,
+        "standardDeviation": 2239833.9533694605
+      },
+      "sourceTrianglesPerSecond": 1672166.6179042126,
+      "geometryHash": "0897b5e8d46750f4"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 8111983.333333333,
+        "p50": 7469300,
+        "p95": 9555000,
+        "p99": 9555000,
+        "min": 7040400,
+        "max": 9555000,
+        "standardDeviation": 981764.3045388575
+      },
+      "sourceTrianglesPerSecond": 1009864.0077745065,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7712550,
+        "p50": 7475600,
+        "p95": 9062400,
+        "p99": 9062400,
+        "min": 6893600,
+        "max": 9062400,
+        "standardDeviation": 740809.5295013422
+      },
+      "sourceTrianglesPerSecond": 1062164.913031358,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 6524216.666666667,
+        "p50": 6205600,
+        "p95": 8422600,
+        "p99": 8422600,
+        "min": 5566100,
+        "max": 8422600,
+        "standardDeviation": 1042458.1169844028
+      },
+      "sourceTrianglesPerSecond": 1255629.666907649,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 7027433.333333333,
+        "p50": 6488300,
+        "p95": 8862400,
+        "p99": 8862400,
+        "min": 5963700,
+        "max": 8862400,
+        "standardDeviation": 1054372.867000411
+      },
+      "sourceTrianglesPerSecond": 1165717.213017555,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5590183.333333333,
+        "p50": 5511900,
+        "p95": 6198400,
+        "p99": 6198400,
+        "min": 5282100,
+        "max": 6198400,
+        "standardDeviation": 329786.27877258125
+      },
+      "sourceTrianglesPerSecond": 1465425.9997435983,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5612433.333333333,
+        "p50": 5471700,
+        "p95": 5842300,
+        "p99": 5842300,
+        "min": 5367800,
+        "max": 5842300,
+        "standardDeviation": 213151.6611867397
+      },
+      "sourceTrianglesPerSecond": 1459616.4468174826,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5298283.333333333,
+        "p50": 5204700,
+        "p95": 5999300,
+        "p99": 5999300,
+        "min": 4841000,
+        "max": 5999300,
+        "standardDeviation": 429110.6123911021
+      },
+      "sourceTrianglesPerSecond": 1546161.1779916137,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 5655883.333333333,
+        "p50": 5068600,
+        "p95": 8018700,
+        "p99": 8018700,
+        "min": 4706900,
+        "max": 8018700,
+        "standardDeviation": 1233350.4050620273
+      },
+      "sourceTrianglesPerSecond": 1448403.2850748335,
+      "geometryHash": "0a4d8662159457bb"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 32673616.666666668,
+        "p50": 31963500,
+        "p95": 34580500,
+        "p99": 34580500,
+        "min": 31605500,
+        "max": 34580500,
+        "standardDeviation": 1177850.5226329302
+      },
+      "sourceTrianglesPerSecond": 1002888.6711347636,
+      "geometryHash": "d6ac1abdfa1f450b"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "effectiveWorkerLimit": 1,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 33368800,
+        "p50": 30162300,
+        "p95": 42681600,
+        "p99": 42681600,
+        "min": 29103200,
+        "max": 42681600,
+        "standardDeviation": 5169684.039474753
+      },
+      "sourceTrianglesPerSecond": 981995.1571527894,
+      "geometryHash": "d6ac1abdfa1f450b"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 27525866.666666668,
+        "p50": 26663800,
+        "p95": 29975400,
+        "p99": 29975400,
+        "min": 25853700,
+        "max": 29975400,
+        "standardDeviation": 1717582.8849481083
+      },
+      "sourceTrianglesPerSecond": 1190443.8976187247,
+      "geometryHash": "d6ac1abdfa1f450b"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "effectiveWorkerLimit": 2,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 28537066.666666668,
+        "p50": 27145400,
+        "p95": 32806000,
+        "p99": 32806000,
+        "min": 25767400,
+        "max": 32806000,
+        "standardDeviation": 2714847.798066526
+      },
+      "sourceTrianglesPerSecond": 1148260.9751995066,
+      "geometryHash": "d6ac1abdfa1f450b"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 24334850,
+        "p50": 22922900,
+        "p95": 27862000,
+        "p99": 27862000,
+        "min": 21417000,
+        "max": 27862000,
+        "standardDeviation": 2674864.9287393936
+      },
+      "sourceTrianglesPerSecond": 1346546.208421256,
+      "geometryHash": "d6ac1abdfa1f450b"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "effectiveWorkerLimit": 4,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 24948300,
+        "p50": 24038700,
+        "p95": 29447400,
+        "p99": 29447400,
+        "min": 22730400,
+        "max": 29447400,
+        "standardDeviation": 2353868.0064948415
+      },
+      "sourceTrianglesPerSecond": 1313436.1860327157,
+      "geometryHash": "d6ac1abdfa1f450b"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "legacy",
+      "wallNs": {
+        "samples": 6,
+        "mean": 24066800,
+        "p50": 22667200,
+        "p95": 28080300,
+        "p99": 28080300,
+        "min": 20148300,
+        "max": 28080300,
+        "standardDeviation": 3502303.660164264
+      },
+      "sourceTrianglesPerSecond": 1361543.703358984,
+      "geometryHash": "d6ac1abdfa1f450b"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "effectiveWorkerLimit": 8,
+      "candidate": "shared",
+      "wallNs": {
+        "samples": 6,
+        "mean": 23795016.666666668,
+        "p50": 23322100,
+        "p95": 25809200,
+        "p99": 25809200,
+        "min": 22213900,
+        "max": 25809200,
+        "standardDeviation": 1429274.7803227575
+      },
+      "sourceTrianglesPerSecond": 1377095.064022509,
+      "geometryHash": "d6ac1abdfa1f450b"
+    }
+  ],
+  "pairedLegacyOverSharedWallRatio": [
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "ratio": {
+        "samples": 6,
+        "mean": 1.0609568206597677,
+        "p50": 1.01632703803081,
+        "p95": 1.2885011737994732,
+        "p99": 1.2885011737994732,
+        "min": 0.9235862759829702,
+        "max": 1.2885011737994732,
+        "standardDeviation": 0.1258469061911666
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9431269788669912,
+        "p50": 0.9471110870330742,
+        "p95": 1.065940170940171,
+        "p99": 1.065940170940171,
+        "min": 0.8026956593516739,
+        "max": 1.065940170940171,
+        "standardDeviation": 0.08516345218361412
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9592791687525768,
+        "p50": 0.9112303239923767,
+        "p95": 1.1084223707534435,
+        "p99": 1.1084223707534435,
+        "min": 0.8701392377345853,
+        "max": 1.1084223707534435,
+        "standardDeviation": 0.09868117557147899
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9430819438838012,
+        "p50": 0.9630288157759394,
+        "p95": 1.0468531667949925,
+        "p99": 1.0468531667949925,
+        "min": 0.7830025671406003,
+        "max": 1.0468531667949925,
+        "standardDeviation": 0.09958443907806151
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9751868202166836,
+        "p50": 0.9932335156924849,
+        "p95": 1.0885853469148983,
+        "p99": 1.0885853469148983,
+        "min": 0.8046096962724246,
+        "max": 1.0885853469148983,
+        "standardDeviation": 0.09846513915132632
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9278634683928622,
+        "p50": 0.9375023049817781,
+        "p95": 1.002542048735576,
+        "p99": 1.002542048735576,
+        "min": 0.8043001652892562,
+        "max": 1.002542048735576,
+        "standardDeviation": 0.06919916010690506
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9737570221706439,
+        "p50": 0.9264438176398808,
+        "p95": 1.1533880702129746,
+        "p99": 1.1533880702129746,
+        "min": 0.8847843413467776,
+        "max": 1.1533880702129746,
+        "standardDeviation": 0.09791987818197928
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "attributes",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9156555556742744,
+        "p50": 0.8713965108401084,
+        "p95": 1.0969735613599618,
+        "p99": 1.0969735613599618,
+        "min": 0.8034587249088873,
+        "max": 1.0969735613599618,
+        "standardDeviation": 0.11807978026629323
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9898791922578021,
+        "p50": 0.9784746051446789,
+        "p95": 1.0925797962274137,
+        "p99": 1.0925797962274137,
+        "min": 0.8038208840977228,
+        "max": 1.0925797962274137,
+        "standardDeviation": 0.10181422417015504
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9241190587133467,
+        "p50": 0.9545798247121499,
+        "p95": 1.0329243997064066,
+        "p99": 1.0329243997064066,
+        "min": 0.7082521681948459,
+        "max": 1.0329243997064066,
+        "standardDeviation": 0.12578623541474693
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9195652283618506,
+        "p50": 0.9079069459172853,
+        "p95": 1.2581774571058282,
+        "p99": 1.2581774571058282,
+        "min": 0.7039462445191048,
+        "max": 1.2581774571058282,
+        "standardDeviation": 0.2053018745391138
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9124124168492684,
+        "p50": 0.9107385669288628,
+        "p95": 1.0419946041492232,
+        "p99": 1.0419946041492232,
+        "min": 0.7130155152747811,
+        "max": 1.0419946041492232,
+        "standardDeviation": 0.12586183204717885
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9879430198908294,
+        "p50": 0.9556158211219596,
+        "p95": 1.3167389252403732,
+        "p99": 1.3167389252403732,
+        "min": 0.6675038983825198,
+        "max": 1.3167389252403732,
+        "standardDeviation": 0.20969899925208751
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9119023322872968,
+        "p50": 0.9436751659043855,
+        "p95": 1.0272701444587713,
+        "p99": 1.0272701444587713,
+        "min": 0.685777515825744,
+        "max": 1.0272701444587713,
+        "standardDeviation": 0.11814998981624354
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9207380591337171,
+        "p50": 0.9438647495069764,
+        "p95": 1.044788163360358,
+        "p99": 1.044788163360358,
+        "min": 0.6940346112667545,
+        "max": 1.044788163360358,
+        "standardDeviation": 0.14147356388913657
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "plain",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.956419742209167,
+        "p50": 0.9071440603824439,
+        "p95": 1.157262884948898,
+        "p99": 1.157262884948898,
+        "min": 0.765715297360867,
+        "max": 1.157262884948898,
+        "standardDeviation": 0.13147090685409724
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 1,
+      "ratio": {
+        "samples": 6,
+        "mean": 1.0544921452381029,
+        "p50": 0.9845625882768362,
+        "p95": 1.2075218946277597,
+        "p99": 1.2075218946277597,
+        "min": 0.9595224466432252,
+        "max": 1.2075218946277597,
+        "standardDeviation": 0.1164720149012236
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 2,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9296888095334674,
+        "p50": 0.9274113463817791,
+        "p95": 1.0423562553448362,
+        "p99": 1.0423562553448362,
+        "min": 0.8535548739391772,
+        "max": 1.0423562553448362,
+        "standardDeviation": 0.06980928584507834
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 4,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9962523866893902,
+        "p50": 0.983193423060913,
+        "p95": 1.0609520223199767,
+        "p99": 1.0609520223199767,
+        "min": 0.9196697861192975,
+        "max": 1.0609520223199767,
+        "standardDeviation": 0.04889476061891109
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 64,
+      "requestedWorkers": 8,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.961375511555341,
+        "p50": 0.8978884173481007,
+        "p95": 1.1867258705304977,
+        "p99": 1.1867258705304977,
+        "min": 0.7481636674273885,
+        "max": 1.1867258705304977,
+        "standardDeviation": 0.15765910065134633
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 1,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9931590718807412,
+        "p50": 0.9724170820257215,
+        "p95": 1.1182619093433024,
+        "p99": 1.1182619093433024,
+        "min": 0.8101968998350577,
+        "max": 1.1182619093433024,
+        "standardDeviation": 0.1111255704500747
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 2,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9689373525899196,
+        "p50": 0.9581768639360262,
+        "p95": 1.0830453778540747,
+        "p99": 1.0830453778540747,
+        "min": 0.8681568074692392,
+        "max": 1.0830453778540747,
+        "standardDeviation": 0.07464497647493981
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 4,
+      "ratio": {
+        "samples": 6,
+        "mean": 0.9769452599991238,
+        "p50": 0.9461616305684033,
+        "p95": 1.1322964092210708,
+        "p99": 1.1322964092210708,
+        "min": 0.89093836189145,
+        "max": 1.1322964092210708,
+        "standardDeviation": 0.08500532024986901
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    },
+    {
+      "configuration": "seams",
+      "cells": 128,
+      "requestedWorkers": 8,
+      "ratio": {
+        "samples": 6,
+        "mean": 1.0124830368698834,
+        "p50": 0.9070131764345748,
+        "p95": 1.2074877785989688,
+        "p99": 1.2074877785989688,
+        "min": 0.8692270421617264,
+        "max": 1.2074877785989688,
+        "standardDeviation": 0.1470086496296087
+      },
+      "interpretation": ">1 means shared runtime used less build wall time"
+    }
+  ]
+}

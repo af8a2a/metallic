@@ -1,0 +1,50 @@
+{
+  "platform": "Windows-11-10.0.26300-SP0",
+  "machine": "unavailable",
+  "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor",
+  "cpu_identity_source": "HKLM/HARDWARE/DESCRIPTION/System/CentralProcessor/0/ProcessorNameString",
+  "logical_cpu_count": 16,
+  "compiler": "MSVC 19.44.35229 Release /O2 baseline x64",
+  "ispc": "1.32.0 LLVM 23.1.2; SHA256 148d5cd96abe7501c730d5fbd00f1f0c893b96bfeada38d1811c9b6251e86a5c",
+  "executables": {
+    "multi": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-cpu-kernels-ispc\\MetallicCPUKernelBench.exe",
+    "sse4": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-cpu-kernels-sse4\\MetallicCPUKernelBench.exe",
+    "avx2": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-cpu-kernels-avx2\\MetallicCPUKernelBench.exe"
+  },
+  "counts": [
+    31,
+    65536,
+    1048576
+  ],
+  "runs": 3,
+  "source_sha256": {
+    "cmake/CPUKernels.cmake": "0378ee5049aec2643a406b8e5f4c9a78933de9c12aa88d37d5c13a86d6eb3ac6",
+    "Source/Runtime/CPUKernels/AABBTransform.cpp": "5682326bbb526df83337d6c1a49e8d317f2549baecede82b6eed4788fafbcaf4",
+    "Source/Runtime/CPUKernels/AABBTransform.h": "c9d28837246354b74f36938c3f6e0274b562f00ff4570db031fe24fd13b450e7",
+    "Source/Runtime/CPUKernels/AABBTransform.ispc": "3c2e6e29ae9ed470ce2cbcc2a74519b9f6a5cb37b1a22df5b9435fb3ba2d2525",
+    "Source/Runtime/CPUKernels/AABBTransformAutoVectorized.cpp": "86227ee5006c5f2ed7371a35627c52a07b9197539465f711875b25b8722b411d",
+    "Source/Runtime/CPUKernels/AABBTransformInternal.h": "c676e6388ad299bdbc6576fd87d9d1a56530e1b2d1c80fa9c6fb554bbc90244c",
+    "Source/Runtime/CPUKernels/AABBTransformScalar.cpp": "c77fda7025468bc88abf647a6e5e0956918319d215cbcb277a4dced6155f5869",
+    "tests/cpu/AABBParallelForTests.cpp": "f4424140bf4a1bdf8b7700cc9f90223da734aa409af8603e5ed2829bcf82663f",
+    "tests/cpu/AABBTestData.h": "2def72725059a3bf39823a7e7f918c5d8a2a710b436bdd9bf73a865723af8c08",
+    "tests/cpu/AABBTransformBench.cpp": "70ab26c3fd385da137e5dc425ab9aca4eb8fb907208cca70f3ded75dd203e990",
+    "tests/cpu/AABBTransformTests.cpp": "2b049399d937557e7dc1b8d2148012888fae1222e90afffa5f178a531fb89161",
+    "tests/cpu/CMakeLists.txt": "866c0887d3f9cc31ba57148914306837c0b1eaa26960349595bd62c3a82176d8",
+    "tests/cpu/MeasureCPUKernels.py": "a53145308a0ca9bdb68bc174f4d306e4382932941023a65bc780b46bc8b49b5d"
+  },
+  "executable_sha256": {
+    "multi": "faaf53d5bd39d97907614ad8895eb01f297beed18f91793e0b6a182717427626",
+    "sse4": "16b0f850a3c43961d0fe1a9573eae61ddc2c5c9c217142e24664216039aeb6c5",
+    "avx2": "af65160a81ad9b17cfc790748afacd6f3359abc5bc70c3f215bff6fe0380ef71"
+  },
+  "samples_per_process": 31,
+  "untimed_warmup_rounds": 2,
+  "start_unix_seconds": 1793980659.9130352,
+  "elapsed_seconds": 27.92641568183899,
+  "conditions": "One caller thread; rotated in-process backend and per-run executable order; deterministic seed 0x73b01; allocation/setup excluded. first_call is not a cache flush. Warm samples include no packing; aos-to-soa separately times packing. Caller must ensure other builds and CPU benchmarks are idle.",
+  "unavailable_metrics": [
+    "Hardware SIMD utilization",
+    "CPU performance counters",
+    "Scene frame time"
+  ]
+}

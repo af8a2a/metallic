@@ -1,5 +1,6 @@
 #include "Runtime/Scene/GeometryAttributes.h"
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Task/TaskSystem.h"
 
 #include <meshoptimizer.h>
 #include <json.hpp>
@@ -510,6 +511,12 @@ int main(int argc, char** argv)
     bool reportSafe = false;
     try {
         options = parseOptions(argc, argv);
+        const auto initialized = metallic::task::initializeTaskSystem(
+            {.workerCount = std::max(1u, std::thread::hardware_concurrency() / 2u)});
+        if (!initialized) { throw std::runtime_error(initialized.error().message); }
+        struct TaskSystemShutdown {
+            ~TaskSystemShutdown() { metallic::task::shutdownTaskSystem(); }
+        } taskSystemShutdown;
         cook(options, report, reportSafe);
         writeReport(options.report, report);
         std::printf("Validated resident cache staged at %s\n", options.output.string().c_str());

@@ -436,6 +436,11 @@ struct MemoryDomainBudget {
 struct DeviceMemoryBudget {
     std::vector<MemoryHeapBudget> heaps;
     std::array<MemoryDomainBudget, size_t(MemoryBudgetDomain::Count)> domains{};
+    // Simultaneous RHI allocation totals and lifetime highs. Excludes external
+    // SDK/driver allocations and VMA block slack; independent domain highs do
+    // not establish the simultaneous total.
+    uint64_t trackedAllocationBytes = 0, trackedDeviceLocalBytes = 0;
+    uint64_t peakTrackedAllocationBytes = 0, peakTrackedDeviceLocalBytes = 0;
     MemoryBudgetPolicy policy;
     uint32_t primaryDeviceLocalHeap = UINT32_MAX;
     bool driverBudget = false;

@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "generatedUtc": "2026-11-07T01:18:22.843363+00:00",
+  "plottingPlatform": "Windows-11-10.0.26300-SP0",
+  "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
+  "matplotlib": "3.10.9",
+  "plotterSHA256": "98070a4495d60925fb569e895003e45edb02e8f33b6d66e99c7a3c6183f076d5",
+  "inputsSHA256": {
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-001-shared-w4-measured\\Capture.json": "8d1cb06ea769c5056488490bb286e016760f37441a4bd89aecea446c28f4e640",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-001-shared-w4-measured\\FinalColor.bin": "9c275b97ea228e85dc2941c286c4ca4ba95b5cb9c9863962b3313af00614852e",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-002-shared-w4-measured\\Capture.json": "e3908c40e4dffdd7445dd0824d78f414c2657ab70e02a1f725d6cbefe9d03010",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-002-shared-w4-measured\\FinalColor.bin": "0a4bae9d6cf98e79b243e601c1c3198b8e26f24755017db0496fff2dc89ee94e"
+  },
+  "budgets": {
+    "frameMs": null,
+    "cpuMemoryMiB": null,
+    "vramMiB": null
+  },
+  "notes": [
+    "P50/P95/P99 summarize the recorded sample population, not confidence intervals. Missing data is never replaced with zero.",
+    "Budgets: frameMs=not supplied; cpuMemoryMiB=not supplied; vramMiB=not supplied"
+  ],
+  "figures": [
+    {
+      "file": "RenderPreview1.png",
+      "title": "Render output preview 1",
+      "caption": "Native 1920x1080 RGB preview from RGBA16Sfloat; encoding enum=2; preview transfer=linear-rec709, fixed clipping to raw [0,1], alpha ignored for display but checked for finiteness. No adaptive exposure or tone mapping. SceneLinear/ExposedLinear basis is not guessed; HDR values outside the clipping interval remain in raw statistics."
+    },
+    {
+      "file": "RenderPreview2.png",
+      "title": "Render output preview 2",
+      "caption": "Native 1920x1080 RGB preview from RGBA16Sfloat; encoding enum=2; preview transfer=linear-rec709, fixed clipping to raw [0,1], alpha ignored for display but checked for finiteness. No adaptive exposure or tone mapping. SceneLinear/ExposedLinear basis is not guessed; HDR values outside the clipping interval remain in raw statistics."
+    },
+    {
+      "file": "RenderImageDifference.png",
+      "title": "Render output numerical comparison",
+      "caption": "Caller context: SuperSponza fixed scene/camera/effective graph/extents; 60 warmup plus 120 captured frames (61..180), final export after frame 180; core validation on, synchronization validation off. Raw-coordinate differences are diagnostic and compared with same-backend repeats; no bitwise equality preset or independent proof of all temporal state.. Raw RGB MAE=4.332215e-05; maximum=0.1103516; RMSE=0.0002994492. Heatmap normalization uses the observed maximum and is not an acceptance threshold. Temporal algorithms, frame seeds, exposure and priming require caller control; different pixels are not automatically classified as a regression."
+    }
+  ],
+  "figureSHA256": {
+    "RenderPreview1.png": "b65176637dec0c32a553608b4c6381209eed3db6ca3a69bfab9259da6f05a00c",
+    "RenderPreview2.png": "72cb5e9867128b70b58fce51a11bd836ea07492a9b989db146eea9aa30bb110a",
+    "RenderImageDifference.png": "6e1c0e4ee942fb84f3160d2de3247041be96c6fb7b12dfe551e21564b1d93c12"
+  }
+}

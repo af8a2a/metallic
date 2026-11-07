@@ -1,0 +1,70 @@
+{
+  "camera": {
+    "center": [
+      -7.84351921081543,
+      1.786533236503601,
+      -0.6762740612030029
+    ],
+    "eye": [
+      -8.807430267333984,
+      1.5922194719314575,
+      -0.8582578301429749
+    ],
+    "fovDegrees": 58.51197814941406,
+    "orthoHeight": 2.0,
+    "projection": "perspective",
+    "up": [
+      -0.19094055891036987,
+      0.9809394478797913,
+      -0.03604902699589729
+    ],
+    "zfar": 10000.0,
+    "znear": 0.10000000149011612
+  },
+  "config": {
+    "camera": {
+      "center": [
+        -7.843519222198665,
+        1.786533203681289,
+        -0.6762740633110123
+      ],
+      "eye": [
+        -8.80743,
+        1.59221947,
+        -0.85825783
+      ],
+      "fovDegrees": 58.5119763983259,
+      "up": [
+        -0.1909405528670367,
+        0.980939433087972,
+        -0.03604902728223164
+      ],
+      "zfar": 10000.0,
+      "znear": 0.1
+    },
+    "captureImage": true,
+    "diagnostics": false,
+    "frames": 12,
+    "height": 1080,
+    "memorySampleIntervalFrames": 10,
+    "sample": "gpu-driven-zorah-full",
+    "scenePath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+    "streamAssetPath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf.meshstream.bin",
+    "validation": false,
+    "warmupFrames": 12,
+    "width": 1920,
+    "workerCount": 4
+  },
+  "cpuFramePathContract": "nonoverlapping-coordinator-wall-segments-v1",
+  "diagnostics": false,
+  "error": "Production frame failed",
+  "frameTimeDefinition": "start-to-start editor loop including frame-slot wait, rendering, submission, Present and telemetry; no per-frame GPU drain/readback",
+  "hiddenWindow": true,
+  "protocol": "metallic-cpu-jobs-production-v1",
+  "recordingWorkerLimit": 4,
+  "resourceDefinition": "VMA/driver budget snapshots after selected frames; domain peaks are independent lifetime highs and must not be summed; OS monitor spans process lifetime",
+  "scene": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+  "status": "failed",
+  "validationRequested": false,
+  "workerCount": 4
+}

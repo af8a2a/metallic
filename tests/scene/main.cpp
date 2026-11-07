@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <chrono>
 #include <condition_variable>
@@ -440,25 +441,25 @@ std::filesystem::path writeMeshoptCompressedScene(
 std::filesystem::path writeMeshletLodGridScene(
     const std::filesystem::path& directory,
     uint32_t meshCount = 1,
-    bool percentEncodedBufferUri = false)
+    bool percentEncodedBufferUri = false,
+    uint32_t gridCells = 32)
 {
-    constexpr uint32_t kGridCells = 32;
-    constexpr uint32_t kGridVertices = (kGridCells + 1) * (kGridCells + 1);
-    constexpr uint32_t kGridTriangles = kGridCells * kGridCells * 2;
+    const uint32_t gridVertices = (gridCells + 1) * (gridCells + 1);
+    const uint32_t gridTriangles = gridCells * gridCells * 2;
 
     std::vector<float> positions;
     std::vector<float> normals;
     std::vector<float> texcoords;
     std::vector<uint32_t> indices;
-    positions.reserve(static_cast<size_t>(kGridVertices) * 3u);
-    normals.reserve(static_cast<size_t>(kGridVertices) * 3u);
-    texcoords.reserve(static_cast<size_t>(kGridVertices) * 2u);
-    indices.reserve(static_cast<size_t>(kGridTriangles) * 3u);
+    positions.reserve(static_cast<size_t>(gridVertices) * 3u);
+    normals.reserve(static_cast<size_t>(gridVertices) * 3u);
+    texcoords.reserve(static_cast<size_t>(gridVertices) * 2u);
+    indices.reserve(static_cast<size_t>(gridTriangles) * 3u);
 
     float3 minBounds(std::numeric_limits<float>::max());
     float3 maxBounds(-std::numeric_limits<float>::max());
-    for (uint32_t y = 0; y <= kGridCells; ++y) {
-        for (uint32_t x = 0; x <= kGridCells; ++x) {
+    for (uint32_t y = 0; y <= gridCells; ++y) {
+        for (uint32_t x = 0; x <= gridCells; ++x) {
             const float fx = static_cast<float>(x);
             const float fy = static_cast<float>(y);
             const float fz = std::sin(fx * 0.35f) * std::cos(fy * 0.27f) * 0.08f;
@@ -466,7 +467,7 @@ std::filesystem::path writeMeshletLodGridScene(
             normals.insert(normals.end(), {0.0f, 0.0f, 1.0f});
             texcoords.insert(
                 texcoords.end(),
-                {fx / static_cast<float>(kGridCells), fy / static_cast<float>(kGridCells)});
+                {fx / static_cast<float>(gridCells), fy / static_cast<float>(gridCells)});
             minBounds.x = std::min(minBounds.x, fx);
             minBounds.y = std::min(minBounds.y, fy);
             minBounds.z = std::min(minBounds.z, fz);
@@ -476,11 +477,11 @@ std::filesystem::path writeMeshletLodGridScene(
         }
     }
 
-    const auto vertexIndex = [](uint32_t x, uint32_t y) {
-        return y * (kGridCells + 1) + x;
+    const auto vertexIndex = [=](uint32_t x, uint32_t y) {
+        return y * (gridCells + 1) + x;
     };
-    for (uint32_t y = 0; y < kGridCells; ++y) {
-        for (uint32_t x = 0; x < kGridCells; ++x) {
+    for (uint32_t y = 0; y < gridCells; ++y) {
+        for (uint32_t x = 0; x < gridCells; ++x) {
             const uint32_t i0 = vertexIndex(x, y);
             const uint32_t i1 = vertexIndex(x + 1, y);
             const uint32_t i2 = vertexIndex(x, y + 1);
@@ -531,13 +532,13 @@ std::filesystem::path writeMeshletLodGridScene(
   ],
   "accessors": [
     { "bufferView": 0, "componentType": 5126, "count": )json"
-         << kGridVertices << R"json(, "type": "VEC3", "min": [)json"
+         << gridVertices << R"json(, "type": "VEC3", "min": [)json"
          << minBounds.x << ", " << minBounds.y << ", " << minBounds.z << R"json(], "max": [)json"
          << maxBounds.x << ", " << maxBounds.y << ", " << maxBounds.z << R"json(] },
     { "bufferView": 1, "componentType": 5126, "count": )json"
-         << kGridVertices << R"json(, "type": "VEC3" },
+         << gridVertices << R"json(, "type": "VEC3" },
     { "bufferView": 2, "componentType": 5126, "count": )json"
-         << kGridVertices << R"json(, "type": "VEC2" },
+         << gridVertices << R"json(, "type": "VEC2" },
     { "bufferView": 3, "componentType": 5125, "count": )json"
          << indices.size() << R"json(, "type": "SCALAR" }
   ],
@@ -2208,6 +2209,94 @@ void expectClusterMetadataEqual(
     expectVec3(actual.coneAxis, expected.coneAxis, label + " cone axis");
     EXPECT_TRUE(nearlyEqual(actual.coneCutoff, expected.coneCutoff)) << label;
     EXPECT_EQ(actual.packedCone, expected.packedCone) << label;
+}
+
+void expectMeshletPrimitiveExact(
+    const metallic::scene::RenderPrimitive& actual,
+    const metallic::scene::RenderPrimitive& expected)
+{
+    const auto scalar = [](float a, float b) {
+        EXPECT_EQ(std::bit_cast<uint32_t>(a), std::bit_cast<uint32_t>(b));
+    };
+    const auto vector3 = [&](const float3& a, const float3& b) {
+        scalar(a.x, b.x); scalar(a.y, b.y); scalar(a.z, b.z);
+    };
+    const auto bounds = [&](const metallic::scene::Bounds& a, const metallic::scene::Bounds& b) {
+        EXPECT_EQ(a.valid, b.valid);
+        vector3(a.min, b.min); vector3(a.max, b.max);
+    };
+    const auto cluster = [&](const metallic::scene::MeshletCluster& a,
+        const metallic::scene::MeshletCluster& b) {
+        EXPECT_EQ(a.vertexOffset, b.vertexOffset); EXPECT_EQ(a.vertexCount, b.vertexCount);
+        EXPECT_EQ(a.triangleOffset, b.triangleOffset); EXPECT_EQ(a.triangleCount, b.triangleCount);
+        EXPECT_EQ(a.lodLevel, b.lodLevel); EXPECT_EQ(a.lodGroupChildIndex, b.lodGroupChildIndex);
+        EXPECT_EQ(a.lodGroupIndex, b.lodGroupIndex); EXPECT_EQ(a.refinedGroupIndex, b.refinedGroupIndex);
+        scalar(a.lodError, b.lodError); bounds(a.bounds, b.bounds);
+        vector3(a.boundingSphereCenter, b.boundingSphereCenter);
+        scalar(a.boundingSphereRadius, b.boundingSphereRadius);
+        vector3(a.coneApex, b.coneApex); vector3(a.coneAxis, b.coneAxis);
+        scalar(a.coneCutoff, b.coneCutoff); EXPECT_EQ(a.packedCone, b.packedCone);
+    };
+    EXPECT_EQ(actual.name, expected.name);
+    EXPECT_EQ(actual.meshIndex, expected.meshIndex);
+    EXPECT_EQ(actual.primitiveIndex, expected.primitiveIndex);
+    EXPECT_EQ(actual.materialIndex, expected.materialIndex);
+    EXPECT_EQ(actual.mode, expected.mode);
+    EXPECT_EQ(actual.vertexCount, expected.vertexCount);
+    EXPECT_EQ(actual.indexCount, expected.indexCount);
+    EXPECT_EQ(actual.triangleCount, expected.triangleCount);
+    EXPECT_EQ(actual.hasAuthoredNormals, expected.hasAuthoredNormals);
+    EXPECT_EQ(actual.hasAuthoredTangents, expected.hasAuthoredTangents);
+    bounds(actual.localBounds, expected.localBounds);
+    ASSERT_EQ(actual.positions.size(), expected.positions.size());
+    ASSERT_EQ(actual.normals.size(), expected.normals.size());
+    ASSERT_EQ(actual.tangents.size(), expected.tangents.size());
+    ASSERT_EQ(actual.texcoords0.size(), expected.texcoords0.size());
+    for (size_t index = 0; index < actual.positions.size(); ++index) {
+        vector3(actual.positions[index], expected.positions[index]);
+    }
+    for (size_t index = 0; index < actual.normals.size(); ++index) {
+        vector3(actual.normals[index], expected.normals[index]);
+    }
+    for (size_t index = 0; index < actual.tangents.size(); ++index) {
+        const auto& a = actual.tangents[index]; const auto& b = expected.tangents[index];
+        scalar(a.x, b.x); scalar(a.y, b.y); scalar(a.z, b.z); scalar(a.w, b.w);
+    }
+    for (size_t index = 0; index < actual.texcoords0.size(); ++index) {
+        scalar(actual.texcoords0[index].x, expected.texcoords0[index].x);
+        scalar(actual.texcoords0[index].y, expected.texcoords0[index].y);
+    }
+    EXPECT_EQ(actual.indices, expected.indices);
+    EXPECT_EQ(actual.meshletVertices, expected.meshletVertices);
+    EXPECT_EQ(actual.meshletTriangles, expected.meshletTriangles);
+    EXPECT_EQ(actual.meshletLodVertices, expected.meshletLodVertices);
+    EXPECT_EQ(actual.meshletLodTriangles, expected.meshletLodTriangles);
+    ASSERT_EQ(actual.meshletClusters.size(), expected.meshletClusters.size());
+    ASSERT_EQ(actual.meshletLodClusters.size(), expected.meshletLodClusters.size());
+    ASSERT_EQ(actual.meshletLodLevels.size(), expected.meshletLodLevels.size());
+    ASSERT_EQ(actual.meshletLodGroups.size(), expected.meshletLodGroups.size());
+    for (size_t index = 0; index < actual.meshletClusters.size(); ++index) {
+        SCOPED_TRACE(::testing::Message() << "base cluster " << index);
+        cluster(actual.meshletClusters[index], expected.meshletClusters[index]);
+    }
+    for (size_t index = 0; index < actual.meshletLodClusters.size(); ++index) {
+        SCOPED_TRACE(::testing::Message() << "LOD cluster " << index);
+        cluster(actual.meshletLodClusters[index], expected.meshletLodClusters[index]);
+    }
+    for (size_t index = 0; index < actual.meshletLodLevels.size(); ++index) {
+        const auto& a = actual.meshletLodLevels[index]; const auto& b = expected.meshletLodLevels[index];
+        EXPECT_EQ(a.groupOffset, b.groupOffset); EXPECT_EQ(a.groupCount, b.groupCount);
+        EXPECT_EQ(a.clusterOffset, b.clusterOffset); EXPECT_EQ(a.clusterCount, b.clusterCount);
+        scalar(a.minBoundingSphereRadius, b.minBoundingSphereRadius);
+        scalar(a.minMaxQuadricError, b.minMaxQuadricError);
+    }
+    for (size_t index = 0; index < actual.meshletLodGroups.size(); ++index) {
+        const auto& a = actual.meshletLodGroups[index]; const auto& b = expected.meshletLodGroups[index];
+        EXPECT_EQ(a.clusterOffset, b.clusterOffset); EXPECT_EQ(a.clusterCount, b.clusterCount);
+        EXPECT_EQ(a.lodLevel, b.lodLevel); bounds(a.bounds, b.bounds);
+        vector3(a.boundingSphereCenter, b.boundingSphereCenter);
+        scalar(a.boundingSphereRadius, b.boundingSphereRadius); scalar(a.maxQuadricError, b.maxQuadricError);
+    }
 }
 
 void testMeshletPersistence(const std::filesystem::path& directory)
@@ -6530,6 +6619,149 @@ TEST(SceneEditing, PickerBVH)
 TEST(SceneLoading, AsyncProgressAndCancellation)
 {
     testAsyncSceneLoad(prepareOutputDirectory());
+}
+
+TEST(SceneLoading, FewLargePrimitivesPrepareMeshletLODGroupsConcurrently)
+{
+    using namespace metallic;
+    const uint32_t hardwareBudget = std::max(1u, std::thread::hardware_concurrency() / 2u);
+    uint32_t concurrentConfigurations = 0;
+    struct PreparationObserver {
+        std::mutex mutex;
+        std::condition_variable ready;
+        uint64_t executionId = 0;
+        size_t preparations = 0;
+        std::vector<uint64_t> workerThreads;
+        bool timedOut = false;
+    };
+    for (const uint32_t primitiveCount : {1u, 2u}) {
+        for (const uint32_t workers : {1u, 4u}) {
+            // The first graph can belong to either primitive, so rendezvous
+            // only if the hardware cap leaves two scratch lanes for each.
+            const bool checkConcurrent = std::min(workers, hardwareBudget) >= 2u * primitiveCount;
+            concurrentConfigurations += checkConcurrent;
+            SCOPED_TRACE(::testing::Message() << "primitives=" << primitiveCount << " workers=" << workers
+                << " rendezvous=" << checkConcurrent);
+            const auto directory = prepareOutputDirectory() /
+                ("async_meshlet_lod_" + std::to_string(primitiveCount) + "_" + std::to_string(workers));
+            std::filesystem::create_directories(directory);
+            const auto source = writeMeshletLodGridScene(directory, primitiveCount, false, 128);
+            auto cache = source;
+            cache += ".meshlets.bin";
+            std::filesystem::remove(cache);
+
+            // Build the reference outside the task runtime, then force the
+            // loader to execute the same import rather than read its cache.
+            ASSERT_EQ(task::tryGetTaskSystem(), nullptr);
+            scene::SceneDocument reference;
+            ASSERT_TRUE(reference.load(source)) << reference.lastLoadResult().error;
+            ASSERT_EQ(reference.renderPrimitives().size(), primitiveCount);
+            for (const auto& primitive : reference.renderPrimitives()) {
+                ASSERT_GT(primitive.meshletLodLevels.size(), 1u);
+                ASSERT_GT(primitive.meshletLodGroups.size(), 1u);
+            }
+            ASSERT_TRUE(std::filesystem::remove(cache));
+
+            ASSERT_TRUE(task::initializeTaskSystem({.workerCount = workers}));
+            struct ShutdownGuard { ~ShutdownGuard() { task::shutdownTaskSystem(); } } shutdownGuard;
+            const auto observed = std::make_shared<PreparationObserver>();
+            auto recorder = std::make_shared<ImageTaskRecorder>();
+            recorder->onEvent = [observed, checkConcurrent](const task::TaskNodeEvent& event) {
+                if (event.node.desc.name != "PrepareMeshletLODGroup" ||
+                    event.node.state != task::TaskState::Running) { return; }
+                std::unique_lock lock(observed->mutex);
+                ++observed->preparations;
+                if (!checkConcurrent) { return; }
+                // One stage of one primitive must admit two preparations on
+                // distinct workers. Parallelism across primitives is insufficient.
+                if (!observed->executionId) { observed->executionId = event.executionId; }
+                if (observed->executionId != event.executionId || observed->timedOut ||
+                    observed->workerThreads.size() == 2) { return; }
+                const auto thread = event.node.workerThreadId;
+                if (std::find(observed->workerThreads.begin(), observed->workerThreads.end(), thread) ==
+                    observed->workerThreads.end()) { observed->workerThreads.push_back(thread); }
+                if (observed->workerThreads.size() == 2) {
+                    observed->ready.notify_all();
+                } else if (!observed->ready.wait_for(lock, std::chrono::seconds(5), [&] {
+                    return observed->workerThreads.size() == 2 || observed->timedOut;
+                })) {
+                    // Watchdog for a serialization regression, not a speed assertion.
+                    observed->timedOut = true;
+                    observed->ready.notify_all();
+                }
+            };
+            const auto subscription = task::taskSystem().subscribe(recorder);
+            auto handle = scene::SceneLoader{}.request(source);
+            ASSERT_TRUE(handle.valid());
+            waitForSceneLoad(handle);
+            ASSERT_EQ(handle.progress().status, scene::SceneLoadStatus::Succeeded) << handle.progress().error;
+            EXPECT_EQ(recorder->waitForPayload().status, task::TaskGraphStatus::Succeeded);
+            EXPECT_TRUE(task::taskSystem().unsubscribe(subscription));
+            {
+                std::lock_guard lock(observed->mutex);
+                EXPECT_GT(observed->preparations, 1u);
+                if (checkConcurrent) {
+                    EXPECT_FALSE(observed->timedOut);
+                    EXPECT_EQ(observed->workerThreads.size(), 2u);
+                }
+            }
+
+            auto loaded = handle.takeResult();
+            ASSERT_NE(loaded, nullptr);
+            EXPECT_FALSE(loaded->hasDeferredMeshlets());
+            EXPECT_FALSE(loaded->lastLoadResult().meshletCacheLoaded);
+            EXPECT_TRUE(loaded->lastLoadResult().meshletCacheSaved);
+            EXPECT_TRUE(std::filesystem::exists(cache));
+            ASSERT_EQ(loaded->renderPrimitives().size(), reference.renderPrimitives().size());
+            for (size_t index = 0; index < loaded->renderPrimitives().size(); ++index) {
+                SCOPED_TRACE(::testing::Message() << "primitive=" << index);
+                expectMeshletPrimitiveExact(loaded->renderPrimitives()[index], reference.renderPrimitives()[index]);
+            }
+        }
+    }
+    RecordProperty("ConcurrentConfigurations", concurrentConfigurations);
+    if (!concurrentConfigurations) {
+        GTEST_SKIP() << "Output equivalence checked; hardware worker budget does not permit a two-lane rendezvous";
+    }
+}
+
+TEST(SceneLoading, CancelsDuringMeshletLODGroupWithoutPublishingSceneOrCache)
+{
+    using namespace metallic;
+    const auto directory = prepareOutputDirectory() / "cancel_meshlet_lod_group";
+    std::filesystem::create_directories(directory);
+    const auto source = writeMeshletLodGridScene(directory, 1, false, 128);
+    auto cache = source;
+    cache += ".meshlets.bin";
+    std::filesystem::remove(cache);
+
+    ASSERT_TRUE(task::initializeTaskSystem({.workerCount = 4}));
+    struct ShutdownGuard { ~ShutdownGuard() { task::shutdownTaskSystem(); } } shutdownGuard;
+    std::promise<scene::SceneLoadHandle> handlePromise;
+    const auto handleFuture = handlePromise.get_future().share();
+    auto attempted = std::make_shared<std::atomic_bool>(false);
+    auto accepted = std::make_shared<std::atomic_bool>(false);
+    auto recorder = std::make_shared<ImageTaskRecorder>();
+    recorder->onEvent = [handleFuture, attempted, accepted](const task::TaskNodeEvent& event) {
+        if (event.node.desc.name != "PrepareMeshletLODGroup" || event.node.state != task::TaskState::Running ||
+            attempted->exchange(true)) { return; }
+        if (handleFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
+            auto handle = handleFuture.get();
+            accepted->store(handle.cancel());
+        }
+    };
+    task::taskSystem().subscribe(recorder);
+    auto handle = scene::SceneLoader{}.request(source);
+    handlePromise.set_value(handle);
+    ASSERT_TRUE(handle.valid());
+    waitForSceneLoad(handle);
+    // A cancelled handle reports terminal status before the stage has drained.
+    task::shutdownTaskSystem();
+    EXPECT_TRUE(attempted->load());
+    EXPECT_TRUE(accepted->load());
+    EXPECT_EQ(handle.progress().status, scene::SceneLoadStatus::Cancelled);
+    EXPECT_EQ(handle.takeResult(), nullptr);
+    EXPECT_FALSE(std::filesystem::exists(cache));
 }
 
 TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)

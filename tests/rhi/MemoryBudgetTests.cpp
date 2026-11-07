@@ -52,6 +52,16 @@ public:
             return RHITestResult::fail("Released reservation did not restore allocation headroom");
         }
         const auto beforeMove = device.memoryBudget();
+        uint64_t domainBytes = 0, localBytes = 0;
+        for (const auto& allocation : beforeMove.domains) {
+            domainBytes += allocation.allocationBytes;
+            localBytes += allocation.deviceLocalBytes;
+        }
+        if (beforeMove.trackedAllocationBytes != domainBytes || beforeMove.trackedDeviceLocalBytes != localBytes ||
+            beforeMove.peakTrackedAllocationBytes < domainBytes || beforeMove.peakTrackedDeviceLocalBytes < localBytes ||
+            beforeMove.trackedDeviceLocalBytes <= initial.trackedDeviceLocalBytes) {
+            return RHITestResult::fail("Simultaneous allocation ledger or lifetime high-water omitted live geometry");
+        }
         const size_t domain = size_t(MemoryBudgetDomain::Geometry);
         std::shared_ptr<Buffer> retained = std::move(geometry);
         if (device.memoryBudget().domains[domain].allocationBytes != beforeMove.domains[domain].allocationBytes) {
@@ -82,6 +92,12 @@ public:
             return RHITestResult::fail("Oversized reservation was accepted");
         }
         const auto final = device.memoryBudget();
+        if (final.trackedAllocationBytes != initial.trackedAllocationBytes ||
+            final.trackedDeviceLocalBytes != initial.trackedDeviceLocalBytes ||
+            final.peakTrackedAllocationBytes < beforeMove.peakTrackedAllocationBytes ||
+            final.peakTrackedDeviceLocalBytes < beforeMove.peakTrackedDeviceLocalBytes) {
+            return RHITestResult::fail("Allocation destruction lost simultaneous totals or lifetime high-water");
+        }
         for (size_t i = 0; i < final.domains.size(); ++i) {
             if (final.domains[i].allocationBytes != initial.domains[i].allocationBytes ||
                 final.domains[i].allocationCount != initial.domains[i].allocationCount) {
@@ -95,6 +111,8 @@ public:
         std::ofstream(context.outputDirectory / "memory-budget.json") << nlohmann::json{
             {"driverBudget", final.driverBudget}, {"heapCount", final.heaps.size()},
             {"deniedAllocations", final.deniedAllocations - initial.deniedAllocations},
+            {"peakTrackedAllocationBytes", final.peakTrackedAllocationBytes},
+            {"peakTrackedDeviceLocalBytes", final.peakTrackedDeviceLocalBytes},
             {"reservationReleased", true}, {"resourceLedgerRestored", true}}.dump(2);
         return RHITestResult::pass("Shared geometry/texture admission, reservations, retained resources and move/destruction accounting");
     }

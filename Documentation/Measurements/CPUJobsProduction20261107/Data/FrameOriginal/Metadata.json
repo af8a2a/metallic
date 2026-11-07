@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "protocol": "metallic-production-cpu-jobs-abba-v1",
+  "status": "running",
+  "startedUtc": "2026-11-07T01:38:51.485053+00:00",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "logicalProcessors": 16,
+  "repositoryRevision": "53237e6df075d64ddfaa82bdf8ef4184a714aaf5",
+  "executables": {
+    "legacy": {
+      "path": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\Source\\MetallicCPUJobsLegacy.exe",
+      "sha256": "b19a266982b803b1363feeed446cfbc7d21c0b563faf9e9f8f4e7e89803c6142"
+    },
+    "shared": {
+      "path": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\Source\\Metallic.exe",
+      "sha256": "361d1651beb963a5c1418892bbe5e8695e2628c0c0eda8ce516640ef5caa8b67"
+    }
+  },
+  "sourceSha256": {
+    "Tools/CPUJobs/MeasureProductionCPUJobs.py": "e4702109eca387cb11a27cc49f84d8b34302d5ac01787f509a71abbc4d27b588",
+    "Tools/CPUJobs/ProcessResources.py": "b21f059690addf923c0867f40d23496ab26d55208ac1762937c107641ed7cbc3",
+    "Tools/CPUJobs/LegacyMeshletSceneAdapter.cpp": "5760b29b33399a4f6d4d755939a00293be9bef16ba6cc7ac858a1ccd3dc571ee",
+    "Source/Runtime/Scene/MeshletBuildParallel.cpp": "6e605017afbfd7ff177f6fcd2ba2e4c013cf6ecede7d977d9cdfbd474d6c4f98",
+    "Source/Runtime/Task/TaskSystem.cpp": "8c130a6f3b1ec53e5cfab1ebf562150cb9698bd2ef6cbfebbe4f382f97b334f6",
+    "Source/Runtime/Task/ParallelFor.cpp": "7529aa4fd654b06269d8508d821df91f057bd82b9f53d4d62d282662f2333517",
+    "Source/Editor/EditorCPUJobBenchmark.cpp": "fd7e085036c52c47796feae11a3c5f87528bf13d96c8f12acc4f5978477391f7",
+    "Source/Editor/EditorApplication.cpp": "9b7e6cfa02d130eeb89888b20cf7521350f7442b6ec740586fd725fefe231df9",
+    "Source/Editor/EditorApplication.h": "df5e885951cc83f68e62f8c4457ff5d190542fd4f42f9d6d22ce28df3bc92697",
+    "Source/CMakeLists.txt": "c112c1bf19a400721bf96bb0f5f264b21c6f94c048c9c3cb00f5227a47bb52a6",
+    "Tools/CPUJobs/CMakeLists.txt": "4ca015d15020dcbc1a07d99fff23c3698727eaa4c4a8f0d79932001460d64e42",
+    "Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp": "4e74ebcf0ef5fb9a6f11c5f4f547e139d9f15c70d574c56713431de0fa1bc3fc",
+    "Source/Runtime/Render/Profiling/SchedulingDiagnostics.h": "40713594fecbfda3f64253185859c080769b0d9eef2e4aeafcae9a9a77ff053f",
+    "Source/Runtime/Render/GAPI/RHI.h": "d3fe523a631dc8d925833fb4bff01dce0192bc007d0e90e4afb380b029efe018",
+    "Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp": "ad5e361c259c87513d28ac696a5e7c07d79234c87fc82f22d25f804d0d1fb10b"
+  },
+  "assetSha256": {
+    "E:\\metallic\\Asset\\SuperSponza\\NewSponza_Main_glTF_003.gltf": "e04c4c540c74bdddcbd3f590a85c14119bfd5839702246a23b3a737c0cce2400",
+    "E:\\metallic\\Asset\\SuperSponza\\NewSponza_Main_glTF_003.gltf.meshstream.bin": "f5a1cf492d3f9ee538a160a41322e3fcfb173e9eae3dc3dcd9d4514d67a57c28",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\Pipelines\\Samples\\gpu_driven_zorah_full.metallic_graph.json": "bb8c2b3ea7f18c00b1625f2178b7f2d994a0353d1f5b10aa7a00815e680d76b3"
+  },
+  "config": {
+    "sample": "gpu-driven-zorah-full",
+    "scenePath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+    "streamAssetPath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf.meshstream.bin",
+    "camera": {
+      "eye": [
+        -8.80743,
+        1.59221947,
+        -0.85825783
+      ],
+      "center": [
+        -7.843519222198665,
+        1.786533203681289,
+        -0.6762740633110123
+      ],
+      "up": [
+        -0.1909405528670367,
+        0.980939433087972,
+        -0.03604902728223164
+      ],
+      "fovDegrees": 58.5119763983259,
+      "znear": 0.1,
+      "zfar": 10000.0
+    },
+    "width": 1920,
+    "height": 1080,
+    "workerCount": 4,
+    "frames": 600,
+    "warmupFrames": 180,
+    "memorySampleIntervalFrames": 10,
+    "validation": false,
+    "diagnostics": false,
+    "captureImage": false,
+    "materialTextureBudgetMiB": 8192,
+    "expectedVsync": false,
+    "expectedReflexMode": 0,
+    "expectedReflexFrameLimitUs": 0,
+    "geometryBudgetMiB": 512
+  },
+  "configSha256": "45cafee2785217e87a80dc3ec39ed1c0e86109670ba1b613987f162bafc3ef2d",
+  "workers": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "blocks": 3,
+  "prewarmProcessesPerCandidateWorker": 1,
+  "diagnostics": "off",
+  "purpose": "performance",
+  "sampleMilliseconds": 100.0,
+  "conditions": {
+    "order": "Fresh-process ABBA blocks, reversed to BAAB on alternate blocks; worker order rotates between blocks. No outcome-dependent extra sampling.",
+    "cache": "Shared application/OS/driver caches are retained. Excluded prewarm processes run both candidates before measured blocks. No claim of cold-cache startup.",
+    "frameWarmup": "Application config controls discarded warmup frames; measured Frames.jsonl must exclude them.",
+    "resources": "OS samples cover launch to exit, including scene load/warmup/render/export/teardown. Memory/process CPU are not GPU metrics.",
+    "scopes": "Nested or parallel CPU/GPU scopes are reported independently; no inferred summed frame critical path.",
+    "gpuMemory": "Only app RHI heap/domain telemetry; missing stays null. Heap allocation/block/usage are distinct quantities and are not stacked.",
+    "statistics": "Nearest-rank within-process frame quantiles; independent process/block is the A/B unit, not individual frames.",
+    "externalActivity": "Caller must reserve the machine/GPU; script does not detect other agent builds or desktop load."
+  }
+}

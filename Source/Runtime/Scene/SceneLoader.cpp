@@ -1,4 +1,5 @@
 #include "Runtime/Scene/SceneLoader.h"
+#include "Runtime/Scene/DeferredMeshletBuild.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include "Runtime/Task/TaskSystem.h"
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -422,6 +424,7 @@ struct ImagePipelineMetrics {
 } // namespace
 
 struct SceneLoadHandle::State {
+    struct MeshletPipeline;
     mutable std::mutex mutex;
     SceneLoadProgress progress;
     std::unique_ptr<SceneDocument> result;
@@ -430,6 +433,166 @@ struct SceneLoadHandle::State {
     std::atomic_bool cancelRequested{false};
     SceneLoadClock::time_point begin = SceneLoadClock::now();
     bool resultTaken = false;
+
+    task::TaskOutcome submitGraph(task::TaskGraph&& graph, const std::shared_ptr<task::TaskSystem>& system)
+    {
+        {
+            std::lock_guard lock(mutex);
+            if (isTerminal(progress.status)) { return {}; }
+        }
+        auto submitted = system->submit(std::move(graph));
+        if (!submitted) {
+            std::lock_guard lock(mutex);
+            if (!isTerminal(progress.status)) {
+                progress.status = SceneLoadStatus::Failed;
+                progress.phase = SceneLoadPhase::Failed;
+                progress.error = submitted.error().message;
+                candidate.reset();
+                runs.clear();
+            }
+            return std::unexpected(submitted.error().message);
+        }
+        bool stop = false;
+        {
+            std::lock_guard lock(mutex);
+            stop = isTerminal(progress.status);
+            if (!stop) {
+                // Keep only outstanding or failed graphs. The current callback
+                // registers its successor before returning, so terminal-state
+                // polling cannot mistake a gap between stages for completion.
+                std::erase_if(runs, [](const auto& run) {
+                    return run->isComplete() && run->snapshot().status == task::TaskGraphStatus::Succeeded;
+                });
+                runs.push_back(std::make_shared<task::TaskGraphRun>(std::move(*submitted)));
+            }
+        }
+        if (stop) { (void)submitted->requestStop(); }
+        return {};
+    }
+};
+
+struct SceneLoadHandle::State::MeshletPipeline : std::enable_shared_from_this<MeshletPipeline> {
+    struct PrimitiveBuild : std::enable_shared_from_this<PrimitiveBuild> {
+        std::shared_ptr<MeshletPipeline> pipeline;
+        std::unique_ptr<DeferredMeshletBuild> build;
+        size_t primitiveIndex = 0;
+        size_t admissionSlot = 0;
+        uint32_t stageIndex = 0;
+
+        task::TaskOutcome start()
+        {
+            if (pipeline->state->cancelRequested.load(std::memory_order_acquire)) { return {}; }
+            build = pipeline->candidate->createDeferredMeshletBuild(
+                primitiveIndex, pipeline->laneCounts[admissionSlot]);
+            if (!build || build->complete()) {
+                build.reset();
+                return pipeline->finishPrimitive(primitiveIndex, admissionSlot);
+            }
+            return submitStage();
+        }
+
+        task::TaskOutcome submitStage()
+        {
+            auto self = shared_from_this();
+            task::TaskGraph graph("SceneMeshletLOD " + std::to_string(primitiveIndex) +
+                " stage " + std::to_string(stageIndex++));
+            auto completion = build->addStage(graph,
+                {.name = "MeshletLOD", .category = "SceneLoad", .userTag = primitiveIndex});
+            if (!completion) { return std::unexpected(completion.error().message); }
+            auto continuation = graph.addTask(
+                {.name = "AdvancePrimitiveMeshlets", .category = "SceneLoad", .userTag = primitiveIndex},
+                // The final publish depends on every prepare. TaskSystem also
+                // drains prerequisites before skipping a dependent on failure
+                // or stop, so this capture retains the job through every stage.
+                [self](task::TaskContext& context) -> task::TaskOutcome {
+                    if (context.stopRequested() ||
+                        self->pipeline->state->cancelRequested.load(std::memory_order_acquire)) { return {}; }
+                    self->build->advance();
+                    if (self->build->complete()) {
+                        // Release this primitive's temporary buffers before
+                        // admitting the next primitive in the same slot.
+                        self->build.reset();
+                        return self->pipeline->finishPrimitive(self->primitiveIndex, self->admissionSlot);
+                    }
+                    return self->submitStage();
+                });
+            if (auto dependency = graph.addDependency(*completion, continuation); !dependency) {
+                return std::unexpected(dependency.error().message);
+            }
+            return pipeline->state->submitGraph(std::move(graph), pipeline->system);
+        }
+    };
+
+    MeshletPipeline(std::shared_ptr<State> loadState, std::shared_ptr<SceneDocument> scene,
+        std::shared_ptr<task::TaskSystem> runtime, task::TaskGraph&& payloadGraph)
+        : state(std::move(loadState)), candidate(std::move(scene)), system(std::move(runtime)),
+          payload(std::move(payloadGraph)), primitiveCount(candidate->renderPrimitives().size())
+    {
+        const uint32_t defaultMeshletWorkers = std::max(1u, std::thread::hardware_concurrency() / 2u);
+        const uint32_t workers = std::min(system->workerCount(), defaultMeshletWorkers);
+        const size_t admitted = std::min<size_t>(primitiveCount, workers);
+        for (size_t slot = 0; slot < admitted; ++slot) {
+            laneCounts.push_back(workers / admitted + (slot < workers % admitted ? 1u : 0u));
+        }
+        nextPrimitive.store(admitted, std::memory_order_relaxed);
+    }
+
+    task::TaskOutcome start()
+    {
+        if (!primitiveCount) { return state->submitGraph(std::move(payload), system); }
+        task::TaskGraph graph("SceneMeshletAdmission");
+        for (size_t slot = 0; slot < laneCounts.size(); ++slot) { addStart(graph, slot, slot); }
+        return state->submitGraph(std::move(graph), system);
+    }
+
+    void addStart(task::TaskGraph& graph, size_t primitiveIndex, size_t slot)
+    {
+        graph.addTask({.name = "BuildPrimitiveMeshlets", .category = "SceneLoad", .userTag = primitiveIndex},
+            [self = shared_from_this(), primitiveIndex, slot]() -> task::TaskOutcome {
+                auto operation = std::make_shared<PrimitiveBuild>();
+                operation->pipeline = self;
+                operation->primitiveIndex = primitiveIndex;
+                operation->admissionSlot = slot;
+                return operation->start();
+            });
+    }
+
+    task::TaskOutcome finishPrimitive(size_t primitiveIndex, size_t slot)
+    {
+        if (state->cancelRequested.load(std::memory_order_acquire)) { return {}; }
+        size_t count;
+        {
+            std::lock_guard lock(state->mutex);
+            if (isTerminal(state->progress.status)) { return {}; }
+            count = ++completed;
+            state->progress.phase = SceneLoadPhase::Geometry;
+            state->progress.fraction = std::max(state->progress.fraction,
+                0.20f + 0.20f * static_cast<float>(count) / static_cast<float>(primitiveCount));
+            state->progress.completedUnits = count;
+            state->progress.totalUnits = primitiveCount;
+            state->progress.currentItem = candidate->renderPrimitives()[primitiveIndex].name;
+        }
+        if (count == primitiveCount) { return state->submitGraph(std::move(payload), system); }
+        const size_t next = nextPrimitive.fetch_add(1, std::memory_order_relaxed);
+        if (next < primitiveCount) {
+            task::TaskGraph graph("SceneMeshletAdmission");
+            addStart(graph, next, slot);
+            return state->submitGraph(std::move(graph), system);
+        }
+        return {};
+    }
+
+    std::shared_ptr<State> state;
+    // Stages retain the candidate even after handle cancellation clears State.
+    std::shared_ptr<SceneDocument> candidate;
+    std::shared_ptr<task::TaskSystem> system;
+    task::TaskGraph payload;
+    size_t primitiveCount;
+    // At most one builder per admission slot. Its scratch window shares this
+    // fixed budget with the other slots; the sum never exceeds worker count.
+    std::vector<uint32_t> laneCounts;
+    std::atomic_size_t nextPrimitive{0};
+    size_t completed = 0; // Guarded by State::mutex with geometry progress.
 };
 
 void SceneLoadHandle::refreshTerminalState() const
@@ -681,41 +844,6 @@ SceneLoadHandle SceneLoader::request(
             }
 
             task::TaskGraph decodeGraph("SceneCPUPayload");
-            auto builtPrimitiveCount = std::make_shared<std::atomic_size_t>(0);
-            std::vector<task::TaskNodeHandle> geometryTasks;
-            if (candidate->hasDeferredMeshlets()) {
-                geometryTasks.reserve(candidate->renderPrimitives().size());
-                for (size_t primitiveIndex = 0;
-                     primitiveIndex < candidate->renderPrimitives().size();
-                     ++primitiveIndex) {
-                    geometryTasks.push_back(decodeGraph.addTask(
-                        task::TaskDesc{
-                            .name = "BuildPrimitiveMeshlets",
-                            .category = "SceneLoad",
-                            .userTag = primitiveIndex,
-                        },
-                        [state, candidate, builtPrimitiveCount, primitiveIndex]() {
-                            if (!state->cancelRequested.load(std::memory_order_acquire)) {
-                                (void)candidate->buildDeferredMeshlet(primitiveIndex);
-                                const size_t completed = builtPrimitiveCount->fetch_add(
-                                    1,
-                                    std::memory_order_acq_rel) + 1u;
-                                std::lock_guard lock(state->mutex);
-                                if (!isTerminal(state->progress.status)) {
-                                    state->progress.phase = SceneLoadPhase::Geometry;
-                                    state->progress.fraction = std::max(
-                                        state->progress.fraction,
-                                        0.20f + 0.20f * static_cast<float>(completed) /
-                                            static_cast<float>(candidate->renderPrimitives().size()));
-                                    state->progress.completedUnits = completed;
-                                    state->progress.totalUnits = candidate->renderPrimitives().size();
-                                    state->progress.currentItem =
-                                        candidate->renderPrimitives()[primitiveIndex].name;
-                                }
-                            }
-                        }));
-                }
-            }
             const task::TaskNodeHandle geometryFinalize = decodeGraph.addTask(
                 task::TaskDesc{
                     .name = "FinalizeSceneMeshlets",
@@ -734,13 +862,6 @@ SceneLoadHandle SceneLoader::request(
                         state->progress.totalUnits = candidate->images().size() * 2u;
                     }
                 });
-            for (const task::TaskNodeHandle geometryTask : geometryTasks) {
-                const auto dependency = decodeGraph.addDependency(geometryTask, geometryFinalize);
-                if (!dependency) {
-                    return std::unexpected(dependency.error().message);
-                }
-            }
-
             auto metrics = std::make_shared<ImagePipelineMetrics>();
             const auto imagesBegin = decodeGraph.addTask(
                 {.name = "BeginSceneImages", .category = "SceneLoad"},
@@ -876,25 +997,12 @@ SceneLoadHandle SceneLoader::request(
                 }
             }
 
-            auto submittedDecode = system->submit(std::move(decodeGraph));
-            if (!submittedDecode) {
-                std::lock_guard lock(state->mutex);
-                state->progress.status = SceneLoadStatus::Failed;
-                state->progress.phase = SceneLoadPhase::Failed;
-                state->progress.error = submittedDecode.error().message;
-                return std::unexpected(submittedDecode.error().message);
+            if (candidate->hasDeferredMeshlets()) {
+                auto pipeline = std::make_shared<SceneLoadHandle::State::MeshletPipeline>(
+                    state, candidate, system, std::move(decodeGraph));
+                return pipeline->start();
             }
-            {
-                std::lock_guard lock(state->mutex);
-                // Cancellation can race submission of the second graph.
-                if (state->cancelRequested.load(std::memory_order_acquire)) {
-                    (void)submittedDecode->requestStop();
-                } else {
-                    state->runs.push_back(
-                        std::make_shared<task::TaskGraphRun>(std::move(*submittedDecode)));
-                }
-            }
-            return {};
+            return state->submitGraph(std::move(decodeGraph), system);
         });
 
     auto submitted = system->submit(std::move(graph));

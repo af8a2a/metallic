@@ -1,0 +1,15 @@
+{
+  "schema": "metallic-production-compact-summary-v1",
+  "bundle": "RHIRegression",
+  "sourceStatus": null,
+  "definition": "Per-run scalar/aggregate subset of original records; not the original Raw/Summary and not sufficient for frame-level replotting. Restore the release asset for full data.",
+  "originalRawLineHashDefinition": "SHA256 of each original UTF-8 JSONL record excluding its line terminator",
+  "originalFiles": {},
+  "population": {
+    "completeRecords": 0,
+    "measuredRecords": 0,
+    "prewarmRecords": 0
+  },
+  "processes": [],
+  "comparisons": []
+}

@@ -1,0 +1,87 @@
+{
+  "declaredUtc": "2026-11-07T00:51:37.525434+00:00",
+  "scope": "Fixed authored camera; real async editor RenderGraph, load and resource lifetime; separate cold-source geometry cook",
+  "workers": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "blocks": 3,
+  "order": "ABBA, BAAB, ABBA with worker rotation",
+  "excludedPrewarmProcessesPerCandidateWorker": 1,
+  "measuredFramesPerProcess": 600,
+  "warmupFramesPerProcess": 180,
+  "resourcePollingMs": 100,
+  "rhiSnapshotEveryFrames": 10,
+  "performanceValidation": false,
+  "performanceDiagnostics": false,
+  "stopRule": "Fixed budget; abort on failure or workload mismatch; no outcome-dependent sampling",
+  "comparisonVariable": "Legacy dedicated MeshletBuildParallel versus shared TaskSystem adapter, same final renderer source and options. Cache-hit frame runs may not execute meshlet ranges. No overall issue-start revision or SIMD FPS claim.",
+  "cache": "Retain shared shader/PSO/OS/driver caches; process load and cook-output cold are separate from flushed cache cold.",
+  "pilots": [
+    "build-issue73-production/pilot-shared-1: failed 512MiB texture budget",
+    "build-issue73-production/pilot-shared-2: passed 8192MiB, initial compile excluded"
+  ],
+  "quality": "Same production preset; RT shadow + SIGMA + DLSS Quality, 1920x1080 output / 1280x720 render. 8192MiB material budget for 72 full 4K PNG images; upload concurrency and quality unchanged.",
+  "revisionBeforeAcceptanceSamplingUtc": "2026-11-07T01:00:27.970481+00:00",
+  "geometryCapacity": "512 MiB, same both arms; all 3781 cooked pages require 314864384 aligned device bytes and fit together. Replaces unrelated Zorah 3.5GiB capacity without changing page payload, LOD pixel error, traversal or quality. Pre-sampling pilot showed global desktop VRAM baseline 6452MiB and near-full whole-device usage with the oversized capacity.",
+  "validationCompatibility": {
+    "observedUtc": "2026-11-07T01:07:08.253800+00:00",
+    "failedAttempt": "build-issue73-production/validation-super-sponza/run-000-legacy-w4-measured",
+    "reason": "Streamline vkCreateInstance wrapper rejects VK_EXT_layer_settings; device creation Unsupported before rendering",
+    "fullProduction": "Core validation with DLSS+SIGMA retained. Synchronization validation evaluated separately where supported; no downgrade of the full workload."
+  },
+  "correctnessBudget": {
+    "declaredUtc": "2026-11-07T01:10:58.468429+00:00",
+    "workers": [
+      4
+    ],
+    "blocks": 1,
+    "warmupFrames": 60,
+    "measuredFrames": 120,
+    "purpose": "Core validation/image output only, no performance inference",
+    "pilot": "Earlier complete 600-frame core-validation capture passed in app with zero validation messages but old runner rejected core-only sync=false schema; preserve separately. Core validation averaged ~130ms/frame, so shorten independent correctness population before final comparative captures."
+  },
+  "coldCookBudget": {
+    "declaredUtc": "2026-11-07T01:19:07.804051+00:00",
+    "workers": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "blocks": 3,
+    "order": "ABBA/BAAB/ABBA, rotated workers",
+    "processes": 48,
+    "freshOutput": true,
+    "compression": "reference",
+    "memoryLimitMiB": 0,
+    "separateAllPayloadAndSourceAttributeValidation": true,
+    "excludedPilot": "build-issue73-production/cook-pilot-shared: complete 405 geometries, 3781 pages, 110435932 bytes, process 5.8730825 s; no comparative pilot used to select outcome"
+  },
+  "steadySoakBudget": {
+    "declaredUtc": "2026-11-07T01:19:07.804051+00:00",
+    "workers": [
+      8
+    ],
+    "blocks": 1,
+    "processes": 4,
+    "warmupFrames": 180,
+    "measuredFrames": 6000,
+    "diagnostics": true,
+    "validation": false,
+    "captureImage": "Untimed final readback after last drain, for late fixed-view output inspection",
+    "scope": "Fixed authored camera; resource plateau and stream-error checks, no claim of camera-route or per-frame image/video validation"
+  },
+  "userRequestedFrameBudgetReduction": {
+    "recordedUtc": "2026-11-07T01:59:10.785114+00:00",
+    "request": "Fewer test repetitions to avoid a long task",
+    "originalPlanCompleted": false,
+    "originalRecords": "Data/FrameOriginal",
+    "curatedPopulation": "Data/FrameReduced: eight excluded prewarm plus one complete W1 ABBA (four measured processes, two per backend)",
+    "excludedLaterRecords": "Completed W2 legacy run12 has no matched shared process; interrupted run13 is not a completed sample",
+    "stopCause": "External user time budget, before comparative outcomes were inspected; no outcome-dependent retries or replacement samples",
+    "remainingPolicy": "No additional renderer, cooker or test runs; existing records only"
+  }
+}

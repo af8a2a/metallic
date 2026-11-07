@@ -25,6 +25,8 @@ std::mutex gTaskSystemMutex;
 std::shared_ptr<TaskSystem> gTaskSystem;
 bool gTaskSystemShuttingDown = false;
 thread_local bool gInsideTaskCallback = false;
+thread_local std::stop_token gTaskStopToken;
+thread_local detail::TaskCallbackIdentity gTaskCallbackIdentity;
 
 TaskError makeTaskError(TaskErrorCode code, std::string message)
 {
@@ -49,19 +51,27 @@ bool terminalState(TaskState state)
 
 class TaskCallbackScope {
 public:
-    TaskCallbackScope()
+    TaskCallbackScope(std::stop_token stopToken, detail::TaskCallbackIdentity identity)
         : previous_(gInsideTaskCallback)
+        , previousStopToken_(gTaskStopToken)
+        , previousIdentity_(gTaskCallbackIdentity)
     {
         gInsideTaskCallback = true;
+        gTaskStopToken = stopToken;
+        gTaskCallbackIdentity = identity;
     }
 
     ~TaskCallbackScope()
     {
         gInsideTaskCallback = previous_;
+        gTaskStopToken = previousStopToken_;
+        gTaskCallbackIdentity = previousIdentity_;
     }
 
 private:
     bool previous_ = false;
+    std::stop_token previousStopToken_;
+    detail::TaskCallbackIdentity previousIdentity_;
 };
 
 } // namespace
@@ -244,11 +254,17 @@ struct TaskSystemBackend {
 
     void shutdown()
     {
-        if (!accepting.exchange(false, std::memory_order_acq_rel)) {
-            return;
+        std::vector<std::shared_ptr<detail_TaskExecutionState>> executions;
+        {
+            // Admission and the shutdown snapshot are one boundary: an accepted
+            // graph must be registered before shutdown begins draining. start()
+            // may then observe stop, but its execution remains in this snapshot.
+            std::lock_guard admissionLock(admissionMutex);
+            if (!accepting.exchange(false, std::memory_order_acq_rel)) {
+                return;
+            }
+            executions = activeSnapshot();
         }
-
-        const std::vector<std::shared_ptr<detail_TaskExecutionState>> executions = activeSnapshot();
         for (const std::shared_ptr<detail_TaskExecutionState>& execution : executions) {
             execution->requestStop();
         }
@@ -270,6 +286,7 @@ struct TaskSystemBackend {
     std::atomic_uint64_t nextExecutionId{1};
     std::atomic_uint64_t nextSinkToken{1};
     std::atomic_uint32_t nextWorkerIndex{0};
+    std::mutex admissionMutex;
     std::mutex activeMutex;
     std::unordered_map<uint64_t, std::shared_ptr<detail_TaskExecutionState>> activeExecutions;
     std::mutex sinkMutex;
@@ -387,7 +404,8 @@ void detail_TaskExecutionState::runNode(uint32_t nodeIndex) noexcept
     };
     TaskContext context(&contextImpl);
     try {
-        TaskCallbackScope callbackScope;
+        TaskCallbackScope callbackScope(contextImpl.stopToken,
+            {.executionId = contextImpl.executionId, .node = contextImpl.node});
         TaskOutcome outcome = node->callback(context);
         if (!outcome) {
             finalState = TaskState::Failed;
@@ -784,7 +802,13 @@ std::expected<TaskGraphRun, TaskError> TaskSystem::submit(TaskGraph&& graph)
         std::move(graph.impl_->name),
         std::move(runtimeNodes),
         std::move(graph.impl_->edges));
-    impl_->backend.addExecution(state);
+    {
+        std::lock_guard admissionLock(impl_->backend.admissionMutex);
+        if (!impl_->backend.accepting.load(std::memory_order_acquire)) {
+            return std::unexpected(makeTaskError(TaskErrorCode::ShuttingDown, "TaskSystem is shutting down"));
+        }
+        impl_->backend.addExecution(state);
+    }
     state->start();
     return TaskGraphRun(std::move(state));
 }
@@ -887,6 +911,16 @@ void shutdownTaskSystem()
 }
 
 namespace detail {
+
+TaskCallbackIdentity taskCallbackIdentity() noexcept
+{
+    return gTaskCallbackIdentity;
+}
+
+std::stop_token taskCallbackStopToken() noexcept
+{
+    return gTaskStopToken;
+}
 
 std::shared_ptr<TaskSystem> tryAcquireTaskSystem() noexcept
 {

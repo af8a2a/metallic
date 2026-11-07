@@ -1,13 +1,11 @@
 #include "Runtime/Scene/MeshletBuildParallel.h"
+#include "Runtime/Task/ParallelFor.h"
 
 #include <algorithm>
-#include <atomic>
-#include <condition_variable>
 #include <exception>
 #include <mutex>
-#include <thread>
+#include <stdexcept>
 #include <unordered_map>
-#include <vector>
 
 namespace metallic::scene {
 namespace {
@@ -37,75 +35,9 @@ struct ActivePoolScope {
 struct MeshletBuildParallel::Impl {
     explicit Impl(size_t count) : workerCount(std::max<size_t>(1, count))
     {
-        workers.reserve(workerCount - 1);
-        try {
-            for (size_t worker = 1; worker < workerCount; ++worker) {
-                workers.emplace_back([this, worker] {
-                    size_t observedEpoch = 0;
-                    for (;;) {
-                        std::unique_lock lock(workMutex);
-                        workChanged.wait(lock, [&] { return stopping || epoch != observedEpoch; });
-                        if (stopping) { return; }
-                        observedEpoch = epoch;
-                        lock.unlock();
-                        runTasks(worker);
-                        lock.lock();
-                        if (--remainingWorkers == 0) { finished.notify_one(); }
-                    }
-                });
-            }
-        } catch (...) {
-            stop();
-            throw;
-        }
-    }
-
-    ~Impl()
-    {
-        stop();
-    }
-
-    void stop()
-    {
-        {
-            std::lock_guard lock(workMutex);
-            stopping = true;
-        }
-        workChanged.notify_all();
-        for (std::thread& worker : workers) {
-            if (worker.joinable()) { worker.join(); }
-        }
-    }
-
-    void runTasks(size_t workerIndex)
-    {
-        ActivePoolScope scope(this, workerIndex);
-        try {
-            for (;;) {
-                const size_t taskIndex = nextTask.fetch_add(1, std::memory_order_relaxed);
-                if (taskIndex >= taskCount) { break; }
-                task(taskIndex, workerIndex);
-            }
-        } catch (...) {
-            std::lock_guard lock(workMutex);
-            if (!failure) { failure = std::current_exception(); }
-            nextTask.store(taskCount, std::memory_order_relaxed);
-        }
     }
 
     const size_t workerCount;
-    std::mutex submissionMutex;
-    std::mutex workMutex;
-    std::condition_variable workChanged;
-    std::condition_variable finished;
-    std::atomic_size_t nextTask{0};
-    size_t taskCount = 0;
-    size_t epoch = 0;
-    size_t remainingWorkers = 0;
-    bool stopping = false;
-    Task task;
-    std::exception_ptr failure;
-    std::vector<std::thread> workers;
 };
 
 MeshletBuildParallel::MeshletBuildParallel(size_t workerCount)
@@ -123,45 +55,50 @@ size_t MeshletBuildParallel::workerCount() const noexcept
 void MeshletBuildParallel::forEach(size_t taskCount, const Task& task)
 {
     if (taskCount == 0) { return; }
-    if (activePool == impl_.get()) {
-        // A nested submission must not wait for the worker currently making it.
-        for (size_t index = 0; index < taskCount; ++index) { task(index, activeWorker); }
+    if (activePool == impl_.get() || task::isInsideTaskCallback()) {
+        // The Meshlet callback can publish results in task-index order. A child
+        // submission must finish inline instead of waiting on occupied workers.
+        const size_t worker = activePool == impl_.get() ? activeWorker : 0;
+        ActivePoolScope scope(impl_.get(), worker);
+        for (size_t index = 0; index < taskCount; ++index) { task(index, worker); }
         return;
     }
-    std::lock_guard submissionLock(impl_->submissionMutex);
-    if (taskCount == 1 || impl_->workerCount == 1) {
+    if (taskCount == 1) {
         ActivePoolScope scope(impl_.get(), 0);
-        for (size_t index = 0; index < taskCount; ++index) { task(index, 0); }
+        task(0, 0);
         return;
     }
-    {
-        std::lock_guard lock(impl_->workMutex);
-        impl_->task = task;
-        impl_->taskCount = taskCount;
-        impl_->nextTask.store(0, std::memory_order_relaxed);
-        impl_->failure = nullptr;
-        impl_->remainingWorkers = impl_->workerCount - 1;
-        ++impl_->epoch;
+    if (taskCount > UINT32_MAX || impl_->workerCount > UINT32_MAX) {
+        throw std::length_error("Meshlet parallel range exceeds the uint32 index contract");
     }
-    impl_->workChanged.notify_all();
-    impl_->runTasks(0);
-    std::unique_lock lock(impl_->workMutex);
-    impl_->finished.wait(lock, [&] { return impl_->remainingWorkers == 0; });
-    const std::exception_ptr failure = impl_->failure;
-    impl_->task = {};
-    lock.unlock();
+    std::mutex failureMutex;
+    std::exception_ptr failure;
+    const auto outcome = task::parallelFor(0, static_cast<uint32_t>(taskCount),
+        {.minGrain = 1, .maxWorkers = static_cast<uint32_t>(impl_->workerCount),
+            .strategy = task::PartitionStrategy::Dynamic},
+        [&](uint32_t begin, uint32_t end, task::WorkerContext& worker) {
+            ActivePoolScope scope(impl_.get(), worker.workerIndex);
+            try {
+                for (uint32_t index = begin; index < end; ++index) { task(index, worker.workerIndex); }
+            } catch (...) {
+                std::lock_guard lock(failureMutex);
+                if (!failure) { failure = std::current_exception(); }
+                throw;
+            }
+        });
     if (failure) { std::rethrow_exception(failure); }
+    if (!outcome) { throw std::runtime_error(outcome.error()); }
 }
 
 MeshletBuildParallel& MeshletBuildParallel::shared(size_t workerCount)
 {
-    static std::mutex poolsMutex;
-    static std::unordered_map<size_t, std::unique_ptr<MeshletBuildParallel>> pools;
+    static std::mutex adaptersMutex;
+    static std::unordered_map<size_t, std::unique_ptr<MeshletBuildParallel>> adapters;
     workerCount = std::max<size_t>(1, workerCount);
-    std::lock_guard lock(poolsMutex);
-    auto& pool = pools[workerCount];
-    if (!pool) { pool = std::make_unique<MeshletBuildParallel>(workerCount); }
-    return *pool;
+    std::lock_guard lock(adaptersMutex);
+    auto& adapter = adapters[workerCount];
+    if (!adapter) { adapter = std::make_unique<MeshletBuildParallel>(workerCount); }
+    return *adapter;
 }
 
 } // namespace metallic::scene

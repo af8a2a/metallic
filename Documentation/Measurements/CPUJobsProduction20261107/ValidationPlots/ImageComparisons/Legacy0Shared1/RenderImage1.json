@@ -1,0 +1,18 @@
+{
+  "capture": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-000-legacy-w4-measured\\Capture.json",
+  "rawImageSHA256": "b9f04464288cb7977a11c058056ae7ff082fd7a770e9872b6ad3741828767022",
+  "format": "RGBA16Sfloat",
+  "colorEncoding": 2,
+  "width": 1920,
+  "height": 1080,
+  "finiteRGBA": true,
+  "nonfiniteRGBAValues": 0,
+  "nonfiniteRGBValues": 0,
+  "rgbMinimum": -0.00039768218994140625,
+  "rgbMaximum": 5.265625,
+  "rgbMean": 0.1654973179101944,
+  "alphaMinimum": 1.0,
+  "alphaMaximum": 1.0,
+  "rgbValuesBelowZero": 22461,
+  "rgbValuesAboveOne": 223293
+}

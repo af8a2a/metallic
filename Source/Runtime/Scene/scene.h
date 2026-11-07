@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <array>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +20,8 @@
 namespace metallic::material { struct ResolvedMaterialInstance; class MaterialAssetLibrary; }
 
 namespace metallic::scene {
+
+class DeferredMeshletBuild;
 
 inline constexpr int32_t kInvalidSceneIndex = -1;
 
@@ -404,6 +407,10 @@ public:
         bool deferMeshletBuild = false);
     bool hasDeferredMeshlets() const { return deferredMeshletBuild_; }
     bool buildDeferredMeshlet(size_t primitiveIndex);
+    // The caller owns this primitive exclusively until the staged job drains.
+    // Resident-cached primitives do not create a staged job.
+    std::unique_ptr<DeferredMeshletBuild> createDeferredMeshletBuild(
+        size_t primitiveIndex, uint32_t workerCount);
     bool finalizeDeferredMeshlets();
     void clear();
     bool setObjectLocalMatrix(SceneEntity object, const float4x4& localMatrix);

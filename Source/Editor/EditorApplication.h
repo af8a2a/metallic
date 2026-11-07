@@ -62,6 +62,8 @@ private:
     bool runSliderDebugSmokeTest();
     bool runSceneSwitchSmokeTest();
     bool runZorahFullRoamBenchmark();
+    bool configureCPUJobBenchmark(uint32_t& workerCount);
+    bool runCPUJobBenchmark();
     bool runZorahFullRasterComparison(const render::RenderGraphProperties& config, const std::filesystem::path& output);
     bool runDlssCameraSmokeTest();
     bool runNsightCaptureSmokeTest();
@@ -330,6 +332,8 @@ private:
     bool running_ = true;
     bool fullRoamRequested_ = false, fullRoamActive_ = false;
     uint32_t fullRoamWidth_ = 0, fullRoamHeight_ = 0;
+    render::RenderGraphProperties cpuJobBenchmarkConfig_;
+    uint32_t cpuJobRecordingWorkerLimit_ = 0;
     bool smokeTest_ = false;
     bool waitForGraphicsDebugger_ = false;
     bool nsightGraphicsCaptureRequested_ = false;
