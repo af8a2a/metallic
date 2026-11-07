@@ -2178,8 +2178,13 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     // Resolution belongs to the receiver, independently of the filter kernel.
     float3 normal = float3(0.0);
-    if (push.receiverFootprint != 0u || push.filterMode == 1u) {
+    if (push.receiverFootprint != 0u || push.filterMode == 1u || push.lightType == 0u) {
         normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
+    }
+    if (push.lightType == 0u) {
+        float3 toLight = normalize(projections[0].rowZ.xyz);
+        float sinAlpha = max(sin(push.angularRadius), 0.1);
+        if (dot(normal, toLight) < -sinAlpha) { return; }
     }
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
         vsmProjectedReceiverFootprint(position, normal, linearDepth, view, projections[0], push));
