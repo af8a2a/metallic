@@ -102,6 +102,10 @@ Compute-heavy cases are similar; there is no general win over the legacy pool
 or oneTBB. On this contiguous bandwidth kernel, small globally claimed batches
 are costly, while static/local interval claims avoid that shared bottleneck.
 This explains a candidate tuning direction, not a universal half-steal gain.
+These long-tail workloads vary callback cost across 65,536 elements, which
+divides evenly into each measured grain (1, 64, 256). They do not exercise a
+short final batch. When a victim holds one full grain plus a short tail,
+AdaptiveHalfSteal leaves the tail with the owner to avoid a sub-grain steal.
 
 Four-worker warm P50 milliseconds for the uniform and long-tail calibration:
 

@@ -1,5 +1,9 @@
 # SuperSponza CPU jobs production acceptance
 
+[ReviewFollowup.md](ReviewFollowup.md) records subsequent PR review fixes and
+their separate validation. The historical measurements below were not rerun
+and do not establish the revised code's speed or resource peaks.
+
 This report completes the production phase of [issue #73](https://github.com/af8a2a/metallic/issues/73)
 after the [M0–M2 evidence](../CPUJobs20261106/Validation.md), within the user's revised sampling budget.
 The implementation lives in the isolated `codex/issue-73-cpu-jobs` worktree.
