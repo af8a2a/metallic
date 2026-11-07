@@ -596,49 +596,90 @@ uint vsmClipProjection(inout ShadowClipVertex polygon[9], float4 bounds, bool pe
     return vsmClipPlane(polygon, count, 1u, bounds.w, -1.0);
 }
 
+struct VSMReceiverBasis
+{
+    float3 eye;
+    float3 forward;
+    float3 right;
+    float3 up;
+    float3 rightAspect;
+    float tanHalfFov;
+    float orthoHalfHeight;
+    float2 jitter;
+    float2 invViewport;
+    int2 viewportSize;
+    float nearPlane;
+    float farPlane;
+    float farMinusNear;
+    float nearTimesFar;
+    bool isOrtho;
+    bool reversed;
+};
+
+VSMReceiverBasis vsmMakeReceiverBasis(ViewConstants view)
+{
+    VSMReceiverBasis basis;
+    basis.eye = view.current.eye.xyz;
+    basis.forward = normalize(view.current.center.xyz - view.current.eye.xyz);
+    basis.right = normalize(cross(basis.forward, view.current.upProjection.xyz));
+    basis.up = cross(basis.right, basis.forward);
+    basis.rightAspect = basis.right * view.current.viewport.x;
+    basis.tanHalfFov = tan(view.current.viewport.w * 0.5);
+    basis.orthoHalfHeight = view.current.clipOrtho.z * 0.5;
+    basis.jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
+    basis.invViewport = 1.0 / view.current.viewport.yz;
+    basis.viewportSize = int2(view.current.viewport.yz);
+    basis.nearPlane = view.current.clipOrtho.x;
+    basis.farPlane = view.current.clipOrtho.y;
+    basis.farMinusNear = view.current.clipOrtho.y - view.current.clipOrtho.x;
+    basis.nearTimesFar = view.current.clipOrtho.x * view.current.clipOrtho.y;
+    basis.isOrtho = view.current.upProjection.w > 0.5;
+    basis.reversed = view.current.clipOrtho.w > 0.5;
+    return basis;
+}
+
 // Uses the actual receiver projection, including temporal jitter in pixel units.
 // clipOrtho.w selects reversed (1) or standard (0) receiver depth only; shadow
 // projections always use reversed depth.
-bool vsmReceiver(int2 pixel, ViewConstants view, Texture2D<float> depth,
+bool vsmReceiver(int2 pixel, VSMReceiverBasis basis, Texture2D<float> depth,
     out float3 position, out float linearDepth)
 {
     position = float3(0.0);
     linearDepth = 0.0;
-    if (any(pixel < 0) || any(pixel >= int2(view.current.viewport.yz))) { return false; }
+    if (any(pixel < 0) || any(pixel >= basis.viewportSize)) { return false; }
     float value = depth.Load(int3(pixel, 0));
-    bool reversed = view.current.clipOrtho.w > 0.5;
-    if (value == (reversed ? 0.0 : 1.0)) { return false; }
-    float nearPlane = view.current.clipOrtho.x;
-    float farPlane = view.current.clipOrtho.y;
-    if (view.current.upProjection.w > 0.5) {
-        linearDepth = reversed ? lerp(farPlane, nearPlane, value) : lerp(nearPlane, farPlane, value);
+    if (value == (basis.reversed ? 0.0 : 1.0)) { return false; }
+    if (basis.isOrtho) {
+        linearDepth = basis.reversed ? lerp(basis.farPlane, basis.nearPlane, value) : lerp(basis.nearPlane, basis.farPlane, value);
     } else {
-        float denominator = reversed ? nearPlane + value * (farPlane - nearPlane)
-            : farPlane - value * (farPlane - nearPlane);
-        linearDepth = nearPlane * farPlane / denominator;
+        float denominator = basis.reversed ? basis.nearPlane + value * basis.farMinusNear
+            : basis.farPlane - value * basis.farMinusNear;
+        linearDepth = basis.nearTimesFar / denominator;
     }
-    float3 forward = normalize(view.current.center.xyz - view.current.eye.xyz);
-    float3 right = normalize(cross(forward, view.current.upProjection.xyz));
-    float3 up = cross(right, forward);
-    float2 jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
-    float2 uv = (float2(pixel) + 0.5 + jitter) / view.current.viewport.yz;
+    float2 uv = (float2(pixel) + 0.5 + basis.jitter) * basis.invViewport;
     float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    float halfHeight = view.current.upProjection.w > 0.5 ? view.current.clipOrtho.z * 0.5
-        : linearDepth * tan(view.current.viewport.w * 0.5);
-    position = view.current.eye.xyz + forward * linearDepth +
-        halfHeight * (right * ndc.x * view.current.viewport.x + up * ndc.y);
+    float halfHeight = basis.isOrtho ? basis.orthoHalfHeight
+        : linearDepth * basis.tanHalfFov;
+    position = basis.eye + basis.forward * linearDepth +
+        halfHeight * (basis.rightAspect * ndc.x + basis.up * ndc.y);
     return true;
 }
 
-float3 vsmReceiverNormal(int2 pixel, ViewConstants view, Texture2D<float> depth,
+bool vsmReceiver(int2 pixel, ViewConstants view, Texture2D<float> depth,
+    out float3 position, out float linearDepth)
+{
+    return vsmReceiver(pixel, vsmMakeReceiverBasis(view), depth, position, linearDepth);
+}
+
+float3 vsmReceiverNormal(int2 pixel, VSMReceiverBasis basis, Texture2D<float> depth,
     float3 position, float linearDepth)
 {
     float3 left, right, top, bottom;
     float zl, zr, zt, zb;
-    bool hasLeft = vsmReceiver(pixel - int2(1, 0), view, depth, left, zl);
-    bool hasRight = vsmReceiver(pixel + int2(1, 0), view, depth, right, zr);
-    bool hasTop = vsmReceiver(pixel - int2(0, 1), view, depth, top, zt);
-    bool hasBottom = vsmReceiver(pixel + int2(0, 1), view, depth, bottom, zb);
+    bool hasLeft = vsmReceiver(pixel - int2(1, 0), basis, depth, left, zl);
+    bool hasRight = vsmReceiver(pixel + int2(1, 0), basis, depth, right, zr);
+    bool hasTop = vsmReceiver(pixel - int2(0, 1), basis, depth, top, zt);
+    bool hasBottom = vsmReceiver(pixel + int2(0, 1), basis, depth, bottom, zb);
     bool useLeft = hasLeft && (!hasRight || abs(zl - linearDepth) < abs(zr - linearDepth));
     bool useTop = hasTop && (!hasBottom || abs(zt - linearDepth) < abs(zb - linearDepth));
     float3 dx = useLeft ? position - left : (hasRight ? right - position : float3(0.0));
@@ -646,6 +687,12 @@ float3 vsmReceiverNormal(int2 pixel, ViewConstants view, Texture2D<float> depth,
     float3 normal = cross(dy, dx);
     float lengthSquared = dot(normal, normal);
     return lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
+}
+
+float3 vsmReceiverNormal(int2 pixel, ViewConstants view, Texture2D<float> depth,
+    float3 position, float linearDepth)
+{
+    return vsmReceiverNormal(pixel, vsmMakeReceiverBasis(view), depth, position, linearDepth);
 }
 
 // Screen depth limits the uncertain segment near a simplified shadow receiver.
@@ -999,19 +1046,17 @@ float vsmSearchLength(float3 position, float linearDepth, ViewConstants view, Sh
 }
 
 float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,
-    ViewConstants view, ShadowProjection projection, ShadowPush push)
+    VSMReceiverBasis basis, ShadowProjection projection, ShadowPush push)
 {
-    float footprint = vsmPixelFootprint(linearDepth, view, push);
-    if (push.receiverFootprint == 0u) { return footprint; }
-    float3 forward = normalize(view.current.center.xyz - view.current.eye.xyz);
-    float3 right = normalize(cross(forward, view.current.upProjection.xyz));
-    float3 up = cross(right, forward);
-    float3 viewRay = view.current.upProjection.w > 0.5 ? forward : position - view.current.eye.xyz;
+    if (push.receiverFootprint == 0u) { return 0.0; }
+    float footprint = basis.isOrtho ? (basis.orthoHalfHeight * 2.0) * basis.invViewport.y :
+        (2.0 * linearDepth * basis.tanHalfFov) * basis.invViewport.y;
+    float3 viewRay = basis.isOrtho ? basis.forward : position - basis.eye;
     float denominator = dot(normal, viewRay);
     // An undefined or edge-on depth plane has no finite pixel differential.
     if (abs(denominator) <= 1e-5 * length(viewRay)) { return footprint; }
-    float3 dx = right - viewRay * (dot(normal, right) / denominator);
-    float3 dy = up - viewRay * (dot(normal, up) / denominator);
+    float3 dx = basis.right - viewRay * (dot(normal, basis.right) / denominator);
+    float3 dy = basis.up - viewRay * (dot(normal, basis.up) / denominator);
     float3 lightRight = normalize(projection.rowX.xyz), lightUp = normalize(projection.rowY.xyz);
     if (push.lightType != 0u) {
         float3 fromLight = position - projection.originNear.xyz;
@@ -1031,6 +1076,12 @@ float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linear
     // The smaller singular value preserves resolution along the compressed
     // axis at grazing incidence. An area ratio misses projection shear.
     return footprint * abs(a.x * b.y - a.y * b.x) * rsqrt(maximumSquared);
+}
+
+float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,
+    ViewConstants view, ShadowProjection projection, ShadowPush push)
+{
+    return vsmProjectedReceiverFootprint(position, normal, linearDepth, vsmMakeReceiverBasis(view), projection, push);
 }
 
 #if !VSM_ONE_PASS_PROJECTION
@@ -2190,7 +2241,8 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
     float3 position;
     float linearDepth;
-    if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) { return; }
+    VSMReceiverBasis basis = vsmMakeReceiverBasis(view);
+    if (!vsmReceiver(int2(id.xy), basis, depth, position, linearDepth)) { return; }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     bool nearPlane;
     if (push.lightType == 2u && push.filterMode != 0u) {
@@ -2203,7 +2255,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
     // Resolution belongs to the receiver, independently of the filter kernel.
     float3 normal = float3(0.0);
     if (push.receiverFootprint != 0u || push.filterMode == 1u || push.lightType == 0u) {
-        normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
+        normal = vsmReceiverNormal(int2(id.xy), basis, depth, position, linearDepth);
     }
     if (push.lightType == 0u) {
         float3 toLight = normalize(projections[0].rowZ.xyz);
@@ -2211,7 +2263,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         if (dot(normal, toLight) < -sinAlpha) { return; }
     }
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
-        vsmProjectedReceiverFootprint(position, normal, linearDepth, view, projections[0], push));
+        vsmProjectedReceiverFootprint(position, normal, linearDepth, basis, projections[0], push));
     if (push.filterMode == 0u) {
         vsmMarkPosition(position, projections, pages, push, receiverLevel, workCounts);
         return;
@@ -4013,7 +4065,8 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
 #else
     bool sharedPointLayer = (push.projectionFlags & 1u) != 0u && push.lightType == 2u;
 #endif
-    if (!vsmReceiver(int2(id.xy), view, depth, position, linearDepth)) {
+    VSMReceiverBasis basis = vsmMakeReceiverBasis(view);
+    if (!vsmReceiver(int2(id.xy), basis, depth, position, linearDepth)) {
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         if (push.filterMode != 0u) { projectionCounts |= 1u << 0u; }
         else
@@ -4045,9 +4098,9 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     }
     vsmWorkAdd(push, kVSMWorkProjectionReceivers, 1u);
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    float3 normal = vsmReceiverNormal(int2(id.xy), view, depth, position, linearDepth);
+    float3 normal = vsmReceiverNormal(int2(id.xy), basis, depth, position, linearDepth);
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
-        vsmProjectedReceiverFootprint(position, normal, linearDepth, view, proj0, push), useGroupCache);
+        vsmProjectedReceiverFootprint(position, normal, linearDepth, basis, proj0, push), useGroupCache);
     uint selectedLevel = push.clipmapCount;
     uint firstLevel = 0xffffffffu;
     uint physicalPage = 0xffffffffu;
