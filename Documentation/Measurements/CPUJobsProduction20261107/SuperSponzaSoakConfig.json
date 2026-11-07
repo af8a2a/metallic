@@ -1,0 +1,40 @@
+{
+  "sample": "gpu-driven-zorah-full",
+  "scenePath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf",
+  "streamAssetPath": "E:/metallic/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf.meshstream.bin",
+  "camera": {
+    "eye": [
+      -8.80743,
+      1.59221947,
+      -0.85825783
+    ],
+    "center": [
+      -7.843519222198665,
+      1.786533203681289,
+      -0.6762740633110123
+    ],
+    "up": [
+      -0.1909405528670367,
+      0.980939433087972,
+      -0.03604902728223164
+    ],
+    "fovDegrees": 58.5119763983259,
+    "znear": 0.1,
+    "zfar": 10000.0
+  },
+  "width": 1920,
+  "height": 1080,
+  "workerCount": 4,
+  "frames": 6000,
+  "warmupFrames": 180,
+  "memorySampleIntervalFrames": 10,
+  "validation": false,
+  "diagnostics": true,
+  "captureImage": false,
+  "materialTextureBudgetMiB": 8192,
+  "expectedVsync": false,
+  "expectedReflexMode": 0,
+  "expectedReflexFrameLimitUs": 0,
+  "synchronizationValidation": false,
+  "geometryBudgetMiB": 512
+}
