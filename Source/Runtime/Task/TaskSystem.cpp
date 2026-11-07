@@ -26,6 +26,7 @@ std::shared_ptr<TaskSystem> gTaskSystem;
 bool gTaskSystemShuttingDown = false;
 thread_local bool gInsideTaskCallback = false;
 thread_local std::stop_token gTaskStopToken;
+thread_local detail::TaskCallbackIdentity gTaskCallbackIdentity;
 
 TaskError makeTaskError(TaskErrorCode code, std::string message)
 {
@@ -50,23 +51,27 @@ bool terminalState(TaskState state)
 
 class TaskCallbackScope {
 public:
-    explicit TaskCallbackScope(std::stop_token stopToken)
+    TaskCallbackScope(std::stop_token stopToken, detail::TaskCallbackIdentity identity)
         : previous_(gInsideTaskCallback)
         , previousStopToken_(gTaskStopToken)
+        , previousIdentity_(gTaskCallbackIdentity)
     {
         gInsideTaskCallback = true;
         gTaskStopToken = stopToken;
+        gTaskCallbackIdentity = identity;
     }
 
     ~TaskCallbackScope()
     {
         gInsideTaskCallback = previous_;
         gTaskStopToken = previousStopToken_;
+        gTaskCallbackIdentity = previousIdentity_;
     }
 
 private:
     bool previous_ = false;
     std::stop_token previousStopToken_;
+    detail::TaskCallbackIdentity previousIdentity_;
 };
 
 } // namespace
@@ -399,7 +404,8 @@ void detail_TaskExecutionState::runNode(uint32_t nodeIndex) noexcept
     };
     TaskContext context(&contextImpl);
     try {
-        TaskCallbackScope callbackScope(contextImpl.stopToken);
+        TaskCallbackScope callbackScope(contextImpl.stopToken,
+            {.executionId = contextImpl.executionId, .node = contextImpl.node});
         TaskOutcome outcome = node->callback(context);
         if (!outcome) {
             finalState = TaskState::Failed;
@@ -905,6 +911,11 @@ void shutdownTaskSystem()
 }
 
 namespace detail {
+
+TaskCallbackIdentity taskCallbackIdentity() noexcept
+{
+    return gTaskCallbackIdentity;
+}
 
 std::stop_token taskCallbackStopToken() noexcept
 {

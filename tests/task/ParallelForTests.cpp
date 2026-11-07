@@ -277,6 +277,131 @@ TEST_F(ParallelForTest, ConnectsAsyncInputsAndOutputsThroughEntryAndCompletion)
     }
 }
 
+TEST_F(ParallelForTest, DiagnosticsAssociateOperationsAndLanesWithTheContainingGraphSnapshot)
+{
+    TaskGraph graph("ObservedRanges");
+    std::array<ParallelForDiagnostics, 2> diagnostics;
+    std::array<ParallelForNodes, 2> nodes;
+    std::atomic_uint32_t elements{0};
+    for (uint32_t operation = 0; operation < diagnostics.size(); ++operation) {
+        std::string backend = "test-kernel-" + std::to_string(operation);
+        auto added = addParallelFor(graph, {.name = "Operation" + std::to_string(operation)},
+            7, 1038, {.minGrain = 8, .maxWorkers = 4, .strategy = kStrategies[operation],
+                .backendLabel = backend, .diagnostics = &diagnostics[operation]},
+            [&](uint32_t begin, uint32_t end, WorkerContext& worker) {
+                EXPECT_TRUE(worker.node.valid());
+                elements += end - begin;
+            });
+        ASSERT_TRUE(added);
+        nodes[operation] = *added;
+        backend.assign(backend.size(), 'x');
+    }
+    ASSERT_TRUE(graph.addDependency(nodes[0].completion, nodes[1].entry));
+    auto submitted = taskSystem().submit(std::move(graph));
+    ASSERT_TRUE(submitted);
+    const auto snapshot = submitted->wait();
+    ASSERT_TRUE(snapshot);
+    ASSERT_EQ(snapshot->status, TaskGraphStatus::Succeeded);
+    EXPECT_EQ(elements.load(), 2u * 1031u);
+    EXPECT_NE(diagnostics[0].operationId, 0u);
+    EXPECT_NE(diagnostics[0].operationId, diagnostics[1].operationId);
+    for (uint32_t operation = 0; operation < diagnostics.size(); ++operation) {
+        const auto& observed = diagnostics[operation];
+        EXPECT_EQ(observed.operationName, "Operation" + std::to_string(operation));
+        EXPECT_EQ(observed.backendLabel, "test-kernel-" + std::to_string(operation));
+        EXPECT_EQ(observed.graphId, snapshot->graphId);
+        EXPECT_EQ(observed.begin, 7u);
+        EXPECT_EQ(observed.end, 1038u);
+        EXPECT_EQ(observed.minGrain, 8u);
+        EXPECT_EQ(observed.strategy, kStrategies[operation]);
+        EXPECT_LE(observed.createdTime, snapshot->submittedTime);
+        for (uint32_t lane = 0; lane < observed.workers.size(); ++lane) {
+            const auto& worker = observed.workers[lane];
+            ASSERT_TRUE(worker.node.valid());
+            ASSERT_LT(worker.node.nodeIndex, snapshot->nodes.size());
+            const auto& task = snapshot->nodes[worker.node.nodeIndex];
+            EXPECT_EQ(worker.workerIndex, lane);
+            EXPECT_EQ(worker.executionId, snapshot->executionId);
+            EXPECT_EQ(worker.node, task.handle);
+            EXPECT_EQ(worker.workerThreadId, task.workerThreadId);
+            EXPECT_EQ(worker.node.graphId, snapshot->graphId);
+            EXPECT_TRUE(task.desc.name.starts_with(observed.operationName + ".range."));
+            EXPECT_FALSE(worker.inlineExecution);
+            EXPECT_LE(task.scheduledTime, task.startTime);
+            EXPECT_LE(task.startTime, worker.startTime);
+            EXPECT_LE(worker.startTime, worker.finishTime);
+            EXPECT_LE(worker.finishTime, task.finishTime);
+            EXPECT_LE(worker.activeNanoseconds,
+                uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(worker.finishTime - worker.startTime).count()));
+        }
+    }
+}
+
+TEST_F(ParallelForTest, NestedDiagnosticsBorrowTheParentIdentityAndFinishOnException)
+{
+    TaskGraph graph("ObservedNestedRanges");
+    ParallelForDiagnostics failed, succeeded;
+    TaskNodeHandle parent;
+    parent = graph.addTask({.name = "Parent"}, [&](TaskContext& context) {
+        const auto result = parallelFor(0, 100, {.minGrain = 8, .maxWorkers = 4,
+            .backendLabel = "nested-failure", .diagnostics = &failed},
+            [&](uint32_t, uint32_t, WorkerContext& worker) {
+                EXPECT_EQ(worker.node, context.node());
+                EXPECT_EQ(worker.executionId, context.executionId());
+                throw std::runtime_error("observed nested failure");
+            });
+        ASSERT_FALSE(result);
+        EXPECT_EQ(result.error(), "observed nested failure");
+        EXPECT_EQ(detail::taskCallbackIdentity().node, context.node());
+        EXPECT_EQ(detail::taskCallbackIdentity().executionId, context.executionId());
+        EXPECT_TRUE(parallelFor(0, 1, {.diagnostics = &succeeded},
+            [&](uint32_t, uint32_t, WorkerContext& worker) {
+                EXPECT_EQ(worker.node, context.node());
+                EXPECT_EQ(worker.executionId, context.executionId());
+            }));
+    });
+    auto submitted = taskSystem().submit(std::move(graph));
+    ASSERT_TRUE(submitted);
+    const auto snapshot = submitted->wait();
+    ASSERT_TRUE(snapshot);
+    ASSERT_EQ(snapshot->status, TaskGraphStatus::Succeeded);
+    EXPECT_NE(failed.operationId, succeeded.operationId);
+    const auto& task = snapshot->nodes[parent.nodeIndex];
+    for (const auto* observed : {&failed, &succeeded}) {
+        EXPECT_EQ(observed->graphId, snapshot->graphId);
+        ASSERT_EQ(observed->workers.size(), 1u);
+        const auto& worker = observed->workers.front();
+        EXPECT_TRUE(worker.inlineExecution);
+        EXPECT_EQ(worker.node, parent);
+        EXPECT_EQ(worker.executionId, snapshot->executionId);
+        EXPECT_EQ(worker.workerThreadId, task.workerThreadId);
+        EXPECT_LE(task.startTime, worker.startTime);
+        EXPECT_LE(worker.startTime, worker.finishTime);
+        EXPECT_LE(worker.finishTime, task.finishTime);
+    }
+    EXPECT_FALSE(detail::taskCallbackIdentity().node.valid());
+    EXPECT_EQ(detail::taskCallbackIdentity().executionId, 0u);
+}
+
+TEST_F(ParallelForTest, ExternalInlineDiagnosticsDoNotInventGraphOrTaskIdentities)
+{
+    ParallelForDiagnostics diagnostics;
+    EXPECT_TRUE(parallelFor(17, 18, {.maxWorkers = 1, .diagnostics = &diagnostics},
+        [](uint32_t, uint32_t, WorkerContext& worker) {
+            EXPECT_FALSE(worker.node.valid());
+            EXPECT_EQ(worker.executionId, 0u);
+        }));
+    EXPECT_EQ(diagnostics.graphId, 0u);
+    EXPECT_NE(diagnostics.operationId, 0u);
+    ASSERT_EQ(diagnostics.workers.size(), 1u);
+    const auto& worker = diagnostics.workers.front();
+    EXPECT_TRUE(worker.inlineExecution);
+    EXPECT_FALSE(worker.node.valid());
+    EXPECT_EQ(worker.executionId, 0u);
+    EXPECT_LE(diagnostics.createdTime, worker.startTime);
+    EXPECT_LE(worker.startTime, worker.finishTime);
+}
+
 TEST_F(ParallelForTest, AsyncFailureAndExternalStopSkipDependentPublication)
 {
     for (bool cancellation : {false, true}) {

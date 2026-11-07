@@ -50,3 +50,32 @@ dispatch/finish versus range/legacy kernel callbacks. Actual sleep/wakeup
 transitions and upstream stdexec/oneTBB steal counters are unavailable; queue
 delay must not be described as wakeup delay. Use enough repeats for tails, and
 do not convert these measurements into renderer FPS claims.
+
+## Range identity example
+
+`MetallicRangeDiagnosticsExample` is a manual `EXCLUDE_FROM_ALL` target available
+when `METALLIC_CPU_JOBS_RANGE=ON`. It performs a deterministic producer/range/
+nested-consumer correctness example and writes one JSON file. It checks each
+lane's graph, execution, node, thread and time envelope against the completed
+TaskGraph snapshot before accepting the output. It is not a benchmark.
+
+From a root build, explicitly build the target with
+`cmake --build build-issue73 --target MetallicRangeDiagnosticsExample`, then run
+`build-issue73/cpu-jobs/MetallicRangeDiagnosticsExample.exe <fresh-output.json>`.
+For the standalone CPUJobs project, the executable is directly in its build
+directory. Compiler, stdexec and build options are the same as the Task library.
+No renderer, Vulkan, Slang, ISPC or JSON library is added to the task layer.
+
+An [archived example](../../Documentation/Measurements/CPUJobsProduction20261107/RangeDiagnostics/Example.json)
+and [provenance](../../Documentation/Measurements/CPUJobsProduction20261107/RangeDiagnostics/Metadata.json)
+show four asynchronous lanes and one nested inline lane. The inline lane
+borrows its parent's task identity and has null queue delay. Async queue delay
+is derived from the TaskGraph's scheduled/start times; it is not wakeup delay.
+Operation creation time may precede submission by an arbitrary interval.
+
+These diagnostics are opt-in through `ParallelForOptions::diagnostics` and an
+optional generic `backendLabel`. The production meshlet adapter still uses
+null diagnostics. A Task event observer can capture its actual range-task
+graph/node/thread intervals, but no range steal count exists unless that
+owning caller explicitly opts into a diagnostics object. Missing counters
+must not be fabricated from worker or task counts.

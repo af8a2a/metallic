@@ -1,0 +1,12 @@
+{
+  "scope": "Correctness/identity example, not a performance sample",
+  "captureMethod": "Built and executed manual CMake target in build-issue73-production after source promotion",
+  "source": "Tools/CPUJobs/RangeDiagnosticsExample.cpp",
+  "sourceSHA256": "8b91653d1855b54460cddd0cda09e31d4b76448840de4e69ab04cc392c06a263",
+  "sampleSHA256": "213e776d609185a56638826a28ad32247ccf7e1997cc1dbaafe852d918c5e7b6",
+  "tasks": 7,
+  "operations": 2,
+  "lanes": 5,
+  "validation": "Every lane graph/execution/node/thread/timing envelope matched; async queue delay came from TaskGraph snapshot; nested delay is null",
+  "reproductionTarget": "MetallicRangeDiagnosticsExample (manual EXCLUDE_FROM_ALL)"
+}

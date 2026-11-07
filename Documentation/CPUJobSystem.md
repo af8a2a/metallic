@@ -201,9 +201,10 @@ and snapshot machinery. The scheduler assigns contiguous subranges to those
 runners; a callback's dense runner slot owns its scratch storage for the
 duration of that invocation. A slot is not a native CPU/thread identity.
 Different concurrent range operations own different slot arrays and state.
-`WorkerContext::executionId` and `node` identify asynchronous runner tasks;
-inline calls have no separate graph identity. Optional diagnostics must be
-exclusive to one in-flight operation and may be read or reused after joining.
+`WorkerContext::executionId` and `node` identify asynchronous runner tasks.
+Nested inline calls borrow their parent task identity; external inline calls
+have no graph identity. Optional diagnostics must be exclusive to one in-flight
+operation and may be read or reused after joining.
 
 Static splitting partitions a range evenly. Dynamic splitting claims monotonic
 grain-sized batches from one atomic counter. Adaptive half-stealing keeps one
@@ -316,3 +317,31 @@ P95/P99 with six observations are usually the maximum observation; these
 samples cannot characterize rare latency tails. This is a generated workload
 using the real meshlet algorithm, not a production-scene frame-time or FPS
 benchmark.
+
+## Correlating range diagnostics with graph execution
+
+Opt-in range diagnostics retain an operation ID, an owned operation name and
+backend label, the input interval, grain, strategy and creation time. The
+backend label is generic caller metadata; callers with runtime kernel dispatch
+should report the backend that actually ran. Labels are copied at the API
+boundary, so temporary label storage need not survive graph execution.
+
+Each started lane records its dense slot, execution/node identity, native
+thread hash, and steady-clock start/finish endpoints, including exception
+paths. Join these records to TaskGraph snapshots by execution ID and node
+handle. Both use the same clock and thread-hash convention. Task queue delay
+comes from the node's start minus scheduled timestamp, not range creation
+time. Creation can precede graph submission by an arbitrary caller interval.
+Lanes cancelled before starting retain empty identity and timestamp fields.
+
+Nested inline lanes are explicitly marked and borrow the containing task's
+identity; they create neither a new node nor a separate queue delay. Their
+interval lies inside that task's interval and must not be added to the parent
+when computing a critical path. Callback-active nanoseconds count completed
+batches; lane start/finish also encloses claim/steal overhead and exceptional
+callbacks. Neither quantity measures OS thread running or sleep time.
+
+When diagnostics is null, operation-ID allocation, label copying and additional
+range timestamp reads are disabled. The existing TaskGraph snapshot timestamps
+and callback-scope identity remain available. The task layer has no renderer,
+Tracy, Vulkan or ISPC dependency; presentation/export belongs to its observer.

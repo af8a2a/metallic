@@ -5,9 +5,12 @@
 #include <cassert>
 #include <exception>
 #include <memory>
+#include <thread>
 
 namespace metallic::task {
 namespace {
+
+std::atomic_uint64_t gNextRangeOperationId{1};
 
 uint64_t packRange(uint32_t begin, uint32_t end)
 {
@@ -20,7 +23,8 @@ struct alignas(64) RangeSlot {
 
 struct RangeState {
     RangeState(uint32_t first, uint32_t last, uint32_t lanes,
-        ParallelForOptions settings, ParallelForCallback function)
+        ParallelForOptions settings, ParallelForCallback function,
+        std::string_view operationName, uint64_t graphId)
         : begin(first), end(last), laneCount(lanes), options(settings), callback(std::move(function)),
           slots(std::make_unique<RangeSlot[]>(lanes)), next(first)
     {
@@ -33,7 +37,19 @@ struct RangeState {
             const auto upper = static_cast<uint32_t>(begin + std::min(count, lastBatch * options.minGrain));
             slots[lane].range.store(packRange(lower, upper), std::memory_order_relaxed);
         }
-        if (options.diagnostics) { options.diagnostics->workers.assign(lanes, {}); }
+        if (options.diagnostics) {
+            auto& diagnostics = *options.diagnostics;
+            diagnostics.operationId = gNextRangeOperationId.fetch_add(1, std::memory_order_relaxed);
+            diagnostics.graphId = graphId;
+            diagnostics.operationName = operationName;
+            diagnostics.backendLabel = options.backendLabel;
+            diagnostics.begin = begin;
+            diagnostics.end = end;
+            diagnostics.minGrain = options.minGrain;
+            diagnostics.strategy = options.strategy;
+            diagnostics.createdTime = TaskClock::now();
+            diagnostics.workers.assign(lanes, {});
+        }
     }
 
     bool stopped(TaskContext* context) const
@@ -72,10 +88,25 @@ struct RangeState {
 
     TaskOutcome run(uint32_t lane, TaskContext* context)
     {
+        const auto parent = detail::taskCallbackIdentity();
         WorkerContext worker{.workerIndex = lane, .workerCount = laneCount,
-            .executionId = context ? context->executionId() : 0,
-            .node = context ? context->node() : TaskNodeHandle{}};
+            .executionId = context ? context->executionId() : parent.executionId,
+            .node = context ? context->node() : parent.node};
         ParallelForWorkerMetrics metrics;
+        if (options.diagnostics) {
+            metrics.workerIndex = lane;
+            metrics.executionId = worker.executionId;
+            metrics.node = worker.node;
+            metrics.workerThreadId = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+            metrics.startTime = TaskClock::now();
+            metrics.inlineExecution = context == nullptr;
+        }
+        const auto publish = [&] {
+            if (options.diagnostics) {
+                metrics.finishTime = TaskClock::now();
+                options.diagnostics->workers[lane] = metrics;
+            }
+        };
         auto invoke = [&](uint32_t first, uint32_t last) {
             if (options.diagnostics) {
                 const auto start = TaskClock::now();
@@ -131,10 +162,10 @@ struct RangeState {
             }
         } catch (...) {
             failed.store(true, std::memory_order_relaxed);
-            if (options.diagnostics) { options.diagnostics->workers[lane] = metrics; }
+            publish();
             throw;
         }
-        if (options.diagnostics) { options.diagnostics->workers[lane] = metrics; }
+        publish();
         if (options.stopToken.stop_requested() ||
             (!context && detail::taskCallbackStopToken().stop_requested())) {
             return std::unexpected("parallelFor stop requested");
@@ -184,7 +215,7 @@ std::expected<ParallelForNodes, TaskError> addParallelFor(
     }
     auto system = detail::tryAcquireTaskSystem();
     const uint32_t lanes = lanesFor(begin, end, options, system ? system->workerCount() : 1);
-    auto state = std::make_shared<RangeState>(begin, end, lanes, options, std::move(callback));
+    auto state = std::make_shared<RangeState>(begin, end, lanes, options, std::move(callback), desc.name, graph.id());
     const std::string name = desc.name;
     desc.name = name + ".entry";
     const auto entry = graph.addTask(desc, [] {});
@@ -210,7 +241,7 @@ TaskOutcome parallelFor(uint32_t begin, uint32_t end,
     if (auto validated = validate(begin, end, options, callback); !validated) { return validated; }
     auto system = detail::tryAcquireTaskSystem();
     if (isInsideTaskCallback() || !system || options.maxWorkers == 1 || begin == end) {
-        RangeState state(begin, end, 1, options, callback);
+        RangeState state(begin, end, 1, options, callback, "ParallelFor", detail::taskCallbackIdentity().node.graphId);
         try { return state.run(0, nullptr); }
         catch (const std::exception& error) { return std::unexpected(error.what()); }
         catch (...) { return std::unexpected("parallelFor callback threw an unknown exception"); }
