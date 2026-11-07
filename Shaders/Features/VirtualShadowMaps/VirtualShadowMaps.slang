@@ -1713,6 +1713,10 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
     VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, pages, push, receiverLevel);
+    VSMDirectionalRayCache rayCache;
+    rayCache.lastPage = 0xffffffffu;
+    rayCache.lastMapping = uint4(0u);
+    rayCache.lastPhysicalCoord = uint2(0u);
 #endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
@@ -1738,12 +1742,6 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         // Trace back toward the receiver, including t=0. Depth discontinuities
         // can expose only the front layer: continue the preceding surface with
         // bounded slope through that gap instead of inventing an intersection.
-#if VSM_DIRECTIONAL_PROJECTION
-        VSMDirectionalRayCache rayCache;
-        rayCache.lastPage = 0xffffffffu;
-        rayCache.lastMapping = uint4(0u);
-        rayCache.lastPhysicalCoord = uint2(0u);
-#endif
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom);
 #if VSM_DIRECTIONAL_PROJECTION
