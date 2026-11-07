@@ -42,5 +42,36 @@
     "measuredFrames": 120,
     "purpose": "Core validation/image output only, no performance inference",
     "pilot": "Earlier complete 600-frame core-validation capture passed in app with zero validation messages but old runner rejected core-only sync=false schema; preserve separately. Core validation averaged ~130ms/frame, so shorten independent correctness population before final comparative captures."
+  },
+  "coldCookBudget": {
+    "declaredUtc": "2026-11-07T01:19:07.804051+00:00",
+    "workers": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "blocks": 3,
+    "order": "ABBA/BAAB/ABBA, rotated workers",
+    "processes": 48,
+    "freshOutput": true,
+    "compression": "reference",
+    "memoryLimitMiB": 0,
+    "separateAllPayloadAndSourceAttributeValidation": true,
+    "excludedPilot": "build-issue73-production/cook-pilot-shared: complete 405 geometries, 3781 pages, 110435932 bytes, process 5.8730825 s; no comparative pilot used to select outcome"
+  },
+  "steadySoakBudget": {
+    "declaredUtc": "2026-11-07T01:19:07.804051+00:00",
+    "workers": [
+      8
+    ],
+    "blocks": 1,
+    "processes": 4,
+    "warmupFrames": 180,
+    "measuredFrames": 6000,
+    "diagnostics": true,
+    "validation": false,
+    "captureImage": "Untimed final readback after last drain, for late fixed-view output inspection",
+    "scope": "Fixed authored camera; resource plateau and stream-error checks, no claim of camera-route or per-frame image/video validation"
   }
 }
