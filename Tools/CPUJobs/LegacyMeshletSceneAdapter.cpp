@@ -1,5 +1,5 @@
 // Benchmark-only implementation copied from repository commit 8e0d94587.
-// Link directly into the legacy scene benchmark, never into the renderer.
+// Link only into explicitly selected legacy benchmark targets.
 #include "Runtime/Scene/MeshletBuildParallel.h"
 
 #include <algorithm>

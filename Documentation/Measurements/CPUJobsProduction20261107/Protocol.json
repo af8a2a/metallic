@@ -1,0 +1,29 @@
+{
+  "declaredUtc": "2026-11-07T00:51:37.525434+00:00",
+  "scope": "Fixed authored camera; real async editor RenderGraph, load and resource lifetime; separate cold-source geometry cook",
+  "workers": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "blocks": 3,
+  "order": "ABBA, BAAB, ABBA with worker rotation",
+  "excludedPrewarmProcessesPerCandidateWorker": 1,
+  "measuredFramesPerProcess": 600,
+  "warmupFramesPerProcess": 180,
+  "resourcePollingMs": 100,
+  "rhiSnapshotEveryFrames": 10,
+  "performanceValidation": false,
+  "performanceDiagnostics": false,
+  "stopRule": "Fixed budget; abort on failure or workload mismatch; no outcome-dependent sampling",
+  "comparisonVariable": "Legacy dedicated MeshletBuildParallel versus shared TaskSystem adapter, same final renderer source and options. Cache-hit frame runs may not execute meshlet ranges. No overall issue-start revision or SIMD FPS claim.",
+  "cache": "Retain shared shader/PSO/OS/driver caches; process load and cook-output cold are separate from flushed cache cold.",
+  "pilots": [
+    "build-issue73-production/pilot-shared-1: failed 512MiB texture budget",
+    "build-issue73-production/pilot-shared-2: passed 8192MiB, initial compile excluded"
+  ],
+  "quality": "Same production preset; RT shadow + SIGMA + DLSS Quality, 1920x1080 output / 1280x720 render. 8192MiB material budget for 72 full 4K PNG images; upload concurrency and quality unchanged.",
+  "revisionBeforeAcceptanceSamplingUtc": "2026-11-07T01:00:27.970481+00:00",
+  "geometryCapacity": "512 MiB, same both arms; all 3781 cooked pages require 314864384 aligned device bytes and fit together. Replaces unrelated Zorah 3.5GiB capacity without changing page payload, LOD pixel error, traversal or quality. Pre-sampling pilot showed global desktop VRAM baseline 6452MiB and near-full whole-device usage with the oversized capacity."
+}

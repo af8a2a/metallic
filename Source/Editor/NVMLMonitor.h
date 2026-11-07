@@ -45,6 +45,10 @@ public:
     void drawWindow(bool* open);
 
     bool valid() const { return valid_; }
+    const std::vector<Device>& devices() const { return devices_; }
+    const std::string& driverVersion() const { return driverVersion_; }
+    std::chrono::steady_clock::time_point lastSampleTime() const { return lastSampleTime_; }
+    uint32_t sampleIntervalMilliseconds() const { return sampleIntervalMilliseconds_; }
     const std::string& status() const { return status_; }
     const Sample* currentSample(const Device& device) const;
     const Sample* orderedSample(const Device& device, size_t index) const;

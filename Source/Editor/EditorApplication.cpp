@@ -2011,7 +2011,9 @@ int EditorApplication::run(
             return 1;
         }
     }
-    const auto taskInitialization = task::initializeTaskSystem();
+    uint32_t taskWorkerCount = 0;
+    if (!configureCPUJobBenchmark(taskWorkerCount)) { return 1; }
+    const auto taskInitialization = task::initializeTaskSystem({.workerCount = taskWorkerCount});
     if (!taskInitialization) {
         spdlog::error("TaskSystem initialization failed: {}", taskInitialization.error().message);
         return 1;
@@ -2061,6 +2063,11 @@ int EditorApplication::run(
     }
     startupScenePath_ = startupScenePath != nullptr ? startupScenePath : "";
     startupStreamAssetPath_ = startupStreamAssetPath != nullptr ? startupStreamAssetPath : "";
+    if (!cpuJobBenchmarkConfig_.is_null()) {
+        startupSampleId_ = cpuJobBenchmarkConfig_.at("sample").get<std::string>();
+        startupScenePath_ = cpuJobBenchmarkConfig_.at("scenePath").get<std::string>();
+        startupStreamAssetPath_ = cpuJobBenchmarkConfig_.value("streamAssetPath", std::string{});
+    }
     spdlog::info(
         "[Startup] Run requested smokeTest={} waitForGraphicsDebugger={} nsightCapture={} "
         "shaderDebugMode={} startupSample='{}' "
@@ -2122,6 +2129,11 @@ int EditorApplication::run(
         return 1;
     }
 
+    if (std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT")) {
+        const bool passed = runCPUJobBenchmark();
+        shutdown();
+        return passed ? 0 : 1;
+    }
     if (std::getenv("METALLIC_FULL_ROAM_OUTPUT")) {
         const bool passed = runZorahFullRoamBenchmark();
         shutdown();
@@ -2524,7 +2536,8 @@ bool EditorApplication::initialize()
 
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     if ((!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) &&
-        !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN")) { SDL_ShowWindow(window_); }
+        !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN") &&
+        !std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT")) { SDL_ShowWindow(window_); }
 
     if (waitForGraphicsDebugger_) {
         SDL_ShowSimpleMessageBox(
@@ -2553,13 +2566,14 @@ bool EditorApplication::initialize()
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         if ((!smokeTest_ || !environmentFlagEnabled("METALLIC_SMOKE_TEST_HIDDEN")) &&
-        !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN")) {
+        !environmentFlagEnabled("METALLIC_FULL_ROAM_HIDDEN") &&
+        !std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT")) {
             io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
         }
         io.ConfigDpiScaleFonts = true;
         io.ConfigDpiScaleViewports = true;
         loadDefaultImGuiLayoutIfMissing();
-        if (std::getenv("METALLIC_FULL_ROAM_OUTPUT") && io.IniFilename) {
+        if ((std::getenv("METALLIC_FULL_ROAM_OUTPUT") || std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT")) && io.IniFilename) {
             // CLI captures reuse the saved layout but never overwrite the user's layout.
             ImGui::LoadIniSettingsFromDisk(io.IniFilename);
             io.IniFilename = nullptr;
@@ -2641,6 +2655,8 @@ bool EditorApplication::initializeRhi()
         result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic Engine Editor",
                 .enableValidation = debugRuntime_ && environmentFlagEnabled("METALLIC_DEBUG_VALIDATION"),
+                .enableSynchronizationValidation = !cpuJobBenchmarkConfig_.is_null() &&
+                    cpuJobBenchmarkConfig_.value("synchronizationValidation", false),
                 .enableBindlessDescriptorHeap = true,
                 .enableShaderObject = true,
                 .enableMeshShader = true,
@@ -2776,7 +2792,8 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             .imageCount = kSwapchainImageCount,
             .framesInFlight = kFrameSlotCount,
             .format = render::Format::BGRA8sRGB,
-            .vsync = !(std::getenv("METALLIC_FULL_ROAM_OUTPUT") != nullptr &&
+            .vsync = !((std::getenv("METALLIC_FULL_ROAM_OUTPUT") != nullptr ||
+                    std::getenv("METALLIC_CPU_JOB_BENCH_OUTPUT") != nullptr) &&
                 std::getenv("METALLIC_FULL_ROAM_NO_VSYNC") != nullptr &&
                 std::string_view(std::getenv("METALLIC_FULL_ROAM_NO_VSYNC")) == "1"),
             .outputMode = displayHdrEnabled_ ? requestedOutput_ : render::DisplayOutputMode::SDR_sRGB,
@@ -7175,7 +7192,8 @@ bool EditorApplication::renderGraphPreview()
         .color = render::ColorValue{0.78f, 0.36f, 0.92f, 1.0f},
     });
     render::Result<> result = graphExecutor_->execute(render::RenderGraphSubmitDesc{.graphicsQueue = graphicsQueue_,
-        .computeQueue = device_->getQueue(render::QueueType::Compute), .historyResources = &historyResources_});
+        .computeQueue = device_->getQueue(render::QueueType::Compute), .historyResources = &historyResources_,
+        .recordingWorkerLimit = cpuJobRecordingWorkerLimit_});
     profiler_.addRenderGraphStats(graphExecutor_->executionStats());
     if (result) { historyFrameIndex_ = graphExecutor_->executionStats().executionId + 1; }
     if (smokeTest_ && result) {

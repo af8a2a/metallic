@@ -415,6 +415,7 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorApplication.cpp
     Editor/EditorApplicationSmokeTests.cpp
     Editor/EditorFullRoamBenchmark.cpp
+    Editor/EditorCPUJobBenchmark.cpp
     Editor/EditorRasterComparison.cpp
     Editor/EditorMaterialInspector.cpp
     Editor/EditorMaterialInspectorSmoke.cpp
@@ -553,6 +554,24 @@ function(configure_metallic_editor_sample target_name)
     metallic_copy_openusd_runtime(${target_name})
     metallic_copy_spdlog_runtime(${target_name})
 endfunction()
+
+option(METALLIC_BUILD_CPU_JOB_PRODUCTION_BENCHMARKS "Build the legacy-adapter production editor A/B control" OFF)
+if(METALLIC_BUILD_CPU_JOB_PRODUCTION_BENCHMARKS)
+    add_executable(MetallicCPUJobsLegacy EXCLUDE_FROM_ALL Main.cpp ${METALLIC_EDITOR_SOURCES}
+        "${CMAKE_SOURCE_DIR}/Tools/CPUJobs/LegacyMeshletSceneAdapter.cpp")
+    configure_metallic_editor_sample(MetallicCPUJobsLegacy)
+    target_compile_options(MetallicCPUJobsLegacy PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/EHsc>)
+    add_executable(MetallicMeshletCookLegacy EXCLUDE_FROM_ALL Tools/MeshletCookMain.cpp
+        "${CMAKE_SOURCE_DIR}/Tools/CPUJobs/LegacyMeshletSceneAdapter.cpp")
+    target_link_libraries(MetallicMeshletCookLegacy PRIVATE MetallicRuntimeScene)
+    if(WIN32)
+        target_compile_definitions(MetallicMeshletCookLegacy PRIVATE NOMINMAX)
+        target_compile_options(MetallicMeshletCookLegacy PRIVATE /EHsc)
+        target_link_libraries(MetallicMeshletCookLegacy PRIVATE Psapi)
+    endif()
+    metallic_copy_openusd_runtime(MetallicMeshletCookLegacy)
+    metallic_copy_spdlog_runtime(MetallicMeshletCookLegacy)
+endif()
 
 add_executable(MetallicMaterialVisualizationSample
     Samples/MaterialVisualizationSampleMain.cpp
