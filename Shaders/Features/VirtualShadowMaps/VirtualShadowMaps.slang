@@ -539,9 +539,18 @@ float4 vsmPageBounds(uint virtualPage, ShadowProjection projection)
         float2(page + 1u) * (2.0 / float(projection.page.y)) - 1.0);
 }
 
+uint2 vsmPhysicalPageCoord(uint physicalPage, uint physicalPagesX)
+{
+    if ((physicalPagesX & (physicalPagesX - 1u)) == 0u) {
+        uint shift = uint(firstbitlow(physicalPagesX));
+        return uint2(physicalPage & (physicalPagesX - 1u), physicalPage >> shift);
+    }
+    return uint2(physicalPage % physicalPagesX, physicalPage / physicalPagesX);
+}
+
 float2 vsmAtlasPosition(float2 pagePosition, uint physicalPage, ShadowPush push)
 {
-    uint2 page = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
+    uint2 page = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
     return (float2(page) + pagePosition) * (2.0 / float2(push.physicalPagesX, push.physicalPagesY)) - 1.0;
 }
 
@@ -1313,7 +1322,7 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
         result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
         ++filterCounts.y;
     }
-    uint2 physical = uint2(physicalPage % physicalPagesX, physicalPage / physicalPagesX);
+    uint2 physical = vsmPhysicalPageCoord(physicalPage, physicalPagesX);
     uint2 texel = vsmAtlasTexel(physical, vsmPageLocalTexel(result.virtualTexel, push.pageSize), push.pageSize);
 #if VSM_DIRECTIONAL_PROJECTION
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
@@ -1348,10 +1357,12 @@ struct VSMDirectionalRayState
     float receiverResolution;
     float receiverMargin;
     bool allowClipmaps;
+    uint2 coarsePhysicalCoord;
+    bool coarseValid;
 };
 
 VSMDirectionalRayState vsmCreateDirectionalRayBase(float3 position,
-    ShadowProjection first, ShadowProjection coarse, ShadowPush push, uint receiverLevel)
+    ShadowProjection first, ShadowProjection coarse, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel)
 {
     VSMDirectionalRayState ray;
     ray.comparisonOrigin = vsmProjectPosition(position, first);
@@ -1367,15 +1378,18 @@ VSMDirectionalRayState vsmCreateDirectionalRayBase(float3 position,
     ray.receiverMargin = 1.0 / ray.receiverResolution;
     StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
     ray.allowClipmaps = statistics[5] == 0u;
+    uint4 coarseEntry = pages[coarse.page.x];
+    ray.coarseValid = (coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u;
+    ray.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
     return ray;
 }
 
 VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endpoint, float3 dither,
-    StructuredBuffer<ShadowProjection> projections, ShadowPush push, uint receiverLevel, bool useGroupCache = false)
+    StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel, bool useGroupCache = false)
 {
     ShadowProjection first = vsmGetCachedProjection(projections, receiverLevel, useGroupCache);
     ShadowProjection coarse = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-    VSMDirectionalRayState ray = vsmCreateDirectionalRayBase(position, first, coarse, push, receiverLevel);
+    VSMDirectionalRayState ray = vsmCreateDirectionalRayBase(position, first, coarse, pages, push, receiverLevel);
     float3 direction = endpoint - position;
     ray.lookupOrigin = vsmProjectPosition(position + dither, first);
     ray.step = float3(dot(first.rowX.xyz, direction), dot(first.rowY.xyz, direction), dot(first.rowZ.xyz, direction));
@@ -1457,7 +1471,9 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
                 mapping = pages[push.totalPages + page];
                 cache.lastPage = page;
                 cache.lastMapping = mapping;
-                cache.lastPhysicalCoord = uint2(mapping.x % push.physicalPagesX, mapping.x / push.physicalPagesX);
+                if (mapping.w == 1u) {
+                    cache.lastPhysicalCoord = vsmPhysicalPageCoord(mapping.x, push.physicalPagesX);
+                }
             }
             if (mapping.w == 1u) {
                 result.level = ray.receiverLevel;
@@ -1519,17 +1535,17 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
         result.projected = vsmDirectionalRayPosition(ray, time, push.clipmapCount, coarse, true);
         if (!vsmContains(result.projected, coarse, push.pageSize, false)) { return result; }
         vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
-        uint4 entry = pages[coarse.page.x];
-        if ((entry.y & 2u) == 0u || (entry.w & 1u) == 0u) {
+        if (!ray.coarseValid) {
             ++counts.z;
             return result;
         }
-        physicalPage = entry.x;
+        physical = ray.coarsePhysicalCoord;
+        hasPhysicalCoord = true;
         result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
         ++counts.y;
     }
     if (!hasPhysicalCoord) {
-        physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
+        physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
     }
     uint2 texel = vsmAtlasTexel(physical, vsmPageLocalTexel(result.virtualTexel, push.pageSize), push.pageSize);
     result.storedDepth = atlas.Load(int3(texel, 0));
@@ -1627,7 +1643,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-    VSMDirectionalRayState baseRayState = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, push, receiverLevel);
+    VSMDirectionalRayState baseRayState = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, pages, push, receiverLevel);
 #endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
@@ -4200,7 +4216,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         }
         compareDepth = projected.z + correction + projection.metric.z;
     }
-    uint2 physical = uint2(physicalPage % push.physicalPagesX, physicalPage / push.physicalPagesX);
+    uint2 physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
     uint2 texel = vsmAtlasTexel(physical, vsmPageLocalTexel(virtualTexel, push.pageSize), push.pageSize);
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     float storedDepth = atlas.Load(int3(texel, 0));
