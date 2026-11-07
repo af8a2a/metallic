@@ -1085,6 +1085,15 @@ float vsmDirectionalComparisonDepth(float3 normal, float3 projected, uint2 texel
     float correction = -dot(normal, delta) * invDenom;
     return projected.z + correction + biasZ;
 }
+
+float vsmDirectionalComparisonDepth(float3 projected, uint2 texel,
+    float extent, float invResolution, float2 normalSlope, float biasZ)
+{
+    float2 sampleNDC = (float2(texel) + 0.5) * invResolution - 1.0;
+    float2 offset = (sampleNDC - projected.xy) * extent;
+    float correction = -dot(normalSlope, offset);
+    return projected.z + correction + biasZ;
+}
 #endif
 
 float vsmComparisonDepth(float3 position, float3 normal, float3 projected, uint2 texel,
@@ -1290,19 +1299,12 @@ struct VSMDirectionalRayState
     bool allowClipmaps;
 };
 
-VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endpoint, float3 dither,
-    StructuredBuffer<ShadowProjection> projections, ShadowPush push, uint receiverLevel, bool useGroupCache = false)
+VSMDirectionalRayState vsmCreateDirectionalRayBase(float3 position,
+    ShadowProjection first, ShadowProjection coarse, ShadowPush push, uint receiverLevel)
 {
     VSMDirectionalRayState ray;
-    ShadowProjection first = vsmGetCachedProjection(projections, receiverLevel, useGroupCache);
-    ShadowProjection coarse = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-    float3 direction = endpoint - position;
     ray.comparisonOrigin = vsmProjectPosition(position, first);
-    ray.lookupOrigin = vsmProjectPosition(position + dither, first);
-    ray.step = float3(dot(first.rowX.xyz, direction), dot(first.rowY.xyz, direction), dot(first.rowZ.xyz, direction));
     ray.coarseComparisonOrigin = vsmProjectPosition(position, coarse).xy;
-    ray.coarseLookupOrigin = vsmProjectPosition(position + dither, coarse).xy;
-    ray.coarseStep = float2(dot(coarse.rowX.xyz, direction), dot(coarse.rowY.xyz, direction));
     ray.sourceTranslation = float2(first.rowX.w, first.rowY.w);
     ray.receiverLevel = receiverLevel;
     ray.coarseLevel = push.clipmapCount;
@@ -1314,6 +1316,20 @@ VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endp
     ray.receiverMargin = 1.0 / ray.receiverResolution;
     StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
     ray.allowClipmaps = statistics[5] == 0u;
+    return ray;
+}
+
+VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endpoint, float3 dither,
+    StructuredBuffer<ShadowProjection> projections, ShadowPush push, uint receiverLevel, bool useGroupCache = false)
+{
+    ShadowProjection first = vsmGetCachedProjection(projections, receiverLevel, useGroupCache);
+    ShadowProjection coarse = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
+    VSMDirectionalRayState ray = vsmCreateDirectionalRayBase(position, first, coarse, push, receiverLevel);
+    float3 direction = endpoint - position;
+    ray.lookupOrigin = vsmProjectPosition(position + dither, first);
+    ray.step = float3(dot(first.rowX.xyz, direction), dot(first.rowY.xyz, direction), dot(first.rowZ.xyz, direction));
+    ray.coarseLookupOrigin = vsmProjectPosition(position + dither, coarse).xy;
+    ray.coarseStep = float2(dot(coarse.rowX.xyz, direction), dot(coarse.rowY.xyz, direction));
     return ray;
 }
 
@@ -1554,10 +1570,13 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float3 normY = normalize(proj0.rowY.xyz);
     float denominator = dot(normal, toLight);
     float invDenom = abs(denominator) > 1e-5 ? length(proj0.rowZ.xyz) / denominator : 0.0;
+    float2 normalSlope = float2(dot(normal, normX), dot(normal, normY)) * invDenom;
     float biasZ = proj0.metric.z;
     float receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
+    ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
+    VSMDirectionalRayState baseRayState = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, push, receiverLevel);
 #endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
@@ -1567,7 +1586,12 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
         float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
 #if VSM_DIRECTIONAL_PROJECTION
-        VSMDirectionalRayState rayState = vsmCreateDirectionalRayState(position, endpoint, dither, projections, push, receiverLevel, useGroupCache);
+        VSMDirectionalRayState rayState = baseRayState;
+        float3 direction = endpoint - position;
+        rayState.lookupOrigin = vsmProjectPosition(position + dither, receiverProj);
+        rayState.step = float3(dot(receiverProj.rowX.xyz, direction), dot(receiverProj.rowY.xyz, direction), dot(receiverProj.rowZ.xyz, direction));
+        rayState.coarseLookupOrigin = vsmProjectPosition(position + dither, coarseProj).xy;
+        rayState.coarseStep = float2(dot(coarseProj.rowX.xyz, direction), dot(coarseProj.rowY.xyz, direction));
 #endif
         float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
             1.0 / length(endpoint - proj0.originNear.xyz) -
@@ -1609,8 +1633,8 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                 extent = projection.metric.x;
                 invResolution = 2.0 / float(projection.page.y * push.pageSize);
             }
-            float compare = vsmDirectionalComparisonDepth(normal, projected, sample.virtualTexel,
-                extent, invResolution, normX, normY, invDenom, biasZ);
+            float compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
+                extent, invResolution, normalSlope, biasZ);
             float reference = vsmDirectionalRayDepth(compare, rayState);
             float tolerance = abs(reference - previousReference) * 1.05;
             float timeDelta = time - historyTime;
