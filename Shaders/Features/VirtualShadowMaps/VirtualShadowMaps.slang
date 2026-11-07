@@ -1285,6 +1285,8 @@ struct VSMDirectionalRayState
     float receiverDepth;
     float depthScale;
     float invDepthScale;
+    float receiverResolution;
+    float receiverMargin;
     bool allowClipmaps;
 };
 
@@ -1308,6 +1310,8 @@ VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endp
     ray.receiverDepth = ray.comparisonOrigin.z;
     ray.depthScale = length(first.rowZ.xyz);
     ray.invDepthScale = 1.0 / ray.depthScale;
+    ray.receiverResolution = float(push.virtualPagesPerAxis * push.pageSize);
+    ray.receiverMargin = 1.0 / ray.receiverResolution;
     StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
     ray.allowClipmaps = statistics[5] == 0u;
     return ray;
@@ -1368,12 +1372,10 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
     ++counts.x;
     if (ray.allowClipmaps) {
         float3 p = ray.lookupOrigin + time * ray.step;
-        float margin = 1.0 / float(push.virtualPagesPerAxis * push.pageSize);
-        bool inBounds = all(p.xy >= -1.0 + margin) && all(p.xy < 1.0 - margin) && p.z >= 0.0 && p.z <= 1.0;
+        bool inBounds = all(p.xy >= -1.0 + ray.receiverMargin) && all(p.xy < 1.0 - ray.receiverMargin) && p.z >= 0.0 && p.z <= 1.0;
         bool mappedToCoarse = false;
         if (inBounds) {
-            uint resolution = push.virtualPagesPerAxis * push.pageSize;
-            uint2 texel = uint2((p.xy * 0.5 + 0.5) * float(resolution));
+            uint2 texel = uint2((p.xy * 0.5 + 0.5) * ray.receiverResolution);
 #if VSM_PROJECTION_PAGE_SHIFT >= 0
             uint2 pageCoord = texel >> VSM_PROJECTION_PAGE_SHIFT;
 #else
@@ -1391,12 +1393,14 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
                 cache.lastPhysicalCoord = uint2(mapping.x % push.physicalPagesX, mapping.x / push.physicalPagesX);
             }
             if (mapping.w == 1u) {
-                physicalPage = mapping.x;
-                physical = cache.lastPhysicalCoord;
-                hasPhysicalCoord = true;
                 result.level = ray.receiverLevel;
                 result.projected = p;
                 result.virtualTexel = texel;
+                uint2 atlasTexel = vsmAtlasTexel(cache.lastPhysicalCoord, vsmPageLocalTexel(texel, push.pageSize), push.pageSize);
+                result.storedDepth = atlas.Load(int3(atlasTexel, 0));
+                vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
+                result.valid = true;
+                return result;
             } else if (mapping.w == 0u) {
                 vsmWorkAdd(push, kVSMWorkProjectionMappingSlowPaths, 1u);
                 vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
@@ -1608,18 +1612,17 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             float compare = vsmDirectionalComparisonDepth(normal, projected, sample.virtualTexel,
                 extent, invResolution, normX, normY, invDenom, biasZ);
             float reference = vsmDirectionalRayDepth(compare, rayState);
+            float tolerance = abs(reference - previousReference) * 1.05;
+            float timeDelta = time - historyTime;
+            float predicted = historyDepth + historySlope * timeDelta;
+            float predictedSeparation = predicted - reference;
+            float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
             if (!hasHistory) {
-                float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
                 blocked = depth > reference;
                 historyDepth = depth;
                 historyTime = time;
                 hasHistory = true;
             } else {
-                float tolerance = abs(reference - previousReference) * 1.05;
-                float timeDelta = time - historyTime;
-                float predicted = historyDepth + historySlope * timeDelta;
-                float predictedSeparation = predicted - reference;
-                float depth = vsmDirectionalRayDepth(sample.storedDepth, rayState);
                 float diff = depth - reference;
                 float separation = (diff > tolerance) ? predictedSeparation : diff;
                 if (diff <= tolerance && depth != historyDepth) {
