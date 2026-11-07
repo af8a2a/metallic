@@ -4,6 +4,8 @@
 
 #include <functional>
 #include <stop_token>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace metallic::task {
@@ -19,10 +21,18 @@ struct WorkerContext {
     uint32_t workerIndex = 0;
     uint32_t workerCount = 1;
     uint64_t executionId = 0;
+    // Async runners identify their own task; inline work borrows its parent's
+    // identity, or is empty on an external caller without a containing graph.
     TaskNodeHandle node;
 };
 
 struct ParallelForWorkerMetrics {
+    uint32_t workerIndex = 0;
+    uint64_t executionId = 0;
+    TaskNodeHandle node;
+    uint64_t workerThreadId = 0; // Same native-thread hash as TaskNodeSnapshot.
+    TaskClock::time_point startTime{}, finishTime{};
+    bool inlineExecution = false;
     uint64_t batches = 0;
     uint64_t elements = 0;
     uint64_t activeNanoseconds = 0;
@@ -34,6 +44,16 @@ struct ParallelForWorkerMetrics {
 struct ParallelForDiagnostics {
     // Exclusive to one in-flight operation, one writer per lane. Read only
     // after the containing graph has completed/joined.
+    uint64_t operationId = 0;
+    uint64_t graphId = 0;
+    std::string operationName;
+    std::string backendLabel;
+    uint32_t begin = 0, end = 0, minGrain = 0;
+    PartitionStrategy strategy = PartitionStrategy::Dynamic;
+    TaskClock::time_point createdTime{};
+    // Unstarted/cancelled lanes retain zero identity and timestamps. Async
+    // metrics join the graph snapshot by executionId/node; queue delay comes
+    // from that snapshot's scheduledTime, never from createdTime.
     std::vector<ParallelForWorkerMetrics> workers;
 };
 
@@ -43,6 +63,9 @@ struct ParallelForOptions {
     uint32_t maxWorkers = 0;
     PartitionStrategy strategy = PartitionStrategy::Dynamic;
     std::stop_token stopToken;
+    // Generic profiling metadata, copied during this API call only when
+    // diagnostics is enabled. No ISPC/ISA dependency enters the task layer.
+    std::string_view backendLabel;
     ParallelForDiagnostics* diagnostics = nullptr;
 };
 
