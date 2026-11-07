@@ -86,8 +86,9 @@ std::expected<ParallelForNodes, TaskError> addParallelFor(
     TaskGraph& graph, TaskDesc desc, uint32_t begin, uint32_t end,
     const ParallelForOptions& options, ParallelForCallback callback);
 
-// Joins on an external caller. Nested task callbacks and uninitialized runtimes
-// execute inline, without blocking a worker or creating another pool. Returns an
+// Joins on an external caller. A single effective lane, nested task callbacks
+// and uninitialized runtimes execute inline without submitting a child graph.
+// Other calls share the current worker pool. Returns an
 // error after all started callbacks have drained on failure/cancellation.
 TaskOutcome parallelFor(uint32_t begin, uint32_t end,
     const ParallelForOptions& options, const ParallelForCallback& callback);

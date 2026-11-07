@@ -240,7 +240,8 @@ TaskOutcome parallelFor(uint32_t begin, uint32_t end,
 {
     if (auto validated = validate(begin, end, options, callback); !validated) { return validated; }
     auto system = detail::tryAcquireTaskSystem();
-    if (isInsideTaskCallback() || !system || options.maxWorkers == 1 || begin == end) {
+    const uint32_t lanes = lanesFor(begin, end, options, system ? system->workerCount() : 1);
+    if (isInsideTaskCallback() || lanes == 1) {
         RangeState state(begin, end, 1, options, callback, "ParallelFor", detail::taskCallbackIdentity().node.graphId);
         try { return state.run(0, nullptr); }
         catch (const std::exception& error) { return std::unexpected(error.what()); }
