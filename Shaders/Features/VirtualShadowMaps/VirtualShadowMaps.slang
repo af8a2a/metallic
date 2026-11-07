@@ -1493,7 +1493,7 @@ struct VSMDirectionalRayCache
     uint2 lastPhysicalCoord;
 };
 
-ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
+ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
     Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
 {
@@ -1507,7 +1507,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirec
     bool hasPhysicalCoord = false;
     ++counts.x;
     if (rayBase.allowClipmaps) {
-        float3 p = ray.lookupOrigin + time * ray.step;
+        float3 p = ray.lookupOrigin + stepOffset;
         bool inBounds = all(p.xy >= -rayBase.receiverMarginMax) && all(p.xy < rayBase.receiverMarginMax) && p.z >= 0.0 && p.z <= 1.0;
         bool mappedToCoarse = false;
         if (inBounds) {
@@ -1603,11 +1603,18 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirec
     if (!hasPhysicalCoord) {
         physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
     }
-    uint2 texel = vsmAtlasTexel(physical, vsmPageLocalTexel(result.virtualTexel, push.pageSize), push.pageSize);
+    uint2 texel = vsmAtlasTexelFromVirtual(physical, result.virtualTexel, push.pageSize);
     result.storedDepth = atlas.Load(int3(texel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
+}
+
+ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
+    StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
+    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
+{
+    return vsmDirectionalRayLookup(time, time * ray.step, ray, rayBase, projections, pages, atlas, push, counts, cache, useGroupCache);
 }
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
@@ -1757,7 +1764,8 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom);
 #if VSM_DIRECTIONAL_PROJECTION
-            ShadowLookup sample = vsmDirectionalRayLookup(time, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
+            float3 stepOffset = time * dirRay.step;
+            ShadowLookup sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
 #else
             float3 point = vsmRayPosition(position, endpoint, time, proj0, push);
             ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
@@ -1770,7 +1778,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             float extent;
             float invResolution;
             if (sample.level == rayBase.receiverLevel) {
-                projected = rayBase.comparisonOrigin + time * dirRay.step;
+                projected = rayBase.comparisonOrigin + stepOffset;
                 extent = receiverExtent;
                 invResolution = receiverInvResolution;
             } else {
@@ -1783,9 +1791,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                 extent, invResolution, normalSlope, biasZ);
             float reference = vsmDirectionalRayDepth(compare, rayBase);
             if (!hasHistory) {
-                float depth = vsmDirectionalRayDepth(sample.storedDepth, rayBase);
-                blocked = depth > reference;
-                historyDepth = depth;
+                blocked = sample.storedDepth > compare;
+                if (blocked) { break; }
+                historyDepth = vsmDirectionalRayDepth(sample.storedDepth, rayBase);
                 historyTime = time;
                 hasHistory = true;
             } else {
