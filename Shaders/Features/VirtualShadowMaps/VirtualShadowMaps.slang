@@ -4114,6 +4114,14 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         debugValue = float4(float(selectedLevel + 1u) / float(push.clipmapCount), 0.5, 0.0, 1.0);
     }
     ShadowProjection projection = vsmGetCachedProjection(projections, selectedLevel, useGroupCache);
+    if (push.lightType == 0u) {
+        float3 toLight = normalize(proj0.rowZ.xyz);
+        float sinAlpha = max(sin(push.angularRadius), 0.1);
+        if (dot(normal, toLight) < -sinAlpha) {
+            visibility = 0.0;
+            return true;
+        }
+    }
     if (push.filterMode != 0u) {
         ShadowPush trace = push;
         trace.rayLength = vsmSearchLength(position, linearDepth, view, push);
