@@ -1158,7 +1158,7 @@ float vsmDirectionalComparisonDepth(float3 normal, float3 projected, uint2 texel
 float vsmDirectionalComparisonDepth(float3 projected, uint2 texel,
     float extent, float invResolution, float2 normalSlope, float biasZ)
 {
-    float2 sampleNDC = (float2(texel) + 0.5) * invResolution - 1.0;
+    float2 sampleNDC = fma(float2(texel), float2(invResolution), float2(0.5 * invResolution - 1.0));
     float2 offset = (sampleNDC - projected.xy) * extent;
     float correction = -dot(normalSlope, offset);
     return projected.z + correction + biasZ;
@@ -1784,6 +1784,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
+    float coarseInvResolution = 2.0 / float(push.pageSize);
     VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, pages, push, receiverLevel);
     VSMDirectionalRayCache rayCache;
     rayCache.lastPage = 0xffffffffu;
@@ -1793,7 +1794,8 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
-        float3 endpoint = vsmRayEndpoint(position, proj0, push, toLight, right * disk.x + up * disk.y);
+        float3 rayOffset = right * disk.x + up * disk.y;
+        float3 endpoint = vsmRayEndpoint(position, proj0, push, toLight, rayOffset);
         float2 ditherOffset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
             vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
         float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
@@ -1832,15 +1834,16 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             float3 projected;
             float extent;
             float invResolution;
+            float3 currentRayPos = rayBase.comparisonOrigin + stepOffset;
             if (sample.level == rayBase.receiverLevel) {
-                projected = rayBase.comparisonOrigin + stepOffset;
+                projected = currentRayPos;
                 extent = receiverExtent;
                 invResolution = receiverInvResolution;
             } else {
                 ShadowProjection projection = vsmGetCachedProjection(projections, sample.level, useGroupCache);
                 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, projection, false);
                 extent = projection.metric.x;
-                invResolution = 2.0 / float(projection.page.y * push.pageSize);
+                invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
             }
             float compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
                 extent, invResolution, normalSlope, biasZ);
