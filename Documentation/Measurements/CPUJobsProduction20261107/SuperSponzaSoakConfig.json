@@ -30,7 +30,7 @@
   "memorySampleIntervalFrames": 10,
   "validation": false,
   "diagnostics": true,
-  "captureImage": false,
+  "captureImage": true,
   "materialTextureBudgetMiB": 8192,
   "expectedVsync": false,
   "expectedReflexMode": 0,
