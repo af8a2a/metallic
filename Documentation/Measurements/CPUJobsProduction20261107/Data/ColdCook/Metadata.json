@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "protocol": "metallic-production-cold-cook-abba-v1",
+  "status": "complete",
+  "startedUtc": "2026-11-07T01:19:48.086853+00:00",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "workers": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "blocks": 3,
+  "compression": "reference",
+  "memoryMiB": 0,
+  "sampleMilliseconds": 100.0,
+  "sourceAssetSha256": {
+    "E:\\metallic\\Asset\\SuperSponza\\NewSponza_Main_glTF_003.gltf": "e04c4c540c74bdddcbd3f590a85c14119bfd5839702246a23b3a737c0cce2400",
+    "E:\\metallic\\Asset\\SuperSponza\\NewSponza_Main_glTF_003.bin": "903d443b46b51c8397c25b65286d9f9e111121f12a3e0e303f19019982568d6b"
+  },
+  "repositoryRevision": "53237e6df075d64ddfaa82bdf8ef4184a714aaf5",
+  "sourceSha256": {
+    "Tools/CPUJobs/MeasureProductionMeshlets.py": "81e4d570bb80d0091465df66aca8a55bf25ac85364e20dbf190a6c52706573f2",
+    "Tools/CPUJobs/ProcessResources.py": "b21f059690addf923c0867f40d23496ab26d55208ac1762937c107641ed7cbc3",
+    "Tools/CPUJobs/LegacyMeshletSceneAdapter.cpp": "5760b29b33399a4f6d4d755939a00293be9bef16ba6cc7ac858a1ccd3dc571ee",
+    "Source/Tools/MeshletCookMain.cpp": "08626f424cb52315eeb9c8b41c1056bf0504565b540b36b9f02dfdebf3a64b31",
+    "Source/Runtime/Scene/Scene.cpp": "a401ee7b17dd28f59aff91b78cd2a0e54e29751ad6488f887d753f6c56611e57",
+    "Source/Runtime/Scene/MeshletBuildParallel.cpp": "6e605017afbfd7ff177f6fcd2ba2e4c013cf6ecede7d977d9cdfbd474d6c4f98",
+    "Source/Runtime/Task/TaskSystem.cpp": "8c130a6f3b1ec53e5cfab1ebf562150cb9698bd2ef6cbfebbe4f382f97b334f6",
+    "Source/Runtime/Task/ParallelFor.cpp": "7529aa4fd654b06269d8508d821df91f057bd82b9f53d4d62d282662f2333517"
+  },
+  "executables": {
+    "legacy": {
+      "path": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\Source\\MetallicMeshletCookLegacy.exe",
+      "sha256": "a7d2ecb195aaa2b46c106de85347a6505358efbf71f0b501fff959417bd618d3"
+    },
+    "shared": {
+      "path": "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\Source\\MetallicMeshletCook.exe",
+      "sha256": "7757ac7408bc138653c6f3616a97384890438de2cc3162b4a6c29a1bcd5b8506"
+    }
+  },
+  "conditions": {
+    "cold": "New unique output path for every process; no resume/cache-hit output. Source/OS caches are retained, not flushed cold.",
+    "order": "Independent ABBA/BAAB/ABBA blocks with rotating worker order; fixed sample budget.",
+    "timing": "Cook process wall/CPU and cooker elapsed include source decode, build, encode, checkpoint, runtime topology inspection and report work. Separate inspect/all-payload/source-attribute validation is excluded from cook timings and resources.",
+    "correctness": "Every output is fully payload-validated, checked against source dependency identity by the cooker, and whole-file SHA256 plus geometry manifest must match across all candidates/workers/repetitions.",
+    "storage": "By default retain the first validated reference stream, remove later matching run-owned payloads after cross-candidate validation/hash capture, and preserve every manifest/event/log/resource sample. Failed/mismatching outputs remain. --keep-payloads retains all binaries.",
+    "gpu": "CPU-only cooker; no GPU work or measured VRAM. Aligned device payload sizes in manifests are byte accounting, not VRAM measurements."
+  },
+  "processCount": 48
+}

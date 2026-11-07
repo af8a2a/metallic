@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "generatedUtc": "2026-11-07T01:52:26.484723+00:00",
+  "plottingPlatform": "Windows-11-10.0.26300-SP0",
+  "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
+  "matplotlib": "3.10.9",
+  "scriptSnapshot": "PlotProductionCPUJobs.py",
+  "plotterSHA256": "c981e76a872dcf68a543b5a6e7f68306549c375676d5e3be5ee48f4f88cc343f",
+  "inputsSHA256": {
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\Metadata.json": "651daa3ec705efd5ed931ac714f3078c52a20943756fea568260f0b842ca09f2",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\Raw.jsonl": "9efac1b08bb3f0ed97515d8bbc3044d68b9f4dfeba0bae2f1025286a96bcf617",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-000-legacy-w8-measured\\Console.log": "5f400b3029e04c8682f2fc451dc0e4b590b074cef36bd8201d7ed28f2788f48d",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-001-shared-w8-measured\\Console.log": "0a106bb6dda4866e785d0efb4712c5339cfb81215dcb0346510c7d8418ce5324",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-002-shared-w8-measured\\Console.log": "aee21afba5f5878b9d17289189f7baaf381159e5f15245cbfbdedc9ce0574f7a",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-003-legacy-w8-measured\\Console.log": "80a78fdd77678265ce6cdb8e4b20f397917e26efa60f1bc164ca449cfa6ecb5e",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-000-legacy-w8-measured\\Frames.jsonl": "aa047d60b13d6cbe65c6bbbad3dde2db1d47512c675aaae0cf98e7ae6341df56",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-001-shared-w8-measured\\Frames.jsonl": "70a60e54ff9cd00f5f5f7be2c26ff280e64914420e95a70b04ef31499aa7f37c",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-002-shared-w8-measured\\Frames.jsonl": "7b54b24b671abf07ff785e0d6978a10749da9e289abd3f794c62551e5b65db69",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-003-legacy-w8-measured\\Frames.jsonl": "fd939b2ff4db8ebe3e36b3f34f217892ddc51107f651297df2f05a7f2074f577",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-000-legacy-w8-measured\\TaskGraphs.jsonl": "60cc9365b13845572221532825a0ad783dc98bfc5aaa2cf5617796a86d7e5f17",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-001-shared-w8-measured\\TaskGraphs.jsonl": "dbecbe50bce7461282ffd9fe2c19855393733663bbbef2a34a7ab5f68bb06891",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-002-shared-w8-measured\\TaskGraphs.jsonl": "b15228783d629c593fd5fde1804c2ac84e112c9fb464a4505f6620ffd560e19b",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\steady-soak-final-super-sponza\\run-003-legacy-w8-measured\\TaskGraphs.jsonl": "a907d05454ff1e7b83bbe0c848c7834a924e469e3ee32133d00d2f7ea50bf6a9"
+  },
+  "budgets": {
+    "frameMs": null,
+    "cpuMemoryMiB": null,
+    "vramMiB": null
+  },
+  "notes": [
+    "P50/P95/P99 summarize the recorded sample population, not confidence intervals. Missing data is never replaced with zero.",
+    "Budgets: frameMs=not supplied; cpuMemoryMiB=not supplied; vramMiB=not supplied",
+    "Production input purpose=performance; scheduling diagnostics=on; app diagnostic sink=True. Validation and performance populations are not mixed.",
+    "Production: 4 passed measured processes; 0 prewarm/failed/incomplete records excluded from latency comparisons. Frames are correlated within a process; per-process quantiles are plotted individually, never pooled as independent experiments.",
+    "Production worker limits: [8]; W labels identify each limit. No results are averaged across different worker limits, blocks or executable candidates.",
+    "SceneLoad console step durations are independent producer-owned envelopes; order is console occurrence, not a shared-clock timeline. They may include nested or overlapping work and are not summed into total loading. Separate PNG decode, mip generation and upload boundaries are NA: the available logs do not establish complete independent intervals for these stages.",
+    "A TaskGraph/DAG critical path is unavailable unless dependency-linked task intervals are separately recorded. Inclusive profiler scope durations alone do not establish that path."
+  ],
+  "figures": [
+    {
+      "file": "ProductionLoadingScopes.png",
+      "title": "Production initialization, loading and process lifetime",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. Each marker is one process and one independently owned wall-duration scope. Editor initialization is the explicit console duration; capture loadingSeconds begins after Editor initialization and ends at scene ready, including shader compilation and uploads within that envelope. OS process lifetime covers launch to exit, including initialization, loading, warmup, capture and shutdown. These scopes are not stacked or subtracted to infer a warmup duration. Missing observations are unavailable, not zero."
+    },
+    {
+      "file": "ProductionFrameBlocks.png",
+      "title": "Production frame distributions by process/block",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. legacy: 2 processes, shared: 2 processes. Every marker is one process quantile of its measured frames; P95/P99 are not confidence bounds. Missing GPU data is unavailable, not zero. No frame budget was supplied."
+    },
+    {
+      "file": "ProductionFrameSeries01.png",
+      "title": "Production recorded frame time series, page 1",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. Every recorded frame is shown in its own process, with common y limits across all pages; no smoothing, interpolation, rebasing or cross-process concatenation. Shading uses the runner's explicit measuredFrameRange when available; absent windows are not guessed. The per-process Raw.frameMs distribution remains the measured-window authority."
+    },
+    {
+      "file": "ProductionCPUScopes.png",
+      "title": "Production CPU scope wall durations",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. legacy: 2 processes, shared: 2 processes; each dot is one process's scope-occurrence median, which may have a different sample count than frameCount. Top 16 paths ranked by their largest process median. Nested, parallel and idle scopes can overlap; no scope durations are summed, subtracted into CPU work, or relabeled as a critical path."
+    },
+    {
+      "file": "ProductionCoordinatorPath.png",
+      "title": "Production non-overlapping coordinator frame path",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. Only explicit producer-contracted intervals are used, with non-overlap/envelope validation. Stacks use means from the same complete frames, not sums of P50s. Unattributed frame envelope is a measured duration difference, not worker idle or useful CPU work. This is not a reconstructed TaskGraph longest path."
+    },
+    {
+      "file": "ProductionTaskGraphChains.png",
+      "title": "Diagnostic DAG completion-chain breakdown",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. One largest-wall graph per process, selected explicitly; not a median or performance-off sample. Actual edges validate non-overlap along each chain. Stacks partition graph wall into node intervals, observed ready-to-start gaps and completion epilogue; they are not added to inclusive frame scopes. The black marker is a separately computed longest dependency-node-wall path. Diagnostics may perturb scheduling; the graph-completed timestamp precedes sink serialization, so this is not a measurement of all observer cost."
+    },
+    {
+      "file": "ProductionTaskGraphTimeline.png",
+      "title": "Diagnostic worker intervals and actual DAG chain",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. Actual start/finish intervals on separate recorded worker identities (TaskSystem hashes std::thread::id; these are not Windows TIDs). Parallel intervals are shown, not summed. Orange nodes form the latest-predecessor completion chain. Task gaps include readiness bookkeeping, scheduling and preemption; neither gaps nor node wall are pure CPU execution or measured worker sleep."
+    },
+    {
+      "file": "ProductionResourcePeaks.png",
+      "title": "Production memory and process-thread peaks",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. legacy: 2 processes, shared: 2 processes; one marker per available process metric. OS high-waters include startup only through the last successful sample; current-value sampled peaks depend on poll cadence/window. Device-local allocated/block/usage measures are not additive or automatically process-private. Missing values remain absent. No RAM/VRAM budget is assumed when none is supplied; whole-device capacity is not an application budget."
+    },
+    {
+      "file": "ProductionRHIHighWaters.png",
+      "title": "Production RHI allocation high-waters",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. Event high-waters are simultaneous totals maintained at RHI allocation/free events, through the last queried snapshot. They cover RHI-tracked allocations, excluding untracked external SDK/driver memory. Current-value sampled maxima are separate. Host+device totals are not VRAM-only; domains and these totals are not added together. Missing counters remain unavailable."
+    },
+    {
+      "file": "ProductionCPUOccupancy.png",
+      "title": "Production CPU occupancy",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. Each available marker is process CPU time divided by lifetime wall time, across all process threads. It includes loading/warmup when those fall in the producer's process window. It is neither worker utilization nor a CPU usage peak. No host-wide CPU utilization or peak CPU usage is synthesized."
+    },
+    {
+      "file": "ProductionMemoryDomains.png",
+      "title": "Production domain allocation peaks",
+      "caption": "INSTRUMENTED diagnostic run \u2014 observer overhead included; separate from performance-off data. Each point is one process's reported peak for that allocation domain. Peaks can occur on different frames. RHI domains may include host and device allocations; this is not a VRAM-only partition. Domain definitions and ownership come from the producer; they are not summed into a simultaneous total or a memory budget."
+    }
+  ],
+  "figureSHA256": {
+    "ProductionLoadingScopes.png": "ef3280cedf910a7f8dfa44c9800441f1c3239e063f30d8c25702f13e9e2c3861",
+    "ProductionFrameBlocks.png": "a9b56c299154bb905e0c36431b4c3f306055c2c9a3ab19c1db53f2956d951838",
+    "ProductionFrameSeries01.png": "8ed65d69c86a203e09aeb262b6edc8ae4042670f091e2d39e09fbec39c9bda5c",
+    "ProductionCPUScopes.png": "48937666fbb2bec5cdde3627bf4bda766d8b63901f7e724c6a2999a3550d1937",
+    "ProductionCoordinatorPath.png": "90327f6cda782b98d7ac310fcddb0b4589e9a2861e2b32b297f7f220095e55ed",
+    "ProductionTaskGraphChains.png": "685c7703ad264723a87835489a8c3e5a5326c0cfdd8106b26b044742d9f68ea4",
+    "ProductionTaskGraphTimeline.png": "5ce6ff632e7d43100884bbce07b6a06b43791da5e7cf9410a93c355161a29804",
+    "ProductionResourcePeaks.png": "d6670febd0c4b488d2683fbea86baf4e396c7b719bdd184703110414ef782d9a",
+    "ProductionRHIHighWaters.png": "44382c619d1143097e3d8d27f3e679001b63af7dd1ec18463008f5b16a42a2e4",
+    "ProductionCPUOccupancy.png": "539ee4af7cb7455f2e046dab99cefed6657285e62a24de31724648889b480fc2",
+    "ProductionMemoryDomains.png": "d7d93da5f82c7ea762615810462cff730bb55002d502152cacbb7c8dab47bf47"
+  }
+}

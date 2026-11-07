@@ -1,0 +1,24 @@
+{
+  "schema": "metallic-production-compact-summary-v1",
+  "bundle": "SyncUnsupported",
+  "sourceStatus": "failed",
+  "definition": "Per-run scalar/aggregate subset of original records; not the original Raw/Summary and not sufficient for frame-level replotting. Restore the release asset for full data.",
+  "originalRawLineHashDefinition": "SHA256 of each original UTF-8 JSONL record excluding its line terminator",
+  "originalFiles": {
+    "Metadata.json": {
+      "bytes": 5745,
+      "sha256": "ea6da13ec2ad20aa4f8238409cb232803470616f219ac001329fc4ae79559787"
+    },
+    "Raw.jsonl": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "population": {
+    "completeRecords": 0,
+    "measuredRecords": 0,
+    "prewarmRecords": 0
+  },
+  "processes": [],
+  "comparisons": []
+}

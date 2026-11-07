@@ -1,0 +1,23 @@
+<!doctype html><html lang='en'><meta charset='utf-8'>
+<title>CPU jobs archived scheduler, range, SIMD and generated meshlet measurements</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:1320px;margin:32px auto;padding:0 24px;color:#17243a;background:#fff}h1,h2{line-height:1.2}section{margin:36px 0}img{width:100%;height:auto;border:1px solid #e2e8f0;border-radius:8px}figcaption,.note{color:#526176}table{border-collapse:collapse;font-size:14px;width:100%;margin:16px 0}td,th{text-align:left;border-bottom:1px solid #dce3ed;padding:8px;vertical-align:top;overflow-wrap:anywhere}code{overflow-wrap:anywhere}</style>
+<h1>CPU jobs archived scheduler, range, SIMD and generated meshlet measurements</h1><p class='note'>Generated from immutable evidence; no renderer or benchmark was executed.</p>
+<p class='note'>P50/P95/P99 summarize the recorded sample population, not confidence intervals. Missing data is never replaced with zero.</p>
+<p class='note'>Budgets: frameMs=not supplied; cpuMemoryMiB=not supplied; vramMiB=not supplied</p>
+<p class='note'>Historical plots use archived 2026-11-06 evidence from C:\Users\11252\.codex\worktrees\3379\metallic\Documentation\Measurements\CPUJobs20261106; they are separate workloads and binaries from production A/B.</p>
+<section><h2>Archived scheduler baseline</h2><figure><img src='HistoricalScheduler.png' alt='Archived scheduler baseline'><figcaption>P50 lines and P50-P95 bands; 20 warm invocations per point, diagnostics off, grain 64. Raw stdexec and TaskGraph have different graph bookkeeping; these are not deque-only costs. Archived floor-index quantiles are retained. Invocations are not independent fresh processes.</figcaption></figure></section>
+<section><h2>Archived range strategies</h2><figure><img src='HistoricalRange.png' alt='Archived range strategies'><figcaption>P50 lines and P50-P95 bands; grain 64, 20 warm invocations per point, diagnostics off. Uniform/long-tail contain 65,536 elements; bandwidth contains 16,777,216 uint32 values. Identical kernels within each workload; useful work, scheduling and join are timed together. No FPS inference.</figcaption></figure></section>
+<section><h2>Archived SIMD kernel isolation</h2><figure><img src='HistoricalSIMD.png' alt='Archived SIMD kernel isolation'><figcaption>Bars show warm P50, whiskers P95; each bar has 93 warm samples from 3 processes x 31 invocations. Same interval algorithm and SoA input; allocation/repacking/scheduling excluded. Multi-target selects AVX2 on this host. The 31-element timer-quantized case is retained in raw evidence, omitted from this scale comparison.</figcaption></figure></section>
+<section><h2>Archived layout-conversion cost</h2><figure><img src='HistoricalPacking.png' alt='Archived layout-conversion cost'><figcaption>Runtime-dispatch configuration, 93 warm samples per point. Dots show P50, whiskers P95 on a log axis. Simple AoS-to-SoA packing is timed separately from kernels; values must not be added into an asserted end-to-end scene speedup. Optimized packing and production SoA lifetime were not measured.</figcaption></figure></section>
+<section><h2>Archived generated geometry cooker</h2><figure><img src='HistoricalMeshlets.png' alt='Archived generated geometry cooker'><figcaption>P50 lines and P50-P95 bands; 6 process samples per point, complete logical geometry hashes checked by the original runner. Generated grids with cold process/warmup protocol documented in the source evidence; this is not SuperSponza or a renderer frame.</figcaption></figure></section>
+<section><h2>Archived comparison executable identities</h2><table><tr><th>Evidence set</th><th>Candidate</th><th>Executable SHA256</th></tr>
+<tr><td>Baseline</td><td>benchmark executable</td><td>1622211e719cebc7cd3188c987fae41aec64bab272c8b27754718049a1601295</td></tr>
+<tr><td>SmallTasks</td><td>benchmark executable</td><td>1622211e719cebc7cd3188c987fae41aec64bab272c8b27754718049a1601295</td></tr>
+<tr><td>Range</td><td>benchmark executable</td><td>1622211e719cebc7cd3188c987fae41aec64bab272c8b27754718049a1601295</td></tr>
+<tr><td>Kernels</td><td>multi</td><td>faaf53d5bd39d97907614ad8895eb01f297beed18f91793e0b6a182717427626</td></tr>
+<tr><td>Kernels</td><td>sse4</td><td>16b0f850a3c43961d0fe1a9573eae61ddc2c5c9c217142e24664216039aeb6c5</td></tr>
+<tr><td>Kernels</td><td>avx2</td><td>af65160a81ad9b17cfc790748afacd6f3359abc5bc70c3f215bff6fe0380ef71</td></tr>
+<tr><td>Meshlet</td><td>shared</td><td>520345e8e13ce217e7627e1d2675fca15cbff2c7e43eba3920e588d8beeef7ef</td></tr>
+<tr><td>Meshlet</td><td>legacy</td><td>d70a7d1a7b6a098607ac26aa5c246853000efcda8d5a61734868b21d1fd53c4c</td></tr>
+</table></section>
+<p><a href='PlotManifest.json'>Input and plot provenance</a></p></html>

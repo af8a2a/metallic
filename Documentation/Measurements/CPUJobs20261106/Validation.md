@@ -1,5 +1,13 @@
 # CPU jobs implementation and validation
 
+Historical scope note, added 2026-11-07: this page records the initial
+pre-production delivery and its validation state. The production acceptance
+described as unmeasured below was investigated afterward; see the
+[SuperSponza production report](../CPUJobsProduction20261107/Report.md) and
+[final scope checklist](../CPUJobsProduction20261107/AcceptanceChecklist.md).
+The ordinary frame matrix was curtailed by the user's test budget; it is not
+claimed fully completed. The original measurement data/provenance are retained.
+
 Work ran in the isolated `codex/issue-73-cpu-jobs` worktree on November 6–7,
 2026. The issue's M0/M1 first-delivery loop is implemented, together with the
 independent M2 kernel backend and scoped M3 integration regressions. The full

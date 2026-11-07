@@ -345,3 +345,29 @@ When diagnostics is null, operation-ID allocation, label copying and additional
 range timestamp reads are disabled. The existing TaskGraph snapshot timestamps
 and callback-scope identity remain available. The task layer has no renderer,
 Tracy, Vulkan or ISPC dependency; presentation/export belongs to its observer.
+
+## Production evidence and retained decisions
+
+The [SuperSponza production report](Measurements/CPUJobsProduction20261107/Report.md)
+and [acceptance checklist](Measurements/CPUJobsProduction20261107/AcceptanceChecklist.md)
+extend the original synthetic/generated evidence with real fresh-output cooking,
+full-DLSS core validation, independent RHI synchronization validation and a
+bounded 6000-frame residency soak. The [source/window audit](Measurements/CPUJobsProduction20261107/Notes.md)
+distinguishes serial pass recording, joined VBuffer preparation and prewarm
+stream loading. Fixed-camera frames reuse a prebuilt streamasset; they do not
+execute the changed LOD builder or the experimental SIMD kernel.
+
+The real cooker preserves complete stream hashes and geometry manifests across
+48 cooks and 48 separate validations, including equality with the original
+asset. At workers 8 the sampled thread peak drops 19→12, while workers 4/8 are
+approximately 2.2% slower in aggregate process wall time. Shared ownership is
+the demonstrated benefit; there is no unconditional throughput gain. Retain
+stdexec and C++ `Automatic`; no evidence triggers M4 or production ISPC adoption.
+
+The user stopped further testing to reduce the budget. Ordinary frame evidence
+is limited to one complete W1 ABBA block, two processes per arm ×600 frames,
+after excluding eight prewarm processes. One-sided/interrupted W2 runs remain
+excluded and recorded. A large CPU/GPU tail in one legacy process prevents a
+stable FPS-improvement claim; the original three-block workers1/2/4/8 matrix is
+not complete. The report preserves this limitation rather than extrapolating
+from the cook, soak or microbenchmarks.

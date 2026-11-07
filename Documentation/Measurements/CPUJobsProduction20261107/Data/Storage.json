@@ -1,0 +1,163 @@
+{
+  "schema": "metallic-production-release-evidence-v1",
+  "createdUtc": "2026-11-07T02:33:12.625172+00:00",
+  "release": {
+    "repository": "af8a2a/metallic",
+    "tag": "pr-74-cpu-jobs-evidence-20261107",
+    "asset": "metallic-cpu-jobs-production-20261107.zip",
+    "url": "https://github.com/af8a2a/metallic/releases/download/pr-74-cpu-jobs-evidence-20261107/metallic-cpu-jobs-production-20261107.zip",
+    "bytes": 159991114,
+    "sha256": "e51c7a7c0ff634f951a1692c85f4b578ea4b3434ab72d539ca7244a2a8971f83"
+  },
+  "archiveLayout": "Data/<bundle>/...; inner Runs.zip archives and original manifests are unchanged",
+  "originalEvidenceManifestSHA256": "2b73d6f9740cf1b1b07a0f8e77729447571819f8366a4c553558074eec8f687a",
+  "files": [
+    {
+      "path": "Data/ColdCook/Metadata.json",
+      "bytes": 3368,
+      "sha256": "5abcf2f476b2ef40d0e93aff87081ba1ce59fa0e585c90591677f343a5482f6f"
+    },
+    {
+      "path": "Data/ColdCook/Raw.jsonl",
+      "bytes": 14964344,
+      "sha256": "f5941a5980982fc5b85f936eae55cbce0dc5f797732a03c4d00bd51cba2a4aab"
+    },
+    {
+      "path": "Data/ColdCook/Runs.zip",
+      "bytes": 4567783,
+      "sha256": "ac86e08ef65128cd6728e76c93bebe7c231e8ea30b46d3ad9f8fbdabc1b1166e"
+    },
+    {
+      "path": "Data/ColdCook/Summary.json",
+      "bytes": 30963431,
+      "sha256": "5b5864e8b73de82a1e120ce3be295a10eb6adcb426d3d3341f43081ae930576e"
+    },
+    {
+      "path": "Data/CoreSchemaPilot/Metadata.json",
+      "bytes": 5634,
+      "sha256": "e17e48fea65217940753163963b146745ce44025b96e9de34972c76fc72cf21e"
+    },
+    {
+      "path": "Data/CoreSchemaPilot/Raw.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "Data/CoreSchemaPilot/Runs.zip",
+      "bytes": 8437144,
+      "sha256": "ac71e375017f25d37aebf44db7c049e52e80e96f72dd159d46ba5a18dbac6ccd"
+    },
+    {
+      "path": "Data/CoreValidation/Metadata.json",
+      "bytes": 5630,
+      "sha256": "efbf0d6edf349a371e5ae9dcdf9d1f31a35b5fec53f1dc3b0661e93072927c60"
+    },
+    {
+      "path": "Data/CoreValidation/Raw.jsonl",
+      "bytes": 276472,
+      "sha256": "fc48dc09c697865f3ba27ed1f2c7bf04efd47dc6627019c0ad998e1d889afa45"
+    },
+    {
+      "path": "Data/CoreValidation/Runs.zip",
+      "bytes": 31985827,
+      "sha256": "c35bbad3da791f1546032c76dc19c7cb3e607e52d7ff10087845653f04558f6a"
+    },
+    {
+      "path": "Data/CoreValidation/Summary.json",
+      "bytes": 418340,
+      "sha256": "108c52eadd2c250e3b2ccbd8f15864622f5b8c44a7971fb1aae18d7279e8dcab"
+    },
+    {
+      "path": "Data/Evidence.json",
+      "bytes": 285695,
+      "sha256": "2b73d6f9740cf1b1b07a0f8e77729447571819f8366a4c553558074eec8f687a"
+    },
+    {
+      "path": "Data/FrameOriginal/Metadata.json",
+      "bytes": 5541,
+      "sha256": "5f8eddd1533942fd55dad52f7f700fd0f04c3bd1ebaf06bf7065287414159f5c"
+    },
+    {
+      "path": "Data/FrameOriginal/Raw.jsonl",
+      "bytes": 858669,
+      "sha256": "1e806de693222aa6990ab0584157dc20e682e3bd3384872625cfd21f4fc749f7"
+    },
+    {
+      "path": "Data/FrameOriginal/Runs.zip",
+      "bytes": 6416245,
+      "sha256": "675d01c6ace1851a5f2f008bf393e99fbe64d11335a70195a00941c91081388f"
+    },
+    {
+      "path": "Data/FrameReduced/Metadata.json",
+      "bytes": 6944,
+      "sha256": "280bb82d42cae9ae83983565c082c330eeca2ab2cd7d6eda553e4bf0d389d29a"
+    },
+    {
+      "path": "Data/FrameReduced/Raw.jsonl",
+      "bytes": 792389,
+      "sha256": "64f8a69a49a9d5fd0d010b7167bd599ef9374c3f11b892904e569ec572e00348"
+    },
+    {
+      "path": "Data/FrameReduced/Runs.zip",
+      "bytes": 5893609,
+      "sha256": "9f80971852260bc5a37ab4496b4d05f6d4c89ea3c00619f2189a69254405d25d"
+    },
+    {
+      "path": "Data/FrameReduced/Summary.json",
+      "bytes": 1188920,
+      "sha256": "6c50cdcfc0dd83f1645f96e9b0438aa03891b777f8a387dccbff3ed87a50fbeb"
+    },
+    {
+      "path": "Data/RegressionLogs/Runs.zip",
+      "bytes": 33660,
+      "sha256": "d208358c1027991e7619e647f3a52a7eb134ada650707ed617e46e0df7ead0e4"
+    },
+    {
+      "path": "Data/RHIRegression/Runs.zip",
+      "bytes": 840227,
+      "sha256": "9a4eeb3e67531749cc47bebc77315d1f6fb169d259c98dbd1c243a9debf582ad"
+    },
+    {
+      "path": "Data/RHISynchronization/Runs.zip",
+      "bytes": 1031521,
+      "sha256": "d6b26af17850b319b1e9060f412d9eff408cd8f886c33634c394b019b4f2b994"
+    },
+    {
+      "path": "Data/SteadySoak/Metadata.json",
+      "bytes": 5634,
+      "sha256": "651daa3ec705efd5ed931ac714f3078c52a20943756fea568260f0b842ca09f2"
+    },
+    {
+      "path": "Data/SteadySoak/Raw.jsonl",
+      "bytes": 274734,
+      "sha256": "9efac1b08bb3f0ed97515d8bbc3044d68b9f4dfeba0bae2f1025286a96bcf617"
+    },
+    {
+      "path": "Data/SteadySoak/Runs.zip",
+      "bytes": 50298992,
+      "sha256": "1afa113139348a05b8ab4805c5ff72116d62fba147682747f75a1a30c293f21d"
+    },
+    {
+      "path": "Data/SteadySoak/Summary.json",
+      "bytes": 416213,
+      "sha256": "1b629591ad9c08ff2b9c4f831eed0fb00878bd5f1c44967d0a1bd87ab61f9e06"
+    },
+    {
+      "path": "Data/SyncUnsupported/Metadata.json",
+      "bytes": 5745,
+      "sha256": "ea6da13ec2ad20aa4f8238409cb232803470616f219ac001329fc4ae79559787"
+    },
+    {
+      "path": "Data/SyncUnsupported/Raw.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "Data/SyncUnsupported/Runs.zip",
+      "bytes": 4541,
+      "sha256": "bba6a889849a6b26b13f5d4590e8ace8375942e907a97c1c1e9c72cd5afd11f5"
+    }
+  ],
+  "verification": "Complete source-to-backup hashes, original copied-record/archive hashes, outer ZIP CRC and all outer member SHA256s matched",
+  "retention": "Versioned evidence prerelease assets have no automatic expiry. Retain while this PR/report is referenced; deletion requires a maintainer decision. The ignored local OriginalData backup is an additional copy, not the published retention mechanism."
+}

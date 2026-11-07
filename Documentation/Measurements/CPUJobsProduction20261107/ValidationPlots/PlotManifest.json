@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "generatedUtc": "2026-11-07T01:17:16.761288+00:00",
+  "plottingPlatform": "Windows-11-10.0.26300-SP0",
+  "python": "3.12.4 (tags/v3.12.4:8e8a4ba, Jun  6 2024, 19:30:16) [MSC v.1940 64 bit (AMD64)]",
+  "matplotlib": "3.10.9",
+  "plotterSHA256": "98070a4495d60925fb569e895003e45edb02e8f33b6d66e99c7a3c6183f076d5",
+  "inputsSHA256": {
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\Metadata.json": "efbf0d6edf349a371e5ae9dcdf9d1f31a35b5fec53f1dc3b0661e93072927c60",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\Raw.jsonl": "fc48dc09c697865f3ba27ed1f2c7bf04efd47dc6627019c0ad998e1d889afa45",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-000-legacy-w4-measured\\Frames.jsonl": "81c1c1db9f5a6986427f3563bd21a7b131d9e9b6aeabbaf2cdaf0a04103b3ca5",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-001-shared-w4-measured\\Frames.jsonl": "ecf638e61bbba5de7eb081d8286ee3224a61889451b958b4cdf040d4c2f81edd",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-002-shared-w4-measured\\Frames.jsonl": "71cb53d71837ec9f2c9102c357bbfaaa48b6a4beb0d794299bf4b647f1c1e823",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-003-legacy-w4-measured\\Frames.jsonl": "0b9381f1068316995df4635d7cfa13124afc3e17be1f8bac30019550e26f58c9",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-000-legacy-w4-measured\\TaskGraphs.jsonl": "508c0f9b19db5f261d700a1b79c0f2d473d16ae525c96db8925b9371c9b36b9e",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-001-shared-w4-measured\\TaskGraphs.jsonl": "007855c5214f197577901be79726713f4188df884a5ad8ef3a736e74eb846728",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-002-shared-w4-measured\\TaskGraphs.jsonl": "06786c01c77d4ad170b10a4cbafae09aecf24cdfeae27347db2e62d11df2db9f",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-003-legacy-w4-measured\\TaskGraphs.jsonl": "4476c16eaab5daff6a3b53b9c55600a078b873e00a9c7e253eb01a7f5714bbec",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-000-legacy-w4-measured\\Capture.json": "dae2f7b5017132f77701a365a6a5716d991f4d3f7d863c905e8ded989f11e151",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-000-legacy-w4-measured\\FinalColor.bin": "b9f04464288cb7977a11c058056ae7ff082fd7a770e9872b6ad3741828767022",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-001-shared-w4-measured\\Capture.json": "8d1cb06ea769c5056488490bb286e016760f37441a4bd89aecea446c28f4e640",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-001-shared-w4-measured\\FinalColor.bin": "9c275b97ea228e85dc2941c286c4ca4ba95b5cb9c9863962b3313af00614852e",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-002-shared-w4-measured\\Capture.json": "e3908c40e4dffdd7445dd0824d78f414c2657ab70e02a1f725d6cbefe9d03010",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-002-shared-w4-measured\\FinalColor.bin": "0a4bae9d6cf98e79b243e601c1c3198b8e26f24755017db0496fff2dc89ee94e",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-003-legacy-w4-measured\\Capture.json": "30712b6fad17fc4d0dc990a8e818cf757d1184a397bbdcd7b2bf5ef7be2d1093",
+    "C:\\Users\\11252\\.codex\\worktrees\\3379\\metallic\\build-issue73-production\\validation-core-final-super-sponza\\run-003-legacy-w4-measured\\FinalColor.bin": "b6a3db2bf9a43674ad173668298a299022c3d001fd919b2aefedfcbb86bfe4d5"
+  },
+  "budgets": {
+    "frameMs": null,
+    "cpuMemoryMiB": null,
+    "vramMiB": null
+  },
+  "notes": [
+    "P50/P95/P99 summarize the recorded sample population, not confidence intervals. Missing data is never replaced with zero.",
+    "Budgets: frameMs=not supplied; cpuMemoryMiB=not supplied; vramMiB=not supplied",
+    "Production input purpose=validation; scheduling diagnostics=on; app diagnostic sink=True. Validation and performance populations are not mixed.",
+    "Production: 4 passed measured processes; 0 prewarm/failed/incomplete records excluded from latency comparisons. Frames are correlated within a process; per-process quantiles are plotted individually, never pooled as independent experiments.",
+    "Production worker limits: [4]; W labels identify each limit. No results are averaged across different worker limits, blocks or executable candidates.",
+    "A TaskGraph/DAG critical path is unavailable unless dependency-linked task intervals are separately recorded. Inclusive profiler scope durations alone do not establish that path.",
+    "No dependency-linked TaskGraph intervals inside a measured frame window: DAG completion-chain plots unavailable. Diagnostic sink runs are separate from performance-off captures."
+  ],
+  "figures": [
+    {
+      "file": "ProductionFrameBlocks.png",
+      "title": "Production frame distributions by process/block",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. legacy: 2 processes, shared: 2 processes. Every marker is one process quantile of its measured frames; P95/P99 are not confidence bounds. Missing GPU data is unavailable, not zero. No frame budget was supplied."
+    },
+    {
+      "file": "ProductionFrameSeries01.png",
+      "title": "Production recorded frame time series, page 1",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. Every recorded frame is shown in its own process, with common y limits across all pages; no smoothing, interpolation, rebasing or cross-process concatenation. Shading uses the runner's explicit measuredFrameRange when available; absent windows are not guessed. The per-process Raw.frameMs distribution remains the measured-window authority."
+    },
+    {
+      "file": "ProductionCPUScopes.png",
+      "title": "Production CPU scope wall durations",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. legacy: 2 processes, shared: 2 processes; each dot is one process's scope-occurrence median, which may have a different sample count than frameCount. Top 16 paths ranked by their largest process median. Nested, parallel and idle scopes can overlap; no scope durations are summed, subtracted into CPU work, or relabeled as a critical path."
+    },
+    {
+      "file": "ProductionCoordinatorPath.png",
+      "title": "Production non-overlapping coordinator frame path",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. Only explicit producer-contracted intervals are used, with non-overlap/envelope validation. Stacks use means from the same complete frames, not sums of P50s. Unattributed frame envelope is a measured duration difference, not worker idle or useful CPU work. This is not a reconstructed TaskGraph longest path."
+    },
+    {
+      "file": "ProductionResourcePeaks.png",
+      "title": "Production memory and process-thread peaks",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. legacy: 2 processes, shared: 2 processes; one marker per available process metric. OS high-waters include startup only through the last successful sample; current-value sampled peaks depend on poll cadence/window. Device-local allocated/block/usage measures are not additive or automatically process-private. Missing values remain absent. No RAM/VRAM budget is assumed when none is supplied; whole-device capacity is not an application budget."
+    },
+    {
+      "file": "ProductionRHIHighWaters.png",
+      "title": "Production RHI allocation high-waters",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. Event high-waters are simultaneous totals maintained at RHI allocation/free events, through the last queried snapshot. They cover RHI-tracked allocations, excluding untracked external SDK/driver memory. Current-value sampled maxima are separate. Host+device totals are not VRAM-only; domains and these totals are not added together. Missing counters remain unavailable."
+    },
+    {
+      "file": "ProductionCPUOccupancy.png",
+      "title": "Production CPU occupancy",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. Each available marker is process CPU time divided by lifetime wall time, across all process threads. It includes loading/warmup when those fall in the producer's process window. It is neither worker utilization nor a CPU usage peak. No host-wide CPU utilization or peak CPU usage is synthesized."
+    },
+    {
+      "file": "ProductionMemoryDomains.png",
+      "title": "Production domain allocation peaks",
+      "caption": "VALIDATION telemetry \u2014 not a performance A/B or FPS result. Each point is one process's reported peak for that allocation domain. Peaks can occur on different frames. RHI domains may include host and device allocations; this is not a VRAM-only partition. Domain definitions and ownership come from the producer; they are not summed into a simultaneous total or a memory budget."
+    },
+    {
+      "file": "RenderPreview1.png",
+      "title": "Render output preview 1",
+      "caption": "Native 1920x1080 RGB preview from RGBA16Sfloat; encoding enum=2; preview transfer=linear-rec709, fixed clipping to raw [0,1], alpha ignored for display but checked for finiteness. No adaptive exposure or tone mapping. SceneLinear/ExposedLinear basis is not guessed; HDR values outside the clipping interval remain in raw statistics."
+    },
+    {
+      "file": "RenderPreview2.png",
+      "title": "Render output preview 2",
+      "caption": "Native 1920x1080 RGB preview from RGBA16Sfloat; encoding enum=2; preview transfer=linear-rec709, fixed clipping to raw [0,1], alpha ignored for display but checked for finiteness. No adaptive exposure or tone mapping. SceneLinear/ExposedLinear basis is not guessed; HDR values outside the clipping interval remain in raw statistics."
+    },
+    {
+      "file": "RenderPreview3.png",
+      "title": "Render output preview 3",
+      "caption": "Native 1920x1080 RGB preview from RGBA16Sfloat; encoding enum=2; preview transfer=linear-rec709, fixed clipping to raw [0,1], alpha ignored for display but checked for finiteness. No adaptive exposure or tone mapping. SceneLinear/ExposedLinear basis is not guessed; HDR values outside the clipping interval remain in raw statistics."
+    },
+    {
+      "file": "RenderPreview4.png",
+      "title": "Render output preview 4",
+      "caption": "Native 1920x1080 RGB preview from RGBA16Sfloat; encoding enum=2; preview transfer=linear-rec709, fixed clipping to raw [0,1], alpha ignored for display but checked for finiteness. No adaptive exposure or tone mapping. SceneLinear/ExposedLinear basis is not guessed; HDR values outside the clipping interval remain in raw statistics."
+    }
+  ],
+  "figureSHA256": {
+    "ProductionFrameBlocks.png": "7ae7ef540499d0f0c1b911640a261955bb5a4978378ba4f4321af5c650a1ee05",
+    "ProductionFrameSeries01.png": "bcfedc5097943ddce9addd494aedc38f2640a6767675c6e5127813b2d51363c3",
+    "ProductionCPUScopes.png": "5b42dfe2e77995bf958403260a20912e1417ad81d92657cc2c5ed749f249bef1",
+    "ProductionCoordinatorPath.png": "ec694c74edd85ccbc646cde089e04a219a45df0414503c7e3dc3062a34393973",
+    "ProductionResourcePeaks.png": "0c3f4c114b17968c167ef46dbad7f822828a9101c0fb78581a1df037b1bcffcd",
+    "ProductionRHIHighWaters.png": "2485f6a2bde78d0293628ca9bb51a0752a441bd4782378b6d26af0c8663cf838",
+    "ProductionCPUOccupancy.png": "3f057857e289f2e502708efdbb6b5b15cacf50ace7b5c44fe36107d0f4279fc8",
+    "ProductionMemoryDomains.png": "23873da925ebc34cfa039d2da529c8ee6f352799535453ee08c3f470c3664616",
+    "RenderPreview1.png": "66d2e7c2427d4fb457b9cab783599b5187047602e27d679657e17de8ca139d7c",
+    "RenderPreview2.png": "b65176637dec0c32a553608b4c6381209eed3db6ca3a69bfab9259da6f05a00c",
+    "RenderPreview3.png": "72cb5e9867128b70b58fce51a11bd836ea07492a9b989db146eea9aa30bb110a",
+    "RenderPreview4.png": "4c7d64d81bc39f7c718787043b27d22b31f2b4a489800946add0b27e14b24225"
+  }
+}
