@@ -402,6 +402,94 @@ TEST_F(ParallelForTest, ExternalInlineDiagnosticsDoNotInventGraphOrTaskIdentitie
     EXPECT_LE(worker.startTime, worker.finishTime);
 }
 
+TEST_F(ParallelForTest, SingleEffectiveLaneRunsOnCallerWithoutSubmittingGraph)
+{
+    struct SubmissionCounter final : ITaskEventSink {
+        std::atomic_uint32_t submissions{0};
+        void onGraphSubmitted(const TaskGraphSnapshot&) override { ++submissions; }
+        void onTaskStateChanged(const TaskNodeEvent&) override {}
+        void onGraphCompleted(const TaskGraphSnapshot&) override {}
+    };
+    const auto caller = std::this_thread::get_id();
+    for (const uint32_t workers : {1u, 4u}) {
+        shutdownTaskSystem();
+        ASSERT_TRUE(initializeTaskSystem({.workerCount = workers}));
+        auto counter = std::make_shared<SubmissionCounter>();
+        const auto subscription = taskSystem().subscribe(counter);
+        const uint32_t count = workers == 1 ? 33u : 7u;
+        const uint32_t grain = workers == 1 ? 8u : 64u;
+        for (const auto strategy : kStrategies) {
+            ParallelForDiagnostics diagnostics;
+            uint32_t visits = 0;
+            const auto outcome = parallelFor(17, 17 + count,
+                {.minGrain = grain, .strategy = strategy, .backendLabel = "single-lane-test",
+                    .diagnostics = &diagnostics},
+                [&](uint32_t first, uint32_t last, WorkerContext& worker) {
+                    EXPECT_EQ(std::this_thread::get_id(), caller);
+                    EXPECT_EQ(worker.workerIndex, 0u);
+                    EXPECT_EQ(worker.workerCount, 1u);
+                    EXPECT_FALSE(worker.node.valid());
+                    EXPECT_EQ(worker.executionId, 0u);
+                    EXPECT_EQ(first, 17u + visits);
+                    visits += last - first;
+                });
+            ASSERT_TRUE(outcome) << outcome.error();
+            EXPECT_EQ(visits, count);
+            EXPECT_EQ(counter->submissions.load(), 0u);
+            EXPECT_EQ(diagnostics.graphId, 0u);
+            EXPECT_EQ(diagnostics.backendLabel, "single-lane-test");
+            ASSERT_EQ(diagnostics.workers.size(), 1u);
+            const auto& lane = diagnostics.workers.front();
+            EXPECT_TRUE(lane.inlineExecution);
+            EXPECT_FALSE(lane.node.valid());
+            EXPECT_EQ(lane.executionId, 0u);
+            EXPECT_EQ(lane.elements, count);
+            EXPECT_EQ(lane.batches, (count + grain - 1) / grain);
+            EXPECT_LE(diagnostics.createdTime, lane.startTime);
+            EXPECT_LE(lane.startTime, lane.finishTime);
+        }
+        EXPECT_TRUE(taskSystem().unsubscribe(subscription));
+    }
+}
+
+TEST_F(ParallelForTest, SingleEffectiveLanePreservesStopAndExceptionOutcomes)
+{
+    for (const uint32_t workers : {1u, 4u}) {
+        shutdownTaskSystem();
+        ASSERT_TRUE(initializeTaskSystem({.workerCount = workers}));
+        const uint32_t count = workers == 1 ? 33u : 7u;
+        const uint32_t grain = workers == 1 ? 8u : 64u;
+        for (const auto strategy : kStrategies) {
+            for (const bool stoppedBeforeCall : {false, true}) {
+                std::stop_source stop;
+                if (stoppedBeforeCall) { stop.request_stop(); }
+                ParallelForDiagnostics diagnostics;
+                uint32_t calls = 0;
+                const auto outcome = parallelFor(0, count,
+                    {.minGrain = grain, .strategy = strategy, .stopToken = stop.get_token(),
+                        .diagnostics = &diagnostics},
+                    [&](uint32_t, uint32_t, WorkerContext&) { ++calls; stop.request_stop(); });
+                ASSERT_FALSE(outcome);
+                EXPECT_EQ(outcome.error(), "parallelFor stop requested");
+                EXPECT_EQ(calls, stoppedBeforeCall ? 0u : 1u);
+                ASSERT_EQ(diagnostics.workers.size(), 1u);
+                EXPECT_TRUE(diagnostics.workers.front().inlineExecution);
+                EXPECT_EQ(diagnostics.workers.front().elements,
+                    stoppedBeforeCall ? 0u : std::min(count, grain));
+            }
+            ParallelForDiagnostics failed;
+            const auto outcome = parallelFor(0, count,
+                {.minGrain = grain, .strategy = strategy, .diagnostics = &failed},
+                [](uint32_t, uint32_t, WorkerContext&) { throw std::runtime_error("single-lane failure"); });
+            ASSERT_FALSE(outcome);
+            EXPECT_EQ(outcome.error(), "single-lane failure");
+            ASSERT_EQ(failed.workers.size(), 1u);
+            EXPECT_TRUE(failed.workers.front().inlineExecution);
+            EXPECT_LE(failed.workers.front().startTime, failed.workers.front().finishTime);
+        }
+    }
+}
+
 TEST_F(ParallelForTest, AsyncFailureAndExternalStopSkipDependentPublication)
 {
     for (bool cancellation : {false, true}) {
