@@ -1154,6 +1154,7 @@ struct VSMDirectionalUniformData
     uint pageSizeMask;
     uint physicalPagesXShift;
     uint physicalPagesXMask;
+    uint virtualPagesPerAxisShift;
 };
 
 #if !VSM_ONE_PASS_PROJECTION
@@ -1433,18 +1434,157 @@ struct VSMDirectionalRayBase
     float2 sourceTranslation;
     uint receiverLevel;
     uint receiverPageOffset;
+    uint receiverMappingOffset;
     uint coarseLevel;
     float invDepthScale;
     float halfReceiverResolution;
     float receiverMarginMax;
-    bool allowClipmaps;
-    uint2 coarsePhysicalCoord;
-    bool coarseValid;
-    uint pageSizeShift;
-    uint pageSizeMask;
-    uint physicalPagesXShift;
-    uint physicalPagesXMask;
-    bool powerOfTwoLayout;
+#if VSM_ONE_PASS_PROJECTION
+    bool m_allowClipmaps;
+    uint2 m_coarsePhysicalCoord;
+    bool m_coarseValid;
+    uint m_pageSizeShift;
+    uint m_pageSizeMask;
+    uint m_physicalPagesXShift;
+    uint m_physicalPagesXMask;
+    uint m_virtualPagesPerAxisShift;
+    bool m_powerOfTwoLayout;
+#endif
+
+    property bool allowClipmaps {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.allowClipmaps != 0u;
+#else
+            return m_allowClipmaps;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_allowClipmaps = value;
+#endif
+        }
+    }
+
+    property bool coarseValid {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.coarseValid != 0u;
+#else
+            return m_coarseValid;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_coarseValid = value;
+#endif
+        }
+    }
+
+    property uint2 coarsePhysicalCoord {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.coarsePhysicalCoord;
+#else
+            return m_coarsePhysicalCoord;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_coarsePhysicalCoord = value;
+#endif
+        }
+    }
+
+    property bool powerOfTwoLayout {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.powerOfTwoLayout != 0u;
+#else
+            return m_powerOfTwoLayout;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_powerOfTwoLayout = value;
+#endif
+        }
+    }
+
+    property uint pageSizeShift {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.pageSizeShift;
+#else
+            return m_pageSizeShift;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_pageSizeShift = value;
+#endif
+        }
+    }
+
+    property uint pageSizeMask {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.pageSizeMask;
+#else
+            return m_pageSizeMask;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_pageSizeMask = value;
+#endif
+        }
+    }
+
+    property uint physicalPagesXShift {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.physicalPagesXShift;
+#else
+            return m_physicalPagesXShift;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_physicalPagesXShift = value;
+#endif
+        }
+    }
+
+    property uint physicalPagesXMask {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.physicalPagesXMask;
+#else
+            return m_physicalPagesXMask;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_physicalPagesXMask = value;
+#endif
+        }
+    }
+
+    property uint virtualPagesPerAxisShift {
+        get {
+#if !VSM_ONE_PASS_PROJECTION
+            return gVsmDirectionalUniform.virtualPagesPerAxisShift;
+#else
+            return m_virtualPagesPerAxisShift;
+#endif
+        }
+        set {
+#if VSM_ONE_PASS_PROJECTION
+            m_virtualPagesPerAxisShift = value;
+#endif
+        }
+    }
 };
 
 struct VSMDirectionalRay
@@ -1480,6 +1620,8 @@ struct VSMDirectionalRayState
     property bool allowClipmaps { get { return base.allowClipmaps; } }
     property uint2 coarsePhysicalCoord { get { return base.coarsePhysicalCoord; } }
     property bool coarseValid { get { return base.coarseValid; } }
+    property uint receiverMappingOffset { get { return base.receiverMappingOffset; } }
+    property uint virtualPagesPerAxisShift { get { return base.virtualPagesPerAxisShift; } }
 };
 
 VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
@@ -1492,21 +1634,13 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
     rayBase.receiverLevel = receiverLevel;
     rayBase.coarseLevel = push.clipmapCount;
     rayBase.receiverPageOffset = first.page.x;
+    rayBase.receiverMappingOffset = push.totalPages + first.page.x;
     rayBase.invDepthScale = 1.0 / length(first.rowZ.xyz);
     float receiverResolution = float(push.virtualPagesPerAxis * push.pageSize);
     rayBase.halfReceiverResolution = 0.5 * receiverResolution;
     rayBase.receiverMarginMax = 1.0 - (1.0 / receiverResolution);
 #if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && push.lightType == 0u) {
-        rayBase.allowClipmaps = gVsmDirectionalUniform.allowClipmaps != 0u;
-        rayBase.coarseValid = gVsmDirectionalUniform.coarseValid != 0u;
-        rayBase.coarsePhysicalCoord = gVsmDirectionalUniform.coarsePhysicalCoord;
-        rayBase.powerOfTwoLayout = gVsmDirectionalUniform.powerOfTwoLayout != 0u;
-        rayBase.pageSizeShift = gVsmDirectionalUniform.pageSizeShift;
-        rayBase.pageSizeMask = gVsmDirectionalUniform.pageSizeMask;
-        rayBase.physicalPagesXShift = gVsmDirectionalUniform.physicalPagesXShift;
-        rayBase.physicalPagesXMask = gVsmDirectionalUniform.physicalPagesXMask;
-    } else
+    if (!useGroupCache || push.lightType != 0u)
 #endif
     {
         StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
@@ -1516,11 +1650,13 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
         rayBase.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
         bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
         bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
-        rayBase.powerOfTwoLayout = isPow2PageSize && isPow2PhysicalX;
+        bool isPow2VirtualPages = (push.virtualPagesPerAxis & (push.virtualPagesPerAxis - 1u)) == 0u && push.virtualPagesPerAxis != 0u;
+        rayBase.powerOfTwoLayout = isPow2PageSize && isPow2PhysicalX && isPow2VirtualPages;
         rayBase.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
         rayBase.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
         rayBase.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
         rayBase.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
+        rayBase.virtualPagesPerAxisShift = isPow2VirtualPages ? uint(firstbitlow(push.virtualPagesPerAxis)) : 0u;
     }
     return rayBase;
 }
@@ -1707,20 +1843,23 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
             uint2 texel = uint2(fma(p.xy, float2(rayBase.halfReceiverResolution), float2(rayBase.halfReceiverResolution)));
             uint2 pageCoord;
             uint2 localTexel;
+            uint pageOffset;
             if (rayBase.powerOfTwoLayout) {
                 pageCoord = texel >> rayBase.pageSizeShift;
                 localTexel = texel & rayBase.pageSizeMask;
+                pageOffset = (pageCoord.y << rayBase.virtualPagesPerAxisShift) | pageCoord.x;
             } else {
                 pageCoord = texel / push.pageSize;
                 localTexel = texel % push.pageSize;
+                pageOffset = pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
             }
-            uint page = rayBase.receiverPageOffset + pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
+            uint page = rayBase.receiverPageOffset + pageOffset;
             vsmWorkAdd(push, kVSMWorkProjectionMappingLoads, 1u);
             uint2 physical;
             if (page == cache.lastPage && cache.lastPageHit) {
                 physical = cache.lastPhysicalCoord;
             } else {
-                uint4 mapping = pages[push.totalPages + page];
+                uint4 mapping = pages[rayBase.receiverMappingOffset + pageOffset];
                 if (mapping.w == 1u) {
                     if (rayBase.powerOfTwoLayout) {
                         physical = uint2(mapping.x & rayBase.physicalPagesXMask, mapping.x >> rayBase.physicalPagesXShift);
@@ -4743,11 +4882,13 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, u
 
             bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
             bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
-            gVsmDirectionalUniform.powerOfTwoLayout = (isPow2PageSize && isPow2PhysicalX) ? 1u : 0u;
+            bool isPow2VirtualPages = (push.virtualPagesPerAxis & (push.virtualPagesPerAxis - 1u)) == 0u && push.virtualPagesPerAxis != 0u;
+            gVsmDirectionalUniform.powerOfTwoLayout = (isPow2PageSize && isPow2PhysicalX && isPow2VirtualPages) ? 1u : 0u;
             gVsmDirectionalUniform.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
             gVsmDirectionalUniform.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
             gVsmDirectionalUniform.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
             gVsmDirectionalUniform.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
+            gVsmDirectionalUniform.virtualPagesPerAxisShift = isPow2VirtualPages ? uint(firstbitlow(push.virtualPagesPerAxis)) : 0u;
         }
 #endif
     }
