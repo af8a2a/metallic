@@ -2801,9 +2801,10 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
 // Groupshared receiver basis and directional uniform structures have been replaced
 // with direct register/scalar loads to eliminate intra-workgroup barriers and serialization.
 
-void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
+void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint receiverDispatch)
 {
     workCounts = uint3(0u);
+    receiverDispatch = 0u;
     if (push.enabled == 0u) { return; }
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
     VSMReceiverBasis basis = vsmMakeReceiverBasis(views[0]);
@@ -2827,7 +2828,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         if ((push.lightRange > 0.0 && length(delta) >= push.lightRange) ||
             max(delta.x, max(delta.y, delta.z)) <= projections[0].originNear.w) { return; }
     } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
-    vsmWorkAdd(push, kVSMWorkMarkReceiverDispatches, 1u);
+    receiverDispatch = 1u;
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     // Resolution belongs to the receiver, independently of the filter kernel.
     float3 normal = float3(0.0);
@@ -2954,7 +2955,8 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
     }
     GroupMemoryBarrierWithGroupSync();
     uint3 counts;
-    vsmMarkReceiver(id, push, counts);
+    uint receiverDispatch;
+    vsmMarkReceiver(id, push, counts, receiverDispatch);
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
     // All mask contributions are complete before publishing requests and masks.
     GroupMemoryBarrierWithGroupSync();
@@ -2969,26 +2971,45 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
         }
     }
 #endif
-    vsmWorkAdd(push, kVSMWorkMarkSamplePositions, counts.x);
-    vsmWorkAdd(push, kVSMWorkMarkLevelTests, counts.y);
-    vsmWorkAdd(push, kVSMWorkMarkPageRequests, counts.z);
+    uint4 totals = WaveActiveSum(uint4(counts, receiverDispatch));
+    if (WaveIsFirstLane()) {
+        if (totals.w != 0u) { vsmWorkAdd(push, kVSMWorkMarkReceiverDispatches, totals.w); }
+        if (totals.x != 0u) { vsmWorkAdd(push, kVSMWorkMarkSamplePositions, totals.x); }
+        if (totals.y != 0u) { vsmWorkAdd(push, kVSMWorkMarkLevelTests, totals.y); }
+        if (totals.z != 0u) { vsmWorkAdd(push, kVSMWorkMarkPageRequests, totals.z); }
+    }
 }
 
 // Allocation scratch follows the physical owner table in the same buffer:
 // local page ranks, block counts/prefixes, then free/evictable physical slots.
 // Every scan invocation participates, including rounded dispatch tails.
-groupshared uint3 gVsmAllocationScan[256];
+groupshared uint3 gVsmWarpTotals[8];
+groupshared uint3 gVsmAllocationTotal;
+
 uint3 vsmAllocationPrefix(uint3 value, uint lane)
 {
-    gVsmAllocationScan[lane] = value;
-    GroupMemoryBarrierWithGroupSync();
-    for (uint offset = 1u; offset < 256u; offset <<= 1u) {
-        uint3 previous = lane >= offset ? gVsmAllocationScan[lane - offset] : uint3(0u);
-        GroupMemoryBarrierWithGroupSync();
-        gVsmAllocationScan[lane] += previous;
-        GroupMemoryBarrierWithGroupSync();
+    uint3 warpPrefix = WavePrefixSum(value);
+    uint3 warpTotal = WaveActiveSum(value);
+    uint laneInWarp = WaveGetLaneIndex();
+    uint warpIndex = lane / WaveGetLaneCount();
+    if (laneInWarp == 0u) {
+        gVsmWarpTotals[warpIndex] = warpTotal;
     }
-    return gVsmAllocationScan[lane] - value;
+    GroupMemoryBarrierWithGroupSync();
+
+    uint warpCount = (256u + WaveGetLaneCount() - 1u) / WaveGetLaneCount();
+    if (lane < warpCount) {
+        uint3 total = gVsmWarpTotals[lane];
+        uint3 prefix = WavePrefixSum(total);
+        uint3 totalSum = WaveActiveSum(total);
+        gVsmWarpTotals[lane] = prefix;
+        if (lane == 0u) {
+            gVsmAllocationTotal = totalSum;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    return warpPrefix + gVsmWarpTotals[warpIndex];
 }
 
 [shader("compute")]
@@ -3040,7 +3061,7 @@ void vsmAllocateMain(uint lane : SV_GroupIndex, uniform ShadowPush push)
         prefix += value;
     }
     if (lane == 0u) {
-        uint requested = gVsmAllocationScan[255].x;
+        uint requested = gVsmAllocationTotal.x;
         uint allocated = min(requested, push.physicalPageCount - 1u);
         statistics[0] = requested;
         statistics[1] = allocated;
@@ -3162,7 +3183,7 @@ void vsmPhysicalMain(uint lane : SV_GroupIndex, uniform ShadowPush push)
         else if ((pages[owner - 1u].y & 2u) == 0u) { ++counts.z; }
     }
     uint3 prefix = vsmAllocationPrefix(counts, lane);
-    uint3 totals = gVsmAllocationScan[255];
+    uint3 totals = gVsmAllocationTotal;
     uint candidateCount = totals.y + totals.z;
     for (uint block = firstBlock; block < endBlock; ++block) {
         uint count = owners[blockOffset + block];
