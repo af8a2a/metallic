@@ -625,6 +625,7 @@ struct VSMReceiverBasis
     float orthoHalfHeight;
     float2 jitter;
     float2 invViewport;
+    float2 ndcScale;
     int2 viewportSize;
     float nearPlane;
     float farPlane;
@@ -646,6 +647,7 @@ VSMReceiverBasis vsmMakeReceiverBasis(ViewConstants view)
     basis.orthoHalfHeight = view.current.clipOrtho.z * 0.5;
     basis.jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
     basis.invViewport = 1.0 / view.current.viewport.yz;
+    basis.ndcScale = float2(2.0, -2.0) * basis.invViewport;
     basis.viewportSize = int2(view.current.viewport.yz);
     basis.nearPlane = view.current.clipOrtho.x;
     basis.farPlane = view.current.clipOrtho.y;
@@ -674,8 +676,7 @@ bool vsmReceiver(int2 pixel, VSMReceiverBasis basis, Texture2D<float> depth,
             : basis.farPlane - value * basis.farMinusNear;
         linearDepth = basis.nearTimesFar / denominator;
     }
-    float2 uv = (float2(pixel) + 0.5 + basis.jitter) * basis.invViewport;
-    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    float2 ndc = fma(float2(pixel) + 0.5 + basis.jitter, basis.ndcScale, float2(-1.0, 1.0));
     float halfHeight = basis.isOrtho ? basis.orthoHalfHeight
         : linearDepth * basis.tanHalfFov;
     position = basis.eye + basis.forward * linearDepth +
@@ -1125,6 +1126,7 @@ struct VSMReceiverBasisGroup
     float orthoHalfHeight;
     float2 jitter;
     float2 invViewport;
+    float2 ndcScale;
     int2 viewportSize;
     float nearPlane;
     float farPlane;
@@ -1175,6 +1177,7 @@ VSMReceiverBasis vsmGetGroupReceiverBasis()
     b.orthoHalfHeight = gVsmReceiverBasis.orthoHalfHeight;
     b.jitter = gVsmReceiverBasis.jitter;
     b.invViewport = gVsmReceiverBasis.invViewport;
+    b.ndcScale = gVsmReceiverBasis.ndcScale;
     b.viewportSize = gVsmReceiverBasis.viewportSize;
     b.nearPlane = gVsmReceiverBasis.nearPlane;
     b.farPlane = gVsmReceiverBasis.farPlane;
@@ -2702,6 +2705,7 @@ VSMReceiverBasis vsmGetMarkGroupReceiverBasis()
     b.orthoHalfHeight = gVsmMarkReceiverBasis.orthoHalfHeight;
     b.jitter = gVsmMarkReceiverBasis.jitter;
     b.invViewport = gVsmMarkReceiverBasis.invViewport;
+    b.ndcScale = gVsmMarkReceiverBasis.ndcScale;
     b.viewportSize = gVsmMarkReceiverBasis.viewportSize;
     b.nearPlane = gVsmMarkReceiverBasis.nearPlane;
     b.farPlane = gVsmMarkReceiverBasis.farPlane;
@@ -2881,6 +2885,7 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
         gVsmMarkReceiverBasis.orthoHalfHeight = b.orthoHalfHeight;
         gVsmMarkReceiverBasis.jitter = b.jitter;
         gVsmMarkReceiverBasis.invViewport = b.invViewport;
+        gVsmMarkReceiverBasis.ndcScale = b.ndcScale;
         gVsmMarkReceiverBasis.viewportSize = b.viewportSize;
         gVsmMarkReceiverBasis.nearPlane = b.nearPlane;
         gVsmMarkReceiverBasis.farPlane = b.farPlane;
@@ -4846,6 +4851,7 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, u
         gVsmReceiverBasis.orthoHalfHeight = b.orthoHalfHeight;
         gVsmReceiverBasis.jitter = b.jitter;
         gVsmReceiverBasis.invViewport = b.invViewport;
+        gVsmReceiverBasis.ndcScale = b.ndcScale;
         gVsmReceiverBasis.viewportSize = b.viewportSize;
         gVsmReceiverBasis.nearPlane = b.nearPlane;
         gVsmReceiverBasis.farPlane = b.farPlane;
