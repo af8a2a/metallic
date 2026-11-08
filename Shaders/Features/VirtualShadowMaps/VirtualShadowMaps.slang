@@ -1747,8 +1747,12 @@ ShadowLookup vsmSamplePhysicalPage(
     result.virtualTexel = virtualTexel;
     uint2 physical;
     if (rayBase.powerOfTwoLayout) {
-        physical = uint2(physicalPage & rayBase.physicalPagesXMask, physicalPage >> rayBase.physicalPagesXShift);
-        result.storedDepth = atlas.Load(int3((physical << rayBase.pageSizeShift) | (virtualTexel & rayBase.pageSizeMask), 0));
+        uint physXMask = rayBase.physicalPagesXMask;
+        uint physXShift = rayBase.physicalPagesXShift;
+        uint pageSizeShift = rayBase.pageSizeShift;
+        uint pageSizeMask = rayBase.pageSizeMask;
+        physical = uint2(physicalPage & physXMask, physicalPage >> physXShift);
+        result.storedDepth = atlas.Load(int3((physical << pageSizeShift) | (virtualTexel & pageSizeMask), 0));
     } else {
         physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
         result.storedDepth = atlas.Load(int3(vsmAtlasTexelFromVirtual(physical, virtualTexel, push.pageSize), 0));
@@ -1801,6 +1805,9 @@ ShadowLookup vsmDirectionalRayLookupSlow(
 
     if (!mappedToCoarse) {
         float2 basePXY = p.xy;
+        bool isPow2 = rayBase.powerOfTwoLayout;
+        uint pageSizeShift = rayBase.pageSizeShift;
+        uint vpaShift = rayBase.virtualPagesPerAxisShift;
         for (uint level = rayBase.receiverLevel + 1u; level < push.clipmapCount; ++level) {
             ShadowProjection projection = vsmGetCachedProjection(projections, level, useGroupCache);
             float scale = asfloat(uint(127 - (int(level) - int(rayBase.receiverLevel))) << 23u);
@@ -1808,7 +1815,13 @@ ShadowLookup vsmDirectionalRayLookupSlow(
             float3 fallbackP = float3(basePXY * scale + translation, p.z);
             if (!vsmContains(fallbackP, projection, push.pageSize, true)) { continue; }
             uint2 fallbackTexel = vsmVirtualTexel(fallbackP, projection, push.pageSize);
-            uint fallbackPage = vsmVirtualPage(fallbackTexel, projection, push.pageSize);
+            uint fallbackPage;
+            if (isPow2) {
+                uint2 pageXY = fallbackTexel >> pageSizeShift;
+                fallbackPage = projection.page.x + ((pageXY.y << vpaShift) | pageXY.x);
+            } else {
+                fallbackPage = vsmVirtualPage(fallbackTexel, projection, push.pageSize);
+            }
             uint mappedPhysical, mappedLevel;
             if (vsmDirectionalRayMapping(float2(projection.rowX.w, projection.rowY.w), fallbackPage, fallbackP, fallbackTexel,
                     projections, pages, push, level, mappedPhysical, mappedLevel, useGroupCache)) {
@@ -1868,10 +1881,14 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
             uint2 pageCoord;
             uint2 localTexel;
             uint pageOffset;
-            if (rayBase.powerOfTwoLayout) {
-                pageCoord = texel >> rayBase.pageSizeShift;
-                localTexel = texel & rayBase.pageSizeMask;
-                pageOffset = (pageCoord.y << rayBase.virtualPagesPerAxisShift) | pageCoord.x;
+            bool isPow2 = rayBase.powerOfTwoLayout;
+            uint pageSizeShift = rayBase.pageSizeShift;
+            uint pageSizeMask = rayBase.pageSizeMask;
+            uint vpaShift = rayBase.virtualPagesPerAxisShift;
+            if (isPow2) {
+                pageCoord = texel >> pageSizeShift;
+                localTexel = texel & pageSizeMask;
+                pageOffset = (pageCoord.y << vpaShift) | pageCoord.x;
             } else {
                 pageCoord = texel / push.pageSize;
                 localTexel = texel % push.pageSize;
@@ -1885,7 +1902,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
             } else {
                 uint4 mapping = pages[rayBase.receiverMappingOffset + pageOffset];
                 if (mapping.w == 1u) {
-                    if (rayBase.powerOfTwoLayout) {
+                    if (isPow2) {
                         physical = uint2(mapping.x & rayBase.physicalPagesXMask, mapping.x >> rayBase.physicalPagesXShift);
                     } else {
                         physical = vsmPhysicalPageCoord(mapping.x, push.physicalPagesX);
@@ -1900,8 +1917,8 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
                 }
             }
             uint2 atlasTexel;
-            if (rayBase.powerOfTwoLayout) {
-                atlasTexel = (physical << rayBase.pageSizeShift) | localTexel;
+            if (isPow2) {
+                atlasTexel = (physical << pageSizeShift) | localTexel;
             } else {
                 atlasTexel = physical * push.pageSize + localTexel;
             }
