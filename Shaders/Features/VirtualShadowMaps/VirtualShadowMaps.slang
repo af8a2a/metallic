@@ -1183,7 +1183,14 @@ struct VSMDirectionalUniformData
 
 #if !VSM_ONE_PASS_PROJECTION
 static const uint kVSMMaxCachedProjections = 24u;
-groupshared ShadowProjection gVsmProjections[kVSMMaxCachedProjections];
+struct VSMDirectionalLevel
+{
+    float2 translation;
+    float extent;
+    float texelSize;
+    uint pageOffset;
+};
+groupshared VSMDirectionalLevel gVsmDirectionalLevels[kVSMMaxCachedProjections];
 groupshared VSMReceiverBasisGroup gVsmReceiverBasis;
 groupshared VSMDirectionalUniformData gVsmDirectionalUniform;
 
@@ -1213,11 +1220,6 @@ VSMReceiverBasis vsmGetGroupReceiverBasis()
 
 ShadowProjection vsmGetCachedProjection(StructuredBuffer<ShadowProjection> projections, uint level, bool useGroupCache = false)
 {
-#if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && level < kVSMMaxCachedProjections) {
-        return gVsmProjections[level];
-    }
-#endif
     return projections[level];
 }
 
@@ -1225,8 +1227,15 @@ uint vsmReceiverLevel(float3 position, StructuredBuffer<ShadowProjection> projec
     ShadowPush push, float footprint, bool useGroupCache = false)
 {
     uint level = 0u;
+#if !VSM_ONE_PASS_PROJECTION
+    if (useGroupCache && push.lightType == 0u) {
+        while (level + 1u < push.clipmapCount &&
+            (level < kVSMMaxCachedProjections ? gVsmDirectionalLevels[level].texelSize : projections[level].metric.y) < footprint * 0.5) { ++level; }
+        return level;
+    }
+#endif
     while (level + 1u < push.clipmapCount &&
-        vsmWorldTexelSize(position, vsmGetCachedProjection(projections, level, useGroupCache), push.pageSize, push.lightType) < footprint * 0.5) { ++level; }
+        vsmWorldTexelSize(position, projections[level], push.pageSize, push.lightType) < footprint * 0.5) { ++level; }
     return level;
 }
 
@@ -1334,13 +1343,24 @@ void vsmMapDirectionalAncestor(uint4 mapping, float2 sourceTranslation, inout fl
 {
     uint targetLevel = vsmMappingLevel(mapping.y);
     float scale = asfloat((127u - (targetLevel - level)) << 23u);
-    ShadowProjection targetProj = vsmGetCachedProjection(projections, targetLevel, useGroupCache);
-    float2 translation = float2(targetProj.rowX.w, targetProj.rowY.w) -
-        sourceTranslation * scale;
+    float2 targetTranslation;
+    uint targetPageY;
+#if !VSM_ONE_PASS_PROJECTION
+    if (useGroupCache && targetLevel < kVSMMaxCachedProjections) {
+        targetTranslation = gVsmDirectionalLevels[targetLevel].translation;
+        targetPageY = push.virtualPagesPerAxis;
+    } else
+#endif
+    {
+        ShadowProjection targetProj = projections[targetLevel];
+        targetTranslation = float2(targetProj.rowX.w, targetProj.rowY.w);
+        targetPageY = targetProj.page.y;
+    }
+    float2 translation = targetTranslation - sourceTranslation * scale;
     projected.xy = projected.xy * scale + translation;
     uint2 page = uint2(mapping.z & 0xffffu, mapping.z >> 16u);
     uint2 firstTexel = page * push.pageSize;
-    float2 address = (projected.xy * 0.5 + 0.5) * float(targetProj.page.y * push.pageSize);
+    float2 address = (projected.xy * 0.5 + 0.5) * float(targetPageY * push.pageSize);
     texel = uint2(clamp(address, float2(firstTexel), float2(firstTexel + push.pageSize - 1u)));
     vsmWorkAdd(push, kVSMWorkProjectionMappedAncestors, 1u);
 }
@@ -1604,17 +1624,23 @@ VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endp
 }
 
 float3 vsmDirectionalRayPosition(VSMDirectionalRay ray, VSMDirectionalRayBase rayBase, float time, uint level,
-    ShadowProjection projection, bool lookup)
+    float2 levelTranslation, bool lookup)
 {
     float3 position = (lookup ? ray.lookupOrigin : rayBase.comparisonOrigin) + time * ray.step;
     if (level == rayBase.coarseLevel) {
         position.xy = (lookup ? ray.coarseLookupOrigin : rayBase.coarseComparisonOrigin) + time * ray.coarseStep;
     } else {
         float scale = asfloat(uint(127 - (int(level) - int(rayBase.receiverLevel))) << 23u);
-        float2 translation = float2(projection.rowX.w, projection.rowY.w) - rayBase.sourceTranslation * scale;
+        float2 translation = levelTranslation - rayBase.sourceTranslation * scale;
         position.xy = position.xy * scale + translation;
     }
     return position;
+}
+
+float3 vsmDirectionalRayPosition(VSMDirectionalRay ray, VSMDirectionalRayBase rayBase, float time, uint level,
+    ShadowProjection projection, bool lookup)
+{
+    return vsmDirectionalRayPosition(ray, rayBase, time, level, float2(projection.rowX.w, projection.rowY.w), lookup);
 }
 
 float3 vsmDirectionalRayPosition(VSMDirectionalRayState ray, float time, uint level,
@@ -1728,22 +1754,37 @@ ShadowLookup vsmDirectionalRayLookupSlow(
         uint pageSizeShift = rayBase.pageSizeShift;
         uint vpaShift = rayBase.virtualPagesPerAxisShift;
         for (uint level = rayBase.receiverLevel + 1u; level < push.clipmapCount; ++level) {
-            ShadowProjection projection = vsmGetCachedProjection(projections, level, useGroupCache);
+            float2 levelTranslation;
+            uint levelPageOffset;
+#if !VSM_ONE_PASS_PROJECTION
+            if (useGroupCache && level < kVSMMaxCachedProjections) {
+                levelTranslation = gVsmDirectionalLevels[level].translation;
+                levelPageOffset = gVsmDirectionalLevels[level].pageOffset;
+            } else
+#endif
+            {
+                ShadowProjection projection = projections[level];
+                levelTranslation = float2(projection.rowX.w, projection.rowY.w);
+                levelPageOffset = projection.page.x;
+            }
             float scale = asfloat(uint(127 - (int(level) - int(rayBase.receiverLevel))) << 23u);
-            float2 translation = float2(projection.rowX.w, projection.rowY.w) - rayBase.sourceTranslation * scale;
+            float2 translation = levelTranslation - rayBase.sourceTranslation * scale;
             float3 fallbackP = float3(basePXY * scale + translation, p.z);
-            if (!vsmContains(fallbackP, projection, push.pageSize, true)) { continue; }
-            uint2 fallbackTexel = vsmVirtualTexel(fallbackP, projection, push.pageSize);
+            float margin = 1.0 / float(push.virtualPagesPerAxis * push.pageSize);
+            if (!(all(fallbackP.xy >= -1.0 + margin) && all(fallbackP.xy < 1.0 - margin) &&
+                  fallbackP.z >= 0.0 && fallbackP.z <= 1.0)) { continue; }
+            uint2 fallbackTexel = uint2(floor((fallbackP.xy * 0.5 + 0.5) * float(push.virtualPagesPerAxis * push.pageSize)));
             uint fallbackPage;
             if (isPow2) {
                 uint2 pageXY = fallbackTexel >> pageSizeShift;
-                fallbackPage = projection.page.x + ((pageXY.y << vpaShift) | pageXY.x);
+                fallbackPage = levelPageOffset + ((pageXY.y << vpaShift) | pageXY.x);
             } else {
-                fallbackPage = vsmVirtualPage(fallbackTexel, projection, push.pageSize);
+                uint2 pageCoord = fallbackTexel / push.pageSize;
+                fallbackPage = levelPageOffset + pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
             }
             uint2 mappedPhysical;
             uint mappedLevel;
-            if (vsmDirectionalRayMapping(float2(projection.rowX.w, projection.rowY.w), fallbackPage, fallbackP, fallbackTexel,
+            if (vsmDirectionalRayMapping(levelTranslation, fallbackPage, fallbackP, fallbackTexel,
                     projections, pages, push, level, mappedPhysical, mappedLevel, useGroupCache)) {
                 if (mappedLevel == push.clipmapCount) { break; }
                 return vsmSampleDirectionalAtlasPage(mappedPhysical, mappedLevel, fallbackP, fallbackTexel, rayBase, atlas, push);
@@ -2068,9 +2109,20 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                 compare = rayBase.comparisonOrigin.z + relDepth;
                 reference = relDepth * rayBase.invDepthScale;
             } else {
-                ShadowProjection projection = vsmGetCachedProjection(projections, sample.level, useGroupCache);
-                float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, projection, false);
-                float extent = projection.metric.x;
+                float2 translation;
+                float extent;
+#if !VSM_ONE_PASS_PROJECTION
+                if (useGroupCache && sample.level < kVSMMaxCachedProjections) {
+                    translation = gVsmDirectionalLevels[sample.level].translation;
+                    extent = gVsmDirectionalLevels[sample.level].extent;
+                } else
+#endif
+                {
+                    ShadowProjection projection = projections[sample.level];
+                    translation = float2(projection.rowX.w, projection.rowY.w);
+                    extent = projection.metric.x;
+                }
+                float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, translation, false);
                 float invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
                 compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
                     extent, invResolution, normalSlope, biasZ);
@@ -4785,7 +4837,11 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, u
     id.xy = vsmMortonPixel(id.xy);
     if (push.enabled != 0u && lane <= push.clipmapCount && lane < kVSMMaxCachedProjections) {
         StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-        gVsmProjections[lane] = projections[lane];
+        ShadowProjection proj = projections[lane];
+        gVsmDirectionalLevels[lane].translation = float2(proj.rowX.w, proj.rowY.w);
+        gVsmDirectionalLevels[lane].extent = proj.metric.x;
+        gVsmDirectionalLevels[lane].texelSize = proj.metric.y;
+        gVsmDirectionalLevels[lane].pageOffset = proj.page.x;
     }
     if (push.filterMode != 0u && lane < kVsmProjectionCounterCount) {
         gVsmFilterCounts[lane] = 0u;
