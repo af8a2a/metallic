@@ -29,6 +29,7 @@ struct TemporalViewBasis
     float toleranceScale;
     float orthoTolerance;
     float2 ndcScale;
+    float2 ndcBias;
     uint isOrtho;
     uint reversed;
 };
@@ -56,6 +57,7 @@ TemporalViewBasis createTemporalViewBasis(ViewConstants view)
     b.ndcScale = float2(2.0, -2.0) * b.invViewport;
     b.reversed = view.current.clipOrtho.w > 0.5 ? 1u : 0u;
     b.jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
+    b.ndcBias = fma(0.5 + b.jitter, b.ndcScale, float2(-1.0, 1.0));
     return b;
 }
 
@@ -67,10 +69,10 @@ bool temporalReceiver(int2 pixel, TemporalViewBasis basis, float depth, out floa
     if (basis.isOrtho != 0u) {
         linearDepth = basis.reversed != 0u ? lerp(basis.farPlane, basis.nearPlane, depth) : lerp(basis.nearPlane, basis.farPlane, depth);
     } else {
-        float denominator = basis.reversed != 0u ? basis.nearPlane + depth * basis.farMinusNear : basis.farPlane - depth * basis.farMinusNear;
+        float denominator = basis.reversed != 0u ? fma(depth, basis.farMinusNear, basis.nearPlane) : fma(-depth, basis.farMinusNear, basis.farPlane);
         linearDepth = basis.nearTimesFar / denominator;
     }
-    float2 ndc = fma(float2(pixel) + 0.5 + basis.jitter, basis.ndcScale, float2(-1.0, 1.0));
+    float2 ndc = fma(float2(pixel), basis.ndcScale, basis.ndcBias);
     float halfHeight = basis.isOrtho != 0u ? basis.halfOrthoHeight : linearDepth * basis.tanHalfFov;
     position = basis.eye + basis.forward * linearDepth +
         halfHeight * (basis.rightAspect * ndc.x + basis.up * ndc.y);
