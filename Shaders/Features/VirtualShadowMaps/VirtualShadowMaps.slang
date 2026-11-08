@@ -1442,152 +1442,15 @@ struct VSMDirectionalRayBase
     float invDepthScale;
     float halfReceiverResolution;
     float receiverMarginMax;
-#if VSM_ONE_PASS_PROJECTION
-    bool m_allowClipmaps;
-    uint2 m_coarsePhysicalCoord;
-    bool m_coarseValid;
-    uint m_pageSizeShift;
-    uint m_pageSizeMask;
-    uint m_physicalPagesXShift;
-    uint m_physicalPagesXMask;
-    uint m_virtualPagesPerAxisShift;
-    bool m_powerOfTwoLayout;
-#endif
-
-    property bool allowClipmaps {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.allowClipmaps != 0u;
-#else
-            return m_allowClipmaps;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_allowClipmaps = value;
-#endif
-        }
-    }
-
-    property bool coarseValid {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.coarseValid != 0u;
-#else
-            return m_coarseValid;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_coarseValid = value;
-#endif
-        }
-    }
-
-    property uint2 coarsePhysicalCoord {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.coarsePhysicalCoord;
-#else
-            return m_coarsePhysicalCoord;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_coarsePhysicalCoord = value;
-#endif
-        }
-    }
-
-    property bool powerOfTwoLayout {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.powerOfTwoLayout != 0u;
-#else
-            return m_powerOfTwoLayout;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_powerOfTwoLayout = value;
-#endif
-        }
-    }
-
-    property uint pageSizeShift {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.pageSizeShift;
-#else
-            return m_pageSizeShift;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_pageSizeShift = value;
-#endif
-        }
-    }
-
-    property uint pageSizeMask {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.pageSizeMask;
-#else
-            return m_pageSizeMask;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_pageSizeMask = value;
-#endif
-        }
-    }
-
-    property uint physicalPagesXShift {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.physicalPagesXShift;
-#else
-            return m_physicalPagesXShift;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_physicalPagesXShift = value;
-#endif
-        }
-    }
-
-    property uint physicalPagesXMask {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.physicalPagesXMask;
-#else
-            return m_physicalPagesXMask;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_physicalPagesXMask = value;
-#endif
-        }
-    }
-
-    property uint virtualPagesPerAxisShift {
-        get {
-#if !VSM_ONE_PASS_PROJECTION
-            return gVsmDirectionalUniform.virtualPagesPerAxisShift;
-#else
-            return m_virtualPagesPerAxisShift;
-#endif
-        }
-        set {
-#if VSM_ONE_PASS_PROJECTION
-            m_virtualPagesPerAxisShift = value;
-#endif
-        }
-    }
+    bool allowClipmaps;
+    uint2 coarsePhysicalCoord;
+    bool coarseValid;
+    uint pageSizeShift;
+    uint pageSizeMask;
+    uint physicalPagesXShift;
+    uint physicalPagesXMask;
+    uint virtualPagesPerAxisShift;
+    bool powerOfTwoLayout;
 };
 
 struct VSMDirectionalRay
@@ -1643,7 +1506,17 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
     rayBase.halfReceiverResolution = 0.5 * receiverResolution;
     rayBase.receiverMarginMax = 1.0 - (1.0 / receiverResolution);
 #if !VSM_ONE_PASS_PROJECTION
-    if (!useGroupCache || push.lightType != 0u)
+    if (useGroupCache && push.lightType == 0u) {
+        rayBase.allowClipmaps = gVsmDirectionalUniform.allowClipmaps != 0u;
+        rayBase.coarseValid = gVsmDirectionalUniform.coarseValid != 0u;
+        rayBase.coarsePhysicalCoord = gVsmDirectionalUniform.coarsePhysicalCoord;
+        rayBase.powerOfTwoLayout = gVsmDirectionalUniform.powerOfTwoLayout != 0u;
+        rayBase.pageSizeShift = gVsmDirectionalUniform.pageSizeShift;
+        rayBase.pageSizeMask = gVsmDirectionalUniform.pageSizeMask;
+        rayBase.physicalPagesXShift = gVsmDirectionalUniform.physicalPagesXShift;
+        rayBase.physicalPagesXMask = gVsmDirectionalUniform.physicalPagesXMask;
+        rayBase.virtualPagesPerAxisShift = gVsmDirectionalUniform.virtualPagesPerAxisShift;
+    } else
 #endif
     {
         StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
@@ -2086,6 +1959,8 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float denominator = dot(normal, toLight);
     float invDenom = abs(denominator) > 1e-5 ? length(proj0.rowZ.xyz) / denominator : 0.0;
     float2 normalSlope = float2(dot(normal, normX), dot(normal, normY)) * invDenom;
+    float2 receiverScaledSlope = normalSlope * receiverExtent;
+    float invSamplesPerRay = 1.0 / float(push.samplesPerRay);
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
@@ -2132,8 +2007,8 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             float reference;
             if (sample.level == rayBase.receiverLevel) {
                 float2 sampleNDC = fma(float2(sample.virtualTexel), float2(receiverInvResolution), float2(0.5 * receiverInvResolution - 1.0));
-                float2 offset = (sampleNDC - (rayBase.comparisonOrigin.xy + stepOffset.xy)) * receiverExtent;
-                float correction = -dot(normalSlope, offset);
+                float2 offset = sampleNDC - (rayBase.comparisonOrigin.xy + stepOffset.xy);
+                float correction = -dot(receiverScaledSlope, offset);
                 float relDepth = stepOffset.z + correction + biasZ;
                 compare = rayBase.comparisonOrigin.z + relDepth;
                 reference = relDepth * rayBase.invDepthScale;
