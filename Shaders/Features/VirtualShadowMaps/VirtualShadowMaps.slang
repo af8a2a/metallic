@@ -1158,65 +1158,8 @@ struct VSMReceiverBasisGroup
     uint reversed;
 };
 
-struct VSMDirectionalUniformData
-{
-    float3 toLight;
-    float3 right;
-    float3 up;
-    float3 normX;
-    float3 normY;
-    float biasZ;
-    float sinAlpha;
-    float tanAngularRadius;
-    float coarseInvResolution;
-    float receiverInvResolution;
-    uint allowClipmaps;
-    uint coarseValid;
-    uint2 coarsePhysicalCoord;
-    uint powerOfTwoLayout;
-    uint pageSizeShift;
-    uint pageSizeMask;
-    uint physicalPagesXShift;
-    uint physicalPagesXMask;
-    uint virtualPagesPerAxisShift;
-};
-
-#if !VSM_ONE_PASS_PROJECTION
-static const uint kVSMMaxCachedProjections = 24u;
-struct VSMDirectionalLevel
-{
-    float2 translation;
-    float extent;
-    float texelSize;
-    uint pageOffset;
-};
-groupshared VSMDirectionalLevel gVsmDirectionalLevels[kVSMMaxCachedProjections];
-groupshared VSMReceiverBasisGroup gVsmReceiverBasis;
-groupshared VSMDirectionalUniformData gVsmDirectionalUniform;
-
-VSMReceiverBasis vsmGetGroupReceiverBasis()
-{
-    VSMReceiverBasis b;
-    b.eye = gVsmReceiverBasis.eye;
-    b.forward = gVsmReceiverBasis.forward;
-    b.right = gVsmReceiverBasis.right;
-    b.up = gVsmReceiverBasis.up;
-    b.rightAspect = gVsmReceiverBasis.rightAspect;
-    b.tanHalfFov = gVsmReceiverBasis.tanHalfFov;
-    b.orthoHalfHeight = gVsmReceiverBasis.orthoHalfHeight;
-    b.jitter = gVsmReceiverBasis.jitter;
-    b.invViewport = gVsmReceiverBasis.invViewport;
-    b.ndcScale = gVsmReceiverBasis.ndcScale;
-    b.viewportSize = gVsmReceiverBasis.viewportSize;
-    b.nearPlane = gVsmReceiverBasis.nearPlane;
-    b.farPlane = gVsmReceiverBasis.farPlane;
-    b.farMinusNear = gVsmReceiverBasis.farMinusNear;
-    b.nearTimesFar = gVsmReceiverBasis.nearTimesFar;
-    b.isOrtho = gVsmReceiverBasis.isOrtho != 0u;
-    b.reversed = gVsmReceiverBasis.reversed != 0u;
-    return b;
-}
-#endif
+// Groupshared receiver basis, directional levels, and uniform caches have been
+// replaced with direct register/scalar loads to eliminate intra-workgroup barriers.
 
 ShadowProjection vsmGetCachedProjection(StructuredBuffer<ShadowProjection> projections, uint level, bool useGroupCache = false)
 {
@@ -1227,13 +1170,6 @@ uint vsmReceiverLevel(float3 position, StructuredBuffer<ShadowProjection> projec
     ShadowPush push, float footprint, bool useGroupCache = false)
 {
     uint level = 0u;
-#if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && push.lightType == 0u) {
-        while (level + 1u < push.clipmapCount &&
-            (level < kVSMMaxCachedProjections ? gVsmDirectionalLevels[level].texelSize : projections[level].metric.y) < footprint * 0.5) { ++level; }
-        return level;
-    }
-#endif
     while (level + 1u < push.clipmapCount &&
         vsmWorldTexelSize(position, projections[level], push.pageSize, push.lightType) < footprint * 0.5) { ++level; }
     return level;
@@ -1343,19 +1279,9 @@ void vsmMapDirectionalAncestor(uint4 mapping, float2 sourceTranslation, inout fl
 {
     uint targetLevel = vsmMappingLevel(mapping.y);
     float scale = asfloat((127u - (targetLevel - level)) << 23u);
-    float2 targetTranslation;
-    uint targetPageY;
-#if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && targetLevel < kVSMMaxCachedProjections) {
-        targetTranslation = gVsmDirectionalLevels[targetLevel].translation;
-        targetPageY = push.virtualPagesPerAxis;
-    } else
-#endif
-    {
-        ShadowProjection targetProj = projections[targetLevel];
-        targetTranslation = float2(targetProj.rowX.w, targetProj.rowY.w);
-        targetPageY = targetProj.page.y;
-    }
+    ShadowProjection targetProj = projections[targetLevel];
+    float2 targetTranslation = float2(targetProj.rowX.w, targetProj.rowY.w);
+    uint targetPageY = targetProj.page.y;
     float2 translation = targetTranslation - sourceTranslation * scale;
     projected.xy = projected.xy * scale + translation;
     uint2 page = uint2(mapping.z & 0xffffu, mapping.z >> 16u);
@@ -1565,35 +1491,20 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
     float receiverResolution = float(push.virtualPagesPerAxis * push.pageSize);
     rayBase.halfReceiverResolution = 0.5 * receiverResolution;
     rayBase.receiverMarginMax = 1.0 - (1.0 / receiverResolution);
-#if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && push.lightType == 0u) {
-        rayBase.allowClipmaps = gVsmDirectionalUniform.allowClipmaps != 0u;
-        rayBase.coarseValid = gVsmDirectionalUniform.coarseValid != 0u;
-        rayBase.coarsePhysicalCoord = gVsmDirectionalUniform.coarsePhysicalCoord;
-        rayBase.powerOfTwoLayout = gVsmDirectionalUniform.powerOfTwoLayout != 0u;
-        rayBase.pageSizeShift = gVsmDirectionalUniform.pageSizeShift;
-        rayBase.pageSizeMask = gVsmDirectionalUniform.pageSizeMask;
-        rayBase.physicalPagesXShift = gVsmDirectionalUniform.physicalPagesXShift;
-        rayBase.physicalPagesXMask = gVsmDirectionalUniform.physicalPagesXMask;
-        rayBase.virtualPagesPerAxisShift = gVsmDirectionalUniform.virtualPagesPerAxisShift;
-    } else
-#endif
-    {
-        StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
-        rayBase.allowClipmaps = statistics[5] == 0u;
-        uint4 coarseEntry = pages[coarse.page.x];
-        rayBase.coarseValid = (coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u;
-        rayBase.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
-        bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
-        bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
-        bool isPow2VirtualPages = (push.virtualPagesPerAxis & (push.virtualPagesPerAxis - 1u)) == 0u && push.virtualPagesPerAxis != 0u;
-        rayBase.powerOfTwoLayout = isPow2PageSize && isPow2PhysicalX && isPow2VirtualPages;
-        rayBase.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
-        rayBase.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
-        rayBase.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
-        rayBase.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
-        rayBase.virtualPagesPerAxisShift = isPow2VirtualPages ? uint(firstbitlow(push.virtualPagesPerAxis)) : 0u;
-    }
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    rayBase.allowClipmaps = statistics[5] == 0u;
+    uint4 coarseEntry = pages[coarse.page.x];
+    rayBase.coarseValid = (coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u;
+    rayBase.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
+    bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
+    bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
+    bool isPow2VirtualPages = (push.virtualPagesPerAxis & (push.virtualPagesPerAxis - 1u)) == 0u && push.virtualPagesPerAxis != 0u;
+    rayBase.powerOfTwoLayout = isPow2PageSize && isPow2PhysicalX && isPow2VirtualPages;
+    rayBase.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
+    rayBase.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
+    rayBase.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
+    rayBase.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
+    rayBase.virtualPagesPerAxisShift = isPow2VirtualPages ? uint(firstbitlow(push.virtualPagesPerAxis)) : 0u;
     return rayBase;
 }
 
@@ -1754,19 +1665,9 @@ ShadowLookup vsmDirectionalRayLookupSlow(
         uint pageSizeShift = rayBase.pageSizeShift;
         uint vpaShift = rayBase.virtualPagesPerAxisShift;
         for (uint level = rayBase.receiverLevel + 1u; level < push.clipmapCount; ++level) {
-            float2 levelTranslation;
-            uint levelPageOffset;
-#if !VSM_ONE_PASS_PROJECTION
-            if (useGroupCache && level < kVSMMaxCachedProjections) {
-                levelTranslation = gVsmDirectionalLevels[level].translation;
-                levelPageOffset = gVsmDirectionalLevels[level].pageOffset;
-            } else
-#endif
-            {
-                ShadowProjection projection = projections[level];
-                levelTranslation = float2(projection.rowX.w, projection.rowY.w);
-                levelPageOffset = projection.page.x;
-            }
+            ShadowProjection projection = projections[level];
+            float2 levelTranslation = float2(projection.rowX.w, projection.rowY.w);
+            uint levelPageOffset = projection.page.x;
             float scale = asfloat(uint(127 - (int(level) - int(rayBase.receiverLevel))) << 23u);
             float2 translation = levelTranslation - rayBase.sourceTranslation * scale;
             float3 fallbackP = float3(basePXY * scale + translation, p.z);
@@ -1977,19 +1878,9 @@ void vsmDirectionalSampleCompareAndReference(
         compare = rayBase.comparisonOrigin.z + relDepth;
         reference = relDepth * rayBase.invDepthScale;
     } else {
-        float2 translation;
-        float extent;
-#if !VSM_ONE_PASS_PROJECTION
-        if (useGroupCache && sample.level < kVSMMaxCachedProjections) {
-            translation = gVsmDirectionalLevels[sample.level].translation;
-            extent = gVsmDirectionalLevels[sample.level].extent;
-        } else
-#endif
-        {
-            ShadowProjection projection = projections[sample.level];
-            translation = float2(projection.rowX.w, projection.rowY.w);
-            extent = projection.metric.x;
-        }
+        ShadowProjection projection = projections[sample.level];
+        float2 translation = float2(projection.rowX.w, projection.rowY.w);
+        float extent = projection.metric.x;
         float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, translation, false);
         float invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
         compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
@@ -2048,47 +1939,19 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
     ShadowProjection proj0 = vsmGetCachedProjection(projections, 0u, useGroupCache);
-    float3 toLight;
-    float3 right;
-    float3 up;
-    float tanAngularRadius;
-#if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && push.lightType == 0u) {
-        toLight = gVsmDirectionalUniform.toLight;
-        right = gVsmDirectionalUniform.right;
-        up = gVsmDirectionalUniform.up;
-        tanAngularRadius = gVsmDirectionalUniform.tanAngularRadius;
-    } else
-#endif
-    {
-        toLight = push.lightType == 0u ? normalize(proj0.rowZ.xyz) :
-            normalize(proj0.originNear.xyz - position);
-        right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
-        up = cross(toLight, right);
-        tanAngularRadius = tan(push.angularRadius);
-    }
+    float3 toLight = push.lightType == 0u ? normalize(proj0.rowZ.xyz) :
+        normalize(proj0.originNear.xyz - position);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    float tanAngularRadius = tan(push.angularRadius);
     float receiverTexelSize = vsmWorldTexelSize(position, receiverProj, push.pageSize, push.lightType);
 #if VSM_DIRECTIONAL_PROJECTION
     float receiverExtent = receiverProj.metric.x;
-    float3 normX, normY;
-    float biasZ;
-    float receiverInvResolution, coarseInvResolution;
-#if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && push.lightType == 0u) {
-        normX = gVsmDirectionalUniform.normX;
-        normY = gVsmDirectionalUniform.normY;
-        biasZ = gVsmDirectionalUniform.biasZ;
-        coarseInvResolution = gVsmDirectionalUniform.coarseInvResolution;
-        receiverInvResolution = gVsmDirectionalUniform.receiverInvResolution;
-    } else
-#endif
-    {
-        normX = normalize(proj0.rowX.xyz);
-        normY = normalize(proj0.rowY.xyz);
-        biasZ = proj0.metric.z;
-        receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
-        coarseInvResolution = 2.0 / float(push.pageSize);
-    }
+    float3 normX = normalize(proj0.rowX.xyz);
+    float3 normY = normalize(proj0.rowY.xyz);
+    float biasZ = proj0.metric.z;
+    float receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
+    float coarseInvResolution = 2.0 / float(push.pageSize);
     float denominator = dot(normal, toLight);
     float invDenom = abs(denominator) > 1e-5 ? length(proj0.rowZ.xyz) / denominator : 0.0;
     float2 normalSlope = float2(dot(normal, normX), dot(normal, normY)) * invDenom;
@@ -2247,19 +2110,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                     storedDepth = atlas.Load(int3(atlasTexel, 0));
                     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
 
-                    float2 translation;
-                    float extent;
-#if !VSM_ONE_PASS_PROJECTION
-                    if (useGroupCache && ancestorLevel < kVSMMaxCachedProjections) {
-                        translation = gVsmDirectionalLevels[ancestorLevel].translation;
-                        extent = gVsmDirectionalLevels[ancestorLevel].extent;
-                    } else
-#endif
-                    {
-                        ShadowProjection targetProj = projections[ancestorLevel];
-                        translation = float2(targetProj.rowX.w, targetProj.rowY.w);
-                        extent = targetProj.metric.x;
-                    }
+                    ShadowProjection targetProj = projections[ancestorLevel];
+                    float2 translation = float2(targetProj.rowX.w, targetProj.rowY.w);
+                    float extent = targetProj.metric.x;
                     float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, ancestorLevel, translation, false);
                     compare = vsmDirectionalComparisonDepth(projected, ancestorTexel,
                         extent, receiverInvResolution, normalSlope, biasZ);
@@ -4790,12 +4643,8 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     projectionCounts = 0u;
 #endif
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
-#if !VSM_ONE_PASS_PROJECTION
-    VSMReceiverBasis basis = useGroupCache ? vsmGetGroupReceiverBasis() : vsmMakeReceiverBasis(views[0]);
-#else
     ViewConstants view = views[0];
     VSMReceiverBasis basis = vsmMakeReceiverBasis(view);
-#endif
     if (any(id.xy >= uint2(basis.viewportSize))) { return false; }
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
@@ -4848,15 +4697,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     float3 projected = float3(0.0);
     // Any fine-work overflow invalidates the entire partial fine atlas. The
     // independent coarse draw always traverses every caster slot.
-    bool allowClipmaps;
-#if !VSM_ONE_PASS_PROJECTION
-    if (useGroupCache && push.lightType == 0u) {
-        allowClipmaps = gVsmDirectionalUniform.allowClipmaps != 0u;
-    } else
-#endif
-    {
-        allowClipmaps = statistics[5] == 0u;
-    }
+    bool allowClipmaps = statistics[5] == 0u;
     if (allowClipmaps) {
         for (uint level = receiverLevel; level < push.clipmapCount; ++level) {
             ShadowProjection projection = vsmGetCachedProjection(projections, level, useGroupCache);
@@ -4917,13 +4758,8 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     }
     ShadowProjection projection = vsmGetCachedProjection(projections, selectedLevel, useGroupCache);
     if (push.lightType == 0u) {
-#if !VSM_ONE_PASS_PROJECTION
-        float3 toLight = useGroupCache ? gVsmDirectionalUniform.toLight : normalize(proj0.rowZ.xyz);
-        float sinAlpha = useGroupCache ? gVsmDirectionalUniform.sinAlpha : max(sin(push.angularRadius), 0.1);
-#else
         float3 toLight = normalize(proj0.rowZ.xyz);
         float sinAlpha = max(sin(push.angularRadius), 0.1);
-#endif
         if (dot(normal, toLight) < -sinAlpha) {
             visibility = 0.0;
             return true;
@@ -5004,12 +4840,6 @@ void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts
     }
 }
 
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-// Slots 0/1/2 retain filter 30/31/9; the other five combine one-bit receiver events.
-static const uint kVsmProjectionCounterCount = 8u;
-#else
-static const uint kVsmProjectionCounterCount = 3u;
-#endif
 uint2 vsmMortonPixel(uint2 dispatchPixel)
 {
     uint lane = (dispatchPixel.x & 7u) + ((dispatchPixel.y & 7u) << 3u);
@@ -5018,138 +4848,61 @@ uint2 vsmMortonPixel(uint2 dispatchPixel)
     return (dispatchPixel & ~7u) + xy;
 }
 
-#if !VSM_ONE_PASS_PROJECTION
-groupshared uint gVsmFilterCounts[kVsmProjectionCounterCount];
+void vsmRecordProjectionStatistics(uint3 counts
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    , uint projectionCounts
+#endif
+    , ShadowPush push
+)
+{
+    if (push.filterMode == 0u) { return; }
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    counts.z += (projectionCounts >> 3u) & 1u;
+#endif
+    // Integer subgroup reductions preserve the per-face totals without a
+    // workgroup barrier or shared storage.
+    uint3 totals = WaveActiveSum(counts);
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    if (WaveIsFirstLane()) {
+        if (totals.x != 0u) { InterlockedAdd(statistics[30], totals.x); }
+        if (totals.y != 0u) { InterlockedAdd(statistics[31], totals.y); }
+        if (totals.z != 0u) { InterlockedAdd(statistics[9], totals.z); }
+    }
+#if VSM_OPTIMIZE_PROJECTION_STATISTICS
+    [unroll]
+    for (uint event = 0u; event < 5u; ++event) {
+        uint bit = event < 3u ? event : event + 1u;
+        uint total = WaveActiveSum((projectionCounts >> bit) & 1u);
+        if (WaveIsFirstLane() && total != 0u) {
+            uint index = event == 0u ? 8u : event == 1u ? 6u : event == 2u ? 29u : event == 3u ? 7u : 13u;
+            InterlockedAdd(statistics[index], total);
+        }
+    }
+#endif
+}
 
+#if !VSM_ONE_PASS_PROJECTION
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
     id.xy = vsmMortonPixel(id.xy);
-    if (push.enabled != 0u && lane <= push.clipmapCount && lane < kVSMMaxCachedProjections) {
-        StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-        ShadowProjection proj = projections[lane];
-        gVsmDirectionalLevels[lane].translation = float2(proj.rowX.w, proj.rowY.w);
-        gVsmDirectionalLevels[lane].extent = proj.metric.x;
-        gVsmDirectionalLevels[lane].texelSize = proj.metric.y;
-        gVsmDirectionalLevels[lane].pageOffset = proj.page.x;
-    }
-    if (push.filterMode != 0u && lane < kVsmProjectionCounterCount) {
-        gVsmFilterCounts[lane] = 0u;
-    }
-    if (lane == 0u) {
-        StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
-        ViewConstants view = views[0];
-        VSMReceiverBasis b = vsmMakeReceiverBasis(view);
-        gVsmReceiverBasis.eye = b.eye;
-        gVsmReceiverBasis.forward = b.forward;
-        gVsmReceiverBasis.right = b.right;
-        gVsmReceiverBasis.up = b.up;
-        gVsmReceiverBasis.rightAspect = b.rightAspect;
-        gVsmReceiverBasis.tanHalfFov = b.tanHalfFov;
-        gVsmReceiverBasis.orthoHalfHeight = b.orthoHalfHeight;
-        gVsmReceiverBasis.jitter = b.jitter;
-        gVsmReceiverBasis.invViewport = b.invViewport;
-        gVsmReceiverBasis.ndcScale = b.ndcScale;
-        gVsmReceiverBasis.viewportSize = b.viewportSize;
-        gVsmReceiverBasis.nearPlane = b.nearPlane;
-        gVsmReceiverBasis.farPlane = b.farPlane;
-        gVsmReceiverBasis.farMinusNear = b.farMinusNear;
-        gVsmReceiverBasis.nearTimesFar = b.nearTimesFar;
-        gVsmReceiverBasis.isOrtho = b.isOrtho ? 1u : 0u;
-        gVsmReceiverBasis.reversed = b.reversed ? 1u : 0u;
 
-#if VSM_DIRECTIONAL_PROJECTION
-        if (push.enabled != 0u && push.lightType == 0u) {
-            StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-            ShadowProjection proj0 = projections[0u];
-            ShadowProjection coarseProj = projections[push.clipmapCount];
-            float3 toLight = normalize(proj0.rowZ.xyz);
-            float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
-            float3 up = cross(toLight, right);
-            gVsmDirectionalUniform.toLight = toLight;
-            gVsmDirectionalUniform.right = right;
-            gVsmDirectionalUniform.up = up;
-            gVsmDirectionalUniform.normX = normalize(proj0.rowX.xyz);
-            gVsmDirectionalUniform.normY = normalize(proj0.rowY.xyz);
-            gVsmDirectionalUniform.biasZ = proj0.metric.z;
-            gVsmDirectionalUniform.sinAlpha = max(sin(push.angularRadius), 0.1);
-            gVsmDirectionalUniform.tanAngularRadius = tan(push.angularRadius);
-            gVsmDirectionalUniform.coarseInvResolution = 2.0 / float(push.pageSize);
-            gVsmDirectionalUniform.receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
-
-            StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
-            gVsmDirectionalUniform.allowClipmaps = (statistics[5] == 0u) ? 1u : 0u;
-
-            StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-            uint4 coarseEntry = pages[coarseProj.page.x];
-            gVsmDirectionalUniform.coarseValid = ((coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u) ? 1u : 0u;
-            gVsmDirectionalUniform.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
-
-            bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
-            bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
-            bool isPow2VirtualPages = (push.virtualPagesPerAxis & (push.virtualPagesPerAxis - 1u)) == 0u && push.virtualPagesPerAxis != 0u;
-            gVsmDirectionalUniform.powerOfTwoLayout = (isPow2PageSize && isPow2PhysicalX && isPow2VirtualPages) ? 1u : 0u;
-            gVsmDirectionalUniform.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
-            gVsmDirectionalUniform.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
-            gVsmDirectionalUniform.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
-            gVsmDirectionalUniform.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
-            gVsmDirectionalUniform.virtualPagesPerAxisShift = isPow2VirtualPages ? uint(firstbitlow(push.virtualPagesPerAxis)) : 0u;
-        }
-#endif
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    uint3 counts;
+    uint3 counts = uint3(0u);
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
-    uint projectionCounts;
+    uint projectionCounts = 0u;
 #endif
-    if (push.filterMode == 0u) {
-        vsmProjectAndStore(id, push, counts
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-            , projectionCounts
-#endif
-            , true
-        );
-        return;
-    }
-    // Early returns, including viewport tails and point-face rejection, stay
-    // inside the receiver helper so every lane reaches the group barriers.
     vsmProjectAndStore(id, push, counts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         , projectionCounts
 #endif
-            , true
     );
+    vsmRecordProjectionStatistics(counts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
-    // All events were recorded at the original sites, including counts before
-    // compact point-face ownership and disabled-light rejection.
-    counts.z += (projectionCounts >> 3u) & 1u;
-    if ((projectionCounts & (1u << 0u)) != 0u) { InterlockedAdd(gVsmFilterCounts[3], 1u); }
-    if ((projectionCounts & (1u << 1u)) != 0u) { InterlockedAdd(gVsmFilterCounts[4], 1u); }
-    if ((projectionCounts & (1u << 2u)) != 0u) { InterlockedAdd(gVsmFilterCounts[5], 1u); }
-    if ((projectionCounts & (1u << 4u)) != 0u) { InterlockedAdd(gVsmFilterCounts[6], 1u); }
-    if ((projectionCounts & (1u << 5u)) != 0u) { InterlockedAdd(gVsmFilterCounts[7], 1u); }
+        , projectionCounts
 #endif
-    if (counts.x != 0u) { InterlockedAdd(gVsmFilterCounts[0], counts.x); }
-    if (counts.y != 0u) { InterlockedAdd(gVsmFilterCounts[1], counts.y); }
-    if (counts.z != 0u) { InterlockedAdd(gVsmFilterCounts[2], counts.z); }
-    GroupMemoryBarrierWithGroupSync();
-    if (lane < kVsmProjectionCounterCount) {
-        uint count = gVsmFilterCounts[lane];
-        if (count != 0u) {
-            // Attribute cross-face point queries to the receiver's dispatch,
-            // just like the original per-lookup counters. Preserve all slots.
-            RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
-            uint index = lane == 0u ? 30u : lane == 1u ? 31u : 9u;
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-            if (lane >= 3u) {
-                index = lane == 3u ? 8u : lane == 4u ? 6u : lane == 5u ? 29u : lane == 6u ? 7u : 13u;
-            }
-#endif
-            InterlockedAdd(statistics[index], count);
-        }
-    }
+        , push
+    );
 }
 #else
 void vsmProjectionGridAdd(uint diagnostics, uint counter, uint laneValue)
@@ -5199,30 +4952,12 @@ void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job
 #if VSM_LIGHT_GRID_PROJECTION
     }
 #endif
-    if (push.filterMode == 0u) { return; }
+    vsmRecordProjectionStatistics(counts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
-    counts.z += (projectionCounts >> 3u) & 1u;
+        , projectionCounts
 #endif
-    // Integer subgroup reductions preserve the per-face totals without a
-    // workgroup barrier between jobs or shared storage for each face.
-    uint3 totals = WaveActiveSum(counts);
-    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
-    if (WaveIsFirstLane()) {
-        if (totals.x != 0u) { InterlockedAdd(statistics[30], totals.x); }
-        if (totals.y != 0u) { InterlockedAdd(statistics[31], totals.y); }
-        if (totals.z != 0u) { InterlockedAdd(statistics[9], totals.z); }
-    }
-#if VSM_OPTIMIZE_PROJECTION_STATISTICS
-    [unroll]
-    for (uint event = 0u; event < 5u; ++event) {
-        uint bit = event < 3u ? event : event + 1u;
-        uint total = WaveActiveSum((projectionCounts >> bit) & 1u);
-        if (WaveIsFirstLane() && total != 0u) {
-            uint index = event == 0u ? 8u : event == 1u ? 6u : event == 2u ? 29u : event == 3u ? 7u : 13u;
-            InterlockedAdd(statistics[index], total);
-        }
-    }
-#endif
+        , push
+    );
 }
 
 #if VSM_LIGHT_GRID_PROJECTION
