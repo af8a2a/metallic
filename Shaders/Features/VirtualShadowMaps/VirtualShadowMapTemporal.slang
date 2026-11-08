@@ -24,8 +24,8 @@ struct TemporalViewBasis
     float farPlane;
     float farMinusNear;
     float2 jitter;
-    bool isOrtho;
-    bool reversed;
+    uint isOrtho;
+    uint reversed;
 };
 
 TemporalViewBasis createTemporalViewBasis(ViewConstants view)
@@ -39,12 +39,12 @@ TemporalViewBasis createTemporalViewBasis(ViewConstants view)
     b.invViewport = 1.0 / view.current.viewport.yz;
     b.viewportAspect = view.current.viewport.x;
     b.tanHalfFov = tan(view.current.viewport.w * 0.5);
-    b.isOrtho = view.current.upProjection.w > 0.5;
+    b.isOrtho = view.current.upProjection.w > 0.5 ? 1u : 0u;
     b.halfOrthoHeight = view.current.clipOrtho.z * 0.5;
     b.nearPlane = view.current.clipOrtho.x;
     b.farPlane = view.current.clipOrtho.y;
     b.farMinusNear = view.current.clipOrtho.y - view.current.clipOrtho.x;
-    b.reversed = view.current.clipOrtho.w > 0.5;
+    b.reversed = view.current.clipOrtho.w > 0.5 ? 1u : 0u;
     b.jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
     return b;
 }
@@ -53,16 +53,16 @@ bool temporalReceiver(int2 pixel, TemporalViewBasis basis, float depth, out floa
 {
     position = float3(0.0); linearDepth = 0.0;
     if (any(pixel < 0) || any(pixel >= int2(basis.viewportExtent))) { return false; }
-    if (depth == (basis.reversed ? 0.0 : 1.0)) { return false; }
-    if (basis.isOrtho) {
-        linearDepth = basis.reversed ? lerp(basis.farPlane, basis.nearPlane, depth) : lerp(basis.nearPlane, basis.farPlane, depth);
+    if (depth == (basis.reversed != 0u ? 0.0 : 1.0)) { return false; }
+    if (basis.isOrtho != 0u) {
+        linearDepth = basis.reversed != 0u ? lerp(basis.farPlane, basis.nearPlane, depth) : lerp(basis.nearPlane, basis.farPlane, depth);
     } else {
-        float denominator = basis.reversed ? basis.nearPlane + depth * basis.farMinusNear : basis.farPlane - depth * basis.farMinusNear;
+        float denominator = basis.reversed != 0u ? basis.nearPlane + depth * basis.farMinusNear : basis.farPlane - depth * basis.farMinusNear;
         linearDepth = basis.nearPlane * basis.farPlane / denominator;
     }
     float2 uv = (float2(pixel) + 0.5 + basis.jitter) * basis.invViewport;
     float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    float halfHeight = basis.isOrtho ? basis.halfOrthoHeight : linearDepth * basis.tanHalfFov;
+    float halfHeight = basis.isOrtho != 0u ? basis.halfOrthoHeight : linearDepth * basis.tanHalfFov;
     position = basis.eye + basis.forward * linearDepth +
         halfHeight * (basis.right * (ndc.x * basis.viewportAspect) + basis.up * ndc.y);
     return true;
@@ -106,7 +106,7 @@ bool temporalProject(float3 position, TemporalViewBasis basis, out float2 pixel)
     float z = dot(delta, basis.forward);
     pixel = float2(0.0);
     if (z <= basis.nearPlane || z >= basis.farPlane) { return false; }
-    float halfHeight = basis.isOrtho ? basis.halfOrthoHeight : z * basis.tanHalfFov;
+    float halfHeight = basis.isOrtho != 0u ? basis.halfOrthoHeight : z * basis.tanHalfFov;
     float2 ndc = float2(dot(delta, basis.right) / (halfHeight * basis.viewportAspect), dot(delta, basis.up) / halfHeight);
     float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     pixel = uv * basis.viewportExtent - 0.5 - basis.jitter;
@@ -115,13 +115,21 @@ bool temporalProject(float3 position, TemporalViewBasis basis, out float2 pixel)
 
 groupshared float4 gTemporalPositions[10][10];
 groupshared float gTemporalRawDepth[10][10];
+groupshared TemporalViewBasis gCurrentBasis;
+groupshared TemporalViewBasis gPreviousBasis;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    ViewConstants currentView = params.views.load(0);
-    TemporalViewBasis current = createTemporalViewBasis(currentView);
+    if (lane == 0u) {
+        gCurrentBasis = createTemporalViewBasis(params.views.load(0));
+        gPreviousBasis = createTemporalViewBasis(params.views.load(1));
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    TemporalViewBasis current = gCurrentBasis;
+    TemporalViewBasis previous = gPreviousBasis;
     Texture2D<float> depthTex = resolveUniform(params.depth);
 
     int2 tileOrigin = int2(group.xy * 8u) - int2(1, 1);
@@ -167,8 +175,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
     float result = raw;
     uint count = 1u;
 
-    ViewConstants previousView = params.views.load(1);
-    TemporalViewBasis previous = createTemporalViewBasis(previousView);
+
     float2 previousPixel;
     if (params.hasHistory != 0u && temporalProject(position, previous, previousPixel)) {
         float4 sLeft = gTemporalPositions[localY + 1u][localX];
@@ -189,7 +196,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
         float lengthSquared = dot(normal, normal);
         normal = lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
 
-        float pixelSize = current.isOrtho ? current.halfOrthoHeight * 2.0 / float(params.height) :
+        float pixelSize = (current.isOrtho != 0u) ? current.halfOrthoHeight * 2.0 / float(params.height) :
             2.0 * linearDepth * current.tanHalfFov / float(params.height);
         float tolerance = max(1e-4, pixelSize * 0.01 + linearDepth * 1e-5);
         int2 base = int2(floor(previousPixel));
@@ -204,16 +211,17 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
         core[2] = fetchHistorySample(base + int2(0, 1), previous, prevHistory);
         core[3] = fetchHistorySample(base + int2(1, 1), previous, prevHistory);
 
+        float2 f0 = 1.0 - fraction, f1 = fraction;
+        float4 tapWeights = float4(f0.x * f0.y, f1.x * f0.y, f0.x * f1.y, f1.x * f1.y);
         float sum = 0.0, weightSum = 0.0, sampleCount = 0.0;
         [unroll]
         for (uint tap = 0u; tap < 4u; ++tap) {
-            int2 offset = int2(tap & 1u, tap >> 1u);
-            float2 weights = lerp(1.0 - fraction, fraction, float2(offset));
-            float weight = weights.x * weights.y;
+            float weight = tapWeights[tap];
             if (weight <= 0.0) { continue; }
             HistorySample sample = core[tap];
             if (!sample.valid) { continue; }
 
+            int2 offset = int2(tap & 1u, tap >> 1u);
             int2 pixel = base + offset;
             HistorySample sLeftHist, sRightHist, sTopHist, sBottomHist;
             if (tap == 0u) {
@@ -239,8 +247,9 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
             }
 
             float3 oldNormal = temporalNormalFromNeighbors(sLeftHist, sRightHist, sTopHist, sBottomHist, sample.position, sample.linearDepth);
-            if (dot(normal, oldNormal) < 0.9 || abs(dot(sample.position - position, normal)) > tolerance ||
-                abs(dot(sample.position - position, oldNormal)) > tolerance) { continue; }
+            float3 deltaPos = sample.position - position;
+            if (dot(normal, oldNormal) < 0.9 || abs(dot(deltaPos, normal)) > tolerance ||
+                abs(dot(deltaPos, oldNormal)) > tolerance) { continue; }
 
             sum += weight * f16tof32(sample.history.x & 0xffffu);
             sampleCount += weight * float(sample.history.x >> 16u);
