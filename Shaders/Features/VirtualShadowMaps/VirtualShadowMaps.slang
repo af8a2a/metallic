@@ -958,6 +958,11 @@ float2 vsmDiskSample(uint ray, uint rayCount, uint2 pixel, uint phase)
         float2(vsmSampleRandom(pixel, 0u, phase), vsmSampleRandom(pixel, 1u, phase)));
 }
 
+float3 vsmRayEndpointDirectional(float3 position, float3 toLight, float3 offset, float tanAlpha, float rayLength)
+{
+    return position + normalize(toLight + offset * tanAlpha) * rayLength;
+}
+
 float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush push, float3 toLight, float3 offset)
 {
     if (push.lightType == 0u) {
@@ -1054,6 +1059,13 @@ float vsmPixelFootprint(float linearDepth, ViewConstants view, ShadowPush push)
         2.0 * linearDepth * tan(view.current.viewport.w * 0.5) / view.current.viewport.z;
 }
 
+float vsmSearchLength(float3 position, float linearDepth, VSMReceiverBasis basis, ShadowPush push)
+{
+    if (push.rayLengthScale == 0.0) { return push.rayLength; }
+    float distance = basis.isOrtho ? linearDepth : length(position - basis.eye);
+    return min(push.rayLength, push.rayLengthScale * distance);
+}
+
 float vsmSearchLength(float3 position, float linearDepth, ViewConstants view, ShadowPush push)
 {
     if (push.rayLengthScale == 0.0) { return push.rayLength; }
@@ -1105,6 +1117,73 @@ float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linear
 #if !VSM_ONE_PASS_PROJECTION
 static const uint kVSMMaxCachedProjections = 24u;
 groupshared ShadowProjection gVsmProjections[kVSMMaxCachedProjections];
+
+struct VSMReceiverBasisGroup
+{
+    float3 eye;
+    float3 forward;
+    float3 right;
+    float3 up;
+    float3 rightAspect;
+    float tanHalfFov;
+    float orthoHalfHeight;
+    float2 jitter;
+    float2 invViewport;
+    int2 viewportSize;
+    float nearPlane;
+    float farPlane;
+    float farMinusNear;
+    float nearTimesFar;
+    uint isOrtho;
+    uint reversed;
+};
+
+struct VSMDirectionalUniformData
+{
+    float3 toLight;
+    float3 right;
+    float3 up;
+    float3 normX;
+    float3 normY;
+    float biasZ;
+    float sinAlpha;
+    float tanAngularRadius;
+    float coarseInvResolution;
+    float receiverInvResolution;
+    uint allowClipmaps;
+    uint coarseValid;
+    uint2 coarsePhysicalCoord;
+    uint powerOfTwoLayout;
+    uint pageSizeShift;
+    uint pageSizeMask;
+    uint physicalPagesXShift;
+    uint physicalPagesXMask;
+};
+
+groupshared VSMReceiverBasisGroup gVsmReceiverBasis;
+groupshared VSMDirectionalUniformData gVsmDirectionalUniform;
+
+VSMReceiverBasis vsmGetGroupReceiverBasis()
+{
+    VSMReceiverBasis b;
+    b.eye = gVsmReceiverBasis.eye;
+    b.forward = gVsmReceiverBasis.forward;
+    b.right = gVsmReceiverBasis.right;
+    b.up = gVsmReceiverBasis.up;
+    b.rightAspect = gVsmReceiverBasis.rightAspect;
+    b.tanHalfFov = gVsmReceiverBasis.tanHalfFov;
+    b.orthoHalfHeight = gVsmReceiverBasis.orthoHalfHeight;
+    b.jitter = gVsmReceiverBasis.jitter;
+    b.invViewport = gVsmReceiverBasis.invViewport;
+    b.viewportSize = gVsmReceiverBasis.viewportSize;
+    b.nearPlane = gVsmReceiverBasis.nearPlane;
+    b.farPlane = gVsmReceiverBasis.farPlane;
+    b.farMinusNear = gVsmReceiverBasis.farMinusNear;
+    b.nearTimesFar = gVsmReceiverBasis.nearTimesFar;
+    b.isOrtho = gVsmReceiverBasis.isOrtho != 0u;
+    b.reversed = gVsmReceiverBasis.reversed != 0u;
+    return b;
+}
 #endif
 
 ShadowProjection vsmGetCachedProjection(StructuredBuffer<ShadowProjection> projections, uint level, bool useGroupCache = false)
@@ -1405,7 +1484,7 @@ struct VSMDirectionalRayState
 };
 
 VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
-    ShadowProjection first, ShadowProjection coarse, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel)
+    ShadowProjection first, ShadowProjection coarse, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel, bool useGroupCache = false)
 {
     VSMDirectionalRayBase rayBase;
     rayBase.comparisonOrigin = vsmProjectPosition(position, first);
@@ -1418,18 +1497,32 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
     float receiverResolution = float(push.virtualPagesPerAxis * push.pageSize);
     rayBase.halfReceiverResolution = 0.5 * receiverResolution;
     rayBase.receiverMarginMax = 1.0 - (1.0 / receiverResolution);
-    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
-    rayBase.allowClipmaps = statistics[5] == 0u;
-    uint4 coarseEntry = pages[coarse.page.x];
-    rayBase.coarseValid = (coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u;
-    rayBase.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
-    bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
-    bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
-    rayBase.powerOfTwoLayout = isPow2PageSize && isPow2PhysicalX;
-    rayBase.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
-    rayBase.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
-    rayBase.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
-    rayBase.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
+#if !VSM_ONE_PASS_PROJECTION
+    if (useGroupCache && push.lightType == 0u) {
+        rayBase.allowClipmaps = gVsmDirectionalUniform.allowClipmaps != 0u;
+        rayBase.coarseValid = gVsmDirectionalUniform.coarseValid != 0u;
+        rayBase.coarsePhysicalCoord = gVsmDirectionalUniform.coarsePhysicalCoord;
+        rayBase.powerOfTwoLayout = gVsmDirectionalUniform.powerOfTwoLayout != 0u;
+        rayBase.pageSizeShift = gVsmDirectionalUniform.pageSizeShift;
+        rayBase.pageSizeMask = gVsmDirectionalUniform.pageSizeMask;
+        rayBase.physicalPagesXShift = gVsmDirectionalUniform.physicalPagesXShift;
+        rayBase.physicalPagesXMask = gVsmDirectionalUniform.physicalPagesXMask;
+    } else
+#endif
+    {
+        StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+        rayBase.allowClipmaps = statistics[5] == 0u;
+        uint4 coarseEntry = pages[coarse.page.x];
+        rayBase.coarseValid = (coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u;
+        rayBase.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
+        bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
+        bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
+        rayBase.powerOfTwoLayout = isPow2PageSize && isPow2PhysicalX;
+        rayBase.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
+        rayBase.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
+        rayBase.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
+        rayBase.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
+    }
     return rayBase;
 }
 
@@ -1438,7 +1531,7 @@ VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endp
 {
     ShadowProjection first = vsmGetCachedProjection(projections, receiverLevel, useGroupCache);
     ShadowProjection coarse = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-    VSMDirectionalRayBase base = vsmCreateDirectionalRayBase(position, first, coarse, pages, push, receiverLevel);
+    VSMDirectionalRayBase base = vsmCreateDirectionalRayBase(position, first, coarse, pages, push, receiverLevel, useGroupCache);
     float3 direction = endpoint - position;
     VSMDirectionalRay ray;
     ray.lookupOrigin = vsmProjectPosition(position + dither, first);
@@ -1770,25 +1863,54 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
     ShadowProjection proj0 = vsmGetCachedProjection(projections, 0u, useGroupCache);
-    float3 toLight = push.lightType == 0u ? normalize(proj0.rowZ.xyz) :
-        normalize(proj0.originNear.xyz - position);
-    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
-    float3 up = cross(toLight, right);
+    float3 toLight;
+    float3 right;
+    float3 up;
+    float tanAngularRadius;
+#if !VSM_ONE_PASS_PROJECTION
+    if (useGroupCache && push.lightType == 0u) {
+        toLight = gVsmDirectionalUniform.toLight;
+        right = gVsmDirectionalUniform.right;
+        up = gVsmDirectionalUniform.up;
+        tanAngularRadius = gVsmDirectionalUniform.tanAngularRadius;
+    } else
+#endif
+    {
+        toLight = push.lightType == 0u ? normalize(proj0.rowZ.xyz) :
+            normalize(proj0.originNear.xyz - position);
+        right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+        up = cross(toLight, right);
+        tanAngularRadius = tan(push.angularRadius);
+    }
     float receiverTexelSize = vsmWorldTexelSize(position, receiverProj, push.pageSize, push.lightType);
 #if VSM_DIRECTIONAL_PROJECTION
     float receiverExtent = receiverProj.metric.x;
-    float3 normX = normalize(proj0.rowX.xyz);
-    float3 normY = normalize(proj0.rowY.xyz);
+    float3 normX, normY;
+    float biasZ;
+    float receiverInvResolution, coarseInvResolution;
+#if !VSM_ONE_PASS_PROJECTION
+    if (useGroupCache && push.lightType == 0u) {
+        normX = gVsmDirectionalUniform.normX;
+        normY = gVsmDirectionalUniform.normY;
+        biasZ = gVsmDirectionalUniform.biasZ;
+        coarseInvResolution = gVsmDirectionalUniform.coarseInvResolution;
+        receiverInvResolution = gVsmDirectionalUniform.receiverInvResolution;
+    } else
+#endif
+    {
+        normX = normalize(proj0.rowX.xyz);
+        normY = normalize(proj0.rowY.xyz);
+        biasZ = proj0.metric.z;
+        receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
+        coarseInvResolution = 2.0 / float(push.pageSize);
+    }
     float denominator = dot(normal, toLight);
     float invDenom = abs(denominator) > 1e-5 ? length(proj0.rowZ.xyz) / denominator : 0.0;
     float2 normalSlope = float2(dot(normal, normX), dot(normal, normY)) * invDenom;
-    float biasZ = proj0.metric.z;
-    float receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-    float coarseInvResolution = 2.0 / float(push.pageSize);
-    VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, pages, push, receiverLevel);
+    VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, pages, push, receiverLevel, useGroupCache);
     VSMDirectionalRayCache rayCache;
     rayCache.lastPage = 0xffffffffu;
     rayCache.lastPhysicalCoord = uint2(0u);
@@ -1798,7 +1920,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
         float3 rayOffset = right * disk.x + up * disk.y;
-        float3 endpoint = vsmRayEndpoint(position, proj0, push, toLight, rayOffset);
+        float3 endpoint = (push.lightType == 0u) ?
+            vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength) :
+            vsmRayEndpoint(position, proj0, push, toLight, rayOffset);
         float2 ditherOffset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
             vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
         float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
@@ -4249,8 +4373,13 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     projectionCounts = 0u;
 #endif
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
+#if !VSM_ONE_PASS_PROJECTION
+    VSMReceiverBasis basis = useGroupCache ? vsmGetGroupReceiverBasis() : vsmMakeReceiverBasis(views[0]);
+#else
     ViewConstants view = views[0];
-    if (any(id.xy >= uint2(view.current.viewport.yz))) { return false; }
+    VSMReceiverBasis basis = vsmMakeReceiverBasis(view);
+#endif
+    if (any(id.xy >= uint2(basis.viewportSize))) { return false; }
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
     float3 position;
@@ -4260,7 +4389,6 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
 #else
     bool sharedPointLayer = (push.projectionFlags & 1u) != 0u && push.lightType == 2u;
 #endif
-    VSMReceiverBasis basis = vsmMakeReceiverBasis(view);
     if (!vsmReceiver(int2(id.xy), basis, depth, position, linearDepth)) {
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         if (push.filterMode != 0u) { projectionCounts |= 1u << 0u; }
@@ -4303,7 +4431,16 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     float3 projected = float3(0.0);
     // Any fine-work overflow invalidates the entire partial fine atlas. The
     // independent coarse draw always traverses every caster slot.
-    if (statistics[5] == 0u) {
+    bool allowClipmaps;
+#if !VSM_ONE_PASS_PROJECTION
+    if (useGroupCache && push.lightType == 0u) {
+        allowClipmaps = gVsmDirectionalUniform.allowClipmaps != 0u;
+    } else
+#endif
+    {
+        allowClipmaps = statistics[5] == 0u;
+    }
+    if (allowClipmaps) {
         for (uint level = receiverLevel; level < push.clipmapCount; ++level) {
             ShadowProjection projection = vsmGetCachedProjection(projections, level, useGroupCache);
             float3 p = vsmProjectPosition(position, projection);
@@ -4363,8 +4500,13 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     }
     ShadowProjection projection = vsmGetCachedProjection(projections, selectedLevel, useGroupCache);
     if (push.lightType == 0u) {
+#if !VSM_ONE_PASS_PROJECTION
+        float3 toLight = useGroupCache ? gVsmDirectionalUniform.toLight : normalize(proj0.rowZ.xyz);
+        float sinAlpha = useGroupCache ? gVsmDirectionalUniform.sinAlpha : max(sin(push.angularRadius), 0.1);
+#else
         float3 toLight = normalize(proj0.rowZ.xyz);
         float sinAlpha = max(sin(push.angularRadius), 0.1);
+#endif
         if (dot(normal, toLight) < -sinAlpha) {
             visibility = 0.0;
             return true;
@@ -4372,7 +4514,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     }
     if (push.filterMode != 0u) {
         ShadowPush trace = push;
-        trace.rayLength = vsmSearchLength(position, linearDepth, view, push);
+        trace.rayLength = vsmSearchLength(position, linearDepth, basis, push);
         visibility = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, trace, filterCounts, useGroupCache);
         return true;
     }
@@ -4404,6 +4546,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         float depthScale = length(projection.rowZ.xyz);
         float bias = projection.metric.z / depthScale;
         float blockerDistance = (storedDepth - compareDepth) / depthScale + bias;
+        ViewConstants view = views[0];
         float offset = vsmLODScreenRayOffset(position, normal, linearDepth, normalize(projection.rowZ.xyz),
             view, depth, push.lodScreenRayLength, blockerDistance, bias);
 #if VSM_REFINED_RECEIVER
@@ -4472,6 +4615,64 @@ void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, u
     }
     if (push.filterMode != 0u && lane < kVsmProjectionCounterCount) {
         gVsmFilterCounts[lane] = 0u;
+    }
+    if (lane == 0u) {
+        StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
+        ViewConstants view = views[0];
+        VSMReceiverBasis b = vsmMakeReceiverBasis(view);
+        gVsmReceiverBasis.eye = b.eye;
+        gVsmReceiverBasis.forward = b.forward;
+        gVsmReceiverBasis.right = b.right;
+        gVsmReceiverBasis.up = b.up;
+        gVsmReceiverBasis.rightAspect = b.rightAspect;
+        gVsmReceiverBasis.tanHalfFov = b.tanHalfFov;
+        gVsmReceiverBasis.orthoHalfHeight = b.orthoHalfHeight;
+        gVsmReceiverBasis.jitter = b.jitter;
+        gVsmReceiverBasis.invViewport = b.invViewport;
+        gVsmReceiverBasis.viewportSize = b.viewportSize;
+        gVsmReceiverBasis.nearPlane = b.nearPlane;
+        gVsmReceiverBasis.farPlane = b.farPlane;
+        gVsmReceiverBasis.farMinusNear = b.farMinusNear;
+        gVsmReceiverBasis.nearTimesFar = b.nearTimesFar;
+        gVsmReceiverBasis.isOrtho = b.isOrtho ? 1u : 0u;
+        gVsmReceiverBasis.reversed = b.reversed ? 1u : 0u;
+
+#if VSM_DIRECTIONAL_PROJECTION
+        if (push.enabled != 0u && push.lightType == 0u) {
+            StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+            ShadowProjection proj0 = projections[0u];
+            ShadowProjection coarseProj = projections[push.clipmapCount];
+            float3 toLight = normalize(proj0.rowZ.xyz);
+            float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+            float3 up = cross(toLight, right);
+            gVsmDirectionalUniform.toLight = toLight;
+            gVsmDirectionalUniform.right = right;
+            gVsmDirectionalUniform.up = up;
+            gVsmDirectionalUniform.normX = normalize(proj0.rowX.xyz);
+            gVsmDirectionalUniform.normY = normalize(proj0.rowY.xyz);
+            gVsmDirectionalUniform.biasZ = proj0.metric.z;
+            gVsmDirectionalUniform.sinAlpha = max(sin(push.angularRadius), 0.1);
+            gVsmDirectionalUniform.tanAngularRadius = tan(push.angularRadius);
+            gVsmDirectionalUniform.coarseInvResolution = 2.0 / float(push.pageSize);
+            gVsmDirectionalUniform.receiverInvResolution = 2.0 / float(push.virtualPagesPerAxis * push.pageSize);
+
+            StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+            gVsmDirectionalUniform.allowClipmaps = (statistics[5] == 0u) ? 1u : 0u;
+
+            StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+            uint4 coarseEntry = pages[coarseProj.page.x];
+            gVsmDirectionalUniform.coarseValid = ((coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u) ? 1u : 0u;
+            gVsmDirectionalUniform.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
+
+            bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
+            bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
+            gVsmDirectionalUniform.powerOfTwoLayout = (isPow2PageSize && isPow2PhysicalX) ? 1u : 0u;
+            gVsmDirectionalUniform.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
+            gVsmDirectionalUniform.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
+            gVsmDirectionalUniform.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
+            gVsmDirectionalUniform.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
+        }
+#endif
     }
     GroupMemoryBarrierWithGroupSync();
 
