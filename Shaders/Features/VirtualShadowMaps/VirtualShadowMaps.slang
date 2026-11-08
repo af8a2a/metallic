@@ -265,6 +265,19 @@ uint vsmCompactBatchCount(ShadowPush push)
 void vsmWorkAdd(ShadowPush push, uint counter, uint value)
 {
 #if VSM_WORKLOAD_DIAGNOSTICS
+    uint waveCounter = WaveReadLaneFirst(counter);
+    if (WaveActiveAllTrue(counter == waveCounter)) {
+        uint total = WaveActiveSum(value);
+        if (WaveIsFirstLane() && total != 0u) {
+            RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+            uint word = 32u + waveCounter * 2u;
+            uint previous;
+            InterlockedAdd(statistics[word], total, previous);
+            if (previous > 0xffffffffu - total) { InterlockedAdd(statistics[word + 1u], 1u); }
+        }
+        return;
+    }
+
     if (value == 0u) { return; }
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     uint word = 32u + counter * 2u;
