@@ -2656,13 +2656,44 @@ float2 vsmDirectionalFootprintRange(float4 row, float3 position, VSMDirectionalF
     return vsmDirectionalFootprintRange(row, length(row.xyz), position, ctx);
 }
 
+struct VSMDirectionalAxisBase
+{
+    float centerBase;
+    float axialBase;
+    float transverseDitherBase;
+    float commonMagnitudeBase;
+};
+
+VSMDirectionalAxisBase vsmCreateDirectionalAxisBase(float4 firstRow, float firstRowLength, float3 position, VSMDirectionalFootprintContext ctx)
+{
+    VSMDirectionalAxisBase b;
+    b.centerBase = dot(firstRow.xyz, position);
+    b.axialBase = ctx.rayLength * dot(firstRow.xyz, ctx.toLight);
+    float transverse = ctx.coneRadius * firstRowLength;
+    float dither = 0.5 * ctx.texelSize * (abs(dot(firstRow.xyz, ctx.right)) + abs(dot(firstRow.xyz, ctx.up)));
+    b.transverseDitherBase = transverse + dither;
+    b.commonMagnitudeBase = dot(abs(firstRow.xyz), ctx.commonPos);
+    return b;
+}
+
+float2 vsmDirectionalFootprintFastRange(VSMDirectionalAxisBase baseAxis, float rowW, float scale)
+{
+    float center = baseAxis.centerBase * scale + rowW;
+    float axial = baseAxis.axialBase * scale;
+    float magnitude = baseAxis.commonMagnitudeBase * scale + abs(rowW) + 1.0;
+    float error = magnitude * (256.0 * 5.960464477539063e-8);
+    float spread = baseAxis.transverseDitherBase * scale + error;
+    return float2(center + min(0.0, axial) - spread, center + max(0.0, axial) + spread);
+}
+
 void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProjection> projections,
     RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel,
     float3 toLight, float3 right, float3 up, float sinAngularRadius, inout uint3 workCounts)
 {
     ++workCounts.x;
     // The receiver-selected texel sets dither for every sampled clipmap.
-    float texelSize = projections[firstLevel].metric.y;
+    ShadowProjection firstProj = projections[firstLevel];
+    float texelSize = firstProj.metric.y;
     float coneRadius = push.rayLength * sinAngularRadius;
     VSMDirectionalFootprintContext ctx;
     ctx.toLight = toLight;
@@ -2686,12 +2717,16 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
     uint2 defaultLastPage = uint2(virtualPages - 1u);
     uint2 defaultLastTexel = uint2(axisTexels - 1u);
 
+    float firstInvExtent = length(firstProj.rowX.xyz);
+    VSMDirectionalAxisBase baseAxisX = vsmCreateDirectionalAxisBase(firstProj.rowX, firstInvExtent, position, ctx);
+    VSMDirectionalAxisBase baseAxisY = vsmCreateDirectionalAxisBase(firstProj.rowY, firstInvExtent, position, ctx);
+
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
         ShadowProjection projection = projections[level];
-        float invExtent = length(projection.rowX.xyz);
-        float2 xRange = vsmDirectionalFootprintRange(projection.rowX, invExtent, position, ctx);
-        float2 yRange = vsmDirectionalFootprintRange(projection.rowY, invExtent, position, ctx);
+        float scale = asfloat(uint(127 - int(level - firstLevel)) << 23u);
+        float2 xRange = vsmDirectionalFootprintFastRange(baseAxisX, projection.rowX.w, scale);
+        float2 yRange = vsmDirectionalFootprintFastRange(baseAxisY, projection.rowY.w, scale);
         float2 low = float2(xRange.x, yRange.x), high = float2(xRange.y, yRange.y);
         uint2 firstPage = uint2(0u), lastPage = defaultLastPage;
         uint2 firstTexel = uint2(0u), lastTexel = defaultLastTexel;
