@@ -2337,8 +2337,8 @@ float2 vsmDirectionalFootprintRange(float4 row, float3 position, VSMDirectionalF
     // The axial term also retains finite-precision XY/light-axis nonorthogonality.
     float magnitude = dot(abs(row.xyz), ctx.commonPos) + abs(row.w) + 1.0;
     float error = magnitude * (256.0 * 5.960464477539063e-8);
-    return float2(center + min(0.0, axial) - transverse - dither - error,
-        center + max(0.0, axial) + transverse + dither + error);
+    float spread = transverse + dither + error;
+    return float2(center + min(0.0, axial) - spread, center + max(0.0, axial) + spread);
 }
 
 void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProjection> projections,
@@ -2361,21 +2361,24 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
     float2 depthRange = vsmDirectionalFootprintRange(projections[0].rowZ, position, ctx);
     if (all(isfinite(depthRange)) && (depthRange.y < 0.0 || depthRange.x > 1.0)) { return; }
 
+    uint virtualPages = push.virtualPagesPerAxis;
+#if VSM_MARK_PAGE_SHIFT >= 0
+    uint axisTexels = virtualPages << VSM_MARK_PAGE_SHIFT;
+#else
+    uint axisTexels = virtualPages * push.pageSize;
+#endif
+    float resolution = float(axisTexels);
+    uint2 defaultLastPage = uint2(virtualPages - 1u);
+    uint2 defaultLastTexel = uint2(axisTexels - 1u);
+
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
         ShadowProjection projection = projections[level];
         float2 xRange = vsmDirectionalFootprintRange(projection.rowX, position, ctx);
         float2 yRange = vsmDirectionalFootprintRange(projection.rowY, position, ctx);
         float2 low = float2(xRange.x, yRange.x), high = float2(xRange.y, yRange.y);
-        uint2 firstPage = uint2(0u), lastPage = uint2(projection.page.y - 1u);
-#if VSM_MARK_PAGE_SHIFT >= 0
-        uint axisTexels = projection.page.y << VSM_MARK_PAGE_SHIFT;
-        float resolution = float(axisTexels);
-        uint2 firstTexel = uint2(0u), lastTexel = uint2(axisTexels - 1u);
-#else
-        float resolution = float(projection.page.y * push.pageSize);
-        uint2 firstTexel = uint2(0u), lastTexel = uint2(projection.page.y * push.pageSize - 1u);
-#endif
+        uint2 firstPage = uint2(0u), lastPage = defaultLastPage;
+        uint2 firstTexel = uint2(0u), lastTexel = defaultLastTexel;
         // Unbounded numerical ranges retain the full grid, never an empty request.
         if (all(isfinite(low)) && all(isfinite(high)) && all(low <= high)) {
             if (any(high < -1.0) || any(low > 1.0)) { continue; }
