@@ -28,6 +28,7 @@ struct TemporalViewBasis
     float2 jitter;
     float toleranceScale;
     float orthoTolerance;
+    float2 ndcScale;
     uint isOrtho;
     uint reversed;
 };
@@ -52,6 +53,7 @@ TemporalViewBasis createTemporalViewBasis(ViewConstants view)
     b.nearTimesFar = b.nearPlane * b.farPlane;
     b.toleranceScale = (b.isOrtho != 0u) ? 1e-5 : ((2.0 * b.tanHalfFov / b.viewportExtent.y) * 0.01 + 1e-5);
     b.orthoTolerance = (b.isOrtho != 0u) ? (b.halfOrthoHeight * 2.0 / b.viewportExtent.y * 0.01) : 0.0;
+    b.ndcScale = float2(2.0, -2.0) * b.invViewport;
     b.reversed = view.current.clipOrtho.w > 0.5 ? 1u : 0u;
     b.jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
     return b;
@@ -68,8 +70,7 @@ bool temporalReceiver(int2 pixel, TemporalViewBasis basis, float depth, out floa
         float denominator = basis.reversed != 0u ? basis.nearPlane + depth * basis.farMinusNear : basis.farPlane - depth * basis.farMinusNear;
         linearDepth = basis.nearTimesFar / denominator;
     }
-    float2 uv = (float2(pixel) + 0.5 + basis.jitter) * basis.invViewport;
-    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    float2 ndc = fma(float2(pixel) + 0.5 + basis.jitter, basis.ndcScale, float2(-1.0, 1.0));
     float halfHeight = basis.isOrtho != 0u ? basis.halfOrthoHeight : linearDepth * basis.tanHalfFov;
     position = basis.eye + basis.forward * linearDepth +
         halfHeight * (basis.rightAspect * ndc.x + basis.up * ndc.y);
@@ -228,6 +229,9 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
             HistorySample sample = core[tap];
             if (!sample.valid) { continue; }
 
+            float3 deltaPos = sample.position - position;
+            if (abs(dot(deltaPos, normal)) > tolerance) { continue; }
+
             int2 offset = int2(tap & 1u, tap >> 1u);
             int2 pixel = base + offset;
             HistorySample sLeftHist, sRightHist, sTopHist, sBottomHist;
@@ -254,9 +258,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
             }
 
             float3 oldNormal = temporalNormalFromNeighbors(sLeftHist, sRightHist, sTopHist, sBottomHist, sample.position, sample.linearDepth);
-            float3 deltaPos = sample.position - position;
-            if (dot(normal, oldNormal) < 0.9 || abs(dot(deltaPos, normal)) > tolerance ||
-                abs(dot(deltaPos, oldNormal)) > tolerance) { continue; }
+            if (dot(normal, oldNormal) < 0.9 || abs(dot(deltaPos, oldNormal)) > tolerance) { continue; }
 
             sum += weight * f16tof32(sample.history.x & 0xffffu);
             sampleCount += weight * float(sample.history.x >> 16u);
