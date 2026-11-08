@@ -2129,28 +2129,29 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                     extent, invResolution, normalSlope, biasZ);
                 reference = vsmDirectionalRayDepth(compare, rayBase);
             }
+            float diff = (sample.storedDepth - compare) * rayBase.invDepthScale;
             if (!hasHistory) {
-                blocked = sample.storedDepth > compare;
+                blocked = diff > 0.0;
                 if (blocked) { break; }
-                historyDepth = vsmDirectionalRayDepth(sample.storedDepth, rayBase);
+                historyDepth = reference + diff;
                 historyTime = time;
                 hasHistory = true;
             } else {
                 float tolerance = abs(reference - previousReference) * 1.05;
-                float diff = (sample.storedDepth - compare) * rayBase.invDepthScale;
-                float timeDelta = time - historyTime;
-                float predicted = historyDepth + historySlope * timeDelta;
-                float predictedSeparation = predicted - reference;
-                float separation = (diff > tolerance) ? predictedSeparation : diff;
                 if (diff <= tolerance) {
-                    float depth = vsmDirectionalRayDepth(sample.storedDepth, rayBase);
+                    blocked = diff > 0.0;
+                    float depth = reference + diff;
                     if (depth != historyDepth) {
+                        float timeDelta = time - historyTime;
                         historySlope = clamp((depth - historyDepth) / timeDelta, -maxSlope, maxSlope);
                         historyDepth = depth;
                         historyTime = time;
                     }
+                } else {
+                    float timeDelta = time - historyTime;
+                    float predictedSeparation = (historyDepth + historySlope * timeDelta) - reference;
+                    blocked = predictedSeparation > 0.0 && predictedSeparation <= tolerance;
                 }
-                blocked = separation > 0.0 && separation <= tolerance;
             }
             if (blocked) { break; }
             previousReference = reference;
