@@ -87,17 +87,22 @@ struct HistorySample
     float linearDepth;
 };
 
-HistorySample fetchHistorySample(int2 pixel, TemporalViewBasis basis, RWTexture2D<uint2> prevHistory)
+HistorySample reconstructHistorySample(int2 pixel, uint2 stored, bool inBounds, TemporalViewBasis basis)
 {
     HistorySample s;
     s.valid = false; s.history = uint2(0u); s.position = float3(0.0); s.linearDepth = 0.0;
-    if (any(pixel < 0) || any(pixel >= int2(basis.viewportExtent))) { return s; }
-    uint2 stored = prevHistory[pixel];
-    if ((stored.x >> 16u) == 0u) { return s; }
+    if (!inBounds || (stored.x >> 16u) == 0u) { return s; }
     float depth = asfloat(stored.y);
     s.valid = temporalReceiver(pixel, basis, depth, s.position, s.linearDepth);
     s.history = stored;
     return s;
+}
+
+HistorySample fetchHistorySample(int2 pixel, TemporalViewBasis basis, RWTexture2D<uint2> prevHistory)
+{
+    bool inBounds = all(pixel >= 0) && all(pixel < int2(basis.viewportExtent));
+    uint2 stored = inBounds ? prevHistory[pixel] : uint2(0u);
+    return reconstructHistorySample(pixel, stored, inBounds, basis);
 }
 
 float3 temporalNormalFromNeighbors(HistorySample left, HistorySample right, HistorySample top, HistorySample bottom, float3 position, float linearDepth)
@@ -207,12 +212,28 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
 
         RWTexture2D<uint2> prevHistory = resolveUniform(params.previousHistory);
 
-        // Pre-fetch the 4 core tap samples; core[tap] corresponds to offset (tap & 1, tap >> 1)
+        int2 p0 = base + int2(0, 0);
+        int2 p1 = base + int2(1, 0);
+        int2 p2 = base + int2(0, 1);
+        int2 p3 = base + int2(1, 1);
+        int2 vpExtent = int2(previous.viewportExtent);
+
+        bool inBounds0 = all(p0 >= 0) && all(p0 < vpExtent);
+        bool inBounds1 = all(p1 >= 0) && all(p1 < vpExtent);
+        bool inBounds2 = all(p2 >= 0) && all(p2 < vpExtent);
+        bool inBounds3 = all(p3 >= 0) && all(p3 < vpExtent);
+
+        // Issue all 4 core history memory loads concurrently to hide latency
+        uint2 s0 = inBounds0 ? prevHistory[p0] : uint2(0u);
+        uint2 s1 = inBounds1 ? prevHistory[p1] : uint2(0u);
+        uint2 s2 = inBounds2 ? prevHistory[p2] : uint2(0u);
+        uint2 s3 = inBounds3 ? prevHistory[p3] : uint2(0u);
+
         HistorySample core[4];
-        core[0] = fetchHistorySample(base + int2(0, 0), previous, prevHistory);
-        core[1] = fetchHistorySample(base + int2(1, 0), previous, prevHistory);
-        core[2] = fetchHistorySample(base + int2(0, 1), previous, prevHistory);
-        core[3] = fetchHistorySample(base + int2(1, 1), previous, prevHistory);
+        core[0] = reconstructHistorySample(p0, s0, inBounds0, previous);
+        core[1] = reconstructHistorySample(p1, s1, inBounds1, previous);
+        core[2] = reconstructHistorySample(p2, s2, inBounds2, previous);
+        core[3] = reconstructHistorySample(p3, s3, inBounds3, previous);
 
         float2 f0 = 1.0 - fraction, f1 = fraction;
         float4 tapWeights = float4(f0.x * f0.y, f1.x * f0.y, f0.x * f1.y, f1.x * f1.y);
@@ -231,25 +252,49 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
             int2 pixel = base + offset;
             HistorySample sLeftHist, sRightHist, sTopHist, sBottomHist;
             if (tap == 0u) {
-                sLeftHist = fetchHistorySample(pixel - int2(1, 0), previous, prevHistory);
+                int2 pL = pixel - int2(1, 0);
+                int2 pT = pixel - int2(0, 1);
+                bool inL = all(pL >= 0) && all(pL < vpExtent);
+                bool inT = all(pT >= 0) && all(pT < vpExtent);
+                uint2 vL = inL ? prevHistory[pL] : uint2(0u);
+                uint2 vT = inT ? prevHistory[pT] : uint2(0u);
+                sLeftHist = reconstructHistorySample(pL, vL, inL, previous);
                 sRightHist = core[1];
-                sTopHist = fetchHistorySample(pixel - int2(0, 1), previous, prevHistory);
+                sTopHist = reconstructHistorySample(pT, vT, inT, previous);
                 sBottomHist = core[2];
             } else if (tap == 1u) {
+                int2 pR = pixel + int2(1, 0);
+                int2 pT = pixel - int2(0, 1);
+                bool inR = all(pR >= 0) && all(pR < vpExtent);
+                bool inT = all(pT >= 0) && all(pT < vpExtent);
+                uint2 vR = inR ? prevHistory[pR] : uint2(0u);
+                uint2 vT = inT ? prevHistory[pT] : uint2(0u);
                 sLeftHist = core[0];
-                sRightHist = fetchHistorySample(pixel + int2(1, 0), previous, prevHistory);
-                sTopHist = fetchHistorySample(pixel - int2(0, 1), previous, prevHistory);
+                sRightHist = reconstructHistorySample(pR, vR, inR, previous);
+                sTopHist = reconstructHistorySample(pT, vT, inT, previous);
                 sBottomHist = core[3];
             } else if (tap == 2u) {
-                sLeftHist = fetchHistorySample(pixel - int2(1, 0), previous, prevHistory);
+                int2 pL = pixel - int2(1, 0);
+                int2 pB = pixel + int2(0, 1);
+                bool inL = all(pL >= 0) && all(pL < vpExtent);
+                bool inB = all(pB >= 0) && all(pB < vpExtent);
+                uint2 vL = inL ? prevHistory[pL] : uint2(0u);
+                uint2 vB = inB ? prevHistory[pB] : uint2(0u);
+                sLeftHist = reconstructHistorySample(pL, vL, inL, previous);
                 sRightHist = core[3];
                 sTopHist = core[0];
-                sBottomHist = fetchHistorySample(pixel + int2(0, 1), previous, prevHistory);
+                sBottomHist = reconstructHistorySample(pB, vB, inB, previous);
             } else {
+                int2 pR = pixel + int2(1, 0);
+                int2 pB = pixel + int2(0, 1);
+                bool inR = all(pR >= 0) && all(pR < vpExtent);
+                bool inB = all(pB >= 0) && all(pB < vpExtent);
+                uint2 vR = inR ? prevHistory[pR] : uint2(0u);
+                uint2 vB = inB ? prevHistory[pB] : uint2(0u);
                 sLeftHist = core[2];
-                sRightHist = fetchHistorySample(pixel + int2(1, 0), previous, prevHistory);
+                sRightHist = reconstructHistorySample(pR, vR, inR, previous);
                 sTopHist = core[1];
-                sBottomHist = fetchHistorySample(pixel + int2(0, 1), previous, prevHistory);
+                sBottomHist = reconstructHistorySample(pB, vB, inB, previous);
             }
 
             float3 oldNormal = temporalNormalFromNeighbors(sLeftHist, sRightHist, sTopHist, sBottomHist, sample.position, sample.linearDepth);
