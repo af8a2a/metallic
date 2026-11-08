@@ -60,7 +60,7 @@ void propagatedMappingLookupProbeMain(uint3 id : SV_DispatchThreadID)
         bool direct = vsmLookupPropagated(position, float2(source.rowX.w, source.rowY.w), page,
             projected, texel, projections, pages,
             push, 0u, physical, target);
-        mapping = uint4(direct ? 1u : 0u, metadata.x, metadata.y, metadata.w);
+        mapping = uint4(direct ? 1u : 0u, metadata.x, vsmMappingLevel(metadata.y), metadata.w);
         targetPosition = uint4(asuint(projected), target);
         targetAddress = uint4(texel, physical, 0u);
     }
@@ -109,6 +109,10 @@ void projectedRayStateProbeMain(uint3 id : SV_DispatchThreadID)
     float3 up = cross(toLight, right);
     float texelSize = projections[input.control.x].metric.y;
     float coneRadius = push.rayLength * sin(push.angularRadius);
+    VSMDirectionalFootprintContext footprint = {
+        toLight, right, up, push.rayLength, coneRadius, texelSize,
+        abs(position) + (push.rayLength + texelSize + 1.0)
+    };
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     for (uint sampleIndex = 0u; sampleIndex < 11u; ++sampleIndex) {
@@ -133,17 +137,14 @@ void projectedRayStateProbeMain(uint3 id : SV_DispatchThreadID)
             }
             if (input.control.w == 0u) { continue; }
             ++checked;
-            float2 x = vsmDirectionalFootprintRange(projection.rowX, position, toLight, right, up,
-                push.rayLength, coneRadius, texelSize);
-            float2 y = vsmDirectionalFootprintRange(projection.rowY, position, toLight, right, up,
-                push.rayLength, coneRadius, texelSize);
+            float2 x = vsmDirectionalFootprintRange(projection.rowX, position, footprint);
+            float2 y = vsmDirectionalFootprintRange(projection.rowY, position, footprint);
             float resolution = float(projection.page.y * push.pageSize);
             uint2 lower = uint2(clamp((clamp(float2(x.x, y.x), -1.0, 1.0) * 0.5 + 0.5) * resolution - 1.0,
                 0.0, resolution - 1.0));
             uint2 upper = uint2(clamp((clamp(float2(x.y, y.y), -1.0, 1.0) * 0.5 + 0.5) * resolution + 1.0,
                 0.0, resolution - 1.0));
-            float2 depth = vsmDirectionalFootprintRange(projection.rowZ, position, toLight, right, up,
-                push.rayLength, coneRadius, texelSize);
+            float2 depth = vsmDirectionalFootprintRange(projection.rowZ, position, footprint);
             missing += (any(texel < lower) || any(texel > upper) || depth.y < 0.0 || depth.x > 1.0) ? 1u : 0u;
         }
         uint offset = (id.x * 11u + sampleIndex) * 10u;

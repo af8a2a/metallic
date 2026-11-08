@@ -1311,10 +1311,28 @@ ShadowProjection vsmLookupProjection(ShadowLookup sample)
 
 // The directional mapping producer certifies a dyadic ancestor and shared Z.
 // Preserve its integer page ownership while continuing the continuous ray XY.
+// Only the derived mapping tail uses this address. The host caps physical
+// atlases at 64 by 64 pages, and the low half still holds the target level.
+uint vsmPackDirectionalMappingAddress(uint level, uint physicalPage, uint physicalPagesX)
+{
+    uint2 physical = vsmPhysicalPageCoord(physicalPage, physicalPagesX);
+    return level | (physical.x << 16u) | (physical.y << 24u);
+}
+
+uint vsmMappingLevel(uint address)
+{
+    return address & 0xffffu;
+}
+
+uint2 vsmMappingPhysicalCoord(uint address)
+{
+    return uint2((address >> 16u) & 0xffu, address >> 24u);
+}
+
 void vsmMapDirectionalAncestor(uint4 mapping, float2 sourceTranslation, inout float3 projected,
     inout uint2 texel, StructuredBuffer<ShadowProjection> projections, ShadowPush push, uint level, bool useGroupCache = false)
 {
-    uint targetLevel = mapping.y;
+    uint targetLevel = vsmMappingLevel(mapping.y);
     float scale = asfloat((127u - (targetLevel - level)) << 23u);
     ShadowProjection targetProj = vsmGetCachedProjection(projections, targetLevel, useGroupCache);
     float2 translation = float2(targetProj.rowX.w, targetProj.rowY.w) -
@@ -1337,7 +1355,7 @@ bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourceP
     uint4 mapping = pages[tableSize + sourcePage];
     vsmWorkAdd(push, kVSMWorkProjectionMappingLoads, 1u);
     physicalPage = mapping.x;
-    targetLevel = mapping.y;
+    targetLevel = vsmMappingLevel(mapping.y);
     if (mapping.w == 0u) {
         vsmWorkAdd(push, kVSMWorkProjectionMappingSlowPaths, 1u);
         return false;
@@ -1607,12 +1625,12 @@ float3 vsmDirectionalRayPosition(VSMDirectionalRayState ray, float time, uint le
 
 bool vsmDirectionalRayMapping(float2 sourceTranslation, uint sourcePage, inout float3 projected,
     inout uint2 texel, StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    ShadowPush push, uint level, out uint physicalPage, out uint targetLevel, bool useGroupCache = false)
+    ShadowPush push, uint level, out uint2 physical, out uint targetLevel, bool useGroupCache = false)
 {
     uint4 mapping = pages[push.totalPages + sourcePage];
     vsmWorkAdd(push, kVSMWorkProjectionMappingLoads, 1u);
-    physicalPage = mapping.x;
-    targetLevel = mapping.y;
+    physical = vsmMappingPhysicalCoord(mapping.y);
+    targetLevel = vsmMappingLevel(mapping.y);
     if (mapping.w == 0u) {
         vsmWorkAdd(push, kVSMWorkProjectionMappingSlowPaths, 1u);
         return false;
@@ -1631,8 +1649,8 @@ struct VSMDirectionalRayCache
     bool lastPageHit;
 };
 
-ShadowLookup vsmSamplePhysicalPage(
-    uint physicalPage, uint level, float3 projected, uint2 virtualTexel,
+ShadowLookup vsmSampleDirectionalAtlasPage(
+    uint2 physical, uint level, float3 projected, uint2 virtualTexel,
     VSMDirectionalRayBase rayBase, Texture2D<float> atlas, ShadowPush push)
 {
     ShadowLookup result;
@@ -1640,21 +1658,26 @@ ShadowLookup vsmSamplePhysicalPage(
     result.level = level;
     result.projected = projected;
     result.virtualTexel = virtualTexel;
-    uint2 physical;
     if (rayBase.powerOfTwoLayout) {
-        uint physXMask = rayBase.physicalPagesXMask;
-        uint physXShift = rayBase.physicalPagesXShift;
         uint pageSizeShift = rayBase.pageSizeShift;
         uint pageSizeMask = rayBase.pageSizeMask;
-        physical = uint2(physicalPage & physXMask, physicalPage >> physXShift);
         result.storedDepth = atlas.Load(int3((physical << pageSizeShift) | (virtualTexel & pageSizeMask), 0));
     } else {
-        physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
         result.storedDepth = atlas.Load(int3(vsmAtlasTexelFromVirtual(physical, virtualTexel, push.pageSize), 0));
     }
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
+}
+
+ShadowLookup vsmSamplePhysicalPage(
+    uint physicalPage, uint level, float3 projected, uint2 virtualTexel,
+    VSMDirectionalRayBase rayBase, Texture2D<float> atlas, ShadowPush push)
+{
+    uint2 physical = rayBase.powerOfTwoLayout ?
+        uint2(physicalPage & rayBase.physicalPagesXMask, physicalPage >> rayBase.physicalPagesXShift) :
+        vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
+    return vsmSampleDirectionalAtlasPage(physical, level, projected, virtualTexel, rayBase, atlas, push);
 }
 
 [noinline]
@@ -1687,11 +1710,12 @@ ShadowLookup vsmDirectionalRayLookupSlow(
             if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 1u) != 0u) {
                 return vsmSamplePhysicalPage(entry.x, rayBase.receiverLevel, p, texel, rayBase, atlas, push);
             }
-        } else if (mapping.y == push.clipmapCount) {
+        } else if (vsmMappingLevel(mapping.y) == push.clipmapCount) {
             mappedToCoarse = true;
         } else {
             vsmMapDirectionalAncestor(mapping, rayBase.sourceTranslation, p, texel, projections, push, rayBase.receiverLevel, useGroupCache);
-            return vsmSamplePhysicalPage(mapping.x, mapping.y, p, texel, rayBase, atlas, push);
+            return vsmSampleDirectionalAtlasPage(vsmMappingPhysicalCoord(mapping.y), vsmMappingLevel(mapping.y),
+                p, texel, rayBase, atlas, push);
         }
     } else {
         cache.lastPage = 0xffffffffu;
@@ -1717,11 +1741,12 @@ ShadowLookup vsmDirectionalRayLookupSlow(
             } else {
                 fallbackPage = vsmVirtualPage(fallbackTexel, projection, push.pageSize);
             }
-            uint mappedPhysical, mappedLevel;
+            uint2 mappedPhysical;
+            uint mappedLevel;
             if (vsmDirectionalRayMapping(float2(projection.rowX.w, projection.rowY.w), fallbackPage, fallbackP, fallbackTexel,
                     projections, pages, push, level, mappedPhysical, mappedLevel, useGroupCache)) {
                 if (mappedLevel == push.clipmapCount) { break; }
-                return vsmSamplePhysicalPage(mappedPhysical, mappedLevel, fallbackP, fallbackTexel, rayBase, atlas, push);
+                return vsmSampleDirectionalAtlasPage(mappedPhysical, mappedLevel, fallbackP, fallbackTexel, rayBase, atlas, push);
             }
             vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
             uint4 entry = pages[fallbackPage];
@@ -1773,13 +1798,13 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
     if (rayBase.allowClipmaps) {
         if (all(abs(p.xy) < rayBase.receiverMarginMax)) {
             uint2 texel = uint2(fma(p.xy, float2(rayBase.halfReceiverResolution), float2(rayBase.halfReceiverResolution)));
-            bool isPow2 = rayBase.powerOfTwoLayout;
 #if VSM_PROJECTION_PAGE_SHIFT >= 0
             // The page size is known even when the physical atlas width is not a power of two.
             uint2 pageCoord = texel >> VSM_PROJECTION_PAGE_SHIFT;
             uint2 localTexel = vsmPageLocalTexel(texel, push.pageSize);
             uint pageOffset = pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
 #else
+            bool isPow2 = rayBase.powerOfTwoLayout;
             uint2 pageCoord;
             uint2 localTexel;
             uint pageOffset;
@@ -1804,11 +1829,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
             } else {
                 uint4 mapping = pages[rayBase.receiverMappingOffset + pageOffset];
                 if (mapping.w == 1u) {
-                    if (isPow2) {
-                        physical = uint2(mapping.x & rayBase.physicalPagesXMask, mapping.x >> rayBase.physicalPagesXShift);
-                    } else {
-                        physical = vsmPhysicalPageCoord(mapping.x, push.physicalPagesX);
-                    }
+                    physical = vsmMappingPhysicalCoord(mapping.y);
                     cache.lastPhysicalCoord = physical;
                     cache.lastPage = page;
                     cache.lastPageHit = true;
@@ -4016,7 +4037,9 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
     uint level = id.x / stride, local = id.x % stride;
     uint4 entry = pages[id.x];
     if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 1u) != 0u) {
-        pages[push.totalPages + id.x] = uint4(entry.x, level, 0u, 1u);
+        uint address = push.lightType == 0u ?
+            vsmPackDirectionalMappingAddress(level, entry.x, push.physicalPagesX) : level;
+        pages[push.totalPages + id.x] = uint4(entry.x, address, 0u, 1u);
         return;
     }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
@@ -4049,7 +4072,7 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
     if (any(abs(source.originNear.xy) >= 67108864.0)) { return; }
     int2 basePage = int2(local % axis, local / axis) + int2(source.originNear.xy) - int(axis / 2u);
     uint packedParentPage = 0u;
-    uint targetLevel = push.clipmapCount, physicalPage = 0xffffffffu;
+    uint address = push.clipmapCount, physicalPage = 0xffffffffu;
     for (uint next = level + 1u; next < push.clipmapCount; ++next) {
         uint delta = next - level;
         float scale = asfloat((127u - delta) << 23u);
@@ -4065,12 +4088,13 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
         if (any(parentPage == 0) || any(parentPage == int(axis) - 1)) { return; }
         uint4 parentEntry = pages[parent.page.x + uint(parentPage.y) * axis + uint(parentPage.x)];
         if (parentEntry.x != 0xffffffffu && (parentEntry.y & 2u) != 0u && (parentEntry.w & 1u) != 0u) {
-            targetLevel = next; physicalPage = parentEntry.x;
+            physicalPage = parentEntry.x;
+            address = vsmPackDirectionalMappingAddress(next, physicalPage, push.physicalPagesX);
             packedParentPage = uint(parentPage.x) | (uint(parentPage.y) << 16u);
             break;
         }
     }
-    pages[push.totalPages + id.x] = uint4(physicalPage, targetLevel, packedParentPage, 2u);
+    pages[push.totalPages + id.x] = uint4(physicalPage, address, packedParentPage, 2u);
 }
 
 [shader("compute")]
