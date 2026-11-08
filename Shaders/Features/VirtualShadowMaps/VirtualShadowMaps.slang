@@ -2536,11 +2536,11 @@ struct VSMDirectionalFootprintContext
     float3 commonPos;
 };
 
-float2 vsmDirectionalFootprintRange(float4 row, float3 position, VSMDirectionalFootprintContext ctx)
+float2 vsmDirectionalFootprintRange(float4 row, float rowLength, float3 position, VSMDirectionalFootprintContext ctx)
 {
     float center = dot(row, float4(position, 1.0));
     float axial = ctx.rayLength * dot(row.xyz, ctx.toLight);
-    float transverse = ctx.coneRadius * length(row.xyz);
+    float transverse = ctx.coneRadius * rowLength;
     float dither = 0.5 * ctx.texelSize * (abs(dot(row.xyz, ctx.right)) + abs(dot(row.xyz, ctx.up)));
     // Include the original endpoint, world-space lerp and texel dither paths.
     // The axial term also retains finite-precision XY/light-axis nonorthogonality.
@@ -2548,6 +2548,11 @@ float2 vsmDirectionalFootprintRange(float4 row, float3 position, VSMDirectionalF
     float error = magnitude * (256.0 * 5.960464477539063e-8);
     float spread = transverse + dither + error;
     return float2(center + min(0.0, axial) - spread, center + max(0.0, axial) + spread);
+}
+
+float2 vsmDirectionalFootprintRange(float4 row, float3 position, VSMDirectionalFootprintContext ctx)
+{
+    return vsmDirectionalFootprintRange(row, length(row.xyz), position, ctx);
 }
 
 void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProjection> projections,
@@ -2583,8 +2588,9 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
         ShadowProjection projection = projections[level];
-        float2 xRange = vsmDirectionalFootprintRange(projection.rowX, position, ctx);
-        float2 yRange = vsmDirectionalFootprintRange(projection.rowY, position, ctx);
+        float invExtent = length(projection.rowX.xyz);
+        float2 xRange = vsmDirectionalFootprintRange(projection.rowX, invExtent, position, ctx);
+        float2 yRange = vsmDirectionalFootprintRange(projection.rowY, invExtent, position, ctx);
         float2 low = float2(xRange.x, yRange.x), high = float2(xRange.y, yRange.y);
         uint2 firstPage = uint2(0u), lastPage = defaultLastPage;
         uint2 firstTexel = uint2(0u), lastTexel = defaultLastTexel;
@@ -2643,48 +2649,15 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
 }
 #endif
 
-#if VSM_DIRECTIONAL_MARK
-struct VSMMarkDirectionalUniformData
-{
-    float3 toLight;
-    float3 right;
-    float3 up;
-    float sinAngularRadius;
-    float sinAlpha;
-};
-groupshared VSMMarkDirectionalUniformData gVsmMarkDirectionalUniform;
-#endif
-groupshared VSMReceiverBasisGroup gVsmMarkReceiverBasis;
-
-VSMReceiverBasis vsmGetMarkGroupReceiverBasis()
-{
-    VSMReceiverBasis b;
-    b.eye = gVsmMarkReceiverBasis.eye;
-    b.forward = gVsmMarkReceiverBasis.forward;
-    b.right = gVsmMarkReceiverBasis.right;
-    b.up = gVsmMarkReceiverBasis.up;
-    b.rightAspect = gVsmMarkReceiverBasis.rightAspect;
-    b.tanHalfFov = gVsmMarkReceiverBasis.tanHalfFov;
-    b.orthoHalfHeight = gVsmMarkReceiverBasis.orthoHalfHeight;
-    b.jitter = gVsmMarkReceiverBasis.jitter;
-    b.invViewport = gVsmMarkReceiverBasis.invViewport;
-    b.ndcScale = gVsmMarkReceiverBasis.ndcScale;
-    b.viewportSize = gVsmMarkReceiverBasis.viewportSize;
-    b.nearPlane = gVsmMarkReceiverBasis.nearPlane;
-    b.farPlane = gVsmMarkReceiverBasis.farPlane;
-    b.farMinusNear = gVsmMarkReceiverBasis.farMinusNear;
-    b.nearTimesFar = gVsmMarkReceiverBasis.nearTimesFar;
-    b.isOrtho = gVsmMarkReceiverBasis.isOrtho != 0u;
-    b.reversed = gVsmMarkReceiverBasis.reversed != 0u;
-    return b;
-}
+// Groupshared receiver basis and directional uniform structures have been replaced
+// with direct register/scalar loads to eliminate intra-workgroup barriers and serialization.
 
 void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
 {
     workCounts = uint3(0u);
     if (push.enabled == 0u) { return; }
     StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
-    VSMReceiverBasis basis = vsmGetMarkGroupReceiverBasis();
+    VSMReceiverBasis basis = vsmMakeReceiverBasis(views[0]);
 #if VSM_RECEIVER_COVERAGE_DIAGNOSTICS
     // CPU enables this permutation only for one directional SMRT recording.
     // Every in-viewport pixel owns one record, including rejected receivers.
@@ -2715,15 +2688,9 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
     float3 toLight = float3(0.0);
     float sinAngularRadius = 0.0;
     if (push.lightType == 0u) {
-#if VSM_DIRECTIONAL_MARK
-        toLight = gVsmMarkDirectionalUniform.toLight;
-        sinAngularRadius = gVsmMarkDirectionalUniform.sinAngularRadius;
-        float sinAlpha = gVsmMarkDirectionalUniform.sinAlpha;
-#else
         toLight = normalize(projections[0].rowZ.xyz);
         sinAngularRadius = sin(push.angularRadius);
         float sinAlpha = max(sinAngularRadius, 0.1);
-#endif
         if (dot(normal, toLight) < -sinAlpha) { return; }
     }
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
@@ -2759,8 +2726,8 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
         coverageData[coverageRecord] = 1u;
 #endif
 #if VSM_DIRECTIONAL_MARK
-        float3 right = gVsmMarkDirectionalUniform.right;
-        float3 up = gVsmMarkDirectionalUniform.up;
+        float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+        float3 up = cross(toLight, right);
         vsmMarkDirectionalFootprint(position, projections, pages, trace, receiverLevel,
             toLight, right, up, sinAngularRadius, workCounts);
 #else
@@ -2835,43 +2802,6 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
         gVsmReceiverPages[entry].store(0xffffffffu, MemoryOrder.Relaxed);
         gVsmReceiverMasks[entry].x.store(0u, MemoryOrder.Relaxed);
         gVsmReceiverMasks[entry].y.store(0u, MemoryOrder.Relaxed);
-#endif
-    }
-    if (lane == 0u) {
-        StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
-        ViewConstants view = views[0];
-        VSMReceiverBasis b = vsmMakeReceiverBasis(view);
-        gVsmMarkReceiverBasis.eye = b.eye;
-        gVsmMarkReceiverBasis.forward = b.forward;
-        gVsmMarkReceiverBasis.right = b.right;
-        gVsmMarkReceiverBasis.up = b.up;
-        gVsmMarkReceiverBasis.rightAspect = b.rightAspect;
-        gVsmMarkReceiverBasis.tanHalfFov = b.tanHalfFov;
-        gVsmMarkReceiverBasis.orthoHalfHeight = b.orthoHalfHeight;
-        gVsmMarkReceiverBasis.jitter = b.jitter;
-        gVsmMarkReceiverBasis.invViewport = b.invViewport;
-        gVsmMarkReceiverBasis.ndcScale = b.ndcScale;
-        gVsmMarkReceiverBasis.viewportSize = b.viewportSize;
-        gVsmMarkReceiverBasis.nearPlane = b.nearPlane;
-        gVsmMarkReceiverBasis.farPlane = b.farPlane;
-        gVsmMarkReceiverBasis.farMinusNear = b.farMinusNear;
-        gVsmMarkReceiverBasis.nearTimesFar = b.nearTimesFar;
-        gVsmMarkReceiverBasis.isOrtho = b.isOrtho ? 1u : 0u;
-        gVsmMarkReceiverBasis.reversed = b.reversed ? 1u : 0u;
-
-#if VSM_DIRECTIONAL_MARK
-        if (push.lightType == 0u) {
-            StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-            float3 toLight = normalize(projections[0].rowZ.xyz);
-            float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
-            float3 up = cross(toLight, right);
-            float sinAngularRadius = sin(push.angularRadius);
-            gVsmMarkDirectionalUniform.toLight = toLight;
-            gVsmMarkDirectionalUniform.right = right;
-            gVsmMarkDirectionalUniform.up = up;
-            gVsmMarkDirectionalUniform.sinAngularRadius = sinAngularRadius;
-            gVsmMarkDirectionalUniform.sinAlpha = max(sinAngularRadius, 0.1);
-        }
 #endif
     }
     GroupMemoryBarrierWithGroupSync();
