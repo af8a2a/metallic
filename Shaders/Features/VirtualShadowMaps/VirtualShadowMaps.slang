@@ -1961,6 +1961,42 @@ float vsmDirectionalRayDepth(float depth, VSMDirectionalRayState ray)
 {
     return vsmDirectionalRayDepth(depth, ray.base);
 }
+
+void vsmDirectionalSampleCompareAndReference(
+    ShadowLookup sample, float time, float3 stepOffset, VSMDirectionalRay dirRay,
+    VSMDirectionalRayBase rayBase, StructuredBuffer<ShadowProjection> projections,
+    ShadowPush push, float receiverInvResolution, float coarseInvResolution,
+    float2 receiverScaledSlope, float2 normalSlope, float biasZ, bool useGroupCache,
+    out float compare, out float reference)
+{
+    if (sample.level == rayBase.receiverLevel) {
+        float2 sampleNDC = fma(float2(sample.virtualTexel), float2(receiverInvResolution), float2(0.5 * receiverInvResolution - 1.0));
+        float2 offset = sampleNDC - (rayBase.comparisonOrigin.xy + stepOffset.xy);
+        float correction = -dot(receiverScaledSlope, offset);
+        float relDepth = stepOffset.z + correction + biasZ;
+        compare = rayBase.comparisonOrigin.z + relDepth;
+        reference = relDepth * rayBase.invDepthScale;
+    } else {
+        float2 translation;
+        float extent;
+#if !VSM_ONE_PASS_PROJECTION
+        if (useGroupCache && sample.level < kVSMMaxCachedProjections) {
+            translation = gVsmDirectionalLevels[sample.level].translation;
+            extent = gVsmDirectionalLevels[sample.level].extent;
+        } else
+#endif
+        {
+            ShadowProjection projection = projections[sample.level];
+            translation = float2(projection.rowX.w, projection.rowY.w);
+            extent = projection.metric.x;
+        }
+        float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, translation, false);
+        float invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
+        compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
+            extent, invResolution, normalSlope, biasZ);
+        reference = vsmDirectionalRayDepth(compare, rayBase);
+    }
+}
 #endif
 
 float vsmRayDepth(float depth, ShadowProjection projection, uint2 virtualTexel, float3 receiver, uint pageSize)
@@ -2097,38 +2133,108 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom, invSamplesPerRay);
             float3 stepOffset = time * dirRay.step;
-            ShadowLookup sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
-            if (!sample.valid) { continue; }
+            ++filterCounts.x;
+            float3 p = dirRay.lookupOrigin + stepOffset;
+            if (p.z < 0.0 || p.z > 1.0) {
+                rayCache.lastPage = 0xffffffffu;
+                rayCache.lastPageHit = false;
+                continue;
+            }
+
             float compare;
             float reference;
-            if (sample.level == rayBase.receiverLevel) {
-                float2 sampleNDC = fma(float2(sample.virtualTexel), float2(receiverInvResolution), float2(0.5 * receiverInvResolution - 1.0));
-                float2 offset = sampleNDC - (rayBase.comparisonOrigin.xy + stepOffset.xy);
-                float correction = -dot(receiverScaledSlope, offset);
-                float relDepth = stepOffset.z + correction + biasZ;
-                compare = rayBase.comparisonOrigin.z + relDepth;
-                reference = relDepth * rayBase.invDepthScale;
-            } else {
-                float2 translation;
-                float extent;
-#if !VSM_ONE_PASS_PROJECTION
-                if (useGroupCache && sample.level < kVSMMaxCachedProjections) {
-                    translation = gVsmDirectionalLevels[sample.level].translation;
-                    extent = gVsmDirectionalLevels[sample.level].extent;
-                } else
-#endif
-                {
-                    ShadowProjection projection = projections[sample.level];
-                    translation = float2(projection.rowX.w, projection.rowY.w);
-                    extent = projection.metric.x;
+            float storedDepth;
+            bool sampleValid = false;
+
+            if (rayBase.allowClipmaps && all(abs(p.xy) < rayBase.receiverMarginMax)) {
+                uint2 texel = uint2(fma(p.xy, float2(rayBase.halfReceiverResolution), float2(rayBase.halfReceiverResolution)));
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+                uint2 pageCoord = texel >> VSM_PROJECTION_PAGE_SHIFT;
+                uint2 localTexel = vsmPageLocalTexel(texel, push.pageSize);
+                uint pageOffset = pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
+#else
+                bool isPow2 = rayBase.powerOfTwoLayout;
+                uint2 pageCoord;
+                uint2 localTexel;
+                uint pageOffset;
+                uint pageSizeShift = rayBase.pageSizeShift;
+                uint pageSizeMask = rayBase.pageSizeMask;
+                uint vpaShift = rayBase.virtualPagesPerAxisShift;
+                if (isPow2) {
+                    pageCoord = texel >> pageSizeShift;
+                    localTexel = texel & pageSizeMask;
+                    pageOffset = (pageCoord.y << vpaShift) | pageCoord.x;
+                } else {
+                    pageCoord = texel / push.pageSize;
+                    localTexel = texel % push.pageSize;
+                    pageOffset = pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
                 }
-                float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, translation, false);
-                float invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
-                compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
-                    extent, invResolution, normalSlope, biasZ);
-                reference = vsmDirectionalRayDepth(compare, rayBase);
+#endif
+                uint page = rayBase.receiverPageOffset + pageOffset;
+                vsmWorkAdd(push, kVSMWorkProjectionMappingLoads, 1u);
+                uint2 physical;
+                bool isFastPath = false;
+                if (page == rayCache.lastPage && rayCache.lastPageHit) {
+                    physical = rayCache.lastPhysicalCoord;
+                    isFastPath = true;
+                } else {
+                    uint4 mapping = pages[rayBase.receiverMappingOffset + pageOffset];
+                    if (mapping.w == 1u) {
+                        physical = vsmMappingPhysicalCoord(mapping.y);
+                        rayCache.lastPhysicalCoord = physical;
+                        rayCache.lastPage = page;
+                        rayCache.lastPageHit = true;
+                        isFastPath = true;
+                    } else {
+                        rayCache.lastPage = page;
+                        rayCache.lastPageHit = false;
+                        ShadowLookup sample = vsmDirectionalRayLookupSlow(p, texel, page, mapping, true, time, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
+                        if (sample.valid) {
+                            sampleValid = true;
+                            storedDepth = sample.storedDepth;
+                            vsmDirectionalSampleCompareAndReference(sample, time, stepOffset, dirRay,
+                                rayBase, projections, push, receiverInvResolution, coarseInvResolution,
+                                receiverScaledSlope, normalSlope, biasZ, useGroupCache, compare, reference);
+                        }
+                    }
+                }
+
+                if (isFastPath) {
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+                    uint2 atlasTexel = vsmAtlasTexel(physical, localTexel, push.pageSize);
+#else
+                    uint2 atlasTexel;
+                    if (isPow2) {
+                        atlasTexel = (physical << pageSizeShift) | localTexel;
+                    } else {
+                        atlasTexel = physical * push.pageSize + localTexel;
+                    }
+#endif
+                    storedDepth = atlas.Load(int3(atlasTexel, 0));
+                    vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
+
+                    float2 sampleNDC = fma(float2(texel), float2(receiverInvResolution), float2(0.5 * receiverInvResolution - 1.0));
+                    float2 offset = sampleNDC - (rayBase.comparisonOrigin.xy + stepOffset.xy);
+                    float correction = -dot(receiverScaledSlope, offset);
+                    float relDepth = stepOffset.z + correction + biasZ;
+                    compare = rayBase.comparisonOrigin.z + relDepth;
+                    reference = relDepth * rayBase.invDepthScale;
+                    sampleValid = true;
+                }
+            } else {
+                ShadowLookup sample = vsmDirectionalRayLookupSlow(p, uint2(0u), 0u, uint4(0u), false, time, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
+                if (sample.valid) {
+                    sampleValid = true;
+                    storedDepth = sample.storedDepth;
+                    vsmDirectionalSampleCompareAndReference(sample, time, stepOffset, dirRay,
+                        rayBase, projections, push, receiverInvResolution, coarseInvResolution,
+                        receiverScaledSlope, normalSlope, biasZ, useGroupCache, compare, reference);
+                }
             }
-            float diff = (sample.storedDepth - compare) * rayBase.invDepthScale;
+
+            if (!sampleValid) { continue; }
+
+            float diff = (storedDepth - compare) * rayBase.invDepthScale;
             if (!hasHistory) {
                 blocked = diff > 0.0;
                 if (blocked) { break; }
