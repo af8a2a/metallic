@@ -1773,10 +1773,16 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
     if (rayBase.allowClipmaps) {
         if (all(abs(p.xy) < rayBase.receiverMarginMax)) {
             uint2 texel = uint2(fma(p.xy, float2(rayBase.halfReceiverResolution), float2(rayBase.halfReceiverResolution)));
+            bool isPow2 = rayBase.powerOfTwoLayout;
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+            // The page size is known even when the physical atlas width is not a power of two.
+            uint2 pageCoord = texel >> VSM_PROJECTION_PAGE_SHIFT;
+            uint2 localTexel = vsmPageLocalTexel(texel, push.pageSize);
+            uint pageOffset = pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
+#else
             uint2 pageCoord;
             uint2 localTexel;
             uint pageOffset;
-            bool isPow2 = rayBase.powerOfTwoLayout;
             uint pageSizeShift = rayBase.pageSizeShift;
             uint pageSizeMask = rayBase.pageSizeMask;
             uint vpaShift = rayBase.virtualPagesPerAxisShift;
@@ -1789,6 +1795,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
                 localTexel = texel % push.pageSize;
                 pageOffset = pageCoord.y * push.virtualPagesPerAxis + pageCoord.x;
             }
+#endif
             uint page = rayBase.receiverPageOffset + pageOffset;
             vsmWorkAdd(push, kVSMWorkProjectionMappingLoads, 1u);
             uint2 physical;
@@ -1811,12 +1818,16 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
                     return vsmDirectionalRayLookupSlow(p, texel, page, mapping, true, time, ray, rayBase, projections, pages, atlas, push, counts, cache, useGroupCache);
                 }
             }
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+            uint2 atlasTexel = vsmAtlasTexel(physical, localTexel, push.pageSize);
+#else
             uint2 atlasTexel;
             if (isPow2) {
                 atlasTexel = (physical << pageSizeShift) | localTexel;
             } else {
                 atlasTexel = physical * push.pageSize + localTexel;
             }
+#endif
             float storedDepth = atlas.Load(int3(atlasTexel, 0));
             vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
             ShadowLookup result;
@@ -2132,16 +2143,39 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
 // Read-before-write filters must remain atomic with other lanes' updates.
 groupshared Atomic<uint> gVsmMarkedPages[256];
 
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+bool vsmClaimMarkSlot(uint page, out uint slot)
+{
+    // The page key remains valid until flush. A colliding page publishes directly.
+    slot = (page * 2654435761u) >> 24u;
+    uint current = gVsmMarkedPages[slot].load(MemoryOrder.Relaxed);
+    if (current == page) { return true; }
+    if (current != 0xffffffffu) { return false; }
+    uint previous = gVsmMarkedPages[slot].compareExchange(0xffffffffu, page, MemoryOrder.Relaxed, MemoryOrder.Relaxed);
+    return previous == 0xffffffffu || previous == page;
+}
+#endif
+
+void vsmPublishMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCounts)
+{
+    InterlockedOr(pages[page].y, 1u);
+    ++workCounts.z;
+}
+
 void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCounts)
 {
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+    uint slot;
+    if (vsmClaimMarkSlot(page, slot)) { return; }
+#else
     // A cache hit reuses an inserting lane's eventual OR. Hash collisions only
     // cause repeated requests; allocation observes this dispatch after all ORs.
     uint slot = (page * 2654435761u) >> 24u;
     if (gVsmMarkedPages[slot].load(MemoryOrder.Relaxed) == page) { return; }
     uint previous = gVsmMarkedPages[slot].exchange(page, MemoryOrder.Relaxed);
     if (previous == page) { return; }
-    InterlockedOr(pages[page].y, 1u);
-    ++workCounts.z;
+#endif
+    vsmPublishMarkPage(pages, page, workCounts);
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
@@ -2491,8 +2525,6 @@ void vsmWriteReceiverMask(ShadowPush push, uint page, uint2 mask)
     vsmWorkAdd(push, kVSMWorkMarkReceiverMaskAtomicOrs, uint(mask.x != 0u) + uint(mask.y != 0u));
 }
 
-// The final group barrier completes all mask contributions before flush.
-groupshared Atomic<uint> gVsmReceiverPages[256];
 struct VSMReceiverMaskAtomic
 {
     Atomic<uint> x;
@@ -2502,14 +2534,10 @@ groupshared VSMReceiverMaskAtomic gVsmReceiverMasks[256];
 
 bool vsmAccumulateReceiverMask(uint page, uint2 mask)
 {
+    uint slot;
+    if (!vsmClaimMarkSlot(page, slot)) { return false; }
+    // A zero mask still contributes a page request.
     if ((mask.x | mask.y) == 0u) { return true; }
-    uint slot = (page * 2654435761u) >> 24u;
-    uint current = gVsmReceiverPages[slot].load(MemoryOrder.Relaxed);
-    if (current != page) {
-        if (current != 0xffffffffu) { return false; }
-        uint previous = gVsmReceiverPages[slot].compareExchange(0xffffffffu, page, MemoryOrder.Relaxed, MemoryOrder.Relaxed);
-        if (previous != 0xffffffffu && previous != page) { return false; }
-    }
     uint curX = gVsmReceiverMasks[slot].x.load(MemoryOrder.Relaxed);
     uint curY = gVsmReceiverMasks[slot].y.load(MemoryOrder.Relaxed);
     if (((curX & mask.x) == mask.x) && ((curY & mask.y) == mask.y)) {
@@ -2640,9 +2668,13 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
                 // Page deduplication must not discard another receiver's subtiles.
                 uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel, uint2(x, y), push.pageSize);
 #endif
-                if (!vsmAccumulateReceiverMask(page, mask)) { vsmWriteReceiverMask(push, page, mask); }
-#endif
+                if (!vsmAccumulateReceiverMask(page, mask)) {
+                    vsmWriteReceiverMask(push, page, mask);
+                    vsmPublishMarkPage(pages, page, workCounts);
+                }
+#else
                 vsmMarkPage(pages, page, workCounts);
+#endif
             }
         }
     }
@@ -2799,7 +2831,6 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
     for (uint entry = lane; entry < 256u; entry += 64u) {
         gVsmMarkedPages[entry].store(0xffffffffu, MemoryOrder.Relaxed);
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
-        gVsmReceiverPages[entry].store(0xffffffffu, MemoryOrder.Relaxed);
         gVsmReceiverMasks[entry].x.store(0u, MemoryOrder.Relaxed);
         gVsmReceiverMasks[entry].y.store(0u, MemoryOrder.Relaxed);
 #endif
@@ -2808,14 +2839,16 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
     uint3 counts;
     vsmMarkReceiver(id, push, counts);
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
-    // Receiver rejection and divergent page loops have completed on all lanes.
+    // All mask contributions are complete before publishing requests and masks.
     GroupMemoryBarrierWithGroupSync();
+    RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     for (uint entry = lane; entry < 256u; entry += 64u) {
-        uint page = gVsmReceiverPages[entry].load(MemoryOrder.Relaxed);
+        uint page = gVsmMarkedPages[entry].load(MemoryOrder.Relaxed);
         if (page != 0xffffffffu) {
             uint2 mask = uint2(gVsmReceiverMasks[entry].x.load(MemoryOrder.Relaxed),
                 gVsmReceiverMasks[entry].y.load(MemoryOrder.Relaxed));
             vsmWriteReceiverMask(push, page, mask);
+            vsmPublishMarkPage(pages, page, counts);
         }
     }
 #endif
