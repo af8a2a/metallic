@@ -1736,6 +1736,28 @@ struct VSMDirectionalRayCache
     bool lastPageHit;
 };
 
+ShadowLookup vsmSamplePhysicalPage(
+    uint physicalPage, uint level, float3 projected, uint2 virtualTexel,
+    VSMDirectionalRayBase rayBase, Texture2D<float> atlas, ShadowPush push)
+{
+    ShadowLookup result;
+    result.projectionsHandle = push.projections;
+    result.level = level;
+    result.projected = projected;
+    result.virtualTexel = virtualTexel;
+    uint2 physical;
+    if (rayBase.powerOfTwoLayout) {
+        physical = uint2(physicalPage & rayBase.physicalPagesXMask, physicalPage >> rayBase.physicalPagesXShift);
+        result.storedDepth = atlas.Load(int3((physical << rayBase.pageSizeShift) | (virtualTexel & rayBase.pageSizeMask), 0));
+    } else {
+        physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
+        result.storedDepth = atlas.Load(int3(vsmAtlasTexelFromVirtual(physical, virtualTexel, push.pageSize), 0));
+    }
+    vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
+    result.valid = true;
+    return result;
+}
+
 [noinline]
 ShadowLookup vsmDirectionalRayLookupSlow(
     float3 p, uint2 texel, uint page, uint4 mapping, bool inBounds,
@@ -1748,40 +1770,42 @@ ShadowLookup vsmDirectionalRayLookupSlow(
     result.valid = false;
     result.storedDepth = 0.0;
     result.level = push.clipmapCount;
-    uint physicalPage = 0xffffffffu;
-    uint2 physical = uint2(0u);
-    bool hasPhysicalCoord = false;
-    bool mappedToCoarse = false;
+    result.projected = p;
+    result.virtualTexel = texel;
 
+    if (p.z < 0.0 || p.z > 1.0) {
+        cache.lastPage = 0xffffffffu;
+        cache.lastPageHit = false;
+        return result;
+    }
+
+    bool mappedToCoarse = false;
     if (inBounds) {
         if (mapping.w == 0u) {
             vsmWorkAdd(push, kVSMWorkProjectionMappingSlowPaths, 1u);
             vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
             uint4 entry = pages[page];
             if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 1u) != 0u) {
-                physicalPage = entry.x;
-                result.level = rayBase.receiverLevel;
-                result.projected = p;
-                result.virtualTexel = texel;
+                return vsmSamplePhysicalPage(entry.x, rayBase.receiverLevel, p, texel, rayBase, atlas, push);
             }
         } else if (mapping.y == push.clipmapCount) {
             mappedToCoarse = true;
         } else {
             vsmMapDirectionalAncestor(mapping, rayBase.sourceTranslation, p, texel, projections, push, rayBase.receiverLevel, useGroupCache);
-            physicalPage = mapping.x;
-            result.level = mapping.y;
-            result.projected = p;
-            result.virtualTexel = texel;
+            return vsmSamplePhysicalPage(mapping.x, mapping.y, p, texel, rayBase, atlas, push);
         }
     } else {
         cache.lastPage = 0xffffffffu;
         cache.lastPageHit = false;
     }
 
-    if (physicalPage == 0xffffffffu && !mappedToCoarse) {
+    if (!mappedToCoarse) {
+        float2 basePXY = p.xy;
         for (uint level = rayBase.receiverLevel + 1u; level < push.clipmapCount; ++level) {
             ShadowProjection projection = vsmGetCachedProjection(projections, level, useGroupCache);
-            float3 fallbackP = vsmDirectionalRayPosition(ray, rayBase, time, level, projection, true);
+            float scale = asfloat(uint(127 - (int(level) - int(rayBase.receiverLevel))) << 23u);
+            float2 translation = float2(projection.rowX.w, projection.rowY.w) - rayBase.sourceTranslation * scale;
+            float3 fallbackP = float3(basePXY * scale + translation, p.z);
             if (!vsmContains(fallbackP, projection, push.pageSize, true)) { continue; }
             uint2 fallbackTexel = vsmVirtualTexel(fallbackP, projection, push.pageSize);
             uint fallbackPage = vsmVirtualPage(fallbackTexel, projection, push.pageSize);
@@ -1789,45 +1813,30 @@ ShadowLookup vsmDirectionalRayLookupSlow(
             if (vsmDirectionalRayMapping(float2(projection.rowX.w, projection.rowY.w), fallbackPage, fallbackP, fallbackTexel,
                     projections, pages, push, level, mappedPhysical, mappedLevel, useGroupCache)) {
                 if (mappedLevel == push.clipmapCount) { break; }
-                physicalPage = mappedPhysical; result.level = mappedLevel;
-                result.projected = fallbackP; result.virtualTexel = fallbackTexel;
-                break;
+                return vsmSamplePhysicalPage(mappedPhysical, mappedLevel, fallbackP, fallbackTexel, rayBase, atlas, push);
             }
             vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
             uint4 entry = pages[fallbackPage];
             if (entry.x == 0xffffffffu || (entry.y & 2u) == 0u || (entry.w & 1u) == 0u) { continue; }
-            physicalPage = entry.x; result.level = level;
-            result.projected = fallbackP; result.virtualTexel = fallbackTexel;
-            break;
+            return vsmSamplePhysicalPage(entry.x, level, fallbackP, fallbackTexel, rayBase, atlas, push);
         }
     }
 
-    if (physicalPage == 0xffffffffu) {
-        ShadowProjection coarse = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-        result.projected = vsmDirectionalRayPosition(ray, rayBase, time, push.clipmapCount, coarse, true);
-        if (!vsmContains(result.projected, coarse, push.pageSize, false)) { return result; }
-        vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
-        if (!rayBase.coarseValid) {
-            ++counts.z;
-            return result;
-        }
-        physical = rayBase.coarsePhysicalCoord;
-        hasPhysicalCoord = true;
-        result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
-        ++counts.y;
+    ShadowProjection coarse = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
+    result.projected = vsmDirectionalRayPosition(ray, rayBase, time, push.clipmapCount, coarse, true);
+    if (!vsmContains(result.projected, coarse, push.pageSize, false)) { return result; }
+    vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
+    if (!rayBase.coarseValid) {
+        ++counts.z;
+        return result;
     }
-    if (!hasPhysicalCoord) {
-        if (rayBase.powerOfTwoLayout) {
-            physical = uint2(physicalPage & rayBase.physicalPagesXMask, physicalPage >> rayBase.physicalPagesXShift);
-        } else {
-            physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
-        }
-    }
+    result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
+    ++counts.y;
     uint2 finalAtlasTexel;
     if (rayBase.powerOfTwoLayout) {
-        finalAtlasTexel = (physical << rayBase.pageSizeShift) | (result.virtualTexel & rayBase.pageSizeMask);
+        finalAtlasTexel = (rayBase.coarsePhysicalCoord << rayBase.pageSizeShift) | (result.virtualTexel & rayBase.pageSizeMask);
     } else {
-        finalAtlasTexel = vsmAtlasTexelFromVirtual(physical, result.virtualTexel, push.pageSize);
+        finalAtlasTexel = vsmAtlasTexelFromVirtual(rayBase.coarsePhysicalCoord, result.virtualTexel, push.pageSize);
     }
     result.storedDepth = atlas.Load(int3(finalAtlasTexel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
@@ -1840,9 +1849,21 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
     Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
 {
     ++counts.x;
+    float3 p = ray.lookupOrigin + stepOffset;
+    if (p.z < 0.0 || p.z > 1.0) {
+        cache.lastPage = 0xffffffffu;
+        cache.lastPageHit = false;
+        ShadowLookup invalidResult;
+        invalidResult.projectionsHandle = push.projections;
+        invalidResult.level = push.clipmapCount;
+        invalidResult.projected = p;
+        invalidResult.virtualTexel = uint2(0u);
+        invalidResult.storedDepth = 0.0;
+        invalidResult.valid = false;
+        return invalidResult;
+    }
     if (rayBase.allowClipmaps) {
-        float3 p = ray.lookupOrigin + stepOffset;
-        if (all(abs(p.xy) < rayBase.receiverMarginMax) && p.z >= 0.0 && p.z <= 1.0) {
+        if (all(abs(p.xy) < rayBase.receiverMarginMax)) {
             uint2 texel = uint2(fma(p.xy, float2(rayBase.halfReceiverResolution), float2(rayBase.halfReceiverResolution)));
             uint2 pageCoord;
             uint2 localTexel;
@@ -1895,9 +1916,9 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
             result.valid = true;
             return result;
         }
-        return vsmDirectionalRayLookupSlow(float3(0.0), uint2(0u), 0u, uint4(0u), false, time, ray, rayBase, projections, pages, atlas, push, counts, cache, useGroupCache);
+        return vsmDirectionalRayLookupSlow(p, uint2(0u), 0u, uint4(0u), false, time, ray, rayBase, projections, pages, atlas, push, counts, cache, useGroupCache);
     }
-    return vsmDirectionalRayLookupSlow(float3(0.0), uint2(0u), 0u, uint4(0u), false, time, ray, rayBase, projections, pages, atlas, push, counts, cache, useGroupCache);
+    return vsmDirectionalRayLookupSlow(p, uint2(0u), 0u, uint4(0u), false, time, ray, rayBase, projections, pages, atlas, push, counts, cache, useGroupCache);
 }
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
