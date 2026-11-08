@@ -127,21 +127,12 @@ bool temporalProject(float3 position, TemporalViewBasis basis, out float2 pixel)
 
 groupshared float4 gTemporalPositions[10][10];
 groupshared float gTemporalRawDepth[10][10];
-groupshared TemporalViewBasis gCurrentBasis;
-groupshared TemporalViewBasis gPreviousBasis;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    if (lane == 0u) {
-        gCurrentBasis = createTemporalViewBasis(params.views.load(0));
-        gPreviousBasis = createTemporalViewBasis(params.views.load(1));
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    TemporalViewBasis current = gCurrentBasis;
-    TemporalViewBasis previous = gPreviousBasis;
+    TemporalViewBasis current = createTemporalViewBasis(params.views.load(0));
     Texture2D<float> depthTex = resolveUniform(params.depth);
 
     int2 tileOrigin = int2(group.xy * 8u) - int2(1, 1);
@@ -188,8 +179,10 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
     uint count = 1u;
 
 
-    float2 previousPixel;
-    if (params.hasHistory != 0u && temporalProject(position, previous, previousPixel)) {
+    if (params.hasHistory != 0u) {
+        TemporalViewBasis previous = createTemporalViewBasis(params.views.load(1));
+        float2 previousPixel;
+        if (temporalProject(position, previous, previousPixel)) {
         float4 sLeft = gTemporalPositions[localY + 1u][localX];
         float4 sRight = gTemporalPositions[localY + 1u][localX + 2u];
         float4 sTop = gTemporalPositions[localY][localX + 1u];
@@ -272,6 +265,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
             uint priorCount = min(uint(sampleCount / weightSum + 0.5), params.maxFrames - 1u);
             count = priorCount + 1u;
             result = (sum / weightSum * float(priorCount) + raw) / float(count);
+        }
         }
     }
     currHistory[id.xy] = uint2((count << 16u) | (f32tof16(result) & 0xffffu), asuint(rawDepth));
