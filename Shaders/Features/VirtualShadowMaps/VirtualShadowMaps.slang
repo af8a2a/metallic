@@ -2587,6 +2587,7 @@ groupshared VSMReceiverMaskAtomic gVsmReceiverMasks[256];
 
 bool vsmAccumulateReceiverMask(uint page, uint2 mask)
 {
+    if ((mask.x | mask.y) == 0u) { return true; }
     uint slot = (page * 2654435761u) >> 24u;
     uint current = gVsmReceiverPages[slot].load(MemoryOrder.Relaxed);
     if (current != page) {
@@ -2594,10 +2595,15 @@ bool vsmAccumulateReceiverMask(uint page, uint2 mask)
         uint previous = gVsmReceiverPages[slot].compareExchange(0xffffffffu, page, MemoryOrder.Relaxed, MemoryOrder.Relaxed);
         if (previous != 0xffffffffu && previous != page) { return false; }
     }
-    if (mask.x != 0u && (gVsmReceiverMasks[slot].x.load(MemoryOrder.Relaxed) & mask.x) != mask.x) {
+    uint curX = gVsmReceiverMasks[slot].x.load(MemoryOrder.Relaxed);
+    uint curY = gVsmReceiverMasks[slot].y.load(MemoryOrder.Relaxed);
+    if (((curX & mask.x) == mask.x) && ((curY & mask.y) == mask.y)) {
+        return true;
+    }
+    if ((curX & mask.x) != mask.x) {
         gVsmReceiverMasks[slot].x.or(mask.x, MemoryOrder.Relaxed);
     }
-    if (mask.y != 0u && (gVsmReceiverMasks[slot].y.load(MemoryOrder.Relaxed) & mask.y) != mask.y) {
+    if ((curY & mask.y) != mask.y) {
         gVsmReceiverMasks[slot].y.or(mask.y, MemoryOrder.Relaxed);
     }
     return true;
@@ -2686,13 +2692,33 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
             lastPage = lastTexel / push.pageSize;
 #endif
         }
+#if VSM_RECEIVER_MASK
+#if VSM_MARK_PAGE_SHIFT >= 3
+        uint subShift = uint(VSM_MARK_PAGE_SHIFT - 3);
+        uint subMask = push.pageSize - 1u;
+#endif
+#endif
         for (uint y = firstPage.y; y <= lastPage.y; ++y) {
             uint rowBasePage = projection.page.x + y * projection.page.y;
+#if VSM_RECEIVER_MASK
+#if VSM_MARK_PAGE_SHIFT >= 3
+            uint firstSubY = (y == firstPage.y) ? ((firstTexel.y & subMask) >> subShift) : 0u;
+            uint lastSubY = (y == lastPage.y) ? ((lastTexel.y & subMask) >> subShift) : 7u;
+#endif
+#endif
             for (uint x = firstPage.x; x <= lastPage.x; ++x) {
                 uint page = rowBasePage + x;
 #if VSM_RECEIVER_MASK
+#if VSM_MARK_PAGE_SHIFT >= 3
+                uint firstSubX = (x == firstPage.x) ? ((firstTexel.x & subMask) >> subShift) : 0u;
+                uint lastSubX = (x == lastPage.x) ? ((lastTexel.x & subMask) >> subShift) : 7u;
+                uint2 mask = (firstSubX == 0u && lastSubX == 7u && firstSubY == 0u && lastSubY == 7u) ?
+                    uint2(0xffffffffu, 0xffffffffu) :
+                    vsmReceiverRectangleMask(uint2(firstSubX, firstSubY), uint2(lastSubX, lastSubY));
+#else
                 // Page deduplication must not discard another receiver's subtiles.
                 uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel, uint2(x, y), push.pageSize);
+#endif
                 if (!vsmAccumulateReceiverMask(page, mask)) { vsmWriteReceiverMask(push, page, mask); }
 #endif
                 vsmMarkPage(pages, page, workCounts);
