@@ -15,6 +15,7 @@ struct TemporalViewBasis
     float3 forward;
     float3 right;
     float3 up;
+    float3 rightAspect;
     float2 viewportExtent;
     float2 invViewport;
     float viewportAspect;
@@ -23,7 +24,10 @@ struct TemporalViewBasis
     float nearPlane;
     float farPlane;
     float farMinusNear;
+    float nearTimesFar;
     float2 jitter;
+    float toleranceScale;
+    float orthoTolerance;
     uint isOrtho;
     uint reversed;
 };
@@ -38,12 +42,16 @@ TemporalViewBasis createTemporalViewBasis(ViewConstants view)
     b.viewportExtent = view.current.viewport.yz;
     b.invViewport = 1.0 / view.current.viewport.yz;
     b.viewportAspect = view.current.viewport.x;
+    b.rightAspect = b.right * view.current.viewport.x;
     b.tanHalfFov = tan(view.current.viewport.w * 0.5);
     b.isOrtho = view.current.upProjection.w > 0.5 ? 1u : 0u;
     b.halfOrthoHeight = view.current.clipOrtho.z * 0.5;
     b.nearPlane = view.current.clipOrtho.x;
     b.farPlane = view.current.clipOrtho.y;
     b.farMinusNear = view.current.clipOrtho.y - view.current.clipOrtho.x;
+    b.nearTimesFar = b.nearPlane * b.farPlane;
+    b.toleranceScale = (b.isOrtho != 0u) ? 1e-5 : ((2.0 * b.tanHalfFov / b.viewportExtent.y) * 0.01 + 1e-5);
+    b.orthoTolerance = (b.isOrtho != 0u) ? (b.halfOrthoHeight * 2.0 / b.viewportExtent.y * 0.01) : 0.0;
     b.reversed = view.current.clipOrtho.w > 0.5 ? 1u : 0u;
     b.jitter = view.frame.z != 0u ? view.jitter.xy : float2(0.0);
     return b;
@@ -58,13 +66,13 @@ bool temporalReceiver(int2 pixel, TemporalViewBasis basis, float depth, out floa
         linearDepth = basis.reversed != 0u ? lerp(basis.farPlane, basis.nearPlane, depth) : lerp(basis.nearPlane, basis.farPlane, depth);
     } else {
         float denominator = basis.reversed != 0u ? basis.nearPlane + depth * basis.farMinusNear : basis.farPlane - depth * basis.farMinusNear;
-        linearDepth = basis.nearPlane * basis.farPlane / denominator;
+        linearDepth = basis.nearTimesFar / denominator;
     }
     float2 uv = (float2(pixel) + 0.5 + basis.jitter) * basis.invViewport;
     float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     float halfHeight = basis.isOrtho != 0u ? basis.halfOrthoHeight : linearDepth * basis.tanHalfFov;
     position = basis.eye + basis.forward * linearDepth +
-        halfHeight * (basis.right * (ndc.x * basis.viewportAspect) + basis.up * ndc.y);
+        halfHeight * (basis.rightAspect * ndc.x + basis.up * ndc.y);
     return true;
 }
 
@@ -107,8 +115,9 @@ bool temporalProject(float3 position, TemporalViewBasis basis, out float2 pixel)
     pixel = float2(0.0);
     if (z <= basis.nearPlane || z >= basis.farPlane) { return false; }
     float halfHeight = basis.isOrtho != 0u ? basis.halfOrthoHeight : z * basis.tanHalfFov;
-    float2 ndc = float2(dot(delta, basis.right) / (halfHeight * basis.viewportAspect), dot(delta, basis.up) / halfHeight);
-    float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    float invHalfHeight = 1.0 / halfHeight;
+    float2 ndc = float2(dot(delta, basis.right) * (invHalfHeight / basis.viewportAspect), dot(delta, basis.up) * invHalfHeight);
+    float2 uv = float2(fma(ndc.x, 0.5, 0.5), fma(-ndc.y, 0.5, 0.5));
     pixel = uv * basis.viewportExtent - 0.5 - basis.jitter;
     return all(pixel >= -0.5) && all(pixel < basis.viewportExtent - 0.5);
 }
@@ -134,8 +143,8 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
 
     int2 tileOrigin = int2(group.xy * 8u) - int2(1, 1);
     for (uint i = lane; i < 100u; i += 64u) {
-        uint ky = i / 10u;
-        uint kx = i % 10u;
+        uint ky = (i * 205u) >> 11u;
+        uint kx = i - ky * 10u;
         int2 pixel = tileOrigin + int2(kx, ky);
         float depth = 1.0;
         float3 pos = float3(0.0);
@@ -196,9 +205,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
         float lengthSquared = dot(normal, normal);
         normal = lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
 
-        float pixelSize = (current.isOrtho != 0u) ? current.halfOrthoHeight * 2.0 / float(params.height) :
-            2.0 * linearDepth * current.tanHalfFov / float(params.height);
-        float tolerance = max(1e-4, pixelSize * 0.01 + linearDepth * 1e-5);
+        float tolerance = max(1e-4, linearDepth * current.toleranceScale + current.orthoTolerance);
         int2 base = int2(floor(previousPixel));
         float2 fraction = frac(previousPixel);
 
