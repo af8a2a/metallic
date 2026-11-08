@@ -2087,25 +2087,24 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             float3 stepOffset = time * dirRay.step;
             ShadowLookup sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
             if (!sample.valid) { continue; }
-            // Comparison follows the undithered ray in the selected level.
-            // The lookup's mapped/clamped projected coordinate is not that ray.
-            float3 projected;
-            float extent;
-            float invResolution;
-            float3 currentRayPos = rayBase.comparisonOrigin + stepOffset;
+            float compare;
+            float reference;
             if (sample.level == rayBase.receiverLevel) {
-                projected = currentRayPos;
-                extent = receiverExtent;
-                invResolution = receiverInvResolution;
+                float2 sampleNDC = fma(float2(sample.virtualTexel), float2(receiverInvResolution), float2(0.5 * receiverInvResolution - 1.0));
+                float2 offset = (sampleNDC - (rayBase.comparisonOrigin.xy + stepOffset.xy)) * receiverExtent;
+                float correction = -dot(normalSlope, offset);
+                float relDepth = stepOffset.z + correction + biasZ;
+                compare = rayBase.comparisonOrigin.z + relDepth;
+                reference = relDepth * rayBase.invDepthScale;
             } else {
                 ShadowProjection projection = vsmGetCachedProjection(projections, sample.level, useGroupCache);
-                projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, projection, false);
-                extent = projection.metric.x;
-                invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
+                float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, projection, false);
+                float extent = projection.metric.x;
+                float invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
+                compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
+                    extent, invResolution, normalSlope, biasZ);
+                reference = vsmDirectionalRayDepth(compare, rayBase);
             }
-            float compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
-                extent, invResolution, normalSlope, biasZ);
-            float reference = vsmDirectionalRayDepth(compare, rayBase);
             if (!hasHistory) {
                 blocked = sample.storedDepth > compare;
                 if (blocked) { break; }
@@ -2114,16 +2113,18 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                 hasHistory = true;
             } else {
                 float tolerance = abs(reference - previousReference) * 1.05;
+                float diff = (sample.storedDepth - compare) * rayBase.invDepthScale;
                 float timeDelta = time - historyTime;
                 float predicted = historyDepth + historySlope * timeDelta;
                 float predictedSeparation = predicted - reference;
-                float depth = vsmDirectionalRayDepth(sample.storedDepth, rayBase);
-                float diff = depth - reference;
                 float separation = (diff > tolerance) ? predictedSeparation : diff;
-                if (diff <= tolerance && depth != historyDepth) {
-                    historySlope = clamp((depth - historyDepth) / timeDelta, -maxSlope, maxSlope);
-                    historyDepth = depth;
-                    historyTime = time;
+                if (diff <= tolerance) {
+                    float depth = vsmDirectionalRayDepth(sample.storedDepth, rayBase);
+                    if (depth != historyDepth) {
+                        historySlope = clamp((depth - historyDepth) / timeDelta, -maxSlope, maxSlope);
+                        historyDepth = depth;
+                        historyTime = time;
+                    }
                 }
                 blocked = separation > 0.0 && separation <= tolerance;
             }
