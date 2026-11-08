@@ -631,6 +631,8 @@ struct VSMReceiverBasis
     float farPlane;
     float farMinusNear;
     float nearTimesFar;
+    float depthParamA;
+    float depthParamB;
     bool isOrtho;
     bool reversed;
 };
@@ -655,7 +657,32 @@ VSMReceiverBasis vsmMakeReceiverBasis(ViewConstants view)
     basis.nearTimesFar = view.current.clipOrtho.x * view.current.clipOrtho.y;
     basis.isOrtho = view.current.upProjection.w > 0.5;
     basis.reversed = view.current.clipOrtho.w > 0.5;
+    if (basis.isOrtho) {
+        basis.depthParamA = basis.reversed ? basis.farPlane : basis.nearPlane;
+        basis.depthParamB = basis.reversed ? (basis.nearPlane - basis.farPlane) : (basis.farPlane - basis.nearPlane);
+    } else {
+        basis.depthParamA = basis.reversed ? basis.nearPlane : basis.farPlane;
+        basis.depthParamB = basis.reversed ? basis.farMinusNear : -basis.farMinusNear;
+    }
     return basis;
+}
+
+float vsmLinearDepth(float value, VSMReceiverBasis basis)
+{
+    if (basis.isOrtho) {
+        return fma(value, basis.depthParamB, basis.depthParamA);
+    } else {
+        return basis.nearTimesFar / fma(value, basis.depthParamB, basis.depthParamA);
+    }
+}
+
+float3 vsmReceiverPosition(int2 pixel, float linearDepth, VSMReceiverBasis basis)
+{
+    float2 ndc = fma(float2(pixel) + 0.5 + basis.jitter, basis.ndcScale, float2(-1.0, 1.0));
+    float halfHeight = basis.isOrtho ? basis.orthoHalfHeight
+        : linearDepth * basis.tanHalfFov;
+    return basis.eye + basis.forward * linearDepth +
+        halfHeight * (basis.rightAspect * ndc.x + basis.up * ndc.y);
 }
 
 // Uses the actual receiver projection, including temporal jitter in pixel units.
@@ -669,18 +696,8 @@ bool vsmReceiver(int2 pixel, VSMReceiverBasis basis, Texture2D<float> depth,
     if (any(pixel < 0) || any(pixel >= basis.viewportSize)) { return false; }
     float value = depth.Load(int3(pixel, 0));
     if (value == (basis.reversed ? 0.0 : 1.0)) { return false; }
-    if (basis.isOrtho) {
-        linearDepth = basis.reversed ? lerp(basis.farPlane, basis.nearPlane, value) : lerp(basis.nearPlane, basis.farPlane, value);
-    } else {
-        float denominator = basis.reversed ? basis.nearPlane + value * basis.farMinusNear
-            : basis.farPlane - value * basis.farMinusNear;
-        linearDepth = basis.nearTimesFar / denominator;
-    }
-    float2 ndc = fma(float2(pixel) + 0.5 + basis.jitter, basis.ndcScale, float2(-1.0, 1.0));
-    float halfHeight = basis.isOrtho ? basis.orthoHalfHeight
-        : linearDepth * basis.tanHalfFov;
-    position = basis.eye + basis.forward * linearDepth +
-        halfHeight * (basis.rightAspect * ndc.x + basis.up * ndc.y);
+    linearDepth = vsmLinearDepth(value, basis);
+    position = vsmReceiverPosition(pixel, linearDepth, basis);
     return true;
 }
 
@@ -693,16 +710,56 @@ bool vsmReceiver(int2 pixel, ViewConstants view, Texture2D<float> depth,
 float3 vsmReceiverNormal(int2 pixel, VSMReceiverBasis basis, Texture2D<float> depth,
     float3 position, float linearDepth)
 {
-    float3 left, right, top, bottom;
-    float zl, zr, zt, zb;
-    bool hasLeft = vsmReceiver(pixel - int2(1, 0), basis, depth, left, zl);
-    bool hasRight = vsmReceiver(pixel + int2(1, 0), basis, depth, right, zr);
-    bool hasTop = vsmReceiver(pixel - int2(0, 1), basis, depth, top, zt);
-    bool hasBottom = vsmReceiver(pixel + int2(0, 1), basis, depth, bottom, zb);
+    float emptyDepth = basis.reversed ? 0.0 : 1.0;
+    float zl = 0.0, zr = 0.0, zt = 0.0, zb = 0.0;
+    bool hasLeft = false, hasRight = false, hasTop = false, hasBottom = false;
+
+    if (pixel.x > 0) {
+        float val = depth.Load(int3(pixel.x - 1, pixel.y, 0));
+        if (val != emptyDepth) {
+            hasLeft = true;
+            zl = vsmLinearDepth(val, basis);
+        }
+    }
+    if (pixel.x + 1 < basis.viewportSize.x) {
+        float val = depth.Load(int3(pixel.x + 1, pixel.y, 0));
+        if (val != emptyDepth) {
+            hasRight = true;
+            zr = vsmLinearDepth(val, basis);
+        }
+    }
+    if (pixel.y > 0) {
+        float val = depth.Load(int3(pixel.x, pixel.y - 1, 0));
+        if (val != emptyDepth) {
+            hasTop = true;
+            zt = vsmLinearDepth(val, basis);
+        }
+    }
+    if (pixel.y + 1 < basis.viewportSize.y) {
+        float val = depth.Load(int3(pixel.x, pixel.y + 1, 0));
+        if (val != emptyDepth) {
+            hasBottom = true;
+            zb = vsmLinearDepth(val, basis);
+        }
+    }
+
     bool useLeft = hasLeft && (!hasRight || abs(zl - linearDepth) < abs(zr - linearDepth));
     bool useTop = hasTop && (!hasBottom || abs(zt - linearDepth) < abs(zb - linearDepth));
-    float3 dx = useLeft ? position - left : (hasRight ? right - position : float3(0.0));
-    float3 dy = useTop ? position - top : (hasBottom ? bottom - position : float3(0.0));
+
+    float3 dx = float3(0.0);
+    if (useLeft) {
+        dx = position - vsmReceiverPosition(pixel - int2(1, 0), zl, basis);
+    } else if (hasRight) {
+        dx = vsmReceiverPosition(pixel + int2(1, 0), zr, basis) - position;
+    }
+
+    float3 dy = float3(0.0);
+    if (useTop) {
+        dy = position - vsmReceiverPosition(pixel - int2(0, 1), zt, basis);
+    } else if (hasBottom) {
+        dy = vsmReceiverPosition(pixel + int2(0, 1), zb, basis) - position;
+    }
+
     float3 normal = cross(dy, dx);
     float lengthSquared = dot(normal, normal);
     return lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
