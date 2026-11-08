@@ -2283,6 +2283,21 @@ bool vsmClaimMarkSlot(uint page, out uint slot)
 {
     // The page key remains valid until flush. A colliding page publishes directly.
     slot = (page * 2654435761u) >> 24u;
+    uint wavePage = WaveReadLaneFirst(page);
+    if (WaveActiveAllTrue(page == wavePage)) {
+        bool claimed = false;
+        if (WaveIsFirstLane()) {
+            uint current = gVsmMarkedPages[slot].load(MemoryOrder.Relaxed);
+            if (current == page) {
+                claimed = true;
+            } else if (current == 0xffffffffu) {
+                uint previous = gVsmMarkedPages[slot].compareExchange(0xffffffffu, page, MemoryOrder.Relaxed, MemoryOrder.Relaxed);
+                claimed = (previous == 0xffffffffu || previous == page);
+            }
+        }
+        return WaveReadLaneFirst(claimed ? 1u : 0u) != 0u;
+    }
+
     uint current = gVsmMarkedPages[slot].load(MemoryOrder.Relaxed);
     if (current == page) { return true; }
     if (current != 0xffffffffu) { return false; }
@@ -2303,6 +2318,26 @@ void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCou
     uint slot;
     if (vsmClaimMarkSlot(page, slot)) { return; }
 #else
+    uint wavePage = WaveReadLaneFirst(page);
+    if (WaveActiveAllTrue(page == wavePage)) {
+        bool shouldPublish = false;
+        if (WaveIsFirstLane()) {
+            uint slot = (page * 2654435761u) >> 24u;
+            if (gVsmMarkedPages[slot].load(MemoryOrder.Relaxed) != page) {
+                uint previous = gVsmMarkedPages[slot].exchange(page, MemoryOrder.Relaxed);
+                if (previous != page) {
+                    shouldPublish = true;
+                }
+            }
+        }
+        if (WaveReadLaneFirst(shouldPublish ? 1u : 0u) != 0u) {
+            if (WaveIsFirstLane()) {
+                vsmPublishMarkPage(pages, page, workCounts);
+            }
+        }
+        return;
+    }
+
     // A cache hit reuses an inserting lane's eventual OR. Hash collisions only
     // cause repeated requests; allocation observes this dispatch after all ORs.
     uint slot = (page * 2654435761u) >> 24u;
@@ -2673,6 +2708,13 @@ bool vsmAccumulateReceiverMask(uint page, uint2 mask)
     uint slot;
     if (!vsmClaimMarkSlot(page, slot)) { return false; }
     if ((mask.x | mask.y) == 0u) { return true; }
+
+    uint waveSlot = WaveReadLaneFirst(slot);
+    if (WaveActiveAllTrue(slot == waveSlot)) {
+        mask = uint2(WaveActiveBitOr(mask.x), WaveActiveBitOr(mask.y));
+        if (!WaveIsFirstLane()) { return true; }
+    }
+
     uint curX = gVsmReceiverMasks[slot].x.load(MemoryOrder.Relaxed);
     uint curY = gVsmReceiverMasks[slot].y.load(MemoryOrder.Relaxed);
     if (((curX & mask.x) == mask.x) && ((curY & mask.y) == mask.y)) {
