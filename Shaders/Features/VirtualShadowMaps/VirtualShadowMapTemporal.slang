@@ -237,79 +237,93 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
 
         float2 f0 = 1.0 - fraction, f1 = fraction;
         float4 tapWeights = float4(f0.x * f0.y, f1.x * f0.y, f0.x * f1.y, f1.x * f1.y);
-        float sum = 0.0, weightSum = 0.0, sampleCount = 0.0;
-        [unroll]
-        for (uint tap = 0u; tap < 4u; ++tap) {
-            float weight = tapWeights[tap];
-            if (weight <= 0.0) { continue; }
-            HistorySample sample = core[tap];
-            if (!sample.valid) { continue; }
+        float3 deltaPos0 = core[0].position - position;
+        float3 deltaPos1 = core[1].position - position;
+        float3 deltaPos2 = core[2].position - position;
+        float3 deltaPos3 = core[3].position - position;
 
-            float3 deltaPos = sample.position - position;
-            if (abs(dot(deltaPos, normal)) > tolerance) { continue; }
+        bool tapNeeded0 = tapWeights.x > 0.0 && core[0].valid && (abs(dot(deltaPos0, normal)) <= tolerance);
+        bool tapNeeded1 = tapWeights.y > 0.0 && core[1].valid && (abs(dot(deltaPos1, normal)) <= tolerance);
+        bool tapNeeded2 = tapWeights.z > 0.0 && core[2].valid && (abs(dot(deltaPos2, normal)) <= tolerance);
+        bool tapNeeded3 = tapWeights.w > 0.0 && core[3].valid && (abs(dot(deltaPos3, normal)) <= tolerance);
 
-            int2 offset = int2(tap & 1u, tap >> 1u);
-            int2 pixel = base + offset;
-            HistorySample sLeftHist, sRightHist, sTopHist, sBottomHist;
-            if (tap == 0u) {
-                int2 pL = pixel - int2(1, 0);
-                int2 pT = pixel - int2(0, 1);
-                bool inL = all(pL >= 0) && all(pL < vpExtent);
-                bool inT = all(pT >= 0) && all(pT < vpExtent);
-                uint2 vL = inL ? prevHistory[pL] : uint2(0u);
-                uint2 vT = inT ? prevHistory[pT] : uint2(0u);
-                sLeftHist = reconstructHistorySample(pL, vL, inL, previous);
-                sRightHist = core[1];
-                sTopHist = reconstructHistorySample(pT, vT, inT, previous);
-                sBottomHist = core[2];
-            } else if (tap == 1u) {
-                int2 pR = pixel + int2(1, 0);
-                int2 pT = pixel - int2(0, 1);
-                bool inR = all(pR >= 0) && all(pR < vpExtent);
-                bool inT = all(pT >= 0) && all(pT < vpExtent);
-                uint2 vR = inR ? prevHistory[pR] : uint2(0u);
-                uint2 vT = inT ? prevHistory[pT] : uint2(0u);
-                sLeftHist = core[0];
-                sRightHist = reconstructHistorySample(pR, vR, inR, previous);
-                sTopHist = reconstructHistorySample(pT, vT, inT, previous);
-                sBottomHist = core[3];
-            } else if (tap == 2u) {
-                int2 pL = pixel - int2(1, 0);
-                int2 pB = pixel + int2(0, 1);
-                bool inL = all(pL >= 0) && all(pL < vpExtent);
-                bool inB = all(pB >= 0) && all(pB < vpExtent);
-                uint2 vL = inL ? prevHistory[pL] : uint2(0u);
-                uint2 vB = inB ? prevHistory[pB] : uint2(0u);
-                sLeftHist = reconstructHistorySample(pL, vL, inL, previous);
-                sRightHist = core[3];
-                sTopHist = core[0];
-                sBottomHist = reconstructHistorySample(pB, vB, inB, previous);
-            } else {
-                int2 pR = pixel + int2(1, 0);
-                int2 pB = pixel + int2(0, 1);
-                bool inR = all(pR >= 0) && all(pR < vpExtent);
-                bool inB = all(pB >= 0) && all(pB < vpExtent);
-                uint2 vR = inR ? prevHistory[pR] : uint2(0u);
-                uint2 vB = inB ? prevHistory[pB] : uint2(0u);
-                sLeftHist = core[2];
-                sRightHist = reconstructHistorySample(pR, vR, inR, previous);
-                sTopHist = core[1];
-                sBottomHist = reconstructHistorySample(pB, vB, inB, previous);
+        if (tapNeeded0 || tapNeeded1 || tapNeeded2 || tapNeeded3) {
+            int2 pL0 = base + int2(-1, 0);
+            int2 pT0 = base + int2(0, -1);
+            int2 pR0 = base + int2(2, 0);
+            int2 pT1 = base + int2(1, -1);
+            int2 pL1 = base + int2(-1, 1);
+            int2 pB0 = base + int2(0, 2);
+            int2 pR1 = base + int2(2, 1);
+            int2 pB1 = base + int2(1, 2);
+
+            bool inL0 = all(pL0 >= 0) && all(pL0 < vpExtent);
+            bool inT0 = all(pT0 >= 0) && all(pT0 < vpExtent);
+            bool inR0 = all(pR0 >= 0) && all(pR0 < vpExtent);
+            bool inT1 = all(pT1 >= 0) && all(pT1 < vpExtent);
+            bool inL1 = all(pL1 >= 0) && all(pL1 < vpExtent);
+            bool inB0 = all(pB0 >= 0) && all(pB0 < vpExtent);
+            bool inR1 = all(pR1 >= 0) && all(pR1 < vpExtent);
+            bool inB1 = all(pB1 >= 0) && all(pB1 < vpExtent);
+
+            // Batch issue all required exterior history loads concurrently
+            uint2 vL0 = (tapNeeded0 && inL0) ? prevHistory[pL0] : uint2(0u);
+            uint2 vT0 = (tapNeeded0 && inT0) ? prevHistory[pT0] : uint2(0u);
+            uint2 vR0 = (tapNeeded1 && inR0) ? prevHistory[pR0] : uint2(0u);
+            uint2 vT1 = (tapNeeded1 && inT1) ? prevHistory[pT1] : uint2(0u);
+            uint2 vL1 = (tapNeeded2 && inL1) ? prevHistory[pL1] : uint2(0u);
+            uint2 vB0 = (tapNeeded2 && inB0) ? prevHistory[pB0] : uint2(0u);
+            uint2 vR1 = (tapNeeded3 && inR1) ? prevHistory[pR1] : uint2(0u);
+            uint2 vB1 = (tapNeeded3 && inB1) ? prevHistory[pB1] : uint2(0u);
+
+            float sum = 0.0, weightSum = 0.0, sampleCount = 0.0;
+            if (tapNeeded0) {
+                HistorySample sLeftHist = reconstructHistorySample(pL0, vL0, inL0, previous);
+                HistorySample sTopHist = reconstructHistorySample(pT0, vT0, inT0, previous);
+                float3 oldNormal = temporalNormalFromNeighbors(sLeftHist, core[1], sTopHist, core[2], core[0].position, core[0].linearDepth);
+                if (dot(normal, oldNormal) >= 0.9 && abs(dot(deltaPos0, oldNormal)) <= tolerance) {
+                    sum += tapWeights.x * f16tof32(core[0].history.x & 0xffffu);
+                    sampleCount += tapWeights.x * float(core[0].history.x >> 16u);
+                    weightSum += tapWeights.x;
+                }
             }
-
-            float3 oldNormal = temporalNormalFromNeighbors(sLeftHist, sRightHist, sTopHist, sBottomHist, sample.position, sample.linearDepth);
-            if (dot(normal, oldNormal) < 0.9 || abs(dot(deltaPos, oldNormal)) > tolerance) { continue; }
-
-            sum += weight * f16tof32(sample.history.x & 0xffffu);
-            sampleCount += weight * float(sample.history.x >> 16u);
-            weightSum += weight;
-        }
-        // Reject footprints mostly outside the old surface instead of borrowing
-        // a tiny valid corner across a disocclusion or silhouette.
-        if (weightSum >= 0.5) {
-            uint priorCount = min(uint(sampleCount / weightSum + 0.5), params.maxFrames - 1u);
-            count = priorCount + 1u;
-            result = (sum / weightSum * float(priorCount) + raw) / float(count);
+            if (tapNeeded1) {
+                HistorySample sRightHist = reconstructHistorySample(pR0, vR0, inR0, previous);
+                HistorySample sTopHist = reconstructHistorySample(pT1, vT1, inT1, previous);
+                float3 oldNormal = temporalNormalFromNeighbors(core[0], sRightHist, sTopHist, core[3], core[1].position, core[1].linearDepth);
+                if (dot(normal, oldNormal) >= 0.9 && abs(dot(deltaPos1, oldNormal)) <= tolerance) {
+                    sum += tapWeights.y * f16tof32(core[1].history.x & 0xffffu);
+                    sampleCount += tapWeights.y * float(core[1].history.x >> 16u);
+                    weightSum += tapWeights.y;
+                }
+            }
+            if (tapNeeded2) {
+                HistorySample sLeftHist = reconstructHistorySample(pL1, vL1, inL1, previous);
+                HistorySample sBottomHist = reconstructHistorySample(pB0, vB0, inB0, previous);
+                float3 oldNormal = temporalNormalFromNeighbors(sLeftHist, core[3], core[0], sBottomHist, core[2].position, core[2].linearDepth);
+                if (dot(normal, oldNormal) >= 0.9 && abs(dot(deltaPos2, oldNormal)) <= tolerance) {
+                    sum += tapWeights.z * f16tof32(core[2].history.x & 0xffffu);
+                    sampleCount += tapWeights.z * float(core[2].history.x >> 16u);
+                    weightSum += tapWeights.z;
+                }
+            }
+            if (tapNeeded3) {
+                HistorySample sRightHist = reconstructHistorySample(pR1, vR1, inR1, previous);
+                HistorySample sBottomHist = reconstructHistorySample(pB1, vB1, inB1, previous);
+                float3 oldNormal = temporalNormalFromNeighbors(core[2], sRightHist, core[1], sBottomHist, core[3].position, core[3].linearDepth);
+                if (dot(normal, oldNormal) >= 0.9 && abs(dot(deltaPos3, oldNormal)) <= tolerance) {
+                    sum += tapWeights.w * f16tof32(core[3].history.x & 0xffffu);
+                    sampleCount += tapWeights.w * float(core[3].history.x >> 16u);
+                    weightSum += tapWeights.w;
+                }
+            }
+            // Reject footprints mostly outside the old surface instead of borrowing
+            // a tiny valid corner across a disocclusion or silhouette.
+            if (weightSum >= 0.5) {
+                uint priorCount = min(uint(sampleCount / weightSum + 0.5), params.maxFrames - 1u);
+                count = priorCount + 1u;
+                result = (sum / weightSum * float(priorCount) + raw) / float(count);
+            }
         }
         }
     }
