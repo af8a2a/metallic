@@ -943,20 +943,32 @@ float vsmSampleRandom(uint2 pixel, uint dimension, uint phase)
     return phase == 0u ? spatial : frac(spatial + float(phase) * ((dimension & 1u) != 0u ? 0.569840291 : 0.754877666));
 }
 
-float2 vsmDiskSample(uint ray, uint rayCount, float2 scramble)
+float2 vsmDiskSample(uint ray, float invRayCount, float2 scramble)
 {
     // Scramble the stratified disk per receiver. A common disk point at one ray
     // shifts a hard shadow instead of estimating area-source visibility.
-    float2 sample = frac(float2(float(ray) / float(rayCount), float(ray) * 0.61803398875) +
+    float2 sample = frac(float2(float(ray) * invRayCount, float(ray) * 0.61803398875) +
         scramble);
     float angle = sample.y * 6.28318530718;
-    return sqrt(sample.x) * float2(cos(angle), sin(angle));
+    float sinAngle, cosAngle;
+    sincos(angle, sinAngle, cosAngle);
+    return sqrt(sample.x) * float2(cosAngle, sinAngle);
+}
+
+float2 vsmDiskSample(uint ray, uint rayCount, float2 scramble)
+{
+    return vsmDiskSample(ray, 1.0 / float(rayCount), scramble);
+}
+
+float2 vsmDiskSample(uint ray, float invRayCount, uint2 pixel, uint phase)
+{
+    return vsmDiskSample(ray, invRayCount,
+        float2(vsmSampleRandom(pixel, 0u, phase), vsmSampleRandom(pixel, 1u, phase)));
 }
 
 float2 vsmDiskSample(uint ray, uint rayCount, uint2 pixel, uint phase)
 {
-    return vsmDiskSample(ray, rayCount,
-        float2(vsmSampleRandom(pixel, 0u, phase), vsmSampleRandom(pixel, 1u, phase)));
+    return vsmDiskSample(ray, 1.0 / float(rayCount), pixel, phase);
 }
 
 float3 vsmRayEndpointDirectional(float3 position, float3 toLight, float3 offset, float tanAlpha, float rayLength)
@@ -1000,17 +1012,27 @@ float3 vsmRayEndpoint(float3 position, ShadowProjection projection, ShadowPush p
     return vsmRayEndpoint(position, projection, push, toLight, right * disk.x + up * disk.y);
 }
 
-float vsmRaySampleTime(uint step, ShadowPush push, float stepRandom)
+float vsmRaySampleTime(uint step, ShadowPush push, float stepRandom, float invSamplesPerRay)
 {
     if (step == push.samplesPerRay) { return 0.0; }
-    float t = 1.0 - (float(step + 1u) - stepRandom) / float(push.samplesPerRay);
+    float t = 1.0 - (float(step + 1u) - stepRandom) * invSamplesPerRay;
     return t * t;
+}
+
+float vsmRaySampleTime(uint step, ShadowPush push, float stepRandom)
+{
+    return vsmRaySampleTime(step, push, stepRandom, 1.0 / float(push.samplesPerRay));
+}
+
+float vsmRaySampleTime(uint step, ShadowPush push, uint2 pixel, float invSamplesPerRay)
+{
+    if (step == push.samplesPerRay) { return 0.0; }
+    return vsmRaySampleTime(step, push, vsmSampleRandom(pixel, 2u, push.samplePhase), invSamplesPerRay);
 }
 
 float vsmRaySampleTime(uint step, ShadowPush push, uint2 pixel)
 {
-    if (step == push.samplesPerRay) { return 0.0; }
-    return vsmRaySampleTime(step, push, vsmSampleRandom(pixel, 2u, push.samplePhase));
+    return vsmRaySampleTime(step, push, pixel, 1.0 / float(push.samplesPerRay));
 }
 
 float3 vsmRayPosition(float3 position, float3 endpoint, float time, ShadowProjection projection, ShadowPush push)
@@ -1908,6 +1930,8 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     }
     float visibility = 0.0;
     float stepRandom = vsmSampleRandom(pixel, 2u, push.samplePhase);
+    float invSamplesPerRay = 1.0 / float(push.samplesPerRay);
+    float invRayCount = 1.0 / float(push.rayCount);
 #if VSM_ADAPTIVE_RAY_COUNT
     uint tracedRays = push.rayCount;
 #endif
@@ -1960,7 +1984,6 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float invDenom = abs(denominator) > 1e-5 ? length(proj0.rowZ.xyz) / denominator : 0.0;
     float2 normalSlope = float2(dot(normal, normX), dot(normal, normY)) * invDenom;
     float2 receiverScaledSlope = normalSlope * receiverExtent;
-    float invSamplesPerRay = 1.0 / float(push.samplesPerRay);
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
     ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
@@ -1972,7 +1995,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
 #endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
-        float2 disk = vsmDiskSample(ray, push.rayCount, pixel, push.samplePhase);
+        float2 disk = vsmDiskSample(ray, invRayCount, pixel, push.samplePhase);
         float3 rayOffset = right * disk.x + up * disk.y;
         float3 endpoint = (push.lightType == 0u) ?
             vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength) :
@@ -1999,7 +2022,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         // bounded slope through that gap instead of inventing an intersection.
 #if VSM_DIRECTIONAL_PROJECTION
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
-            float time = vsmRaySampleTime(step, push, stepRandom);
+            float time = vsmRaySampleTime(step, push, stepRandom, invSamplesPerRay);
             float3 stepOffset = time * dirRay.step;
             ShadowLookup sample = vsmDirectionalRayLookup(time, stepOffset, dirRay, rayBase, projections, pages, atlas, push, filterCounts, rayCache, useGroupCache);
             if (!sample.valid) { continue; }
@@ -2050,7 +2073,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         }
 #else
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
-            float time = vsmRaySampleTime(step, push, stepRandom);
+            float time = vsmRaySampleTime(step, push, stepRandom, invSamplesPerRay);
             float3 point = vsmRayPosition(position, endpoint, time, proj0, push);
             ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
             if (!sample.valid) { continue; }
@@ -2770,9 +2793,11 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
             startW = dot(position - originProjection.originNear.xyz, forward);
         }
 #endif
+        float invRayCount = 1.0 / float(push.rayCount);
+        float invSamplesPerRay = 1.0 / float(push.samplesPerRay);
         for (uint ray = 0u; ray < push.rayCount; ++ray) {
 #if VSM_LOCAL_MARK
-            float2 disk = vsmDiskSample(ray, push.rayCount, scramble);
+            float2 disk = vsmDiskSample(ray, invRayCount, scramble);
             float3 endpoint = vsmRayEndpoint(position, originProjection, trace, toLight, right * disk.x + up * disk.y);
             float2 offset = float2(vsmSampleRandom(id.xy, 3u + 2u * ray, push.samplePhase),
                 vsmSampleRandom(id.xy, 4u + 2u * ray, push.samplePhase)) - 0.5;
@@ -2784,12 +2809,12 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts)
 #endif
             for (uint step = 0u; step <= push.samplesPerRay; ++step) {
 #if VSM_LOCAL_MARK
-                float t = 1.0 - (float(step + 1u) - stepRandom) / float(push.samplesPerRay);
+                float t = 1.0 - (float(step + 1u) - stepRandom) * invSamplesPerRay;
                 float time = step == push.samplesPerRay ? 0.0 : t * t;
                 if (push.lightType != 0u) { time = time * startW / lerp(endW, startW, time); }
                 float3 point = lerp(position, endpoint, time);
 #else
-                float time = vsmRaySampleTime(step, push, id.xy);
+                float time = vsmRaySampleTime(step, push, id.xy, invSamplesPerRay);
                 float3 point = vsmRayPosition(position, endpoint, time, projections[0], push);
 #endif
                 vsmMarkPosition(point + dither, projections, pages, push, receiverLevel, lastPages, workCounts);
