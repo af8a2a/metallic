@@ -2368,6 +2368,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
 groupshared Atomic<uint> gVsmMarkedPages[256];
 
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+[inline]
 bool vsmClaimMarkSlot(uint page, out uint slot)
 {
     // The page key remains valid until flush. A colliding page publishes directly.
@@ -2756,11 +2757,11 @@ struct VSMReceiverMaskAtomic
 };
 groupshared VSMReceiverMaskAtomic gVsmReceiverMasks[256];
 
+[inline]
 bool vsmAccumulateReceiverMask(uint page, uint2 mask)
 {
     uint slot;
     if (!vsmClaimMarkSlot(page, slot)) { return false; }
-    // A zero mask still contributes a page request.
     if ((mask.x | mask.y) == 0u) { return true; }
     uint curX = gVsmReceiverMasks[slot].x.load(MemoryOrder.Relaxed);
     uint curY = gVsmReceiverMasks[slot].y.load(MemoryOrder.Relaxed);
@@ -2872,12 +2873,20 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
     VSMDirectionalAxisBase baseAxisX = vsmCreateDirectionalAxisBase(firstProj.rowX, firstInvExtent, position, ctx);
     VSMDirectionalAxisBase baseAxisY = vsmCreateDirectionalAxisBase(firstProj.rowY, firstInvExtent, position, ctx);
 
+#if VSM_RECEIVER_MASK
+#if VSM_MARK_PAGE_SHIFT >= 3
+    uint subShift = uint(VSM_MARK_PAGE_SHIFT - 3);
+    uint subMask = push.pageSize - 1u;
+#endif
+#endif
+
     for (uint level = firstLevel; level < push.clipmapCount; ++level) {
         ++workCounts.y;
-        ShadowProjection projection = projections[level];
+        float rowXw = projections[level].rowX.w;
+        float rowYw = projections[level].rowY.w;
         float scale = asfloat(uint(127 - int(level - firstLevel)) << 23u);
-        float2 xRange = vsmDirectionalFootprintFastRange(baseAxisX, projection.rowX.w, scale);
-        float2 yRange = vsmDirectionalFootprintFastRange(baseAxisY, projection.rowY.w, scale);
+        float2 xRange = vsmDirectionalFootprintFastRange(baseAxisX, rowXw, scale);
+        float2 yRange = vsmDirectionalFootprintFastRange(baseAxisY, rowYw, scale);
         float2 low = float2(xRange.x, yRange.x), high = float2(xRange.y, yRange.y);
         uint2 firstPage = uint2(0u), lastPage = defaultLastPage;
         uint2 firstTexel = uint2(0u), lastTexel = defaultLastTexel;
@@ -2900,18 +2909,14 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
             lastPage = lastTexel / push.pageSize;
 #endif
         }
-#if VSM_RECEIVER_MASK
-#if VSM_MARK_PAGE_SHIFT >= 3
-        uint subShift = uint(VSM_MARK_PAGE_SHIFT - 3);
-        uint subMask = push.pageSize - 1u;
-#endif
-#endif
+        uint2 pageBase = projections[level].page.xy;
         for (uint y = firstPage.y; y <= lastPage.y; ++y) {
-            uint rowBasePage = projection.page.x + y * projection.page.y;
+            uint rowBasePage = pageBase.x + y * pageBase.y;
 #if VSM_RECEIVER_MASK
 #if VSM_MARK_PAGE_SHIFT >= 3
             uint firstSubY = (y == firstPage.y) ? ((firstTexel.y & subMask) >> subShift) : 0u;
             uint lastSubY = (y == lastPage.y) ? ((lastTexel.y & subMask) >> subShift) : 7u;
+            bool fullY = (firstSubY == 0u && lastSubY == 7u);
 #endif
 #endif
             for (uint x = firstPage.x; x <= lastPage.x; ++x) {
@@ -2920,7 +2925,7 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
 #if VSM_MARK_PAGE_SHIFT >= 3
                 uint firstSubX = (x == firstPage.x) ? ((firstTexel.x & subMask) >> subShift) : 0u;
                 uint lastSubX = (x == lastPage.x) ? ((lastTexel.x & subMask) >> subShift) : 7u;
-                uint2 mask = (firstSubX == 0u && lastSubX == 7u && firstSubY == 0u && lastSubY == 7u) ?
+                uint2 mask = (fullY && firstSubX == 0u && lastSubX == 7u) ?
                     uint2(0xffffffffu, 0xffffffffu) :
                     vsmReceiverRectangleMask(uint2(firstSubX, firstSubY), uint2(lastSubX, lastSubY));
 #else
