@@ -2052,6 +2052,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     rayCache.lastPage = 0xffffffffu;
     rayCache.lastPhysicalCoord = uint2(0u);
     rayCache.lastPageHit = false;
+    float2 texelSlope = -receiverScaledSlope * receiverInvResolution;
+    float2 baseOffset = float2(0.5 * receiverInvResolution - 1.0) - rayBase.comparisonOrigin.xy;
+    float baseSlopeCorrection = -dot(receiverScaledSlope, baseOffset) + biasZ;
 #endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
@@ -2070,6 +2073,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         dirRay.step = float3(dot(receiverProj.rowX.xyz, direction), dot(receiverProj.rowY.xyz, direction), dot(receiverProj.rowZ.xyz, direction));
         dirRay.coarseLookupOrigin = vsmProjectPosition(position + dither, coarseProj).xy;
         dirRay.coarseStep = float2(dot(coarseProj.rowX.xyz, direction), dot(coarseProj.rowY.xyz, direction));
+        float raySlopeZ = dirRay.step.z + dot(receiverScaledSlope, dirRay.step.xy);
 #endif
         float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
             1.0 / length(endpoint - proj0.originNear.xyz) -
@@ -2083,22 +2087,23 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
 #if VSM_DIRECTIONAL_PROJECTION
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom, invSamplesPerRay);
-            float3 stepOffset = time * dirRay.step;
             ++filterCounts.x;
-            float3 p = dirRay.lookupOrigin + stepOffset;
-            if (p.z < 0.0 || p.z > 1.0) {
+            float pZ = fma(time, dirRay.step.z, dirRay.lookupOrigin.z);
+            if (pZ < 0.0 || pZ > 1.0) {
                 rayCache.lastPage = 0xffffffffu;
                 rayCache.lastPageHit = false;
                 continue;
             }
+            float2 pXY = fma(float2(time), dirRay.step.xy, dirRay.lookupOrigin.xy);
+            float3 p = float3(pXY, pZ);
 
             float compare;
             float reference;
             float storedDepth;
             bool sampleValid = false;
 
-            if (rayBase.allowClipmaps && all(abs(p.xy) < rayBase.receiverMarginMax)) {
-                uint2 texel = uint2(fma(p.xy, float2(rayBase.halfReceiverResolution), float2(rayBase.halfReceiverResolution)));
+            if (rayBase.allowClipmaps && all(abs(pXY) < rayBase.receiverMarginMax)) {
+                uint2 texel = uint2(fma(pXY, float2(rayBase.halfReceiverResolution), float2(rayBase.halfReceiverResolution)));
 #if VSM_PROJECTION_PAGE_SHIFT >= 0
                 uint2 pageCoord = texel >> VSM_PROJECTION_PAGE_SHIFT;
                 uint2 localTexel = vsmPageLocalTexel(texel, push.pageSize);
@@ -2157,6 +2162,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                             if (sample.valid) {
                                 sampleValid = true;
                                 storedDepth = sample.storedDepth;
+                                float3 stepOffset = time * dirRay.step;
                                 vsmDirectionalSampleCompareAndReference(sample, time, stepOffset, dirRay,
                                     rayBase, projections, push, receiverInvResolution, coarseInvResolution,
                                     receiverScaledSlope, normalSlope, biasZ, useGroupCache, compare, reference);
@@ -2179,10 +2185,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                     storedDepth = atlas.Load(int3(atlasTexel, 0));
                     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
 
-                    float2 sampleNDC = fma(float2(texel), float2(receiverInvResolution), float2(0.5 * receiverInvResolution - 1.0));
-                    float2 offset = sampleNDC - (rayBase.comparisonOrigin.xy + stepOffset.xy);
-                    float correction = -dot(receiverScaledSlope, offset);
-                    float relDepth = stepOffset.z + correction + biasZ;
+                    float relDepth = fma(time, raySlopeZ, dot(texelSlope, float2(texel)) + baseSlopeCorrection);
                     compare = rayBase.comparisonOrigin.z + relDepth;
                     reference = relDepth * rayBase.invDepthScale;
                     sampleValid = true;
@@ -2200,10 +2203,15 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                     storedDepth = atlas.Load(int3(atlasTexel, 0));
                     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
 
-                    float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, ancestorLevel, ancestorTranslation, false);
-                    compare = vsmDirectionalComparisonDepth(projected, ancestorTexel,
-                        ancestorExtent, receiverInvResolution, normalSlope, biasZ);
-                    reference = vsmDirectionalRayDepth(compare, rayBase);
+                    float scale = asfloat((127u - (ancestorLevel - rayBase.receiverLevel)) << 23u);
+                    float2 translation = ancestorTranslation - rayBase.sourceTranslation * scale;
+                    float2 ancestorOrigin = fma(rayBase.comparisonOrigin.xy, float2(scale), translation);
+                    float2 ancestorSampleNDC = fma(float2(ancestorTexel), float2(receiverInvResolution), float2(0.5 * receiverInvResolution - 1.0));
+                    float2 ancestorOffset = (ancestorSampleNDC - ancestorOrigin) * ancestorExtent;
+                    float ancestorCorrection = -dot(normalSlope, ancestorOffset);
+                    float relDepth = fma(time, raySlopeZ, ancestorCorrection + biasZ);
+                    compare = rayBase.comparisonOrigin.z + relDepth;
+                    reference = relDepth * rayBase.invDepthScale;
                     sampleValid = true;
                 }
             } else {
@@ -2211,6 +2219,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                 if (sample.valid) {
                     sampleValid = true;
                     storedDepth = sample.storedDepth;
+                    float3 stepOffset = time * dirRay.step;
                     vsmDirectionalSampleCompareAndReference(sample, time, stepOffset, dirRay,
                         rayBase, projections, push, receiverInvResolution, coarseInvResolution,
                         receiverScaledSlope, normalSlope, biasZ, useGroupCache, compare, reference);

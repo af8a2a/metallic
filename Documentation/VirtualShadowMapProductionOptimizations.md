@@ -1,5 +1,36 @@
 # VSM 已接受优化的生产路径
 
+## 2026-11-09 VSM 定向光投影视线步进斜率外提与短路优化
+
+在完成了物理/虚拟页二次幂解耦与祖先投影元数据提升（Commit `f9243dc8`）后，进一步针对 SMRT 视线步进循环（`vsmFilterVisibility`）执行代数折叠与几何斜率外提优化：
+
+1. **光线斜率分量 $k_z$ 射线级外提（Slope Projection Hoisting）**：
+   - 将内层步进循环中重复执行的 3D 步进向量点积与法线斜率校正进行代数重组，证明光线在接收面上的有效 Z 向斜率 $k_z = \mathbf{d}_z + \mathbf{s} \cdot \mathbf{d}_{xy}$ 在整条光线（16 个步进采样）上恒定，且在定向光空间中对任意祖先 Clipmap 层级完全恒等。
+2. **像素级常量折叠（Pixel Invariant Precomputation）**：
+   - 提取图素斜率 $\mathbf{k}_{\text{texel}} = -\mathbf{s} \cdot \text{invRes}$ 与偏置常数 $C_{\text{base}}$ 至循环外部，使 `isFastFine` 命中路径的深度计算由原 11 条浮点向量指令精简为单次 2D 点积与单次 FMA：`relDepth = fma(time, raySlopeZ, dot(texelSlope, float2(texel)) + baseSlopeCorrection)`。
+3. **步进边界快速短路（Z-Early Boundary Exit）**：
+   - 提取标量 $p_z = \operatorname{fma}(t, \mathbf{d}_z, \mathbf{o}_z)$，仅当 $p_z \in [0, 1]$ 时计算 $p_{xy}$ 向量并执行页表检测，降低无效步进寄存器与指令吞吐开销。
+4. **祖先投射路径精简（Ancestor Path Hoisting）**：
+   - 祖先投射复用 $k_z$ 与统一参考深度计算，消除步进内构造 3D 向量和调用 `vsmDirectionalRayPosition` 的开销。
+
+### 验证与新性能基线
+
+- **正确性**：80 帧开启 Vulkan Validation Layer 诊断验收测试（`virtual_shadow_map_acceptance`）通过，Validation 消息为 0；3/3 RHI 单元测试通过；392 个 Slang 模块所有权审查通过。
+- **基线采集环境**：Sponza 1920×1080、SMRT 2×16、2048 页分层图集、6 clipmaps，96 帧无 validation 计时测试，剔除前 48 帧预热，统计 Frames 48–95。
+
+**2026-11-09 最新性能基线**：
+
+| 测量阶段 / 指标 | 原 Baseline (修复前) | 方向 A 优化后 (`f9243dc8`) | 方向 B 最新基线 (当前) | 相对原 Baseline 变化 |
+| :--- | :--- | :--- | :--- | :--- |
+| **VSM projection dispatch (中位数)** | 1.2684 ms | 1.2207 ms | **1.2136 ms** | **-54.8 µs (-4.32%)** |
+| **Project VSM lights (中位数)** | 1.2782 ms | 1.2301 ms | **1.2232 ms** | **-55.0 µs (-4.30%)** |
+| **Shadows Pass 整体 (中位数)** | 2.8592 ms | 2.8144 ms | **2.8054 ms** | **-53.7 µs (-1.88%)** |
+| **全帧 Total GPU (中位数)** | 8.4396 ms | 8.4527 ms | **8.4101 ms** | **-29.5 µs (-0.35%)** |
+| VSM projection dispatch (均值) | 1.2810 ms | 1.2301 ms | **1.2446 ms** | -36.4 µs (-2.84%) |
+| VSM projection dispatch (最小值) | 1.2640 ms | 1.2176 ms | **1.2103 ms** | -53.7 µs (-4.25%) |
+
+
+
 ## 2026-11-05 Mark 共享缓存原子读取修复
 
 候选 `6f0b3b7dcfe14fdd5dd2c498d9da4f0e94548b29` 的共享缓存预筛把普通 LDS 读取与其他 lane 的原子写入混用；首尾组屏障不能消除累积阶段的竞争。修复将 Mark 去重页、receiver key 和 mask word 定义为原址 `Atomic<uint>`，显式使用 relaxed load/store/exchange/compareExchange/or。保留 256 槽 receiver 缓存、先读预筛、矩形位并行计算和 row-base 外提，不增加资源绑定或 CPU ABI。
