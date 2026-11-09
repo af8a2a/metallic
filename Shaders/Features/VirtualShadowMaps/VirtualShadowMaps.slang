@@ -2754,15 +2754,10 @@ bool vsmAccumulateReceiverMask(uint page, uint2 mask)
         if (!WaveIsFirstLane()) { return true; }
     }
 
-    uint curX = gVsmReceiverMasks[slot].x.load(MemoryOrder.Relaxed);
-    uint curY = gVsmReceiverMasks[slot].y.load(MemoryOrder.Relaxed);
-    if (((curX & mask.x) == mask.x) && ((curY & mask.y) == mask.y)) {
-        return true;
-    }
-    if ((curX & mask.x) != mask.x) {
+    if (mask.x != 0u) {
         gVsmReceiverMasks[slot].x.or(mask.x, MemoryOrder.Relaxed);
     }
-    if ((curY & mask.y) != mask.y) {
+    if (mask.y != 0u) {
         gVsmReceiverMasks[slot].y.or(mask.y, MemoryOrder.Relaxed);
     }
     return true;
@@ -4845,8 +4840,16 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         return true;
     }
     vsmWorkAdd(push, kVSMWorkProjectionReceivers, 1u);
-    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     float3 normal = vsmReceiverNormal(int2(id.xy), basis, depth, position, linearDepth);
+    if (push.lightType == 0u) {
+        float3 toLight = normalize(proj0.rowZ.xyz);
+        float sinAlpha = max(sin(push.angularRadius), 0.1);
+        if (dot(normal, toLight) < -sinAlpha) {
+            visibility = 0.0;
+            return true;
+        }
+    }
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
         vsmProjectedReceiverFootprint(position, normal, linearDepth, basis, proj0, push), useGroupCache);
     uint selectedLevel = push.clipmapCount;
@@ -4916,14 +4919,6 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         debugValue = float4(float(selectedLevel + 1u) / float(push.clipmapCount), 0.5, 0.0, 1.0);
     }
     ShadowProjection projection = vsmGetCachedProjection(projections, selectedLevel, useGroupCache);
-    if (push.lightType == 0u) {
-        float3 toLight = normalize(proj0.rowZ.xyz);
-        float sinAlpha = max(sin(push.angularRadius), 0.1);
-        if (dot(normal, toLight) < -sinAlpha) {
-            visibility = 0.0;
-            return true;
-        }
-    }
     if (push.filterMode != 0u) {
         ShadowPush trace = push;
         trace.rayLength = vsmSearchLength(position, linearDepth, basis, push);

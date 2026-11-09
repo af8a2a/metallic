@@ -26,11 +26,13 @@ ROOT = w.ROOT
 TARGET = "Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang"
 PROTOCOL = "metallic-shader-experiment-v1"
 # The candidate schema is shared with diagnostic runners and remains v1.
-CURRENT_PROTOCOL = "metallic-shader-experiment-v2"
+V2_PROTOCOL = "metallic-shader-experiment-v2"
+CURRENT_PROTOCOL = "metallic-shader-experiment-v3"
 LEGACY_POLICY = {"minimumGain": .03, "maximumGraphRegression": .02,
                  "confidence": .95, "primaryMetric": "softwareTotalMs", "promotion": "manual"}
-POLICY = {**LEGACY_POLICY, "version": 2, "statistic": "abba-log-ratio",
-          "discoveryMinimumGain": .03}
+V2_POLICY = {**LEGACY_POLICY, "version": 2, "statistic": "abba-log-ratio",
+             "discoveryMinimumGain": .03}
+POLICY = {**V2_POLICY, "version": 3, "minimumGain": 0., "discoveryMinimumGain": 0.}
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571,
        7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262}
 
@@ -138,6 +140,7 @@ def classify(result, stage):
         "primary_regression": ("valid", "confirmed_regression", "reject_candidate"),
         "graph_regression": ("valid", "confirmed_regression", "reject_candidate"),
         "gain_below_threshold": ("valid", "below_target", "reject_candidate"),
+        "no_positive_gain": ("valid", "no_gain", "reject_candidate"),
         "promising_gain": ("valid", "promising", "run_confirmation"),
         "qualified_gain": ("valid", "confirmed_gain", "accept_candidate"),
         "confidence_interval_crosses_gate": ("valid", "uncertain", "retain_candidate"),
@@ -181,7 +184,7 @@ def independent_processes(rows):
 
 def assess(rows, case, policy, expected_runs, stage="confirmation", reference_rows=()):
     """Recomputed from raw runs by verify; never trust a supplied pass boolean."""
-    w.require(policy in (LEGACY_POLICY, POLICY), "Unknown decision policy")
+    w.require(policy in (LEGACY_POLICY, V2_POLICY, POLICY), "Unknown decision policy")
     w.require(stage in ("discovery", "confirmation"), "Unknown experiment stage")
     legacy = policy == LEGACY_POLICY
     result = assess_stage(rows, case, policy, expected_runs, stage, legacy, reference_rows)
@@ -254,15 +257,22 @@ def assess_stage(rows, case, policy, expected_runs, stage, legacy, reference_row
             return verdict("reject", "graph_regression", **evidence)
         if primary["upper95"] < 0:
             return verdict("reject", "primary_regression", **evidence)
+    # v3 accepts any demonstrated positive gain; zero is not an improvement.
+    if policy == POLICY and primary["upper95"] <= 0:
+        return verdict("reject", "no_positive_gain", **evidence)
     if primary["upper95"] < policy["minimumGain"]:
         return verdict("reject", "gain_below_threshold", **evidence)
     if graph["upper95"] < -policy["maximumGraphRegression"]:
         return verdict("reject", "graph_regression", **evidence)
     if not legacy and stage == "discovery":
-        if primary["estimate"] >= policy["discoveryMinimumGain"]:
+        promising = (primary["estimate"] > 0 if policy == POLICY else
+                     primary["estimate"] >= policy["discoveryMinimumGain"])
+        if promising:
             return verdict("inconclusive", "promising_gain", **evidence)
         return verdict("inconclusive", "discovery_below_screen", **evidence)
-    if primary["lower95"] >= policy["minimumGain"] and graph["lower95"] >= -policy["maximumGraphRegression"]:
+    qualified = (primary["lower95"] > 0 if policy == POLICY else
+                 primary["lower95"] >= policy["minimumGain"])
+    if qualified and graph["lower95"] >= -policy["maximumGraphRegression"]:
         return verdict("accept", "qualified_gain", **evidence)
     return verdict("inconclusive", "confidence_interval_crosses_gate", **evidence)
 
@@ -508,10 +518,11 @@ def execute(args):
 
 def verify(directory):
     manifest = w.load(directory / "Manifest.json")
-    w.require(manifest["protocol"] in (PROTOCOL, CURRENT_PROTOCOL) and manifest["status"] == "complete",
+    policies = {PROTOCOL: LEGACY_POLICY, V2_PROTOCOL: V2_POLICY, CURRENT_PROTOCOL: POLICY}
+    w.require(manifest["protocol"] in policies and manifest["status"] == "complete",
               "Incomplete or unknown experiment protocol")
     legacy = manifest["protocol"] == PROTOCOL
-    policy = LEGACY_POLICY if legacy else POLICY
+    policy = policies[manifest["protocol"]]
     w.require(manifest["policy"] == policy, "Decision policy changed")
     maximum_blocks = 5 if legacy else 10
     w.require(2 <= manifest['blocks'] <= maximum_blocks and

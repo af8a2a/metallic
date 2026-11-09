@@ -70,9 +70,12 @@ Compile, loading, warmup and readback are outside the measurement window. Clocks
 are unaltered. Other applications are not closed; the cooperative experiment
 lock does not establish global GPU exclusivity. The unit of statistics is the
 process median; the six paired gains use a 95% Student-t interval. Improvement
-requires a PT gain lower bound of 3%, a graph lower bound of -2%, and <=10%
+requires a PT gain lower bound strictly above zero, a graph lower bound of -2%, and <=10%
 process-median spread in each arm. Results crossing a gate remain inconclusive;
-do not repeat unchanged experiments until they pass.
+zero gain is not improvement. Reliable gains below 3% are eligible. Do not repeat
+unchanged experiments until they pass. This runner has one fixed balanced batch,
+not an independent confirmation stage. The archived thresholds govern verification
+and report labels; historical 3% experiments retain their original decisions.
 
 The original installed candidate is restored in `finally`, including on capture
 failure. Unknown concurrent shader bytes are never overwritten. After a hard

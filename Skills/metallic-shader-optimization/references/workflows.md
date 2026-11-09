@@ -4,19 +4,19 @@
 所选 runner 的 `--help` 和对应 `.md`。替换示例路径；输出目录必须是新的。
 仅做离线复核时无需构建、SDK 或重新采集。
 
-## 本机线索与前置检查
+## 环境发现与前置检查
 
-2026-09-25 验证时的本机线索，使用前重新检查存在性和实际版本：
+从当前项目配置、可用工具和已有证据解析环境，不假设盘符、用户名、安装位置或
+历史构建目录。下面命令中的变量须先解析为当前任务的实际值，不能原样照抄运行：
 
-- checkout：`E:/metallic`。
-- Release：`build-release/Source/MetallicGPUDrivenSample.exe`，单配置 CMake/Ninja。
-- case：`Tools/Perf/WorkloadCase.MiniZorahHistory.json`，非零 early/late WorkControl。
-- 资产清单：`build/m2-assets-20260925/mini.json`，不含完整资产副本。
-- SDK 压缩包：`D:/NVIDIA_Nsight_Perf_SDK_2025.1_Public_Windows.zip`；解压目录：
-  `build/nvperf-sdk-2025.1`。不把 SDK 复制进 skill 或提交仓库。
-- MSVC 初始化：`E:/VisualStudio/VC/Auxiliary/Build/vcvars64.bat`。
-- 已验证 NvPerf 包：`build/nvperf-20260925-02`；报告：
-  `Documentation/AgenticShaderOptimizationNvPerf.md`。这是历史证据，不是当前性能基线。
+- `$casePath`、`$assetsManifest`：目标 workload 与已核验的资产身份清单。
+- `$buildDir`、`$sampleExe`：兼容的 Release 构建目录及其实际产物。
+- `$candidatePath`：本轮声明的候选；`$outputDir`：本轮新的输出目录。
+- `$evidenceDir`：需离线复核或恢复的既有证据包。
+- `$nvperfSdkRoot`：仅在使用 NvPerf 时发现并核对的配套 SDK 根目录。
+
+优先复用匹配的 case、构建和证据；工具路径从当前安装发现，MSVC 环境使用项目
+规定的开发者 shell。历史报告用于理解限制，不充当当前基线或默认复测任务。
 
 检查 CMake cache 对应当前 source root、Release 和目标 EXE。变更 C++ 后构建，
 只查历史结果时不构建。使用已初始化的 VS x64 shell；若从 PowerShell 启动 `.cmd`
@@ -29,8 +29,8 @@ GPU 命令权限不足时对有界命令走环境提供的审批机制，不以�
 ## 可信工作负载与 A/A
 
 ```powershell
-python -B Tools/Perf/WorkloadCase.py run --case Tools/Perf/WorkloadCase.MiniZorahHistory.json --assets build/m2-assets-20260925/mini.json --exe build-release/Source/MetallicGPUDrivenSample.exe --output build/workload-new --runs 3 --timeout 240
-python -B Tools/Perf/WorkloadCase.py verify build/workload-new
+python -B Tools/Perf/WorkloadCase.py run --case "$casePath" --assets "$assetsManifest" --exe "$sampleExe" --output "$outputDir" --runs 3 --timeout 240
+python -B Tools/Perf/WorkloadCase.py verify "$outputDir"
 ```
 
 先查可复用的合格 case 和资产 manifest。需要重新生成 manifest 时先读
@@ -40,20 +40,34 @@ python -B Tools/Perf/WorkloadCase.py verify build/workload-new
 
 ## 候选优化闭环
 
-先读 `ExperimentRunner.md` 和候选 JSON schema。当前仅允许
+优化前先按 [Nsight 驱动的优化闭环](nsight-guided-optimization.md) 建立瓶颈假设，
+候选后关联同范围 GPU Trace、计数器和 Profiler 对比。以下是 WorkControl 的普通
+计时入口；其他 pass 选其对应 runner，不将本入口视为通用 shader 捕获器。
+
+先读 `ExperimentRunner.md` 和候选 JSON schema。此 runner 当前仅允许
 `Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang` 的明确文本替换。
 候选记录假设、当前 baseline SHA-256、旧/新文本及预期匹配次数。不能盲改旧 hash
 使过时的候选通过。多文件/C++/质量设置候选需要扩展契约，不能伪装成受支持候选。
 
 ```powershell
-python -B Tools/Perf/ExperimentRunner.py run --case Tools/Perf/WorkloadCase.MiniZorahHistory.json --candidate build/candidate-new.json --assets build/m2-assets-20260925/mini.json --exe build-release/Source/MetallicGPUDrivenSample.exe --build-dir build-release --output build/experiment-new
-python -B Tools/Perf/ExperimentRunner.py verify build/experiment-new
+python -B Tools/Perf/ExperimentRunner.py run --case "$casePath" --candidate "$candidatePath" --assets "$assetsManifest" --exe "$sampleExe" --build-dir "$buildDir" --output "$outputDir"
+python -B Tools/Perf/ExperimentRunner.py verify "$outputDir"
 ```
 
-默认 3 个 discovery ABBA block，通过后再运行 2 个 confirmation block，每进程限时
-300 秒；确认当前默认值，提前说明长实验的规模。保持原门槛：软件总时间收益区间
-下界至少 3%，graph 收益下界至少 -2%。exit 0 可以是 accept 或 reject，exit 2 是
-inconclusive；读取 `Decision.json`、确认阶段和事务恢复状态，不能只看 exit code。
+默认 3 个 discovery ABBA block，有希望的候选再运行 5 个独立 confirmation block，
+每进程限时 300 秒；确认当前默认值，在采集前固定两阶段预算并说明实验规模。
+当前规则不设 3% 最低收益：discovery 的软件总时间收益点估计严格大于 0，且没有
+已确认的目标退化或超预算 graph 退化，即进入 confirmation；只有独立 confirmation
+的收益 95% 区间下界严格大于 0、graph 收益下界至少 -2% 才接受。
+例如确认区间为 [0.2%, 0.8%] 的小幅收益可以接受；[-0.2%, 0.8%] 仍为
+inconclusive；零收益不能接受。正确性、身份、恢复和证据完整性要求仍须通过。
+exit 0 可以是 accept 或 reject，exit 2 是 inconclusive；读取 `Decision.json`、
+确认阶段和事务恢复状态，不能只看 exit code。
+
+样本预算不足以分辨小收益时保留候选和全部结果，并说明测量精度限制。后续实验应
+先声明预算、可检验的改动或噪声来源处置；不自动追加样本或只保留显著批次。
+旧证据按归档时的政策复核，不用新规则改写历史 verdict。其他 pass 使用其对应
+runner 和证据契约；有明确非劣效预算的 overhead case 不等同于正收益优化。
 历史 `Candidate.CompactWorkVertices.json` 已拒绝，不作为默认优化配方。
 
 ## NvPerf：生产 dispatch 计数
@@ -63,10 +77,10 @@ inconclusive；读取 `Decision.json`、确认阶段和事务恢复状态，不�
 必要时在 VS shell 中执行：
 
 ```powershell
-cmake -S . -B build-release -DMETALLIC_ENABLE_NVPERF=ON -DMETALLIC_NVPERF_SDK_ROOT=E:/metallic/build/nvperf-sdk-2025.1
-cmake --build build-release --target MetallicGPUDrivenSample --config Release
-python -B Tools/Perf/NvPerf.py run --case Tools/Perf/WorkloadCase.MiniZorahHistory.json --assets build/m2-assets-20260925/mini.json --exe build-release/Source/MetallicGPUDrivenSample.exe --build-dir build-release --output build/nvperf-new
-python -B Tools/Perf/NvPerf.py verify build/nvperf-new
+cmake -S . -B "$buildDir" -DMETALLIC_ENABLE_NVPERF=ON "-DMETALLIC_NVPERF_SDK_ROOT=$nvperfSdkRoot"
+cmake --build "$buildDir" --target MetallicGPUDrivenSample --config Release
+python -B Tools/Perf/NvPerf.py run --case "$casePath" --assets "$assetsManifest" --exe "$sampleExe" --build-dir "$buildDir" --output "$outputDir"
+python -B Tools/Perf/NvPerf.py verify "$outputDir"
 ```
 
 runner 自行清理继承的 `METALLIC_*` 环境并设置所需开关，串行启动三次独立进程，
@@ -86,8 +100,8 @@ manifest 的精确文件清单。SDK 2025.1 本机 Vulkan 1.4 的正式支持标
 生产寄存器、共享内存和 binary size 使用独立 resources 批次，事先构建 Release：
 
 ```powershell
-python -B Tools/Perf/DeepProfile.py run --mode resources --case Tools/Perf/WorkloadCase.MiniZorahHistory.json --assets build/m2-assets-20260925/mini.json --exe build-release/Source/MetallicGPUDrivenSample.exe --build-dir build-release --output build/resources-new
-python -B Tools/Perf/DeepProfile.py verify build/resources-new
+python -B Tools/Perf/DeepProfile.py run --mode resources --case "$casePath" --assets "$assetsManifest" --exe "$sampleExe" --build-dir "$buildDir" --output "$outputDir"
+python -B Tools/Perf/DeepProfile.py verify "$outputDir"
 ```
 
 明确需要 A/B 编译资源比较时加入已声明的 `--candidate`。核对
@@ -102,15 +116,22 @@ architecture 和 metric-set，再按 `DeepProfile.md` 运行。默认保持 cloc
 
 ## MCP 诊断与实验衔接
 
-已有 `.ngfx-capture` 先用官方 Native 的 `graphics_debugging_replay.open_capture`
-离线检查元数据、事件和 Shader；已有 `.ngfx-gputrace` 可直接用 `gpu_trace.open_trace`
-分析，无需先导出 `.xls`。仅需已有文件的查询时，不重新采集或启动目标。
+实际优化按 [Nsight 驱动的优化闭环](nsight-guided-optimization.md) 完成前后对比与
+联合判定。下面仅列接口选择与证据限制；不要以能力发现代替真正读取计数器和热点。
+
+先发现本机官方 Native 的实际 Schema；提供对应工具时，已有 `.ngfx-capture` 用
+`graphics_debugging_replay.open_capture` 离线检查元数据、事件和 Shader，已有
+`.ngfx-gputrace` 用 `gpu_trace.open_trace` 直接分析，无需先导出 `.xls`。
+只有旧 CLI 时使用其已支持的查询/导出；所需接口缺失则报告证据缺口，不转为 CUA。
+仅需已有文件的查询时，不重新采集或启动目标。
 
 - Native 使用渐进发现：先读 family/group/tool details 的实际 Schema，再调用对应
-  工具。本机 2026.4 的初始五个入口不表示其余工具缺失；不要将 Native 与 Workflow
+  工具。2026.4 的初始五个入口不表示其余工具缺失，也不证明旧安装具备这些接口；不要将 Native 与 Workflow
   的工具名、ID 和会话语义混用。可用工具与字段以当前安装包实际返回为准。
-- 纹理、Buffer、几何和 GPU 计时等需要在线回放；先完成 `go_online` 及其返回的
-  确认流程，取得实际输出后再判断可回放性。内嵌的 capture 截图不证明在线输出正确。
+- Graphics Capture 的纹理、Buffer、几何读取及回放 GPU 计时等需要在线回放时，
+  先完成 `go_online` 及其返回的确认流程，取得实际输出后再判断可回放性。
+  内嵌的 capture 截图不证明在线输出正确。GPU Trace 已采集的时间线/计数器使用
+  trace 查询，无需为此启动 Graphics Capture 在线回放。
 - 由 MCP 负责外部注入 Metallic 时，不再传入应用的 `--nsight-capture` 自注入开关。
   只有需要源码关联/Shader 性能归因时才按当前编译入口启用
   `METALLIC_SHADER_CAPTURE_SYMBOLS=1`；保留优化，不用 unoptimized shader-debug 计时验收。
@@ -136,7 +157,7 @@ architecture 和 metric-set，再按 `DeepProfile.md` 运行。默认保持 cloc
 不得并行启动新实验。对 M3/resources 的 `Transaction.json`，owner 已停止后使用：
 
 ```powershell
-python -B Tools/Perf/ExperimentRunner.py recover build/interrupted-experiment
+python -B Tools/Perf/ExperimentRunner.py recover "$evidenceDir"
 ```
 
 未知当前 shader 字节必须保留并人工对齐，不能直接复制 baseline 覆盖。NvPerf-only

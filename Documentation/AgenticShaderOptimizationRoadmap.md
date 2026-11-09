@@ -1,5 +1,12 @@
 # Metallic Agentic Shader 优化路线图
 
+当前候选验收规则见 [ExperimentRunner 工具契约](../Tools/Perf/ExperimentRunner.md)。
+2026-11-09 起，新实验取消统一 3% 最低收益，允许独立确认区间下界严格大于 0 的
+小幅收益；正确性、证据完整性与整图回退预算仍须通过。下文里程碑数据为历史记录。
+当前优化默认按 [Nsight 驱动的闭环](../Skills/metallic-shader-optimization/references/nsight-guided-optimization.md)
+通过 MCP 读取 GPU Trace 计数器和 Shader Profiler 热点，对比前后捕获来验证瓶颈
+假设并选择下一轮改动；实际加速仍由独立的普通计时与正确性证据确认。
+
 2026-09-24。设计依据：用户提供的 Pro 讨论、当前工作树与历史实验报告、已安装 Nsight Graphics 2026.3.1 的能力发现，以及 NVIDIA 官方文档。本轮只做设计和只读核对，没有采集新的 GPU 数据，也没有执行优化实验。
 
 M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)，M1 实施进度见 [Nsight 源码分析](AgenticShaderOptimizationM1.md)。[M0 收尾](AgenticShaderOptimizationM0Closeout.md)已完成真实 Source/IL 格式验证；原生桌面运行时恢复后，[三次实际 UI 导出](NsightUIExportValidation.md) 3/3 通过。验收范围是同一固定报告的重复保存，M1 的可复用 adapter、重新打开/选择及回放异常恢复仍为 partial；cua-child 不再是前置条件。

@@ -22,8 +22,9 @@ ROOT = baseline.ROOT
 PROTOCOL = "metallic-clas-tessellation-ab-v1"
 MODES = {"A": "triangles", "B": "templates"}
 METRICS = ("clasMs", "tessellationMs", "graphMs", "shadowsMs")
-POLICY = {"statistic": "abba-log-ratio", "confidence": .95, "minimumGain": .03,
+LEGACY_POLICY = {"statistic": "abba-log-ratio", "confidence": .95, "minimumGain": .03,
           "maximumGraphRegression": .02, "primaryMetric": "clasMs", "imagePolicy": "exact-bytes"}
+POLICY = {**LEGACY_POLICY, "minimumGain": 0.0}
 read, save, digest = baseline.read, baseline.save, baseline.digest
 
 
@@ -261,7 +262,7 @@ def analyze_run(directory, config, expected_graph, arm, *, expected_mode=None):
             "warmupGraphMs": [f["graphMs"] for f in case["warmup"]]}
 
 
-def decision(rows, stage, reference=()):
+def decision(rows, stage, reference=(), policy=POLICY):
     require(stage in ("discovery", "confirmation"), "Unknown stage")
     require(len(rows) >= 8 and len(rows) % 4 == 0 and [r["arm"] for r in rows] == list("ABBA") * (len(rows)//4), "Incomplete ABBA blocks")
     require(experiment.independent_processes(rows), "Overlapping or invalid independent processes")
@@ -277,13 +278,16 @@ def decision(rows, stage, reference=()):
                   for v in [[r["result"]["timings"][m]["median"] for r in rows if r["arm"] == a]]} for a in MODES}
     primary, graph = gains["clasMs"], gains["graphMs"]
     status, effect, action = "inconclusive", "uncertain", "retain_candidate"
-    if primary["upper95"] < 0 or graph["upper95"] < -POLICY["maximumGraphRegression"]:
+    minimum = policy["minimumGain"]
+    promising = primary["estimate"] > 0 if minimum == 0 else primary["estimate"] >= minimum
+    confirmed = primary["lower95"] > 0 if minimum == 0 else primary["lower95"] >= minimum
+    if primary["upper95"] < 0 or graph["upper95"] < -policy["maximumGraphRegression"]:
         status, effect, action = "reject", "confirmed_regression", "reject_candidate"
-    elif primary["upper95"] < POLICY["minimumGain"]:
+    elif primary["upper95"] < minimum:
         status, effect, action = "reject", "below_target", "reject_candidate"
-    elif stage == "discovery" and primary["estimate"] >= POLICY["minimumGain"]:
+    elif stage == "discovery" and promising:
         effect, action = "promising", "run_confirmation"
-    elif stage == "confirmation" and primary["lower95"] >= POLICY["minimumGain"] and graph["lower95"] >= -POLICY["maximumGraphRegression"]:
+    elif stage == "confirmation" and confirmed and graph["lower95"] >= -policy["maximumGraphRegression"]:
         status, effect, action = "accept", "confirmed_gain", "accept_candidate"
     return {"decision": status, "stage": stage, "evidenceValidity": "valid", "effectAssessment": effect,
             "nextAction": action, "gains": gains, "withinArmRelativeRange": spread,
@@ -438,7 +442,7 @@ def verify(directory):
     require(read(directory / "Manifest.json") == {str(p.relative_to(directory)).replace("\\", "/"): digest(p)
             for p in directory.rglob("*") if p.is_file() and p.name != "Manifest.json"}, "Evidence file set/hash changed")
     manifest = read(directory / "Experiment.json")
-    require(manifest["protocol"] == PROTOCOL and manifest["policy"] == POLICY and manifest["status"] == "complete", "Unsupported/incomplete experiment")
+    require(manifest["protocol"] == PROTOCOL and manifest["policy"] in (POLICY, LEGACY_POLICY) and manifest["status"] == "complete", "Unsupported/incomplete experiment")
     require(all(type(v) is int and 2 <= v <= 10 for v in manifest["budgets"].values()), "Invalid declared stage budget")
     config, graphs = fixture_configs(directory / "fixtures")
     validate_run_order(manifest["runs"], manifest)
@@ -486,7 +490,7 @@ def verify(directory):
             continue
         require(len(rows) == manifest["budgets"][stage] * 4, "Stage budget not completed")
         require(stage != "confirmation" or decisions["discovery"]["nextAction"] == "run_confirmation", "Unauthorized confirmation")
-        decisions[stage] = decision(rows, stage, discovery)
+        decisions[stage] = decision(rows, stage, discovery, manifest["policy"])
         require(decisions[stage] == manifest[stage], "Saved decision differs from recomputed v2 block statistics")
         if stage == "discovery":
             discovery = rows

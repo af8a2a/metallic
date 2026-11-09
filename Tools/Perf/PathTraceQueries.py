@@ -26,6 +26,8 @@ FILES = ["ScenePathTrace.slang", "StreamSceneRayQuery.slang", "OpenPBRRayQueryPa
          "OpenPBRRayQueryPathTraceGuides.slang"]
 ORDERS = ["ABC", "CBA", "BAC", "CAB", "ACB", "BCA"]
 LOCK = ROOT / "build/shader-experiment.lock"
+LEGACY_THRESHOLDS = dict(hdrAbsolute=2e-5, hdrRelative=2e-5, guides='byte exact', gainLower=.03, graphGainLower=-.02)
+THRESHOLDS = {**LEGACY_THRESHOLDS, 'gainLower': 0.0}
 
 
 def report_path(folder):
@@ -107,7 +109,7 @@ def run(args):
     identity.update(phase=args.phase,clocks='unaltered',orders=['ABC'] if args.phase=='correctness' else ORDERS,
                     statisticalUnit='independent-process median; one comparison block per order',
                     scope='production PathTrace pass and render-graph GPU timestamps; excludes denoiser/upscaler/presentation',
-                    thresholds=dict(hdrAbsolute=2e-5,hdrRelative=2e-5,guides='byte exact',gainLower=.03,graphGainLower=-.02))
+                    thresholds=THRESHOLDS)
     identity['gpu'] = subprocess.check_output(['nvidia-smi','--query-gpu=name,uuid,driver_version','--format=csv,noheader'],text=True).strip()
     mb.save(root/'Identity.json',identity)
     shutil.copyfile(cases,root/'Cases.json')
@@ -191,6 +193,9 @@ def verify(root):
     if manifest!=actual or not mb.read(root/'Transaction.json')['restored']:
         raise ValueError('Evidence integrity/restoration failed')
     identity,config,processes=mb.read(root/'Identity.json'),mb.read(root/'Cases.json'),mb.read(root/'Processes.json')
+    thresholds = identity['thresholds']
+    if thresholds not in (THRESHOLDS, LEGACY_THRESHOLDS):
+        raise ValueError('Unsupported declared thresholds')
     expected=[c['id'] for c in config['cases']]
     sequence=[(i,a) for i,o in enumerate(identity['orders']) for a in o]
     if [(p['block'],p['arm']) for p in processes]!=sequence or any(p['exit']!=0 for p in processes):
@@ -235,8 +240,10 @@ def verify(root):
                     mean=statistics.mean(gains)
                     margin=float(t.ppf(.975,n-1))*statistics.stdev(gains)/math.sqrt(n)
                     values.append(dict(mean=mean,low=mean-margin,high=mean+margin,pairs=gains))
-                decision='improvement' if values[0]['low']>=.03 and values[1]['low']>=-.02 else 'inconclusive'
-                if values[0]['high']<0 or values[1]['high']<-.02: decision='regression'
+                minimum = thresholds['gainLower']
+                confirmed = values[0]['low'] > 0 if minimum == 0 else values[0]['low'] >= minimum
+                decision='improvement' if confirmed and values[1]['low']>=thresholds['graphGainLower'] else 'inconclusive'
+                if values[0]['high']<0 or values[1]['high']<thresholds['graphGainLower']: decision='regression'
                 spread=[]
                 for arm in (a,b):
                     times=[medians[(i,arm,case)][0] for i in range(n)]

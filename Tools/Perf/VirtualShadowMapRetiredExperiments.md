@@ -30,6 +30,16 @@ policies and report generation remain available. Use the current tool's `report`
 command on old packages; do not execute archived runner copies. Historical
 comparison results do not imply that old switches still affect the current renderer.
 
+New `compact-build` plans default to `minimumGain=0`: a positive discovery point
+estimate schedules independent confirmation, and confirmation requires the primary
+gain's 95% lower bound to be strictly above zero, with the graph lower bound at
+least -2%. Small positive gains are eligible; intervals crossing or touching zero
+remain inconclusive unless the upper bound is nonpositive. Keep the declared
+fixed budget; do not repeatedly rerun until significant. Correctness, input/shader
+identity and independent confirmation checks remain required. Historical sealed
+plans keep their recorded 3% target, including when verified with current tools;
+the retired one-pass overhead role keeps its original -5% noninferiority guard.
+
 Live `compact-build` experiments remain available. To prevent ignored settings
 from producing a false A/B, their new capture graphs must omit these removed
 properties, including properties previously set to the optimized/default value:
