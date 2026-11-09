@@ -155,45 +155,66 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     float3 a, b, c;
     if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
         gStreamPages, gStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))), record, a, b, c)) { return false; }
-    uint count, stride;
-    gRasterInstances.GetDimensions(count, stride);
-    if (record.instanceIndex >= count) { return false; }
     GPUDrivenPreviewInstance instance = gRasterInstances[record.instanceIndex];
-    float3 localNormal = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
+    float3 ab = b - a;
+    float3 ac = c - a;
+    float3 localNormal = safeTriangleNormal(ab, ac, float3(0, 1, 0));
     float3 p = rasterWorldPosition(instance, a);
     hit.geometryNormal = rasterWorldNormal(instance, localNormal);
     hit.normal = hit.geometryNormal;
-    float4 domain = rasterDomain(pixel);
-    float denominator = dot(ray.direction, hit.geometryNormal);
-    if (domain.x < 0.0 && abs(denominator) < 1e-8) { return false; }
-    hit.t = domain.x >= 0.0 ? rasterRayDistance(pixel, ray, push) : dot(p - ray.origin, hit.geometryNormal) / denominator;
-    hit.position = ray.origin + ray.direction * hit.t;
-    float3 world[3] = {p, rasterWorldPosition(instance, b), rasterWorldPosition(instance, c)};
-    float3 e0 = world[1] - p, e1 = world[2] - p, crossEdges = cross(e0, e1);
+
+    float3 e0 = rasterWorldVector(instance, ab);
+    float3 e1 = rasterWorldVector(instance, ac);
+    float3 crossEdges = cross(e0, e1);
     float area = dot(crossEdges, crossEdges);
     if (area < 1e-20) { return false; }
-    float2 yz = float2(dot(cross(hit.position - p, e1), crossEdges), dot(cross(e0, hit.position - p), crossEdges)) / area;
-    if (domain.x >= 0.0) {
-        yz = domain.xy;
+
+    bool hasDomain = (gRasterFrameInfo.Load(96) & 1u) != 0u;
+    float3 bary;
+    float4 domain = float4(-1, -1, 0, 0);
+    if (hasDomain) {
+        domain = gRasterDomain.Load(int3(pixel, 0));
+        hit.t = rasterRayDistance(pixel, ray, push);
+        hit.position = ray.origin + ray.direction * hit.t;
         hit.geometryNormal = domainNormal(domain.w);
+        bary = float3(1.0 - domain.x - domain.y, domain.xy);
+    } else {
+        float denominator = dot(ray.direction, hit.geometryNormal);
+        if (abs(denominator) < 1e-8) { return false; }
+        hit.t = dot(p - ray.origin, hit.geometryNormal) / denominator;
+        hit.position = ray.origin + ray.direction * hit.t;
+        float2 yz = float2(dot(cross(hit.position - p, e1), crossEdges), dot(cross(e0, hit.position - p), crossEdges)) / area;
+        bary = float3(1.0 - yz.x - yz.y, yz);
     }
-    float3 bary = float3(1.0 - yz.x - yz.y, yz);
+
     float3 normals[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributes(record, triangleIndex, gStreamGroups, gStreamPages, gStreamPageTable, normals, uv, tangents);
-    hit.normal = domain.x >= 0.0 ? hit.geometryNormal : rasterWorldNormal(instance,
-        Metallic.ScenePath::safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
+    if (!hasDomain) {
+        hit.normal = rasterWorldNormal(instance,
+            Metallic.ScenePath::safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
+    }
     hit.texcoord = uv[0] * bary.x + uv[1] * bary.y + uv[2] * bary.z;
     float2 du = uv[1] - uv[0], dv = uv[2] - uv[0];
-    float uvArea = abs(du.x * dv.y - du.y * dv.x);
-    hit.rayConeLodConstant = domain.x >= 0.0 ? domain.z : (uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(area)) : 0.0);
+    float det = du.x * dv.y - du.y * dv.x;
+    float uvArea = abs(det);
+    hit.rayConeLodConstant = hasDomain ? domain.z : (uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(area)) : 0.0);
+
     float3 uvTangent, uvBitangent;
-    computeTriangleTangentSpace(world[0], world[1], world[2], uv[0], uv[1], uv[2], hit.normal, uvTangent, uvBitangent);
+    if (uvArea <= 0.0000001) {
+        float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+        uvTangent = Metallic.ScenePath::safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
+        uvBitangent = Metallic.ScenePath::safeNormalize(cross(hit.normal, uvTangent), float3(0.0, 1.0, 0.0));
+    } else {
+        float invDet = 1.0 / det;
+        uvTangent = (e0 * dv.y - e1 * du.y) * invDet;
+        uvBitangent = (e1 * du.x - e0 * dv.x) * invDet;
+    }
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
     // Keep the authored geometric normal stable until normal map evaluation.
     float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
     float3 tangent = Metallic.ScenePath::safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), Metallic.ScenePath::safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
     float tangentSign = dot(cross(hit.normal, tangent), uvBitangent) < 0.0 ? -1.0 : 1.0;
-    if ((attributes & 16u) != 0u && domain.x < 0.0) {
+    if ((attributes & 16u) != 0u && !hasDomain) {
         float4 authored = tangents[0] * bary.x + tangents[1] * bary.y + tangents[2] * bary.z;
         float3 worldTangent = rasterWorldVector(instance, authored.xyz);
         tangent = Metallic.ScenePath::safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), tangent);
@@ -201,11 +222,8 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     }
     hit.tangent = float4(tangent, tangentSign * push.bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * tangentSign * push.bitangentFlip;
-    gRasterMaterials.GetDimensions(count, stride);
-    if (instance.identity.y >= count) { return false; }
+
     hit.materialIndex = gRasterMaterials[instance.identity.y].identity.z;
-    sceneMaterials().GetDimensions(count, stride);
-    if (hit.materialIndex >= count) { return false; }
     hit.instanceIndex = instance.identity.z;
     hit.primitiveIndex = gStreamGroups[record.dataIndex].primitiveIndex;
     hit.triangleIndex = triangleIndex;
