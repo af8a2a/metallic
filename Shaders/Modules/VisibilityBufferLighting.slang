@@ -29,6 +29,9 @@ using Metallic.Lighting;
 namespace Metallic.VisibilityLighting
 {
 
+#ifndef MATERIAL_CLASS
+#define MATERIAL_CLASS -1
+#endif
 
 #ifndef METALLIC_DEFERRED_RUNTIME_PRECISION
 #define METALLIC_DEFERRED_RUNTIME_PRECISION 0
@@ -173,7 +176,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
 };
 
 public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed)
+    ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
 {
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
         propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t), ray.direction, false),
@@ -209,37 +212,81 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 normal = hit.normal;
         float roughness = saturate(summary.roughness);
-        float ior = summary.ior;
-        // Keep the established FP16 approximation policy: round bounded
-        // coefficients before deriving color weights, while HDR stays FP32.
+        float3 viewDirectionWS = viewDirection;
+        float NoV = saturate(dot(normal, viewDirectionWS));
+
+        const bool isDielectric = (MATERIAL_CLASS == 1) || (fixedMetalness == 0);
+        const bool isConductor = (MATERIAL_CLASS == 2) || (fixedMetalness == 1);
+        const bool isOpaque = (MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3) || opaquePrimary || (summary.transmissionWeight <= 0.0);
+
+#if MATERIAL_CLASS == 1
+        // Dielectric class compile-time specialization: conductorFraction is 0, F0 is purely dielectric reflectance.
+        float3 f0 = summary.dielectricReflectance;
+#elif MATERIAL_CLASS == 2
+        // Conductor class compile-time specialization: conductorFraction is 1, F0 is purely baseColor.
+        float3 f0 = summary.baseColor;
+#else
         DeferredInput conductorFraction = DeferredInput(summary.conductorFraction);
-        DeferredInput surfaceTransmission = DeferredInput(saturate(summary.surfaceTransmission));
-        float3 f0 = lerp(summary.dielectricReflectance, summary.baseColor, conductorFraction);
+        float3 f0 = isDielectric ? summary.dielectricReflectance :
+            (isConductor ? summary.baseColor : lerp(summary.dielectricReflectance, summary.baseColor, conductorFraction));
+#endif
+
         DeferredColor specularWeight = DeferredColor(saturate(approxSpecularIntegralGGX(f0,
-            max(roughness * roughness, 0.0001), saturate(dot(normal, viewDirection)))));
+            max(roughness * roughness, 0.0001), NoV)));
+
+#if MATERIAL_CLASS == 1
+        // Dielectric: conductorFraction is 0, surfaceTransmission is 0 (opaque).
 #if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
         bool useFP16Precision = kDeferredUseFP16Precision;
-        DeferredWeight diffuseWeight = deferredPrecisionRoundTrip(DeferredWeight(saturate(summary.diffuseWeight)), useFP16Precision) *
-            (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
-        diffuseWeight = deferredPrecisionRoundTrip(diffuseWeight, useFP16Precision);
+        DeferredWeight diffuseWeight = deferredPrecisionRoundTrip(DeferredWeight(saturate(summary.diffuseWeight)), useFP16Precision);
 #else
-        DeferredWeight diffuseWeight = DeferredWeight(saturate(summary.diffuseWeight)) *
-            (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
+        DeferredWeight diffuseWeight = DeferredWeight(saturate(summary.diffuseWeight));
 #endif
         DeferredColor diffuseColor = DeferredColor(summary.baseColor) * diffuseWeight *
             (DeferredColor(1.0) - specularWeight);
-        DeferredColor transmissionColor = DeferredColor(summary.transmissionColor) * surfaceTransmission *
-            (DeferredWeight(1.0) - conductorFraction) * (DeferredColor(1.0) - specularWeight);
-        float3 diffuse = environmentDiffuseIrradiance(normal, push) / kPi *
-            float3(diffuseColor);
-        float3 specular = realtimeEnvironmentSpecular(reflect(-viewDirection, normal), roughness, push) * float3(specularWeight);
+        float3 diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
+#elif MATERIAL_CLASS == 2
+        // Conductor: zero diffuse contribution.
+        float3 diffuse = float3(0.0);
+#else
+        float3 diffuse = float3(0.0);
+        if (!isConductor) {
+            DeferredInput surfaceTransmission = DeferredInput(saturate(summary.surfaceTransmission));
+#if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+            bool useFP16Precision = kDeferredUseFP16Precision;
+            DeferredWeight diffuseWeight = deferredPrecisionRoundTrip(DeferredWeight(saturate(summary.diffuseWeight)), useFP16Precision) *
+                (DeferredWeight(1.0) - conductorFraction) * (isOpaque ? DeferredWeight(1.0) : (DeferredWeight(1.0) - surfaceTransmission));
+            diffuseWeight = deferredPrecisionRoundTrip(diffuseWeight, useFP16Precision);
+#else
+            DeferredWeight diffuseWeight = DeferredWeight(saturate(summary.diffuseWeight)) *
+                (DeferredWeight(1.0) - conductorFraction) * (isOpaque ? DeferredWeight(1.0) : (DeferredWeight(1.0) - surfaceTransmission));
+#endif
+            DeferredColor diffuseColor = DeferredColor(summary.baseColor) * diffuseWeight *
+                (DeferredColor(1.0) - specularWeight);
+            diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
+        }
+#endif
+
+        float3 specular = realtimeEnvironmentSpecular(reflect(-viewDirectionWS, normal), roughness, push) * float3(specularWeight);
+
+#if MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3
+        // All opaque classes (Dielectric, Conductor, General Opaque) are compile-time guaranteed zero transmission.
+        radiance += (diffuse + specular) * summary.occlusion;
+#else
         float3 transmitted = float3(0.0);
-        float3 refraction = refract(-viewDirection, normal, hit.frontFace ? 1.0 / ior : ior);
-        if (dot(refraction, refraction) > 0.0 && summary.transmissionWeight > 0.0) {
-            transmitted = realtimeEnvironmentSpecular(refraction, roughness, push) *
-                float3(transmissionColor);
+        if (!isOpaque && summary.transmissionWeight > 0.0) {
+            DeferredInput surfaceTransmission = DeferredInput(saturate(summary.surfaceTransmission));
+            DeferredColor transmissionColor = DeferredColor(summary.transmissionColor) * surfaceTransmission *
+                (DeferredWeight(1.0) - conductorFraction) * (DeferredColor(1.0) - specularWeight);
+            float ior = summary.ior;
+            float3 refraction = refract(-viewDirectionWS, normal, hit.frontFace ? 1.0 / ior : ior);
+            if (dot(refraction, refraction) > 0.0) {
+                transmitted = realtimeEnvironmentSpecular(refraction, roughness, push) *
+                    float3(transmissionColor);
+            }
         }
         radiance += (diffuse + specular + transmitted) * summary.occlusion;
+#endif
     }
     return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
 }
@@ -258,16 +305,16 @@ public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     uint family = sceneSurfaceMaterialFamily(hit.materialIndex, specializedProgram);
     if (family == 1u) {
         var program = makeSceneSlabMaterialProgram<SceneSingleSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
-        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed);
+        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
     }
     if (family == 2u) {
         var program = makeSceneSlabMaterialProgram<SceneDualSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
-        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed);
+        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
     }
 #endif
     var program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
     program.program.fixedMetalness = fixedMetalness;
     program.program.opaquePrimary = opaquePrimary;
-    return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed);
+    return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
 }
 } // namespace Metallic.VisibilityLighting
