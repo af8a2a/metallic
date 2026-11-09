@@ -108,15 +108,16 @@ public float3 environmentDiffuseIrradiance(float3 normal, ScenePathTracePush pus
 
 public struct VisibilitySurfaceLights : ISurfaceLightProvider
 {
-    public ScenePathTracePush push;
+    public uint debugFlags;
     public float3 position;
     public float2 pixel;
-    public ClusterLightGridParams grid;
+    public uint globalLightCount;
+    public uint globalLightCandidateOffset;
     public ClusterLightGridLookup lookup;
     public uint count()
     {
-        return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)
-            ? 0u : kCelestialLightCount + lookup.count + clusterLightGridGlobalLightCount(grid);
+        return (debugFlags & kOpenPBRDebugDisableDirectLighting) != 0u
+            ? 0u : kCelestialLightCount + lookup.count + globalLightCount;
     }
     public SurfaceLightSample sample(uint index)
     {
@@ -130,7 +131,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
             index -= kCelestialLightCount;
             result.source = index < lookup.count
                 ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
-                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
+                : (index - lookup.count < globalLightCount ? gDeferredGridCandidates[globalLightCandidateOffset + (index - lookup.count)] : kClusterLightGridInvalidIndex);
             light = samplePunctualLightData(gDeferredGridLights[result.source], position);
         }
         result.direction = light.direction;
@@ -141,7 +142,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
     }
     public float3 visibility(SurfaceLightSample light)
     {
-        if (openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)) { return float3(1); }
+        if ((debugFlags & kOpenPBRDebugDisableShadows) != 0u) { return float3(1); }
         let tableHandle = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
         if (tableHandle.index != 0xffffffffu) {
             let table = resolveUniform(tableHandle);
@@ -191,12 +192,14 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     }
     if (summary.unlit) { return applyPrimaryAerialPerspective(summary.baseColor, hit.position, ray.origin); }
     float3 viewDirection = -ray.direction;
+    ClusterLightGridParams gridParams = gDeferredGridParams[0];
     VisibilitySurfaceLights lights;
-    lights.push = push;
+    lights.debugFlags = push.debugFlags;
     lights.position = hit.position;
     lights.pixel = samplePixel;
-    lights.grid = gDeferredGridParams[0];
-    lights.lookup = clusterLightGridLookup(lights.grid, gDeferredGridCells,
+    lights.globalLightCount = clusterLightGridGlobalLightCount(gridParams);
+    lights.globalLightCandidateOffset = gridParams.counts.x;
+    lights.lookup = clusterLightGridLookup(gridParams, gDeferredGridCells,
         uint2(samplePixel), cameraLinearDepth(hit.position, push));
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);

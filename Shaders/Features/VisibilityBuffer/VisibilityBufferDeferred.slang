@@ -240,15 +240,62 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
 
 // Both schedules resolve the same raster surface. The RNG is used only by
 // optional stochastic texture filtering, never for light/path sampling.
-void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
+struct CameraRayBasis
+{
+    float3 origin;
+    float3 forward;
+    float3 rightHalfFov;
+    float3 upHalfFov;
+    float2 invResolution;
+    bool isOrthographic;
+};
+
+CameraRayBasis makeCameraRayBasis(ScenePathTracePush push)
+{
+    CameraRayBasis basis;
+    basis.isOrthographic = push.upProjection.w > 0.5;
+    basis.origin = push.eye.xyz;
+    basis.forward = Metallic.ScenePath::safeNormalize(push.center.xyz - push.eye.xyz, float3(0.0, 0.0, -1.0));
+    float3 cameraUp = Metallic.ScenePath::safeNormalize(push.upProjection.xyz, float3(0.0, 1.0, 0.0));
+    float3 right = Metallic.ScenePath::safeNormalize(cross(basis.forward, cameraUp), float3(1.0, 0.0, 0.0));
+    float3 up = Metallic.ScenePath::safeNormalize(cross(right, basis.forward), float3(0.0, 1.0, 0.0));
+    float aspect = max(push.viewport.x, 0.001);
+    basis.invResolution = 1.0 / float2(max(push.width, 1u), max(push.height, 1u));
+
+    if (basis.isOrthographic) {
+        float halfHeight = max(push.clipOrtho.z * 0.5, 0.0001);
+        basis.rightHalfFov = right * (halfHeight * aspect);
+        basis.upHalfFov = up * halfHeight;
+    } else {
+        float fovRadians = clamp(push.viewport.w, 0.017453292, 3.12413936);
+        float halfHeight = tan(fovRadians * 0.5);
+        basis.rightHalfFov = right * (aspect * halfHeight);
+        basis.upHalfFov = up * halfHeight;
+    }
+    return basis;
+}
+
+Ray cameraRayFromPixel(CameraRayBasis basis, float2 pixel)
+{
+    float2 ndc = float2(pixel.x * basis.invResolution.x * 2.0 - 1.0, 1.0 - pixel.y * basis.invResolution.y * 2.0);
+    Ray ray;
+    if (basis.isOrthographic) {
+        ray.origin = basis.origin + basis.rightHalfFov * ndc.x + basis.upHalfFov * ndc.y;
+        ray.direction = basis.forward;
+    } else {
+        ray.origin = basis.origin;
+        ray.direction = Metallic.ScenePath::safeNormalize(basis.forward + basis.rightHalfFov * ndc.x + basis.upHalfFov * ndc.y, basis.forward);
+    }
+    return ray;
+}
+
+void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis basis)
 {
     push = withTextureFeedbackSampling(push, pixel);
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
     float2 rayPixel = samplePixel + float2(push.jitterOffsetX, push.jitterOffsetY);
-    Ray ray;
-    ray.origin = rayOriginFromPixel(rayPixel, push);
-    ray.direction = rayDirectionFromPixel(rayPixel, push);
+    Ray ray = cameraRayFromPixel(basis, rayPixel);
     uint seed = hash(pixel.x + pixel.y * push.width);
     HitInfo hit;
     float3 radiance;
@@ -289,7 +336,8 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 {
     ScenePathTracePush push = deferredViewPush();
-    shadeVisibilityPixel(dispatchId.xy, push);
+    CameraRayBasis basis = makeCameraRayBasis(push);
+    shadeVisibilityPixel(dispatchId.xy, push, basis);
 }
 
 [shader("compute")]
@@ -297,6 +345,7 @@ void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
 {
     ScenePathTracePush push = deferredViewPush();
+    CameraRayBasis basis = makeCameraRayBasis(push);
     uint binIndex = push.deferredSettings & 0xffffu;
     if (!gMaterialBins.contains(binIndex)) { return; }
     MaterialBin bin = gMaterialBins[binIndex];
@@ -306,5 +355,5 @@ void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
     MaterialTile tile = gMaterialTiles[bin.offset + index];
     uint lane = WaveGetLaneIndex();
     if ((tile.laneMask & (1u << lane)) == 0u) { return; }
-    shadeVisibilityPixel(materialTilePixel(tile, lane, push.width), push);
+    shadeVisibilityPixel(materialTilePixel(tile, lane, push.width), push, basis);
 }
