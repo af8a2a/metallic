@@ -2314,14 +2314,20 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
 }
 
 // Read-before-write filters must remain atomic with other lanes' updates.
-groupshared Atomic<uint> gVsmMarkedPages[256];
+#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+static const uint kVSMMarkHashBits = 7u;
+#else
+static const uint kVSMMarkHashBits = 8u;
+#endif
+static const uint kVSMMarkHashCapacity = 1u << kVSMMarkHashBits;
+groupshared Atomic<uint> gVsmMarkedPages[kVSMMarkHashCapacity];
 
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
 [inline]
 bool vsmClaimMarkSlot(uint page, out uint slot)
 {
     // The page key remains valid until flush. A colliding page publishes directly.
-    slot = (page * 2654435761u) >> 24u;
+    slot = (page * 2654435761u) >> (32u - kVSMMarkHashBits);
     uint current = gVsmMarkedPages[slot].load(MemoryOrder.Relaxed);
     if (current == page) { return true; }
     if (current != 0xffffffffu) { return false; }
@@ -2344,7 +2350,7 @@ void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCou
 #else
     // A cache hit reuses an inserting lane's eventual OR. Hash collisions only
     // cause repeated requests; allocation observes this dispatch after all ORs.
-    uint slot = (page * 2654435761u) >> 24u;
+    uint slot = (page * 2654435761u) >> (32u - kVSMMarkHashBits);
     if (gVsmMarkedPages[slot].load(MemoryOrder.Relaxed) == page) { return; }
     uint previous = gVsmMarkedPages[slot].exchange(page, MemoryOrder.Relaxed);
     if (previous == page) { return; }
@@ -2704,7 +2710,7 @@ struct VSMReceiverMaskAtomic
     Atomic<uint> x;
     Atomic<uint> y;
 };
-groupshared VSMReceiverMaskAtomic gVsmReceiverMasks[256];
+groupshared VSMReceiverMaskAtomic gVsmReceiverMasks[kVSMMarkHashCapacity];
 
 [inline]
 bool vsmAccumulateReceiverMask(uint page, uint2 mask)
@@ -3062,7 +3068,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint r
 void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
     // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
-    for (uint entry = lane; entry < 256u; entry += 64u) {
+    for (uint entry = lane; entry < kVSMMarkHashCapacity; entry += 64u) {
         gVsmMarkedPages[entry].store(0xffffffffu, MemoryOrder.Relaxed);
 #if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
         gVsmReceiverMasks[entry].x.store(0u, MemoryOrder.Relaxed);
@@ -3077,7 +3083,7 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
     // All mask contributions are complete before publishing requests and masks.
     GroupMemoryBarrierWithGroupSync();
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
-    for (uint entry = lane; entry < 256u; entry += 64u) {
+    for (uint entry = lane; entry < kVSMMarkHashCapacity; entry += 64u) {
         uint page = gVsmMarkedPages[entry].load(MemoryOrder.Relaxed);
         if (page != 0xffffffffu) {
             uint2 mask = uint2(gVsmReceiverMasks[entry].x.load(MemoryOrder.Relaxed),
