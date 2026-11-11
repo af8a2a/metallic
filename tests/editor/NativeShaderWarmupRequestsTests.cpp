@@ -195,6 +195,79 @@ TEST(NativeShaderWarmupRequests, CompletePathTracePoliciesOwnRuntimeLayoutsAndSp
     }
 }
 
+TEST(NativeShaderWarmupRequests, CheckedDeferredRootsPreserveRuntimeLayoutsAndSpecializationTuples)
+{
+    const auto catalog = builtinShaderWarmupRequests("");
+    for (const bool customMaterials : {false, true}) {
+        SceneShaderOptions options{.customMaterials = customMaterials,
+            .materialInclude = customMaterials ? "generated/material-content-key" : ""};
+        for (const bool half : {false, true}) {
+            options.deferredFloat16 = half;
+            const auto check = [&](SceneShaderProgram program, std::span<const SlangMacroDefine> defines) {
+                const auto descriptorRequest = makeSceneShaderRequest(program, options, defines);
+                const auto constants = sceneShaderSpecializationConstants(program, options, defines);
+                for (const bool inlineRoot : {false, true}) {
+                    auto request = descriptorRequest;
+                    applyPathTraceShaderPolicy(request,
+                        {.inlineComputeRoot = inlineRoot, .trustedSceneParameters = false});
+                    const auto original = request;
+                    if (!customMaterials) {
+                        // Warm both the complete default source and explicit
+                        // legacy opt-out, without duplicating either source key.
+                        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), request), 1);
+                    }
+                    const auto variants = nativeComputeWarmupVariants(request);
+                    SCOPED_TRACE(request.module + "." + request.entry);
+                    ASSERT_FALSE(variants.empty());
+                    const uint32_t pushBytes = inlineRoot ? sizeof(ComputeResourceParameters) : sizeof(GPUBufferSpan);
+                    EXPECT_TRUE(std::any_of(variants.begin(), variants.end(), [&](const auto& variant) {
+                        return variant.userPushDataSize == pushBytes && !variant.indirectBindable &&
+                            std::ranges::equal(variant.specializationConstants, constants);
+                    }));
+                    for (const auto& variant : variants) {
+                        EXPECT_EQ(variant.userPushDataSize, pushBytes);
+                        EXPECT_EQ(std::count(variants.begin(), variants.end(), variant), 1);
+                    }
+                    EXPECT_EQ(request, original);
+                    if (!inlineRoot) { EXPECT_EQ(request, descriptorRequest); }
+                }
+            };
+            check(SceneShaderProgram::Deferred, {});
+            // Include the background bin and the custom-material source, whose
+            // static request must retain the same root ABI as the shared bins.
+            for (uint32_t materialClass = 0; materialClass < 5; ++materialClass) {
+                const auto value = std::to_string(materialClass);
+                std::vector<SlangMacroDefine> defines{{"MATERIAL_CLASS", value.c_str()}};
+                if (customMaterials && materialClass == 4) { defines.push_back({"MATERIAL_PROGRAM_ID", "17"}); }
+                check(SceneShaderProgram::DeferredBinned, defines);
+            }
+        }
+    }
+}
+
+TEST(NativeShaderWarmupRequests, DeferredRejectsUncheckedAndMalformedRootContracts)
+{
+    for (const auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+        auto request = makeSceneShaderRequest(program, {});
+        applyPathTraceShaderPolicy(request, {.inlineComputeRoot = true, .trustedSceneParameters = false});
+        ASSERT_FALSE(nativeComputeWarmupVariants(request).empty());
+        for (const std::string_view macro : {"METALLIC_INLINE_COMPUTE_ROOT", "METALLIC_TRUSTED_SCENE_RESOURCE_BYTES"}) {
+            auto missing = request;
+            std::erase_if(missing.defines, [&](const auto& define) { return define.first == macro; });
+            EXPECT_TRUE(nativeComputeWarmupVariants(missing).empty());
+            auto duplicated = request;
+            duplicated.defines.emplace_back(macro, macro == "METALLIC_INLINE_COMPUTE_ROOT" ? "1" : "0");
+            EXPECT_TRUE(nativeComputeWarmupVariants(duplicated).empty());
+        }
+        auto trusted = makeSceneShaderRequest(program, {});
+        applyPathTraceShaderPolicy(trusted, {.inlineComputeRoot = true, .trustedSceneParameters = true});
+        EXPECT_TRUE(nativeComputeWarmupVariants(trusted).empty());
+        auto wave = request;
+        wave.defines.emplace_back("METALLIC_TEXTURE_FEEDBACK_WAVE", "1");
+        EXPECT_TRUE(nativeComputeWarmupVariants(wave).empty());
+    }
+}
+
 TEST(NativeShaderWarmupRequests, MalformedPathTraceRootContractsAreNotGuessed)
 {
     const auto request = makePathTraceShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, {});

@@ -133,11 +133,13 @@ that catalog to the tool. Macro, capability and search-path order remain part of
 cache identity. Scene requests include the runtime `METALLIC_CUSTOM_MATERIALS=0`
 default so prewarmed OpenPBR and path-tracing binaries are reused.
 
-`PathTraceShaderPolicy.h` owns the unsplit compute path tracer's final transport
-and trusted-resource macros together with its native root layout. Runtime and
-warmup use this policy after the scene request factory selects specialization.
+`PathTraceShaderPolicy.h` owns the unsplit compute path tracer's and visibility-buffer
+Deferred's final transport and trusted-resource macros together with their native
+root layout. Runtime and warmup use this policy after the scene request factory selects specialization.
 The catalog includes the default inline root (24-byte `ComputeResourceParameters`)
-and the explicit legacy descriptor root (12-byte `GPUBufferSpan`). Regression
+and the explicit legacy descriptor root (12-byte `GPUBufferSpan`). Deferred uses
+checked scene access with either root; its builtin and custom-material catalogs
+cover both transports. Regression
 validation must include the DLSS RR sample with single-sample guides and SHARC;
 matching entry-point names alone does not establish matching shader requests.
 

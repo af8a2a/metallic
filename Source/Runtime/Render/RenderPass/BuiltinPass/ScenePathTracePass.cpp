@@ -730,7 +730,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const bool textureFeedbackWave = boolProperty(properties(), "textureFeedbackWave", false) &&
-            supportsInlineComputeRoot(properties()) && context.device->capabilities().shaderMaximalReconvergence &&
+            !visibilityDeferred_ && supportsInlineComputeRoot(properties()) && context.device->capabilities().shaderMaximalReconvergence &&
             context.device->capabilities().computeSubgroupBallotArithmetic;
         if (!visibilityDeferred_ && (!context.device->capabilities().rayTracingAccelerationStructure ||
             !context.device->capabilities().rayQuery)) {
@@ -2177,14 +2177,14 @@ public:
 private:
     bool supportsInlineComputeRoot(const RenderGraphProperties& properties) const
     {
-        return !realtime_ && !visibilityDeferred_ && !rayPipelineEnabled(properties) &&
+        return (visibilityDeferred_ || !realtime_) && !rayPipelineEnabled(properties) &&
             !boolProperty(properties, "splitPrimaryGuides", false);
     }
 
     bool inlineComputeRootEnabled(const RenderGraphProperties& properties) const
     {
-        // Keep authored graphs from the experiment readable; the supported path
-        // now uses the direct root by default without an opt-in property.
+        // Keep authored graphs from the experiment readable. Supported compute
+        // paths use the direct root by default, with an explicit legacy opt-out.
         return boolProperty(properties, "inlineComputeRoot",
             boolProperty(properties, "experimentalInlineComputeRoot", supportsInlineComputeRoot(properties)));
     }
@@ -2192,7 +2192,7 @@ private:
     bool validateInlineComputeRoot(const RenderGraphProperties& properties, std::string& log) const
     {
         if (inlineComputeRootEnabled(properties) && !supportsInlineComputeRoot(properties)) {
-            log += "inlineComputeRoot requires the unsplit compute path tracer\n";
+            log += "inlineComputeRoot requires the unsplit compute path tracer or visibility-buffer Deferred\n";
             return false;
         }
         return true;
@@ -2201,13 +2201,15 @@ private:
     bool trustedSceneParametersEnabled(const RenderGraphProperties& properties) const
     {
         return boolProperty(properties, "trustedSceneParameters",
-            !properties.contains("diagnosticPixels") && supportsInlineComputeRoot(properties) && inlineComputeRootEnabled(properties));
+            !visibilityDeferred_ && !properties.contains("diagnosticPixels") &&
+                supportsInlineComputeRoot(properties) && inlineComputeRootEnabled(properties));
     }
 
     bool validateTrustedSceneParameters(const RenderGraphProperties& properties, std::string& log) const
     {
         if (trustedSceneParametersEnabled(properties) &&
-            (properties.contains("diagnosticPixels") || !supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
+            (visibilityDeferred_ || properties.contains("diagnosticPixels") ||
+                !supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
             log += "trustedSceneParameters requires the unextended Scene packet and unsplit compute path tracer with inlineComputeRoot\n";
             return false;
         }

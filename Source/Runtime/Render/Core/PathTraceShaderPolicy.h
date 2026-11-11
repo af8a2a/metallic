@@ -36,6 +36,15 @@ inline bool isPathTraceShaderRequest(const ShaderRequest& request)
     return false;
 }
 
+inline bool isDeferredShaderRequest(const ShaderRequest& request)
+{
+    for (const auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+        const auto identity = sceneShaderIdentity(program);
+        if (request.module == identity.module && request.entry == identity.entry) { return true; }
+    }
+    return false;
+}
+
 inline void applyPathTraceShaderPolicy(ShaderRequest& request, const PathTraceShaderPolicy& policy)
 {
     if (policy.trustedSceneParameters && !policy.inlineComputeRoot) {
