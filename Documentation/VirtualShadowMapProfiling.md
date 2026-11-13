@@ -49,6 +49,10 @@ For a bounded diagnostic run, use `Tools/Perf/VirtualShadowMapAcceptance.py` wit
 frames. Its verified JSON already contains section names, parent indices and GPU
 milliseconds. Keep workload atomics disabled when diagnosing marker ranges unless
 workload counts are specifically needed; such counts add their own instrumentation.
+The [diagnostic ABI](VirtualShadowMapsGPUProfile.md#诊断-abi当前布局与历史读取)
+defines the current workload / Build layouts, independent JSON version fields and
+historical-package reading rules. Marker profiling does not define a separate
+counter ABI or make unavailable historical counters zero.
 
 Generate the nested report without launching another GPU process:
 
