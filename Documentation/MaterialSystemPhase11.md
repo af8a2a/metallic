@@ -1,8 +1,27 @@
 # Material System Phase 11 — Material Program → Closure Family
 
 生产 Deferred 已显式区分 Material Program 与 Closure Family，继续使用 fused dispatch。
-独立 split 原型完成 GPU A/B；本次数据不支持把全屏 Closure Buffer 升为生产默认路径，
+独立 split 原型完成 GPU A/B；该阶段数据不支持把全屏 Closure Buffer 升为生产默认路径，
 因此没有进入 Phase 12 的生产 Packed Closure Buffer 实现。
+
+## 与原 M2 的当前状态对账（2026-11-13，仅静态核对）
+
+- **已交付（delivered）**：Wave32 Deferred 的 `programBinning` / Sparse Material Program Bins
+  [默认开启](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp#L506-L514)，
+  [生产调用](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp#L1960-L1978)
+  把 generation 的 instance→executable 表交给 [MaterialBinning sparse 分支](../Source/Runtime/Render/MaterialBinning.cpp#L50-L66)，
+  [间接消费者](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp#L2122-L2144)
+  继续调用各 bin 的实际 executable、fused evaluate + lighting。本阶段只对这些原 bin 做 Family 顺序分组。
+- **已取代（superseded）**：[M2 首批记录](MaterialValueProgramsM2.md) 的“自定义程序只能走通用 kernel”
+  不再是生产默认描述。通用路径保留用于关闭分箱；split 原型不替换
+  [Phase 6 生产分配器](MaterialSystemPhase6.md#稀疏任务生成)。Family 合并不等于丢弃 Program 身份，
+  JSON/IR 程序数也不等于去重后的 executable bin 数。
+- **仍缺（remaining）**：原 M2 的完整 RT cone/LOD、三平面/UV seam/grazing/跨 primitive/tile
+  边缘矩阵、非 Wave32/规模压力与屏幕外反射自定义程序数值验收仍见
+  [M2 逐项清单](MaterialValueProgramsM2.md#原剩余清单逐项对账2026-11-13) 和
+  [路线图 M2](MaterialSystemRoadmap.md#m2-跑通真正的自定义程序)。本阶段 2/8 Program 原型没有关闭这些门槛。
+
+下面的 GPU A/B 数值与证据保留 2026-10-04 的阶段记录；本次文档修复未重跑 GPU、未新增性能或画质通过声明。
 
 ## 生产逻辑分类
 
@@ -19,7 +38,10 @@ Program / Family slot 0 都保留给背景。空场景返回合法的 background
 SingleSlab、DualSlab、OpenPBRComposite 三类均能组成逻辑表。
 
 [ScenePathTracePass](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp) 从已有编译
-ProgramKey 去重表建立映射。当前生产 Surface 特化均输出 OpenPBRCompositeClosure，
+ProgramKey 去重表建立映射。Phase 11 首次验收时的生产 Surface 特化均输出 OpenPBRCompositeClosure；
+后续 [M4 场景 Closure 接入](MaterialSystemM4SceneClosure.md#场景运行) 已增加 SingleSlab/DualSlab，
+当前 [updateMaterialProgramBins](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp#L2845-L2885)
+从 Value manifest 取得 Family 并选择 Slab 特化 executable。
 同族 Program 连续执行，但每个 Program 仍执行自己的 material evaluation + closure lighting。
 间接参数、tile mask 与 push 中的 bin ID 始终使用原 slot；分组顺序不会改变像素归属。
 原有 fixed-five-class fallback 保留。没有改变 MaterialBinning 的 GPU ABI、shader 绑定或管线资产。
@@ -31,7 +53,8 @@ ProgramKey 去重表建立映射。当前生产 Surface 特化均输出 OpenPBRC
 ```
 
 这里统计当前 generation 的 executable table，不是可见像素数或非空 GPU bin 数。
-现有生产回归场景记录的是 `1:1`；独立 Slab 基准覆盖 `2:1`、`8:1`。
+Phase 11 首次验收的生产回归场景记录的是 `1:1`；独立 Slab 基准覆盖 `2:1`、`8:1`。
+这不是当前所有场景的固定比例；后续 M4 场景测试已有三个程序映射到两个 Family。
 保留 Program 特化有利于独立优化材质求值；Family 只定义兼容的 Closure 布局与光照实现，
 不能用 Family ID 替代 Program 的求值代码。
 

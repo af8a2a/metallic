@@ -44,7 +44,7 @@
 | [Slang 模块组织](../Shaders/README.md) 已建立 Modules / Interop / Features 边界和传递依赖缓存 | 新材质编译器复用现有 Slang 后端；无需重新进行全仓库 shader 模块化 |
 | [RTXCR groom](RtxcrSample.md) 已有 Chiang BSDF 和 groom → DOTS → triangle BLAS 路径 | 早期即可验证 Fiber adapter；LSS、动画和 strand 光栅覆盖仍是后续项目 |
 | [DGC](DeviceGeneratedCommands.md) 已有可选能力、execution set、preprocess 和读回测试 | 后续任务是接入材质 active-program 调度及测量收益，不是从零实现扩展 |
-| [场景绑定](VisibilityBufferDeferred.md#场景绑定与帧前准备) 已保证 visibility / depth / rasterInfo 同源，并处理场景版本交接 | 扩展现有契约以纳入 program、layout、参数和 descriptor generation |
+| [场景绑定](VisibilityBufferDeferred.md#分箱资源与场景契约) 已保证 visibility / depth / rasterInfo 同源，并处理场景版本交接 | 扩展现有契约以纳入 program、layout、参数和 descriptor generation |
 
 本次也核对了本机 VividRP 的 `MaterialValueIR.cs`、`ClosureExpressionGraph.cs` 及 lowerer：表达层已有 Slab / HorizontalMix / VerticalLayer，lowerer 仍要求单 Slab 或一个操作符连接两个直接 Slab。可继承双 IR、验证器和规范化思路；Metallic 的拓扑限制应归属 backend / quality profile，不能固化为作者图的类型规则。
 
@@ -167,7 +167,18 @@ ABeautifulGame、StreamAsset、程序数量压力与 Claire groom 分别在后�
 
 ### M2 跑通真正的自定义程序
 
-**当前状态：进行中。** 首批受控 Value 前端、静态程序集和 OpenPBR PT / reference VBuffer 接入见 [M2 实施记录](MaterialValueProgramsM2.md)。完整阶段门槛仍以下列四项为准。
+**当前状态（2026-11-13 静态对账）：部分已交付，完整 M2 仍有剩余验收。**
+[M2 状态快照与逐项对账](MaterialValueProgramsM2.md) 是当前状态入口，以下四项保留完整目标，不再表示全部未实现。
+本文 M2 是原自定义程序里程碑，不等同于 [外部 M1–M4 验收](MaterialSystemM1M4Acceptance.md) 的 M2 Surface API。
+
+| 子任务 | 当前状态 / 后续取代 | 剩余验收 |
+| --- | --- | --- |
+| Coverage | **已交付（delivered）**：[Phase 8](MaterialSystemPhase8.md#共享快照与生产接入) 同代 Surface/Coverage 发布、候选命中/阴影与 OMM 绕过/恢复；其字节码后端已被 [Native Slang Coverage](MaterialCoverageNativeSlang.md#cache-and-live-edits) **取代（superseded）**。当前 [IR 切片/生成入口](../Source/Runtime/Render/Material/MaterialValueProgram.cpp#L160-L185)、[binding generation](../Source/Runtime/Render/Material/MaterialRuntime.h#L142-L161)。 | 不外推为 NTC alpha、任意 visibility producer 或长期动画一致性已验收。 |
+| TextureFootprint | **基础已交付（delivered）**：[Phase 9](MaterialSystemPhase9.md#显式纹理-footprint) 的统一 Value IR 和 ExplicitLOD/SampleGrad/RayCone；当前 [生产采样实现](../Shaders/Modules/MaterialValueTextureSampling.slang#L48-L67) 消费 [Surface footprint](../Shaders/Modules/OpenPBRSurface.slang#L230-L244)。首批禁止纹理/无统一 IR 的限制已取代。 | **仍缺（remaining）**完整 RT cone/LOD 适配验收、程序化梯度/近似 LOD、三平面混合、grazing、UV seam、跨 primitive/tile 边缘矩阵；双 mip 探针不代表这些已完成。 |
+| 稀疏 Program tile | **已交付（delivered），为 Wave32 Deferred 默认路径**：[默认设置](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp#L506-L514)、[生产提交](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp#L1960-L1978)、[sparse 分配分支](../Source/Runtime/Render/MaterialBinning.cpp#L50-L66)、[实际 executable 间接消费者](../Source/Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp#L2122-L2144)。[Phase 6](MaterialSystemPhase6.md) 交付生产分配器，[Phase 11](MaterialSystemPhase11.md) 只增加 Family 逻辑顺序，保留 fused。 | **仍缺（remaining）**完整规模/容量压力与非 Wave32 设备验收；不支持的设备明确报 Unsupported，需显式关闭 `materialBinning` 走整屏，不是自动 fallback。详见 [生产链与容量边界](MaterialValueProgramsM2.md#当前生产稀疏分箱默认值生产者和消费者)。 |
+| RT 选择与规模 | **静态分发已交付（delivered）**：[Surface dispatcher](../Source/Runtime/Render/Material/MaterialValueProgram.cpp#L188-L245)，[M4 场景 secondary hit](MaterialSystemM4SceneClosure.md#验收) 不依赖屏幕 Closure。 | **仍缺（remaining）**屏幕外反射自定义程序专门数值验证，以及 1/16/64/256 程序 × 1/100/1000 实例 × tile 混合度的编译时间/SPIR-V/寄存器/运行成本/显存扫描。64 作者程序预算与 4096 active executable bin 上限不同；256 超预算拒绝不等于通过规模测试。 |
+
+本次为文档事实/链接/差异修复，不新增 GPU 通过声明，也不把 Phase 11 split 微基准作为完整 M2 验收。
 
 先做小型代码前端和足够支持示例的 Value 表达，暂不等待完整节点编辑器。用默认 OpenPBR、程序化锈蚀、三平面贴图、带动画 mask 的材质证明：参数计算不同，散射模型可以相同。
 
