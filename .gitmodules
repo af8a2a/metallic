@@ -17,6 +17,9 @@
 [submodule "External/microprofile"]
 	path = External/microprofile
 	url = https://github.com/jonasmr/microprofile.git
+[submodule "External/nrd"]
+	path = External/nrd
+	url = https://github.com/NVIDIA-RTX/NRD.git
 [submodule "External/SDL3"]
 	path = External/SDL3
 	url = https://github.com/libsdl-org/SDL.git

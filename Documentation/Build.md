@@ -36,6 +36,52 @@ produce an installation hint. Manual setup remains available:
 git submodule update --init --recursive -- External/openpbr-bsdf
 ```
 
+### Locked NRD and microprofile revisions
+
+Submodule versions are pinned by the parent repository's gitlinks, not by the
+current upstream default branch. Keep these locks when initializing dependencies;
+do not use `git submodule update --remote` to reproduce a build.
+
+| Submodule | Upstream | Locked commit |
+| --- | --- | --- |
+| `External/nrd` | [NVIDIA-RTX/NRD](https://github.com/NVIDIA-RTX/NRD.git) | `36183520b006b65860bebc96d3dd7185e5edeb45` (NRD 4.16) |
+| `External/microprofile` | [jonasmr/microprofile](https://github.com/jonasmr/microprofile.git) | `a469709c55b973099c1600b78a503912150e2c69` |
+
+The NRD lock matches the vendored shader snapshot described in the
+[NRD integration notes](../Shaders/Interop/Denoising/NRD/README.md).
+`External/nrd` is upstream reference material for snapshot updates, not a build
+input for the Metallic-owned NRD implementation. Its mapping is still required
+for repository-wide recursive submodule operations, even with NRD disabled.
+Microprofile is a required source dependency, including its nested submodules.
+
+For a fresh checkout, initialize all locked dependencies and inspect their state:
+
+```powershell
+git clone https://github.com/af8a2a/metallic.git metallic-clean
+Set-Location metallic-clean
+git submodule update --init --recursive
+git submodule status --recursive
+git status --short
+```
+
+A clean initialized checkout has no `-` (uninitialized), `+` (different commit), or
+`U` (conflict) prefixes in submodule status, and no submodule changes in Git status.
+The full recursive initialization also downloads optional source/reference
+repositories, including OpenUSD and RTXCR assets; it can be substantially larger
+than initializing only the dependencies required by a selected build profile.
+For an existing checkout, inspect and preserve local submodule changes before
+initializing. After pulling a changed mapping, synchronize the affected URLs and
+initialize the locked revisions as needed:
+
+```powershell
+git submodule sync --recursive -- External/nrd External/microprofile
+git submodule update --init --recursive -- External/nrd External/microprofile
+```
+
+Do not reset, clean, or change gitlinks to hide existing local modifications or
+untracked files. A dirty nested checkout can coexist with a parent submodule HEAD
+that already matches its gitlink; check both before diagnosing version drift.
+
 The Vulkan backend requires `VK_KHR_device_address_commands` with
 `deviceAddressCommands` and `bufferDeviceAddress` enabled. Unsupported devices fail initialization with
 `Unsupported`. Indirect dispatch, indirect mesh draws, and buffer transfers use
