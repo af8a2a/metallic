@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_LABELS = ("scene", "task", "debug", "build", "tools", "skip-policy")
 REQUIRED_TARGETS = ("MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests",
                     "MetallicCtl", "MetallicRHITests", "MetallicShaderPipelineBench")
+REQUIRED_CHECKS = ("MetallicShaderModuleOwnershipAudit", "MetallicShaderModuleOwnershipTests",
+                   "MetallicShaderPipelineBenchTests")
 BUILD_DIR = None
 
 
@@ -45,6 +47,11 @@ def policy_errors(document):
     if variables.get("METALLIC_REQUIRE_PYTHON_TESTS") is not True:
         errors.append("CPU tooling requires Python")
     return errors
+
+
+def missing_required_checks(document, test_model):
+    selected = {test["name"] for test in test_model["tests"] if selected_test(document, test)}
+    return [name for name in REQUIRED_CHECKS if name not in selected]
 
 
 def missing_executable_targets(document, test_model):
@@ -149,6 +156,24 @@ class CIPresetTests(unittest.TestCase):
                 ci_preset(document, "buildPresets")["targets"].remove(target)
                 self.assertEqual(missing_executable_targets(document, model), [expected])
 
+    def test_required_checks_must_be_registered_and_selected(self):
+        model = {"tests": [{"name": name, "properties": [
+            {"name": "LABELS", "value": ["tools", "shader"]}]} for name in REQUIRED_CHECKS]}
+        self.assertEqual(missing_required_checks(self.valid, model), [])
+        for name in REQUIRED_CHECKS:
+            for mutation in ("unregistered", "unlabelled", "excluded"):
+                with self.subTest(name=name, mutation=mutation):
+                    document = copy.deepcopy(self.valid)
+                    changed = copy.deepcopy(model)
+                    test = next(test for test in changed["tests"] if test["name"] == name)
+                    if mutation == "unregistered":
+                        changed["tests"].remove(test)
+                    elif mutation == "unlabelled":
+                        test["properties"][0]["value"] = ["shader", "architecture", "cpu"]
+                    else:
+                        ci_preset(document, "testPresets")["filter"]["exclude"]["name"] += "|^" + name + "$"
+                    self.assertEqual(missing_required_checks(document, changed), [name])
+
     def test_configured_ctest_executable_closure(self):
         if BUILD_DIR is None:
             self.skipTest("supply --build-dir for generated CTest command checks")
@@ -163,6 +188,7 @@ class CIPresetTests(unittest.TestCase):
         self.assertTrue(native_tests, "the CPU preset must select registered jobs")
         self.assertEqual({test["name"] for test in native_tests},
                          {test["name"] for test in model["tests"] if selected_test(self.document, test)})
+        self.assertEqual(missing_required_checks(self.document, model), [])
         self.assertEqual(missing_executable_targets(self.document, model), [])
 
 

@@ -171,6 +171,54 @@ Release/MSVC 14.52/Ninja/Windows SDK 10.0.26100 settings and feature choices
 repaired or rerun to green by the new Debug result. Neither its configuration,
 file permissions nor existing GPU artifacts were modified.
 
+## Source-only ownership follow-up — 2026-11-14
+
+The 58-job result above did not include the source ownership audit: its original
+`shader;architecture` labels do not match the CPU preset. This follow-up adds
+`tools;cpu` to both `MetallicShaderModuleOwnershipAudit` and its five-method
+fixture regression `MetallicShaderModuleOwnershipTests`, retaining their original
+labels. These Python checks read repository Slang sources or temporary fixtures;
+they do not invoke Slang, create a Vulkan device, or need another build target.
+The six-target executable closure and GPU-page exclusion are unchanged.
+
+The configured preset contract now requires the ownership audit, its fixture
+regression, and `MetallicShaderPipelineBenchTests` to be registered **and selected**.
+Synthetic negative mutations remove each registration, remove its selectable
+labels (leaving `shader;architecture;cpu`), or exclude it by name. The pre-fix
+[configured red run](../../build/d2-round6-20261114/cpu-audit-contract-red.log)
+ran 11 methods with one failure, identifying exactly the two missing ownership
+jobs. After the registration update and reconfigure, the
+[configured contract](../../build/d2-round6-20261114/cpu-audit-contract-green.log)
+passed **11/11, no skips**; this alone is not the full lane regression.
+Official preset enumeration selects 60 jobs, including all three required checks
+and excluding `MetallicGPUPageTests`. The separate
+[direct source audit](../../build/d2-round6-20261114/cpu-audit-source-check.log)
+returned exit 0: **392 Slang files, 278 modules, 114 implementation units**.
+This checks ownership syntax, not shader compilation or GPU behavior.
+
+The same compatible Debug tree was reconfigured and all six selected targets
+built or remained up to date, exit 0; see the
+[configure/build log](../../build/d2-round6-20261114/cpu-audit-configure-build.log).
+The developer shell still selected MSVC 14.52.37025 and Windows SDK 10.0.26100.0;
+compiler, generator and optional SDK choices were not changed.
+The subsequent **complete selected CPU run passed 60/60, 102.13 s, exit 0**, with
+default TEMP/TMP and no GTEST/CTEST environment overrides. This is a new invocation,
+not a reinterpretation of the historical 58-job results. See its
+[full log](../../build/d2-round6-20261114/cpu-audit-cpu-lane.log) and
+[JUnit](../../build/d2-round6-20261114/cpu-audit-cpu-lane.xml).
+
+The JUnit records the ownership fixture **5/5**, the real source audit's
+**392/278/114** totals, the configured contract **11/11**, and benchmark
+**6 CPU methods passed / 4 explicit opt-in GPU skips**. Its outer `skipped=0`
+counts CTest jobs, not native cases. Successful native Scene/Task/Debug output is
+still truncated at 1024 bytes; the earlier separate native XML evidence above
+is not a case-level rerun of this new 60-job invocation.
+
+Independent read-only final review approved this four-file follow-up after
+checking the full logs/JUnit, exact two-job selection delta, historical evidence
+boundaries and 89 local documentation links. This approval does not cover the
+separate hosted-workflow candidate or whole-issue acceptance.
+
 ## Acceptance balance
 
 #63 remains open. The companion [editor/Nsight source matrix](EditorValidationMatrix-2026-11-14.md)
@@ -179,9 +227,10 @@ boundaries; it adds no runtime passes, cross-platform implementation, or skip
 allowances. It is not a complete repository-wide platform/skip baseline.
 This CPU slice does not deploy a workflow or hosted runner, archive hosted JUnit,
 prove the Nsight integration-on collection timeout/runtime path, or select every
-shader/perf suite. In particular the separate `shader;architecture` module-ownership audit
-and `shader;perf;cpu` suites are not made part of this lane merely by adding
-`tools`. The benchmark CPU regression is not a replacement for GPU collection.
+shader/perf suite. The ownership audit and its fixture regression are explicitly
+included by the follow-up above; other `shader;perf;cpu` suites without a matching
+CPU preset label remain outside this lane. The benchmark CPU regression is not
+a replacement for GPU collection.
 A future workflow must use the matching test preset/filters rather than assume
 an unfiltered invocation of every registered test has this build closure.
 

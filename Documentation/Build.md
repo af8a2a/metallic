@@ -126,7 +126,13 @@ preset explicitly excludes it by name; its CPU subtests are not selected here
 either. Run that bundle separately on a suitable GPU. The pipeline benchmark
 regression checks its CLI and compile-only fixtures, not GPU performance; its
 four opt-in GPU cases remain skipped unless explicitly run with `--gpu`.
-`MetallicCIPresetTests` checks the preset policy and the selected executable references in the configured CTest command model (direct commands,
+The source-only `MetallicShaderModuleOwnershipAudit` runs
+[the Slang ownership checker](../Tools/CheckShaderModules.py) without a GPU or
+Slang compiler; its fixture regression `MetallicShaderModuleOwnershipTests` is
+also selected through `tools`. Their existing `shader;architecture` labels are
+retained. `MetallicCIPresetTests` requires both jobs and the compile-only benchmark
+to remain registered and selected, and checks the preset policy and selected
+executable references in the configured CTest command model (direct commands,
 CMake `-D...EXECUTABLE` arguments and Python `--executable` arguments).
 
 This is a local preset, not a deployed CI workflow. It does not select every
