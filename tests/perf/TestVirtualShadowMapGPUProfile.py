@@ -365,6 +365,55 @@ class GPUProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing frame readback"):
             profile.summarize_package(package)
 
+    def test_capture_declared_work_readback_cannot_be_missing(self):
+        package = self.package(mode="diagnostic")
+        self.mutate_capture(package, lambda data: data.update(gpuWorkDiagnostics=True))
+        with self.assertRaisesRegex(ValueError, "missing frame readback"):
+            profile.summarize_package(package)
+
+    def test_capture_declared_work_readback_must_cover_every_frame(self):
+        package = self.package(mode="diagnostic")
+        for missing in (0, 1):  # Warmup and measured frames both require readback.
+            def mutate(data):
+                data["gpuWorkDiagnostics"] = True
+                data["cases"][0]["frames"] = [add_work(frame(index)) for index in range(4)]
+                del data["cases"][0]["frames"][missing]["shadow"]
+            self.mutate_capture(package, mutate)
+            with self.subTest(missing_frame=missing), self.assertRaisesRegex(ValueError, "missing frame readback"):
+                profile.summarize_package(package)
+
+    def test_capture_declared_work_readback_accepts_complete_frames(self):
+        package = self.package(mode="diagnostic")
+        def mutate(data):
+            data["gpuWorkDiagnostics"] = True
+            data["cases"][0]["frames"] = [add_work(row, version=6) for row in data["cases"][0]["frames"]]
+        self.mutate_capture(package, mutate)
+        result = profile.summarize_package(package)
+        self.assertEqual(result["processes"][0]["workCounterFrames"], 3)
+        self.assertEqual(sum(row["gpuWorkAvailable"] for row in result["workFrames"]), 4)
+        self.assertTrue(all(row["gpuWorkAvailable"] for row in result["workFrames"] if row["process"] == 1))
+
+    def test_case_work_declaration_overrides_capture(self):
+        package = self.package(mode="diagnostic")
+        for capture_enabled in (False, True):
+            def mutate(data):
+                data["gpuWorkDiagnostics"] = capture_enabled
+                data["cases"][0]["gpuWorkDiagnostics"] = not capture_enabled
+            self.mutate_capture(package, mutate)
+            with self.subTest(capture_enabled=capture_enabled):
+                if capture_enabled:
+                    result = profile.summarize_package(package)
+                    self.assertEqual(result["processes"][0]["workCounterFrames"], 0)
+                else:
+                    with self.assertRaisesRegex(ValueError, "missing frame readback"):
+                        profile.summarize_package(package)
+
+    def test_undeclared_historical_work_readback_remains_unavailable(self):
+        result = profile.summarize_package(self.package(mode="diagnostic"))
+        self.assertTrue(all(row["workCounterFrames"] == 0 for row in result["processes"]))
+        self.assertTrue(all(not row["gpuWorkAvailable"] for row in result["workFrames"]))
+        self.assertTrue(all("projectionRays" not in row for row in result["workFrames"]))
+
     def test_build_sidecar_is_independent_and_optional(self):
         row = add_build(add_work(frame(1)))
         before = profile.work_frame(row, "diagnostic")

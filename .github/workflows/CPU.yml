@@ -1,0 +1,40 @@
+name: CPU (Windows hosted candidate)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # CMake initializes only its required submodules, not optional/licensed assets.
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check workflow source contract (not a YAML parser)
+        shell: pwsh
+        run: python -B tests/perf/TestCPUWorkflow.py
+      - name: Install CPU Python dependencies, configure, build and test CPU preset
+        shell: pwsh
+        run: ./scripts/RunCPULane.ps1
+      - name: Preserve CPU diagnostics even after failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-windows-diagnostics
+          path: |
+            build-ci/ci-logs/
+            build-ci/CTestResults.xml
+            build-ci/Testing/Temporary/LastTest.log
+            build-ci/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: warn

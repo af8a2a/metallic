@@ -1,0 +1,10 @@
+# Windows CPU lane on CPython 3.12: array/image checks, plots, process probes,
+# and Student-t confidence intervals in TestPathTraceQueries.
+# Pin direct CPU-test dependencies, not terrain/OpenEXR or optional GPU tooling.
+# Verified releases have CPython 3.12 Windows x64 wheels (psutil uses abi3).
+# This is NOT a transitive/hash lock: pip resolves matplotlib dependencies
+# (including Pillow); RunCPULane logs pip list and checks the resolved environment.
+numpy==2.2.6
+matplotlib==3.10.3
+psutil==7.0.0
+scipy==1.15.3

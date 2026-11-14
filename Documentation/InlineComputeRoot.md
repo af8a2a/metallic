@@ -1,10 +1,10 @@
 # Direct compute resource root
 
 `ScenePathTracePass.inlineComputeRoot` is a default-enabled feature for the ordinary,
-unsplit compute path tracer, selecting a separate 24-byte push-constant ABI. An explicit
-`false` restores the buffered root for A/B comparisons. Realtime lighting, visibility
-deferred, ray pipelines and primary-guide splitting default to `false` and reject an
-explicit `true`. Preparation, compilation and execution use the same selection helper.
+unsplit compute path tracer and visibility-buffer Deferred, selecting a separate
+24-byte push-constant ABI. An explicit `false` restores the buffered root for A/B
+comparisons. Realtime lighting, ray pipelines and primary-guide splitting default to
+`false` and reject an explicit `true`. Preparation, compilation and execution use the same selection helper.
 Existing pipeline assets inherit this policy without adding an explicit property.
 The old `experimentalInlineComputeRoot` name remains a compatibility alias for authored
 graphs and archived experiments. An explicit boolean `inlineComputeRoot` takes
@@ -19,7 +19,7 @@ sentinels remain unchanged. `ComputeResourceParameters.h` owns the shared wire l
 and asserts the CPU size, alignment and offsets.
 
 The generic shader ABI still defaults to `ParameterRoot`: a 12-byte push span points
-to the uploaded 24-byte root. The supported path tracer appends the global definition
+to the uploaded 24-byte root. The supported passes append the global definition
 `METALLIC_INLINE_COMPUTE_ROOT=1` and imports `InlineComputeRoot`: the same 24-byte root
 is pushed directly. A compilation importing the legacy root in this mode is rejected.
 The request factory selects the same entry point and specialization constants before
@@ -31,6 +31,13 @@ checks in both modes. The legacy short-root zero-return contract is preserved. T
 direct mode has no external root span to truncate; its CPU encoder must supply the
 complete root. It still returns zero for a short resource packet or invalid field offset.
 Direct transport does not add forced inlining or load the whole scene resource packet.
+
+Deferred always retains checked scene access: `trustedSceneParameters` defaults to
+`false` and an explicit `true` is rejected. Flat, binned, background and custom-material
+requests use the same transport policy. Builtin and custom-material warmup catalogs
+include both checked inline requests and legacy descriptor requests; native warmup
+preserves their root ABI and material specialization constants. Deferred does not
+enable the path tracer's texture-feedback wave policy.
 
 ## Host-guaranteed scene packet
 

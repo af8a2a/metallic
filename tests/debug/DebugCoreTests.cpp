@@ -187,10 +187,11 @@ TEST(DebugCapture, ScopedRelationsMissingDependenciesAndNonFiniteStatistics)
     add("streaming.P.activeHeader", {"MeshletStreamGPUActiveHeader", 20, {{"activeGroupCount", "u32", 0}, {"activeGroupCapacity", "u32", 4}, {"maxActiveGroupClusters", "u32", 8}, {"overflowCount", "u32", 12}, {"frameIndex", "u32", 16}}}, header, sizeof(header));
     auto root = capture.evaluationRoot(); ASSERT_TRUE(root);
     const auto& links = root->at("links").at("streaming.P.visibleClusters").at("items");
-    EXPECT_EQ(links[0]["source"], "Resident"); EXPECT_EQ(links[0]["geometry"]["status"], "Captured");
-    EXPECT_EQ(links[0]["meshlet"]["status"], "MissingDependency");
+    // Unreferenced storage must not revive retired source-0 Resident semantics.
+    EXPECT_EQ(links[0]["source"], "Unknown"); EXPECT_EQ(links[0]["recordValidity"], "Unverified");
+    EXPECT_EQ(links[0]["geometry"]["status"], "Captured"); EXPECT_EQ(links[0]["meshlet"]["status"], "MissingDependency");
     EXPECT_EQ(links[1]["source"], "StreamPage"); EXPECT_EQ(links[1]["activeGroup"]["status"], "MissingDependency");
-    EXPECT_EQ(links[1]["instance"]["status"], "OutOfRange");
+    EXPECT_EQ(links[1]["recordValidity"], "Unverified"); EXPECT_EQ(links[1]["instance"]["status"], "OutOfRange");
     EXPECT_EQ(root->at("diagnostics")[0]["code"], "CounterExceedsCapacity");
     const float values[] = {1, 3, INFINITY, NAN};
     add("samples", {"f32", 4, {{"value", "f32", 0}}}, values, sizeof(values), 4);

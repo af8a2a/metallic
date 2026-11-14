@@ -12,6 +12,8 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
+#include "Runtime/Render/Shadow/VirtualShadowMaps.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 
 #include <optional>
 
@@ -31,8 +33,12 @@ namespace native_warmup_detail {
 // must declare its actual pipeline ABI; it never inherits a guessed 12-byte root.
 inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
 {
-    if (isPathTraceShaderRequest(request)) {
+    if (isPathTraceShaderRequest(request) || isDeferredShaderRequest(request)) {
         const auto policy = parsePathTraceShaderPolicy(request);
+        // Deferred's inline transport retains checked packet access and does not
+        // enable the path tracer's texture-feedback reconvergence policy.
+        if (policy && isDeferredShaderRequest(request) &&
+            (policy->trustedSceneParameters || policy->textureFeedbackWave)) { return std::nullopt; }
         return policy ? std::optional<uint32_t>(policy->userPushDataSize()) : std::nullopt;
     }
     const auto matches = [&](std::string_view module, std::initializer_list<std::string_view> entries) {
@@ -110,6 +116,15 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
     }
     if (matches("Features/PathTracing/OpenPBRPrimaryGuides", {"openPbrPrimaryGuidesMain"}) ||
         matches("Features/PathTracing/OpenPBRPathContinuation", {"openPbrPathContinuationMain"})) { return static_cast<uint32_t>(sizeof(GPUBufferSpan)); }
+    if (matches("Features/VirtualShadowMaps/VirtualShadowMaps", {
+            "vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
+            "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
+            "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain"})) {
+        return static_cast<uint32_t>(sizeof(ShadowPush));
+    }
+    if (matches("Features/VirtualShadowMaps/VirtualShadowMapTemporal", {"vsmTemporalMain"})) {
+        return static_cast<uint32_t>(sizeof(VirtualShadowMapTemporalParams));
+    }
     return std::nullopt;
 }
 
@@ -170,7 +185,7 @@ inline std::vector<NativeComputeWarmupVariant> nativeComputeWarmupVariants(const
     const auto addPolicy = [&](SceneShaderProgram program, const SceneShaderOptions& policy,
                                std::span<const SlangMacroDefine> defines = {}) {
         auto generated = makeSceneShaderRequest(program, policy, defines);
-        if (isPathTraceShaderRequest(request)) {
+        if (isPathTraceShaderRequest(request) || isDeferredShaderRequest(request)) {
             const auto transport = parsePathTraceShaderPolicy(request);
             if (!transport) { return; }
             applyPathTraceShaderPolicy(generated, *transport);

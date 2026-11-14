@@ -334,7 +334,7 @@ class CurrentExperimentTests(unittest.TestCase):
             f'timestamp,pid,process,engine,utilization\n{timestamp},{pid},synthetic,gpu,0\n')
         return {'arm':arm,'result':result,'process':process,'competition':e.monitor_coverage(directory,pid)}
 
-    def archive(self, discovery=(.1,.1), confirmation=(.1,.1), scales=None):
+    def archive(self, discovery=(.1,.1), confirmation=(.1,.1), scales=None, protocol=e.CURRENT_PROTOCOL):
         root = self.fixture.path/'current-experiment'
         root.mkdir()
         candidate = {'protocol':e.PROTOCOL,'id':'synthetic','hypothesis':'unit test only','path':e.TARGET,
@@ -346,7 +346,7 @@ class CurrentExperimentTests(unittest.TestCase):
         e.w.save(root/'Build.json',{'exitCode':0})
         (root/'CMakeCache.txt').write_bytes(b'synthetic cache')
         e.w.save(root/'Transaction.json',{'state':'restored'})
-        manifest = {'protocol':e.CURRENT_PROTOCOL,'status':'complete','policy':self.policy,
+        manifest = {'protocol':protocol,'status':'complete','policy':self.policy,
                     'blocks':len(discovery),'confirmationBlocks':len(confirmation),'restored':True,'runs':[],
                     'buildIdentity':{'configuration':'Release','cacheSha256':e.w.digest(root/'CMakeCache.txt')},
                     'toolHashes':{}}
@@ -475,22 +475,47 @@ class CurrentExperimentTests(unittest.TestCase):
         self.assertLess(decision['gains']['softwareTotalMs']['lower95'],self.policy['minimumGain'])
 
     def test_discovery_below_point_target_with_wide_interval_retains_candidate(self):
-        self.block_timings([-.08,.01,.08])
+        self.block_timings([-.09,.01,.07])
         decision = self.assess('discovery')
         self.assertEqual(decision['decision'],'inconclusive')
         self.assertEqual(decision['nextAction'],'retain_candidate')
         self.assertLess(decision['gains']['softwareTotalMs']['estimate'],self.policy['minimumGain'])
         self.assertGreater(decision['gains']['softwareTotalMs']['upper95'],self.policy['minimumGain'])
 
-    def test_zero_gain_and_small_reliable_gain_are_below_target(self):
-        for gain in (0,.02):
+    def test_small_reliable_gain_qualifies_for_confirmation_and_acceptance(self):
+        for gain in (.0001,.005,.02):
             with self.subTest(gain=gain):
                 self.block_timings([gain]*3)
                 decision = self.assess('discovery')
-                self.assertEqual(decision['decision'],'reject')
-                self.assertEqual(decision['reason'],'gain_below_threshold')
-                self.assertEqual(decision['effectAssessment'],'below_target')
+                self.assertEqual(decision['decision'],'inconclusive')
+                self.assertEqual(decision['nextAction'],'run_confirmation')
                 self.assertAlmostEqual(decision['gains']['softwareTotalMs']['estimate'],gain)
+                self.assertEqual(self.assess()['decision'],'accept')
+
+    def test_exact_zero_gain_is_not_an_improvement(self):
+        self.block_timings([0]*3)
+        for stage in ('discovery','confirmation'):
+            with self.subTest(stage=stage):
+                decision = self.assess(stage)
+                self.assertEqual(decision['decision'],'reject')
+                self.assertEqual(decision['reason'],'no_positive_gain')
+                self.assertEqual(decision['effectAssessment'],'no_gain')
+
+    def test_small_gain_crossing_zero_remains_uncertain(self):
+        self.block_timings([-.005,.005,.015])
+        self.assertEqual(self.assess('discovery')['nextAction'],'run_confirmation')
+        decision = self.assess()
+        self.assertEqual(decision['decision'],'inconclusive')
+        self.assertEqual(decision['effectAssessment'],'uncertain')
+        self.assertLess(decision['gains']['softwareTotalMs']['lower95'],0)
+        self.assertGreater(decision['gains']['softwareTotalMs']['upper95'],0)
+
+    def test_v2_retains_its_declared_three_percent_gate(self):
+        self.block_timings([.02]*3)
+        for stage in ('discovery','confirmation'):
+            decision = e.assess(self.rows,self.case,e.V2_POLICY,len(self.rows),stage)
+            self.assertEqual(decision['decision'],'reject')
+            self.assertEqual(decision['reason'],'gain_below_threshold')
 
     def test_primary_and_graph_regressions_are_explicit(self):
         for gains, graph_gains, reason in (([-.1]*3,[0]*3,'primary_regression'),
@@ -563,7 +588,7 @@ class CurrentExperimentTests(unittest.TestCase):
             row['process']['pid'] += 12
         decision = e.assess(self.rows,self.case,self.policy,12,reference_rows=reference)
         self.assertEqual(decision['decision'],'reject')
-        self.assertEqual(decision['effectAssessment'],'below_target')
+        self.assertEqual(decision['effectAssessment'],'no_gain')
         self.assertAlmostEqual(decision['gains']['softwareTotalMs']['estimate'],0)
 
     def test_confirmation_rejects_cross_stage_output_or_identity_changes(self):
@@ -601,6 +626,23 @@ class CurrentExperimentTests(unittest.TestCase):
         self.assertEqual(discovery['decision'],'inconclusive')
         self.assertEqual(discovery['nextAction'],'run_confirmation')
         self.assertEqual(e.verify(root)['decision'],'accept')
+
+    def test_execute_and_verify_small_gain(self):
+        decision,calls,root = self.execute_synthetic([.005]*3,[.005]*5)
+        self.assertEqual(calls,['discovery']*12+['confirmation']*20)
+        self.assertEqual(decision['decision'],'accept')
+        self.assertEqual(e.verify(root)['decision'],'accept')
+
+    def test_offline_v2_archive_keeps_original_policy(self):
+        self.policy = copy.deepcopy(e.V2_POLICY)
+        root,manifest = self.archive(confirmation=(.02,.02),protocol=e.V2_PROTOCOL)
+        decision = e.verify(root)
+        self.assertEqual(decision['decision'],'reject')
+        self.assertEqual(decision['reason'],'gain_below_threshold')
+        manifest['protocol'] = e.CURRENT_PROTOCOL
+        self.save_manifest(root,manifest)
+        with self.assertRaisesRegex(ValueError,'policy'):
+            e.verify(root)
 
     def test_execute_confirmation_failure_does_not_reuse_discovery_gain(self):
         decision,calls,root = self.execute_synthetic([.1]*3,[0]*5)

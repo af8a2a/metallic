@@ -34,6 +34,7 @@ STREAM_FIELDS = ("residentPages", "geometryUsedBytes", "originalTopologyHash", "
                  "textureSemanticIdentitySha256", "textureSemanticIdentityBytes")
 STREAM_ERRORS = ("pendingPages", "allocationFailures", "loadFailures", "requestOverflows")
 TEXTURE_FIELDS = ("textureResidentBytes", "loadedTextures", "pendingRequests", "texturePendingBytes", "texturePendingImages")
+# Original policy for retired four-arm evidence only, not the target for new experiments.
 POLICY = {"minimumGain": .03, "maximumGraphRegression": .02, "confidence": .95,
           "statisticalUnit": "independent symmetric eight-process block",
           "statistic": "ABBA log ratios via ExperimentRunner.block_gain", "promotion": "manual"}

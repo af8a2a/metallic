@@ -3,6 +3,10 @@
 #include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/PathTraceShaderPolicy.h"
 #include "Runtime/Render/HZBSPD.h"
+#include "Runtime/Render/Material/MaterialValueProgram.h"
+#include "Runtime/Render/Shadow/VirtualShadowMaps.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
+#include <filesystem>
 
 #include <initializer_list>
 #include <string>
@@ -15,6 +19,25 @@ namespace metallic::render {
 // many files are modules/includes, and identical entry points with different
 // ordered defines/capabilities have different runtime cache keys.
 // Variant options use the same factories as the owning runtime passes.
+inline std::string defaultVirtualShadowMapCoverageInclude()
+{
+    static const std::string cachedPath = []() -> std::string {
+        const std::filesystem::path coveragePath = std::filesystem::path(PROJECT_SOURCE_DIR) / ".cache" / "materials" / "coverage" / "4073608975505000349";
+        if (std::filesystem::exists(coveragePath / "MaterialCoverageGenerated.slang")) {
+            return coveragePath.string();
+        }
+        std::string diagnostics;
+        const auto coverage = MaterialValueProgramSet::create({}, diagnostics);
+        if (!coverage) { return {}; }
+        std::filesystem::path directory;
+        if (!coverage->writeCoverageInclude(PROJECT_SOURCE_DIR "/.cache/materials", directory, diagnostics)) {
+            return {};
+        }
+        return directory.string();
+    }();
+    return cachedPath;
+}
+
 inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string& rtxcrInclude)
 {
     std::vector<ShaderRequest> requests;
@@ -145,6 +168,34 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
         }
     }
     requests.push_back(makeShadowShaderRequest());
+    const std::string defaultCoverage = defaultVirtualShadowMapCoverageInclude();
+    for (bool staticPageHZB : {true, false}) {
+        for (bool refined : {true, false}) {
+            for (bool receiverMask : {true, false}) {
+                for (uint32_t clipmaps : {8u, 4u}) {
+                    for (auto& req : makeVirtualShadowMapRequests({
+                            .directional = true,
+                            .receiverMask = receiverMask,
+                            .staticPageHZB = staticPageHZB,
+                            .refinedReceiver = refined,
+                            .clipmapCount = clipmaps,
+                            .pageSize = 128,
+                            .coverageInclude = defaultCoverage})) {
+                        requests.push_back(std::move(req));
+                    }
+                }
+            }
+        }
+    }
+    for (auto& req : makeVirtualShadowMapRequests({
+            .directional = false,
+            .receiverMask = false,
+            .staticPageHZB = false,
+            .refinedReceiver = false,
+            .coverageInclude = defaultCoverage})) {
+        requests.push_back(std::move(req));
+    }
+    requests.push_back(makeVirtualShadowMapTemporalRequest());
     // The runtime appends SINGLE_SAMPLE after its Base/SHARC_QUERY defines.
     // Append coverage without changing the existing ordered request prefix.
     const SlangMacroDefine singleSampleGuides[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
@@ -154,13 +205,14 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     // Match VisibilityBufferPass LDS and optional wave SPD startup requests.
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "0"}});
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "1"}});
-    // Runtime defaults use the inline root and trusted scene packet. Keep the
-    // explicit legacy transport recipes and warm the exact default source too.
+    // Runtime defaults use an inline root: trusted for PT, checked for Deferred.
+    // Keep legacy transport recipes and warm the exact default sources too.
     const size_t legacyRequestCount = requests.size();
     for (size_t index = 0; index < legacyRequestCount; ++index) {
-        if (!isPathTraceShaderRequest(requests[index])) { continue; }
+        const bool deferred = isDeferredShaderRequest(requests[index]);
+        if (!isPathTraceShaderRequest(requests[index]) && !deferred) { continue; }
         auto request = requests[index];
-        applyPathTraceShaderPolicy(request, {});
+        applyPathTraceShaderPolicy(request, {.trustedSceneParameters = !deferred});
         requests.push_back(std::move(request));
     }
     // Deduplicate complete requests, preserving macro/capability/search-path

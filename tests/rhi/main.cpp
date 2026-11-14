@@ -87,6 +87,7 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
 {
     gtestArguments.clear();
     gtestArguments.emplace_back(argv[0]);
+    bool hasLegacyFilter = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
@@ -151,11 +152,13 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
                 return false;
             }
             gtestArguments.emplace_back(std::string("--gtest_filter=*") + argv[++index] + "*");
+            hasLegacyFilter = true;
             continue;
         }
         if (argument.starts_with("--filter=")) {
             gtestArguments.emplace_back(
                 std::string("--gtest_filter=*") + std::string(argument.substr(9)) + "*");
+            hasLegacyFilter = true;
             continue;
         }
         if (argument == "--help" || argument == "-h") {
@@ -165,6 +168,11 @@ bool parseArguments(int argc, char** argv, Options& options, std::vector<std::st
         gtestArguments.emplace_back(argument);
     }
 
+    if (hasLegacyFilter) {
+        // A legacy regression filter must select tests by default. Prepend the
+        // policy so explicit GoogleTest CLI options can still override it.
+        gtestArguments.insert(gtestArguments.begin() + 1, "--gtest_fail_if_no_test_selected");
+    }
     return true;
 }
 

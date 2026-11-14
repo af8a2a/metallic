@@ -66,9 +66,34 @@ class CLASTessellationABTests(unittest.TestCase):
         result = runner.decision(rows(graph_gain=-.05), "confirmation")
         self.assertEqual(result["effectAssessment"], "confirmed_regression")
 
-    def test_below_target_is_not_no_benefit(self):
+    def test_small_gain_proceeds_to_confirmation_and_accepts(self):
+        self.assertEqual(runner.decision(rows(gain=.01), "discovery")["nextAction"], "run_confirmation")
         result = runner.decision(rows(gain=.01), "confirmation")
+        self.assertEqual(result["decision"], "accept")
+
+    def test_legacy_policy_keeps_three_percent_target(self):
+        result = runner.decision(rows(gain=.01), "confirmation", policy=runner.LEGACY_POLICY)
         self.assertEqual(result["effectAssessment"], "below_target")
+
+    def test_zero_gain_is_not_confirmation_or_improvement(self):
+        for stage in ("discovery", "confirmation"):
+            result = runner.decision(rows(gain=0), stage)
+            self.assertEqual(result["decision"], "inconclusive")
+            self.assertEqual(result["nextAction"], "retain_candidate")
+
+    def test_uncertain_small_gain_retains_candidate(self):
+        changed = rows(gain=.01)
+        for index, row in enumerate(changed):
+            if row["arm"] == "B":
+                row["result"]["timings"]["clasMs"]["median"] *= (1.03, 1, .97)[index // 4]
+        result = runner.decision(changed, "confirmation")
+        self.assertLess(result["gains"]["clasMs"]["lower95"], 0)
+        self.assertGreater(result["gains"]["clasMs"]["upper95"], 0)
+        self.assertEqual(result["decision"], "inconclusive")
+
+    def test_small_confirmed_regression_rejects(self):
+        result = runner.decision(rows(gain=-.01), "confirmation")
+        self.assertEqual(result["effectAssessment"], "confirmed_regression")
 
     def test_cross_stage_identity_drift_is_invalid(self):
         changed = rows(blocks=5)

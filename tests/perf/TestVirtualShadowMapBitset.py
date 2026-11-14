@@ -572,10 +572,9 @@ class BitsetTests(unittest.TestCase):
             value["cases"][0]["graph"] = f"{arm}.json"
             a.save(cases / f"Diagnostic-{arm}Cases.json", value)
             a.save(cases / f"{arm}.json", live_graph(graph(arm, "diagnostic", one_pass=True)))
-        plan = bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="one-pass-projection", role="overhead",
-            cases_dir=cases, exe=self.root / "fake.exe"))
-        self.assertEqual(plan["protocol"], bitset.ONE_PASS_PROTOCOL)
-        self.assertEqual(plan["policy"]["role"], "overhead")
+        with self.assertRaisesRegex(ValueError, "Retired VSM experiment one-pass-projection"):
+            bitset.prepare_plan(SimpleNamespace(phase="diagnostic", experiment="one-pass-projection", role="overhead",
+                cases_dir=cases, exe=self.root / "fake.exe"))
 
     def test_directional_mark_shader_scope_and_actual_hashes(self):
         rows = [{"arm": arm, "shaders": bitset.shader_identity(shader_log(arm, "timing", directional_mark=True),
@@ -866,7 +865,48 @@ class BitsetTests(unittest.TestCase):
         self.assertAlmostEqual(decision["gains"]["buildMs"]["estimate"], .2)
         confirmation = bitset.verify_experiment(self.experiment("confirmation", gain=.01))
         bitset.check_reference(confirmation, discovery)
-        self.assertEqual(bitset.comparisons(confirmation["processes"], "confirmation")["effectAssessment"], "below_target")
+        self.assertEqual(bitset.comparisons(confirmation["processes"], "confirmation")["effectAssessment"], "confirmed_gain")
+
+    def test_small_positive_gains_reach_independent_confirmation(self):
+        for gain in (.001, .01, .029):
+            with self.subTest(gain=gain):
+                rows = [{**item, "metrics": {metric: 1 if item["arm"] == "A" else 1 - gain
+                         for metric in bitset.METRICS}} for item in bitset.schedule("confirmation")]
+                self.assertEqual(bitset.comparisons(rows[:8], "discovery")["nextAction"], "run_confirmation")
+                self.assertEqual(bitset.comparisons(rows, "confirmation")["decision"], "accept")
+                legacy = {**bitset.POLICY, "minimumGain": .03}
+                self.assertEqual(bitset.comparisons(rows, "confirmation", policy=legacy)["effectAssessment"], "below_target")
+
+    def test_zero_regression_and_uncertain_gain_are_not_accepted(self):
+        for gains, expected in (((0, 0, 0), "no_positive_gain"),
+                                ((-.01, -.01, -.01), "confirmed_regression"),
+                                ((-.01, .01, .02), "uncertain")):
+            with self.subTest(gains=gains):
+                rows = [{**item, "metrics": {metric: 1 if item["arm"] == "A" else 1 - gains[item["block"]]
+                         for metric in bitset.METRICS}} for item in bitset.schedule("confirmation")]
+                decision = bitset.comparisons(rows, "confirmation")
+                self.assertEqual(decision["effectAssessment"], expected)
+                self.assertNotEqual(decision["decision"], "accept")
+
+    def test_zero_lower_bound_is_inconclusive(self):
+        rows = [{**item, "metrics": {metric: 1 for metric in bitset.METRICS}}
+                for item in bitset.schedule("confirmation")]
+        interval = {"estimate": .01, "lower95": 0, "upper95": .02}
+        with mock.patch.object(bitset.experiment, "block_gain", return_value=interval):
+            self.assertEqual(bitset.comparisons(rows, "confirmation")["decision"], "inconclusive")
+
+    def test_legacy_plan_keeps_its_declared_target(self):
+        source = self.experiment("confirmation", gain=.01)
+        plan = a.read(source / "Plan.json")
+        plan["policy"]["minimumGain"] = .03
+        a.save(source / "Plan.json", plan)
+        result = bitset.verify_experiment(source)
+        decision = bitset.comparisons(result["processes"], "confirmation", policy=result["plan"]["policy"])
+        self.assertEqual(decision["effectAssessment"], "below_target")
+        plan["policy"]["maximumGraphRegression"] = .1
+        a.save(source / "Plan.json", plan)
+        with self.assertRaisesRegex(ValueError, "Unknown plan/policy"):
+            bitset.verify_experiment(source)
 
     def test_confirmation_acceptance_and_graph_gate(self):
         result = bitset.verify_experiment(self.experiment("confirmation"))
@@ -990,7 +1030,7 @@ class BitsetTests(unittest.TestCase):
 
     def test_reference_must_be_promising_and_pinned(self):
         diagnostic = self.experiment("diagnostic")
-        discovery = self.experiment("discovery", gain=.01)
+        discovery = self.experiment("discovery", gain=0)
         with self.assertRaisesRegex(ValueError, "promising"):
             bitset.load_links(SimpleNamespace(diagnostic=diagnostic, reference=discovery), "confirmation")
         with self.assertRaisesRegex(ValueError, "changed after planning"):

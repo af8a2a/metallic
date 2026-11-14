@@ -162,7 +162,7 @@ public:
             };
             static_assert(sizeof(Projection) == 112);
             constexpr uint64_t abi = 0x56534d50524f5031ull;
-            constexpr uint32_t levels = 12, pageSize = 4, count = 6, maxPages = levels * 64 + 1;
+            constexpr uint32_t levels = 12, pageSize = 4, physicalPagesX = 4, count = 6, maxPages = levels * 64 + 1;
             std::array<ComputeKernel, 2> kernels;
             std::string log;
             const std::array capabilities{"spvMeshShadingEXT"};
@@ -312,7 +312,7 @@ public:
                 const ProbePush push{writer.buffer(pages.get()).index, writer.buffer(projections.get()).index,
                     writer.buffer(statistics.get()).index, writer.sampledImage(atlas.view.get()).index,
                     writer.buffer(positions.get()).index, writer.buffer(output.get()).index,
-                    count, fixture.axis, levels, pageSize, 4, fixture.lightType};
+                    count, fixture.axis, levels, pageSize, physicalPagesX, fixture.lightType};
                 auto encoded = writer.encode(push, abi, ParameterTransport::InlinePush);
                 check(encoded, "Fallback parameters");
                 check(kernels[0].dispatch(*gpu.commands, *encoded, (totalPages + 63u) / 64u), "Fallback metadata build");
@@ -392,9 +392,17 @@ public:
                     return {UINT32_MAX,levels,0,fixture.lightType == 0u ? 2u : 3u};
                 };
                 std::vector<std::array<uint32_t,4>> expectedMappings(totalPages);
+                uint32_t packedPhysicalXYVerified = 0;
                 for (uint32_t page = 0; page < totalPages; ++page) {
                     expectedMappings[page] = expectedMapping(page);
-                    check(actualMappings[page] == expectedMappings[page], std::string(fixture.name) +
+                    auto packed = expectedMappings[page];
+                    if (fixture.lightType == 0u && packed[0] != UINT32_MAX) {
+                        const uint32_t x = packed[0] % physicalPagesX;
+                        const uint32_t y = packed[0] / physicalPagesX;
+                        packed[1] |= x << 16u | y << 24u;
+                        ++packedPhysicalXYVerified;
+                    }
+                    check(actualMappings[page] == packed, std::string(fixture.name) +
                         ": integer mapping oracle mismatch at page " + std::to_string(page));
                 }
                 const auto project = [&](uint32_t level, const auto& position) {
@@ -496,8 +504,8 @@ public:
                         for (uint32_t component = 0; component < 3; ++component) {
                             check(closeFloat(std::bit_cast<float>(actual[8+component]),expected.projected[component]), label + ": relative projection oracle mismatch");
                         }
-                        const uint32_t x = expected.physical%4u*pageSize+expected.texel[0]%pageSize;
-                        const uint32_t y = expected.physical/4u*pageSize+expected.texel[1]%pageSize;
+                        const uint32_t x = expected.physical%physicalPagesX*pageSize+expected.texel[0]%pageSize;
+                        const uint32_t y = expected.physical/physicalPagesX*pageSize+expected.texel[1]%pageSize;
                         const float depth = float(atlas.pixels[(y*atlas.width+x)*4u])/255.f;
                         check(closeFloat(std::bit_cast<float>(actual[2]),depth), label + ": physical atlas texel oracle mismatch");
                     }
@@ -543,6 +551,7 @@ public:
                 report["cases"].push_back({{"name", fixture.name}, {"axis", fixture.axis}, {"lightType", fixture.lightType}, {"samples", samples},
                     {"lookup", results}, {"expectedLevel", expectedLevel},
                     {"expectedDirect", fixture.expectedDirect},{"integerMappingOraclePages",totalPages},
+                    {"packedPhysicalXYVerified",packedPhysicalXYVerified},
                     {"lookupOracle",oracleObservations},{"clampedSamples",clampedSamples}});
             }
             report["validation"] = validation.snapshot(); check(!validation.failed(), "Fallback Vulkan validation error");
@@ -604,6 +613,7 @@ public:
             static_assert(sizeof(Projection) == 112 && sizeof(Input) == 64 && sizeof(Push) == 48);
             constexpr uint64_t abi = 0x56534d5052415931ull;
             constexpr uint32_t levels = 12, axis = 8, pageSize = 4, stride = axis * axis;
+            constexpr uint32_t physicalPagesX = 3;
             constexpr uint32_t totalPages = levels * stride + 1, rayCount = 6, samples = 11;
             using Packet = std::array<std::array<uint32_t, 4>, 10>;
             std::array<ComputeKernel, 2> kernels;
@@ -694,7 +704,7 @@ public:
                 ParameterWriter writer(device, **registry);
                 const Push push{writer.buffer(pages.get()).index,writer.buffer(projections.get()).index,
                     writer.buffer(statistics.get()).index,writer.sampledImage(atlas.view.get()).index,
-                    writer.buffer(inputs.get()).index,writer.buffer(output.get()).index,rayCount,axis,levels,pageSize,4,0};
+                    writer.buffer(inputs.get()).index,writer.buffer(output.get()).index,rayCount,axis,levels,pageSize,physicalPagesX,0};
                 auto parameters = writer.encode(push, abi, ParameterTransport::InlinePush); check(parameters, "Projected ray parameters");
                 check(kernels[0].dispatch(*gpu.commands, *parameters, (totalPages+63u)/64u), "Projected ray mapping");
                 const BufferBarrierDesc ready{.buffer=pages.get(), .before={PipelineStageBits::ComputeShader,AccessBits::ShaderWrite},
@@ -811,9 +821,9 @@ public:
                                     std::string(fixture.name)+": texel is outside its rounded integer parent-page interval");
                             }
                             const uint32_t physical = expectedLevel < levels ? 5u : 0u;
-                            const uint32_t x = (physical%4u)*pageSize+result[0][2]%pageSize;
-                            const uint32_t y = (physical/4u)*pageSize+result[0][3]%pageSize;
-                            close(value(result[1][3]),double(y*16u+x)/255.0,"physical atlas address");
+                            const uint32_t x = (physical%physicalPagesX)*pageSize+result[0][2]%pageSize;
+                            const uint32_t y = (physical/physicalPagesX)*pageSize+result[0][3]%pageSize;
+                            close(value(result[1][3]),double(y*atlas.width+x)/255.0,"physical atlas address");
                         }
                         check(result[7][1] == 0, std::string(fixture.name)+": a generated projected sample lies outside the original Mark interval");
                         check(result[7][2] == 1, "Projected lookup did not retain its filtered-query count");

@@ -4,6 +4,11 @@
 pipeline 的编译资源和 Nsight GPU Trace 的区间硬件计数器。结果没有 accept/reject
 优化评分；时间收益仍由 `ExperimentRunner.py` 的普通计时与正确性门槛决定。
 
+完整优化循环按 [Nsight 驱动的优化闭环](../../Skills/metallic-shader-optimization/references/nsight-guided-optimization.md)
+通过 MCP 关联 GPU Trace 范围、计数器及 Shader Profiler 热点，并比较候选前后证据。
+本工具的 `triage` 是旧范围导出路径，关闭 shader pipeline collection，不采集
+Shader Profiler；不要把它当作支持函数/源码热点的 MCP 采集入口。
+
 ## 运行
 
 Python 标准库负责解析/复核；实机启动另需 `psutil`，用于仅清理本次拥有的子进程。

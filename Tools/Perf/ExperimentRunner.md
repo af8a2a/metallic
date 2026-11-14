@@ -6,6 +6,14 @@ declared shader candidate, runs independent processes in ABBA order, checks
 outputs and workload identity, makes a decision, and restores the baseline.
 No candidate is installed permanently, including an accepted candidate.
 
+For optimization, use the [Nsight-guided workflow](../../Skills/metallic-shader-optimization/references/nsight-guided-optimization.md)
+to connect the candidate hypothesis to GPU Trace counters and Shader Profiler
+hotspots, then compare matched baseline/candidate captures. This runner owns
+ordinary timing, correctness and the performance verdict; it does not collect
+MCP evidence. Report diagnostic support and measured gain separately. A counter
+improvement cannot substitute for timing, and an unexplained counter change does
+not invalidate an otherwise confirmed small gain.
+
 ## Run
 
 Use an x64 Visual Studio developer shell with CMake, Python and `nvidia-smi` on
@@ -85,7 +93,7 @@ every run. Do not modify source/assets or run another GPU experiment concurrentl
    residency and production binding fields. Only the compiled SPIR-V fingerprint
    may differ. Confirmation must also match discovery's inputs, outputs and each
    corresponding arm's complete identity, including its SPIR-V fingerprint.
-   Version 2 checks input drift before attributing differing outputs to candidate
+   Versions 2 and 3 check input drift before attributing differing outputs to candidate
    correctness. An unplanned identity change is inconclusive. This does not claim
    a complete byte snapshot of every HZB/history input.
 4. The case's existing per-arm spread limit for software total and graph time
@@ -105,21 +113,23 @@ every run. Do not modify source/assets or run another GPU experiment concurrentl
    across blocks or rule out environmental drift.
 6. Discovery screens candidates using its full fixed budget. An upper gain bound
    below zero establishes a software regression; a graph upper gain bound below
-   -2% exceeds the graph regression budget. A software upper gain bound below
-   3% is below the target. These results reject. Otherwise, a software point
-   estimate of at least 3% is promising and schedules independent confirmation,
+   -2% exceeds the graph regression budget. A software upper gain bound of exactly
+   zero establishes no positive gain. These results reject. Otherwise, any positive
+   software point estimate is promising and schedules independent confirmation,
    even when discovery cannot establish the final acceptance bounds. Other
    uncertain results retain the candidate and evidence.
 7. Only confirmation can accept a new candidate. Its own software gain interval
-   must have a lower bound of at least 3%, and its own graph gain lower bound
+   must have a lower bound strictly above zero, and its own graph gain lower bound
    must be at least -2%. Discovery data are not pooled into this decision.
-   Confirmation rejects established regression or a software upper gain bound
-   below 3%; other results remain inconclusive when the fixed budget is spent.
+   Confirmation rejects established regression or no positive gain (upper bound
+   at most zero); intervals crossing or touching zero with a positive upper bound
+   remain inconclusive when the fixed budget is spent. Reliable gains below 3%
+   can be accepted; there is no minimum positive effect size.
    No threshold tuning, automatic extension or repeated retries are performed.
 
 ## Result classification
 
-The top-level `accept / reject / inconclusive` status is retained. Version 2 also
+The top-level `accept / reject / inconclusive` status is retained. Versions 2 and 3 also
 records `stage`, `evidenceValidity`, `effectAssessment`, and `nextAction`, so a
 missing measurement and a promising but imprecise measurement do not imply the
 same follow-up.
@@ -130,8 +140,9 @@ same follow-up.
 | `correctness_failure` | Recorded outputs differ from the baseline; `reject_candidate` regardless of timing. Here `evidenceValidity=valid` describes the evidence, not the candidate's correctness. |
 | `no_shader_change` | Both arms bind the same compiled shader; `revise_candidate`, without a speedup conclusion. |
 | `confirmed_regression` | The interval gives evidence of a software slowdown or a graph regression beyond the 2% budget; `reject_candidate`. `stage` identifies where this was observed; rejection does not require independent confirmation. |
-| `below_target` | The software interval's upper bound is below the 3% target; `reject_candidate` under this policy. A positive gain below 3% is not “no benefit.” |
-| `promising` | Discovery's software estimate is at least 3%, without established regression or an upper bound below target; reason `promising_gain`, status `inconclusive`, `nextAction=run_confirmation`. |
+| `below_target` | Historical v1/v2 result: the software interval's upper bound is below the declared 3% target; `reject_candidate` under that policy. Not produced by v3. |
+| `no_gain` | In v3, the software upper bound is exactly zero; `reject_candidate`. Negative upper bounds are classified as regression. |
+| `promising` | Discovery's software estimate is positive, without established regression; reason `promising_gain`, status `inconclusive`, `nextAction=run_confirmation`. |
 | `uncertain` | The fixed budget does not resolve the decision; `inconclusive` with `nextAction=retain_candidate`. |
 | `confirmed_gain` | Independent confirmation satisfies both lower bounds; `accept_candidate`, subject to successful restoration. |
 
@@ -170,7 +181,7 @@ requires a qualifying discovery result, independent confirmation and successful
 restoration for acceptance.
 It checks process lifetimes, nonoverlap and containment of measurement windows;
 copying a run into another directory does not create an independent sample.
-For version 2, it also checks the declared stage budgets, complete ABBA ordering
+For versions 2 and 3, it also checks the declared stage budgets, complete ABBA ordering
 and the decision that authorized confirmation. Live collection and verification
 both require confirmation to preserve discovery's inputs, outputs and the
 complete identity of each corresponding arm.
@@ -179,17 +190,18 @@ verifier checks those archived hashes without executing archived code and report
 its own hash separately.
 
 Candidate JSON remains `metallic-shader-experiment-v1`; new experiment manifests
-use `metallic-shader-experiment-v2`. The verifier selects the exact supported
+use `metallic-shader-experiment-v3`. The verifier selects the exact supported
 policy from the manifest protocol and requires agreement with saved decisions:
 
 | Manifest | Recomputed policy |
 | --- | --- |
 | `metallic-shader-experiment-v1` | Original per-arm spread hard gate, adjacent-pair gain Student-t interval, and discovery acceptance before confirmation. |
 | `metallic-shader-experiment-v2` | Spread warnings, ABBA-block log-ratio interval, discovery screening, independent confirmation and explicit result classifications. |
+| `metallic-shader-experiment-v3` | Same evidence and confirmation requirements as v2; positive discovery estimate and strictly positive confirmation lower bound replace the 3% target. |
 
-Unknown protocols or altered/unknown policies fail verification. Existing v1
+Unknown protocols or altered/unknown policies fail verification. Existing v1/v2
 archives retain their original decisions and are never rewritten or reclassified
-to fit v2. Any new analysis belongs outside the original evidence bundle and must
+to fit v3. Any new analysis belongs outside the original evidence bundle and must
 identify its separate policy; it does not replace the historical verdict.
 The manifest is an integrity index, not a cryptographically signed attestation
 against intentional rewriting of all evidence and hashes.

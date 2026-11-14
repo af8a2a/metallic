@@ -155,45 +155,66 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     float3 a, b, c;
     if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
         gStreamPages, gStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))), record, a, b, c)) { return false; }
-    uint count, stride;
-    gRasterInstances.GetDimensions(count, stride);
-    if (record.instanceIndex >= count) { return false; }
     GPUDrivenPreviewInstance instance = gRasterInstances[record.instanceIndex];
-    float3 localNormal = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
+    float3 ab = b - a;
+    float3 ac = c - a;
+    float3 localNormal = safeTriangleNormal(ab, ac, float3(0, 1, 0));
     float3 p = rasterWorldPosition(instance, a);
     hit.geometryNormal = rasterWorldNormal(instance, localNormal);
     hit.normal = hit.geometryNormal;
-    float4 domain = rasterDomain(pixel);
-    float denominator = dot(ray.direction, hit.geometryNormal);
-    if (domain.x < 0.0 && abs(denominator) < 1e-8) { return false; }
-    hit.t = domain.x >= 0.0 ? rasterRayDistance(pixel, ray, push) : dot(p - ray.origin, hit.geometryNormal) / denominator;
-    hit.position = ray.origin + ray.direction * hit.t;
-    float3 world[3] = {p, rasterWorldPosition(instance, b), rasterWorldPosition(instance, c)};
-    float3 e0 = world[1] - p, e1 = world[2] - p, crossEdges = cross(e0, e1);
+
+    float3 e0 = rasterWorldVector(instance, ab);
+    float3 e1 = rasterWorldVector(instance, ac);
+    float3 crossEdges = cross(e0, e1);
     float area = dot(crossEdges, crossEdges);
     if (area < 1e-20) { return false; }
-    float2 yz = float2(dot(cross(hit.position - p, e1), crossEdges), dot(cross(e0, hit.position - p), crossEdges)) / area;
-    if (domain.x >= 0.0) {
-        yz = domain.xy;
+
+    bool hasDomain = (gRasterFrameInfo.Load(96) & 1u) != 0u;
+    float3 bary;
+    float4 domain = float4(-1, -1, 0, 0);
+    if (hasDomain) {
+        domain = gRasterDomain.Load(int3(pixel, 0));
+        hit.t = rasterRayDistance(pixel, ray, push);
+        hit.position = ray.origin + ray.direction * hit.t;
         hit.geometryNormal = domainNormal(domain.w);
+        bary = float3(1.0 - domain.x - domain.y, domain.xy);
+    } else {
+        float denominator = dot(ray.direction, hit.geometryNormal);
+        if (abs(denominator) < 1e-8) { return false; }
+        hit.t = dot(p - ray.origin, hit.geometryNormal) / denominator;
+        hit.position = ray.origin + ray.direction * hit.t;
+        float2 yz = float2(dot(cross(hit.position - p, e1), crossEdges), dot(cross(e0, hit.position - p), crossEdges)) / area;
+        bary = float3(1.0 - yz.x - yz.y, yz);
     }
-    float3 bary = float3(1.0 - yz.x - yz.y, yz);
+
     float3 normals[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributes(record, triangleIndex, gStreamGroups, gStreamPages, gStreamPageTable, normals, uv, tangents);
-    hit.normal = domain.x >= 0.0 ? hit.geometryNormal : rasterWorldNormal(instance,
-        Metallic.ScenePath::safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
+    if (!hasDomain) {
+        hit.normal = rasterWorldNormal(instance,
+            Metallic.ScenePath::safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
+    }
     hit.texcoord = uv[0] * bary.x + uv[1] * bary.y + uv[2] * bary.z;
     float2 du = uv[1] - uv[0], dv = uv[2] - uv[0];
-    float uvArea = abs(du.x * dv.y - du.y * dv.x);
-    hit.rayConeLodConstant = domain.x >= 0.0 ? domain.z : (uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(area)) : 0.0);
+    float det = du.x * dv.y - du.y * dv.x;
+    float uvArea = abs(det);
+    hit.rayConeLodConstant = hasDomain ? domain.z : (uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(area)) : 0.0);
+
     float3 uvTangent, uvBitangent;
-    computeTriangleTangentSpace(world[0], world[1], world[2], uv[0], uv[1], uv[2], hit.normal, uvTangent, uvBitangent);
+    if (uvArea <= 0.0000001) {
+        float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+        uvTangent = Metallic.ScenePath::safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
+        uvBitangent = Metallic.ScenePath::safeNormalize(cross(hit.normal, uvTangent), float3(0.0, 1.0, 0.0));
+    } else {
+        float invDet = 1.0 / det;
+        uvTangent = (e0 * dv.y - e1 * du.y) * invDet;
+        uvBitangent = (e1 * du.x - e0 * dv.x) * invDet;
+    }
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
     // Keep the authored geometric normal stable until normal map evaluation.
     float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
     float3 tangent = Metallic.ScenePath::safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), Metallic.ScenePath::safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
     float tangentSign = dot(cross(hit.normal, tangent), uvBitangent) < 0.0 ? -1.0 : 1.0;
-    if ((attributes & 16u) != 0u && domain.x < 0.0) {
+    if ((attributes & 16u) != 0u && !hasDomain) {
         float4 authored = tangents[0] * bary.x + tangents[1] * bary.y + tangents[2] * bary.z;
         float3 worldTangent = rasterWorldVector(instance, authored.xyz);
         tangent = Metallic.ScenePath::safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), tangent);
@@ -201,11 +222,8 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     }
     hit.tangent = float4(tangent, tangentSign * push.bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * tangentSign * push.bitangentFlip;
-    gRasterMaterials.GetDimensions(count, stride);
-    if (instance.identity.y >= count) { return false; }
+
     hit.materialIndex = gRasterMaterials[instance.identity.y].identity.z;
-    sceneMaterials().GetDimensions(count, stride);
-    if (hit.materialIndex >= count) { return false; }
     hit.instanceIndex = instance.identity.z;
     hit.primitiveIndex = gStreamGroups[record.dataIndex].primitiveIndex;
     hit.triangleIndex = triangleIndex;
@@ -222,15 +240,62 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
 
 // Both schedules resolve the same raster surface. The RNG is used only by
 // optional stochastic texture filtering, never for light/path sampling.
-void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
+struct CameraRayBasis
+{
+    float3 origin;
+    float3 forward;
+    float3 rightHalfFov;
+    float3 upHalfFov;
+    float2 invResolution;
+    bool isOrthographic;
+};
+
+CameraRayBasis makeCameraRayBasis(ScenePathTracePush push)
+{
+    CameraRayBasis basis;
+    basis.isOrthographic = push.upProjection.w > 0.5;
+    basis.origin = push.eye.xyz;
+    basis.forward = Metallic.ScenePath::safeNormalize(push.center.xyz - push.eye.xyz, float3(0.0, 0.0, -1.0));
+    float3 cameraUp = Metallic.ScenePath::safeNormalize(push.upProjection.xyz, float3(0.0, 1.0, 0.0));
+    float3 right = Metallic.ScenePath::safeNormalize(cross(basis.forward, cameraUp), float3(1.0, 0.0, 0.0));
+    float3 up = Metallic.ScenePath::safeNormalize(cross(right, basis.forward), float3(0.0, 1.0, 0.0));
+    float aspect = max(push.viewport.x, 0.001);
+    basis.invResolution = 1.0 / float2(max(push.width, 1u), max(push.height, 1u));
+
+    if (basis.isOrthographic) {
+        float halfHeight = max(push.clipOrtho.z * 0.5, 0.0001);
+        basis.rightHalfFov = right * (halfHeight * aspect);
+        basis.upHalfFov = up * halfHeight;
+    } else {
+        float fovRadians = clamp(push.viewport.w, 0.017453292, 3.12413936);
+        float halfHeight = tan(fovRadians * 0.5);
+        basis.rightHalfFov = right * (aspect * halfHeight);
+        basis.upHalfFov = up * halfHeight;
+    }
+    return basis;
+}
+
+Ray cameraRayFromPixel(CameraRayBasis basis, float2 pixel)
+{
+    float2 ndc = float2(pixel.x * basis.invResolution.x * 2.0 - 1.0, 1.0 - pixel.y * basis.invResolution.y * 2.0);
+    Ray ray;
+    if (basis.isOrthographic) {
+        ray.origin = basis.origin + basis.rightHalfFov * ndc.x + basis.upHalfFov * ndc.y;
+        ray.direction = basis.forward;
+    } else {
+        ray.origin = basis.origin;
+        ray.direction = Metallic.ScenePath::safeNormalize(basis.forward + basis.rightHalfFov * ndc.x + basis.upHalfFov * ndc.y, basis.forward);
+    }
+    return ray;
+}
+
+void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis basis)
 {
     push = withTextureFeedbackSampling(push, pixel);
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
     float2 rayPixel = samplePixel + float2(push.jitterOffsetX, push.jitterOffsetY);
-    Ray ray;
-    ray.origin = rayOriginFromPixel(rayPixel, push);
-    ray.direction = rayDirectionFromPixel(rayPixel, push);
+    Ray ray = cameraRayFromPixel(basis, rayPixel);
     uint seed = hash(pixel.x + pixel.y * push.width);
     HitInfo hit;
     float3 radiance;
@@ -271,7 +336,8 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 {
     ScenePathTracePush push = deferredViewPush();
-    shadeVisibilityPixel(dispatchId.xy, push);
+    CameraRayBasis basis = makeCameraRayBasis(push);
+    shadeVisibilityPixel(dispatchId.xy, push, basis);
 }
 
 [shader("compute")]
@@ -279,6 +345,7 @@ void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
 {
     ScenePathTracePush push = deferredViewPush();
+    CameraRayBasis basis = makeCameraRayBasis(push);
     uint binIndex = push.deferredSettings & 0xffffu;
     if (!gMaterialBins.contains(binIndex)) { return; }
     MaterialBin bin = gMaterialBins[binIndex];
@@ -288,5 +355,5 @@ void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
     MaterialTile tile = gMaterialTiles[bin.offset + index];
     uint lane = WaveGetLaneIndex();
     if ((tile.laneMask & (1u << lane)) == 0u) { return; }
-    shadeVisibilityPixel(materialTilePixel(tile, lane, push.width), push);
+    shadeVisibilityPixel(materialTilePixel(tile, lane, push.width), push, basis);
 }

@@ -293,8 +293,18 @@ int main(int argc, char** argv)
             else if (arg == "--count" || arg == "--offset" || arg == "--frame" || arg == "--generation") { options.params[arg.substr(2)] = parseUnsigned(next()); }
             else if (arg == "--roi" || arg == "--pixel") {
                 auto value = next(); std::replace(value.begin(), value.end(), ',', ' ');
-                std::istringstream stream(value); uint32_t x = 0, y = 0, w = 1, h = 1;
-                if (!(stream >> x >> y) || (arg == "--roi" && !(stream >> w >> h))) { throw std::runtime_error("Invalid ROI/pixel"); }
+                std::istringstream stream(value);
+                const auto coordinate = [&]() -> uint32_t {
+                    std::string token;
+                    if (!(stream >> token)) { throw std::runtime_error("Invalid ROI/pixel"); }
+                    return static_cast<uint32_t>(parseUnsigned(token, UINT32_MAX));
+                };
+                const auto x = coordinate();
+                const auto y = coordinate();
+                const auto w = arg == "--roi" ? coordinate() : 1u;
+                const auto h = arg == "--roi" ? coordinate() : 1u;
+                std::string trailing;
+                if (stream >> trailing) { throw std::runtime_error("Invalid ROI/pixel"); }
                 options.params["roi"] = {{"x", x}, {"y", y}, {"width", w}, {"height", h}};
             } else if (arg.starts_with("--")) { options.params[arg.substr(2)] = next(); }
             else { options.words.push_back(arg); }

@@ -85,11 +85,15 @@ mean log(B/A) ratios and converts it to gain space. Frames and the two pairs ins
 a block are not independent trials. No outliers are removed, no optional sample
 extension is allowed, and discovery samples are not pooled into confirmation.
 
-The primary target is at least 3% CLAS-stage gain, with at most 2% whole-graph
-regression. Only confirmation can accept when both lower confidence bounds pass.
-An upper bound below zero establishes regression; a positive upper bound below
-3% is below target, not evidence of zero benefit. Discovery screens on its point
-estimate after completing its budget. Inconclusive results retain their evidence.
+The default primary target is a positive CLAS-stage gain: confirmation requires
+its 95% lower confidence bound to be strictly above zero, with the graph lower
+bound at least -2%. Reliable gains below 3% are eligible. Discovery screens on a
+strictly positive point estimate after completing its budget; only independent
+confirmation can accept. An upper bound below zero establishes regression.
+Intervals touching or crossing zero remain inconclusive at confirmation; retain
+their evidence instead of declaring no benefit or extending the sample budget.
+The recorded policy governs verification: historical 3% experiments retain their
+original decisions and are not retroactively accepted under the new default.
 Per-arm spread over 10% is a warning, not an early rejection of otherwise valid
 paired evidence. The report exposes `evidenceValidity`, `effectAssessment` and
 `nextAction` separately.

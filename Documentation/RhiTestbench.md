@@ -30,6 +30,89 @@ ctest --test-dir build-pass-stages-nrd -R '^MetallicTestbench\.' --output-on-fai
 
 所有 GPU testbench 作业与当前目录中已有 rhi/editor CTest 使用 `MetallicGPU` 锁。外部手工启动的编辑器和其他项目不受 CTest 锁控制。Contract/Core 要求所有选择用例通过；Binding/Sync/Async 允许缺少声明能力或队列时显式 skip。参考 GPU 验收必须加 `--tb-require-all`，禁止将 skip 视为通过。Sync 自动包含 Async 的三个提交/query ring 回归。
 
+## CTest / GoogleTest XML 结果汇总
+
+[#62](https://github.com/af8a2a/metallic/issues/62) 的局部汇总工具 [SummarizeTestResults.py](../Tools/SummarizeTestResults.py) 读取现成 XML，不启动测试或 GPU。它按每条 `testcase` 分列 `passed / skipped / failed`、用例明细和 skip 原因直方图；不会把 skipped 或 disabled 算成 passed，也不把 XML 根节点的汇总数字当作用例证据。
+
+```powershell
+New-Item -ItemType Directory -Force .tmp | Out-Null
+ctest --test-dir build-pass-stages-nrd -L rhi --output-on-failure --output-junit "$PWD/.tmp/ctest-rhi.xml"
+$ctestExit = $LASTEXITCODE
+python -B Tools/SummarizeTestResults.py .tmp/ctest-rhi.xml --json .tmp/ctest-rhi-summary.json --require-all
+$summaryExit = $LASTEXITCODE
+if ($ctestExit -ne 0 -or $summaryExit -ne 0) { throw "CTest=$ctestExit, summary=$summaryExit" }
+```
+
+普通 GoogleTest 入口可在原测试命令后加 `--gtest_output=xml:<output-path>`，再将生成的 XML 传给同一工具。支持多个输入，但只追加记录、不去重：**CTest XML 的单位是注册作业，GoogleTest XML 的单位是内部用例**，同一轮的外层与内层报告应分别汇总，不能相加当成独立覆盖。CTest 作业 exit 0 可能包含内部 GoogleTest skip；不能从外层 XML 或 stdout 反推这些内部结果，须收集 GoogleTest XML。
+
+- `--json PATH` 写入 `schemaVersion: 1`，包含 `counts`（`passed/skipped/failed/total`）、`tests`（`source/suite/name/status/reason`）及 `skipReasons`（原因到数量的映射）。输出目录须已存在；输出不能与任一输入 XML 解析为同一路径，独立的已有 JSON 报告允许覆盖。
+- failure/error 优先于同一用例的 skip；GoogleTest suppressed/notrun 和 CTest disabled 归入 skipped。没有原因时明确标记未提供原因；CTest 的 `SKIP_RETURN_CODE=77` 等原因标识照实保留，工具不猜测缺失的设备能力。
+- 退出码 `0`：没有 failed（允许 skipped）；`1`：存在 failed，或指定 `--require-all` 且存在 skipped；`2`：参数、输入/解析或报告写入错误。空报告不是通过。CI 仍须保留原测试进程的退出码，汇总不能消除启动失败或未生成 XML 等错误。
+- `--require-all` **只影响此汇总命令**，不改变普通 RHI/编辑器 harness 的能力策略。启动测试并组合退出策略请使用下述 required-run 入口；基线比较是独立的显式选项。该工具只识别 CTest/GoogleTest XML，不解析 testbench 自有 JSON。
+
+CPU 样本回归（无需构建 C++ 目标）注册为 `MetallicTestResultSummaryTests`，标签为 `tools;cpu`：
+
+```powershell
+python -B -m unittest discover -s tests/perf -p TestSummarizeTestResults.py
+ctest --test-dir <compatible-build> -R '^MetallicTestResultSummaryTests$' --output-on-failure
+```
+
+## 普通 RHI / 编辑器 required-run
+
+[RunRequiredTests.py](../Tools/RunRequiredTests.py) 将普通入口的执行、全新 XML 和
+`require-all` 退出策略组合为一个 CI 可调用命令。它不改设备协商、原始 skipped 分类或裸跑
+二进制的默认策略，也不把 `--tb-require-all` 混入普通 GoogleTest 路径。
+
+从仓库根目录运行，先构建所选目标；输出目录的父目录须存在，**输出目录本身必须不存在**。
+下面是选定集合的接线示例，不是该参考 GPU 已通过的声明：
+
+```powershell
+New-Item -ItemType Directory -Force .tmp | Out-Null
+python -B Tools/RunRequiredTests.py --kind gtest --output-dir .tmp/rhi-required-001 -- build-release/tests/MetallicRHITests.exe --rhi-no-validation --gtest_filter=RHIResource.resource_lifecycle:RHICommand.indirect_argument_barrier --output-dir .tmp/rhi-required-001/rhi-artifacts
+if ($LASTEXITCODE -ne 0) { throw 'Required RHI lane failed' }
+python -B Tools/RunRequiredTests.py --kind ctest --output-dir .tmp/editor-required-001 -- ctest --test-dir build-release -R '^MetallicLookDevPathTracePipelineCacheSmoke$' --output-on-failure
+if ($LASTEXITCODE -ne 0) { throw 'Required editor lane failed' }
+```
+
+- `gtest` 检查内部用例，要求显式、非空的 `--gtest_filter=...`，追加零选择失败和 XML
+  输出参数；禁止 list/testbench 模式与自带 XML 输出。仅支持单轮，拒绝非 1 的 repeat
+  参数/环境，防止最终一轮报告掩盖前一轮 skip。
+- `ctest` 检查注册作业，追加 `--no-tests=error` 和 JUnit 输出；禁止 repeat/show-only/
+  自带 JUnit 输出。可审查编辑器 `SKIP:`、Reflex unavailable、return 77、disabled 等
+  被 CTest 分类为 skipped 的作业。**不能用该模式证明普通 RHI 内部零 skip**。
+- 子进程非零（包括 77）永不被 XML 的 passed 覆盖；任意 reported skip/failed 使 wrapper
+  非零。退出 `0` 为 child exit 0 且所有记录 passed；`1` 为 child/test/skip 失败；`2`
+  为参数、启动、XML 或报告错误。缺失/空/损坏 XML 和零选择不是通过。
+- 新目录拒绝旧报告复用，保存原始 XML、summary JSON 和包含 `command/childExit/wrapperExit/errors`
+  的 run JSON。stdout/stderr 继承给调用者，CI 需保留 job log；wrapper 不重定向子进程的
+  图像/HTML，按原测试参数指定其目录。手工普通 RHI 不受 CTest GPU 锁保护，勿并发启动 GPU 作业。
+
+## 精确 skip 基线与 CI 边界
+
+[KnownSkips.json](../tests/KnownSkips.json) 初始 profile `minizorah-opt-in-disabled` 仅列出
+两项源码可确认的 opt-in skip：`METALLIC_TEST_MINIZORAH` 未设置或不等于 `1`。记录了用例、
+原原因、类别、所需 opt-in/能力说明和源码依据；**source-backed，不是 GPU 观测结果，也不是
+完整 GPU/driver 基线**。不会将历史 OMM skip 或整机初始化失败泛化为许可。
+
+对这一明确选择范围的 GoogleTest XML，可单独比较：
+
+```powershell
+python -B Tools/SummarizeTestResults.py .tmp/minizorah-opt-in.xml --known-skips tests/KnownSkips.json --skip-profile minizorah-opt-in-disabled --json .tmp/minizorah-skip-summary.json
+if ($LASTEXITCODE -ne 0) { throw 'Test failure or unexpected skip' }
+```
+
+两个参数必须成对提供。按 `suite/name/reason` 精确匹配，仅匹配时去掉 GoogleTest 首行
+C/C++ 源位置；原始原因和直方图保留。新增 case、不同 suite 或不同 reason 都是 unexpected
+并退出 1；基线损坏、未知 profile 退出 2；真实失败从不豁免。JSON 新增
+`skipBaseline{profile,known,unexpected}`，known 仍计 skipped，叠加 `--require-all` 仍失败。
+基线中的条目本轮没出现不算新增 skip，也不代表用例已执行；CI 必须独立固定选择集合。
+
+[metallic-ci preset](../CMakePresets.json) 选择专用 `skip-policy` 标签，并要求 Python，避免 CPU 策略
+回归静默缺席。新增 `MetallicRequiredTestLaneTests`、`MetallicFinalBlitPipelineInventoryTests`
+与既有 `MetallicTestResultSummaryTests` 均无需 GPU。仓库未跟踪托管 CI workflow；preset
+和 wrapper **不等于已经部署参考 GPU runner**。正式强 lane、完整能力/驱动基线和真实 GPU
+零 skip 证据仍需独立接入；不能据这些 CPU 样本关闭 #62。
+
 ## CLI
 
 ```powershell

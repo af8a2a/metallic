@@ -70,13 +70,72 @@ identity稳定，validation为零；已查看实际输出。62个composite-only�
 
 Reset 单列，避免把分配器之前的 remap 误计入 mark。时间戳沿用 BottomOfPipe，表示命令区间而非纯 shader 算术时间。父 pass 还包括 caster preparation、publication、可选 temporal 等工作，六项之和不等于整个 Shadows pass。空工作仍可产生一个合法的零/近零时间区间；不可用时间必须保持缺失。
 
-## 工作量接口
+## 诊断 ABI（当前布局与历史读取）
 
-原 `statistics` 仍为每 face 32 个 uint32，索引语义不变。诊断模式下私有 statistics buffer 尾部增加 128 B，公开为独立 `workload`：每 face 16 个 uint64，按 low/high 两个 uint32 编码，GPU 仅需要 32-bit atomics。单灯输出 128 B，多灯输出 `lightCapacity × 6 × 128 B`，与 compact 屏幕输出层数无关。未启用、未准入及未使用 face 清零。
+本节是 workload / Build 诊断 ABI 的统一说明。当前写入端为 **workload v6 / 31 counters**、**Build v7 / 60 counters**；两个版本号独立，不能由其中一个推断另一个，更不能套用旧 issue 的 v3 布局。
 
-独立 build 诊断在上述两个 ABI 之后再增加 200 B，即 byte 256 起的 25 个 uint64；work 开启时每 face 私有 statistics 总长为 456 B。公开 `buildDiagnostics` 是每 face 200 B，单灯 200 B、多灯 `lightCapacity × 6 × 200 B`；旧 32-word statistics 和 16-counter workload 的长度、偏移与含义不变。
+权威定义与实现：
 
-定义见 [VirtualShadowMapProfiling.h](../Source/Runtime/Render/Shadow/VirtualShadowMapProfiling.h)。计数均在实际 GPU 路径产生，不以 triangle capacity 代替成功解码量。
+- [VirtualShadowMapProfiling.h](../Source/Runtime/Render/Shadow/VirtualShadowMapProfiling.h)：counter 顺序、名称、大小及 word offset 常量。
+- [VirtualShadowMapPass.cpp](../Source/Runtime/Render/RenderPass/BuiltinPass/VirtualShadowMapPass.cpp) / [VirtualShadowMapLightsPass.cpp](../Source/Runtime/Render/RenderPass/BuiltinPass/VirtualShadowMapLightsPass.cpp)：单灯 / 多灯输出的切片与拷贝。
+- [VirtualShadowMapAcceptanceTests.cpp](../tests/rhi/VirtualShadowMapAcceptanceTests.cpp)：JSON 版本字段和 readback 长度断言。
+- [VirtualShadowMapGPUProfile.py](../Tools/Perf/VirtualShadowMapGPUProfile.py)：`WORK_COUNTERS_BY_VERSION`、Build 版本表及历史包校验。
+
+### 当前每 face 布局
+
+公开 `statistics` 仍是 32 个 `uint32`（128 B），索引语义不变。开启 `benchmarkGPUWork` 后，私有 statistics buffer 在其后顺序追加 workload 和 Build 两段；每个诊断 counter 由 low/high 两个 `uint32` 编码为 `uint64`，解码为 `uint64(low) | (uint64(high) << 32)`；GPU 仅需 32-bit atomics，读回必须等待 GPU 完成。
+
+| 私有段 | 起始 word（uint32） | 起始 byte | 长度 |
+| --- | ---: | ---: | ---: |
+| 公开 statistics | 0 | 0 | `32 × 4 = 128 B` |
+| workload v6 | 32 | 128 | `31 × 8 = 248 B` |
+| Build v7 | `32 + 31 × 2 = 94` | `128 + 248 = 376` | `60 × 8 = 480 B` |
+| 可选 receiver coverage records | `32 + (248 + 480) / 4 = 214` | 856 | 不计入上述三段总长 |
+
+因此，work 开启时每 face 私有 statistics 的这三段总长是 **`32 × 4 + 31 × 8 + 60 × 8 = 856 B`**，不是历史的 456 B 或 672 B。Build 起点由 `kVirtualShadowMapBuildDiagnosticWordOffset = 32 + kVirtualShadowMapWorkCounterCount × 2` 决定；coverage 起点由 `kVSMReceiverCoverageStatisticsWordOffset` 决定，不得硬编码旧字节偏移。可选 coverage 另追加每像素 `kVSMReceiverCoverageRecordWords` 个 word；未开 work 且未开 coverage 时仍只有 128 B。
+
+公开输出是独立 buffer，不带私有段前缀：单灯 `workload` 为 248 B、`buildDiagnostics` 为 480 B；多灯分别是 `lightCapacity × 6 × 248 B` 和 `lightCapacity × 6 × 480 B`。面索引为 `lightIndex × 6 + face`，与 compact 屏幕输出层数无关。启用诊断时，未准入及未使用 face 清零；关闭时不应发布旧 readback 为有效计数。
+
+### workload 版本表
+
+每版保留此前字段的顺序并追加以下字段；大小只指 workload 段。
+
+| `shadow.gpuWork.version` | counters / bytes | 本版新增 |
+| --- | --- | --- |
+| 1（历史） | 16 / 128 B | 下方基础 Mark / Build / Raster / Projection counters |
+| 2（历史） | 19 / 152 B | `projectionAdaptiveLitReceivers`、`projectionAdaptiveUmbraReceivers`、`projectionAdaptiveSavedRays` |
+| 3（历史） | 23 / 184 B | `projectionPageTableLoads`、`projectionMappingLoads`、`projectionMappedAncestors`、`projectionMappingSlowPaths` |
+| 4（历史） | 24 / 192 B | `markReceiverMaskAtomicOrs` |
+| 5（历史） | 27 / 216 B | `rasterHZBClusterLevelTests`、`rasterHZBRejectedLevels`、`rasterHZBSkippedTriangles` |
+| 6（当前） | 31 / 248 B | `rasterStaticMergedPages`、`rasterStaticMergedTriangles`、`allocatorLRUEvictions`、`allocatorLRUEvictionAgeFrames` |
+
+### Build 版本表
+
+每版保留此前字段的顺序；大小只指 Build 段，不代表含 workload 的私有总长。
+
+| `shadow.gpuBuildDiagnostics.version` | counters / bytes | 本版新增 |
+| --- | --- | --- |
+| 1（历史） | 25 / 200 B | 9 项 cluster 计数与 16 桶 `clusterPageScan*` histogram |
+| 2（历史） | 43 / 344 B | `clusterBitsetLevelTests`、`clusterBitsetWordTests` 与 16 桶 `clusterBitsetScan*` histogram |
+| 3（历史） | 45 / 360 B | `triangleBitsetWordTests`、`triangleBitsetPageHits` |
+| 4（历史） | 50 / 400 B | `clusterHierarchyLevelTests`、`clusterHierarchyNodeTests`、`clusterHierarchyBoundsRejects`、`receiverMaskPageTests`、`receiverMaskPageRejects` |
+| 5（历史） | 52 / 416 B | `hzbPageTests`、`hzbLevelRejects` |
+| 6（历史） | 55 / 440 B | `instanceTests`、`instanceRejects`、`instanceClusterTickets` |
+| 7（当前） | 60 / 480 B | 本文开头的五项 layered Build 诊断 |
+
+v2 的 [dirty-page bitset](VirtualShadowMapsDirtyPageBitset.md) 扫描与旧 page 扫描分别计数，两种 cluster histogram 合计覆盖扫描路径的 level tests；未执行的扫描模式保持零。v3 的精确三角 bitset 计数替代对应的 fine triangle page-table reads，不计入 cluster histogram；v4 的 hierarchy 查询也不贡献扫描 histogram。不要将所有 Build 事件都当作 page 读取或把 histogram 观察数直接当作耗时。
+
+### JSON 与历史包读取规则
+
+`shadow.gpuWork` 和 `shadow.gpuBuildDiagnostics` 各有自己的 `version`、`enabled`，开启时含逐 face 的 `lightIndex` / `face` / `counters` 及 `totals`。两者共用 `benchmarkGPUWork` 开关，但不是同一版本命名空间，且不改变公开 stats32。关闭时只发布各自的 `version` 与 `enabled:false`，不能携带 `faces` / `totals`。
+
+解析器支持 workload v1–v6 和 Build v1–v7；按对象自己的 version 选择**精确字段集合**，不能以当前字段集合强读旧包。历史版本没有的字段保持缺失 / unavailable，不补零；已有字段的零才是实测零。未知或畸形 version、enabled payload 缺字段/多字段、重复 face、非法 uint64 或逐 face 总和与 totals 不符均拒绝；Build 还校验配套逐 face stats32 和分组/histogram 等不变量。
+
+历史包可完全没有 Build sidecar，此时为 `gpuBuildDiagnosticsAvailable:false` / `missing`；显式关闭为 `disabled`，两者都不是零工作。声明启用诊断却缺少 frame readback 不视为历史兼容。enabled workload 或 Build 只能用于 diagnostic，不能混入 ordinary timing。读取历史原始私有 buffer 时，应按该证据对应的**两个版本**分别计算段长及 Build 偏移，不能借用当前 376 B 起点；例如 workload v3 与 Build v3 的历史组合总长为 `128 + 184 + 360 = 672 B`。
+
+### 基础 workload counters（v1 前缀）
+
+计数均在实际 GPU 路径产生，不以 triangle capacity 代替成功解码量。新增字段的完整定义见上述 header 名称表和 parser 的 counter definitions；下表仅说明各版本共同保留的基础前缀。
 
 | 阶段 | Counter | 含义 |
 | --- | --- | --- |
@@ -96,11 +155,9 @@ Allocator 沿用旧统计中的 requested/admitted/rejected fine pages、dirty/c
 
 诊断 shader macro `VSM_WORKLOAD_DIAGNOSTICS` 属于 ShaderRegistry 缓存身份。关闭时编译掉新增计数代码；208 B push layout 和现有直接 shader tests 的 128 B statistics 合同保持不变。缓存深度有效性不依赖诊断开关。新增 mesh 写入通过 compute→mesh、mesh→compute/transfer 和完整 buffer import 同步。
 
-## 独立 build 诊断（v1）
+## 独立 Build 基础计数语义（v1 前缀）
 
-以下 25 项与 200 B 布局描述 v1 证据。当前写入端采用 [dirty-page bitset 的 v2 扩展](VirtualShadowMapsDirtyPageBitset.md)：保留这些字段并追加 18 项，共 344 B；工具兼容两版。v2 的页扫描与 bitset word 扫描分别计数，两种 histogram 合计覆盖所有 level tests。
-
-`shadow.gpuBuildDiagnostics` 使用独立 version 1 JSON，字段为 `enabled`、`faces`、`totals`。每个 face 沿用 `lightIndex`、`face`、`counters`；不是 compact 屏幕输出层。它与 `shadow.gpuWork` 共用 `benchmarkGPUWork` 开关，但两个 JSON 对象和原 16 个 counter 的 ABI 相互独立。关闭时只发布 `version/enabled:false`，普通 shader 不执行这些新增计数原子。
+以下是历史 Build v1 的基础字段及校验规则，当前版本仍保留这个前缀；完整当前布局、后续版本扩展和 JSON 读取规则统一见[诊断 ABI](#诊断-abi当前布局与历史读取)，本节不是当前完整 ABI。
 
 | Counter | 实际计数位置与含义 |
 | --- | --- |
@@ -124,7 +181,7 @@ Allocator 沿用旧统计中的 requested/admitted/rejected fine pages、dirty/c
 - pageTests 落在各 histogram 档加权下界与上界之间，单次上限为 16384。
 - inactive、triangle capacity 为零或 `stats[16] == 0` 的 face 必须全零。
 
-关闭 cluster 粗筛但开启诊断时，全零 build sidecar 是合法的已测数据；工具不会强制 groups 非零。旧证据缺少整个新字段时标为 `gpuBuildDiagnosticsAvailable:false` / `missing`，不会用零补齐；有新版字段却缺少部分 frame readback 或 enabled 对象的数据则失败。`work_frame` 的原返回结构不变，由独立 `build_frame` 解析新对象。Timing 模式禁止 enabled build sidecar。
+历史 v1 关闭 cluster 粗筛时，全零 Build sidecar 是合法的已测数据；工具不会强制 groups 非零。后续版本新增的 triangle、receiver-mask、layered 等计数不依赖 cluster 粗筛，不能据此假定整个当前 sidecar 为零。对象可用性由独立 `build_frame` 解析，missing、disabled 和 measured zero 的区别见[历史包读取规则](#json-与历史包读取规则)。
 
 ## 采集和报告
 
@@ -144,7 +201,7 @@ Focused GPU 回归 `virtual_shadow_map_profiling` 比较 Off/Timing/Work/Both �
 
 ## 2026-10-29 初始 profiling 验证（mark/cluster 优化前）
 
-Release `Metallic` 与 `MetallicRHITests` 构建通过。GPU 上执行 profiling、compact、allocator、remap、demand_equivalence 五项回归全部通过；profiling 的 16 个状态各比较四种开关，图像、深度、旧 32-word statistics 一致，Timing 不改变 work counters。Core/synchronization validation 无错误。最初测试夹具遗漏太阳 illuminance，非零工作断言失败；已明确设为 3 并保留该次失败记录。15 项报告工具测试与 Slang module audit 均通过。
+本节记录历史 workload v1 / Build sidecar 引入前的证据，不定义当前布局。Release `Metallic` 与 `MetallicRHITests` 构建通过。GPU 上执行 profiling、compact、allocator、remap、demand_equivalence 五项回归全部通过；profiling 的 16 个状态各比较四种开关，图像、深度、旧 32-word statistics 一致，Timing 不改变 work counters。Core/synchronization validation 无错误。最初测试夹具遗漏太阳 illuminance，非零工作断言失败；已明确设为 3 并保留该次失败记录。15 项报告工具测试与 Slang module audit 均通过。
 
 采集保留 `Pipelines/Samples/virtual_shadow_map_sponza.metallic_graph.json` 的 native 1920×1080、LOD0、6 clipmaps、128×128 virtual pages、2048 physical pages、2 rays×16 samples、32-phase temporal SMRT 配置，仅添加诊断开关。设备为 RTX 5070 Ti，驱动 621.01。Timing 为 3 个独立进程，每个 96 帧、前 32 帧 warmup；diagnostic 为独立 64 帧、前 32 帧 warmup，包含两张场景 PNG，validation messages 为 0。均无 RT/CLAS 分配，输入、源码、二进制在各轮采集期间未变化。
 
@@ -163,7 +220,7 @@ Release `Metallic` 与 `MetallicRHITests` 构建通过。GPU 上执行 profiling
 
 ## 2026-10-29 build 诊断补充验证
 
-Release 构建通过；报告工具 27 项测试、四臂工具 19 项测试及 Slang module audit 通过。`virtual_shadow_map_profiling` 的 20 个状态比较 Off/Timing/Work/Both，四臂优化等价回归的 32 个状态也通过，validation 均为 0。检查涵盖 resident/stream、单灯/多灯、hard/PCF/SMRT、cold/warm/dirty/overflow，以及禁用 cluster 粗筛时的零 sidecar。新增 TinySingleHard 使用 VPA=2、4 physical pages，覆盖小 dispatch 和 warm 清零；短扫描不会写高位 histogram 桶，因此该夹具不单独证明高位非零内容的复用清零。CPU reset 已明确覆盖全部 82 个诊断 uint，shader 清零索引为 `statistics[32 + id.x]`。
+本节记录历史 workload v1 / Build v1 的证据；下述 82 个诊断 uint 和扫描校验仅属于该版，不是当前 reset 长度。Release 构建通过；报告工具 27 项测试、四臂工具 19 项测试及 Slang module audit 通过。`virtual_shadow_map_profiling` 的 20 个状态比较 Off/Timing/Work/Both，四臂优化等价回归的 32 个状态也通过，validation 均为 0。检查涵盖 resident/stream、单灯/多灯、hard/PCF/SMRT、cold/warm/dirty/overflow，以及禁用 cluster 粗筛时的零 sidecar。新增 TinySingleHard 使用 VPA=2、4 physical pages，覆盖小 dispatch 和 warm 清零；短扫描不会写高位 histogram 桶，因此该夹具不单独证明高位非零内容的复用清零。CPU reset 已明确覆盖全部 82 个诊断 uint，shader 清零索引为 `statistics[32 + id.x]`。
 
 首次 Tiny 配置 VPA=1 因细级投影没有覆盖夹具 receiver 而未产生 fine work，保留在 `build/vsm-build-diagnostics/RegressionGPU/`；VPA=2 修正后的 20 状态成功记录在 `ProfilingFixed/`。前一目录中的四臂测试已成功，修正仅涉及 profiling 夹具，未更改渲染算法。
 

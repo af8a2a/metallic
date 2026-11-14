@@ -1,4 +1,5 @@
 """Regression tests for the Slang source ownership boundary."""
+from contextlib import chdir
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -10,14 +11,28 @@ spec.loader.exec_module(audit)
 
 
 class ShaderModuleOwnershipTests(unittest.TestCase):
-    def run_case(self, files):
+    def run_case(self, files, *, relative_root=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for relative, content in files.items():
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding='utf-8')
+            if relative_root:
+                with chdir(root):
+                    return audit.check(Path('.'))
             return audit.check(root)
+
+    def test_relative_root_uses_same_ownership_checks(self):
+        files = {
+            'Shaders/Owner.slang': 'module Owner;\n__include "Impl.slang";\n',
+            'Shaders/Impl.slang': 'implementing Owner;\n',
+        }
+        self.assertEqual([], self.run_case(files, relative_root=True))
+        files['Shaders/Impl.slang'] = 'implementing Other;\n'
+        errors = self.run_case(files, relative_root=True)
+        self.assertTrue(any('must declare implementing Owner' in error for error in errors))
+        self.assertTrue(any('implementing owner Other has no module' in error for error in errors))
 
     def test_owned_split_module_and_header_boundary(self):
         self.assertEqual([], self.run_case({

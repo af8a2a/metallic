@@ -26,6 +26,7 @@ def main():
     import PathTraceQueries as pt
     import MaterialBaseline as mb
     summary=pt.verify(perf); validation=pt.verify(correct)
+    thresholds = mb.read(perf/'Identity.json')['thresholds']
     checks=[case for label,rows in validation['correctness'].items() if not label.endswith('-A') for case in rows]
     out.mkdir(parents=True,exist_ok=False)
     mb.save(out/'Summary.json',summary)
@@ -60,7 +61,8 @@ def main():
             ax.errorbar(i,g['mean']*100,yerr=[[g['mean']*100-lo],[hi-g['mean']*100]],fmt='o',capsize=5,color='#2b7aab')
             ax.scatter(np.full(6,i)+np.linspace(-.12,.12,6),np.array(g['pairs'])*100,s=14,color='#94a3b8')
         ax.axhline(0,color='#444',lw=.8)
-        ax.axhline(3,color='#888',ls='--',lw=.8)
+        if thresholds['gainLower'] != 0:
+            ax.axhline(thresholds['gainLower'] * 100,color='#888',ls='--',lw=.8)
         ax.set(xticks=range(3),xticklabels=['Primary / original','Shadow / primary','Combined / original'],
                ylabel='Reduction in PT time (%)',title='Mean paired gain; 95% Student-t interval (n=6)')
         ax.tick_params(axis='x',labelrotation=15);ax.grid(axis='y',alpha=.2)
@@ -107,9 +109,10 @@ def main():
     for row in summary['comparisons']:
         g=row['ptGain']
         lines.append(f"| {row['case']} | {row['comparison']} | {g['mean']:.2%} | [{g['low']:.2%}, {g['high']:.2%}] | {row['decision']} |")
+    primary_gate = '>0%' if thresholds['gainLower'] == 0 else f">={thresholds['gainLower']:.0%}"
     lines+=['','A = original; B = primary hit reuse; C = primary reuse plus shadow classification. '
             'Intervals use six process-paired gains, never individual frames. No samples were filtered. '
-            'Improvement requires PT lower bound >=3%, graph lower bound >=-2%, and per-arm process-median spread <=10%. '
+            f"Improvement requires PT lower bound {primary_gate}, graph lower bound >={thresholds['graphGainLower']:.0%}, and per-arm process-median spread <=10%. "
             'Inconclusive is not an accepted speedup.', '', '![Warmup](Warmup.png)', '',
             'Correctness: nine fixed scenarios including ABeautifulGame, 1/2/4 samples, MASK, BLEND, nested textured transmission/absorption, '
             'normal mapping, sky misses, seven guides, moving RenderView, SHARC and legacy Boolean shadows. '

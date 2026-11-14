@@ -18,7 +18,9 @@ for each light. Per-face workgroup barriers remain outside the receiver helper.
 ARC is fixed by the device capability, rather than a mutable history setting.
 PCF and Hard do not execute ARC.
 
-GPU workload diagnostics version 2 appends three counters to the historical sixteen:
+ARC introduced the following workload counters in the historical v2 schema.
+The current layout, subsequent extensions, version fields and historical-package
+reading rules are defined centrally in the [diagnostic ABI](VirtualShadowMapsGPUProfile.md#诊断-abi当前布局与历史读取):
 
 - `projectionAdaptiveLitReceivers`: receiver/light evaluations exiting after one ray.
 - `projectionAdaptiveUmbraReceivers`: evaluations exiting with zero accumulated misses
@@ -27,10 +29,10 @@ GPU workload diagnostics version 2 appends three counters to the historical sixt
 
 Only exits with remaining rays are counted. A 2-ray configuration therefore records
 no umbra savings. These counters count receiver/light evaluations, not waves. The
-public 32-word statistics remain unchanged; private workload and build offsets use
-shared size constants. The profiling reader supports historical v1/16-counter data.
+public statistics remain unchanged; private workload and Build offsets use the
+shared size constants documented in the diagnostic ABI, not fixed historical lengths.
 
-Bounded Sponza validation and plots are in the local output
+Historical 2026-11-01 Sponza validation and plots (workload v2 / Build v3) are in
 `build/vsm-arc-20261101/Report.md`: four diagnostic processes (2-ray/8-ray A/B) and
 one 2-ray ABBA block. The measured 2-ray Projection improvement was about 1.9%
 (0.019 ms), with localized nonzero image differences. The 8-ray test verified

@@ -83,7 +83,7 @@ RETIRED_PROPERTIES = frozenset(("benchmarkLegacyMark", "benchmarkMarkSamples",
     "aggregateReceiverMask", "benchmarkAggregateReceiverMask", "staticPageHZB", "benchmarkStaticPageHZB",
     "clusterHZBCulling", "benchmarkClusterHZBCulling", "shadowLODHierarchy", "shadowLODDepthGuard", "shadowLODSmartBiasRefine"))
 METRICS = optimization.METRICS
-POLICY = {"minimumGain": .03, "maximumGraphRegression": .02, "confidence": .95,
+POLICY = {"minimumGain": 0.0, "maximumGraphRegression": .02, "confidence": .95,
           "primaryMetric": "buildMs", "statisticalUnit": "independent four-process ABBA block",
           "statistic": "ABBA log ratios via ExperimentRunner.block_gain", "promotion": "manual",
           "spreadWarning": .10}
@@ -102,7 +102,7 @@ def experiment_policy(protocol, role="primary"):
     if protocol == DIRECTIONAL_PROJECTION_PROTOCOL:
         policy["primaryMetric"] = "projectionMs"
     if protocol == ONE_PASS_PROTOCOL:
-        policy.update(primaryMetric="projectionMs", role=role, minimumGain=-.05 if role == "overhead" else .03)
+        policy.update(primaryMetric="projectionMs", role=role, minimumGain=-.05 if role == "overhead" else POLICY["minimumGain"])
     return policy
 
 
@@ -484,7 +484,10 @@ def verify_experiment(source):
     mark_page_size = plan.get("protocol") == MARK_PAGE_SIZE_PROTOCOL
     expected = schedule(phase)
     mode = "diagnostic" if phase == "diagnostic" else "timing"
-    if (plan.get("protocol") not in (PROTOCOL, DIRECTIONAL_PROTOCOL, COMPACT_PROTOCOL, DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL, MARK_RAY_PAGES_PROTOCOL, ONE_PASS_PROTOCOL, DIRECTIONAL_PROJECTION_PROTOCOL, MARK_PAGE_SIZE_PROTOCOL) or plan.get("policy") != experiment_policy(plan.get("protocol"), plan.get("policy", {}).get("role", "primary")) or plan.get("mode") != mode or
+    policy = experiment_policy(plan.get("protocol"), plan.get("policy", {}).get("role", "primary"))
+    # Historical sealed plans retain their declared 3% target; never reclassify them.
+    legacy_policy = {**policy, "minimumGain": -.05 if policy.get("role") == "overhead" else .03}
+    if (plan.get("protocol") not in (PROTOCOL, DIRECTIONAL_PROTOCOL, COMPACT_PROTOCOL, DIRECTIONAL_MARK_PROTOCOL, MARK_CLIPMAPS_PROTOCOL, MARK_RAY_PAGES_PROTOCOL, ONE_PASS_PROTOCOL, DIRECTIONAL_PROJECTION_PROTOCOL, MARK_PAGE_SIZE_PROTOCOL) or plan.get("policy") not in (policy, legacy_policy) or plan.get("mode") != mode or
             plan.get("processes") != expected or plan.get("blocks") != BLOCKS[phase] or
             plan.get("timeoutSeconds") != 600 or plan.get("runsPerPackage") != 1 or
             plan.get("comparisonStartFrame") != 16 or len(receipts) != len(expected)):
@@ -621,11 +624,13 @@ def comparisons(rows, phase, primary="buildMs", policy=None):
     target, graph = gains[primary], gains["graphMs"]
     if target["upper95"] < (minimum if overhead else 0) or graph["upper95"] < graph_limit:
         decision, assessment, action = "reject", "confirmed_regression", "retain_baseline"
+    elif minimum == 0 and target["upper95"] <= 0:
+        decision, assessment, action = "reject", "no_positive_gain", "retain_baseline"
     elif target["upper95"] < minimum:
         decision, assessment, action = "reject", "below_target", "retain_baseline"
-    elif phase == "confirmation" and target["lower95"] >= minimum and graph["lower95"] >= graph_limit:
+    elif phase == "confirmation" and (target["lower95"] > 0 if minimum == 0 else target["lower95"] >= minimum) and graph["lower95"] >= graph_limit:
         decision, assessment, action = "accept", "confirmed_gain", "manual_promotion"
-    elif phase == "discovery" and target["estimate"] >= minimum and (not overhead or graph["estimate"] >= graph_limit):
+    elif phase == "discovery" and (target["estimate"] > 0 if minimum == 0 else target["estimate"] >= minimum) and (not overhead or graph["estimate"] >= graph_limit):
         decision, assessment, action = "inconclusive", "promising_gain", "run_confirmation"
     else:
         decision, assessment, action = "inconclusive", "uncertain", "retain_candidate"
@@ -909,7 +914,9 @@ def report(args):
                 f"Decision: **{result['comparison']['decision']} / {result['comparison']['effectAssessment']}**; next: {result['comparison']['nextAction']}.", "",
                 "| Metric | Gain | 95% CI |", "|---|---:|---:|"])
             lines.extend(f"| {metric} | {gain['estimate']:.2%} | [{gain['lower95']:.2%}, {gain['upper95']:.2%}] |" for metric, gain in gains.items())
-            lines.extend(["", f"Primary target: {result['plan']['policy']['primaryMetric']} gain lower bound ≥{result['plan']['policy']['minimumGain']:.0%}; graph gain lower bound ≥−2% in independent confirmation. Discovery only screens promising candidates.", "",
+            minimum = result["plan"]["policy"]["minimumGain"]
+            comparison = ">" if minimum == 0 else "≥"
+            lines.extend(["", f"Primary target: {result['plan']['policy']['primaryMetric']} gain lower bound {comparison}{minimum:.0%}; graph gain lower bound ≥−2% in independent confirmation. Discovery only screens promising candidates.", "",
                 "![Process medians](ProcessMedians.png)", "", "![Block confidence intervals](BlockGains.png)"])
         else:
             lines.extend(["Diagnostic only: exact canonical output checks passed. These instrumented timings are not performance evidence.", "", "![Diagnostic counts](DiagnosticWork.png)"])

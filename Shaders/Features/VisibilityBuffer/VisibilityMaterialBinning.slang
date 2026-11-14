@@ -37,24 +37,19 @@ struct MaterialBinningParams
 #define gIndirect getParameters<MaterialBinningParams>().arguments
 #define gStreamRecords getParameters<MaterialBinningParams>().streamRecords
 
-uint materialClassForPixel(uint2 pixel)
+uint materialClassFromRecord(uint recordIndex, MaterialBinningParams push)
 {
-    uint recordIndex, triangleIndex;
-    if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return kMaterialClassBackground; }
-    uint count;
-    MaterialBinningParams push = getParameters<MaterialBinningParams>();
-    VisibleClusterRecord record;
-    count = push.streamRecords.length();
+    uint count = push.streamRecords.length();
     if (recordIndex >= count) { return kMaterialClassBackground; }
-    record = unpackStreamVisibleRecord(gStreamRecords[recordIndex]);
+    VisibleClusterRecord record = unpackStreamVisibleRecord(push.streamRecords[recordIndex]);
     if (record.dataIndex >= push.streamGroups.length()) { return kMaterialClassBackground; }
     record.instanceIndex = push.streamGroups[record.dataIndex].gpuSceneInstanceIndex;
     count = push.instances.length();
     if (record.instanceIndex >= count) { return kMaterialClassBackground; }
-    uint material = gInstances[record.instanceIndex].identity.y;
+    uint material = push.instances[record.instanceIndex].identity.y;
     count = push.materials.length();
     if (material >= count) { return kMaterialClassBackground; }
-    uint sourceMaterial = gMaterials[material].identity.z;
+    uint sourceMaterial = push.materials[material].identity.z;
     count = push.shadingMaterials.length();
     if (count == 0u) { return kMaterialClassBackground; }
     // Match the deferred reconstruction's fallback material exactly.
@@ -63,7 +58,14 @@ uint materialClassForPixel(uint2 pixel)
         // MaterialBinning::record validates every entry before uploading the table.
         return push.materialProgramBins.load(sourceMaterial);
     }
-    return classifyDeferredMaterial(gShadingMaterials[sourceMaterial]);
+    return classifyDeferredMaterial(push.shadingMaterials[sourceMaterial]);
+}
+
+uint materialClassForPixel(uint2 pixel)
+{
+    uint recordIndex, triangleIndex;
+    if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return kMaterialClassBackground; }
+    return materialClassFromRecord(recordIndex, getParameters<MaterialBinningParams>());
 }
 
 [shader("compute")]
@@ -86,7 +88,23 @@ void classifyMaterialTile(uint3 group, bool scatter)
     MaterialTile tile = {group.y * columns + group.x, 0u};
     uint2 pixel = materialTilePixel(tile, lane, push.width);
     bool valid = all(pixel < uint2(push.width, push.height));
-    uint materialClass = valid ? materialClassForPixel(pixel) : kMaterialClassBackground;
+
+    uint recordIndex = 0u;
+    uint triangleIndex = 0u;
+    bool hasSurface = valid && unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex);
+    uint remaining = WaveActiveBallot(hasSurface).x;
+
+    uint materialClass = kMaterialClassBackground;
+    while (remaining != 0u) {
+        uint sampleLane = firstbitlow(remaining);
+        uint rec = WaveReadLaneAt(recordIndex, sampleLane);
+        uint classForRec = materialClassFromRecord(rec, push);
+        uint matchMask = WaveActiveBallot(hasSurface && recordIndex == rec).x;
+        if ((matchMask & (1u << lane)) != 0u) {
+            materialClass = classForRec;
+        }
+        remaining &= ~matchMask;
+    }
     if (push.programBinCount != 0u) {
         // Visit only the unique program IDs present in this wave, at most 32.
         // Every lane participates, including partial edge tiles.

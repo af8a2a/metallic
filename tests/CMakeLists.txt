@@ -316,6 +316,10 @@ if(WIN32)
 endif()
 add_test(NAME MetallicDebugTests COMMAND MetallicDebugTests --gtest_color=no)
 set_tests_properties(MetallicDebugTests PROPERTIES LABELS "debug")
+add_test(NAME MetallicCtlArgumentsTests COMMAND ${CMAKE_COMMAND}
+    "-DMETALLIC_CTL_EXECUTABLE=$<TARGET_FILE:MetallicCtl>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MetallicCtlArgumentsTests.cmake")
+set_tests_properties(MetallicCtlArgumentsTests PROPERTIES LABELS "debug;tools" TIMEOUT 60)
 
 add_executable(MetallicTaskTests
     task/TaskGraphTests.cpp
@@ -729,6 +733,10 @@ set_tests_properties(MetallicRHITests PROPERTIES
     LABELS "rhi"
     SKIP_RETURN_CODE 77
 )
+add_test(NAME MetallicRHIFilterSelectionTests COMMAND ${CMAKE_COMMAND}
+    "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RHIFilterSelectionTests.cmake")
+set_tests_properties(MetallicRHIFilterSelectionTests PROPERTIES LABELS "rhi;tools;cpu" TIMEOUT 180)
 
 add_test(NAME MetallicResourceInspectorSmoke
     COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
@@ -833,8 +841,29 @@ endif()
 add_test(NAME MetallicShaderPrintfTests COMMAND MetallicShaderPrintfTests --gtest_color=no)
 set_tests_properties(MetallicShaderPrintfTests PROPERTIES LABELS "rhi;shader-printf" TIMEOUT 30)
 
-find_package(Python3 QUIET COMPONENTS Interpreter)
+option(METALLIC_REQUIRE_PYTHON_TESTS "Require Python for CPU tooling regressions" OFF)
+if(METALLIC_REQUIRE_PYTHON_TESTS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+else()
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+endif()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicCIPresetTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestCIPreset.py"
+            --build-dir "${CMAKE_BINARY_DIR}")
+    set_tests_properties(MetallicCIPresetTests PROPERTIES LABELS "build;tools;cpu" TIMEOUT 30)
+    add_test(NAME MetallicCPUWorkflowTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestCPUWorkflow.py")
+    set_tests_properties(MetallicCPUWorkflowTests PROPERTIES LABELS "build;tools;cpu" TIMEOUT 30)
+    add_test(NAME MetallicRequiredTestLaneTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestRunRequiredTests.py")
+    set_tests_properties(MetallicRequiredTestLaneTests PROPERTIES LABELS "tools;cpu;skip-policy" TIMEOUT 60)
+    add_test(NAME MetallicFinalBlitPipelineInventoryTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestFinalBlitPipelineInventory.py")
+    set_tests_properties(MetallicFinalBlitPipelineInventoryTests PROPERTIES LABELS "tools;cpu;skip-policy" TIMEOUT 30)
+    add_test(NAME MetallicTestResultSummaryTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestSummarizeTestResults.py")
+    set_tests_properties(MetallicTestResultSummaryTests PROPERTIES LABELS "tools;cpu;skip-policy" TIMEOUT 30)
     add_test(NAME MetallicPathTraceSSAEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceSSA.py")
     set_tests_properties(MetallicPathTraceSSAEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
@@ -873,10 +902,10 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(MetallicShaderPostprocessEvidenceTests PROPERTIES LABELS "shader;perf;cpu")
     add_test(NAME MetallicShaderModuleOwnershipTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/TestShaderModules.py")
-    set_tests_properties(MetallicShaderModuleOwnershipTests PROPERTIES LABELS "shader;architecture" TIMEOUT 30)
+    set_tests_properties(MetallicShaderModuleOwnershipTests PROPERTIES LABELS "shader;architecture;tools;cpu" TIMEOUT 30)
     add_test(NAME MetallicShaderModuleOwnershipAudit
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/Tools/CheckShaderModules.py" --root "${CMAKE_SOURCE_DIR}")
-    set_tests_properties(MetallicShaderModuleOwnershipAudit PROPERTIES LABELS "shader;architecture" TIMEOUT 30)
+    set_tests_properties(MetallicShaderModuleOwnershipAudit PROPERTIES LABELS "shader;architecture;tools;cpu" TIMEOUT 30)
     add_test(NAME MetallicShaderPrintfEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/rhi/TestShaderPrintfEvidence.py")
     set_tests_properties(MetallicShaderPrintfEvidenceTests PROPERTIES LABELS "tools;shader-printf" TIMEOUT 30)

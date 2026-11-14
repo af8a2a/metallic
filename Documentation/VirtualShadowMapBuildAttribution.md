@@ -1,6 +1,6 @@
 # VSM compact / indirect build 分段计时
 
-`benchmarkBuildSubstages=true` 配合 `benchmarkGPUProfile=true` 在现有 `VSM build` 父区间内增加子区间。默认关闭；不改变 stats32、work16 或 build diagnostics v3 的 ABI。父区间仍覆盖完整 build，分析时不能把父子区间重复相加。
+`benchmarkBuildSubstages=true` 配合 `benchmarkGPUProfile=true` 在现有 `VSM build` 父区间内增加子区间。默认关闭；不改变公开 statistics、workload 或 Build diagnostics 的 ABI。当前布局、版本字段与历史包读取规则统一见[诊断 ABI](VirtualShadowMapsGPUProfile.md#诊断-abi当前布局与历史读取)，不以本文历史实验的 counter 数量定义当前契约。父区间仍覆盖完整 build，分析时不能把父子区间重复相加。
 
 | 子区间 | 范围 |
 | --- | --- |
@@ -84,7 +84,7 @@ A/B 是进程预热后中位数的中位数；收益与区间按完整 ABBA 区�
 
 - Release `Metallic` / `MetallicRHITests` 构建通过；93 项 VSM Python 测试通过。初次 Python 测试受沙箱 TEMP 清理权限影响，改用工作区 TEMP/TMP 后通过，失败日志保留。
 - 新 profiling 父子区间检查、72 状态 compact 等价矩阵、10 项 production-kernel 参数探针全部通过，无 validation 消息。
-- Sponza diagnostic A/B 启用 synchronization validation；PNG、线性 HDR、depth、shadow、stats32、45 项 build diagnostics 和 15 项确定性 workload 完全一致。
+- 2026-10-30 历史 Sponza diagnostic A/B 启用 synchronization validation；PNG、线性 HDR、depth、shadow、stats32、当时 Build v3 的 45 项 diagnostics 和 workload v1 中所比较的 15 项确定性计数完全一致。这是该批证据的比较集合，不是当前 counter 总数。
 - 实际检查了最终第 63 帧图像、前后分段图和普通计时散点/区间图。
 - 封存证据及最终 739 个 source / 20 个 binary 文件核验一致。普通计时不锁频，不保证系统级 GPU 独占；范围是 pass/RenderGraph，不是呈现 FPS。
 

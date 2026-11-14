@@ -36,6 +36,52 @@ produce an installation hint. Manual setup remains available:
 git submodule update --init --recursive -- External/openpbr-bsdf
 ```
 
+### Locked NRD and microprofile revisions
+
+Submodule versions are pinned by the parent repository's gitlinks, not by the
+current upstream default branch. Keep these locks when initializing dependencies;
+do not use `git submodule update --remote` to reproduce a build.
+
+| Submodule | Upstream | Locked commit |
+| --- | --- | --- |
+| `External/nrd` | [NVIDIA-RTX/NRD](https://github.com/NVIDIA-RTX/NRD.git) | `36183520b006b65860bebc96d3dd7185e5edeb45` (NRD 4.16) |
+| `External/microprofile` | [jonasmr/microprofile](https://github.com/jonasmr/microprofile.git) | `a469709c55b973099c1600b78a503912150e2c69` |
+
+The NRD lock matches the vendored shader snapshot described in the
+[NRD integration notes](../Shaders/Interop/Denoising/NRD/README.md).
+`External/nrd` is upstream reference material for snapshot updates, not a build
+input for the Metallic-owned NRD implementation. Its mapping is still required
+for repository-wide recursive submodule operations, even with NRD disabled.
+Microprofile is a required source dependency, including its nested submodules.
+
+For a fresh checkout, initialize all locked dependencies and inspect their state:
+
+```powershell
+git clone https://github.com/af8a2a/metallic.git metallic-clean
+Set-Location metallic-clean
+git submodule update --init --recursive
+git submodule status --recursive
+git status --short
+```
+
+A clean initialized checkout has no `-` (uninitialized), `+` (different commit), or
+`U` (conflict) prefixes in submodule status, and no submodule changes in Git status.
+The full recursive initialization also downloads optional source/reference
+repositories, including OpenUSD and RTXCR assets; it can be substantially larger
+than initializing only the dependencies required by a selected build profile.
+For an existing checkout, inspect and preserve local submodule changes before
+initializing. After pulling a changed mapping, synchronize the affected URLs and
+initialize the locked revisions as needed:
+
+```powershell
+git submodule sync --recursive -- External/nrd External/microprofile
+git submodule update --init --recursive -- External/nrd External/microprofile
+```
+
+Do not reset, clean, or change gitlinks to hide existing local modifications or
+untracked files. A dirty nested checkout can coexist with a parent submodule HEAD
+that already matches its gitlink; check both before diagnosing version drift.
+
 The Vulkan backend requires `VK_KHR_device_address_commands` with
 `deviceAddressCommands` and `bufferDeviceAddress` enabled. Unsupported devices fail initialization with
 `Unsupported`. Indirect dispatch, indirect mesh draws, and buffer transfers use
@@ -61,7 +107,8 @@ cmake --build --preset metallic-dev
 This builds the editor with glTF, Streamline DLSS when the SDK is available, and
 the bundled SHaRC radiance cache. OpenUSD/oneTBB, NRD denoising and NTC are disabled; tests are off.
 USD files report an explicit unsupported-build error. The `metallic-ci` profile
-disables Streamline and enables the scene, task and debug tests:
+disables Streamline, requires Python, and selects the `scene`, `task`, `debug`,
+`build`, `tools` and `skip-policy` test labels:
 
 ```powershell
 cmake --preset metallic-ci
@@ -69,7 +116,55 @@ cmake --build --preset metallic-ci
 ctest --preset metallic-ci
 ```
 
-USD tests skip when USD is disabled; a separate test checks the disabled importer.
+CTest does not build test executables. The CI build preset includes
+`MetallicSceneTests`, `MetallicTaskTests`, `MetallicDebugTests`, `MetallicCtl`,
+`MetallicRHITests` and `MetallicShaderPipelineBench` for the selected jobs. The
+RHI executable is needed by the CPU-only filter-selection regression; selecting
+`tools` does not select the ordinary `rhi`, `editor` or `testbench` lanes. The
+mixed CPU/GPU `MetallicGPUPageTests` bundle also carries `scene`, so the test
+preset explicitly excludes it by name; its CPU subtests are not selected here
+either. Run that bundle separately on a suitable GPU. The pipeline benchmark
+regression checks its CLI and compile-only fixtures, not GPU performance; its
+four opt-in GPU cases remain skipped unless explicitly run with `--gpu`.
+The source-only `MetallicShaderModuleOwnershipAudit` runs
+[the Slang ownership checker](../Tools/CheckShaderModules.py) without a GPU or
+Slang compiler; its fixture regression `MetallicShaderModuleOwnershipTests` is
+also selected through `tools`. Their existing `shader;architecture` labels are
+retained. `MetallicCIPresetTests` requires both jobs, the compile-only benchmark
+and `MetallicCPUWorkflowTests` to remain registered and selected, and checks the
+preset policy and selected executable references in the configured CTest command
+model (direct commands, CMake `-D...EXECUTABLE` arguments and Python `--executable`
+arguments).
+
+The [Windows CPU workflow](../.github/workflows/CPU.yml) defines a hosted candidate
+on `windows-2025` for pushes, pull requests and manual dispatch. GitHub requires
+the workflow on the default branch before manual dispatch is available; initial
+feature-branch validation uses its push trigger. It uses Python 3.12 and
+[the lane script](../scripts/RunCPULane.ps1), which discovers the x64 Visual Studio
+environment and resolves one Python interpreter for package installation and
+CMake. It installs the four directly pinned [CPU Python dependencies](../requirements-cpu.txt)
+as wheels, checks package consistency, logs the resolved package list and actual
+compiler/SDK/tool versions, and runs the configure/build/test presets. The direct
+pins are not a complete transitive or hash lock; Pillow is provided by matplotlib. Unlike the base preset, this hosted variant
+explicitly disables the NVIDIA SDK umbrella, SPIRV-Tools and ISPC. Its build
+parallelism is 2; CMake bootstraps required submodules and the version/hash-pinned
+Slang SDK. It does not require a separately installed Vulkan SDK. A native
+failure stops subsequent lane steps; direct `pwsh -File` preserves its code,
+whereas GitHub's outer `pwsh -Command` wrapper can report 1 instead. Logs under
+`build-ci/ci-logs/`, CTest JUnit and available CTest diagnostic logs are uploaded
+even after failure. `MetallicCPUWorkflowTests` checks the authored workflow/script
+source contracts and negative mutations, not arbitrary YAML/PowerShell semantics.
+It also runs before configuration in the workflow. The [first hosted run and
+bounded repair](Issues/CPUHostedRegression-2026-11-14.md) records a successful
+SDK-off configure/build but **46/61 passing tests**, not hosted acceptance. See
+also the [historical local workflow evidence](Issues/CPUWorkflowFollowup-2026-11-14.md);
+local regression or workflow source presence cannot replace a green hosted run.
+
+This CPU lane does not select every `perf`/shader test or establish GPU, editor,
+Nsight, or non-Windows cache validation. USD tests skip when USD is disabled; a
+separate test checks the disabled importer. Keep skipped and failed cases separate
+from passes; CTest JUnit counts outer jobs and does not erase inner native skips.
+See the [required-run and skip-baseline policies](RhiTestbench.md#普通-rhi--编辑器-required-run).
 Closing optional integrations changes which render passes can run. Use the full
 profile when working on those integrations.
 
@@ -133,11 +228,13 @@ that catalog to the tool. Macro, capability and search-path order remain part of
 cache identity. Scene requests include the runtime `METALLIC_CUSTOM_MATERIALS=0`
 default so prewarmed OpenPBR and path-tracing binaries are reused.
 
-`PathTraceShaderPolicy.h` owns the unsplit compute path tracer's final transport
-and trusted-resource macros together with its native root layout. Runtime and
-warmup use this policy after the scene request factory selects specialization.
+`PathTraceShaderPolicy.h` owns the unsplit compute path tracer's and visibility-buffer
+Deferred's final transport and trusted-resource macros together with their native
+root layout. Runtime and warmup use this policy after the scene request factory selects specialization.
 The catalog includes the default inline root (24-byte `ComputeResourceParameters`)
-and the explicit legacy descriptor root (12-byte `GPUBufferSpan`). Regression
+and the explicit legacy descriptor root (12-byte `GPUBufferSpan`). Deferred uses
+checked scene access with either root; its builtin and custom-material catalogs
+cover both transports. Regression
 validation must include the DLSS RR sample with single-sample guides and SHARC;
 matching entry-point names alone does not establish matching shader requests.
 
