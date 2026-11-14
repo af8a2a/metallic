@@ -145,9 +145,10 @@ public bool decodeStreamCommittedTriangleAtPage(uint pageIndex, uint clusterInde
 public bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStreamVisibleRecord> records,
     StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
     StructuredBuffer<uint2> pageTable, uint pageWordCount, out VisibleClusterRecord record,
-    out float3 a, out float3 b, out float3 c)
+    out float3 a, out float3 b, out float3 c, out StreamTriangleDecodeContext context)
 {
     record = (VisibleClusterRecord)0; a = b = c = float3(0);
+    context = (StreamTriangleDecodeContext)0;
     uint recordCount, recordStride;
     records.GetDimensions(recordCount, recordStride);
     if (index >= recordCount) { return false; }
@@ -160,7 +161,16 @@ public bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<Com
     record.instanceIndex = group.gpuSceneInstanceIndex;
     if (record.clusterIndex >= group.clusterCount ||
         record.instanceIndex == 0xffffffffu) { return false; }
-    return decodeStreamTriangleAtPage(group.pageIndex, record.clusterIndex, triangle, pages, pageTable, pageWordCount, a, b, c);
+    return decodeStreamTriangleAtPage(group.pageIndex, record.clusterIndex, triangle, pages, pageTable, pageWordCount, a, b, c, context);
+}
+
+public bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStreamVisibleRecord> records,
+    StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
+    StructuredBuffer<uint2> pageTable, uint pageWordCount, out VisibleClusterRecord record,
+    out float3 a, out float3 b, out float3 c)
+{
+    StreamTriangleDecodeContext context;
+    return decodeStreamTriangle(index, triangle, records, groups, pages, pageTable, pageWordCount, record, a, b, c, context);
 }
 
 bool streamHasTexcoords(StructuredBuffer<uint> pages, uint page, uint cluster, out uint uvOffset)

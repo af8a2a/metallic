@@ -146,19 +146,27 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
         let tableHandle = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
         if (tableHandle.index != 0xffffffffu) {
             let table = resolveUniform(tableHandle);
-            VirtualShadowMapLightsHeader header = table.Load<VirtualShadowMapLightsHeader>(0);
             // A connected multi-light publication owns this domain, including
             // explicit disabled/budget-rejected entries; legacy pins are ignored.
+            // VirtualShadowMapLightsHeader::count is at byte offset 4.
+            uint headerCount = table.Load(4u);
             uint index = (light.source & kCelestialSourceBit) != 0u
                 ? light.source & ~kCelestialSourceBit : light.source + kCelestialLightCount;
-            if (index >= header.count) { return float3(1); }
-            VirtualShadowMapLightEntry entry = table.Load<VirtualShadowMapLightEntry>(64u + index * 64u);
-            if (entry.status != 1u) { return float3(1); }
-            uint face = entry.kind == 2u && (header.reserved[0] & 1u) == 0u ? Metallic.Shadow::virtualShadowMapPointFace(
-                position - float3(entry.positionRange[0], entry.positionRange[1], entry.positionRange[2])) : 0u;
+            if (index >= headerCount) { return float3(1); }
+            uint entryOffset = 64u + index * 64u;
+            // VirtualShadowMapLightEntry::status is at byte offset 28.
+            if (table.Load(entryOffset + 28u) != 1u) { return float3(1); }
+            // VirtualShadowMapLightEntry::kind (offset 4) and baseLayer (offset 8).
+            uint2 kindAndBaseLayer = table.Load2(entryOffset + 4u);
+            uint face = 0u;
+            // VirtualShadowMapLightsHeader::reserved[0] is at byte offset 56; positionRange[0..2] at entryOffset + 32.
+            if (kindAndBaseLayer.x == 2u && (table.Load(56u) & 1u) == 0u) {
+                float3 lightPosition = asfloat(table.Load3(entryOffset + 32u));
+                face = Metallic.Shadow::virtualShadowMapPointFace(position - lightPosition);
+            }
             let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
                 ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
-            return float3(shadows.Load(int4(uint2(pixel), entry.baseLayer + face, 0)));
+            return float3(shadows.Load(int4(uint2(pixel), kindAndBaseLayer.y + face, 0)));
         }
         ShadowParameters shadow = gRealtimeShadowParameters[0];
         if (shadow.control.x != 0u && light.source == shadow.control.z) {
@@ -199,8 +207,9 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     lights.pixel = samplePixel;
     lights.globalLightCount = clusterLightGridGlobalLightCount(gridParams);
     lights.globalLightCandidateOffset = gridParams.counts.x;
-    lights.lookup = clusterLightGridLookup(gridParams, gDeferredGridCells,
-        uint2(samplePixel), cameraLinearDepth(hit.position, push));
+    lights.lookup = gridParams.counts.x > 0u
+        ? clusterLightGridLookup(gridParams, gDeferredGridCells, uint2(samplePixel), cameraLinearDepth(hit.position, push))
+        : (ClusterLightGridLookup)0;
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);
     sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;

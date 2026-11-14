@@ -303,11 +303,14 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     // Make coat_normal_ff depend on geometry_coat_basis.n instead of geometry_basis.n
     // and update the coat normal basis to be in the same hemisphere as the view direction.
     OpenPBRBasis coat_anisotropy_basis_ff = resolved_inputs.geometry_coat_basis;
-    openPBRApplyAnisotropyRotation(coat_anisotropy_basis_ff, resolved_inputs.coat_anisotropy_rotation_cos_sin);
+    float3 coat_normal_ff = coat_anisotropy_basis_ff.n;
+    if (TContext.kEnableSheenAndCoat) {
+        openPBRApplyAnisotropyRotation(coat_anisotropy_basis_ff, resolved_inputs.coat_anisotropy_rotation_cos_sin);
 
-    if (dot(view_direction, resolved_inputs.geometry_coat_basis.n) < 0.0f) // back-facing coat
-        openPBRInvertBasis(coat_anisotropy_basis_ff);
-    const float3 coat_normal_ff = coat_anisotropy_basis_ff.n;
+        if (dot(view_direction, resolved_inputs.geometry_coat_basis.n) < 0.0f) // back-facing coat
+            openPBRInvertBasis(coat_anisotropy_basis_ff);
+        coat_normal_ff = coat_anisotropy_basis_ff.n;
+    }
 
     // Calculate IORs considering interactions between layers.
     // IOR variables are assumed to be absolute IORs unless explicitly marked as relative IORs.
@@ -334,7 +337,7 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
         // Unless we're hitting the surface from the outside,
         // ignore the coat (except the way it tints light passing through it).
         // TODO: Refine how coat is handled when hit from the inside.
-        const bool enter_coat = resolved_inputs.coat_weight > 0.0f && !inside;
+        const bool enter_coat = TContext.kEnableSheenAndCoat && resolved_inputs.coat_weight > 0.0f && !inside;
         if (enter_coat) {
             // Adjust the base IOR to be relative to the coat IOR.
             // To handle partial coat, linearly interpolate the coat IOR, which, for low coat
@@ -373,45 +376,48 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     }
 
     // Calculate roughnesses (considering interactions between layers if applicable).
+    float adjusted_coat_roughness = resolved_inputs.coat_roughness;
+    float adjusted_specular_roughness = resolved_inputs.specular_roughness;
+    if (TContext.kEnableSheenAndCoat) {
+        // Adjust the coat roughness to account for the fuzz.
+        // TODO: This is an empirical adjustment. Improve this.
+        // TODO: Make the fuzz affect the tint of the underlying surface, too, and vice versa.
+        const float FuzzEffectOnUnderlyingRoughness = 0.005f; // (at max weight, color, and roughness)
+        const float fuzz_roughness_adjustment_factor = openPBRAverage(resolved_inputs.fuzz_color) *
+                                                       resolved_inputs.fuzz_roughness *
+                                                       FuzzEffectOnUnderlyingRoughness; // TODO: Improve this.
+        adjusted_coat_roughness =
+            lerp(resolved_inputs.coat_roughness,
+                 openPBRFourthRoot(
+                     min(1.0f, openPBRFourthPower(resolved_inputs.coat_roughness) +
+                                   fuzz_roughness_adjustment_factor * openPBRFourthPower(resolved_inputs.fuzz_roughness))),
+                 resolved_inputs.fuzz_weight);
 
-    // Adjust the coat roughness to account for the fuzz.
-    // TODO: This is an empirical adjustment. Improve this.
-    // TODO: Make the fuzz affect the tint of the underlying surface, too, and vice versa.
-    const float FuzzEffectOnUnderlyingRoughness = 0.005f; // (at max weight, color, and roughness)
-    const float fuzz_roughness_adjustment_factor = openPBRAverage(resolved_inputs.fuzz_color) *
-                                                   resolved_inputs.fuzz_roughness *
-                                                   FuzzEffectOnUnderlyingRoughness; // TODO: Improve this.
-    const float adjusted_coat_roughness =
-        lerp(resolved_inputs.coat_roughness,
-             openPBRFourthRoot(
-                 min(1.0f, openPBRFourthPower(resolved_inputs.coat_roughness) +
-                               fuzz_roughness_adjustment_factor * openPBRFourthPower(resolved_inputs.fuzz_roughness))),
-             resolved_inputs.fuzz_weight);
-
-    // Adjust the base roughness to account for the coat.
-    // The heuristic suggested in the OpenPBR spec is too strong as it doesn't take the coat IOR into account.
-    // Light doesn't scatter as much from a low IOR surface even if the roughness is high, because the scattering
-    // comes from refraction and refraction doesn't bend light as much when the IOR is low.
-    // And if the coat IOR is 1, the coat shouldn't affect the roughnesses of the underlying layers at all.
-    // Furthermore, even at high IOR, randomly oriented microfacets can only refract light into a half sphere
-    // of directions while they can reflect light into a full sphere of directions.
-    // So we need to take the coat IOR into account.
-    //
-    // Original version from OpenPBR spec:
-    // adjusted_specular_roughness =
-    //     mix(specular_roughness,
-    //         openpbr_fourth_root(min(1.0f, openpbr_fourth_power(specular_roughness) + 2.0f * openpbr_fourth_power(adjusted_coat_roughness))),
-    //         coat);
-    //
-    // Our current improved version:
-    const float coat_roughness_adjustment_factor = lerp(
-        1.0f, 0.0f, relative_coat_ior >= 1.0f ? 1.0f / relative_coat_ior : relative_coat_ior); // TODO: Improve this.
-    const float adjusted_specular_roughness =
-        lerp(resolved_inputs.specular_roughness,
-             openPBRFourthRoot(
-                 min(1.0f, openPBRFourthPower(resolved_inputs.specular_roughness) +
-                               coat_roughness_adjustment_factor * openPBRFourthPower(adjusted_coat_roughness))),
-             resolved_inputs.coat_weight);
+        // Adjust the base roughness to account for the coat.
+        // The heuristic suggested in the OpenPBR spec is too strong as it doesn't take the coat IOR into account.
+        // Light doesn't scatter as much from a low IOR surface even if the roughness is high, because the scattering
+        // comes from refraction and refraction doesn't bend light as much when the IOR is low.
+        // And if the coat IOR is 1, the coat shouldn't affect the roughnesses of the underlying layers at all.
+        // Furthermore, even at high IOR, randomly oriented microfacets can only refract light into a half sphere
+        // of directions while they can reflect light into a full sphere of directions.
+        // So we need to take the coat IOR into account.
+        //
+        // Original version from OpenPBR spec:
+        // adjusted_specular_roughness =
+        //     mix(specular_roughness,
+        //         openpbr_fourth_root(min(1.0f, openpbr_fourth_power(specular_roughness) + 2.0f * openpbr_fourth_power(adjusted_coat_roughness))),
+        //         coat);
+        //
+        // Our current improved version:
+        const float coat_roughness_adjustment_factor = lerp(
+            1.0f, 0.0f, relative_coat_ior >= 1.0f ? 1.0f / relative_coat_ior : relative_coat_ior); // TODO: Improve this.
+        adjusted_specular_roughness =
+            lerp(resolved_inputs.specular_roughness,
+                 openPBRFourthRoot(
+                     min(1.0f, openPBRFourthPower(resolved_inputs.specular_roughness) +
+                                   coat_roughness_adjustment_factor * openPBRFourthPower(adjusted_coat_roughness))),
+                 resolved_inputs.coat_weight);
+    }
 
     const bool DeltaSpecularSupported =
         false; // TODO: Support isotropic and delta specular lobes and remove this constant.
@@ -422,9 +428,13 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     const float2 anisotropic_specular_alpha = openPBRComputeAnisotropicAlpha(
         specular_alpha, resolved_inputs.specular_roughness_anisotropy, DeltaSpecularSupported, MinMicrofacetAlpha);
 
-    const float coat_alpha = openPBRSquare(adjusted_coat_roughness);
-    const float2 anisotropic_coat_alpha = openPBRComputeAnisotropicAlpha(
-        coat_alpha, resolved_inputs.coat_roughness_anisotropy, DeltaSpecularSupported, MinMicrofacetAlpha);
+    float coat_alpha = 0.0f;
+    float2 anisotropic_coat_alpha = float2(0.0f);
+    if (TContext.kEnableSheenAndCoat) {
+        coat_alpha = openPBRSquare(adjusted_coat_roughness);
+        anisotropic_coat_alpha = openPBRComputeAnisotropicAlpha(
+            coat_alpha, resolved_inputs.coat_roughness_anisotropy, DeltaSpecularSupported, MinMicrofacetAlpha);
+    }
 
     // Base layer.
 
@@ -464,45 +474,48 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     // TODO: Revisit, improve, and extend the physics here.
     // TODO: Consider making fuzz darken the underlying layers as well.
 
-    // Calculate the reflectance from the inside of the coat for perfectly specular and perfectly diffuse underlying surfaces.
+    float3 modulated_coat_darkening = float3(1.0f);
+    if (TContext.kEnableSheenAndCoat) {
+        // Calculate the reflectance from the inside of the coat for perfectly specular and perfectly diffuse underlying surfaces.
 
-    // These formulas correspond to Equation 67 and Equation 66 from the OpenPRB spec (v1.1):
-    const float K_s =
-        openPBRAverageFresnel(relative_coat_ior); // TODO: Use directional Fresnel (of exterior coat reflection).
-    const float K_r = 1.0f - (1.0f - openPBRAverageFresnel(relative_coat_ior)) / openPBRSquare(relative_coat_ior);
+        // These formulas correspond to Equation 67 and Equation 66 from the OpenPRB spec (v1.1):
+        const float K_s =
+            openPBRAverageFresnel(relative_coat_ior); // TODO: Use directional Fresnel (of exterior coat reflection).
+        const float K_r = 1.0f - (1.0f - openPBRAverageFresnel(relative_coat_ior)) / openPBRSquare(relative_coat_ior);
 
-    // Calculate the effective roughness of everything beneath the coat.
-    // TODO: Take colors and additional weights into account.
-    const float specularity_opaque_dielectric =
-        openPBRAverageFresnel(relative_ior_for_opaque_reflection); // TODO: Use directional Fresnel.
-    const float specularity_sss_trans =
-        openPBRAverageFresnel(relative_ior_for_trans_reflection); // TODO: Use directional Fresnel.
-    const float specularity_dielectric =
-        opaque_dielectric * specularity_opaque_dielectric + (sss + trans) * specularity_sss_trans;
-    const float specularity_metal = resolved_inputs.base_metalness;
-    const float specularity_base = specularity_dielectric + specularity_metal;
-    const float effective_roughness_base = lerp(1.0f, adjusted_specular_roughness, specularity_base);
+        // Calculate the effective roughness of everything beneath the coat.
+        // TODO: Take colors and additional weights into account.
+        const float specularity_opaque_dielectric =
+            openPBRAverageFresnel(relative_ior_for_opaque_reflection); // TODO: Use directional Fresnel.
+        const float specularity_sss_trans =
+            openPBRAverageFresnel(relative_ior_for_trans_reflection); // TODO: Use directional Fresnel.
+        const float specularity_dielectric =
+            opaque_dielectric * specularity_opaque_dielectric + (sss + trans) * specularity_sss_trans;
+        const float specularity_metal = resolved_inputs.base_metalness;
+        const float specularity_base = specularity_dielectric + specularity_metal;
+        const float effective_roughness_base = lerp(1.0f, adjusted_specular_roughness, specularity_base);
 
-    // This formula corresponds to Equation 68 from the OpenPRB spec (v1.1):
-    const float K = lerp(K_s, K_r, effective_roughness_base);
+        // This formula corresponds to Equation 68 from the OpenPRB spec (v1.1):
+        const float K = lerp(K_s, K_r, effective_roughness_base);
 
-    // Estimate the base surface albedo.
+        // Estimate the base surface albedo.
 
-    const float3 base_albedo_from_metal = darkened_metal * metal_average_fresnel;
-    const float3 base_albedo_from_opaque_dielectric =
-        opaque_dielectric * lerp(weighted_base_color, float3(1.0f), specularity_opaque_dielectric);
-    const float3 base_albedo_from_sss = sss * resolved_inputs.subsurface_color; // considering all internal bounces
-    const float3 base_albedo_from_trans =
-        float3(trans); // considering zero internal bounces (we don't know how dense the volume is)
-    const float3 E_b =
-        base_albedo_from_metal + base_albedo_from_opaque_dielectric + base_albedo_from_sss + base_albedo_from_trans;
+        const float3 base_albedo_from_metal = darkened_metal * metal_average_fresnel;
+        const float3 base_albedo_from_opaque_dielectric =
+            opaque_dielectric * lerp(weighted_base_color, float3(1.0f), specularity_opaque_dielectric);
+        const float3 base_albedo_from_sss = sss * resolved_inputs.subsurface_color; // considering all internal bounces
+        const float3 base_albedo_from_trans =
+            float3(trans); // considering zero internal bounces (we don't know how dense the volume is)
+        const float3 E_b =
+            base_albedo_from_metal + base_albedo_from_opaque_dielectric + base_albedo_from_sss + base_albedo_from_trans;
 
-    // Calculate the final coat darkening factor.
+        // Calculate the final coat darkening factor.
 
-    // These formulas correspond to Equation 65 and Equation 71 from the OpenPRB spec (v1.1):
-    const float3 Delta = float3(1.0f - K) / (float3(1.0f) - E_b * K);
-    const float3 modulated_coat_darkening =
-        lerp(float3(1.0f), Delta, resolved_inputs.coat_weight * resolved_inputs.coat_darkening);
+        // These formulas correspond to Equation 65 and Equation 71 from the OpenPRB spec (v1.1):
+        const float3 Delta = float3(1.0f - K) / (float3(1.0f) - E_b * K);
+        modulated_coat_darkening =
+            lerp(float3(1.0f), Delta, resolved_inputs.coat_weight * resolved_inputs.coat_darkening);
+    }
 
     // Create specular and diffuse reflection lobes.
 
@@ -847,7 +860,7 @@ openPBRPrepareImpl<TContext : IOpenPBRContext>(TContext context, const OpenPBRRe
 
     OpenPBRVolumeDerivedProps volume_derived_props;
 
-    const bool VolumesEnabled = true;
+    const bool VolumesEnabled = TContext.enableTranslucency();
 
     // Step 1: Set up the volume and any derived properties from resolved inputs.
     openPBRPrepareVolume(resolved_inputs, volume_derived_props, prepared, VolumesEnabled);

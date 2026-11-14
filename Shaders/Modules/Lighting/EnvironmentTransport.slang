@@ -25,6 +25,7 @@ public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCe
     uint slot, float3 worldPosition)
 {
     PunctualLightSample result = sampleCelestialLight(lights, slot);
+    if (!any(result.illuminance > 0.0)) { return result; }
     GPUAtmosphereParameters atmosphere;
 #if SHARC_UPDATE
     let resources = getSceneResourceParameters().environment;

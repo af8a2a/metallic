@@ -233,7 +233,8 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     ScenePathTracePush push,
     RayCone rayCone,
     float3 rayDirection,
-    inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal)
+    inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal,
+    int fixedMetalness = -1, bool opaquePrimary = false)
 {
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
@@ -346,6 +347,8 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     if ((surface.overrideMask & 4u) != 0u) { roughness = clamp(material.params.y, 0.001, 1.0); }
     if ((surface.overrideMask & 8u) != 0u) { emissive = material.emissive.rgb; }
 #endif
+    if (fixedMetalness >= 0) { metallic = float(fixedMetalness); }
+    if (opaquePrimary) { transmission = 0.0; }
 
     OpenPBRClosure<TSource.Context> result;
     result.context = source.context();
@@ -367,7 +370,7 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     result.inputs.specular_anisotropy_rotation_cos_sin = float2(1.0, 0.0);
 
     result.inputs.transmission_weight = transmission * (1.0 - metallic);
-    result.inputs.transmission_color = powColor(baseColor, 0.5);
+    result.inputs.transmission_color = result.inputs.transmission_weight > 0.0 ? powColor(baseColor, 0.5) : float3(1.0);
     result.inputs.transmission_depth = 0.0;
     result.inputs.transmission_scatter = float3(0.0, 0.0, 0.0);
     result.inputs.transmission_scatter_anisotropy = 0.0;
@@ -468,9 +471,7 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
             applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
         SurfaceMaterialResult<Closure> result = (SurfaceMaterialResult<Closure>)0;
         result.closure = resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed, source,
-            context.footprint, context.shadingNormalWS, faceForwardNormal);
-        if (fixedMetalness >= 0) { result.closure.inputs.base_metalness = float(fixedMetalness); }
-        if (opaquePrimary) { result.closure.inputs.transmission_weight = 0.0; }
+            context.footprint, context.shadingNormalWS, faceForwardNormal, fixedMetalness, opaquePrimary);
         result.emission = result.closure.inputs.emission_luminance * result.closure.inputs.emission_color;
         result.flags = 0u;
         summary = summarizeOpenPBRSurface(result.closure, material.emissive.w != 0.0);

@@ -153,8 +153,9 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     hit = (HitInfo)0;
     VisibleClusterRecord record;
     float3 a, b, c;
+    StreamTriangleDecodeContext decodeContext;
     if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
-        gStreamPages, gStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))), record, a, b, c)) { return false; }
+        gStreamPages, gStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))), record, a, b, c, decodeContext)) { return false; }
     GPUDrivenPreviewInstance instance = gRasterInstances[record.instanceIndex];
     float3 ab = b - a;
     float3 ac = c - a;
@@ -188,7 +189,7 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     }
 
     float3 normals[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes = decodeStreamAttributes(record, triangleIndex, gStreamGroups, gStreamPages, gStreamPageTable, normals, uv, tangents);
+    uint attributes = decodeStreamAttributes(gStreamPages, decodeContext, normals, uv, tangents, !hasDomain);
     if (!hasDomain) {
         hit.normal = rasterWorldNormal(instance,
             Metallic.ScenePath::safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
@@ -199,26 +200,39 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     float uvArea = abs(det);
     hit.rayConeLodConstant = hasDomain ? domain.z : (uvArea > 1e-7 ? 0.5 * log2(uvArea / sqrt(area)) : 0.0);
 
-    float3 uvTangent, uvBitangent;
-    if (uvArea <= 0.0000001) {
-        float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
-        uvTangent = Metallic.ScenePath::safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
-        uvBitangent = Metallic.ScenePath::safeNormalize(cross(hit.normal, uvTangent), float3(0.0, 1.0, 0.0));
-    } else {
-        float invDet = 1.0 / det;
-        uvTangent = (e0 * dv.y - e1 * du.y) * invDet;
-        uvBitangent = (e1 * du.x - e0 * dv.x) * invDet;
-    }
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
     // Keep the authored geometric normal stable until normal map evaluation.
-    float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
-    float3 tangent = Metallic.ScenePath::safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), Metallic.ScenePath::safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
-    float tangentSign = dot(cross(hit.normal, tangent), uvBitangent) < 0.0 ? -1.0 : 1.0;
-    if ((attributes & 16u) != 0u && !hasDomain) {
+    float3 tangent = float3(1.0, 0.0, 0.0);
+    float tangentSign = 1.0;
+    bool hasAuthoredTangent = (attributes & 16u) != 0u && !hasDomain;
+    bool needFallbackTangent = true;
+    if (hasAuthoredTangent) {
         float4 authored = tangents[0] * bary.x + tangents[1] * bary.y + tangents[2] * bary.z;
         float3 worldTangent = rasterWorldVector(instance, authored.xyz);
-        tangent = Metallic.ScenePath::safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), tangent);
+        float3 projectedTangent = worldTangent - hit.normal * dot(hit.normal, worldTangent);
+        float projectedLenSq = dot(projectedTangent, projectedTangent);
         tangentSign = (authored.w < 0.0 ? -1.0 : 1.0) * rasterHandedness(instance);
+        if (projectedLenSq > 0.00000001) {
+            tangent = projectedTangent * rsqrt(projectedLenSq);
+            needFallbackTangent = false;
+        }
+    }
+    if (needFallbackTangent) {
+        float3 uvTangent, uvBitangent;
+        if (uvArea <= 0.0000001) {
+            float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+            uvTangent = Metallic.ScenePath::safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
+            uvBitangent = Metallic.ScenePath::safeNormalize(cross(hit.normal, uvTangent), float3(0.0, 1.0, 0.0));
+        } else {
+            float invDet = 1.0 / det;
+            uvTangent = (e0 * dv.y - e1 * du.y) * invDet;
+            uvBitangent = (e1 * du.x - e0 * dv.x) * invDet;
+        }
+        float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
+        tangent = Metallic.ScenePath::safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), Metallic.ScenePath::safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
+        if (!hasAuthoredTangent) {
+            tangentSign = dot(cross(hit.normal, tangent), uvBitangent) < 0.0 ? -1.0 : 1.0;
+        }
     }
     hit.tangent = float4(tangent, tangentSign * push.bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * tangentSign * push.bitangentFlip;
@@ -291,14 +305,26 @@ Ray cameraRayFromPixel(CameraRayBasis basis, float2 pixel)
 
 void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis basis)
 {
-    push = withTextureFeedbackSampling(push, pixel);
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
     float2 rayPixel = samplePixel + float2(push.jitterOffsetX, push.jitterOffsetY);
     Ray ray = cameraRayFromPixel(basis, rayPixel);
-    uint seed = hash(pixel.x + pixel.y * push.width);
     HitInfo hit;
     float3 radiance;
+#if MATERIAL_CLASS == 0
+    bool hasSurface = ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u ||
+        push.debugView != kOpenPBRDebugViewFinal) && reconstructVisibilitySurface(pixel, ray, push, hit);
+    if ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u) {
+        float deviceDepth = gVisibilityDepth.Load(int3(pixel, 0));
+        // Upscaler guides retain the standard-depth contract.
+        gUpscalerDepth[pixel] = 1.0 - deviceDepth;
+        gUpscalerMotion[pixel] = hasSurface ? motionVectorToPrevious(hit.position, samplePixel, push)
+            : skyMotionVectorToPrevious(ray.direction, samplePixel, push);
+    }
+    radiance = (push.debugView != kOpenPBRDebugViewFinal && !hasSurface)
+        ? float3(0.0)
+        : environmentRadiance(ray.direction, push, true, ray.origin);
+#else
     bool hasSurface = reconstructVisibilitySurface(pixel, ray, push, hit);
     if ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u) {
         float deviceDepth = gVisibilityDepth.Load(int3(pixel, 0));
@@ -307,13 +333,14 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
         gUpscalerMotion[pixel] = hasSurface ? motionVectorToPrevious(hit.position, samplePixel, push)
             : skyMotionVectorToPrevious(ray.direction, samplePixel, push);
     }
-#if MATERIAL_CLASS == 0
-    radiance = environmentRadiance(ray.direction, push, true, ray.origin);
-#else
     if (!hasSurface) {
-        radiance = environmentRadiance(ray.direction, push, true, ray.origin);
+        radiance = push.debugView != kOpenPBRDebugViewFinal
+            ? float3(0.0)
+            : environmentRadiance(ray.direction, push, true, ray.origin);
     }
     else {
+        push = withTextureFeedbackSampling(push, pixel);
+        uint seed = hash(pixel.x + pixel.y * push.width);
         radiance = shadeVisibilitySurface(ray, hit, rayPixel, push, seed,
 #if METALLIC_DEFERRED_CLASS_SPECIALIZATION
             kDeferredFixedMetalness, kDeferredOpaquePrimary);
@@ -323,7 +350,6 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
 #endif
     }
 #endif
-    if (push.debugView != kOpenPBRDebugViewFinal && !hasSurface) { radiance = float3(0.0); }
     if (resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))[0].control.w != 0u) {
         float encoded = resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset)).Load(int3(pixel, 0));
         radiance = float3(encoded * encoded);
