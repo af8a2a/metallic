@@ -20,7 +20,8 @@ class WorkloadTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name)
+        # Match the resolved ROOT contract when tests replace a tool's repository.
+        self.path = Path(self.temp.name).resolve()
         self.case = w.load(ROOT / "Tools/Perf/WorkloadCase.ZorahWorkControl.json")
         self.case.update(rounds=1, sampleFrames=8, width=64, height=64, renderWidth=64, renderHeight=64)
         self.shader = {"mode": 5, "module": "Features/GPUDriven/GPUDrivenStreamWorkRaster",
@@ -180,6 +181,21 @@ class WorkloadTests(unittest.TestCase):
             texture.unlink()
             with self.assertRaisesRegex(ValueError, 'Missing glTF'):
                 assets.dependencies(graph, scene, stream)
+
+    def test_declared_asset_closure_rejects_repository_escape(self):
+        repository = self.path / 'repository'
+        repository.mkdir()
+        graph, scene, stream = (repository / n for n in ('graph.json', 'scene.gltf', 'stream.bin'))
+        stream.write_bytes(b'stream')
+        outside = self.path / 'outside.bin'
+        outside.write_bytes(b'outside')
+        with patch.object(assets, 'ROOT', repository):
+            for source in ('graph', 'scene', 'stream'):
+                with self.subTest(source=source):
+                    graph.write_text(json.dumps({'asset': 'Asset/../../outside.bin'} if source == 'graph' else {}))
+                    scene.write_text(json.dumps({'buffers': [{'uri': '../outside.bin'}]} if source == 'scene' else {}))
+                    with self.assertRaisesRegex(ValueError, 'Asset closure leaves repository'):
+                        assets.dependencies(graph, scene, outside if source == 'stream' else stream)
 
 
 if __name__ == "__main__":

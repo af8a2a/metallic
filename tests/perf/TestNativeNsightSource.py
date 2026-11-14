@@ -2,7 +2,9 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -37,6 +39,39 @@ class NativeNsightTests(unittest.TestCase):
         self.assertEqual(result["modules"][0]["entry_points"][0]["symbol"],
                          "%streamClusterRasterWorkControlMain")
         self.assertEqual(len([r for r in result["rows"] if r["representation"] == "source"]), 65)
+
+    def test_git_checkout_preserves_real_fixture_bytes(self):
+        fixtures = (FIXTURE, FIXTURE.with_name("NsightSourceSelectedRange.csv"))
+        for autocrlf in ("false", "true"):
+            with self.subTest(autocrlf=autocrlf), tempfile.TemporaryDirectory() as directory:
+                repository = Path(directory).resolve() / "repository"
+                repository.mkdir()
+
+                def git(*arguments):
+                    result = subprocess.run([
+                        "git", "-C", str(repository),
+                        "-c", f"core.autocrlf={autocrlf}",
+                        "-c", "core.safecrlf=false",
+                        "-c", f"core.attributesFile={os.devnull}", *arguments,
+                    ], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+                git("init", "--quiet")
+                attributes = ROOT / ".gitattributes"
+                if attributes.is_file():
+                    (repository / ".gitattributes").write_bytes(attributes.read_bytes())
+                for fixture in fixtures:
+                    destination = repository / fixture.relative_to(ROOT)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(fixture.read_bytes())
+                git("add", "--all")
+                checkout = Path(directory).resolve() / "checkout"
+                git("checkout-index", "--all", "--prefix=" + checkout.as_posix() + "/")
+                for fixture in fixtures:
+                    with self.subTest(fixture=fixture.name):
+                        data = (checkout / fixture.relative_to(ROOT)).read_bytes()
+                        provenance = ns.read_json(fixture.with_suffix(".provenance.json"))
+                        self.assertEqual(ns.sha(data), provenance["fixture_sha256"])
 
     def test_mirrors_and_total_samples_not_added_to_il(self):
         result = self.parse()

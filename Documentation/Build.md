@@ -141,18 +141,24 @@ on `windows-2025` for pushes, pull requests and manual dispatch. GitHub requires
 the workflow on the default branch before manual dispatch is available; initial
 feature-branch validation uses its push trigger. It uses Python 3.12 and
 [the lane script](../scripts/RunCPULane.ps1), which discovers the x64 Visual Studio
-environment, logs actual compiler/SDK/tool versions, and runs the
-configure/build/test presets. Unlike the base preset, this hosted variant
+environment and resolves one Python interpreter for package installation and
+CMake. It installs the four directly pinned [CPU Python dependencies](../requirements-cpu.txt)
+as wheels, checks package consistency, logs the resolved package list and actual
+compiler/SDK/tool versions, and runs the configure/build/test presets. The direct
+pins are not a complete transitive or hash lock; Pillow is provided by matplotlib. Unlike the base preset, this hosted variant
 explicitly disables the NVIDIA SDK umbrella, SPIRV-Tools and ISPC. Its build
 parallelism is 2; CMake bootstraps required submodules and the version/hash-pinned
-Slang SDK. It does not require a separately installed Vulkan SDK. Each native
-failure stops the lane with its original code. Logs under `build-ci/ci-logs/`,
-CTest JUnit and available CTest diagnostic logs are uploaded even after failure.
-`MetallicCPUWorkflowTests` checks the authored workflow/script source contracts
-and negative mutations, not arbitrary YAML/PowerShell semantics. It also runs
-before configuration in the workflow. See [execution evidence and remaining
-hosted gates](Issues/CPUWorkflowFollowup-2026-11-14.md); merely adding a workflow
-is not evidence that its SDK-off hosted build passed.
+Slang SDK. It does not require a separately installed Vulkan SDK. A native
+failure stops subsequent lane steps; direct `pwsh -File` preserves its code,
+whereas GitHub's outer `pwsh -Command` wrapper can report 1 instead. Logs under
+`build-ci/ci-logs/`, CTest JUnit and available CTest diagnostic logs are uploaded
+even after failure. `MetallicCPUWorkflowTests` checks the authored workflow/script
+source contracts and negative mutations, not arbitrary YAML/PowerShell semantics.
+It also runs before configuration in the workflow. The [first hosted run and
+bounded repair](Issues/CPUHostedRegression-2026-11-14.md) records a successful
+SDK-off configure/build but **46/61 passing tests**, not hosted acceptance. See
+also the [historical local workflow evidence](Issues/CPUWorkflowFollowup-2026-11-14.md);
+local regression or workflow source presence cannot replace a green hosted run.
 
 This CPU lane does not select every `perf`/shader test or establish GPU, editor,
 Nsight, or non-Windows cache validation. USD tests skip when USD is disabled; a

@@ -54,12 +54,23 @@ $compilerVersion = (Get-Item -LiteralPath $compiler.Source).VersionInfo.ProductV
 ) | Tee-Object -FilePath (Join-Path $logDirectory 'toolchain.log')
 Invoke-LoggedNative -FilePath cmake -Arguments @('--version') -LogName 'cmake-version.log'
 Invoke-LoggedNative -FilePath ninja -Arguments @('--version') -LogName 'ninja-version.log'
-Invoke-LoggedNative -FilePath python -Arguments @('--version') -LogName 'python-version.log'
+# Resolve once after importing VS: pip and CMake/CTest must use this same interpreter.
+$pythonExecutable = (Get-Command python -ErrorAction Stop).Source
+Invoke-LoggedNative -FilePath $pythonExecutable -Arguments @(
+    '-c', 'import sys; print(sys.executable); print(sys.version); sys.exit(0 if sys.version_info[:2] == (3, 12) else "CPU lane requires Python 3.12")'
+) -LogName 'python-version.log'
+Invoke-LoggedNative -FilePath $pythonExecutable -Arguments @('-m', 'pip', '--version') -LogName 'pip-version.log'
+Invoke-LoggedNative -FilePath $pythonExecutable -Arguments @(
+    '-m', 'pip', 'install', '--only-binary=:all:', '-r', 'requirements-cpu.txt'
+) -LogName 'python-install.log'
+Invoke-LoggedNative -FilePath $pythonExecutable -Arguments @('-m', 'pip', 'check') -LogName 'python-check.log'
+Invoke-LoggedNative -FilePath $pythonExecutable -Arguments @('-m', 'pip', 'list', '--format=freeze') -LogName 'python-packages.log'
 
 # The existing bootstrap fetches required submodules and hash-pinned Slang/GDeflate/zstd.
 # No Vulkan SDK, optional NVIDIA SDK, ISPC, or SPIRV-Tools installation is requested.
 Invoke-LoggedNative -FilePath cmake -Arguments @(
     '--preset', 'metallic-ci',
+    "-DPython3_EXECUTABLE=$pythonExecutable",
     '-DMETALLIC_ENABLE_NVIDIA_SDKS=OFF',
     '-DMETALLIC_ENABLE_SPIRV_TOOLS=OFF',
     '-DMETALLIC_ENABLE_ISPC=OFF'

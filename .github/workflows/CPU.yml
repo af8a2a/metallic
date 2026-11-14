@@ -24,7 +24,7 @@ jobs:
       - name: Check workflow source contract (not a YAML parser)
         shell: pwsh
         run: python -B tests/perf/TestCPUWorkflow.py
-      - name: Configure, build and test CPU preset
+      - name: Install CPU Python dependencies, configure, build and test CPU preset
         shell: pwsh
         run: ./scripts/RunCPULane.ps1
       - name: Preserve CPU diagnostics even after failure

@@ -19,6 +19,7 @@ def code_only(source: str) -> str:
 
 
 def check(root: Path) -> list[str]:
+    root = root.resolve()
     paths = sorted({path.resolve() for folder in (root / 'Shaders', root / 'tests')
                     for path in folder.rglob('*.slang')})
     errors: list[str] = []
@@ -83,7 +84,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
-    errors = check(args.root.resolve())
+    errors = check(args.root)
     for error in errors:
         print(error, file=sys.stderr)
     return 1 if errors else 0

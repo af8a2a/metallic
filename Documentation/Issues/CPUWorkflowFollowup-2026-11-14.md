@@ -119,11 +119,15 @@ Independent final review approved this seven-file source slice and the new local
 results; this is not hosted/whole-issue approval. All 24 local documentation
 links/ranges and staged diff checks passed.
 
-The initial workflow must be pushed before its hosted push run can exist. Until
-an actual run is linked, Windows 2025 compiler/STL compatibility, first Slang
-bootstrap, the SDK-off six-target build, full hosted tests and uploaded archives
-remain **unverified**. A local SDK-enabled run cannot substitute for those gates.
-Outer CTest JUnit jobs and inner native skips must be counted separately.
+The initial candidate was subsequently pushed as `026b2a782` and its
+[first hosted run](https://github.com/af8a2a/metallic/actions/runs/43554479526)
+**failed: 46 PASS / 15 FAIL out of 61 outer jobs**. Actual Windows 2025
+configuration, hash-verified first Slang installation, the SDK-off six-target
+build and diagnostic upload succeeded; the complete hosted lane did not pass.
+The local results above remain a historical pre-hosted snapshot, not hosted
+acceptance. See the [observed failures and bounded repair](CPUHostedRegression-2026-11-14.md)
+for downloaded artifact/JUnit findings and the subsequent regression boundaries.
+Outer CTest JUnit jobs and inner native skips must still be counted separately.
 
 This slice does not establish GPU performance/correctness, editor validation,
 non-Windows persistent-cache semantics or actual Nsight integration-on capture,

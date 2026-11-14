@@ -1,0 +1,3 @@
+# Preserve the exact exported bytes covered by native Nsight fixture provenance.
+/tests/perf/fixtures/NsightSourceReal.csv -text
+/tests/perf/fixtures/NsightSourceSelectedRange.csv -text
