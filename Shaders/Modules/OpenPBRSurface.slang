@@ -31,6 +31,7 @@ using Metallic.SceneSurface;
 
 
 
+[ForceInline]
 public float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
 #if SHARC_UPDATE
@@ -42,6 +43,7 @@ public float4 sampleOpenPBRLut2D(int lutId, float2 uv)
     return sampleOpenPBRTexture2D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uv);
 }
 
+[ForceInline]
 public float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
 #if SHARC_UPDATE

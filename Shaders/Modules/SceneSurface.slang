@@ -114,62 +114,76 @@ public RWTexture2D<float4> sceneHistoryPrevious()
 #endif
 
 #if SHARC_UPDATE
+[ForceInline]
 public Texture2D<float4> sceneMaterialTexture(uint index)
 {
     return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getSceneResourceParameterField<BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)));
 }
+[ForceInline]
 public SamplerState sceneMaterialSampler()
 {
     return resolveUniform(getSceneResourceParameters().materialSampler);
 }
+[ForceInline]
 public StructuredBuffer<TextureSamplingMetadata> sceneTextureSamplingMetadata()
 {
     return resolveBuffer<StructuredBuffer<TextureSamplingMetadata>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureSamplingMetadataOffset));
 }
+[ForceInline]
 public ByteAddressBuffer sceneMaterialValues()
 {
     return resolveUniform(getSceneResourceParameters().materialValues);
 }
+[ForceInline]
 public Texture2D<float4> sceneEnvironmentMap()
 {
     return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset));
 }
+[ForceInline]
 public Texture2D<float> sceneEnvironmentImportancePdf()
 {
     return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
 }
 #else
+[ForceInline]
 public Texture2D<float4> sceneMaterialTexture(uint index)
 {
     return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getSceneResourceParameterField<BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)));
 }
+[ForceInline]
 public SamplerState sceneMaterialSampler()
 {
     return resolveUniform(getSceneResourceParameterField<SamplerHandle>(kSceneMaterialSamplerOffset));
 }
+[ForceInline]
 public StructuredBuffer<TextureSamplingMetadata> sceneTextureSamplingMetadata()
 {
     return resolveBuffer<StructuredBuffer<TextureSamplingMetadata>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureSamplingMetadataOffset));
 }
+[ForceInline]
 public ByteAddressBuffer sceneMaterialValues()
 {
     return resolveUniform(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMaterialValuesOffset));
 }
+[ForceInline]
 public Texture2D<float4> sceneEnvironmentMap()
 {
     return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset));
 }
+[ForceInline]
 public Texture2D<float> sceneEnvironmentImportancePdf()
 {
     return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
 }
 #endif
 
+[ForceInline]
 public RWStructuredBuffer<uint> sceneTextureDemandMip()
 {
     return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureDemandMipOffset));
 }
 
+[ForceInline]
 public RWStructuredBuffer<uint> sceneTextureDemandHits()
 {
     return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureDemandHitsOffset));

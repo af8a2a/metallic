@@ -20,6 +20,7 @@ public T getResourceParameters<T>()
 // Load only the requested field/view, while retaining the full packet validity
 // contract of getResourceParameters. Read just the resource span from the root;
 // constants are not needed here. Offsets are bytes in the scalar wire layout.
+[ForceInline]
 public TField getResourceParameterField<TPacket, TField>(uint byteOffset)
 {
     TField zero = {};
@@ -37,17 +38,20 @@ public TField getResourceParameterField<TPacket, TField>(uint byteOffset)
 
 // Buffer data layout is selected at the use site, while identity stays a 32-bit
 // engine handle. No logical slot lookup or descriptor representation escapes Core.
+[ForceInline]
 public T resolveBuffer<T : IOpaqueDescriptor>(ResourceHandle<ByteAddressBuffer> handle)
 {
     return resolveUniform(ResourceHandle<T>(handle.index));
 }
 
+[ForceInline]
 public RaytracingAccelerationStructure resolveAccelerationStructure(uint64_t address)
 {
     return resolveDescriptor(DescriptorHandle<RaytracingAccelerationStructure>(
         uint2(uint(address), uint(address >> 32))));
 }
 
+[ForceInline]
 public RWBufferSpan<T> typedBufferSpan<T>(BufferSpan<uint> words)
 {
     uint stride = sizeof(T) / 4u;

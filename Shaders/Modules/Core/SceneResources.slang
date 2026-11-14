@@ -30,6 +30,7 @@ public SceneResourceParameters getSceneResourceParameters()
 }
 
 // Keep field legality independent of the host's complete-packet guarantee.
+[ForceInline]
 public TField getSceneResourceParameterField<TField>(uint byteOffset)
 {
 #if METALLIC_TRUSTED_SCENE_RESOURCE_BYTES
