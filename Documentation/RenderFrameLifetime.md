@@ -153,8 +153,36 @@ aggregate completion. This allows CPU recording overlap and independent queues
 within a frame while preserving shared render targets and history across frames.
 It does not yet overlap GPU work between frames that use these shared resources.
 `historyResources`, when supplied, is advanced using the graph's frame index.
-GPU timing collection for self-submission remains unavailable; existing external
-command-buffer timestamp collection is unchanged.
+
+### GPU timing and completion
+
+Self-submission collects native GPU timings for passes and instrumented sections
+on Graphics, Compute and Copy, using a separate timestamp query pool per queue.
+`resolveGpuTimings()` fills `gpuMilliseconds` and `gpuTimingAvailable` only after
+the execution's completion point and the written queries are ready. CPU recording
+times are separate. The graphics frame interval ends at an epilogue that joins
+all graph segments; it is not the sum of per-queue durations or an independently
+calibrated multi-queue timeline. The timing-only graphics prologue does not gate
+otherwise independent compute/copy work.
+
+Collection requires device `timestampQueries`, a graphics timestamp pool and a
+valid `RenderFrameContext` completion. Each timed queue also needs nonzero
+`timestampValidBits` and a successfully created pool. If all three timing slots
+are pending or still in flight, that execution has no GPU sample; missing timings
+are unavailable, not measured zero. Exhausting a queue's interval budget or the
+bounded section capacity sets `profilingOverflow`; it does not fail rendering.
+Raw external `execute(CommandBuffer&)` recordings without a valid frame completion
+retain CPU scopes but do not collect GPU timestamps. A frame-tracked external
+command buffer can use completion-backed collection.
+
+Native timings and Tracy publication have different coverage. Tracy publishes
+only when the frame timer and **every node timer** belong to graphics; a
+compute/copy node timer suppresses the whole execution's Tracy GPU frame even
+when native timings are available. Nested section timers are not part of that
+publication predicate and are not exported as Tracy GPU zones. See
+[Tracy GPU profiling](TracyGpuProfiling.md#timing-coverage-and-limitations) and the
+[source implementation](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp#L1764-L1949).
+No new GPU validation is implied by this description.
 
 `lastSubmittedCompletion()` returns the whole graph's completion, including a
 partially submitted batch after failure. `waitCompletions` accepts caller-supplied

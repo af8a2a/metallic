@@ -719,8 +719,9 @@ RHI 测试支持原有便捷参数 `--list`/`--filter`，并会转换到 GoogleT
 ## 15. 当前架构约束
 
 - **后端边界尚未完全闭合**：公共 RHI 有抽象，但编辑器、Scene RTX 和 NVIDIA 集成仍与 Vulkan 耦合。
-- **RenderGraph 的并发调度有限**：已有多队列提交接口，但跨队列资源边尚不支持。
-- **资源生命周期以整次编译为主**：图输出独立分配，尚无 transient aliasing 或通用资源池。
+- **RenderGraph 并发按已声明依赖调度**：self-submission 已将跨队列图资源边转换为 timeline 等待，同队列依赖使用队列顺序与 barrier；只对已审计 Pass 开启 async，opaque/SDK 边界仍保守排序。图资源支持共享 queue family，但没有自动实现私有 exclusive 资源的 ownership transfer。详见[多队列生命周期](RenderFrameLifetime.md#self-submitting-graphs-and-multiple-queues)。
+- **GPU 计时不等于 Tracy 多队列时间轴**：self-submission 已按 Graphics/Compute/Copy 采集 native pass/section 时间，需 timestamp 能力、有效 completion 和可用槽位；`profilingOverflow` 表示有界预算不足。Tracy 仅在 frame timer 与所有 node timer 均为 graphics 时发布整帧，section 不导出为 GPU zone。详见[计时与 completion](RenderFrameLifetime.md#gpu-timing-and-completion)及 [Tracy 限制](TracyGpuProfiling.md#timing-coverage-and-limitations)。
+- **资源生命周期仍受编译和 GPU 使用区间约束**：transient texture / buffer aliasing 已有独立 opt-in，默认均关闭，仅合并符合审计与非重叠 GPU 生命周期条件的资源；导出/持久资源不 alias，debug readback 会固定中间资源生命周期。这不是通用资源池。开关与边界见 [RenderGraphCompileOptions](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.h#L34-L43)。
 - **历史资源显式管理**：跨帧数据不属于普通图边，Pass 必须通过 `HistoryResourceManager` 约定名字和有效性。
 - **Shader Object 是基础设备要求**：运行时和 RHI 测试均启用 `VK_EXT_shader_object`；显式关闭会被拒绝，硬件不支持时返回 `Unsupported`，不降级为关闭该特性的设备。
 - **其他高级功能按能力降级**：Mesh Shader、Ray Query、CLAS/PTLAS、NRD、Streamline 不作为基础设备必有能力。

@@ -86,12 +86,32 @@ CPU `Editor Frame`, `RenderGraph Record`, `Queue Submit`, and wait zones plus ed
 relate command recording/submission to GPU work. GPU durations measure timestamp
 intervals in milliseconds; CPU recording duration is a separate measurement.
 
-`RenderGraph Frame` brackets the pass loop, including resource transitions
-between passes. It does not include editor UI, presentation, or subsystem GPU
-prologue/epilogue work. This first integration covers
-`RenderGraphExecutor::execute(CommandBuffer&)`, used by the editor and preview
-renderer. `execute(RenderGraphSubmitDesc)` and its async compute/copy submissions
-are not yet GPU-profiled; their queue submits still appear on the CPU timeline.
+## Timing coverage and limitations
+
+Native RenderGraph statistics support both self-submission through
+`execute(RenderGraphSubmitDesc)` and frame-tracked external
+`execute(CommandBuffer&)`. Graphics, Compute and Copy have separate query pools;
+completed executions expose frame, node and instrumented-section
+`gpuMilliseconds` / `gpuTimingAvailable`. Raw external recordings without a valid
+`RenderFrameContext` completion keep CPU scopes only. These are implemented
+capabilities, not a claim that every queue/device has been validated.
+
+Tracy publication is narrower than native statistics. The adapter publishes a
+GPU frame only when its frame timer and **all node timers** are graphics timers.
+An execution with a compute/copy node timer therefore has no Tracy GPU frame,
+even if native statistics contain valid GPU milliseconds for those nodes.
+Nested section timers are neither tested by that predicate nor exported as
+Tracy GPU zones; internal async work is not thereby a calibrated multi-queue
+Tracy timeline. Queue submits remain visible as CPU zones.
+
+The frame interval uses graphics timestamps. Self-submission starts it in the
+first graphics segment and ends it in the graphics epilogue after joining graph
+segments, including subsystem prologue/epilogue work when present. The external
+path starts after the subsystem prologue and includes the epilogue. Neither path
+includes editor UI or presentation. Do not add per-queue node durations to infer
+frame duration, critical-path time or a synchronized multi-queue timeline.
+See [completion and timing lifetime](RenderFrameLifetime.md#gpu-timing-and-completion)
+and [the publication predicate](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp#L1828-L1949).
 
 The Vulkan RHI optionally enables `VK_EXT_calibrated_timestamps` and samples the
 device clock with Windows QPC or Linux monotonic raw time. Tracy uses these samples
@@ -100,12 +120,20 @@ the context is labeled `(uncalibrated)`: GPU durations remain valid but the
 placement relative to CPU events is approximate. Calibration errors never prevent
 rendering. The RHI sample also retains the driver's maximum deviation in nanoseconds.
 
-Metallic owns the timestamp query pool and its three reusable slots. There are
-two frame queries and two queries per pass, shared with the editor statistics.
-Both boundaries use bottom-of-pipe timestamps, matching Tracy's Vulkan timing
-convention and keeping serial pass timestamps ordered. Completed submissions are
-resolved later with availability checks, without a profiling wait or queue-idle
-call. If all slots are busy, timing for that execution is skipped.
+Metallic owns three reusable timing slots, with separate query pools per queue
+and slot. The bounded query budget includes two frame queries, two per pass and
+additional space for nested scopes / parallel recordings, shared with native
+statistics. Both interval boundaries use bottom-of-pipe timestamps. Completed
+submissions are resolved later with completion and availability checks, without
+a profiling wait or queue-idle call.
+
+Collection requires device `timestampQueries`, a graphics timestamp pool and a
+valid frame completion; each timed queue also requires nonzero
+`timestampValidBits` and a successfully created pool. If all slots are pending or
+still in flight, that execution is not sampled. Exhausting the interval budget
+or section capacity sets `profilingOverflow`; it does not fail rendering or
+turn an unavailable timing into a measured zero. See
+[query allocation and resolution](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp#L1770-L1949).
 
 Tracy GPU events are published as complete frames in execution order with their
 original CPU recording times and thread IDs. Cancelled/incomplete recordings and
