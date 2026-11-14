@@ -178,8 +178,9 @@ a transfer-only queue is currently Unsupported.
 CPU instance, geometry and page arrays retain at most 4,096 records with explicit
 truncation flags. Task/validation queues hold 256 events per provider; task graph
 events contain up to 64 nodes and 256 edges. Shader/pipeline registries are outside
-v1. GPUScene global tables include instances, geometries, meshlets, meshlet draws
-(`VisibleClusterRecord`) and draw-instance IDs.
+v1. The [published GPUScene global tables](../Source/Runtime/Render/Debug/RenderDebugProviders.cpp#L137-L148)
+are instances, geometries and draw-instance IDs; a registered layout alone does not
+make a global meshlet or meshlet-draw table available for capture.
 
 VisibilityBufferPass and GPUDrivenStreamAssetPass publish AfterTraversal when
 streaming is active, AfterEarlyCull, AfterLateCull, and AfterPass. RTAS-only
@@ -193,20 +194,34 @@ Two existing producer contracts matter when interpreting evidence:
   described as unsupported for capture, rather than decoded as live records.
   Instance counter/list data describes the last instance-cull dispatch at that
   boundary; it is not an aggregate over all dispatches in the pass.
-* Streaming `VisibleClusterRecord` entries are sparse and written during mesh
-  drawing. Capture them at AfterPass. A captured visibility pixel can establish
-  that a particular slot was referenced in this execution. An unreferenced slot
-  remains Unverified, even when its bytes resemble a valid old record.
+* Streaming visible-record storage is sparse and written during drawing. Its
+  [capture binding](../Source/Runtime/Render/Debug/RenderDebugProviders.cpp#L183-L190)
+  uses `CompactStreamVisibleRecord`; capture it at AfterPass and validate referenced
+  slots against captured visibility pixels. Capacity is not a live record count.
+  The [compact schema](../Source/Runtime/Render/Debug/RenderDebugProviders.cpp#L57-L65)
+  exposes `packed`, `clusterIndex`, `groupIndexPlusOne` and `rasterFlags`, not the
+  decoded `VisibleClusterRecord` source/validity relations described below.
 
-Packed decoding preserves Resident / StreamPage, draw bucket and page-table state
-and offset. Resident records link to CPU geometry/instance metadata and captured
-GPU geometry/meshlet ranges. Stream records link to active groups, the active
-header and page table. Missing captures or missing subranges produce
-MissingDependency; indices beyond known capacity produce OutOfRange. Active-group
-and visible-instance links explicitly distinguish Live from OutsideLiveRange when
-their headers/counters are captured. An unmapped active group's GPUScene instance
-sentinel is reported as Unmapped. CPU residency and GPU page-table stages are
-reported independently and are not automatically treated as contradictory.
+For the decoded 16-byte `VisibleClusterRecord` layout, packed decoding preserves
+draw bucket, and the [producer contract](../Source/Runtime/Render/GPUDrivenRaster.h#L93-L126)
+supports only `VisibleClusterSource::StreamPage = 1`. The
+[decoder](../Source/Runtime/Debug/DebugAnalysis.cpp#L138-L162) labels source 1 as
+StreamPage and all other values, including retired source 0, as Unknown. A source
+label does not establish `recordValidity` (ReferencedByCapturedPixel or Unverified).
+Legacy geometry/meshlet links may still be exposed for raw source-0 storage; they
+do not restore a supported Resident producer or prove that a captured visibility
+pixel referenced that slot. These decoded-layout relations are not automatically
+created for a `CompactStreamVisibleRecord` capture.
+
+Decoded StreamPage records link to CPU instance metadata, active groups, the active
+header and page table. Page-table packed decoding preserves state and offset;
+its Resident residency state is distinct from the retired visible-record source.
+Missing captures or missing subranges produce MissingDependency; indices beyond known
+capacity produce OutOfRange. Active-group and visible-instance
+links explicitly distinguish Live from OutsideLiveRange when their headers/counters
+are captured. An unmapped active group's GPUScene instance sentinel is reported as
+Unmapped. CPU residency and GPU page-table stages are reported independently and
+are not automatically treated as contradictory.
 
 ## Consistency, lifetime, and limits
 
@@ -322,7 +337,7 @@ checkpoint calls skip all debug work.
 ```powershell
 ctest --test-dir build -C Debug -L debug --output-on-failure
 .\build\tests\MetallicRHITests.exe --gtest_filter='*DebugControl*:*frame_*:*gpu_scene_*:*render_graph_multi_queue_submit*'
-.\build\tests\MetallicRHITests.exe --filter render_graph_gpu_driven_mixed_producer_render
+.\build\tests\MetallicRHITests.exe --filter render_graph_gpu_driven_composed_stream_render
 pwsh -File tests\debug\DebugControlE2E.ps1 -EnginePid 1234 -CaptureDirectory .tmp\new-e2e-evidence
 ```
 
@@ -338,9 +353,17 @@ ROI coverage, resize/reload invalidation, abandoned recording, and submitted
 prefix survival. Device-loss handling follows completion errors but is not
 hardware fault-injected by these tests.
 
-The mixed-producer raster regression also captures all four Preview checkpoints,
-checks Resident typed decoding and the stream visibility-record base, and retains
-its existing image checks for both resident and streamed geometry.
+The [composed-stream raster regression](../tests/rhi/RenderGraphTests.cpp#L8849-L8858)
+captures AfterTraversal, AfterEarlyCull, AfterLateCull and AfterPass on GPUDriven.
+Its [checkpoint assertions](../tests/rhi/RenderGraphTests.cpp#L9044-L9105) require one
+execution across the four jobs and compare the minimum returned by the active-header
+min/max GPU probe with captured `activeGroupCount`. Its [image assertions](../tests/rhi/RenderGraphTests.cpp#L9384-L9444)
+check shared color/depth/visibility and two composed stream instances via active-group
+instance IDs, not a Resident/StreamPage producer pair. These are the test's source
+assertions, not a claim that a GPU run passed in the current environment.
+The [CPU DebugCapture fixture](../tests/debug/DebugCoreTests.cpp#L184-L195) separately
+locks Unknown + Unverified for source 0 and Unverified for an unreferenced StreamPage
+record; it does not establish GPU image correctness.
 
 Follow-up phases remain: pre-recorded submission stepping, restricted IR-to-Slang
 GPU evaluation and revision-checked runtime setting transactions. There is no
