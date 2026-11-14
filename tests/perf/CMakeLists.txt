@@ -50,7 +50,7 @@ if(Python3_Interpreter_FOUND)
     if(TARGET MetallicShaderPipelineBench)
         add_test(NAME MetallicShaderPipelineBenchTests
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestShaderPipelineBench.py"
-                --executable "$<TARGET_FILE:MetallicShaderPipelineBench>")
+                --executable "$<TARGET_FILE:MetallicShaderPipelineBench>" -v)
         set_tests_properties(MetallicShaderPipelineBenchTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 180)
     endif()
     add_test(NAME MetallicPathTraceQueryEvidenceTests
