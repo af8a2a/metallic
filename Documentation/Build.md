@@ -130,16 +130,35 @@ The source-only `MetallicShaderModuleOwnershipAudit` runs
 [the Slang ownership checker](../Tools/CheckShaderModules.py) without a GPU or
 Slang compiler; its fixture regression `MetallicShaderModuleOwnershipTests` is
 also selected through `tools`. Their existing `shader;architecture` labels are
-retained. `MetallicCIPresetTests` requires both jobs and the compile-only benchmark
-to remain registered and selected, and checks the preset policy and selected
-executable references in the configured CTest command model (direct commands,
-CMake `-D...EXECUTABLE` arguments and Python `--executable` arguments).
+retained. `MetallicCIPresetTests` requires both jobs, the compile-only benchmark
+and `MetallicCPUWorkflowTests` to remain registered and selected, and checks the
+preset policy and selected executable references in the configured CTest command
+model (direct commands, CMake `-D...EXECUTABLE` arguments and Python `--executable`
+arguments).
 
-This is a local preset, not a deployed CI workflow. It does not select every
-`perf`/shader test or establish GPU, editor, Nsight, or non-Windows cache
-validation. USD tests skip when USD is disabled; a separate test checks the
-disabled importer. Keep skipped and failed cases separate from passes; see the
-[required-run and skip-baseline policies](RhiTestbench.md#普通-rhi--编辑器-required-run).
+The [Windows CPU workflow](../.github/workflows/CPU.yml) defines a hosted candidate
+on `windows-2025` for pushes, pull requests and manual dispatch. GitHub requires
+the workflow on the default branch before manual dispatch is available; initial
+feature-branch validation uses its push trigger. It uses Python 3.12 and
+[the lane script](../scripts/RunCPULane.ps1), which discovers the x64 Visual Studio
+environment, logs actual compiler/SDK/tool versions, and runs the
+configure/build/test presets. Unlike the base preset, this hosted variant
+explicitly disables the NVIDIA SDK umbrella, SPIRV-Tools and ISPC. Its build
+parallelism is 2; CMake bootstraps required submodules and the version/hash-pinned
+Slang SDK. It does not require a separately installed Vulkan SDK. Each native
+failure stops the lane with its original code. Logs under `build-ci/ci-logs/`,
+CTest JUnit and available CTest diagnostic logs are uploaded even after failure.
+`MetallicCPUWorkflowTests` checks the authored workflow/script source contracts
+and negative mutations, not arbitrary YAML/PowerShell semantics. It also runs
+before configuration in the workflow. See [execution evidence and remaining
+hosted gates](Issues/CPUWorkflowFollowup-2026-11-14.md); merely adding a workflow
+is not evidence that its SDK-off hosted build passed.
+
+This CPU lane does not select every `perf`/shader test or establish GPU, editor,
+Nsight, or non-Windows cache validation. USD tests skip when USD is disabled; a
+separate test checks the disabled importer. Keep skipped and failed cases separate
+from passes; CTest JUnit counts outer jobs and does not erase inner native skips.
+See the [required-run and skip-baseline policies](RhiTestbench.md#普通-rhi--编辑器-required-run).
 Closing optional integrations changes which render passes can run. Use the full
 profile when working on those integrations.
 

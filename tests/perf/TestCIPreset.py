@@ -13,7 +13,7 @@ REQUIRED_LABELS = ("scene", "task", "debug", "build", "tools", "skip-policy")
 REQUIRED_TARGETS = ("MetallicSceneTests", "MetallicTaskTests", "MetallicDebugTests",
                     "MetallicCtl", "MetallicRHITests", "MetallicShaderPipelineBench")
 REQUIRED_CHECKS = ("MetallicShaderModuleOwnershipAudit", "MetallicShaderModuleOwnershipTests",
-                   "MetallicShaderPipelineBenchTests")
+                   "MetallicShaderPipelineBenchTests", "MetallicCPUWorkflowTests")
 BUILD_DIR = None
 
 

@@ -852,6 +852,9 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestCIPreset.py"
             --build-dir "${CMAKE_BINARY_DIR}")
     set_tests_properties(MetallicCIPresetTests PROPERTIES LABELS "build;tools;cpu" TIMEOUT 30)
+    add_test(NAME MetallicCPUWorkflowTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestCPUWorkflow.py")
+    set_tests_properties(MetallicCPUWorkflowTests PROPERTIES LABELS "build;tools;cpu" TIMEOUT 30)
     add_test(NAME MetallicRequiredTestLaneTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestRunRequiredTests.py")
     set_tests_properties(MetallicRequiredTestLaneTests PROPERTIES LABELS "tools;cpu;skip-policy" TIMEOUT 60)
