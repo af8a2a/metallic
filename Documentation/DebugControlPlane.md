@@ -89,7 +89,20 @@ different observation and must not complete a missing dependency in old evidence
 `inspect texture ID --roi X,Y,W,H` / `--pixel X,Y` are capture conveniences.
 Add `--wait --stats` to obtain CPU range statistics. Without an explicit range,
 one element or the pixel at (0, 0) is captured. Statistics report this scope; they
-do not silently expand a pixel query into a full-image scan.
+do not silently expand a pixel query into a full-image scan. CLI coordinates use
+unsigned decimal uint32 components: exactly two for `--pixel`, four for `--roi`,
+separated by commas or whitespace. Negative/signed values, overflow, missing or
+extra components, and numeric suffixes return `InvalidArgument`; `--json` emits
+the existing structured error with exit code 1. Pixel width/height remain 1×1.
+Resource extents and non-empty capture ranges are still checked by the capture
+provider, not inferred by the CLI parser.
+
+CPU-only CLI argument regression (build both selected executables first):
+
+```powershell
+cmake --build build --target MetallicCtl MetallicDebugTests
+ctest --test-dir build -R '^Metallic(CtlArguments|Debug)Tests$' --output-on-failure
+```
 
 ### Comparing checkpoints in one execution
 

@@ -316,6 +316,10 @@ if(WIN32)
 endif()
 add_test(NAME MetallicDebugTests COMMAND MetallicDebugTests --gtest_color=no)
 set_tests_properties(MetallicDebugTests PROPERTIES LABELS "debug")
+add_test(NAME MetallicCtlArgumentsTests COMMAND ${CMAKE_COMMAND}
+    "-DMETALLIC_CTL_EXECUTABLE=$<TARGET_FILE:MetallicCtl>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MetallicCtlArgumentsTests.cmake")
+set_tests_properties(MetallicCtlArgumentsTests PROPERTIES LABELS "debug;tools" TIMEOUT 60)
 
 add_executable(MetallicTaskTests
     task/TaskGraphTests.cpp
