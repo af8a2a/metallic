@@ -58,11 +58,12 @@
     },
     {
       "name": "metallic-ci",
-      "displayName": "Scene/task/debug tests without optional SDKs",
+      "displayName": "Scene/task/debug and CPU tooling tests without optional SDKs",
       "inherits": "metallic-dev",
       "binaryDir": "${sourceDir}/build-ci",
       "cacheVariables": {
         "METALLIC_BUILD_TESTS": true,
+        "METALLIC_REQUIRE_PYTHON_TESTS": true,
         "METALLIC_ENABLE_STREAMLINE": false
       }
     },
@@ -83,6 +84,6 @@
     { "name": "metallic-deps-debug", "configurePreset": "metallic-deps-debug", "jobs": 0, "targets": ["MetallicDependencies"] }
   ],
   "testPresets": [
-    { "name": "metallic-ci", "configurePreset": "metallic-ci", "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^(scene|task|debug|build)$" } } }
+    { "name": "metallic-ci", "configurePreset": "metallic-ci", "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^(scene|task|debug|build|skip-policy)$" } } }
   ]
 }

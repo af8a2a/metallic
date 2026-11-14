@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "c911c6d57",
+  "profiles": {
+    "minizorah-opt-in-disabled": {
+      "description": "Limited source-backed opt-in-disabled profile, not GPU observed. Only these two MiniZorah opt-in gates are covered; this is not a complete device, capability, or GPU skip baseline. Select only when METALLIC_TEST_MINIZORAH is unset or not 1. Known skips remain skipped and do not establish runtime acceptance.",
+      "skips": [
+        {
+          "suite": "RHIRendering",
+          "name": "minizorah_typed_final_blit_frames",
+          "reason": "Set METALLIC_TEST_MINIZORAH=1",
+          "category": "opt-in",
+          "requires": "METALLIC_TEST_MINIZORAH=1 and the local GPU-ready MiniZorah cache to exercise the scene",
+          "source": "source-backed, not GPU observed: tests/rhi/FinalBlitTests.cpp MiniZorahFinalBlitTest::run; tests/rhi/main.cpp suiteNameFor and RHIGTestAdapter map Rendering to RHIRendering and forward the exact skip reason"
+        },
+        {
+          "suite": "RHIValidation",
+          "name": "minizorah_quality_audit",
+          "reason": "Opt in with METALLIC_TEST_MINIZORAH=1",
+          "category": "opt-in",
+          "requires": "METALLIC_TEST_MINIZORAH=1 and the local GPU-ready MiniZorah cache to exercise the quality audit",
+          "source": "source-backed, not GPU observed: tests/rhi/MiniZorahQualityTests.cpp MiniZorahQualityAuditTest::run; tests/rhi/main.cpp suiteNameFor and RHIGTestAdapter map Validation to RHIValidation and forward the exact skip reason"
+        }
+      ]
+    }
+  }
+}

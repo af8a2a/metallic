@@ -505,19 +505,27 @@ Streamline/DLSS-SR/DLSS-RR 和 Aftermath 的实际启用状态通过
 `MetallicVulkanDeviceFeaturesTests` 覆盖缺失扩展/探测位/依赖、软回退、共享链、ray-query 的 CLAS 硬要求和能力发布，
 无需创建 Vulkan 设备；实际设备能力仍由 RHI/GPU 回归验证。
 
-2026-10-03 协商重构验证：CPU 测试 12/12；与重构前实现比较 10,000 组确定性模拟输入，
-选择、评分、匹配、扩展集合、pNext 节点和所有启用位一致。mapped/native 各 90 项 RHI 回归中
-87 通过、3 跳过，无 VUID；两项 OMM GPU 路径因当前配置不可用而跳过（回退通过），另一个为
-MiniZorah 大场景显式 opt-in。NRD 双模式各 11/11，editor smoke 均完成呈现。
-这些检查不替代完整场景视觉/时序验证，也未验证关闭构建的 Streamline SDK 运行路径。
-本轮日志和 XML 位于 `.cache/device-features-*`。
+2026-10-03 两轮历史验证按结果分列如下。每行是当时独立的测试集合，mapped/native
+分别计数；不同集合不累加为覆盖率。`未单列` 表示旧记录没有该分类的独立证据，不补写为零。
 
-2026-10-03 后端配置拆分验证：现有 MSVC Release/NRD 配置下，renderer、RHI/NRD 测试、
-ShaderPrintf 工具和单元测试均构建成功；只添加 `Source` include 路径即可独立编译
-公共 RHI 与扩展配置头。mapped/native 各 75 项 RHI 回归中 71 通过、4 跳过；
-跳过项为未启用的 DLSS 运行路径及 MiniZorah 大场景。框架自测 10/10，
-ShaderPrintf 单元测试 6/6，NRD 双模式各 11/11。两次 editor smoke 均完成呈现，
-各 210 个 warmup 请求全部命中缓存，无失败或 VUID。
+| 历史轮次 / 集合 | passed | skipped | failed | skip 原因 / 证据边界 |
+| --- | ---: | ---: | ---: | --- |
+| 协商重构 CPU | 12 | 未单列 | 未单列 | 另比较 10,000 组确定性模拟输入 |
+| 协商重构 RHI，mapped/native 各自 | 87 | 3 | 0 | 两项 OMM GPU 路径配置不可用；MiniZorah 显式 opt-in；无 VUID |
+| 协商重构 NRD，双模式各自 | 11 | 未单列 | 未单列 | 旧记录为 11/11，不推断未记录分类 |
+| 后端配置拆分 RHI，mapped/native 各自 | 71 | 4 | 0 | 未启用的 DLSS 运行路径及 MiniZorah 大场景 |
+| 后端配置拆分框架自测 | 10 | 未单列 | 未单列 | 旧记录为 10/10 |
+| 后端配置拆分 ShaderPrintf 单测 | 6 | 未单列 | 未单列 | 旧记录为 6/6，不等于 GPU 探针 |
+| 后端配置拆分 NRD，双模式各自 | 11 | 未单列 | 未单列 | 旧记录为 11/11 |
+
+协商重构的选择、评分、匹配、扩展集合、pNext 节点和所有启用位与重构前一致；editor
+smoke 均完成呈现。原记录的日志/XML 路径为 `.cache/device-features-*`，不是本轮新验收。
+OMM 历史 skip 不等于当前仍存在该路径，也不能直接作为当前设备基线。
+
+后端配置拆分时，MSVC Release/NRD 下 renderer、RHI/NRD、ShaderPrintf 工具和单元测试
+构建成功；只添加 `Source` include 路径即可独立编译公共 RHI 与扩展配置头。两次 editor
+smoke 均完成呈现，各 210 个 warmup 请求全部命中缓存，无失败或 VUID。两轮检查均不
+替代完整场景视觉/时序验证，也未验证关闭构建的 Streamline SDK 运行路径。
 
 ShaderPrintf GPU 探针确认扩展配置成功、messenger 已连接、GPU 完成、echo 和读回匹配；
 它的整体状态仍为 `incomplete`，因为本机 loader 报告失效的 EOS overlay JSON 和
@@ -698,6 +706,15 @@ ctest --test-dir build -C Debug -L rhi --output-on-failure
 ```
 
 RHI 测试支持原有便捷参数 `--list`/`--filter`，并会转换到 GoogleTest 的 `--gtest_list_tests`/`--gtest_filter`。依赖设备扩展的测试在能力缺失时以 GoogleTest skip 处理；生成图像写入测试输出目录，不应提交到源码树。
+
+新验证记录必须分别列出 `passed / skipped / failed`，并注明选择范围、配置、skip 原因及
+未验证路径。CTest 外层作业与 GoogleTest 内层用例不可相加；exit 0 不代表内部零 skip。
+普通 RHI/编辑器的 required-run、精确 skip 基线比较与 CI 边界见
+[RHI 测试说明](RhiTestbench.md#普通-rhi--编辑器-required-run)。2026-11-14 的策略 CPU 回归
+为 summary 36 passed、required-run 13 passed、final-blit 静态清单 18 passed，三组均为
+0 skipped / 0 failed；注册 CTest 为 3 passed / 0 skipped / 0 failed，粒度不同不累加。
+这些结果不代表 GPU 能力路径或 final-blit C++ runtime 已通过；详见
+[#62 后续验收记录](Issues/SkipPolicyFollowup-2026-11-14.md)。
 
 ## 15. 当前架构约束
 
