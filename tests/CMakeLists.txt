@@ -733,6 +733,10 @@ set_tests_properties(MetallicRHITests PROPERTIES
     LABELS "rhi"
     SKIP_RETURN_CODE 77
 )
+add_test(NAME MetallicRHIFilterSelectionTests COMMAND ${CMAKE_COMMAND}
+    "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RHIFilterSelectionTests.cmake")
+set_tests_properties(MetallicRHIFilterSelectionTests PROPERTIES LABELS "rhi;tools;cpu" TIMEOUT 180)
 
 add_test(NAME MetallicResourceInspectorSmoke
     COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
