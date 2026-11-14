@@ -1,6 +1,8 @@
 # MiniZorah Profiler 与流送图表
 
-2026-09-13。参考本机 `E:/vk_lod_clusters/src/lodclusters_ui.cpp` 的分层计时表和 Geometry/CLAS 堆叠图，已接入 Metallic 的真实运行时数据。
+本文记录 **2026-09-13 的历史构建与实测**。当时参考本机 `E:/vk_lod_clusters/src/lodclusters_ui.cpp` 的分层计时表和 Geometry/CLAS 堆叠图，接入了 Metallic 的真实运行时数据。下述使用方式、实现描述、测试结果和截图均属于该次记录，不表示当前 HEAD 已复跑这些验证。
+
+现行计时生命周期与 Tracy 覆盖范围分别见 [GPU timing and completion](RenderFrameLifetime.md#gpu-timing-and-completion) 和 [Timing coverage and limitations](TracyGpuProfiling.md#timing-coverage-and-limitations)。
 
 ## 使用
 
@@ -15,13 +17,15 @@
 
 ## 计时与数据范围
 
-1. 修复“包含 Compute/Copy pass 就关闭整组计时”的问题，各队列独立查询池。Graphics 前置 reset 与结束 join 包围图执行；软硬并行分支通过各自命令缓冲写时间戳，父级区间跨 join 结束。
-2. 专用 Transfer 队列不能调用 `vkCmdResetQueryPool`，所以所有池在 Graphics 前置提交中 reset，随后通过已有队列依赖再写入；RHI 对时间戳写入的队列族校验保留。依据：[Vulkan reset 规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdResetQueryPool.html)、[timestamp 规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdWriteTimestamp2.html)。
+1. 当时修复了“包含 Compute/Copy pass 就关闭整组计时”的问题，各队列采用独立查询池。当时以 Graphics 前置 reset 与结束 join 包围图执行；软硬并行分支通过各自命令缓冲写时间戳，父级区间跨 join 结束。
+2. 当时为避开专用 Transfer 队列不能调用 `vkCmdResetQueryPool` 的限制，所有池在 Graphics 前置提交中 reset，随后通过已有队列依赖再写入；RHI 对时间戳写入的队列族校验保留。依据：[Vulkan reset 规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdResetQueryPool.html)、[timestamp 规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdWriteTimestamp2.html)。
 3. 查询环按真实提交完成状态回收。取消 fork/join 后不再向已结束的 producer 写时间戳；超出动态 scope 预算后标记不可用，后续帧可恢复。读取查询结果不增加 GPU 等待。
 4. GPU 总行是 **RenderGraph GPU envelope**，不含编辑器 ImGui 绘制和呈现。父子及异步阶段存在重叠，不能把所有行相加。CPU Frame 在离屏测试中还包含初次编译和预览等待，不能把截图的 CPU Frame 均值当作编辑器稳态性能。
 5. 流送样本直接取自 residency / CLAS 池的 CPU 计数器，不启用调试观察器、不额外回读 GPU、不扫描全场景页面或空闲块。Geometry 表示页面池已分配字节，含等待上传的分配；不是整张显卡进程显存。
 6. 请求来自最近完成的 GPU 反馈；Completed uploads 是本帧 CPU 已确认完成的页，Upload MiB/frame 是本帧提交上传的字节。Upload pipeline 包含 I/O 阶段，不能与 I/O queued/active 相加。
 7. 本次漫游未触发内存预算淘汰，卸载曲线为真实的 0；没有人为生成峰值。CLAS 启用路径的计数入口已接入，本次 MiniZorah 实测为关闭状态。
+
+**现行实现差异：** 上述 Graphics 前置 reset 是历史方案。当前执行器只在查询槽无待收集结果且其前代 completion 已退休后复用槽位，在 host 侧 reset 各队列查询池，不因此给独立 Compute/Copy 工作增加 Graphics 前置依赖。`pending == false` 或查询结果可用本身都不是允许 reset 的充分条件；即使样本无效，已接受的 GPU 工作仍须完成。参见 [槽位复用与 host reset](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp#L1903-L1929) 及 [Vulkan host reset 调用](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp#L3557-L3566)。这项文档纠正不构成新的 GPU 验证。
 
 ## 实测
 
