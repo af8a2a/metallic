@@ -107,7 +107,8 @@ cmake --build --preset metallic-dev
 This builds the editor with glTF, Streamline DLSS when the SDK is available, and
 the bundled SHaRC radiance cache. OpenUSD/oneTBB, NRD denoising and NTC are disabled; tests are off.
 USD files report an explicit unsupported-build error. The `metallic-ci` profile
-disables Streamline and enables the scene, task and debug tests:
+disables Streamline, requires Python, and selects the `scene`, `task`, `debug`,
+`build`, `tools` and `skip-policy` test labels:
 
 ```powershell
 cmake --preset metallic-ci
@@ -115,7 +116,24 @@ cmake --build --preset metallic-ci
 ctest --preset metallic-ci
 ```
 
-USD tests skip when USD is disabled; a separate test checks the disabled importer.
+CTest does not build test executables. The CI build preset includes
+`MetallicSceneTests`, `MetallicTaskTests`, `MetallicDebugTests`, `MetallicCtl`,
+`MetallicRHITests` and `MetallicShaderPipelineBench` for the selected jobs. The
+RHI executable is needed by the CPU-only filter-selection regression; selecting
+`tools` does not select the ordinary `rhi`, `editor` or `testbench` lanes. The
+mixed CPU/GPU `MetallicGPUPageTests` bundle also carries `scene`, so the test
+preset explicitly excludes it by name; its CPU subtests are not selected here
+either. Run that bundle separately on a suitable GPU. The pipeline benchmark
+regression checks its CLI and compile-only fixtures, not GPU performance; its
+four opt-in GPU cases remain skipped unless explicitly run with `--gpu`.
+`MetallicCIPresetTests` checks the preset policy and the selected executable references in the configured CTest command model (direct commands,
+CMake `-D...EXECUTABLE` arguments and Python `--executable` arguments).
+
+This is a local preset, not a deployed CI workflow. It does not select every
+`perf`/shader test or establish GPU, editor, Nsight, or non-Windows cache
+validation. USD tests skip when USD is disabled; a separate test checks the
+disabled importer. Keep skipped and failed cases separate from passes; see the
+[required-run and skip-baseline policies](RhiTestbench.md#普通-rhi--编辑器-required-run).
 Closing optional integrations changes which render passes can run. Use the full
 profile when working on those integrations.
 
