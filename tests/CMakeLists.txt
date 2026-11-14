@@ -835,6 +835,9 @@ set_tests_properties(MetallicShaderPrintfTests PROPERTIES LABELS "rhi;shader-pri
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicTestResultSummaryTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestSummarizeTestResults.py")
+    set_tests_properties(MetallicTestResultSummaryTests PROPERTIES LABELS "tools;cpu" TIMEOUT 30)
     add_test(NAME MetallicPathTraceSSAEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceSSA.py")
     set_tests_properties(MetallicPathTraceSSAEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
