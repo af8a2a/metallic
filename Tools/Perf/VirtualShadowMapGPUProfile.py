@@ -435,7 +435,7 @@ def summarize_package(source):
                     raise ValueError("Declared GPU build diagnostics are missing frame readback or marked as ordinary timing")
                 if not declared_build and any(row["gpuBuildDiagnosticsAvailable"] for row in build):
                     raise ValueError("Enabled GPU build diagnostics disagree with the disabled declaration")
-            if case.get("gpuWorkDiagnostics", False) and not all(row["gpuWorkAvailable"] for row in work):
+            if case.get("gpuWorkDiagnostics", data.get("gpuWorkDiagnostics", False)) and not all(row["gpuWorkAvailable"] for row in work):
                 raise ValueError("Declared GPU work instrumentation is missing frame readback")
             for raw, row in zip(case["frames"], work):
                 if row["gpuWorkAvailable"]:
