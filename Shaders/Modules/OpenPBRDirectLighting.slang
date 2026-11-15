@@ -58,7 +58,7 @@ public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, Sce
     float level = saturate(roughness) * float(kEnvironmentFilterLayers - 1u);
     uint lo = uint(floor(level)), hi = min(lo + 1u, kEnvironmentFilterLayers - 1u);
     // Retain the original HDRI resolution for mirror reflections.
-    float3 a = lo == 0u ? environmentRadiance(direction, push, false)
+    float3 a = lo == 0u ? environmentIndirectRadiance(direction, push)
         : environmentFilterLayer(gEnvironmentSpecular, local, lo) * push.environmentIntensity;
     float3 b = environmentFilterLayer(gEnvironmentSpecular, local, hi) * push.environmentIntensity;
     return lerp(a, b, frac(level));
@@ -160,9 +160,11 @@ public struct RealtimeSurfaceLights : ISurfaceLightProvider
     }
 };
 
-public float3 shadeSceneDirectSurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, bool sampledEnvironment)
+[ForceInline]
+internal float3 shadeSceneDirectSurfaceRadiance<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, inout HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed, bool sampledEnvironment, out bool applyAerial)
 {
+    applyAerial = true;
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
         propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t), ray.direction, false),
         sceneMaterialInstanceRef(hit.materialIndex));
@@ -172,9 +174,10 @@ public float3 shadeSceneDirectSurface<TProgram : ISceneSurfaceMaterialProgram>(i
     float4 normalSample = program.program.sampledNormal();
     SceneSurfaceSummary summary = program.program.surfaceSummary();
     if (push.debugView != kOpenPBRDebugViewFinal) {
+        applyAerial = false;
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, summary, ray.direction);
     }
-    if (summary.unlit) { return applyPrimaryAerialPerspective(summary.baseColor, hit.position, ray.origin); }
+    if (summary.unlit) { return summary.baseColor; }
     float3 viewDirection = -ray.direction;
     RealtimeSurfaceLights lights;
     lights.push = push;
@@ -196,7 +199,7 @@ public float3 shadeSceneDirectSurface<TProgram : ISceneSurfaceMaterialProgram>(i
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
 #if METALLIC_CUSTOM_MATERIALS
         if (summary.numericalEnvironment) {
-            return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push) * summary.occlusion, hit.position, ray.origin);
+            return radiance + sceneSurfaceEnvironment(prepared, push) * summary.occlusion;
         }
 #endif
         float3 normal = hit.normal;
@@ -229,19 +232,27 @@ public float3 shadeSceneDirectSurface<TProgram : ISceneSurfaceMaterialProgram>(i
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(direction, hit.geometryNormal));
             float3 visibility = openPbrDirectVisibility(origin, direction, max(push.clipOrtho.y, 1.0), push);
             environment += max(scatter.weight, float3(0.0)) *
-                environmentRadiance(direction, push, false) * visibility;
+                environmentIndirectRadiance(direction, push) * visibility;
         }
         radiance += environment * summary.occlusion / float(count);
     } else if (!sampledEnvironment) {
 #if METALLIC_CUSTOM_MATERIALS
-        if (summary.numericalEnvironment) { return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push), hit.position, ray.origin); }
+        if (summary.numericalEnvironment) { return radiance + sceneSurfaceEnvironment(prepared, push); }
 #endif
         float3 normal = dot(hit.normal, viewDirection) >= 0.0 ? hit.normal : -hit.normal;
         radiance += summary.diffuseColor * summary.occlusion *
             environmentDiffuseIrradiance(normal, push) / kPi;
     }
 #endif
-    return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
+    return radiance;
+}
+
+public float3 shadeSceneDirectSurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed, bool sampledEnvironment)
+{
+    bool applyAerial;
+    float3 radiance = shadeSceneDirectSurfaceRadiance(program, ray, hit, samplePixel, push, seed, sampledEnvironment, applyAerial);
+    return applyAerial ? applyPrimaryAerialPerspective(radiance, hit.position, ray.origin) : radiance;
 }
 
 

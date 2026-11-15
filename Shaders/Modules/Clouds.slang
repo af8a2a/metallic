@@ -43,8 +43,17 @@ public float density(GPUAtmosphereParameters p, float3 planetPositionKm)
     // wraps its double-precision displacement by the common 2048 km period.
     float3 position = planetPositionKm - p.cloudAdvection.xyz;
     uint seed = asuint(p.cloudAdvection.w);
-    float shape = 0.65 * noise(position / 8.0, seed) + 0.35 * noise(position / 2.0, seed + 17u);
-    float erosion = noise(position / 0.5, seed + 71u) * 0.12;
+    static const float3 kOctaveScales = float3(0.125, 0.5, 2.0);
+    static const uint3 kOctaveSeeds = uint3(0u, 17u, 71u);
+    float shape = 0.0;
+    float erosion = 0.0;
+    [loop]
+    for (uint octave = 0u; octave < 3u; ++octave) {
+        float n = noise(position * kOctaveScales[octave], seed + kOctaveSeeds[octave]);
+        if (octave == 0u) { shape += 0.65 * n; }
+        else if (octave == 1u) { shape += 0.35 * n; }
+        else { erosion = n * 0.12; }
+    }
     float occupancy = smoothstep(1.0 - p.cloudLayer.z, 1.0 - p.cloudLayer.z + 0.2, shape - erosion);
     float profile = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(0.72, 1.0, h));
     return occupancy * (0.35 + 0.65 * shape) * profile * p.cloudLayer.w;

@@ -44,6 +44,7 @@ public struct PreviewOpenPBRContext : IOpenPBRContext
 {
     public static const bool kEnableSheenAndCoat = false;
     public static const bool kEnableDispersion = false;
+    public static const bool kEnableThinFilm = false;
     static bool enableSheenAndCoat() { return false; }
     static bool enableDispersion() { return false; }
     static bool enableTranslucency() { return true; }

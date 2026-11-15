@@ -516,7 +516,9 @@ public:
                 halfPrecision.rebuildGraph = true;
                 settings.push_back(halfPrecision);
                 settings.push_back(runtimeBoolSetting("debugDisableTransmission", "Disable Transmission", false, true));
-                settings.push_back(runtimeBoolSetting("stochasticTextureFiltering", "Stochastic Texture Filtering", false, true));
+                auto stochasticTextureFiltering = runtimeBoolSetting("stochasticTextureFiltering", "Stochastic Texture Filtering", false, true);
+                stochasticTextureFiltering.rebuildGraph = true;
+                settings.push_back(stochasticTextureFiltering);
                 settings.push_back(runtimeEnumSetting("debugView", "Surface Debug", "final",
                     {{"Final", "final"}, {"Base Color", "baseColor"}, {"Geometry Normal", "geometryNormal"},
                         {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}, {"Material ID", "material"}}));
@@ -679,6 +681,7 @@ public:
             (compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true) ||
                 compiledProgramBinning_ != boolProperty(properties(), "programBinning", true) ||
                 compiledHalfPrecision_ != boolProperty(properties(), "halfPrecision", true) ||
+                compiledStochasticFiltering_ != boolProperty(properties(), "stochasticTextureFiltering", false) ||
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false))) {
             return compile(context, log);
         }
@@ -820,6 +823,7 @@ public:
             "|trustedSceneParameters=" + (trustedSceneParameters ? "1" : "0") +
             "|textureFeedbackWave=" + (textureFeedbackWave ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
+            "|stochasticTextureFiltering=" + (visibilityDeferred_ && boolProperty(properties(), "stochasticTextureFiltering", false) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
@@ -868,6 +872,7 @@ public:
             .globalView = globalView,
             .hasRTXCR = METALLIC_HAS_RTXCR != 0,
             .deferredFloat16 = boolProperty(properties(), "halfPrecision", true),
+            .deferredStochasticFiltering = visibilityDeferred_ && boolProperty(properties(), "stochasticTextureFiltering", false),
             .upscalerGuides = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false),
             .materialInclude = valueSearchPath,
             .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR,
@@ -1319,6 +1324,7 @@ public:
         compiledSimpleBSDF_ = false;
         compiledInvocationReorder_ = false;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
+        compiledStochasticFiltering_ = boolProperty(properties(), "stochasticTextureFiltering", false);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
@@ -3193,6 +3199,7 @@ private:
     bool compiledSimpleBSDF_ = false;
     bool compiledInvocationReorder_ = false;
     bool compiledHalfPrecision_ = true;
+    bool compiledStochasticFiltering_ = false;
     bool compiledExportUpscalerGuides_ = false;
     bool compiledGlobalView_ = false;
     SceneLightResources lights_;

@@ -18,6 +18,11 @@ import RayMaterialExecution;
 import StreamTextureSampling;
 import WorkingColor;
 
+#ifndef METALLIC_DEFERRED_STOCHASTIC_FILTERING
+#define METALLIC_DEFERRED_STOCHASTIC_FILTERING 0
+#endif
+
+#if !METALLIC_REALTIME_DEFERRED || METALLIC_DEFERRED_STOCHASTIC_FILTERING
 #ifndef STF_SHADER_STAGE
 #define STF_SHADER_STAGE 6
 #endif
@@ -31,6 +36,7 @@ import WorkingColor;
 #define STF_ALLOW_WAVE_READ 0
 #endif
 #include "../../External/Rtxtf/STFSamplerState.hlsli"
+#endif
 
 #if METALLIC_CUSTOM_MATERIALS
 __include "MaterialValueDispatch.slang";
@@ -584,25 +590,35 @@ public float3 environmentMapRadiance(float3 direction, ScenePathTracePush push)
     return max(sceneEnvironmentMap().Load(int3(texel, 0)).rgb, float3(0.0, 0.0, 0.0));
 }
 
+public float3 environmentIndirectRadiance(float3 direction, ScenePathTracePush push)
+{
+    if (push.environmentMode == kEnvironmentModeDisabled) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 radiance = push.environmentMode == kEnvironmentModeMap
+        ? environmentMapRadiance(direction, push)
+        : proceduralSkyRadiance(direction, push.environmentRotationRadians);
+    return radiance * max(push.environmentIntensity, 0.0);
+}
+
 public float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss, float3 primaryWorldOrigin)
 {
     if (push.environmentMode == kEnvironmentModeDisabled) {
         return float3(0.0, 0.0, 0.0);
     }
-    if (primaryMiss && push.environmentVisible == 0u) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    // The proposal/capture excludes celestial disks. Only the primary visible
-    // background queries the physical sky with disks, avoiding direct-light MIS duplication.
-    let physicalResources = getSceneEnvironmentResources();
-    if (primaryMiss && physicalEnvironmentEnabled(physicalResources)) {
-        return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin) * max(push.environmentIntensity, 0.0);
+    if (primaryMiss) {
+        if (push.environmentVisible == 0u) {
+            return float3(0.0, 0.0, 0.0);
+        }
+        // The proposal/capture excludes celestial disks. Only the primary visible
+        // background queries the physical sky with disks, avoiding direct-light MIS duplication.
+        let physicalResources = getSceneEnvironmentResources();
+        if (physicalEnvironmentEnabled(physicalResources)) {
+            return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin) * max(push.environmentIntensity, 0.0);
+        }
     }
 
-    float3 radiance = push.environmentMode == kEnvironmentModeMap
-        ? environmentMapRadiance(direction, push)
-        : proceduralSkyRadiance(direction, push.environmentRotationRadians);
-    return radiance * max(push.environmentIntensity, 0.0);
+    return environmentIndirectRadiance(direction, push);
 }
 
 public float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss)
@@ -699,6 +715,7 @@ public RayMaterialWork sceneRayMaterialWork(HitInfo hit, RayCone cone, float3 di
     return work;
 }
 
+#if !METALLIC_REALTIME_DEFERRED || METALLIC_DEFERRED_STOCHASTIC_FILTERING
 // Public API composition for the fixed material STF policy. No vendor changes.
 // Load addressing follows Rtxtf/STFSamplerStateImpl.hlsli:1825-1832;
 // NVIDIA's original 2025 copyright/license notice remains in that pinned owner.
@@ -734,6 +751,7 @@ internal STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout 
     samplerState.SetReseedOnSample(false);
     return samplerState;
 }
+#endif
 
 
 public float materialTextureSamplingFloor(uint textureIndex)
@@ -793,6 +811,12 @@ internal float4 loadResidentMaterialTexture(
 {
     float mipFloor = max(metadata.samplingFloor, 0.0);
 #if METALLIC_REALTIME_DEFERRED
+#if !METALLIC_DEFERRED_STOCHASTIC_FILTERING
+    rand4(seed);
+    return decodeMaterialTextureSample(sampleResidentMaterialTexture(sceneMaterialTexture(textureIndex),
+        sceneMaterialSampler(), transformMaterialUv(textureInfo, uv), mipLevel, mipFloor),
+        textureInfo.transform0.w);
+#else
     if ((push.debugFlags & 256u) == 0u) {
         // Preserve the subsequent lighting/feedback random dimensions when
         // comparing filtering modes; only the texture estimator changes.
@@ -801,13 +825,21 @@ internal float4 loadResidentMaterialTexture(
             sceneMaterialSampler(), transformMaterialUv(textureInfo, uv), mipLevel, mipFloor),
             textureInfo.transform0.w);
     }
-#endif
     STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
     return decodeMaterialTextureSample(loadMaterialSTFTextureFromSamplePosition(samplerState,
         sceneMaterialTexture(textureIndex),
         transformMaterialUv(textureInfo, uv),
         max(mipLevel, mipFloor), metadata.residentWidth, metadata.residentHeight,
         metadata.residentMipCount), textureInfo.transform0.w);
+#endif
+#else
+    STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
+    return decodeMaterialTextureSample(loadMaterialSTFTextureFromSamplePosition(samplerState,
+        sceneMaterialTexture(textureIndex),
+        transformMaterialUv(textureInfo, uv),
+        max(mipLevel, mipFloor), metadata.residentWidth, metadata.residentHeight,
+        metadata.residentMipCount), textureInfo.transform0.w);
+#endif
 }
 
 public float4 loadMaterialTexture(

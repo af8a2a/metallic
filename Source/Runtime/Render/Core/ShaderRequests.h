@@ -87,6 +87,7 @@ struct SceneShaderOptions {
     bool globalView = false;
     bool hasRTXCR = false;
     bool deferredFloat16 = true;
+    bool deferredStochasticFiltering = false;
     bool upscalerGuides = false; // Output policy; Deferred shader identity is shared.
     std::string materialInclude;
     std::string rtxcrInclude;
@@ -311,25 +312,34 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
         }
         // Only the closed builtin shapes are independent of the old precision macro.
         // Arbitrary values/custom sources may reference METALLIC_DEFERRED_FP16.
+        const bool backgroundOnly = program == SceneShaderProgram::DeferredBinned &&
+            std::count_if(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+                return std::string_view(define.name) == "MATERIAL_CLASS";
+            }) == 1 &&
+            std::any_of(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+                return std::string_view(define.name) == "MATERIAL_CLASS" && std::string_view(define.value) == "0";
+            });
         if (deferredPrecisionSpecializationValue(program, options, extraDefines) >= 0) {
             request.defines.emplace_back("METALLIC_DEFERRED_RUNTIME_PRECISION", "1");
         } else {
             bool deferredFloat16 = options.deferredFloat16;
             if (program == SceneShaderProgram::DeferredBinned) {
-                const auto classCount = std::count_if(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
-                    return std::string_view(define.name) == "MATERIAL_CLASS";
-                });
-                const bool backgroundOnly = std::any_of(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
-                    return std::string_view(define.name) == "MATERIAL_CLASS" && std::string_view(define.value) == "0";
-                });
                 const bool explicitPrecision = std::any_of(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
                     return std::string_view(define.name) == "METALLIC_DEFERRED_FP16";
                 });
                 // Class zero only shades the environment and never evaluates the
                 // deferred FP16 lighting path. Preserve ambiguous/explicit overrides.
-                if (classCount == 1 && backgroundOnly && !explicitPrecision) { deferredFloat16 = false; }
+                if (backgroundOnly && !explicitPrecision) { deferredFloat16 = false; }
             }
             request.defines.emplace_back("METALLIC_DEFERRED_FP16", flag(deferredFloat16));
+        }
+        if (options.deferredStochasticFiltering) {
+            const bool explicitStochastic = std::any_of(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+                return std::string_view(define.name) == "METALLIC_DEFERRED_STOCHASTIC_FILTERING";
+            });
+            if (!backgroundOnly || explicitStochastic) {
+                request.defines.emplace_back("METALLIC_DEFERRED_STOCHASTIC_FILTERING", "1");
+            }
         }
     }
     if (cacheQuery >= 0) {

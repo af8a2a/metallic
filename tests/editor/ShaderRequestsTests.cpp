@@ -1941,6 +1941,41 @@ TEST(ShaderRequests, DeferredRuntimePrecisionMacroIsFactoryOwned)
     }
 }
 
+TEST(ShaderRequests, DeferredStochasticFilteringCompileTimeMacroFollowsMaterialScope)
+{
+    const SceneShaderOptions base;
+    auto stf = base;
+    stf.deferredStochasticFiltering = true;
+    const SlangMacroDefine bg{"MATERIAL_CLASS", "0"};
+    const SlangMacroDefine dielectric{"MATERIAL_CLASS", "1"};
+    const SlangMacroDefine bgOverride[]{bg, {"METALLIC_DEFERRED_STOCHASTIC_FILTERING", "1"}};
+
+    // Default off emits no extra macro; non-deferred programs ignore the Deferred gate.
+    for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::OpenPBRPathTrace,
+            SceneShaderProgram::RealtimeLighting}) {
+        EXPECT_EQ(makeSceneShaderRequest(program, base), makeSceneShaderRequest(program, stf));
+    }
+
+    // Background-only class zero skips STF unless explicitly requested.
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, base, {&bg, 1}),
+        makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, stf, {&bg, 1}));
+    const auto explicitBg = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, stf, bgOverride);
+    EXPECT_EQ(std::count(explicitBg.defines.begin(), explicitBg.defines.end(),
+        std::pair<std::string, std::string>{"METALLIC_DEFERRED_STOCHASTIC_FILTERING", "1"}), 2);
+
+    // Deferred flat and material classes keep closed specialization IDs with the macro appended.
+    for (const auto& [program, extra] : {
+            std::pair{SceneShaderProgram::Deferred, std::vector<SlangMacroDefine>{}},
+            std::pair{SceneShaderProgram::DeferredBinned, std::vector<SlangMacroDefine>{dielectric}}}) {
+        const auto enabled = makeSceneShaderRequest(program, stf, extra);
+        EXPECT_NE(enabled, makeSceneShaderRequest(program, base, extra));
+        EXPECT_EQ(std::count(enabled.defines.begin(), enabled.defines.end(),
+            std::pair<std::string, std::string>{"METALLIC_DEFERRED_STOCHASTIC_FILTERING", "1"}), 1);
+        EXPECT_EQ(sceneShaderSpecializationConstants(program, stf, extra).size(),
+            sceneShaderSpecializationConstants(program, base, extra).size());
+    }
+}
+
 TEST(ShaderRequests, DeferredRuntimePrecisionKeepsPushPacketRootAndAllHighFlags)
 {
     using metallic::render::builtin_pass::ScenePathTracePush;

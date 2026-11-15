@@ -161,6 +161,7 @@ inline std::vector<NativeComputeWarmupVariant> nativeComputeWarmupVariants(const
     if (!specialized && !splitPrimary && !splitContinuation) { return {{*pushSize, false, {}}}; }
     SceneShaderOptions options{.customMaterials = define("METALLIC_CUSTOM_MATERIALS") == "1",
         .globalView = define("METALLIC_GLOBAL_VIEW") == "1", .hasRTXCR = define("METALLIC_HAS_RTXCR") == "1",
+        .deferredStochasticFiltering = define("METALLIC_DEFERRED_STOCHASTIC_FILTERING") == "1",
         .customCoverage = define("METALLIC_CUSTOM_COVERAGE") == "1"};
     if (options.customMaterials && !request.searchPaths.empty()) { options.materialInclude = request.searchPaths.front(); }
     const size_t coveragePathIndex = options.customMaterials ? 1u : 0u;

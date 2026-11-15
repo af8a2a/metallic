@@ -69,6 +69,7 @@ public struct SceneOpenPBRContext : IOpenPBRContext
     public static const bool kEnableSheenAndCoat = false;
 #endif
     public static const bool kEnableDispersion = false;
+    public static const bool kEnableThinFilm = false;
     public static bool enableSheenAndCoat()
     {
 #if METALLIC_CUSTOM_MATERIALS
@@ -642,7 +643,7 @@ public float3 sceneSurfaceEnvironment<TPrepared : IPreparedSurfaceClosure>(TPrep
             float misWeight = useEnvironmentMis
                 ? environmentBsdfMisWeight(push, scatter.pdf, scatter.wiWS, (scatter.flags & kBSDFDelta) != 0u)
                 : 1.0;
-            radiance += max(scatter.weight, float3(0)) * environmentRadiance(scatter.wiWS, push, false) * misWeight;
+            radiance += max(scatter.weight, float3(0)) * environmentIndirectRadiance(scatter.wiWS, push) * misWeight;
         }
     }
     return radiance / float(count);

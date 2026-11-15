@@ -63,7 +63,7 @@ public bool openPBRNeedsRgbWavelengths<TContext : IOpenPBRContext>(TContext cont
                                                       resolved_inputs.base_metalness < 1.0f;
     const float thin_film_thickness_nm = resolved_inputs.thin_film_thickness * 1000.0f;
     const bool needs_rgb_wavelengths_for_thin_film =
-        resolved_inputs.thin_film_weight > 0.0f && thin_film_thickness_nm > 0.0f;
+        TContext.kEnableThinFilm && resolved_inputs.thin_film_weight > 0.0f && thin_film_thickness_nm > 0.0f;
     return needs_rgb_wavelengths_for_dispersion || needs_rgb_wavelengths_for_thin_film;
 }
 

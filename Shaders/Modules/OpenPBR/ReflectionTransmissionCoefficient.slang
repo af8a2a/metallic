@@ -69,7 +69,8 @@ public float3 openPBRReflectionCoefficient<TContext : IOpenPBRContext>(
     float3 standard_refl_coeff = float3(0.0f);
     float3 thin_film_refl_coeff = float3(0.0f);
 
-    const float thin_film_presence = openPBRComputeThinFilmPresence(refl_trans_coeff, idoth);
+    const float thin_film_presence =
+        TContext.kEnableThinFilm ? openPBRComputeThinFilmPresence(refl_trans_coeff, idoth) : 0.0f;
 
     // Calculate the standard reflection coefficient.
     if (thin_film_presence < 1.0f) {
@@ -128,7 +129,8 @@ public float3 openPBRTransmissionCoefficient<TContext : IOpenPBRContext>(
     float3 standard_trans_coeff = float3(0.0f);
     float3 thin_film_trans_coeff = float3(0.0f);
 
-    const float thin_film_presence = openPBRComputeThinFilmPresence(refl_trans_coeff, idoth);
+    const float thin_film_presence =
+        TContext.kEnableThinFilm ? openPBRComputeThinFilmPresence(refl_trans_coeff, idoth) : 0.0f;
 
     // Calculate the standard transmission coefficient.
     if (thin_film_presence < 1.0f) {
@@ -171,7 +173,8 @@ public OpenPBRAllCoefficients openPBRAllCoefficients<TContext : IOpenPBRContext>
     float3 thin_film_refl_coeff = float3(0.0f);
     float3 thin_film_trans_coeff = float3(0.0f);
 
-    const float thin_film_presence = openPBRComputeThinFilmPresence(refl_trans_coeff, idoth);
+    const float thin_film_presence =
+        TContext.kEnableThinFilm ? openPBRComputeThinFilmPresence(refl_trans_coeff, idoth) : 0.0f;
 
     // Calculate the standard reflection coefficient.
     if (thin_film_presence < 1.0f) {

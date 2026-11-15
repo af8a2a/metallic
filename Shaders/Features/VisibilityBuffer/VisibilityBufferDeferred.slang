@@ -66,7 +66,7 @@ ScenePathTracePush deferredViewPush()
 {
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
     if ((push.deferredSettings & kScenePathTraceUseGlobalView) != 0u) {
-        ViewConstants view = resolveBuffer<StructuredBuffer<ViewConstants>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneViewOffset))[0];
+        ViewConstants view = resolveBuffer<StructuredBuffer<ViewConstants>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneViewOffset))[0];
         push.eye = view.current.eye;
         push.center = view.current.center;
         push.upProjection = view.current.upProjection;
@@ -85,16 +85,16 @@ ScenePathTracePush deferredViewPush()
     return push;
 }
 
-#define gVisibility resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<uint>>>(kSceneVisibilityOffset))
-#define gVisibilityDepth resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneVisibilityDepthOffset))
-#define gRasterInstances resolveBuffer<StructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRasterInstancesOffset))
-#define gRasterMaterials resolveBuffer<StructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRasterMaterialsOffset))
-#define gStreamRecords resolveBuffer<StructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamRecordsOffset))
-#define gStreamGroups resolveBuffer<StructuredBuffer<StreamActiveGroup>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamGroupsOffset))
-#define gStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPagesOffset))
-#define gStreamPageTable resolveBuffer<StructuredBuffer<uint2>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageTableOffset))
-#define gRasterFrameInfo resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRasterFrameInfoOffset))
-#define gRasterDomain resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float4>>>(kSceneRasterDomainOffset))
+#define gVisibility resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<uint>>>(kSceneVisibilityOffset))
+#define gVisibilityDepth resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneVisibilityDepthOffset))
+#define gRasterInstances resolveBuffer<StructuredBuffer<GPUDrivenPreviewInstance>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRasterInstancesOffset))
+#define gRasterMaterials resolveBuffer<StructuredBuffer<GPUDrivenPreviewMaterial>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRasterMaterialsOffset))
+#define gStreamRecords resolveBuffer<StructuredBuffer<CompactStreamVisibleRecord>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneStreamRecordsOffset))
+#define gStreamGroups resolveBuffer<StructuredBuffer<StreamActiveGroup>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneStreamGroupsOffset))
+#define gStreamPages resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneStreamPagesOffset))
+#define gStreamPageTable resolveBuffer<StructuredBuffer<uint2>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageTableOffset))
+#define gRasterFrameInfo resolveBuffer<ByteAddressBuffer>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRasterFrameInfoOffset))
+#define gRasterDomain resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float4>>>(kSceneRasterDomainOffset))
 
 float4 rasterDomain(uint2 pixel)
 {
@@ -116,10 +116,10 @@ float rasterRayDistance(uint2 pixel, Ray ray, ScenePathTracePush push)
     float3 forward = cameraForwardFrom(push.eye, push.center);
     return (viewDepth - dot(ray.origin - push.eye.xyz, forward)) / max(dot(ray.direction, forward), 1e-6);
 }
-#define gMaterialBins typedBufferSpan<MaterialBin>(getResourceParameterField<SceneResourceParameters, BufferSpan<uint>>(kSceneMaterialBinsOffset))
-#define gMaterialTiles typedBufferSpan<MaterialTile>(getResourceParameterField<SceneResourceParameters, BufferSpan<uint>>(kSceneMaterialTilesOffset))
-#define gUpscalerMotion resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float2>>>(kSceneUpscalerMotionOffset))
-#define gUpscalerDepth resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float>>>(kSceneUpscalerDepthOffset))
+#define gMaterialBins typedBufferSpan<MaterialBin>(getSceneResourceParameterField<BufferSpan<uint>>(kSceneMaterialBinsOffset))
+#define gMaterialTiles typedBufferSpan<MaterialTile>(getSceneResourceParameterField<BufferSpan<uint>>(kSceneMaterialTilesOffset))
+#define gUpscalerMotion resolveUniform(getSceneResourceParameterField<ResourceHandle<RWTexture2D<float2>>>(kSceneUpscalerMotionOffset))
+#define gUpscalerDepth resolveUniform(getSceneResourceParameterField<ResourceHandle<RWTexture2D<float>>>(kSceneUpscalerDepthOffset))
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)
 {
@@ -155,7 +155,7 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     float3 a, b, c;
     StreamTriangleDecodeContext decodeContext;
     if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
-        gStreamPages, gStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))), record, a, b, c, decodeContext)) { return false; }
+        gStreamPages, gStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))), record, a, b, c, decodeContext)) { return false; }
     GPUDrivenPreviewInstance instance = gRasterInstances[record.instanceIndex];
     float3 ab = b - a;
     float3 ac = c - a;
@@ -336,7 +336,12 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
     if (!hasSurface) {
         radiance = push.debugView != kOpenPBRDebugViewFinal
             ? float3(0.0)
+#if MATERIAL_CLASS > 0 || METALLIC_DEFERRED_CLASS_SPECIALIZATION
+            // Binned non-background shaders only hit !hasSurface on unready or degenerate hits.
+            : environmentIndirectRadiance(ray.direction, push);
+#else
             : environmentRadiance(ray.direction, push, true, ray.origin);
+#endif
     }
     else {
         push = withTextureFeedbackSampling(push, pixel);
@@ -350,8 +355,8 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
 #endif
     }
 #endif
-    if (resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))[0].control.w != 0u) {
-        float encoded = resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset)).Load(int3(pixel, 0));
+    if (resolveBuffer<StructuredBuffer<ShadowParameters>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))[0].control.w != 0u) {
+        float encoded = resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset)).Load(int3(pixel, 0));
         radiance = float3(encoded * encoded);
     }
     sceneOutput()[pixel] = float4(max(radiance, float3(0.0)), 1.0);
