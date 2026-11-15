@@ -69,21 +69,21 @@ float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
 }
 #endif
 
-#define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentIrradianceSHOffset))
+#define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentIrradianceSHOffset))
 
 
-#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridParamsOffset))
-#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridLightsOffset))
-#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCandidatesOffset))
-#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCellsOffset))
-#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridIndicesOffset))
+#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridParamsOffset))
+#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridLightsOffset))
+#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCandidatesOffset))
+#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCellsOffset))
+#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridIndicesOffset))
 
 
-#define gRealtimeShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
-#define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
-#define gRealtimeMoonShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneMoonShadowVisibilityOffset))
-#define gRealtimeMoonShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMoonShadowParametersOffset))
-#define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kScenePreviousEnvironmentIrradianceSHOffset))
+#define gRealtimeShadow resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
+#define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
+#define gRealtimeMoonShadow resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneMoonShadowVisibilityOffset))
+#define gRealtimeMoonShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMoonShadowParametersOffset))
+#define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kScenePreviousEnvironmentIrradianceSHOffset))
 
 public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
 {
@@ -126,7 +126,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
         if (index < kCelestialLightCount) {
             result.source = celestialSourceIdentity(index);
             light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameterField<SceneResourceParameters, EnvironmentResourceParameters>(kSceneEnvironmentOffset).celestialLights), index, position);
+                getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset).celestialLights), index, position);
         } else {
             index -= kCelestialLightCount;
             result.source = index < lookup.count
@@ -143,7 +143,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
     public float3 visibility(SurfaceLightSample light)
     {
         if ((debugFlags & kOpenPBRDebugDisableShadows) != 0u) { return float3(1); }
-        let tableHandle = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
+        let tableHandle = getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
         if (tableHandle.index != 0xffffffffu) {
             let table = resolveUniform(tableHandle);
             // A connected multi-light publication owns this domain, including
@@ -164,8 +164,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
                 float3 lightPosition = asfloat(table.Load3(entryOffset + 32u));
                 face = Metallic.Shadow::virtualShadowMapPointFace(position - lightPosition);
             }
-            let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
-                ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
+            let shadows = resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
             return float3(shadows.Load(int4(uint2(pixel), kindAndBaseLayer.y + face, 0)));
         }
         ShadowParameters shadow = gRealtimeShadowParameters[0];

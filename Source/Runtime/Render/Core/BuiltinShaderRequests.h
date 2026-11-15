@@ -205,14 +205,14 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     // Match VisibilityBufferPass LDS and optional wave SPD startup requests.
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "0"}});
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "1"}});
-    // Runtime defaults use an inline root: trusted for PT, checked for Deferred.
+    // Runtime defaults use an inline trusted root for PT and Deferred.
     // Keep legacy transport recipes and warm the exact default sources too.
     const size_t legacyRequestCount = requests.size();
     for (size_t index = 0; index < legacyRequestCount; ++index) {
         const bool deferred = isDeferredShaderRequest(requests[index]);
         if (!isPathTraceShaderRequest(requests[index]) && !deferred) { continue; }
         auto request = requests[index];
-        applyPathTraceShaderPolicy(request, {.trustedSceneParameters = !deferred});
+        applyPathTraceShaderPolicy(request, {.trustedSceneParameters = true});
         requests.push_back(std::move(request));
     }
     // Deduplicate complete requests, preserving macro/capability/search-path

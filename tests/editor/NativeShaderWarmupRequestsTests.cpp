@@ -195,7 +195,7 @@ TEST(NativeShaderWarmupRequests, CompletePathTracePoliciesOwnRuntimeLayoutsAndSp
     }
 }
 
-TEST(NativeShaderWarmupRequests, CheckedDeferredRootsPreserveRuntimeLayoutsAndSpecializationTuples)
+TEST(NativeShaderWarmupRequests, DeferredRootsPreserveRuntimeLayoutsAndSpecializationTuples)
 {
     const auto catalog = builtinShaderWarmupRequests("");
     for (const bool customMaterials : {false, true}) {
@@ -209,7 +209,7 @@ TEST(NativeShaderWarmupRequests, CheckedDeferredRootsPreserveRuntimeLayoutsAndSp
                 for (const bool inlineRoot : {false, true}) {
                     auto request = descriptorRequest;
                     applyPathTraceShaderPolicy(request,
-                        {.inlineComputeRoot = inlineRoot, .trustedSceneParameters = false});
+                        {.inlineComputeRoot = inlineRoot, .trustedSceneParameters = inlineRoot});
                     const auto original = request;
                     if (!customMaterials) {
                         // Warm both the complete default source and explicit
@@ -245,7 +245,7 @@ TEST(NativeShaderWarmupRequests, CheckedDeferredRootsPreserveRuntimeLayoutsAndSp
     }
 }
 
-TEST(NativeShaderWarmupRequests, DeferredRejectsUncheckedAndMalformedRootContracts)
+TEST(NativeShaderWarmupRequests, DeferredRejectsWaveFeedbackAndMalformedRootContracts)
 {
     for (const auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
         auto request = makeSceneShaderRequest(program, {});
@@ -261,7 +261,7 @@ TEST(NativeShaderWarmupRequests, DeferredRejectsUncheckedAndMalformedRootContrac
         }
         auto trusted = makeSceneShaderRequest(program, {});
         applyPathTraceShaderPolicy(trusted, {.inlineComputeRoot = true, .trustedSceneParameters = true});
-        EXPECT_TRUE(nativeComputeWarmupVariants(trusted).empty());
+        EXPECT_FALSE(nativeComputeWarmupVariants(trusted).empty());
         auto wave = request;
         wave.defines.emplace_back("METALLIC_TEXTURE_FEEDBACK_WAVE", "1");
         EXPECT_TRUE(nativeComputeWarmupVariants(wave).empty());

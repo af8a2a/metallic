@@ -35,10 +35,9 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
 {
     if (isPathTraceShaderRequest(request) || isDeferredShaderRequest(request)) {
         const auto policy = parsePathTraceShaderPolicy(request);
-        // Deferred's inline transport retains checked packet access and does not
-        // enable the path tracer's texture-feedback reconvergence policy.
-        if (policy && isDeferredShaderRequest(request) &&
-            (policy->trustedSceneParameters || policy->textureFeedbackWave)) { return std::nullopt; }
+        // Deferred shares the inline/trusted Scene packet transport contracts and
+        // does not enable the path tracer's texture-feedback reconvergence policy.
+        if (policy && isDeferredShaderRequest(request) && policy->textureFeedbackWave) { return std::nullopt; }
         return policy ? std::optional<uint32_t>(policy->userPushDataSize()) : std::nullopt;
     }
     const auto matches = [&](std::string_view module, std::initializer_list<std::string_view> entries) {

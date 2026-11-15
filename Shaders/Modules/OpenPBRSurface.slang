@@ -39,8 +39,10 @@ public float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 #else
     let resources = getSceneResourceParameterField<SceneOpenPBRLUTResourceParameters>(kSceneOpenPBRLUTsOffset);
 #endif
-    let texture = ResourceHandle<Texture2D<float4>>(resources.openPBRLut2D.load(openPBRLut2DSlot(lutId)));
-    return sampleOpenPBRTexture2D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uv);
+    let texture = ResourceHandle<Texture2D<float4>>(
+        resolveUniform(resources.openPBRLut2D.resource).Load<uint>(
+            resources.openPBRLut2D.byteOffset + openPBRLut2DSlot(lutId) * sizeof(uint)));
+    return sampleOpenPBRTexture2D(resolveUniform(texture), resolveUniform(resources.openPBRLutSampler), uv);
 }
 
 [ForceInline]
@@ -51,8 +53,10 @@ public float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 #else
     let resources = getSceneResourceParameterField<SceneOpenPBRLUTResourceParameters>(kSceneOpenPBRLUTsOffset);
 #endif
-    let texture = ResourceHandle<Texture3D<float4>>(resources.openPBRLut3D.load(openPBRLut3DSlot(lutId)));
-    return sampleOpenPBRTexture3D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uvw);
+    let texture = ResourceHandle<Texture3D<float4>>(
+        resolveUniform(resources.openPBRLut3D.resource).Load<uint>(
+            resources.openPBRLut3D.byteOffset + openPBRLut3DSlot(lutId) * sizeof(uint)));
+    return sampleOpenPBRTexture3D(resolveUniform(texture), resolveUniform(resources.openPBRLutSampler), uvw);
 }
 
 // The closure module receives a statically specialized BSDF LUT context.

@@ -2201,16 +2201,16 @@ private:
     bool trustedSceneParametersEnabled(const RenderGraphProperties& properties) const
     {
         return boolProperty(properties, "trustedSceneParameters",
-            !visibilityDeferred_ && !properties.contains("diagnosticPixels") &&
+            !properties.contains("diagnosticPixels") &&
                 supportsInlineComputeRoot(properties) && inlineComputeRootEnabled(properties));
     }
 
     bool validateTrustedSceneParameters(const RenderGraphProperties& properties, std::string& log) const
     {
         if (trustedSceneParametersEnabled(properties) &&
-            (visibilityDeferred_ || properties.contains("diagnosticPixels") ||
+            (properties.contains("diagnosticPixels") ||
                 !supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
-            log += "trustedSceneParameters requires the unextended Scene packet and unsplit compute path tracer with inlineComputeRoot\n";
+            log += "trustedSceneParameters requires the unextended Scene packet and unsplit compute path tracer or visibility-buffer Deferred with inlineComputeRoot\n";
             return false;
         }
         return true;

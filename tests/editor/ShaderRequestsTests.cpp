@@ -961,7 +961,7 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
         auto runtime = makeSceneShaderRequest(program, options);
         if (program == SceneShaderProgram::Deferred) {
             EXPECT_TRUE(contains(requests, runtime));
-            applyPathTraceShaderPolicy(runtime, {.trustedSceneParameters = false});
+            applyPathTraceShaderPolicy(runtime, {.trustedSceneParameters = true});
         }
         const auto warmed = std::find(requests.begin(), requests.end(), runtime);
         ASSERT_NE(warmed, requests.end());
@@ -1002,7 +1002,7 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
         const auto descriptorRequest = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, binnedOptions, {&define, 1});
         for (const bool inlineRoot : {false, true}) {
             auto runtime = descriptorRequest;
-            applyPathTraceShaderPolicy(runtime, {.inlineComputeRoot = inlineRoot, .trustedSceneParameters = false});
+            applyPathTraceShaderPolicy(runtime, {.inlineComputeRoot = inlineRoot, .trustedSceneParameters = inlineRoot});
             EXPECT_EQ(std::count(binnedRequests.begin(), binnedRequests.end(), runtime), 1);
         }
     }

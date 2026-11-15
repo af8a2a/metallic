@@ -71,9 +71,9 @@ std::vector<render::ShaderRequest> materialShaderWarmupRequests(
     const auto add = [&](ShaderRequest request) {
         addSource(request);
         if (isDeferredShaderRequest(request)) {
-            // Cover both the default checked root and explicit legacy graphs,
+            // Cover both the default trusted inline root and explicit legacy graphs,
             // including custom closure sources with MATERIAL_PROGRAM_ID.
-            applyPathTraceShaderPolicy(request, {.trustedSceneParameters = false});
+            applyPathTraceShaderPolicy(request, {.trustedSceneParameters = true});
             addSource(std::move(request));
         }
     };
