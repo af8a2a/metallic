@@ -243,6 +243,12 @@ Result<> allocateAndWriteBuffer(ResourceRegistry& registry, Buffer& buffer,
     return result;
 }
 
+struct BufferTransitionRef {
+    Buffer* buffer = nullptr;
+    ResourceState* state = nullptr;
+    bool force = false;
+};
+
 Result<> transitionBuffer(
     CommandBuffer& commandBuffer,
     Buffer& buffer,
@@ -264,6 +270,53 @@ Result<> transitionBuffer(
     }); !commandResult) { return commandResult; }
     state = nextState;
     return {};
+}
+
+Result<> transitionBuffers(
+    CommandBuffer& commandBuffer,
+    std::span<const BufferTransitionRef> entries,
+    ResourceState nextState,
+    bool forceBarrier = false,
+    PipelineStageBits generalComputeStages = PipelineStageBits::AllCommands)
+{
+    std::array<BufferBarrierDesc, 16> barriers{};
+    uint32_t count = 0;
+    const SyncScope after = (nextState == ResourceState::General && generalComputeStages == PipelineStageBits::ComputeShader)
+        ? SyncScope{PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}
+        : resourceSyncScope(nextState, PipelineStageBits::AllCommands);
+    for (const auto& entry : entries) {
+        if (!entry.buffer || !entry.state || (!forceBarrier && !entry.force && *entry.state == nextState)) {
+            continue;
+        }
+        assert(count < barriers.size());
+        barriers[count++] = BufferBarrierDesc{
+            .buffer = entry.buffer,
+            .before = resourceSyncScope(*entry.state, PipelineStageBits::AllCommands),
+            .after = after,
+            .range = {.offset = 0, .size = entry.buffer->desc().size},
+        };
+    }
+    if (count == 0) {
+        return {};
+    }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
+        .buffers = {barriers.data(), count},
+    }); !commandResult) { return commandResult; }
+    for (const auto& entry : entries) {
+        if (entry.buffer && entry.state && (forceBarrier || entry.force || *entry.state != nextState)) {
+            *entry.state = nextState;
+        }
+    }
+    return {};
+}
+
+Result<> recordMemoryBarrier(
+    CommandBuffer& commandBuffer,
+    SyncScope before,
+    SyncScope after)
+{
+    const MemoryBarrierDesc barrier{.before = before, .after = after};
+    return commandBuffer.synchronize(BarrierDesc{.memory = {&barrier, 1}});
 }
 
 Result<> createSlangShaderModule(
@@ -513,16 +566,18 @@ public:
             return makeError(Error::Failure);
         }
 
-        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffers(commandBuffer, {{
+            {&pageTableBuffer, &pageTableState},
+            {&requestBuffer, &requestBufferState},
+        }}, ResourceState::General, false, PipelineStageBits::ComputeShader); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.bindBindlessHeap(bindlessHeap); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.bindExecution((traversalPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
         const uint64_t groups = (uint64_t(threadCount) + 63u) / 64u;
         if (auto commandResult = commandBuffer.dispatch(static_cast<uint32_t>(std::min<uint64_t>(groups, 65535u)),
             static_cast<uint32_t>((groups + 65534u) / 65535u), 1); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
-        return {};
+        return recordMemoryBarrier(commandBuffer,
+            {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite});
     }
 
 private:
@@ -637,7 +692,8 @@ public:
         ResourceState& traversalHeaderBufferState,
         Buffer& traversalWorkBuffer,
         ResourceState& traversalWorkBufferState,
-        bool frontierWave32)
+        bool frontierWave32,
+        bool synchronizeBuffers = true)
     {
         if (threadCount == 0) {
             return {};
@@ -646,13 +702,17 @@ public:
             return makeError(Error::Failure);
         }
 
-        if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (synchronizeBuffers) {
+            if (auto commandResult = transitionBuffers(commandBuffer, {{
+                {&activeGroupBuffer, &activeGroupBufferState},
+                {&activeHeaderBuffer, &activeHeaderBufferState},
+                {&pageTableBuffer, &pageTableState},
+                {&requestBuffer, &requestBufferState},
+                {&drawIndirectBuffer, &drawIndirectBufferState},
+                {&traversalHeaderBuffer, &traversalHeaderBufferState},
+                {&traversalWorkBuffer, &traversalWorkBufferState},
+            }}, ResourceState::General, false, PipelineStageBits::ComputeShader); !commandResult) { return commandResult; }
+        }
         if (auto commandResult = commandBuffer.bindBindlessHeap(bindlessHeap); !commandResult) { return commandResult; }
         const bool cooperative = push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase ||
             push.activeBuildPhase == kMeshletStreamActiveBuildEmitPhase ||
@@ -687,13 +747,12 @@ public:
             }
             if (auto commandResult = commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1); !commandResult) { return commandResult; }
         }
-        if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (synchronizeBuffers) {
+            if (auto commandResult = recordMemoryBarrier(commandBuffer,
+                {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite});
+                !commandResult) { return commandResult; }
+        }
         return {};
     }
 
@@ -4774,9 +4833,29 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
     // once per 67 million frames, so an old unvisited group cannot alias history.
     const bool initializeState = !lodHistoryState_->initialized ||
         (lodTransitionTelemetry_ && (frameIndex_ & 0x03ffffffu) == 0u);
-    if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
-    if (distributedPageDemand_ || lodTransitionTelemetry_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
+    const auto transitionMutableBuffers = [&](PipelineStageBits nextComputeStages) {
+        std::array<BufferTransitionRef, 9> entries{{
+            {activeGroupBuffer_.get(), &activeGroupBufferState_},
+            {activeHeaderBuffer_.get(), &activeHeaderBufferState_},
+            {pageTableBuffer_.get(), &pageTableState_},
+            {requestBuffer_.get(), &requestBufferState_},
+            {drawIndirectBuffer_.get(), &drawIndirectBufferState_},
+            {traversalHeaderBuffer_.get(), &traversalHeaderBufferState_},
+            {traversalWorkBuffer_.get(), &traversalWorkBufferState_},
+            {lodStateBuffer_.get(), &lodStateBufferState_, true},
+            {(distributedPageDemand_ || lodTransitionTelemetry_) ? demandBuffer_.get() : nullptr, &demandBufferState_, true},
+        }};
+        return transitionBuffers(commandBuffer, entries, ResourceState::General, false, nextComputeStages);
+    };
+    if (auto commandResult = transitionMutableBuffers(PipelineStageBits::ComputeShader); !commandResult) { return commandResult; }
+    bool dispatchedPhase = false;
     const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) {
+        if (dispatchedPhase) {
+            if (auto commandResult = recordMemoryBarrier(commandBuffer,
+                {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite});
+                !commandResult) { return commandResult; }
+        }
         push.activeBuildPhase = phase;
         Result<> result = activeBuildPass_->dispatch(
             commandBuffer, *registry_->heap(), push, threadCount,
@@ -4785,11 +4864,8 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
             *pageTableBuffer_, pageTableState_, *requestBuffer_, requestBufferState_,
             *drawIndirectBuffer_, drawIndirectBufferState_,
             *traversalHeaderBuffer_, traversalHeaderBufferState_,
-            *traversalWorkBuffer_, traversalWorkBufferState_, currentFrameFrontierWave32_);
-        if (result) {
-            if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
-            if (distributedPageDemand_ || lodTransitionTelemetry_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
-        }
+            *traversalWorkBuffer_, traversalWorkBufferState_, currentFrameFrontierWave32_, false);
+        if (result) { dispatchedPhase = true; }
         return result;
     };
     if (initializeState) {
@@ -4843,6 +4919,12 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
     if (currentFramePrefetch_) {
         const auto result = dispatchPhase(kMeshletStreamActiveBuildPrefetchPhase, asset_.instanceCount());
         if (!result) { return result; }
+    }
+    if (dispatchedPhase) {
+        if (auto commandResult = recordMemoryBarrier(commandBuffer,
+            {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite});
+            !commandResult) { return commandResult; }
     }
     if (checkpoint) { checkpoint("AfterStreamPrefetch"); }
     return {};
