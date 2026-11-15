@@ -57,7 +57,7 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
     if (matches("Features/Lighting/BuildReGIR", {"buildReGIRMain"})) { return static_cast<uint32_t>(sizeof(BuildReGIRParams)); }
     if (matches("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"})) { return static_cast<uint32_t>(sizeof(ClusterLightGridBuildParams)); }
     if (matches("Features/Lighting/PrepareLightsPdf", {"prepareLightsPdfMain"})) { return static_cast<uint32_t>(sizeof(PrepareLightsPdfParams)); }
-    if (matches("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"})) {
+    if (matches("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReducePartialMain", "autoExposureReduceMain", "autoExposureApplyMain"})) {
         return static_cast<uint32_t>(sizeof(AutoExposureParams));
     }
     if (matches("Features/PostProcess/FinalBlit", {"finalBlitMain", "finalBlitUvMain"})) { return static_cast<uint32_t>(sizeof(FinalBlitParams)); }

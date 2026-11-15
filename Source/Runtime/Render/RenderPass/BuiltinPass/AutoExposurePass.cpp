@@ -65,7 +65,10 @@ public:
     {
         device_ = context.device;
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
-        const char* entries[] = {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"};
+        const char* entries[] = {
+            "autoExposureHistogramMain", "autoExposureReducePartialMain",
+            "autoExposureReduceMain", "autoExposureApplyMain",
+        };
         for (size_t i = 0; i < programs_.size(); ++i) {
             if (programs_[i].valid()) { continue; }
             auto result = ShaderRegistry::instance().getComputeKernel(*context.device,
@@ -77,7 +80,10 @@ public:
             if (!result) { return result; }
         }
         state_ = std::make_shared<State>();
-        return context.device->createBuffer({.size = 16, .structureStride = 16,
+        // Element 0 holds persistent adaptation history; elements [1..] hold transient partial bin sums
+        // written cleanly per frame without changing the public AutoExposureParams 128-byte push ABI.
+        constexpr uint64_t kHistoryBufferBytes = (1ull + uint64_t(kReduceMaxPartialGroups) * 16ull) * 16ull;
+        return context.device->createBuffer({.size = kHistoryBufferBytes, .structureStride = 16,
             .usage = BufferUsageBits::Storage}).transform([&](auto rhiValue) { state_->history = std::move(rhiValue); });
     }
 
@@ -154,13 +160,18 @@ public:
         const auto record = [&](size_t program, CommandBuffer& stageCommands, uint32_t x, uint32_t y) {
             return programs_[program].dispatch(stageCommands, *encoded, x, y);
         };
+        const uint32_t partialGroupCount = push.bypass != 0u || push.tileCount == 0u ? 1u
+            : std::min(kReduceMaxPartialGroups,
+                std::max(1u, (push.tileCount + kReducePartialThreadsY - 1u) / kReducePartialThreadsY));
         using Access = RenderGraphResourceAccess;
         const RenderGraphStageUse histogramUses[] = {
             {"source", Access::TextureSampleRead}, {"histogram", Access::BufferStorageWrite},
         };
+        const RenderGraphStageUse reducePartialUses[] = {
+            {"histogram", Access::BufferStorageRead}, {"history", Access::BufferStorageWrite},
+        };
         const RenderGraphStageUse reduceUses[] = {
-            {"histogram", Access::BufferStorageRead}, {"history", Access::BufferStorageReadWrite},
-            {"exposure", Access::BufferStorageWrite},
+            {"history", Access::BufferStorageReadWrite}, {"exposure", Access::BufferStorageWrite},
         };
         const RenderGraphStageUse applyUses[] = {
             {"source", Access::TextureSampleRead}, {"exposure", Access::BufferStorageRead},
@@ -170,9 +181,12 @@ public:
             {"Histogram", histogramUses, [&](CommandBuffer& stageCommands) {
                 return record(0, stageCommands, (push.width + 15) / 16, (push.height + 15) / 16);
             }},
-            {"Reduce", reduceUses, [&](CommandBuffer& stageCommands) { return record(1, stageCommands, 1, 1); }},
+            {"ReducePartial", reducePartialUses, [&](CommandBuffer& stageCommands) {
+                return record(1, stageCommands, partialGroupCount, 1);
+            }},
+            {"Reduce", reduceUses, [&](CommandBuffer& stageCommands) { return record(2, stageCommands, 1, 1); }},
             {"Apply", applyUses, [&](CommandBuffer& stageCommands) {
-                return record(2, stageCommands, (push.width + 7) / 8, (push.height + 7) / 8);
+                return record(3, stageCommands, (push.width + 7) / 8, (push.height + 7) / 8);
             }},
         };
         auto history = state_->history->slice();
@@ -221,11 +235,14 @@ private:
         return std::isfinite(number) ? std::clamp(number, minimum, maximum) : fallback;
     }
 
+    static constexpr uint32_t kReducePartialThreadsY = 4u;
+    static constexpr uint32_t kReduceMaxPartialGroups = 64u;
+
     struct State {
         std::unique_ptr<Buffer> history;
         bool valid = false;
     };
-    std::array<ComputeKernel, 3> programs_;
+    std::array<ComputeKernel, 4> programs_;
     std::shared_ptr<State> state_;
     std::chrono::steady_clock::time_point lastTime_{};
     uint64_t sceneIdentity_ = 0;

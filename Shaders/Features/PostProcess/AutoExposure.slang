@@ -7,6 +7,9 @@ using Metallic;
 // UE's extended luminance convention with lens attenuation 0.78: Lmax = 2^EV100.
 static const uint kHistogramBins = 64u;
 static const uint kHistogramWeight = 256u;
+static const uint kReducePartialThreadsY = 4u;
+static const uint kReduceMaxPartialGroups = 64u;
+static const uint kPartialGroupFloat4Count = kHistogramBins / 4u;
 
 #include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
 
@@ -14,12 +17,15 @@ static const uint kHistogramWeight = 256u;
 
 #define gSource resolveUniform(gParams.source)
 #define gHistogram gParams.histogram
+// Element 0 holds persistent temporal adaptation state; [1..] hold per-group partial histogram bins.
 #define gHistory gParams.history
 // multiplier, adapted EV100, target EV100, metered luminance (cd/m^2).
 #define gExposure gParams.exposure
 #define gOutput resolveUniform(gParams.output)
 
 groupshared uint sharedHistogram[kHistogramBins];
+groupshared uint partialBinCounts[kReducePartialThreadsY][kHistogramBins];
+groupshared float4 reducedPartialChunks[kReduceMaxPartialGroups];
 groupshared float reducedHistogram[kHistogramBins];
 
 float3 physicalColor(uint2 pixel, AutoExposurePush push)
@@ -78,23 +84,79 @@ float adaptEV100(float current, float target, AutoExposurePush push)
     return target - sign(difference) * distance;
 }
 
+uint autoExposurePartialGroupCount(AutoExposurePush push)
+{
+    if (push.bypass != 0u || push.tileCount == 0u) { return 1u; }
+    return min(kReduceMaxPartialGroups,
+        max(1u, (push.tileCount + kReducePartialThreadsY - 1u) / kReducePartialThreadsY));
+}
+
+[shader("compute")]
+[numthreads(64, 4, 1)]
+void autoExposureReducePartialMain(uint3 threadId : SV_GroupThreadID, uint3 group : SV_GroupID)
+{
+    AutoExposurePush push = gParams.display;
+    if (push.bypass != 0u || push.tileCount == 0u) { return; }
+    uint groupCount = autoExposurePartialGroupCount(push);
+    uint tilesPerGroup = (push.tileCount + groupCount - 1u) / groupCount;
+    uint tileStart = group.x * tilesPerGroup;
+    uint tileEnd = min(push.tileCount, tileStart + tilesPerGroup);
+    uint count = 0u;
+    for (uint tile = tileStart + threadId.y; tile < tileEnd; tile += kReducePartialThreadsY) {
+        count += gHistogram.load(tile * kHistogramBins + threadId.x);
+    }
+    partialBinCounts[threadId.y][threadId.x] = count;
+    GroupMemoryBarrierWithGroupSync();
+    if (threadId.y == 0u) {
+        partialBinCounts[0][threadId.x] = count + partialBinCounts[1][threadId.x] +
+            partialBinCounts[2][threadId.x] + partialBinCounts[3][threadId.x];
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (threadId.y == 0u && threadId.x < kPartialGroupFloat4Count) {
+        uint baseBin = threadId.x * 4u;
+        float4 packed = float4(
+            float(partialBinCounts[0][baseBin]),
+            float(partialBinCounts[0][baseBin + 1u]),
+            float(partialBinCounts[0][baseBin + 2u]),
+            float(partialBinCounts[0][baseBin + 3u])) / float(kHistogramWeight);
+        gHistory.store(1u + group.x * kPartialGroupFloat4Count + threadId.x, packed);
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void autoExposureReduceMain(uint index : SV_GroupIndex)
 {
     AutoExposurePush push = gParams.display;
-    float count = 0.0;
-    for (uint tile = 0u; tile < push.tileCount; ++tile) {
-        count += float(gHistogram.load(tile * kHistogramBins + index)) / float(kHistogramWeight);
-    }
-    reducedHistogram[index] = count;
-    GroupMemoryBarrierWithGroupSync();
-    if (index != 0u) { return; }
     if (push.bypass != 0u) {
-        gHistory.store(0, float4(1.0, 0.0, 0.0, 0.0));
-        gExposure.store(0, float4(1.0, 0.0, 0.0, 0.0));
+        if (index == 0u) {
+            gHistory.store(0, float4(1.0, 0.0, 0.0, 0.0));
+            gExposure.store(0, float4(1.0, 0.0, 0.0, 0.0));
+        }
         return;
     }
+    uint groupCount = autoExposurePartialGroupCount(push);
+    uint binGroup = index & (kPartialGroupFloat4Count - 1u);
+    uint slice = index >> 4u;
+    float4 partial = float4(0.0, 0.0, 0.0, 0.0);
+    for (uint group = slice; group < groupCount; group += 4u) {
+        partial += gHistory.load(1u + group * kPartialGroupFloat4Count + binGroup);
+    }
+    reducedPartialChunks[index] = partial;
+    GroupMemoryBarrierWithGroupSync();
+    if (index < kPartialGroupFloat4Count) {
+        float4 totalBins = reducedPartialChunks[index] +
+            reducedPartialChunks[index + kPartialGroupFloat4Count] +
+            reducedPartialChunks[index + kPartialGroupFloat4Count * 2u] +
+            reducedPartialChunks[index + kPartialGroupFloat4Count * 3u];
+        uint baseBin = index * 4u;
+        reducedHistogram[baseBin] = totalBins.x;
+        reducedHistogram[baseBin + 1u] = totalBins.y;
+        reducedHistogram[baseBin + 2u] = totalBins.z;
+        reducedHistogram[baseBin + 3u] = totalBins.w;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (index != 0u) { return; }
     float total = 0.0;
     for (uint bin = 0u; bin < kHistogramBins; ++bin) { total += reducedHistogram[bin]; }
     float low = total * push.lowPercent;

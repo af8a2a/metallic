@@ -198,6 +198,7 @@ public:
             {"Features/Debug/SliderDebug", "sliderDebugMain", 1},
             {"Features/Debug/SliderDebug", "sliderDebugOverlayMain", 1},
             {"Features/PostProcess/AutoExposure", "autoExposureHistogramMain", 2},
+            {"Features/PostProcess/AutoExposure", "autoExposureReducePartialMain", 2},
             {"Features/PostProcess/AutoExposure", "autoExposureReduceMain", 2},
             {"Features/PostProcess/AutoExposure", "autoExposureApplyMain", 2},
             {"Features/PostProcess/ColorGradingLUT", "composeColorGradingLUT", 3},

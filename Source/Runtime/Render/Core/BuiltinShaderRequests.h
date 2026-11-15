@@ -68,7 +68,7 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/Lighting/BuildReGIR", {"buildReGIRMain"});
     add("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"});
     add("Features/Lighting/PrepareLightsPdf", {"prepareLightsPdfMain"});
-    add("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"});
+    add("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReducePartialMain", "autoExposureReduceMain", "autoExposureApplyMain"});
     for (bool hdr : {false, true}) {
         for (bool scRgb : {false, true}) {
             for (bool sRGB : {false, true}) {
