@@ -103,10 +103,20 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/VisibilityBuffer/VisibilityBufferMaterial", {"visibilityBufferMaterialMain"});
     add("Features/VisibilityBuffer/VisibilityHybridRaster", {"hybridResetMain", "hybridArgumentsMain", "hybridRasterMain", "hybridResolveVertexMain", "hybridResolveFragmentMain", "hybridClusterResetMain", "hybridClusterHistogramMain", "hybridClusterArgumentsMain", "hybridClusterScatterMain"});
     add("Features/Samples/Triangle", {"triangleVertexMain", "triangleFragmentMain"});
+    const std::vector<std::string> binningCapabilities{"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"};
     add("Features/VisibilityBuffer/VisibilityMaterialBinning",
-        {"materialBinningResetMain", "materialBinningCountMain", "materialBinningAllocateMain",
-            "materialBinningClassifyMain", "materialBinningArgumentsMain"},
-        {"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"});
+        {"materialBinningResetMain", "materialBinningAllocateMain", "materialBinningArgumentsMain"},
+        binningCapabilities);
+    add("Features/VisibilityBuffer/VisibilityMaterialBinning",
+        {"materialBinningCountMain"},
+        binningCapabilities,
+        {{"METALLIC_MATERIAL_BINNING_MODE", "1"}});
+    for (const char* mode : {"0", "1", "2", "3"}) {
+        add("Features/VisibilityBuffer/VisibilityMaterialBinning",
+            {"materialBinningClassifyMain"},
+            binningCapabilities,
+            {{"METALLIC_MATERIAL_BINNING_MODE", mode}});
+    }
     add("Features/Debug/SceneRayQueryVisualize", {"sceneRayQueryVisualizeMain"}, {"spvRayQueryKHR"});
     add("Features/Debug/SceneRayQueryVisualize", {"sceneRayQueryVisualizeMain"},
         {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"},

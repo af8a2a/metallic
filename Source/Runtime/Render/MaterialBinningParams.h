@@ -4,7 +4,8 @@
 
 namespace metallic::render {
 
-inline constexpr uint64_t kMaterialBinningABI = 0x4d42494e00000006ull;
+inline constexpr uint64_t kMaterialBinningABI = 0x4d42494e00000008ull;
+
 struct MaterialBinningParams {
     ShaderSampledImage visibility;
     GPUBufferSpan instances;
@@ -20,8 +21,10 @@ struct MaterialBinningParams {
     uint32_t tileCount = 0;
     GPUBufferSpan materialProgramBins;
     uint32_t programBinCount = 0;
+    GPUBufferSpan tileSummaries;
+    GPUBufferSpan tilePixelBins;
 };
-static_assert(sizeof(MaterialBinningParams) == 128);
+static_assert(sizeof(MaterialBinningParams) == 152);
 static_assert(offsetof(MaterialBinningParams, width) == 100);
 
 } // namespace metallic::render
