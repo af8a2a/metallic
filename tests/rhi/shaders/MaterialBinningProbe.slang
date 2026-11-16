@@ -71,6 +71,9 @@ ProbePush probePush()
 #ifndef PROBE_BIN_COUNT
 #define PROBE_BIN_COUNT 5
 #endif
+#ifndef PROBE_VALID_VISIBILITY
+#define PROBE_VALID_VISIBILITY 0
+#endif
 static const uint kProbeHeader = PROBE_BIN_COUNT * 5u + 2u;
 
 [shader("compute")]
@@ -92,7 +95,10 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
     }
     if (i < PROBE_MATERIAL_COUNT) {
         GPUDrivenPreviewMaterial material = {};
-        material.identity.z = i == 0u ? 10000u : (i * 73u) % PROBE_MATERIAL_COUNT;
+        material.identity.z = (i * 73u) % PROBE_MATERIAL_COUNT;
+#if !PROBE_VALID_VISIBILITY
+        if (i == 0u) { material.identity.z = 10000u; }
+#endif
         gMaterials[i] = material;
         // Change executable features while keeping source material IDs stable.
         uint type = 1u + (i + push.bin) % 4u;
@@ -109,9 +115,15 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
         gShadingMaterials[i] = shading;
     }
     if (i < push.width * push.height) {
+#if PROBE_VALID_VISIBILITY
+        // Valid hits and background within the same edge tiles; change their
+        // masks across frames to exercise reuse without malformed hit records.
+        uint kind = (i + push.bin) % 5u == 4u ? PROBE_MATERIAL_COUNT : i % PROBE_MATERIAL_COUNT;
+#else
         uint kind = i % (PROBE_MATERIAL_COUNT + 5u);
         // A dense tile list crosses Vulkan's guaranteed 65535-group X limit.
         if (push.width > 4096u) { kind = 0u; }
+#endif
         uint record = kind < PROBE_MATERIAL_COUNT ? kind : kind - 2u;
         uint visibility = ((record + 1u) << 7u) | (i % 127u);
         if (kind == PROBE_MATERIAL_COUNT || push.width == 8u) { visibility = 0u; }

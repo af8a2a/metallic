@@ -31,8 +31,9 @@ static_assert(sizeof(MaterialProbeParams) == 64);
 
 class MaterialBinningProbePass final : public render::UnsafePass {
 public:
-    explicit MaterialBinningProbePass(bool fixture, bool typed = false, uint32_t materialCount = 257)
-        : fixture_(fixture), typed_(typed), materialCount_(materialCount) {}
+    explicit MaterialBinningProbePass(bool fixture, bool typed = false, uint32_t materialCount = 257,
+        bool validVisibility = false)
+        : fixture_(fixture), typed_(typed), materialCount_(materialCount), validVisibility_(validVisibility) {}
 
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
@@ -84,13 +85,14 @@ public:
             "materialIndirectProbeMain", "materialIndirectProbeMain"};
         for (uint32_t i = 0; i < (fixture_ ? 1u : 3u); ++i) {
             const std::string materialCount = std::to_string(materialCount_);
-            const render::SlangMacroDefine alternate[] = {{"PROBE_MATERIAL_COUNT", materialCount.c_str()}, {"PROBE_ALTERNATE", "1"}};
+            const render::SlangMacroDefine alternate[] = {{"PROBE_MATERIAL_COUNT", materialCount.c_str()},
+                {"PROBE_VALID_VISIBILITY", validVisibility_ ? "1" : "0"}, {"PROBE_ALTERNATE", "1"}};
             render::ShaderCompileResult shader;
             auto result = render::compileSlangShaderToSpirv({
                 .moduleName = "MaterialBinningProbe",
                 .entryPointName = entries[i],
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                .macroDefines = {alternate, i == 2 ? 2u : 1u},
+                .macroDefines = {alternate, i == 2 ? 3u : 2u},
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
             result = programs_[i].initialize(*device_, {
@@ -270,6 +272,7 @@ private:
     bool fixture_;
     bool typed_;
     uint32_t materialCount_;
+    bool validVisibility_;
     render::Device* device_ = nullptr;
     std::array<render::ComputeProgram, 3> programs_;
     render::ComputeProgram incompatibleProgram_;
@@ -659,11 +662,12 @@ public:
 
         constexpr uint32_t kMaterials = 257;
         auto runCase = [&](uint32_t bins, bool trust, uint32_t width, uint32_t height,
-                           uint32_t totalFrames, uint32_t verifyFrames, std::vector<double>* outSamples) -> RHITestResult {
+                           uint32_t totalFrames, uint32_t verifyFrames, std::vector<double>* outSamples,
+                           bool validVisibility = false, std::vector<std::vector<uint32_t>>* outReadbacks = nullptr) -> RHITestResult {
             auto executables = std::make_shared<ProgramBinExecutables>();
             std::weak_ptr<ProgramBinExecutables> weakExecutables = executables;
             registerRenderGraphPassType("ProgramBinFixture", "Program fixture", [=] {
-                return std::make_unique<MaterialBinningProbePass>(true, false, kMaterials);
+                return std::make_unique<MaterialBinningProbePass>(true, false, kMaterials, validVisibility);
             });
             registerRenderGraphPassType("ProgramBinProbe", "Program probe", [=] {
                 return std::make_unique<ProgramBinningProbePass>(bins, true, weakExecutables.lock(), trust);
@@ -704,11 +708,13 @@ public:
                     const uint32_t phase = values[header - 2];
                     std::vector<uint64_t> tilePrograms(size_t(columns) * rows, 0);
                     for (uint32_t pixel = 0; pixel < width * height; ++pixel) {
-                        const uint32_t kind = width > 4096 ? 0 : pixel % (kMaterials + 5);
+                        const uint32_t kind = validVisibility
+                            ? ((pixel + phase) % 5 == 4 ? kMaterials : pixel % kMaterials)
+                            : (width > 4096 ? 0 : pixel % (kMaterials + 5));
                         const uint32_t source = (((kind * 17) % kMaterials) * 73) % kMaterials;
                         uint32_t expected = 0;
                         if (bins == 2) {
-                            const bool isFg = trust ? (kind != kMaterials) : (kind < kMaterials);
+                            const bool isFg = trust && !validVisibility ? (kind != kMaterials) : (kind < kMaterials);
                             expected = (isFg && width != 8) ? 1u : 0u;
                         } else {
                             expected = (kind < kMaterials && width != 8) ? 1u + (source + phase) % (bins - 1) : 0u;
@@ -745,6 +751,7 @@ public:
                     if (bins == 2 && width == 8 && values[1 * 5 + 1] != 0) {
                         return RHITestResult::fail("Empty foreground bin should emit zero tasks");
                     }
+                    if (outReadbacks != nullptr) { outReadbacks->push_back(std::move(values)); }
                 }
                 if (outSamples != nullptr) {
                     auto completed = executor.collectCompletedGpuExecutionStats();
@@ -772,6 +779,31 @@ public:
             }
         }
 
+        // Malformed visibility intentionally differs between validated and trusted
+        // modes above. Valid producer data must have identical coverage and dispatch.
+        for (const auto extent : {std::array<uint32_t, 2>{1, 1}, {8, 4}, {17, 9}, {33, 17}}) {
+            std::array<std::vector<std::vector<uint32_t>>, 2> readbacks;
+            for (uint32_t mode = 0; mode < readbacks.size(); ++mode) {
+                auto status = runCase(2, mode != 0, extent[0], extent[1], 4, 4, nullptr, true, &readbacks[mode]);
+                if (!status.passed) { return status; }
+            }
+            // Task allocation order is unspecified. The readback checks every
+            // pixel's unique bin/mask coverage and each bin's count/offset/arguments.
+            if (readbacks[0] != readbacks[1]) {
+                return RHITestResult::fail("Valid single-foreground coverage or indirect dispatch differs between modes 2 and 3");
+            }
+        }
+        // The trust flag must not collapse multiple foreground programs into bin 1.
+        // Retain malformed IDs here as well: multi-program classification validates them.
+        std::array<std::vector<std::vector<uint32_t>>, 2> multipleProgramReadbacks;
+        for (uint32_t mode = 0; mode < multipleProgramReadbacks.size(); ++mode) {
+            auto status = runCase(5, mode != 0, 17, 17, 4, 4, nullptr, false, &multipleProgramReadbacks[mode]);
+            if (!status.passed) { return status; }
+        }
+        if (multipleProgramReadbacks[0] != multipleProgramReadbacks[1]) {
+            return RHITestResult::fail("Trust flag changed multi-program classification or indirect dispatch");
+        }
+
         std::ofstream report(context.outputDirectory / "ProgramBinningTwoBin.txt");
         for (const auto extent : {std::array<uint32_t, 2>{512, 256}, {4097, 1025}}) {
             struct BenchMode { uint32_t bins; bool trust; const char* label; };
@@ -793,7 +825,7 @@ public:
                     << " meanMs=" << (sum / double(samples.size())) << "\n";
             }
         }
-        return RHITestResult::pass("Single foreground bin (programBinCount=2) validated & trusted modes match per-pixel outputs, bounds safety, direct offsets, and indirect dispatch across edge/oversize extents");
+        return RHITestResult::pass("Single-foreground validated/trusted coverage, exact valid-input A/B, multi-program fallback, and indirect bounds across edge/oversize extents");
     }
 };
 METALLIC_REGISTER_RHI_TEST(TwoBinProgramBinningTest);

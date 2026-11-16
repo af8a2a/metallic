@@ -1977,6 +1977,8 @@ public:
                 std::string binningLog;
                 const bool sparsePrograms = boolProperty(context.properties(), "programBinning", true);
                 if (sparsePrograms) { updateMaterialProgramBins(); }
+                // The frame/view/scene checks above bind the matching VBuffer and
+                // GPUScene publication, whose producer guarantees valid hit records.
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
                     .visibility = visibilityView,
                     .streamRecords = deferredStream->visibleClusterBuffer,
@@ -1985,7 +1987,8 @@ public:
                     .shadingMaterials = sceneResources_.materialBuffer(),
                     .width = push.width, .height = push.height,
                     .materialProgramBins = sparsePrograms ? std::span<const uint32_t>(materialInstanceProgramBins_) : std::span<const uint32_t>{},
-                    .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u},
+                    .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u,
+                    .trustVisibilityHits = true},
                     binningLog).transform([&](auto value) { materialBins = std::move(value); });
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
                 bindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialBins), .buffer = materialBins.bins});
