@@ -3,7 +3,7 @@
 当前候选验收规则见 [ExperimentRunner 工具契约](../Tools/Perf/ExperimentRunner.md)。
 2026-11-09 起，新实验取消统一 3% 最低收益，允许独立确认区间下界严格大于 0 的
 小幅收益；正确性、证据完整性与整图回退预算仍须通过。下文里程碑数据为历史记录。
-当前优化默认按 [Nsight 驱动的闭环](../Skills/metallic-shader-optimization/references/nsight-guided-optimization.md)
+当前优化默认按 [Nsight 驱动的闭环](../.agents/skills/metallic-shader-optimization/references/nsight-guided-optimization.md)
 通过 MCP 读取 GPU Trace 计数器和 Shader Profiler 热点，对比前后捕获来验证瓶颈
 假设并选择下一轮改动；实际加速仍由独立的普通计时与正确性证据确认。
 
