@@ -6,6 +6,9 @@
 
 namespace metallic::render {
 using VSMTemporalUInt = uint32_t;
+using VSMTemporalFloat = float;
+using VSMTemporalFloat2 = std::array<float, 2>;
+using VSMTemporalFloat3 = std::array<float, 3>;
 using VSMTemporalViews = GPUBufferSpan;
 using VSMTemporalDepth = ShaderSampledImage;
 using VSMTemporalShadows = ShaderStorageImage;
@@ -14,7 +17,26 @@ using VSMTemporalHistory = ShaderStorageImage;
 import ShaderCore;
 using Metallic;
 typealias VSMTemporalUInt = uint;
-typealias VSMTemporalViews = BufferSpan<ViewConstants>;
+typealias VSMTemporalFloat = float;
+typealias VSMTemporalFloat2 = float2;
+typealias VSMTemporalFloat3 = float3;
+#endif
+
+struct VSMTemporalViewBasis
+{
+    VSMTemporalFloat3 eye; VSMTemporalFloat nearTimesFar;
+    VSMTemporalFloat3 forward; VSMTemporalFloat depthParamA;
+    VSMTemporalFloat3 right; VSMTemporalFloat depthParamB;
+    VSMTemporalFloat3 up; VSMTemporalFloat clearDepth;
+    VSMTemporalFloat3 originOrRayBase; VSMTemporalFloat toleranceScale;
+    VSMTemporalFloat3 dirX; VSMTemporalFloat orthoTolerance;
+    VSMTemporalFloat3 dirY; VSMTemporalFloat nearPlane;
+    VSMTemporalFloat2 viewportExtent; VSMTemporalFloat projScaleX; VSMTemporalFloat projScaleY;
+    VSMTemporalFloat2 jitter; VSMTemporalFloat farPlane; VSMTemporalUInt isOrtho;
+};
+
+#ifndef __cplusplus
+typealias VSMTemporalViews = BufferSpan<VSMTemporalViewBasis>;
 typealias VSMTemporalDepth = ResourceHandle<Texture2D<float>>;
 typealias VSMTemporalShadows = ResourceHandle<RWTexture2DArray<float>>;
 typealias VSMTemporalHistory = ResourceHandle<RWTexture2D<uint2>>;
@@ -34,6 +56,7 @@ struct VirtualShadowMapTemporalParams
 };
 
 #ifdef __cplusplus
+static_assert(sizeof(VSMTemporalViewBasis) == 144);
 static_assert(sizeof(VirtualShadowMapTemporalParams) == 80);
 
 class RenderGraphExecutionContext;
