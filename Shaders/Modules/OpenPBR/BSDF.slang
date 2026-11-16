@@ -443,19 +443,23 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     // Trans supersedes SSS.
     // TODO: Rename these internal variables (which come from old Lantern code).
 
+    const bool has_dielectric = resolved_inputs.base_metalness < 1.0f;
     const float non_trans = 1.0f - resolved_inputs.transmission_weight;
     const float non_sss = 1.0f - resolved_inputs.subsurface_weight;
 
-    const float dielectric = 1.0f - resolved_inputs.base_metalness;
-    const float opaque_dielectric = non_trans * non_sss * dielectric;
+    const float dielectric = has_dielectric ? (1.0f - resolved_inputs.base_metalness) : 0.0f;
+    const float opaque_dielectric = has_dielectric ? (non_trans * non_sss * dielectric) : 0.0f;
 
-    const float trans = dielectric * resolved_inputs.transmission_weight;
-    const float sss = non_trans * dielectric * resolved_inputs.subsurface_weight;
+    const float trans = (has_dielectric && resolved_inputs.transmission_weight > 0.0f)
+        ? (dielectric * resolved_inputs.transmission_weight) : 0.0f;
+    const float sss = (has_dielectric && resolved_inputs.subsurface_weight > 0.0f)
+        ? (non_trans * dielectric * resolved_inputs.subsurface_weight) : 0.0f;
 
-    const float darkened_metal = resolved_inputs.base_metalness * resolved_inputs.specular_weight;
+    const float darkened_metal = (resolved_inputs.base_metalness > 0.0f)
+        ? (resolved_inputs.base_metalness * resolved_inputs.specular_weight) : 0.0f;
     const float3 weighted_base_color = resolved_inputs.base_color * resolved_inputs.base_weight;
     float3 metal_average_fresnel = float3(1.0f);
-    if (TContext.enableMetallic()) {
+    if (TContext.enableMetallic() && darkened_metal > 0.0f) {
         metal_average_fresnel =
             openPBRMetalAverageFresnelWithF82Tint(weighted_base_color, resolved_inputs.specular_color);
     }
@@ -542,28 +546,28 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     float3 scale_for_opaque_reflection;
     if (inside) {
         // Note that specular tint does not affect dielectric internal reflection.
-        scale_for_trans_reflection = float3(trans_including_sss);
+        scale_for_trans_reflection = (trans_including_sss > 0.0f) ? float3(trans_including_sss) : float3(0.0f);
         thin_wall_aware_scale_for_trans_reflection =
             scale_for_trans_reflection; // no difference (if inside, we must not be in thin-wall mode)
         thin_wall_specular_transmission_albedo_scale =
             float3(0.0f); // no thin-wall contribution (if inside, we must not be in thin-wall mode)
-        scale_for_opaque_reflection = resolved_inputs.specular_color * opaque_dielectric;
+        scale_for_opaque_reflection = (opaque_dielectric > 0.0f) ? (resolved_inputs.specular_color * opaque_dielectric) : float3(0.0f);
     } else // entering
     {
-        scale_for_trans_reflection = resolved_inputs.specular_color * trans_including_sss;
+        scale_for_trans_reflection = (trans_including_sss > 0.0f) ? (resolved_inputs.specular_color * trans_including_sss) : float3(0.0f);
         if (resolved_inputs.geometry_thin_walled) {
             // In thin-wall mode, we only consider the reflection from the "sss" component, not "trans_including_sss" ("trans" + "sss")
             // because the reflection from the "trans" component is handled separately based on a formula that incorporates the
             // reflection from the back surface and all internal bounces.
             thin_wall_aware_scale_for_trans_reflection =
-                resolved_inputs.specular_color * sss; // used for specular reflection from subsurface component
+                (sss > 0.0f) ? (resolved_inputs.specular_color * sss) : float3(0.0f); // used for specular reflection from subsurface component
             thin_wall_specular_transmission_albedo_scale =
-                resolved_inputs.specular_color * trans; // used for specular reflection from transmission component
+                (trans > 0.0f) ? (resolved_inputs.specular_color * trans) : float3(0.0f); // used for specular reflection from transmission component
         } else {
             thin_wall_aware_scale_for_trans_reflection = scale_for_trans_reflection; // no difference
             thin_wall_specular_transmission_albedo_scale = float3(0.0f);             // no thin-wall contribution
         }
-        scale_for_opaque_reflection = resolved_inputs.specular_color * opaque_dielectric;
+        scale_for_opaque_reflection = (opaque_dielectric > 0.0f) ? (resolved_inputs.specular_color * opaque_dielectric) : float3(0.0f);
     }
 
     // Apply dispersion to all of the relative IORs.
@@ -620,12 +624,13 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
             ? abs(cos_theta)
             : cos_theta; // cos(theta) should always positive for thin-walled surfaces since we're always entering from the front
 
-    const float3 final_transmission_tint = openPBRComputeFinalTransmissionTint(
-        volume_derived_props.transmission_tint, resolved_inputs.geometry_thin_walled, thin_wall_aware_cos_theta,
-        relative_ior_for_refraction);
-    const float3 tinted_trans = trans * final_transmission_tint;
+    const float3 tinted_trans = (trans > 0.0f)
+        ? (trans * openPBRComputeFinalTransmissionTint(
+            volume_derived_props.transmission_tint, resolved_inputs.geometry_thin_walled, thin_wall_aware_cos_theta,
+            relative_ior_for_refraction))
+        : float3(0.0f);
     const float3 tinted_trans_including_sss = tinted_trans + float3(sss);
-    const float3 thin_wall_aware_tinted_trans_including_sss = non_thin_wall_weight * tinted_trans_including_sss;
+    const float3 thin_wall_aware_tinted_trans_including_sss = (trans_including_sss > 0.0f) ? (non_thin_wall_weight * tinted_trans_including_sss) : float3(0.0f);
 
     // Set up the surrounding absolute IORs needed for the thin film.
     // Note that thin film is only applied on both the exterior as well as the interior.
@@ -736,21 +741,25 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     // Use the original alpha (roughness^2) value for the specular microfacet-multiple-scattering lobes and the diffuse lobe,
     // since these lobes depend on alpha to conserve energy but don't directly support anisotropy.
     // TODO: Avoid initializing and using these lobes if they don't contribute.
-    if (TContext.enableTranslucency()) {
+    if (TContext.enableTranslucency() && (TContext.kEnableSampling || trans_including_sss > 0.0f)) {
         openPBRInitializeLobe(context, prepared.fuzz_lobe.coating_lobe.base_lobe.dielectric_mms_lobe, normal_ff,
                               view_direction, specular_alpha, relative_ior_for_refraction, scale_for_trans_reflection,
                               tinted_trans_including_sss);
+    } else if (TContext.enableTranslucency()) {
+        prepared.fuzz_lobe.coating_lobe.base_lobe.dielectric_mms_lobe = (OpenPBRDielectricMicrofacetMultipleScatteringLobe)0;
     }
-    if (TContext.enableMetallic()) {
+    if (TContext.enableMetallic() && (TContext.kEnableSampling || darkened_metal > 0.0f)) {
         // Note that color is squared to account for the minimum of one additional absorption event (at the
         // secondary microfacet intersection) (although even more than one additional bounce may occur in reality).
-        const float3 scale_for_metal_reflection = openPBRSquare(metal_average_fresnel) * darkened_metal;
+        const float3 scale_for_metal_reflection = (darkened_metal > 0.0f) ? (openPBRSquare(metal_average_fresnel) * darkened_metal) : float3(0.0f);
         openPBRInitializeLobe(context, prepared.fuzz_lobe.coating_lobe.base_lobe.metal_mms_lobe, normal_ff,
                               view_direction, specular_alpha, scale_for_metal_reflection);
+    } else if (TContext.enableMetallic()) {
+        prepared.fuzz_lobe.coating_lobe.base_lobe.metal_mms_lobe = (OpenPBRMetalMicrofacetMultipleScatteringLobe)0;
     }
 
     // Create and add a diffuse lobe.
-    const float3 diffuse_albedo = weighted_base_color * opaque_dielectric;
+    const float3 diffuse_albedo = (opaque_dielectric > 0.0f) ? (weighted_base_color * opaque_dielectric) : float3(0.0f);
     const float3 thin_wall_aware_diffuse_albedo = diffuse_albedo + thin_wall_subsurface_reflection_albedo;
     // TODO: Avoid initializing and using this lobe if it doesn't contribute.
     openPBRInitializeLobe(context, prepared.fuzz_lobe.coating_lobe.base_lobe.diffuse_lobe, normal_ff, view_direction,
@@ -860,7 +869,7 @@ openPBRPrepareImpl<TContext : IOpenPBRContext>(TContext context, const OpenPBRRe
 
     OpenPBRVolumeDerivedProps volume_derived_props;
 
-    const bool VolumesEnabled = TContext.enableTranslucency();
+    const bool VolumesEnabled = TContext.enableTranslucency() && TContext.kEnableSampling;
 
     // Step 1: Set up the volume and any derived properties from resolved inputs.
     openPBRPrepareVolume(resolved_inputs, volume_derived_props, prepared, VolumesEnabled);

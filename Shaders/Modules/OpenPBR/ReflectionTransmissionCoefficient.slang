@@ -74,16 +74,17 @@ public float3 openPBRReflectionCoefficient<TContext : IOpenPBRContext>(
 
     // Calculate the standard reflection coefficient.
     if (thin_film_presence < 1.0f) {
-        if (TContext.enableTranslucency())
+        if (TContext.enableTranslucency() && any(refl_trans_coeff.scale_for_reflection_for_transparent_part > float3(0.0f)))
             standard_refl_coeff += refl_trans_coeff.scale_for_reflection_for_transparent_part *
                                    openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_transparent_part, idoth,
                                                      TContext.kEnableDispersion);
 
-        standard_refl_coeff +=
-            refl_trans_coeff.scale_for_reflection_for_opaque_part *
-            openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_opaque_part, idoth, TContext.kEnableDispersion);
+        if (any(refl_trans_coeff.scale_for_reflection_for_opaque_part > float3(0.0f)))
+            standard_refl_coeff +=
+                refl_trans_coeff.scale_for_reflection_for_opaque_part *
+                openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_opaque_part, idoth, TContext.kEnableDispersion);
 
-        if (TContext.enableMetallic())
+        if (TContext.enableMetallic() && refl_trans_coeff.metal_amount > 0.0f)
             standard_refl_coeff += refl_trans_coeff.metal_amount *
                                    openPBRMetalSchlickWithF82Tint(refl_trans_coeff.f0_for_metal,
                                                                   refl_trans_coeff.f82_tint_for_metal, idoth);

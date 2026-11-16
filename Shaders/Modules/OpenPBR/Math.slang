@@ -62,6 +62,10 @@ public float openPBRMin3(const float3 v) { return min(min(v.x, v.y), v.z); }
 
 public float openPBRMax3(const float3 v) { return max(max(v.x, v.y), v.z); }
 
+public bool openPBRIsZero3(const float3 v) { return openPBRMax3(abs(v)) == 0.0f; }
+public bool openPBRIsNonZero3(const float3 v) { return openPBRMax3(abs(v)) > 0.0f; }
+public bool openPBRHasPositive3(const float3 v) { return openPBRMax3(v) > 0.0f; }
+
 public float openPBRGetCosThetaLocal(const float3 direction_local) { return direction_local.z; }
 
 public float openPBRSignNonzero(const float x) { return (x >= 0.0f) ? 1.0f : -1.0f; }

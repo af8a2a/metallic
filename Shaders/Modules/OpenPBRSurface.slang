@@ -70,6 +70,7 @@ public struct SceneOpenPBRContext : IOpenPBRContext
 #endif
     public static const bool kEnableDispersion = false;
     public static const bool kEnableThinFilm = false;
+    public static const bool kEnableSampling = true;
     public static bool enableSheenAndCoat()
     {
 #if METALLIC_CUSTOM_MATERIALS
@@ -243,7 +244,7 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal,
     int fixedMetalness = -1, bool opaquePrimary = false)
 {
-    bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
+    bool deterministicGlassTextures = !opaquePrimary && materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
     MaterialValueTextureContext valueContext;
     valueContext.normalizedRayLod = footprint.isotropicLod0;
@@ -311,20 +312,24 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
             rayDirection,
             deterministicGlassTextures,
             seed, footprint, sampled);
-        transmissionSample = source.loadTexture(
-            material.transmissionTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            rayCone,
-            hit,
-            rayDirection,
-            deterministicGlassTextures,
-            seed, footprint, sampled);
-        specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
-            float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, sampled);
-        specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
-            float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, specularColorSampled);
+        if (!opaquePrimary) {
+            transmissionSample = source.loadTexture(
+                material.transmissionTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                rayCone,
+                hit,
+                rayDirection,
+                deterministicGlassTextures,
+                seed, footprint, sampled);
+        }
+        if (fixedMetalness != 1) {
+            specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
+                float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, sampled);
+            specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
+                float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, specularColorSampled);
+        }
     }
     bool disableTextures = openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures);
     // Keep bound-slot sampling and RNG advancement unchanged in debug mode.
@@ -338,10 +343,11 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     }
     float3 baseColor = saturate(modulateSceneMaterialColor(material.baseColor.rgb,
         baseColorSample.rgb, material.baseColorTexture, baseColorSampled, disableTextures));
-    float metallic = saturate(material.params.x * metallicRoughnessSample.b);
+    float metallic = fixedMetalness >= 0 ? float(fixedMetalness)
+        : saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
-    float transmission = saturate(material.glassParams.x * transmissionSample.r);
-    if (openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission)) {
+    float transmission = opaquePrimary ? 0.0 : saturate(material.glassParams.x * transmissionSample.r);
+    if (opaquePrimary || openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission)) {
         transmission = 0.0;
     }
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
@@ -368,16 +374,21 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     result.inputs.base_diffuse_roughness = 0.0;
     result.inputs.base_metalness = metallic;
 
-    result.inputs.specular_weight = lerp(saturate(material.specular.w * specularSample.a), 1.0, metallic);
-    result.inputs.specular_color = lerp(saturate(modulateSceneMaterialColor(material.specular.rgb,
-        specularColorSample.rgb, material.specularColorTexture, specularColorSampled, disableTextures)), float3(1.0), metallic);
+    const float dielectricSpecularWeight = saturate(material.specular.w * specularSample.a);
+    result.inputs.specular_weight = (fixedMetalness == 1) ? 1.0
+        : ((fixedMetalness == 0) ? dielectricSpecularWeight : lerp(dielectricSpecularWeight, 1.0, metallic));
+    const float3 dielectricSpecularColor = (fixedMetalness == 1) ? float3(1.0)
+        : saturate(modulateSceneMaterialColor(material.specular.rgb,
+            specularColorSample.rgb, material.specularColorTexture, specularColorSampled, disableTextures));
+    result.inputs.specular_color = (fixedMetalness == 1) ? float3(1.0)
+        : ((fixedMetalness == 0) ? dielectricSpecularColor : lerp(dielectricSpecularColor, float3(1.0), metallic));
     result.inputs.specular_roughness = roughness;
     result.inputs.specular_roughness_anisotropy = 0.0;
     result.inputs.specular_ior = ior;
     result.inputs.specular_anisotropy_rotation_cos_sin = float2(1.0, 0.0);
 
-    result.inputs.transmission_weight = transmission * (1.0 - metallic);
-    result.inputs.transmission_color = result.inputs.transmission_weight > 0.0 ? powColor(baseColor, 0.5) : float3(1.0);
+    result.inputs.transmission_weight = (fixedMetalness == 1 || opaquePrimary) ? 0.0 : transmission * (1.0 - metallic);
+    result.inputs.transmission_color = (!opaquePrimary && result.inputs.transmission_weight > 0.0) ? powColor(baseColor, 0.5) : float3(1.0);
     result.inputs.transmission_depth = 0.0;
     result.inputs.transmission_scatter = float3(0.0, 0.0, 0.0);
     result.inputs.transmission_scatter_anisotropy = 0.0;
@@ -470,11 +481,12 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
     {
         material = source.loadParameters(instance);
         updateSceneSurfaceHit(hit, context, instance.parameterOffset / kSceneMaterialRecordBytes);
-        if (materialNeedsRayFootprint(source.hasTextures(push), materialNeedsDeterministicTextureMip0(material))) {
+        bool deterministicMip0 = !opaquePrimary && materialNeedsDeterministicTextureMip0(material);
+        if (materialNeedsRayFootprint(source.hasTextures(push), deterministicMip0)) {
             context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
         }
         resolveSceneSurfaceNormal(hit, material.normalTexture, material.textureParams.x, push,
-            rayCone, rayDirection, materialNeedsDeterministicTextureMip0(material), faceForwardNormal,
+            rayCone, rayDirection, deterministicMip0, faceForwardNormal,
             applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
         SurfaceMaterialResult<Closure> result = (SurfaceMaterialResult<Closure>)0;
         result.closure = resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed, source,

@@ -155,7 +155,7 @@ public void openPBRInitializeLobe<TContext : IOpenPBRContext>(TContext context,
     lobe.specular_uv_y = uv_alpha;
     lobe.specular_uv_z = uv_ior;
 
-    if (all(diffuse_albedo == float3(0))) {
+    if (openPBRIsZero3(diffuse_albedo)) {
         lobe.cached_specular_energy_compensation = 0.0f;
         lobe.eval_specular_energy_compensation = 0.0f;
         return;
@@ -188,7 +188,7 @@ openPBRCalculateLobeValue<TContext : IOpenPBRContext>(TContext context,
                                                       const float3 view_direction, const float3 light_direction)
 {
     // Exact zero albedo makes both EON scattering terms zero. Avoid EON and LUT work.
-    if (all(lobe.diffuse_albedo == float3(0))) { return openPBRMakeZeroDiffuseSpecular(); }
+    if (openPBRIsZero3(lobe.diffuse_albedo)) { return openPBRMakeZeroDiffuseSpecular(); }
 
     const float cos_out = dot(light_direction, lobe.normal_ff);
     if (cos_out <= 0.0f)

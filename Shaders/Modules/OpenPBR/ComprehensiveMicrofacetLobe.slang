@@ -89,7 +89,8 @@ public OpenPBRDiffuseSpecular openPBRCalculateLobeValue<TContext : IOpenPBRConte
         const float G = openPBREvalSmithG2(lobe.microfacet_distr, view_direction, light_direction, idotn, odotn);
 
         return openPBRMakeDiffuseSpecularFromSpecular(G * D_other_terms_F);
-    } else if (TContext.enableTranslucency() && idotn * odotn < 0.0f) // transmission
+    } else if (TContext.enableTranslucency() && idotn * odotn < 0.0f &&
+               openPBRHasPositive3(lobe.refl_trans_coeff.transmission)) // transmission
     {
         if (TContext.kEnableDispersion) {
             float3 D_other_terms_F;

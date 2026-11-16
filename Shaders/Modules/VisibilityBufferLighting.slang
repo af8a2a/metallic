@@ -330,6 +330,50 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
 }
 
 
+public struct DeferredOpenPBRContext : IOpenPBRContext
+{
+#if METALLIC_CUSTOM_MATERIALS
+    public static const bool kEnableSheenAndCoat = true;
+#else
+    public static const bool kEnableSheenAndCoat = false;
+#endif
+    public static const bool kEnableDispersion = false;
+    public static const bool kEnableThinFilm = false;
+    public static const bool kEnableSampling = false;
+    public static bool enableSheenAndCoat()
+    {
+#if METALLIC_CUSTOM_MATERIALS
+        return true;
+#else
+        return false;
+#endif
+    }
+    public static bool enableDispersion() { return false; }
+    public static bool enableTranslucency() { return true; }
+    public static bool enableMetallic() { return true; }
+    public float4 sample2D(int id, float2 uv) { return sampleOpenPBRLut2D(id, uv); }
+    public float4 sample3D(int id, float3 uvw) { return sampleOpenPBRLut3D(id, uvw); }
+};
+
+public struct DeferredOpenPBRMaterialSource : IOpenPBRMaterialSource
+{
+    public bool hasTextures(ScenePathTracePush push) { return sceneHasMaterialTextures(push); }
+    public typealias Context = DeferredOpenPBRContext;
+    public Context context() { return DeferredOpenPBRContext(); }
+    public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
+    {
+        return loadSceneOpenPBRMaterial(instance.parameterOffset / kSceneMaterialRecordBytes);
+    }
+    public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
+        ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
+    {
+        SceneMaterialTextureSource source;
+        return source.loadTexture(textureInfo, uv, fallback, push, cone, hit, rayDirection,
+            deterministicMip0, seed, footprint, sampled);
+    }
+};
+
 public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
 {
@@ -350,7 +394,14 @@ public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
         return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
     }
 #endif
-    var program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+    Material<OpenPBRMaterialProgram<DeferredOpenPBRMaterialSource>> program = {};
+    program.program.hit = hit;
+    program.program.push = push;
+    program.program.rayCone = cone;
+    program.program.rayDirection = ray.direction;
+    program.program.seed = seed;
+    program.program.faceForwardNormal = true;
+    program.program.applyDebugNormalOverrides = false;
     program.program.fixedMetalness = fixedMetalness;
     program.program.opaquePrimary = opaquePrimary;
     return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
