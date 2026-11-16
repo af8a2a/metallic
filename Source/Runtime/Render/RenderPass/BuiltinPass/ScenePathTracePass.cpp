@@ -944,6 +944,8 @@ public:
             }
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularTexture), .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularSampler), .kind = ComputeResourceBindingKind::Sampler, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
@@ -1888,6 +1890,12 @@ public:
             }
             {
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .buffer = environment.prefilteredSpecularBuffer});
+                if (environment.prefilteredSpecularView != nullptr) {
+                    bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularTexture),
+                        .textureViews = {&environment.prefilteredSpecularView, 1}});
+                    bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularSampler),
+                        .sampler = environment.prefilteredSpecularSampler});
+                }
                 constexpr std::array shadowInputs{"shadow", "moonShadow"};
                 constexpr std::array parameterInputs{"shadowParameters", "moonShadowParameters"};
                 constexpr std::array shadowMembers{METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility),

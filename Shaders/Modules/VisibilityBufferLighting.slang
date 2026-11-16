@@ -90,6 +90,18 @@ public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, Sce
     float3 local = environmentLocalDirectionToWorld(direction, -push.environmentRotationRadians);
     float level = saturate(roughness) * float(kEnvironmentFilterLayers - 1u);
     uint lo = uint(floor(level)), hi = min(lo + 1u, kEnvironmentFilterLayers - 1u);
+    let textureHandle = getSceneResourceParameterField<ResourceHandle<Texture2DArray<float4>>>(kSceneEnvironmentSpecularTextureOffset);
+    if (textureHandle.index != 0xffffffffu) {
+        let source = resolveUniform(textureHandle);
+        let samplerState = resolveUniform(getSceneResourceParameterField<SamplerHandle>(kSceneEnvironmentSpecularSamplerOffset));
+        float2 uv = environmentFilterUv(local);
+        // Mirror reflections retain the original HDRI, including its full HDR range.
+        float3 a = lo == 0u ? environmentIndirectRadiance(direction, push)
+            : environmentFilterLayer(source, samplerState, uv, lo) * push.environmentIntensity;
+        float3 b = environmentFilterLayer(source, samplerState, uv, hi) * push.environmentIntensity;
+        return lerp(a, b, frac(level));
+    }
+    // RGBA32F linear filtering is optional on Vulkan devices.
     // Retain the original HDRI resolution for mirror reflections.
     float3 a = lo == 0u ? environmentIndirectRadiance(direction, push)
         : environmentFilterLayer(gEnvironmentSpecular, local, lo) * push.environmentIntensity;

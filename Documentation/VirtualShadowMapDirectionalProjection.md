@@ -1,5 +1,53 @@
 # VSM 方向光 Projection 正交计算专用编译
 
+## 2026-11-16：Hard / PCF / SMRT 专用 PSO 候选（QA 未通过）
+
+以 `80160cc1` 为基线，验证了仅作用于 per-face 方向光 Project 的过滤模式
+specialization：Slang 模块声明 SpecId0 / Int32，默认−1保留动态路径；CPU按
+最终有效模式0/1/2懒创建三个 PSO。零半径PCF和零光源半径SMRT在选PSO前降为
+Hard。State 固定所选pipeline并保留 Programs 寿命，filter不加入整组Programs
+失效键；既有 grouped projection statistics 的失效合同不变。局部光和混合
+one-pass保持动态，warmup同步三个tuple，不改变采样数、光源类型算术或资源ABI。
+
+候选未通过完整正确性门槛，**已恢复本轮所有生产与测试源码，候选仅归档**。
+没有启动普通性能计时，不能据此评价收益或认定性能回退。
+
+### 验证与限制
+
+- 候选 Slang O1 编译、SPIR-V 验证、SpecId0检查及模块所有权审查通过。
+  Release RHI程序和ShaderRequests测试构建通过，native warmup契约13/13通过。
+- RHI会拒绝shader未声明的specialization ID，因此没有用旧shader搭配新CPU
+  tuple冒充基线。A/B分别封存同编译器、同CMake配置构建的程序及对应CPU源码；
+  两侧17个DLL完全相同。每次运行安装与该程序匹配的shader和源码快照。
+- RTX 5060 / 621.01，Sponza1920×1080、6clipmaps、page128/VPA128、分层2048页、
+  无jitter，SMRT2×16/history32。SMRT静止/运动、Hard、PCF四例在16/47/49/63/79帧
+  的20个独立HDR检查点逐字节一致、全部有限；24份文件比较含4份重复最终帧。
+  已查看候选HDR预览。实际候选PSO日志覆盖模式2/2/0/1；9个有SHA日志的其他VSM
+  入口一致，仅Project改变。该证据不等同于原生指令或动态分支计数。
+- `virtual_shadow_map_production_room`、`virtual_shadow_map_smrt_temporal`
+  两臂均通过。全部运行无跳过，正确性与回归日志未发现Vulkan验证错误。
+- `virtual_shadow_map_filter_demand` 两臂均在
+  `Point-Finest-PCF-ZeroRadius` 失败，不能计为通过。两臂已记录的50条数据全部
+  逐字段一致；其中完整Directional18条包含过滤切换、四种Hard降级、查询计数、
+  receiver层级及shadow/debug/depth哈希。它证明受测分支的完成与一致性，不替代
+  整项失败结论，也未新增并存recording state的运行时测试。
+- `virtual_shadow_map_projection_equivalence` **不是相同基线失败复现**：
+  A完成12/86状态后在`hard-LegacyLayout-Room-Cold`失败；B完成58/86后在
+  `smrt-LegacyLayout-Floor-Cold`失败。B的StatisticsFallback与Standard阴影、
+  HDR不一致，首个阴影差异为layer6/pixel11654（0与127），发布表确认是第二方向光。
+  共同状态还存在Hard Room的方向光StatisticsFallback shadow哈希变化，以及两项
+  Mark请求计数差异。没有排除这些差异；不能宣称全路径逐位等价。
+
+A因提前失败没有执行到B的SMRT失败状态，因此本轮不能证明该SMRT失败是候选
+新引入，也不能全部归咎于原有基线。应先定位上述方向光投影调度/统计排列的差异，
+再评估是否重启普通A/B。未放宽原oracle或采用门槛，没有用带诊断的测试时间当性能。
+
+本机证据：`build/vsm-filter-specialization-20261116/` 中的`Plan.json`、
+`CorrectnessAudit.json`、`FilterDemandAudit.json`、`ProjectionEquivalenceAudit.json`、
+`RegressionComparison.json`和`Decision.json`。`Candidate.patch`包含shader、CPU
+PSO选择、warmup及测试的完整候选；`cpu-baseline/`、`cpu-candidate/`及两份程序
+保留复现身份。生成物不入库；本轮未创建提交。
+
 2026-11-04 当前状态：方向光资源访问与输出归属专用化使用 uniform 描述符，现为按灯光类型选择的标准实现；已删除 `directionalProjection` 和 `benchmarkDirectionalProjection`。采样数学继续保留与 Mark 共享的表达式。下文开关协议、默认值提升和测量属于历史记录，不能用于当前二进制的新 A/B；2026-10-31 的旧版正交裁剪结果不能作为后续版本的性能证据。
 
 状态（2026-10-31）：已实现，`directionalProjection` 默认关闭。GPU 等价与 Sponza 图像检查通过；独立确认 Projection 收益 13.80%、Shadows 收益 4.33%。RenderGraph 收益区间下界为 −2.19%，未达到预定 −2% 保护门槛，判定为 `inconclusive / uncertain / retain_candidate`，不声明整图稳定加速。

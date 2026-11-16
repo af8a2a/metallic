@@ -68,4 +68,11 @@ public float3 environmentFilterLayer(StructuredBuffer<float4> source, float3 dir
     return lerp(lerp(source[base + a.y * size.x + a.x].rgb, source[base + b.y * size.x + b.x].rgb, f.x),
                 lerp(source[base + c.y * size.x + c.x].rgb, source[base + d.y * size.x + d.x].rgb, f.x), f.y);
 }
+
+public float3 environmentFilterLayer(Texture2DArray<float4> source, SamplerState samplerState, float2 uv, uint layer)
+{
+    // Layers have identical dimensions; roughness interpolation stays explicit.
+    // The publication sampler repeats longitude and clamps latitude at the poles.
+    return source.SampleLevel(samplerState, float3(uv, float(layer)), 0.0).rgb;
+}
 } // namespace Metallic.Lighting

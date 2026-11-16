@@ -13,6 +13,122 @@ VBuffer.visibility / depth / rasterInfo / domain
           AutoExposure → FinalBlit ← ColorGrading.lut
 ```
 
+## 2026-11-16：可过滤纹理预过滤环境光（采用）
+
+Deferred 的镜面和折射 IBL 现在优先读取 RGBA32F `Texture2DArray`，以硬件双线性
+过滤替代每层四次 buffer 读取。仍为八个 256×128 lat-long 层，U repeat、V clamp，
+层间粗糙度插值显式执行；最低粗糙度的原始 HDRI 采样、HDR 精度和环境预计算算法不变。
+设备缺少 RGBA32F linear-filter/transfer 支持时沿用原 buffer 路径。旧消费者继续使用
+buffer；同一 publication 新增约 4 MiB 纹理，只在环境内容发布时复制，不逐帧复制。
+物理天空八份缓存最多额外约 32 MiB，另有 HDRI publication；未测动态天空更新开销。
+
+纹理、view 和 sampler 与既有 publication 同生命周期，覆盖 HDRI 发布以及物理天空
+复用、取消和淘汰。Scene 资源包由 408 扩至 416 字节，新增 texture/sampler 位于
+408/412，旧字段偏移不变；primary-split 与 diagnostic 包扩至 424 字节，后缀移至416。
+
+实验基线为 `80160cc1`，RTX 5060 / 621.01，MSVC Release，Sponza 1920×1080、
+SMRT 2×16/history32、分层缓存2048页、6 clipmaps、page128/VPA128，无 jitter。
+第16帧冻结流送，计时窗口内两臂均为503页、380401664纹理驻留字节及相同拓扑，
+不将冻结解释为全部资源驻留。真实前景为1个 material program，加背景共2个 bin。
+
+两臂使用同一新二进制、相同双资源 publication，仅切换 Deferred 的过滤 shader。
+因此下面量到的是**稳定帧采样收益**，不包含新增纹理的分配、发布和复制成本。
+固定3组 ABBA、12个串行进程，每次96帧预热、128帧计时，保留全部1536帧；
+224–226帧回读在计时窗口之外。保留磁盘缓存，编译与预热排除在计时之外，
+未锁频、未强制 GPU 独占；关闭 validation、Nsight 注入和 VSM detailed GPU profile。
+收益由每进程中位数的区组 log ratio 计算，95% CI 使用 Student-t（df=2）。
+
+| GPU范围 | 耗时下降点估计 | 95% CI |
+| --- | ---: | ---: |
+| Deferred shading | 5.77% | [2.05%, 9.36%] |
+| Deferred pass | 5.28% | [1.94%, 8.51%] |
+| RenderGraph GPU envelope | 2.46% | [1.91%, 3.01%] |
+
+达到预定的 Shading 点估计至少3%、Shading/Deferred收益下界大于零、Graph下界
+不低于−2%的门槛，保留候选。Graph 包含 VBuffer、Shadows、Deferred、AutoExposure、
+ColorGrading、FinalBlit，不含编辑器呈现；重叠节点不能求和，不外推为端到端帧率。
+未采集 native 指令或硬件计数器，不据此断言寄存器、带宽或 TEX 吞吐的变化。
+
+静止、运动、禁用阴影、禁用直射四例的16/47/49/63/79帧，共20个独立 checkpoint
+在 core/synchronization validation 下通过，HDR全部有限。诊断显示代理为非负
+RGB → `x/(1+x)` → sRGB；最大误差0.226576/255，最差RGB RMSE 0.000509/255，
+均低于预声明的2/255与0.15/255门槛。原始HDR最大差异0.042079，alpha无差异。
+直射贡献差异最大1.57e−7，阴影贡献差异最大1.88e−6。已查看静态/运动代理图和差分图；
+代理不等同于实际 ACES/FinalBlit 图像。36份计时截图也全部通过，各臂重复截图逐字节一致。
+
+新增 `environment_prefilter_texture_sampling` 使用真实发布数据：262144 texel 的
+texture.Load及中心采样逐位一致，2048个跨层、接缝、极点、亚texel及HDR高亮样本
+满足设备subTexelPrecisionBits与局部对比度推导的误差界。非中心采样不承诺逐位一致。
+两臂各五项环境光/阴影历史回归、候选采样测试，以及trusted资源包、云层环境发布、
+物理天空取消/淘汰、guide编译检查均通过，无skip和新增validation错误。
+70项ShaderRequests/NativeShaderWarmupRequests测试通过；RHI、请求测试与VSMSample
+构建通过，shader模块所有权审查通过393文件。未在不支持过滤的设备上实测fallback。
+
+共享包额外用world绑定的Opaque1/Sky验证fused/split：64×64、16帧、8–15帧回读、
+第11帧相机变更及逐帧运动，core/synchronization validation通过；HDR满足既有
+`2e-5 + 2e-5 × abs(reference)`门槛，七类guide逐字节一致。原path-only配置在
+首帧发生SEH访问异常，未完成split；源码指向缺少全局GPUScene场景绑定导致实例
+buffer为空，但未取得调试栈，不能断言已确认根因，也不将原测试计为通过。
+首次world配置的runtime通过，但检查器发现缺少同步验证配置；保留记录后显式启用
+该配置，另存两臂完整结果于`SupplementalPrimaryValidated/`，未改变比较门槛。
+
+一次A臂capture-view回归被源码监视器epoch变化中断，封存哈希未变，停止并行构建后
+显式补验通过；原始失败与恢复记录均保留，该补验不是性能补采样。
+本机证据在 `build/deferred-ibl-filter-20261116/`：`Plan.json`、`SealedIdentity.json`、
+`QualitySummary.json`、`RegressionSummary.json`、`TimingSummary.json`、`TimingAudit.json`、`Decision.json`
+及额外兼容验证目录。生成图像、二进制和捕获数据不纳入源码。
+
+## 2026-11-16：shadow-first 直射求值实验（未采用）
+
+以 `80160cc1` 为基线，只在 `VisibilityBufferLighting.slang` 的内置 Deferred
+路径中提前读取 visibility：有效灯光的可见度精确为零时，跳过该灯的
+`prepared.evalProjected`。其余权重、贡献检查和累加表达式保持原顺序；材质
+evaluate/prepare、自发光、IBL、自定义材质与路径追踪不变。候选已完成验证，
+但未达到预定性能门槛，生产 shader 已逐字节恢复；没有新增默认路径或开关。
+
+使用同一新构建 Release RHI 程序，RTX 5060 / 621.01，Sponza 1920×1080、
+SMRT 2×16/history32、分层缓存2048页、6 clipmaps、page128/VPA128，无 jitter。
+固定截图相机，第16帧冻结流送；不将冻结时刻等同于全部资源驻留。两臂开启
+core/synchronization validation，静止、运动、禁用阴影、禁用直射四例的
+16/47/49/63/79帧 HDR 逐字节一致：20个独立 checkpoint、24份文件比较，
+额外4份为重复的最终帧文件，全部有限。已查看候选 HDR 预览。
+
+两臂 `visibility_buffer_deferred_shadow_history` 均通过。另两项原有回归在两臂
+复现完全相同的失败，不能计为通过：`visibility_buffer_deferred_openpbr` 的
+shadingNormal 对照为4153像素、3812 outliers、mean error 40.582230；
+`visibility_buffer_abeautiful_game_transmission` 报告 FP16 显示误差超过2/255。
+没有跳过或新增失败；正确性及回归日志未发现 Vulkan validation 错误。
+
+普通计时为预先固定的3组 ABBA、12个进程，每进程96帧预热、128帧计时；
+224–226帧 HDR 回读在计时窗口外。所有1536个有效帧保留，磁盘缓存保留，
+不锁频、未强制 GPU 独占。以下收益由每进程中位数的区组 log ratio 计算，
+95% CI 使用 Student-t（df=2）；负值表示耗时增加的点估计，不代表确认回退。
+
+| GPU范围 | 耗时下降点估计 | 95% CI |
+| --- | ---: | ---: |
+| Deferred shading | −0.31% | [−4.76%, +3.94%] |
+| Deferred pass | −0.29% | [−4.35%, +3.62%] |
+| RenderGraph GPU envelope | −1.07% | [−4.57%, +2.32%] |
+
+未达到 Shading 点估计至少3%、Shading/Deferred收益区间下界大于零、Graph下界
+不低于−2%的预定门槛。所有普通计时 HDR 比较一致；实际前景 binned shader
+编译产物为448252→448320 B，背景保持226776 B。静态产物变化不能证明原生
+分支执行、寄存器或性能瓶颈；本轮未采集对应 native 指令和硬件计数器。
+不能从旧阴影图的零值覆盖率推导节省比例，也不能推广为所有场景下的性能结论。
+
+首个A进程正常完成，随后报告校验因配置遗漏 `expectedNodeQueues` 而失败。
+原始封存包未改动；离线补充源码支持的明确队列合同后复核通过，并继续B02，
+没有重跑、丢弃或补采样。A01与B02之间存在校验修复暂停，完整时间戳保留。
+实际 Graph 保留 VBuffer、Shadows、Deferred、AutoExposure、ColorGrading、
+FinalBlit；后两节点位于 compute 队列。选择 `Deferred.color` 只是增加回读输出，
+并不裁剪 presentation 依赖。Graph 不含编辑器呈现，重叠节点不能求和解释。
+
+证据位于本机 `build/deferred-shadow-first-20261116/`：`Plan.json`、
+`CorrectnessAudit.json`、`RegressionComparison.json`、`Recovery.json`、
+`TimingSummary.json`、`TimingAudit.json`、`Decision.json` 与 `Candidate.slang`。
+候选和生成数据保留在忽略目录，不纳入源码。Shader 模块所有权审查通过；
+本轮没有新增多灯实景或长期运行性能结论。
+
 ## LookDev 单路径观察
 
 在 Render Graph Editor 的 Settings 中，选择 `lookdev-vbuffer` 或任一 Painter / Studio

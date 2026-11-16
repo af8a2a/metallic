@@ -7,6 +7,7 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Environment/AtmosphereResources.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -46,6 +47,87 @@ constexpr uint32_t kEnvironmentSHCoefficientCount = 9;
 constexpr uint32_t kEnvironmentSHThreadCount = 128;
 constexpr uint32_t kEnvironmentSHMaxDispatchWidth = 65535;
 constexpr uint64_t kEnvironmentSpecularBytes = 256ull * 128 * 8 * sizeof(std::array<float, 4>);
+
+struct FilteredEnvironmentSpecular {
+    std::unique_ptr<Texture> texture;
+    std::unique_ptr<TextureView> view;
+    SamplerDesc sampler{
+        .minFilter = SamplerFilter::Linear,
+        .magFilter = SamplerFilter::Linear,
+        .mipFilter = SamplerFilter::Nearest,
+        .addressU = SamplerAddressMode::Repeat,
+        .addressV = SamplerAddressMode::ClampToEdge,
+        .addressW = SamplerAddressMode::ClampToEdge,
+        .minLod = 0.0f,
+        .maxLod = 0.0f,
+    };
+
+    Result<> initialize(Device& device, std::string& log)
+    {
+        const auto native = vulkan::nativeDevice(device);
+        VkFormatProperties properties{};
+        native.instanceFunctions->vkGetPhysicalDeviceFormatProperties(
+            native.physicalDevice, VK_FORMAT_R32G32B32A32_SFLOAT, &properties);
+        constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+        if ((properties.optimalTilingFeatures & required) != required) { return {}; }
+
+        auto result = device.createTexture({
+            .type = TextureType::Texture2D,
+            .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
+            .format = Format::RGBA32Sfloat,
+            .width = 256,
+            .height = 128,
+            .depth = 1,
+            .mipCount = 1,
+            .layerCount = 8,
+            .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
+        }).transform([&](auto value) { texture = std::move(value); });
+        if (!result) { log = "Environment filterable specular texture allocation failed"; return result; }
+        result = device.createTextureView(*texture, {
+            .format = Format::RGBA32Sfloat,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 8},
+        }).transform([&](auto value) { view = std::move(value); });
+        if (!result) { log = "Environment filterable specular texture view creation failed"; }
+        return result;
+    }
+
+    Result<> copyFrom(CommandBuffer& commands, Buffer& source)
+    {
+        if (texture == nullptr) { return {}; }
+        const BufferBarrierDesc sourceToTransfer{
+            .buffer = &source,
+            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+        };
+        const TextureBarrierDesc textureToTransfer{
+            .texture = texture.get(),
+            .oldLayout = TextureLayout::Undefined,
+            .newLayout = TextureLayout::TransferDestination,
+            .before = {},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 8},
+        };
+        auto result = commands.synchronize({.textures = {&textureToTransfer, 1}, .buffers = {&sourceToTransfer, 1}});
+        if (!result) { return result; }
+        result = source.slice({0, kEnvironmentSpecularBytes}).and_then([&](const auto& bufferSlice) {
+            return commands.copyBufferToTexture({.texture = texture.get(), .buffer = bufferSlice,
+                .width = 256, .height = 128, .depth = 1, .mipLevel = 0, .baseLayer = 0, .layerCount = 8});
+        });
+        if (!result) { return result; }
+        const TextureBarrierDesc textureToRead{
+            .texture = texture.get(),
+            .oldLayout = TextureLayout::TransferDestination,
+            .newLayout = TextureLayout::ShaderRead,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 8},
+        };
+        return commands.synchronize({.textures = {&textureToRead, 1}});
+    }
+};
 
 } // namespace
 
@@ -242,6 +324,7 @@ struct EnvironmentLightingSubsystem::Resources {
     ImportancePdfTexture pdf;
     std::unique_ptr<Buffer> sphericalHarmonicsBuffer;
     std::unique_ptr<Buffer> prefilteredSpecularBuffer;
+    FilteredEnvironmentSpecular filteredSpecular;
     uint32_t width = 1;
     uint32_t height = 1;
     bool mapAvailable = false;
@@ -253,6 +336,7 @@ struct EnvironmentLightingSubsystem::PhysicalPublication {
     ImportancePdfTexture pdf;
     std::unique_ptr<Buffer> sphericalHarmonicsBuffer;
     std::unique_ptr<Buffer> prefilteredSpecularBuffer;
+    FilteredEnvironmentSpecular filteredSpecular;
     std::unique_ptr<Buffer> partials;
     uint64_t revision = 0;
     bool cancelled = false;
@@ -602,6 +686,8 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         .memoryLocation = MemoryLocation::Device,
         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { next->prefilteredSpecularBuffer = std::move(rhiValue); });
     if (!result) { log = "Environment specular prefilter allocation failed"; return result; }
+    result = next->filteredSpecular.initialize(*device_, log);
+    if (!result) { return result; }
     result = device_->createBuffer(BufferDesc{
             .size = kSphericalHarmonicsBytes,
             .structureStride = sizeof(std::array<float, 4>),
@@ -742,6 +828,8 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         log += resultToString(result);
         return result;
     }
+    result = next->filteredSpecular.copyFrom(*context.commandBuffer, *next->prefilteredSpecularBuffer);
+    if (!result) { log = "Environment filterable specular copy failed"; return result; }
     BufferBarrierDesc sphericalHarmonicsToRead{
         .buffer = next->sphericalHarmonicsBuffer.get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
@@ -887,6 +975,8 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
         if (!result) { return makeError(result.error()); }
         result = allocate(publication->prefilteredSpecularBuffer, kEnvironmentSpecularBytes);
         if (!result) { return makeError(result.error()); }
+        result = publication->filteredSpecular.initialize(device, log);
+        if (!result) { return makeError(result.error()); }
         result = allocate(publication->partials, partialBytes);
         if (!result) { return makeError(result.error()); }
         result = publication->pdf.initialize(device, width, height, "Physical atmosphere PDF", log);
@@ -896,6 +986,8 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
         result = gpuPrecompute_->build(commands, *publication->atmosphere.radianceView(), *publication->partials,
             *publication->sphericalHarmonicsBuffer, *publication->prefilteredSpecularBuffer, width, height, false);
         if (!result) { return makeError(result.error()); }
+        result = publication->filteredSpecular.copyFrom(commands, *publication->prefilteredSpecularBuffer);
+        if (!result) { log = "Physical environment filterable specular copy failed"; return makeError(result.error()); }
         std::array barriers{
             BufferBarrierDesc{.buffer = publication->sphericalHarmonicsBuffer.get(),
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
@@ -927,6 +1019,8 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
     resolved.pdfView = publication->pdf.view();
     resolved.sphericalHarmonicsBuffer = publication->sphericalHarmonicsBuffer.get();
     resolved.prefilteredSpecularBuffer = publication->prefilteredSpecularBuffer.get();
+    resolved.prefilteredSpecularView = publication->filteredSpecular.view.get();
+    resolved.prefilteredSpecularSampler = resolved.prefilteredSpecularView ? &publication->filteredSpecular.sampler : nullptr;
     resolved.atmosphereParametersBuffer = publication->atmosphere.parametersBuffer();
     resolved.transmittanceView = publication->atmosphere.transmittanceView();
     resolved.multiScatteringView = publication->atmosphere.multiScatteringView();
@@ -957,6 +1051,10 @@ void EnvironmentLightingSubsystem::appendDebugBindings(const RenderSubsystemFram
         resources_->pdf.appendDebugBindings(bindings, "pdf");
         addBuffer("sphericalHarmonics", resources_->sphericalHarmonicsBuffer.get(), resourceRevision_, "float4", true);
         addBuffer("prefilteredSpecular", resources_->prefilteredSpecularBuffer.get(), resourceRevision_);
+        if (resources_->filteredSpecular.texture) {
+            bindings.push_back({.id = "prefilteredSpecularTexture", .texture = resources_->filteredSpecular.texture.get(),
+                .state = ResourceState::ShaderRead});
+        }
         for (size_t i = begin; i < bindings.size(); ++i) {
             bindings[i].allocation = resourceRevision_;
             bindings[i].metadata["environmentSource"] = "HDRI";
@@ -973,6 +1071,10 @@ void EnvironmentLightingSubsystem::appendDebugBindings(const RenderSubsystemFram
         publication->pdf.appendDebugBindings(bindings, prefix + "pdf");
         addBuffer(prefix + "sphericalHarmonics", publication->sphericalHarmonicsBuffer.get(), publication->revision, "float4", true);
         addBuffer(prefix + "prefilteredSpecular", publication->prefilteredSpecularBuffer.get(), publication->revision);
+        if (publication->filteredSpecular.texture) {
+            bindings.push_back({.id = prefix + "prefilteredSpecularTexture", .texture = publication->filteredSpecular.texture.get(),
+                .state = ResourceState::ShaderRead});
+        }
         for (size_t i = begin; i < bindings.size(); ++i) {
             bindings[i].allocation = publication->revision;
             bindings[i].metadata["environmentSource"] = "PhysicalAtmosphere";
@@ -994,6 +1096,8 @@ void EnvironmentLightingSubsystem::refreshSnapshot()
         snapshot_.pdfView = nullptr;
         snapshot_.sphericalHarmonicsBuffer = nullptr;
         snapshot_.prefilteredSpecularBuffer = nullptr;
+        snapshot_.prefilteredSpecularView = nullptr;
+        snapshot_.prefilteredSpecularSampler = nullptr;
         snapshot_.width = 1;
         snapshot_.height = 1;
         snapshot_.mapAvailable = false;
@@ -1003,6 +1107,8 @@ void EnvironmentLightingSubsystem::refreshSnapshot()
     snapshot_.pdfView = resources_->pdf.valid() ? resources_->pdf.view() : nullptr;
     snapshot_.sphericalHarmonicsBuffer = resources_->sphericalHarmonicsBuffer.get();
     snapshot_.prefilteredSpecularBuffer = resources_->prefilteredSpecularBuffer.get();
+    snapshot_.prefilteredSpecularView = resources_->filteredSpecular.view.get();
+    snapshot_.prefilteredSpecularSampler = snapshot_.prefilteredSpecularView ? &resources_->filteredSpecular.sampler : nullptr;
     snapshot_.width = resources_->width;
     snapshot_.height = resources_->height;
     snapshot_.mapAvailable = resources_->mapAvailable;
