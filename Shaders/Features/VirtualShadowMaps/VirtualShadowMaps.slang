@@ -1503,7 +1503,7 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
 struct VSMDirectionalRayBase
 {
     float3 comparisonOrigin;
-    float2 coarseComparisonOrigin;
+    float sourceExtent;
     float2 sourceTranslation;
     uint receiverLevel;
     uint receiverPageOffset;
@@ -1513,10 +1513,10 @@ struct VSMDirectionalRayBase
     float halfReceiverResolution;
     float receiverMarginMax;
     bool allowClipmaps;
-    uint2 coarsePhysicalCoord;
-    bool coarseValid;
+#if VSM_PROJECTION_PAGE_SHIFT < 0
     uint pageSizeShift;
     uint pageSizeMask;
+#endif
     uint physicalPagesXShift;
     uint physicalPagesXMask;
     uint virtualPagesPerAxisShift;
@@ -1528,8 +1528,6 @@ struct VSMDirectionalRay
 {
     float3 lookupOrigin;
     float3 step;
-    float2 coarseLookupOrigin;
-    float2 coarseStep;
 };
 
 struct VSMDirectionalRayState
@@ -1541,9 +1539,6 @@ struct VSMDirectionalRayState
     property float3 comparisonOrigin { get { return base.comparisonOrigin; } }
     property float3 lookupOrigin { get { return ray.lookupOrigin; } }
     property float3 step { get { return ray.step; } }
-    property float2 coarseComparisonOrigin { get { return base.coarseComparisonOrigin; } }
-    property float2 coarseLookupOrigin { get { return ray.coarseLookupOrigin; } }
-    property float2 coarseStep { get { return ray.coarseStep; } }
     property float2 sourceTranslation { get { return base.sourceTranslation; } }
     property uint receiverLevel { get { return base.receiverLevel; } }
     property uint receiverPageOffset { get { return base.receiverPageOffset; } }
@@ -1555,8 +1550,6 @@ struct VSMDirectionalRayState
     property float halfReceiverResolution { get { return base.halfReceiverResolution; } }
     property float receiverMarginMax { get { return base.receiverMarginMax; } }
     property bool allowClipmaps { get { return base.allowClipmaps; } }
-    property uint2 coarsePhysicalCoord { get { return base.coarsePhysicalCoord; } }
-    property bool coarseValid { get { return base.coarseValid; } }
     property uint receiverMappingOffset { get { return base.receiverMappingOffset; } }
     property uint virtualPagesPerAxisShift { get { return base.virtualPagesPerAxisShift; } }
     property bool powerOfTwoLayout { get { return base.powerOfTwoLayout; } }
@@ -1564,11 +1557,11 @@ struct VSMDirectionalRayState
 };
 
 VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
-    ShadowProjection first, ShadowProjection coarse, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel, bool useGroupCache = false)
+    ShadowProjection first, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel)
 {
     VSMDirectionalRayBase rayBase;
     rayBase.comparisonOrigin = vsmProjectPosition(position, first);
-    rayBase.coarseComparisonOrigin = vsmProjectPosition(position, coarse).xy;
+    rayBase.sourceExtent = first.metric.x;
     rayBase.sourceTranslation = float2(first.rowX.w, first.rowY.w);
     rayBase.receiverLevel = receiverLevel;
     rayBase.coarseLevel = push.clipmapCount;
@@ -1580,16 +1573,17 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
     rayBase.receiverMarginMax = 1.0 - (1.0 / receiverResolution);
     StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
     rayBase.allowClipmaps = statistics[5] == 0u;
-    uint4 coarseEntry = pages[coarse.page.x];
-    rayBase.coarseValid = (coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u;
-    rayBase.coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
-    bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
     bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
     bool isPow2VirtualPages = (push.virtualPagesPerAxis & (push.virtualPagesPerAxis - 1u)) == 0u && push.virtualPagesPerAxis != 0u;
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+    rayBase.powerOfTwoLayout = isPow2VirtualPages;
+#else
+    bool isPow2PageSize = (push.pageSize & (push.pageSize - 1u)) == 0u && push.pageSize != 0u;
     rayBase.powerOfTwoLayout = isPow2PageSize && isPow2VirtualPages;
-    rayBase.powerOfTwoPhysical = isPow2PhysicalX;
     rayBase.pageSizeShift = isPow2PageSize ? uint(firstbitlow(push.pageSize)) : 0u;
     rayBase.pageSizeMask = isPow2PageSize ? (push.pageSize - 1u) : 0u;
+#endif
+    rayBase.powerOfTwoPhysical = isPow2PhysicalX;
     rayBase.physicalPagesXShift = isPow2PhysicalX ? uint(firstbitlow(push.physicalPagesX)) : 0u;
     rayBase.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
     rayBase.virtualPagesPerAxisShift = isPow2VirtualPages ? uint(firstbitlow(push.virtualPagesPerAxis)) : 0u;
@@ -1600,14 +1594,11 @@ VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endp
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel, bool useGroupCache = false)
 {
     ShadowProjection first = vsmGetCachedProjection(projections, receiverLevel, useGroupCache);
-    ShadowProjection coarse = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-    VSMDirectionalRayBase base = vsmCreateDirectionalRayBase(position, first, coarse, pages, push, receiverLevel, useGroupCache);
+    VSMDirectionalRayBase base = vsmCreateDirectionalRayBase(position, first, pages, push, receiverLevel);
     float3 direction = endpoint - position;
     VSMDirectionalRay ray;
     ray.lookupOrigin = vsmProjectPosition(position + dither, first);
     ray.step = float3(dot(first.rowX.xyz, direction), dot(first.rowY.xyz, direction), dot(first.rowZ.xyz, direction));
-    ray.coarseLookupOrigin = vsmProjectPosition(position + dither, coarse).xy;
-    ray.coarseStep = float2(dot(coarse.rowX.xyz, direction), dot(coarse.rowY.xyz, direction));
     VSMDirectionalRayState state;
     state.base = base;
     state.ray = ray;
@@ -1623,23 +1614,21 @@ VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endp
 }
 
 float3 vsmDirectionalRayPosition(VSMDirectionalRay ray, VSMDirectionalRayBase rayBase, float time, uint level,
-    float2 levelTranslation, bool lookup)
+    float2 levelTranslation, float targetExtent, bool lookup)
 {
     float3 position = (lookup ? ray.lookupOrigin : rayBase.comparisonOrigin) + time * ray.step;
-    if (level == rayBase.coarseLevel) {
-        position.xy = (lookup ? ray.coarseLookupOrigin : rayBase.coarseComparisonOrigin) + time * ray.coarseStep;
-    } else {
-        float scale = asfloat(uint(127 - (int(level) - int(rayBase.receiverLevel))) << 23u);
-        float2 translation = levelTranslation - rayBase.sourceTranslation * scale;
-        position.xy = position.xy * scale + translation;
-    }
+    float scale = (level == rayBase.coarseLevel) ?
+        (rayBase.sourceExtent / targetExtent) :
+        asfloat(uint(127 - (int(level) - int(rayBase.receiverLevel))) << 23u);
+    float2 translation = levelTranslation - rayBase.sourceTranslation * scale;
+    position.xy = position.xy * scale + translation;
     return position;
 }
 
 float3 vsmDirectionalRayPosition(VSMDirectionalRay ray, VSMDirectionalRayBase rayBase, float time, uint level,
     ShadowProjection projection, bool lookup)
 {
-    return vsmDirectionalRayPosition(ray, rayBase, time, level, float2(projection.rowX.w, projection.rowY.w), lookup);
+    return vsmDirectionalRayPosition(ray, rayBase, time, level, float2(projection.rowX.w, projection.rowY.w), projection.metric.x, lookup);
 }
 
 float3 vsmDirectionalRayPosition(VSMDirectionalRayState ray, float time, uint level,
@@ -1683,13 +1672,17 @@ ShadowLookup vsmSampleDirectionalAtlasPage(
     result.level = level;
     result.projected = projected;
     result.virtualTexel = virtualTexel;
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+    uint2 atlasTexel = vsmAtlasTexel(physical, vsmPageLocalTexel(virtualTexel, push.pageSize), push.pageSize);
+#else
+    uint2 atlasTexel;
     if (rayBase.powerOfTwoLayout) {
-        uint pageSizeShift = rayBase.pageSizeShift;
-        uint pageSizeMask = rayBase.pageSizeMask;
-        result.storedDepth = atlas.Load(int3((physical << pageSizeShift) | (virtualTexel & pageSizeMask), 0));
+        atlasTexel = (physical << rayBase.pageSizeShift) | (virtualTexel & rayBase.pageSizeMask);
     } else {
-        result.storedDepth = atlas.Load(int3(vsmAtlasTexelFromVirtual(physical, virtualTexel, push.pageSize), 0));
+        atlasTexel = vsmAtlasTexelFromVirtual(physical, virtualTexel, push.pageSize);
     }
+#endif
+    result.storedDepth = atlas.Load(int3(atlasTexel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
@@ -1750,7 +1743,11 @@ ShadowLookup vsmDirectionalRayLookupSlow(
     if (!mappedToCoarse) {
         float2 basePXY = p.xy;
         bool isPow2 = rayBase.powerOfTwoLayout;
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+        uint pageSizeShift = uint(VSM_PROJECTION_PAGE_SHIFT);
+#else
         uint pageSizeShift = rayBase.pageSizeShift;
+#endif
         uint vpaShift = rayBase.virtualPagesPerAxisShift;
         for (uint level = rayBase.receiverLevel + 1u; level < push.clipmapCount; ++level) {
             ShadowProjection projection = projections[level];
@@ -1789,18 +1786,25 @@ ShadowLookup vsmDirectionalRayLookupSlow(
     result.projected = vsmDirectionalRayPosition(ray, rayBase, time, push.clipmapCount, coarse, true);
     if (!vsmContains(result.projected, coarse, push.pageSize, false)) { return result; }
     vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
-    if (!rayBase.coarseValid) {
+    uint4 coarseEntry = pages[coarse.page.x];
+    bool coarseValid = (coarseEntry.y & 2u) != 0u && (coarseEntry.w & 1u) != 0u;
+    if (!coarseValid) {
         ++counts.z;
         return result;
     }
+    uint2 coarsePhysicalCoord = vsmPhysicalPageCoord(coarseEntry.x, push.physicalPagesX);
     result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
     ++counts.y;
+#if VSM_PROJECTION_PAGE_SHIFT >= 0
+    uint2 finalAtlasTexel = vsmAtlasTexel(coarsePhysicalCoord, vsmPageLocalTexel(result.virtualTexel, push.pageSize), push.pageSize);
+#else
     uint2 finalAtlasTexel;
     if (rayBase.powerOfTwoLayout) {
-        finalAtlasTexel = (rayBase.coarsePhysicalCoord << rayBase.pageSizeShift) | (result.virtualTexel & rayBase.pageSizeMask);
+        finalAtlasTexel = (coarsePhysicalCoord << rayBase.pageSizeShift) | (result.virtualTexel & rayBase.pageSizeMask);
     } else {
-        finalAtlasTexel = vsmAtlasTexelFromVirtual(rayBase.coarsePhysicalCoord, result.virtualTexel, push.pageSize);
+        finalAtlasTexel = vsmAtlasTexelFromVirtual(coarsePhysicalCoord, result.virtualTexel, push.pageSize);
     }
+#endif
     result.storedDepth = atlas.Load(int3(finalAtlasTexel, 0));
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
@@ -1967,9 +1971,8 @@ void vsmDirectionalSampleCompareAndReference(
         reference = relDepth * rayBase.invDepthScale;
     } else {
         ShadowProjection projection = projections[sample.level];
-        float2 translation = float2(projection.rowX.w, projection.rowY.w);
         float extent = projection.metric.x;
-        float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, translation, false);
+        float3 projected = vsmDirectionalRayPosition(dirRay, rayBase, time, sample.level, projection, false);
         float invResolution = (sample.level == push.clipmapCount) ? coarseInvResolution : receiverInvResolution;
         compare = vsmDirectionalComparisonDepth(projected, sample.virtualTexel,
             extent, invResolution, normalSlope, biasZ);
@@ -2027,12 +2030,17 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
     ShadowProjection proj0 = vsmGetCachedProjection(projections, 0u, useGroupCache);
+#if VSM_DIRECTIONAL_PROJECTION
+    float3 toLight = normalize(proj0.rowZ.xyz);
+    float receiverTexelSize = receiverProj.metric.y;
+#else
     float3 toLight = push.lightType == 0u ? normalize(proj0.rowZ.xyz) :
         normalize(proj0.originNear.xyz - position);
+    float receiverTexelSize = vsmWorldTexelSize(position, receiverProj, push.pageSize, push.lightType);
+#endif
     float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
     float3 up = cross(toLight, right);
     float tanAngularRadius = tan(push.angularRadius);
-    float receiverTexelSize = vsmWorldTexelSize(position, receiverProj, push.pageSize, push.lightType);
 #if VSM_DIRECTIONAL_PROJECTION
     float receiverExtent = receiverProj.metric.x;
     float3 normX = normalize(proj0.rowX.xyz);
@@ -2046,8 +2054,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float2 receiverScaledSlope = normalSlope * receiverExtent;
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
-    ShadowProjection coarseProj = vsmGetCachedProjection(projections, push.clipmapCount, useGroupCache);
-    VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, coarseProj, pages, push, receiverLevel, useGroupCache);
+    VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, pages, push, receiverLevel);
     VSMDirectionalRayCache rayCache;
     rayCache.lastPage = 0xffffffffu;
     rayCache.lastPhysicalCoord = uint2(0u);
@@ -2060,9 +2067,13 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float2 disk = vsmDiskSample(ray, invRayCount, pixel, push.samplePhase);
         float3 rayOffset = right * disk.x + up * disk.y;
+#if VSM_DIRECTIONAL_PROJECTION
+        float3 endpoint = vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength);
+#else
         float3 endpoint = (push.lightType == 0u) ?
             vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength) :
             vsmRayEndpoint(position, proj0, push, toLight, rayOffset);
+#endif
         float2 ditherOffset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
             vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
         float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
@@ -2071,13 +2082,13 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         float3 direction = endpoint - position;
         dirRay.lookupOrigin = vsmProjectPosition(position + dither, receiverProj);
         dirRay.step = float3(dot(receiverProj.rowX.xyz, direction), dot(receiverProj.rowY.xyz, direction), dot(receiverProj.rowZ.xyz, direction));
-        dirRay.coarseLookupOrigin = vsmProjectPosition(position + dither, coarseProj).xy;
-        dirRay.coarseStep = float2(dot(coarseProj.rowX.xyz, direction), dot(coarseProj.rowY.xyz, direction));
         float raySlopeZ = dirRay.step.z + dot(receiverScaledSlope, dirRay.step.xy);
-#endif
+        float maxSlope = 0.05;
+#else
         float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
             1.0 / length(endpoint - proj0.originNear.xyz) -
             1.0 / length(position - proj0.originNear.xyz));
+#endif
         float historyDepth = 0.0, historyTime = 0.0, historySlope = 0.0, previousReference = 0.0;
         bool hasHistory = false;
         bool blocked = false;
