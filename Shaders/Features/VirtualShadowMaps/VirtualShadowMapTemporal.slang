@@ -13,48 +13,92 @@ const bool kTemporalIsOrtho = false;
 [SpecializationConstant]
 const bool kTemporalHasHistory = true;
 
-VSMTemporalViewBasis loadTemporalViewBasis(BufferSpan<VSMTemporalViewBasis> views, uint index)
+struct TemporalViewBasis
+{
+    float3 eye; float nearTimesFar;
+    float3 forward; float depthParamA;
+    float3 right; float depthParamB;
+    float3 up; float clearDepth;
+    float3 originOrRayBase; float toleranceScale;
+    float3 dirX; float orthoTolerance;
+    float3 dirY; float nearPlane;
+    float2 viewportExtent; float projScaleX; float projScaleY;
+    float2 jitter; float farPlane; uint isOrtho;
+};
+
+TemporalViewBasis createTemporalViewBasis(BufferSpan<ViewConstants> views, uint index)
 {
     ByteAddressBuffer buffer = resolveUniform(views.resource);
-    uint baseOffset = views.byteOffset + index * sizeof(VSMTemporalViewBasis);
-    float4 r0 = asfloat(buffer.Load4(baseOffset + 0u));
-    float4 r1 = asfloat(buffer.Load4(baseOffset + 16u));
-    float4 r2 = asfloat(buffer.Load4(baseOffset + 32u));
-    float4 r3 = asfloat(buffer.Load4(baseOffset + 48u));
-    float4 r4 = asfloat(buffer.Load4(baseOffset + 64u));
-    float4 r5 = asfloat(buffer.Load4(baseOffset + 80u));
-    float4 r6 = asfloat(buffer.Load4(baseOffset + 96u));
-    float4 r7 = asfloat(buffer.Load4(baseOffset + 112u));
-    uint4 r8 = buffer.Load4(baseOffset + 128u);
-    VSMTemporalViewBasis b;
-    b.eye = r0.xyz; b.nearTimesFar = r0.w;
-    b.forward = r1.xyz; b.depthParamA = r1.w;
-    b.right = r2.xyz; b.depthParamB = r2.w;
-    b.up = r3.xyz; b.clearDepth = r3.w;
-    b.originOrRayBase = r4.xyz; b.toleranceScale = r4.w;
-    b.dirX = r5.xyz; b.orthoTolerance = r5.w;
-    b.dirY = r6.xyz; b.nearPlane = r6.w;
-    b.viewportExtent = r7.xy; b.projScaleX = r7.z; b.projScaleY = r7.w;
-    b.jitter = asfloat(r8.xy); b.farPlane = asfloat(r8.z); b.isOrtho = r8.w;
+    uint baseOffset = views.byteOffset + index * sizeof(ViewConstants);
+
+    float4 eye = asfloat(buffer.Load4(baseOffset + 0u));
+    float4 center = asfloat(buffer.Load4(baseOffset + 16u));
+    float4 upProjection = asfloat(buffer.Load4(baseOffset + 32u));
+    float4 viewport = asfloat(buffer.Load4(baseOffset + 48u));
+    float4 clipOrtho = asfloat(buffer.Load4(baseOffset + 64u));
+    float4 jitter = asfloat(buffer.Load4(baseOffset + 160u));
+    uint4 frame = buffer.Load4(baseOffset + 176u);
+
+    TemporalViewBasis b;
+    b.eye = eye.xyz;
+    b.forward = normalize(center.xyz - eye.xyz);
+    b.right = normalize(cross(b.forward, upProjection.xyz));
+    b.up = cross(b.right, b.forward);
+    float3 rightAspect = b.right * viewport.x;
+    b.viewportExtent = viewport.yz;
+    float2 invViewport = 1.0 / viewport.yz;
+    float tanHalfFov = tan(viewport.w * 0.5);
+    b.isOrtho = kTemporalIsOrtho ? 1u : 0u;
+    float halfOrthoHeight = clipOrtho.z * 0.5;
+    b.nearPlane = clipOrtho.x;
+    b.farPlane = clipOrtho.y;
+    float farMinusNear = clipOrtho.y - clipOrtho.x;
+    b.nearTimesFar = b.nearPlane * b.farPlane;
+    b.toleranceScale = kTemporalIsOrtho ? 1e-5 : ((2.0 * tanHalfFov * invViewport.y) * 0.01 + 1e-5);
+    b.orthoTolerance = kTemporalIsOrtho ? (halfOrthoHeight * 2.0 * invViewport.y * 0.01) : 0.0;
+    float2 ndcScale = float2(2.0, -2.0) * invViewport;
+    bool reversed = clipOrtho.w > 0.5;
+    b.clearDepth = reversed ? 0.0 : 1.0;
+    b.jitter = frame.z != 0u ? jitter.xy : float2(0.0);
+    float2 ndcBias = fma(0.5 + b.jitter, ndcScale, float2(-1.0, 1.0));
+
+    if (kTemporalIsOrtho) {
+        b.depthParamA = reversed ? -farMinusNear : farMinusNear;
+        b.depthParamB = reversed ? b.farPlane : b.nearPlane;
+        float invHalfOrthoHeight = 1.0 / halfOrthoHeight;
+        b.projScaleX = invHalfOrthoHeight / viewport.x;
+        b.projScaleY = invHalfOrthoHeight;
+        b.originOrRayBase = b.eye + (halfOrthoHeight * ndcBias.x) * rightAspect + (halfOrthoHeight * ndcBias.y) * b.up;
+        b.dirX = (halfOrthoHeight * ndcScale.x) * rightAspect;
+        b.dirY = (halfOrthoHeight * ndcScale.y) * b.up;
+    } else {
+        b.depthParamA = reversed ? farMinusNear : -farMinusNear;
+        b.depthParamB = reversed ? b.nearPlane : b.farPlane;
+        b.projScaleX = 1.0 / (tanHalfFov * viewport.x);
+        b.projScaleY = 1.0 / tanHalfFov;
+        b.originOrRayBase = b.forward + (tanHalfFov * ndcBias.x) * rightAspect + (tanHalfFov * ndcBias.y) * b.up;
+        b.dirX = (tanHalfFov * ndcScale.x) * rightAspect;
+        b.dirY = (tanHalfFov * ndcScale.y) * b.up;
+    }
     return b;
 }
 
 [ForceInline]
-float vsmTemporalLinearDepth(float depth, VSMTemporalViewBasis basis)
+float vsmTemporalLinearDepth(float depth, TemporalViewBasis basis)
 {
     float d = fma(depth, basis.depthParamA, basis.depthParamB);
     return kTemporalIsOrtho ? d : (basis.nearTimesFar / d);
 }
 
 [ForceInline]
-float3 vsmTemporalPosition(int2 pixel, VSMTemporalViewBasis basis, float linearDepth)
+float3 vsmTemporalPosition(int2 pixel, TemporalViewBasis basis, float linearDepth)
 {
     float3 offset = basis.originOrRayBase + float(pixel.x) * basis.dirX + float(pixel.y) * basis.dirY;
     return kTemporalIsOrtho ? (offset + basis.forward * linearDepth) : (basis.eye + linearDepth * offset);
 }
 
 [ForceInline]
-bool temporalReceiver(int2 pixel, VSMTemporalViewBasis basis, float depth, out float3 position, out float linearDepth)
+bool temporalReceiver(int2 pixel, TemporalViewBasis basis, float depth, out float3 position, out float linearDepth)
 {
     position = float3(0.0); linearDepth = 0.0;
     if (depth == basis.clearDepth) { return false; }
@@ -65,7 +109,7 @@ bool temporalReceiver(int2 pixel, VSMTemporalViewBasis basis, float depth, out f
 
 // Pack position.xyz and linearDepth (w < 0 indicates invalid) to keep live VGPRs compact.
 [ForceInline]
-float4 reconstructHistoryPosDepth(int2 pixel, uint2 stored, bool inBounds, VSMTemporalViewBasis basis)
+float4 reconstructHistoryPosDepth(int2 pixel, uint2 stored, bool inBounds, TemporalViewBasis basis)
 {
     if (!inBounds || (stored.x >> 16u) == 0u) { return float4(0.0, 0.0, 0.0, -1.0); }
     float linearDepth = vsmTemporalLinearDepth(asfloat(stored.y), basis);
@@ -86,7 +130,7 @@ float3 temporalNormalFromNeighbors(float4 left, float4 right, float4 top, float4
     return lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
 }
 
-bool temporalProject(float3 position, VSMTemporalViewBasis basis, out float2 pixel)
+bool temporalProject(float3 position, TemporalViewBasis basis, out float2 pixel)
 {
     float3 delta = position - basis.eye;
     float z = dot(delta, basis.forward);
@@ -100,6 +144,7 @@ bool temporalProject(float3 position, VSMTemporalViewBasis basis, out float2 pix
     return all(pixel >= -0.5) && all(pixel < basis.viewportExtent - 0.5);
 }
 
+groupshared TemporalViewBasis gTemporalViews[2];
 groupshared float4 gTemporalPositions[100];
 groupshared float gTemporalRawDepth[100];
 
@@ -107,7 +152,11 @@ groupshared float gTemporalRawDepth[100];
 [numthreads(8, 8, 1)]
 void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    VSMTemporalViewBasis current = loadTemporalViewBasis(params.views, 0u);
+    if (lane < (kTemporalHasHistory ? 2u : 1u)) {
+        gTemporalViews[lane] = createTemporalViewBasis(params.views, lane);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    TemporalViewBasis current = gTemporalViews[0];
     Texture2D<float> depthTex = resolveUniform(params.depth);
 
     int2 tileOrigin = int2(group.xy * 8u) - int2(1, 1);
@@ -155,7 +204,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
     uint count = 1u;
 
     if (kTemporalHasHistory && params.hasHistory != 0u) {
-        VSMTemporalViewBasis previous = loadTemporalViewBasis(params.views, 1u);
+        TemporalViewBasis previous = gTemporalViews[1];
         float2 previousPixel;
         if (temporalProject(position, previous, previousPixel)) {
             float4 sLeft = gTemporalPositions[centerIndex - 1u];

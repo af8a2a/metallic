@@ -6,12 +6,11 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <tuple>
 
 namespace metallic::render {
 namespace {
-constexpr uint64_t kTemporalABI = 0x56534d54454d5033ull;
+constexpr uint64_t kTemporalABI = 0x56534d54454d5034ull;
 
 bool sameProjection(const ViewConstants& a, const ViewConstants& b)
 {
@@ -39,74 +38,6 @@ bool sameSettings(const VirtualShadowMapSettings& a, const VirtualShadowMapSetti
     };
     // Cache redraw and sampling phase do not change the underlying visibility.
     return key(a) == key(b);
-}
-
-VSMTemporalViewBasis makeTemporalViewBasis(const ViewConstants& view)
-{
-    auto sub3 = [](const float (&a)[4], const float (&b)[4]) -> std::array<float, 3> {
-        return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-    };
-    auto cross3 = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
-        return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-    };
-    auto norm3 = [](const std::array<float, 3>& v) -> std::array<float, 3> {
-        const float inv = 1.0f / std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        return {v[0] * inv, v[1] * inv, v[2] * inv};
-    };
-    const std::array<float, 3> forward = norm3(sub3(view.current.center, view.current.eye));
-    const std::array<float, 3> right = norm3(cross3(forward, {view.current.upProjection[0], view.current.upProjection[1], view.current.upProjection[2]}));
-    const std::array<float, 3> up = cross3(right, forward);
-    const float vpW = view.current.viewport[1], vpH = view.current.viewport[2];
-    const float aspect = view.current.viewport[0];
-    const float tanHalfFov = std::tan(view.current.viewport[3] * 0.5f);
-    const bool isOrtho = view.current.upProjection[3] > 0.5f;
-    const float halfOrthoHeight = view.current.clipOrtho[2] * 0.5f;
-    const float nearPlane = view.current.clipOrtho[0], farPlane = view.current.clipOrtho[1];
-    const float farMinusNear = farPlane - nearPlane;
-    const bool reversed = view.current.clipOrtho[3] > 0.5f;
-    const float jx = view.frame[2] != 0u ? view.jitter[0] : 0.0f;
-    const float jy = view.frame[2] != 0u ? view.jitter[1] : 0.0f;
-    const float ndcScaleX = 2.0f / vpW, ndcScaleY = -2.0f / vpH;
-    const float ndcBiasX = std::fma(0.5f + jx, ndcScaleX, -1.0f);
-    const float ndcBiasY = std::fma(0.5f + jy, ndcScaleY, 1.0f);
-    VSMTemporalViewBasis b{};
-    b.eye = {view.current.eye[0], view.current.eye[1], view.current.eye[2]};
-    b.nearTimesFar = nearPlane * farPlane;
-    b.forward = forward;
-    b.right = right;
-    b.up = up;
-    b.clearDepth = reversed ? 0.0f : 1.0f;
-    b.toleranceScale = isOrtho ? 1e-5f : ((2.0f * tanHalfFov / vpH) * 0.01f + 1e-5f);
-    b.orthoTolerance = isOrtho ? (halfOrthoHeight * 2.0f / vpH * 0.01f) : 0.0f;
-    b.nearPlane = nearPlane;
-    b.viewportExtent = {vpW, vpH};
-    b.jitter = {jx, jy};
-    b.farPlane = farPlane;
-    b.isOrtho = isOrtho ? 1u : 0u;
-    const std::array<float, 3> rightAspect{right[0] * aspect, right[1] * aspect, right[2] * aspect};
-    if (isOrtho) {
-        b.depthParamA = reversed ? -farMinusNear : farMinusNear;
-        b.depthParamB = reversed ? farPlane : nearPlane;
-        const float invHalfOrtho = 1.0f / halfOrthoHeight;
-        b.projScaleX = invHalfOrtho / aspect;
-        b.projScaleY = invHalfOrtho;
-        for (size_t i = 0; i < 3; ++i) {
-            b.originOrRayBase[i] = b.eye[i] + (halfOrthoHeight * ndcBiasX) * rightAspect[i] + (halfOrthoHeight * ndcBiasY) * up[i];
-            b.dirX[i] = (halfOrthoHeight * ndcScaleX) * rightAspect[i];
-            b.dirY[i] = (halfOrthoHeight * ndcScaleY) * up[i];
-        }
-    } else {
-        b.depthParamA = reversed ? farMinusNear : -farMinusNear;
-        b.depthParamB = reversed ? nearPlane : farPlane;
-        b.projScaleX = 1.0f / (tanHalfFov * aspect);
-        b.projScaleY = 1.0f / tanHalfFov;
-        for (size_t i = 0; i < 3; ++i) {
-            b.originOrRayBase[i] = forward[i] + (tanHalfFov * ndcBiasX) * rightAspect[i] + (tanHalfFov * ndcBiasY) * up[i];
-            b.dirX[i] = (tanHalfFov * ndcScaleX) * rightAspect[i];
-            b.dirY[i] = (tanHalfFov * ndcScaleY) * up[i];
-        }
-    }
-    return b;
 }
 } // namespace
 
@@ -240,10 +171,9 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
     auto registry = ResourceRegistry::forDevice(device);
     if (!registry) { return std::unexpected(registry.error()); }
     ParameterWriter writer(device, *frame, **registry);
-    const std::array<VSMTemporalViewBasis, 2> views{makeTemporalViewBasis(view),
-        makeTemporalViewBasis(hasHistory ? previous->view : view)};
+    const std::array<ViewConstants, 2> views{view, hasHistory ? previous->view : view};
     VirtualShadowMapTemporalParams params{};
-    params.views = writer.dataSpan(views.data(), sizeof(views), sizeof(VSMTemporalViewBasis), alignof(VSMTemporalViewBasis));
+    params.views = writer.dataSpan(views.data(), sizeof(views), sizeof(ViewConstants), alignof(ViewConstants));
     params.depth = writer.sampledImage(&depth);
     params.shadows = writer.storageImage(&shadows);
     params.previousHistory = writer.storageImage(old->view.get());
