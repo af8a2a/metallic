@@ -27,12 +27,19 @@ TARGET = "Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang"
 PROTOCOL = "metallic-shader-experiment-v1"
 # The candidate schema is shared with diagnostic runners and remains v1.
 V2_PROTOCOL = "metallic-shader-experiment-v2"
-CURRENT_PROTOCOL = "metallic-shader-experiment-v3"
+V3_PROTOCOL = "metallic-shader-experiment-v3"
+CURRENT_PROTOCOL = "metallic-shader-experiment-v4"
 LEGACY_POLICY = {"minimumGain": .03, "maximumGraphRegression": .02,
                  "confidence": .95, "primaryMetric": "softwareTotalMs", "promotion": "manual"}
 V2_POLICY = {**LEGACY_POLICY, "version": 2, "statistic": "abba-log-ratio",
              "discoveryMinimumGain": .03}
-POLICY = {**V2_POLICY, "version": 3, "minimumGain": 0., "discoveryMinimumGain": 0.}
+V3_POLICY = {**V2_POLICY, "version": 3, "minimumGain": 0., "discoveryMinimumGain": 0.}
+# v4 follows the repository A/B budget: one ABBA block, at most one extension block,
+# and a separation rule instead of a block-level Student-t interval.
+POLICY = {"version": 4, "statistic": "abba-separation", "primaryMetric": "softwareTotalMs",
+          "noiseFloor": .01, "maximumGraphRegression": .02, "promotion": "manual",
+          "discoveryBlocks": 1, "extensionBlocks": 1}
+INTERVAL_POLICIES = (V2_POLICY, V3_POLICY)
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571,
        7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262}
 
@@ -119,6 +126,52 @@ def block_gain(rows, metric):
             "lower95": -math.expm1(bounds["upper95"]), "upper95": -math.expm1(bounds["lower95"])}
 
 
+def separation(rows, metric):
+    """Gain over all process medians; spread and direction come from each ABBA block.
+
+    A block is consistent when its candidate mean is on the same side of its baseline
+    mean as every other block. Spread is the mean of the per-block relative ranges, so a
+    single disturbed block widens it without making a clean extension block unusable.
+    """
+    blocks = []
+    for offset in range(0, len(rows), 4):
+        a = [r["result"]["timings"][metric]["median"] for r in rows[offset:offset+4] if r["arm"] == "A"]
+        b = [r["result"]["timings"][metric]["median"] for r in rows[offset:offset+4] if r["arm"] == "B"]
+        w.require(all(v > 0 and math.isfinite(v) for v in a + b), "Invalid process timing")
+        mean_a = statistics.mean(a)
+        blocks.append({"runMediansA": a, "runMediansB": b, "gain": 1 - statistics.mean(b) / mean_a,
+                       "relativeSpread": max(max(a) - min(a), max(b) - min(b)) / mean_a})
+    a = [v for block in blocks for v in block["runMediansA"]]
+    b = [v for block in blocks for v in block["runMediansB"]]
+    return {"blocks": blocks, "gain": 1 - statistics.mean(b) / statistics.mean(a),
+            "relativeSpread": statistics.mean(block["relativeSpread"] for block in blocks),
+            "candidateFasterInEveryBlock": all(block["gain"] > 0 for block in blocks),
+            "candidateSlowerInEveryBlock": all(block["gain"] < 0 for block in blocks)}
+
+
+def separation_verdict(rows, case, policy, stage):
+    primary, graph = (separation(rows, metric) for metric in ("softwareTotalMs", "graphGpuMs"))
+    limit = case["aaRelativeSpreadLimit"]
+    evidence = {"separation": {"softwareTotalMs": primary, "graphGpuMs": graph},
+                "noiseWarning": any(block["relativeSpread"] > limit
+                                    for s in (primary, graph) for block in s["blocks"]),
+                "correctness": "exact depth/visibility match across all checkpoints and arms",
+                "statisticalUnit": "independent-process median in ABBA blocks; frame medians are not independent trials"}
+    if (graph["candidateSlowerInEveryBlock"] and
+            -graph["gain"] > max(policy["maximumGraphRegression"], graph["relativeSpread"])):
+        return verdict("reject", "graph_regression", **evidence)
+    if abs(primary["gain"]) < policy["noiseFloor"]:
+        return verdict("inconclusive", "no_measurable_difference", **evidence)
+    if primary["candidateSlowerInEveryBlock"] and -primary["gain"] > primary["relativeSpread"]:
+        return verdict("reject", "primary_regression", **evidence)
+    if (primary["candidateFasterInEveryBlock"] and primary["gain"] > primary["relativeSpread"] and
+            -graph["gain"] <= policy["maximumGraphRegression"]):
+        return verdict("accept", "separated_gain", **evidence)
+    if stage == "discovery":
+        return verdict("inconclusive", "mixed_result", **evidence)
+    return verdict("inconclusive", "no_measurable_difference", **evidence)
+
+
 def inputs(result):
     identity = copy.deepcopy(result["identity"])
     for resource in w.OUTPUTS:
@@ -145,6 +198,9 @@ def classify(result, stage):
         "qualified_gain": ("valid", "confirmed_gain", "accept_candidate"),
         "confidence_interval_crosses_gate": ("valid", "uncertain", "retain_candidate"),
         "discovery_below_screen": ("valid", "uncertain", "retain_candidate"),
+        "separated_gain": ("valid", "confirmed_gain", "accept_candidate"),
+        "mixed_result": ("valid", "uncertain", "extend_runs"),
+        "no_measurable_difference": ("valid", "no_measurable_difference", "retain_baseline"),
         "no_completed_runs": ("incomplete", "not_assessed", "collect_complete_evidence"),
         "missing_comparison_arm": ("incomplete", "not_assessed", "collect_complete_evidence"),
         "incomplete_schedule": ("incomplete", "not_assessed", "collect_complete_evidence"),
@@ -166,6 +222,8 @@ def classify(result, stage):
 def should_confirm(decision, policy):
     if policy == LEGACY_POLICY:
         return decision["decision"] == "accept"
+    if policy == POLICY:
+        return decision["stage"] == "discovery" and decision["nextAction"] == "extend_runs"
     return decision["stage"] == "discovery" and decision["nextAction"] == "run_confirmation"
 
 
@@ -184,8 +242,9 @@ def independent_processes(rows):
 
 def assess(rows, case, policy, expected_runs, stage="confirmation", reference_rows=()):
     """Recomputed from raw runs by verify; never trust a supplied pass boolean."""
-    w.require(policy in (LEGACY_POLICY, V2_POLICY, POLICY), "Unknown decision policy")
-    w.require(stage in ("discovery", "confirmation"), "Unknown experiment stage")
+    w.require(policy in (LEGACY_POLICY, V2_POLICY, V3_POLICY, POLICY), "Unknown decision policy")
+    w.require(stage in (("discovery", "extension") if policy == POLICY else ("discovery", "confirmation")),
+              "Unknown experiment stage")
     legacy = policy == LEGACY_POLICY
     result = assess_stage(rows, case, policy, expected_runs, stage, legacy, reference_rows)
     return result if legacy else classify(result, stage)
@@ -231,6 +290,8 @@ def assess_stage(rows, case, policy, expected_runs, stage, legacy, reference_row
         return verdict("inconclusive", "invalid_interleaving")
     if not independent_processes(rows):
         return verdict("inconclusive", "independent_process_evidence_invalid")
+    if policy == POLICY:
+        return separation_verdict(rows, case, policy, stage)
     qualification = {label: w.compare_runs(arm, case) for label, arm in (("A", a), ("B", b))}
     noisy = any(q["status"] != "stable" for q in qualification.values())
     if legacy and noisy:
@@ -258,19 +319,19 @@ def assess_stage(rows, case, policy, expected_runs, stage, legacy, reference_row
         if primary["upper95"] < 0:
             return verdict("reject", "primary_regression", **evidence)
     # v3 accepts any demonstrated positive gain; zero is not an improvement.
-    if policy == POLICY and primary["upper95"] <= 0:
+    if policy == V3_POLICY and primary["upper95"] <= 0:
         return verdict("reject", "no_positive_gain", **evidence)
     if primary["upper95"] < policy["minimumGain"]:
         return verdict("reject", "gain_below_threshold", **evidence)
     if graph["upper95"] < -policy["maximumGraphRegression"]:
         return verdict("reject", "graph_regression", **evidence)
     if not legacy and stage == "discovery":
-        promising = (primary["estimate"] > 0 if policy == POLICY else
+        promising = (primary["estimate"] > 0 if policy == V3_POLICY else
                      primary["estimate"] >= policy["discoveryMinimumGain"])
         if promising:
             return verdict("inconclusive", "promising_gain", **evidence)
         return verdict("inconclusive", "discovery_below_screen", **evidence)
-    qualified = (primary["lower95"] > 0 if policy == POLICY else
+    qualified = (primary["lower95"] > 0 if policy == V3_POLICY else
                  primary["lower95"] >= policy["minimumGain"])
     if qualified and graph["lower95"] >= -policy["maximumGraphRegression"]:
         return verdict("accept", "qualified_gain", **evidence)
@@ -405,8 +466,7 @@ def execute(args):
     w.require(case["variant"] == "swWorkControl" and case["sampleId"] == "gpu-driven-sample" and
               "primeCameraOffset" in case and not case.get("nsightTraceFrames") and not case.get("profileHoldSeconds"),
               "M3 requires the qualified MiniZorah nonzero-late normal timing case")
-    w.require(2 <= args.blocks <= 10 and 2 <= args.confirmation_blocks <= 10 and 1 <= args.timeout <= 900,
-              "Invalid bounded run budget")
+    w.require(1 <= args.timeout <= 900, "Invalid process timeout")
     candidate = w.load(args.candidate)
     original = (ROOT / TARGET).read_bytes()
     changed = candidate_bytes(candidate, original)
@@ -418,7 +478,6 @@ def execute(args):
     output.mkdir(parents=True, exist_ok=False)
     policy = dict(POLICY)
     manifest = {"protocol": CURRENT_PROTOCOL, "status": "running", "runs": [], "policy": policy,
-                "blocks": args.blocks, "confirmationBlocks": args.confirmation_blocks,
                 "toolHashes": {n: w.digest(Path(__file__).with_name(n)) for n in ("ExperimentRunner.py", "WorkloadCase.py", "MeasureExperimentGPU.ps1")}}
     w.save(output / "Manifest.json", manifest)
     for name in manifest["toolHashes"]:
@@ -462,7 +521,7 @@ def execute(args):
         gpu = gpu_identity()
         manifest["gpu"] = gpu
         discovery_rows = []
-        for stage, blocks in (("discovery", args.blocks), ("confirmation", args.confirmation_blocks)):
+        for stage, blocks in (("discovery", policy["discoveryBlocks"]), ("extension", policy["extensionBlocks"])):
             stage_rows = []
             for index, arm in enumerate(list("ABBA") * blocks):
                 transaction.install(original if arm == "A" else changed)
@@ -480,22 +539,21 @@ def execute(args):
                 w.require(w.source_inventory() == expected, "Sources changed during measurement")
                 w.require(all(w.digest(Path(p)) == h for p,h in runtime.items()), "Runtime changed during measurement")
                 w.asset_metadata_matches(assets)
-                check = assess(stage_rows, case, policy, blocks*4, stage, discovery_rows)
+                # The extension extends the discovery sample; its decision covers every run.
+                pooled = discovery_rows + stage_rows
+                check = assess(pooled, case, policy, len(discovery_rows) + blocks*4, stage)
                 w.save(output / "Manifest.json", manifest)
                 print(f"{name}: verified; {check['reason']}", flush=True)
                 if check["reason"] in ("exact_depth_visibility_mismatch", "workload_input_or_binding_drift",
                                        "within_arm_identity_drift", "candidate_compiled_to_same_shader",
                                        "process_or_environment_evidence_missing", "invalid_or_instrumented_run"):
                     break
-            final = assess(stage_rows, case, policy, blocks*4, stage, discovery_rows)
+            final = assess(discovery_rows + stage_rows, case, policy, len(discovery_rows) + blocks*4, stage)
             w.save(output / (stage + "-Decision.json"), final)
             if stage == "discovery":
                 if not should_confirm(final, policy):
                     break
                 discovery_rows = stage_rows
-        # Discovery only screens; formal acceptance uses the fixed confirmation batch.
-        if final["decision"] == "accept":
-            w.require(stage == "confirmation", "Missing independent confirmation")
     except BaseException as error:
         final = classify(verdict("inconclusive", "execution_failure", error=str(error)), stage)
     finally:
@@ -518,15 +576,21 @@ def execute(args):
 
 def verify(directory):
     manifest = w.load(directory / "Manifest.json")
-    policies = {PROTOCOL: LEGACY_POLICY, V2_PROTOCOL: V2_POLICY, CURRENT_PROTOCOL: POLICY}
+    policies = {PROTOCOL: LEGACY_POLICY, V2_PROTOCOL: V2_POLICY, V3_PROTOCOL: V3_POLICY, CURRENT_PROTOCOL: POLICY}
     w.require(manifest["protocol"] in policies and manifest["status"] == "complete",
               "Incomplete or unknown experiment protocol")
     legacy = manifest["protocol"] == PROTOCOL
     policy = policies[manifest["protocol"]]
     w.require(manifest["policy"] == policy, "Decision policy changed")
-    maximum_blocks = 5 if legacy else 10
-    w.require(2 <= manifest['blocks'] <= maximum_blocks and
-              2 <= manifest['confirmationBlocks'] <= maximum_blocks, "Invalid schedule budget")
+    current = policy == POLICY
+    second = "extension" if current else "confirmation"
+    if current:
+        budgets = {"discovery": policy["discoveryBlocks"], second: policy["extensionBlocks"]}
+    else:
+        maximum_blocks = 5 if legacy else 10
+        w.require(2 <= manifest['blocks'] <= maximum_blocks and
+                  2 <= manifest['confirmationBlocks'] <= maximum_blocks, "Invalid schedule budget")
+        budgets = {"discovery": manifest["blocks"], second: manifest["confirmationBlocks"]}
     for relative, expected in manifest["artifacts"].items():
         w.require(w.digest(w.file_in(directory, relative)) == expected, f"Artifact changed: {relative}")
     w.require(artifact_hashes(directory) == manifest["artifacts"], "Artifact inventory changed")
@@ -546,17 +610,15 @@ def verify(directory):
     w.require(final["decision"] in ("accept", "reject", "inconclusive") and
               final["candidateAccepted"] == (final["decision"] == "accept"), "Invalid decision")
     if not legacy:
-        w.require(final.get("stage") in ("discovery", "confirmation"), "Invalid final stage")
+        w.require(final.get("stage") in ("discovery", second), "Invalid final stage")
         w.require(classify(final, final["stage"]) == final, "Decision classification differs")
-        planned = [(stage, arm) for stage, count in
-                   (("discovery", manifest["blocks"]), ("confirmation", manifest["confirmationBlocks"]))
-                   for arm in list("ABBA") * count]
+        planned = [(stage, arm) for stage, count in budgets.items() for arm in list("ABBA") * count]
         actual = [(entry["stage"], entry["arm"]) for entry in manifest["runs"]]
         w.require(actual == planned[:len(actual)], "Invalid experiment stage schedule")
     stages = {}
     seen = set()
     for entry in manifest["runs"]:
-        w.require(entry['stage'] in ('discovery', 'confirmation') and entry['arm'] in ('A','B'), "Unknown schedule entry")
+        w.require(entry['stage'] in ('discovery', second) and entry['arm'] in ('A','B'), "Unknown schedule entry")
         w.require(entry["directory"] not in seen, "Duplicate process evidence")
         seen.add(entry["directory"])
         run = w.file_in(directory, entry["directory"] + "/Capture.json").parent
@@ -570,8 +632,11 @@ def verify(directory):
         stages.setdefault(entry["stage"], []).append(row)
     calculated_stages = {}
     for stage, rows in stages.items():
-        count = manifest["blocks" if stage == "discovery" else "confirmationBlocks"] * 4
-        reference_rows = stages.get("discovery", []) if not legacy and stage == "confirmation" else []
+        count = budgets[stage] * 4
+        reference_rows = stages.get("discovery", []) if not legacy and stage == second else []
+        if current and stage == second:
+            # v4 extension decisions cover the pooled discovery and extension runs.
+            rows, count, reference_rows = reference_rows + rows, count + len(reference_rows), []
         calculated = assess(rows, case, policy, count, stage, reference_rows)
         calculated_stages[stage] = calculated
         stage_file = directory / (stage + "-Decision.json")
@@ -579,25 +644,30 @@ def verify(directory):
             w.require(calculated == w.load(stage_file), "Stage decision differs from raw evidence")
     w.require(independent_processes([r for rows in stages.values() for r in rows]),
               'Reused/overlapping independent-process evidence')
-    if not legacy and "confirmation" in stages:
+    if not legacy and second in stages:
         w.require("discovery" in calculated_stages and should_confirm(calculated_stages["discovery"], policy),
-                  "Confirmation missing eligible discovery")
+                  f"{second.capitalize()} missing eligible discovery")
+    last = second if second in stages else "discovery"
     if final["decision"] == "accept":
-        w.require(manifest.get("restored") and set(stages) == {"discovery", "confirmation"}, "Acceptance missing confirmation/restore")
-        discovery = w.load(directory / "discovery-Decision.json")
-        confirmation = w.load(directory / "confirmation-Decision.json")
-        w.require(should_confirm(discovery, policy) and confirmation["decision"] == "accept", "Acceptance gate failed")
-        w.require(final == w.load(directory / "confirmation-Decision.json"), "Final decision mismatch")
+        w.require(manifest.get("restored"), "Acceptance missing restore")
+        if current:
+            w.require(final == w.load(directory / (last + "-Decision.json")), "Final decision mismatch")
+        else:
+            w.require(set(stages) == {"discovery", "confirmation"}, "Acceptance missing confirmation/restore")
+            discovery = w.load(directory / "discovery-Decision.json")
+            confirmation = w.load(directory / "confirmation-Decision.json")
+            w.require(should_confirm(discovery, policy) and confirmation["decision"] == "accept", "Acceptance gate failed")
+            w.require(final == confirmation, "Final decision mismatch")
         w.require(w.load(directory / 'Build.json')['exitCode'] == 0 and
                   manifest['buildIdentity']['configuration'] == 'Release' and
                   w.digest(directory/'CMakeCache.txt') == manifest['buildIdentity']['cacheSha256'] and
                   w.load(directory / 'Transaction.json')['state'] == 'restored', "Build or restore failed")
     elif final["reason"] not in ("execution_failure", "restore_conflict"):
-        last = "confirmation" if "confirmation" in stages else "discovery"
         w.require(final == w.load(directory / (last + "-Decision.json")), "Final decision mismatch")
     if not legacy and final["reason"] not in ("execution_failure", "restore_conflict"):
         w.require(final == calculated_stages.get(final["stage"]), "Final decision differs from raw evidence")
-        w.require(final["nextAction"] != "run_confirmation", "Experiment missing scheduled confirmation")
+        w.require(final["nextAction"] not in ("run_confirmation", "extend_runs"),
+                  f"Experiment missing scheduled {second}")
     return {"integrity": "passed", "producerToolsVerified": True,
             "verifierSha256": w.digest(Path(__file__)), **final}
 
@@ -608,9 +678,6 @@ def main():
     run = commands.add_parser("run")
     for name in ("case", "candidate", "assets", "exe", "build-dir", "output"):
         run.add_argument("--"+name, type=Path, required=True)
-    run.add_argument("--blocks", type=int, default=3, help="Fixed discovery ABBA blocks (2-10; default 3)")
-    run.add_argument("--confirmation-blocks", type=int, default=5,
-                     help="Fixed independent confirmation ABBA blocks (2-10; default 5)")
     run.add_argument("--timeout", type=int, default=300)
     for name in ("verify", "recover"):
         commands.add_parser(name).add_argument("directory", type=Path)

@@ -1,4 +1,3 @@
-
 # Metallic Repository Guidelines
 
 ## Find the Relevant Context
@@ -9,14 +8,16 @@ Metallic is a C++23 / Slang Vulkan renderer with an SDL3 / ImGui editor. Use the
 - Build variants, SDKs, and dependency reuse: `Documentation/Build.md` and `CMakePresets.json`.
 - Shader modules and interop conventions: `Shaders/README.md`. Programs live in `Shaders/Features/`, shared modules in `Shaders/Modules/`, and GPU test probes in `tests/rhi/shaders/`.
 - Render graph assets: `Pipelines/`; sample content: `Asset/`; test targets and registration: `tests/CMakeLists.txt`.
-- Codex Only: For complex tasks that can be independently split, please use sub agents for parallel analysis, implementation, or validation as needed, without requiring Ultra thinking intensity. The main agent is responsible for integrating the results and final verification; Simple tasks do not require splitting.
-- Codex Only:When computer use is required, delegate the UI interaction phase to a sub-agent using `gpt-6.1-terra`. The main agent is responsible for providing the necessary context, coordinating the work, integrating the results, and performing final verification.
+- Shader/GPU optimization and Nsight diagnosis: the `metallic-shader-optimization` skill in `.agents/skills/` and its runners under `Tools/Perf/`.
 
+## Agent Workflow (Codex Only)
 
+- For complex tasks that split into independent parts, use sub-agents for parallel analysis, implementation, or validation. Sub-agents use the default reasoning effort. The main agent integrates the results and performs final verification. Simple tasks do not need splitting.
+- When computer use is required, delegate the UI interaction phase to a sub-agent using `gpt-6.1-terra`. The main agent provides the necessary context, coordinates the work, integrates the results, and performs final verification.
 
 ## Build and Test
 
-Run commands from the repository root. Windows x64 / MSVC is the main validated platform; Ninja presets need an x64 Visual Studio developer shell with `cl` available. Reuse a compatible configured build directory; do not change its compiler, generator, or SDK options to make an unrelated task build. Initialize missing dependencies with `git submodule update --init --recursive -- <submodule-path>`. Use `-DSLANG_ROOT=<path>` for an alternate Slang installation.
+Run commands from the repository root. Windows x64 / MSVC is the main validated platform; Ninja presets need an x64 Visual Studio developer shell with `cl` available. Reuse a compatible configured build directory; do not change its compiler, generator, or SDK options to make an unrelated task build. Build only the affected targets (`--target`); do not reconfigure or clean a build directory unless the task requires it. Initialize missing dependencies with `git submodule update --init --recursive -- <submodule-path>`. Use `-DSLANG_ROOT=<path>` for an alternate Slang installation.
 
 Common starting points (configure only when needed):
 
@@ -26,15 +27,17 @@ cmake --preset metallic-dev
 cmake --build --preset metallic-dev
 .\build-dev\Source\Metallic.exe --smoke-test
 
-# Scene/task/debug tests without the optional SDK configuration.
+# CI tree without the optional SDK configuration. The build preset also builds
+# MetallicRHITests, MetallicCtl and MetallicShaderPipelineBench; the test preset
+# runs the scene/task/debug/build/tools/skip-policy labels.
 cmake --preset metallic-ci
 cmake --build --preset metallic-ci
-ctest --test-dir build-ci -R '^Metallic(Scene|Task|Debug)Tests$' --output-on-failure
+ctest --preset metallic-ci
 ```
 
 For other configured trees, use `cmake --build <build-dir> --target <target>` and `ctest --test-dir <build-dir> -R '<test-name-regex>' --output-on-failure`. Multi-config generators also need the matching `--config Debug` / `-C Debug`, and place executables under a configuration subdirectory. CTest does not build tests; build every selected executable first. The `metallic-full` build preset does not build every registered test target.
 
-Tests use GoogleTest through CTest. Main targets include `MetallicSceneTests`, `MetallicTaskTests`, `MetallicDebugTests`, `MetallicGPUPageTests`, and `MetallicRHITests`. Use `--gtest_list_tests` and `--gtest_filter=<pattern>` on test executables for focused runs. RHI tests also accept legacy `--list` / `--filter`; unsupported GPU capabilities can produce skipped tests, which are not runtime validation of that path. Follow the local test conventions and register new sources in `tests/CMakeLists.txt`.
+Tests use GoogleTest through CTest. Main targets include `MetallicSceneTests`, `MetallicTaskTests`, `MetallicDebugTests`, `MetallicGPUPageTests`, and `MetallicRHITests`. Use `--gtest_list_tests` and `--gtest_filter=<pattern>` on test executables for focused runs. RHI tests also accept legacy `--list` / `--filter`; unsupported GPU capabilities can produce skipped tests, which are not runtime validation of that path. Place new tests next to existing tests of the same subsystem and register new sources in `tests/CMakeLists.txt`.
 
 `MetallicShaderWarmup` is an optional manual target; keep it outside default builds and editor/sample dependencies.
 
@@ -48,6 +51,14 @@ When applying PascalCase to identifiers and file names, use these exceptions:
 - Preserve the official capitalization of explicitly integrated external components, such as `RTXDI` and `RTXCR`; use names such as `RTXDIIntegration` and `RTXCRPass`, not `RtxdiIntegration` or `RtxcrPass`.
 
 Keep official mixed-case spellings such as `glTF`, `sRGB`, and `scRGB`, including at the beginning of a name; examples include `glTFInstance`, `RGBA8sRGB`, and `HDRscRGB`.
+
+## Slang Module Ownership
+
+Every repository-owned `.slang` file, including feature entrypoints, SDK wrappers, generated Slang sources, and test shaders, must declare exactly one `module Name;` or `implementing Name;`. Shared code uses `import`. A split implementation uses `__include` only from its owning module and declares the same `implementing` owner. Do not create anonymous include-only Slang fragments or use `#include` on a `.slang` file. Give independent entrypoints their own modules and keep registered entrypoint names stable.
+
+Third-party HLSL headers and shared C++/Slang interop headers may retain textual `#include` inside their canonical module owner. Do not convert authored Slang snippets to `.hlsli` to evade module ownership. Local preprocessor definitions do not cross `import` or `__include`; expose dependencies through explicit imports, resource parameters, generics, or interfaces. Existing global shader permutations remain in `SlangShaderDesc::macroDefines` and shader cache identity.
+
+Run `python -B Tools/CheckShaderModules.py` (or CTest `MetallicShaderModuleOwnershipAudit` when Python is available) after changing shader structure, followed by compilation and behavior-appropriate validation. The audit covers `Shaders/` and all test Slang sources; external vendor source trees are excluded.
 
 ## Code Trust Boundaries & Defensive Programming
 
@@ -66,18 +77,22 @@ Before adding complexity for a speculative or vanishingly unlikely race or secur
 
 - Preserve unrelated working-tree changes. Avoid broad rewrites in `External/` or vendor shader snapshots; retain their licenses. Treat `build/`, `build-*`, `cmake-build-*`, `Testing/`, `.cache/`, and IDE folders as local output, not source.
 - For shared render/RHI interface changes, inspect affected runtime callers and tests, including render graph and Vulkan implementations. For shader resource/layout changes, keep CPU bindings, Slang declarations, and affected pipeline assets consistent.
-- Match validation to the changed behavior. For a bug fix, cover the failing case where practical; for documentation-only edits, check facts, links, and the diff without rebuilding the renderer. Broaden testing when affected contracts cross subsystem boundaries.
-- For rendering changes, exercise the affected scene/pass and inspect its output when the GPU environment permits. A build, shader compile, or one-frame smoke test alone does not establish visual correctness, temporal stability, or full-scene memory behavior. State which runtime checks were unavailable.
-- For performance work, compare the same workload and settings, record cache/warmup conditions and the measured scope, and retain correctness checks. Report pass timings as pass timings, not end-to-end speedups. Keep generated captures and images out of source control unless intentionally included as evidence.
+- Match validation to the changed behavior: run the focused tests and one runtime check that cover it; do not repeat a passing check for reassurance. For a bug fix, cover the failing case where practical; for documentation-only edits, check facts, links, and the diff without rebuilding the renderer. Broaden testing when affected contracts cross subsystem boundaries.
+- For rendering changes, exercise the affected scene/pass and inspect its output when the GPU environment permits. A build, shader compile, or one-frame smoke test alone does not establish visual correctness. One capture or short frame sequence of the affected scene/pass is sufficient unless the change targets temporal stability or memory behavior.
+- When the GPU, an SDK, or another runtime prerequisite is unavailable, finish the checks that are possible, state which runtime checks were unavailable, and stop. Do not change build configuration or environment to work around it.
+- For performance work, follow "Performance and A/B Experiment Budget" below.
+
+## Performance and A/B Experiment Budget
+
+- Compare the same workload and settings; record cache/warmup conditions and the measured scope. Report pass timings as pass timings, not end-to-end speedups. Keep generated captures and images out of source control unless intentionally included as evidence.
+- One run is one independent process launch measured after warmup. Frames within a run are not independent samples.
+- Default protocol: interleaved A-B-A-B (4 runs). Stop and report when every B is on the same side of every A and the A/B gap exceeds the within-variant spread. A consistent regression is also a conclusive result; stop and report it.
+- Extend to at most 8 interleaved runs only when the first 4 are mixed, the gap is comparable to the spread, or a run is clearly disturbed (e.g. shader compile, thermal or background spike; name the cause). Do not extend once the result is already clear.
+- A gap below about 1% of the measured pass time, or below the runner's noise floor, counts as "no measurable difference"; do not add runs to resolve it.
+- If 8 runs are still inconclusive, stop and report "no measurable difference" with the observed numbers. Do not rerun to seek a clearer result. Exceeding 8 runs, or adding scenes/resolutions/settings beyond those the change affects, requires the user's approval with a stated reason.
+- Iterate on candidates with a single quick A/B or diagnostic. Run the full A-B-A-B protocol and the correctness check only for the final candidate, not for every intermediate attempt.
+- Report the run count used and the reason the experiment stopped.
 
 ## Commit & Pull Request Guidelines
 
 Use short imperative commit subjects and keep commits scoped to one subsystem. PRs should explain the resulting behavior, list validation commands and outcomes (including skips or unavailable checks), link relevant issues, and provide screenshots or output images for visual changes when available.
-
-## Slang Module Ownership
-
-Every repository-owned `.slang` file, including feature entrypoints, SDK wrappers, generated Slang sources, and test shaders, must declare exactly one `module Name;` or `implementing Name;`. Shared code uses `import`. A split implementation uses `__include` only from its owning module and declares the same `implementing` owner. Do not create anonymous include-only Slang fragments or use `#include` on a `.slang` file. Give independent entrypoints their own modules and keep registered entrypoint names stable.
-
-Third-party HLSL headers and shared C++/Slang interop headers may retain textual `#include` inside their canonical module owner. Do not convert authored Slang snippets to `.hlsli` to evade module ownership. Local preprocessor definitions do not cross `import` or `__include`; expose dependencies through explicit imports, resource parameters, generics, or interfaces. Existing global shader permutations remain in `SlangShaderDesc::macroDefines` and shader cache identity.
-
-Run `python -B Tools/CheckShaderModules.py` (or CTest `MetallicShaderModuleOwnershipAudit` when Python is available) after changing shader structure, followed by compilation and behavior-appropriate validation. The audit covers `Shaders/` and all test Slang sources; external vendor source trees are excluded.

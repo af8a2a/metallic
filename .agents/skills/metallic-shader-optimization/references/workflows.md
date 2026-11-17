@@ -54,15 +54,13 @@ python -B Tools/Perf/ExperimentRunner.py run --case "$casePath" --candidate "$ca
 python -B Tools/Perf/ExperimentRunner.py verify "$outputDir"
 ```
 
-默认 3 个 discovery ABBA block，有希望的候选再运行 5 个独立 confirmation block，
-每进程限时 300 秒；确认当前默认值，在采集前固定两阶段预算并说明实验规模。
-当前规则不设 3% 最低收益：discovery 的软件总时间收益点估计严格大于 0，且没有
-已确认的目标退化或超预算 graph 退化，即进入 confirmation；只有独立 confirmation
-的收益 95% 区间下界严格大于 0、graph 收益下界至少 -2% 才接受。
-例如确认区间为 [0.2%, 0.8%] 的小幅收益可以接受；[-0.2%, 0.8%] 仍为
-inconclusive；零收益不能接受。正确性、身份、恢复和证据完整性要求仍须通过。
+默认 1 个 discovery ABBA block（4 次独立进程），仅当结果混合或差值与组内波动相当时
+再追加 1 个 extension ABBA block（共 8 次进程），每进程限时 300 秒；具体停止条件与
+噪声下限见 `ExperimentRunner.md` 与仓库根目录 `AGENTS.md` 中的 “Performance and A/B Experiment Budget”。
+对低于 1% 噪声下限、或 8 次后仍不确定的候选直接停止并报告 `no_measurable_difference`，
+不自动追加样本或反复重试。正确性、身份、恢复和证据完整性要求仍须通过。
 exit 0 可以是 accept 或 reject，exit 2 是 inconclusive；读取 `Decision.json`、
-确认阶段和事务恢复状态，不能只看 exit code。
+阶段状态和事务恢复状态，不能只看 exit code。
 
 样本预算不足以分辨小收益时保留候选和全部结果，并说明测量精度限制。后续实验应
 先声明预算、可检验的改动或噪声来源处置；不自动追加样本或只保留显著批次。

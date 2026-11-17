@@ -269,10 +269,10 @@ class LegacyExperimentTests(unittest.TestCase):
             e.verify(root)
 
 
-class CurrentExperimentTests(unittest.TestCase):
+class V3ExperimentTests(unittest.TestCase):
     def setUp(self):
         LegacyExperimentTests.setUp(self)
-        self.policy = copy.deepcopy(e.POLICY)
+        self.policy = copy.deepcopy(e.V3_POLICY)
         self.capture = copy.deepcopy(self.fixture.capture)
         self.frames = copy.deepcopy(self.fixture.frames)
         self.buffers = {key:(self.fixture.path/(key+'.bin')).read_bytes() for key in e.w.OUTPUTS}
@@ -334,7 +334,7 @@ class CurrentExperimentTests(unittest.TestCase):
             f'timestamp,pid,process,engine,utilization\n{timestamp},{pid},synthetic,gpu,0\n')
         return {'arm':arm,'result':result,'process':process,'competition':e.monitor_coverage(directory,pid)}
 
-    def archive(self, discovery=(.1,.1), confirmation=(.1,.1), scales=None, protocol=e.CURRENT_PROTOCOL):
+    def archive(self, discovery=(.1,.1), confirmation=(.1,.1), scales=None, protocol=e.V3_PROTOCOL):
         root = self.fixture.path/'current-experiment'
         root.mkdir()
         candidate = {'protocol':e.PROTOCOL,'id':'synthetic','hypothesis':'unit test only','path':e.TARGET,
@@ -618,65 +618,18 @@ class CurrentExperimentTests(unittest.TestCase):
                     self.assertEqual(decision['effectAssessment'],'correctness_failure')
                 self.assertNotIn('gains',decision)
 
-    def test_execute_promising_discovery_runs_fixed_independent_confirmation(self):
-        decision,calls,root = self.execute_synthetic([.01,.09,.17],[.1]*5)
-        self.assertEqual(calls,['discovery']*12+['confirmation']*20)
-        self.assertEqual(decision['decision'],'accept')
-        discovery = e.w.load(root/'discovery-Decision.json')
-        self.assertEqual(discovery['decision'],'inconclusive')
-        self.assertEqual(discovery['nextAction'],'run_confirmation')
-        self.assertEqual(e.verify(root)['decision'],'accept')
-
-    def test_execute_and_verify_small_gain(self):
-        decision,calls,root = self.execute_synthetic([.005]*3,[.005]*5)
-        self.assertEqual(calls,['discovery']*12+['confirmation']*20)
-        self.assertEqual(decision['decision'],'accept')
-        self.assertEqual(e.verify(root)['decision'],'accept')
-
     def test_offline_v2_archive_keeps_original_policy(self):
         self.policy = copy.deepcopy(e.V2_POLICY)
         root,manifest = self.archive(confirmation=(.02,.02),protocol=e.V2_PROTOCOL)
         decision = e.verify(root)
         self.assertEqual(decision['decision'],'reject')
         self.assertEqual(decision['reason'],'gain_below_threshold')
-        manifest['protocol'] = e.CURRENT_PROTOCOL
+        manifest['protocol'] = e.V3_PROTOCOL
         self.save_manifest(root,manifest)
         with self.assertRaisesRegex(ValueError,'policy'):
             e.verify(root)
 
-    def test_execute_confirmation_failure_does_not_reuse_discovery_gain(self):
-        decision,calls,root = self.execute_synthetic([.1]*3,[0]*5)
-        self.assertEqual(calls,['discovery']*12+['confirmation']*20)
-        self.assertEqual(decision['decision'],'reject')
-        self.assertAlmostEqual(decision['gains']['softwareTotalMs']['estimate'],0)
-        self.assertEqual(e.verify(root)['decision'],'reject')
-
-    def test_execute_does_not_confirm_rejected_discovery(self):
-        decision,calls,root = self.execute_synthetic([0]*3,[.1]*5)
-        self.assertEqual(calls,['discovery']*12)
-        self.assertEqual(decision['decision'],'reject')
-        self.assertFalse((root/'confirmation-Decision.json').exists())
-        self.assertEqual(e.verify(root)['decision'],'reject')
-
-    def test_execute_uncertain_confirmation_stops_at_registered_budget(self):
-        decision,calls,root = self.execute_synthetic([.1]*3,[.01,.09,.17])
-        self.assertEqual(calls,['discovery']*12+['confirmation']*12)
-        self.assertEqual(decision['decision'],'inconclusive')
-        self.assertEqual(decision['nextAction'],'retain_candidate')
-        self.assertEqual(e.verify(root)['decision'],'inconclusive')
-
-    def test_cli_predeclares_three_discovery_and_five_confirmation_blocks(self):
-        argv = ['ExperimentRunner.py','run']
-        for option in ('case','candidate','assets','exe','build-dir','output'):
-            argv.extend(['--'+option,'unused'])
-        with patch.object(sys,'argv',argv), patch.object(e,'execute',return_value={'decision':'inconclusive'}) as run, \
-             redirect_stdout(io.StringIO()):
-            self.assertEqual(e.main(),2)
-        args = run.call_args.args[0]
-        self.assertEqual(args.blocks,3)
-        self.assertEqual(args.confirmation_blocks,5)
-
-    def test_offline_current_evidence_recomputes_noise_and_classification(self):
+    def test_offline_v3_evidence_recomputes_noise_and_classification(self):
         root,manifest = self.archive(discovery=(.1,.1,.1),confirmation=(.1,.1,.1),scales=(.8,1,1.2))
         result = e.verify(root)
         self.assertEqual(result['decision'],'accept')
@@ -749,6 +702,166 @@ class CurrentExperimentTests(unittest.TestCase):
         self.save_manifest(root,manifest)
         with self.assertRaisesRegex(ValueError,'decision|identity|shader'):
             e.verify(root)
+
+
+class CurrentExperimentTests(unittest.TestCase):
+    def setUp(self):
+        self.v3 = V3ExperimentTests()
+        self.v3.setUp()
+        self.addCleanup(self.v3.doCleanups)
+        self.v3.policy = copy.deepcopy(e.POLICY)
+
+    def execute_v4(self, blocks):
+        root = self.v3.fixture.path/'v4-execution'
+        root.mkdir()
+        target = root/e.TARGET
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'baseline')
+        case = {**self.v3.case,'sampleId':'gpu-driven-sample','primeCameraOffset':[0,0,3]}
+        self.v3.case = self.v3.fixture.case = case
+        candidate = {'protocol':e.PROTOCOL,'id':'synthetic','hypothesis':'unit test only','path':e.TARGET,
+                     'baseSha256':e.sha(b'baseline'),'replacements':[{'before':'baseline','after':'candidate','count':1}]}
+        assets = {'protocol':'metallic-declared-assets-v1','stream':e.w.ASSETS[case['sampleId']]}
+        for name, value in (('Case.json',case),('Candidate.json',candidate),('Assets.json',assets)):
+            e.w.save(root/name,value)
+        build = root/'build'
+        executable = build/'Source/MetallicGPUDrivenSample.exe'
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'synthetic executable')
+        (build/'CMakeCache.txt').write_text(
+            f'CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_HOME_DIRECTORY:INTERNAL={root}\n')
+        args = SimpleNamespace(case=root/'Case.json',candidate=root/'Candidate.json',assets=root/'Assets.json',
+                               output=root/'result',timeout=30,build_dir=build,exe=executable)
+        calls = []
+
+        def collect(case_arg, exe, directory, timeout):
+            stage, number, arm = directory.name.split('-')
+            block_index = 0 if stage == 'discovery' else 1
+            a_scale, b_scale = blocks[block_index]
+            scale = a_scale if arm == 'A' else b_scale
+            gain = 1 - scale
+            row = self.v3.write_run(directory,arm,len(calls),gain)
+            calls.append(stage)
+            return row
+
+        with patch.object(e,'ROOT',root), patch.object(e.w,'asset_metadata_matches'), \
+             patch.object(e.w,'source_inventory',side_effect=lambda:{e.TARGET:e.sha(target.read_bytes())}), \
+             patch.object(e,'gpu_identity',return_value='synthetic GPU'), \
+             patch.object(e.subprocess,'run',return_value=SimpleNamespace(returncode=0)), \
+             patch.object(e,'collect',side_effect=collect), redirect_stdout(io.StringIO()):
+            decision = e.execute(args)
+        self.assertEqual(target.read_bytes(),b'baseline')
+        return decision,calls,args.output
+
+    def test_v4_accepts_clear_four_run_discovery_without_extension(self):
+        decision,calls,root = self.execute_v4([(1.0, .92)])
+        self.assertEqual(calls,['discovery']*4)
+        self.assertEqual(decision['decision'],'accept')
+        self.assertEqual(decision['reason'],'separated_gain')
+        self.assertFalse((root/'extension-Decision.json').exists())
+        self.assertEqual(e.verify(root)['decision'],'accept')
+
+    def test_v4_rejects_clear_four_run_regression_without_extension(self):
+        decision,calls,root = self.execute_v4([(1.0, 1.08)])
+        self.assertEqual(calls,['discovery']*4)
+        self.assertEqual(decision['decision'],'reject')
+        self.assertEqual(decision['reason'],'primary_regression')
+        self.assertEqual(e.verify(root)['decision'],'reject')
+
+    def test_v4_stops_at_four_runs_below_noise_floor(self):
+        decision,calls,root = self.execute_v4([(1.0, .995)])
+        self.assertEqual(calls,['discovery']*4)
+        self.assertEqual(decision['decision'],'inconclusive')
+        self.assertEqual(decision['reason'],'no_measurable_difference')
+        self.assertEqual(e.verify(root)['reason'],'no_measurable_difference')
+
+    def test_v4_extends_mixed_discovery_to_eight_runs_and_accepts(self):
+        # First block has A1=1.0, A2=1.2 (spread=0.18 > gain=0.09), triggering extension.
+        root = self.v3.fixture.path/'v4-extend'
+        root.mkdir()
+        target = root/e.TARGET
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'baseline')
+        case = {**self.v3.case,'sampleId':'gpu-driven-sample','primeCameraOffset':[0,0,3]}
+        self.v3.case = self.v3.fixture.case = case
+        candidate = {'protocol':e.PROTOCOL,'id':'synthetic','hypothesis':'unit test only','path':e.TARGET,
+                     'baseSha256':e.sha(b'baseline'),'replacements':[{'before':'baseline','after':'candidate','count':1}]}
+        assets = {'protocol':'metallic-declared-assets-v1','stream':e.w.ASSETS[case['sampleId']]}
+        for name, value in (('Case.json',case),('Candidate.json',candidate),('Assets.json',assets)):
+            e.w.save(root/name,value)
+        build = root/'build'
+        executable = build/'Source/MetallicGPUDrivenSample.exe'
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'synthetic executable')
+        (build/'CMakeCache.txt').write_text(
+            f'CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_HOME_DIRECTORY:INTERNAL={root}\n')
+        args = SimpleNamespace(case=root/'Case.json',candidate=root/'Candidate.json',assets=root/'Assets.json',
+                               output=root/'result',timeout=30,build_dir=build,exe=executable)
+        # Block 1 has B1=0.85, B2=1.05 (gain=0.05, spread=0.20), triggering extension.
+        # Block 2 has B1=0.75, B2=0.75 (pooled gain=0.15 > mean spread=0.10).
+        gains = [0, .15, -.05, 0, 0, .25, .25, 0]
+        calls = []
+
+        def collect(case_arg, exe, directory, timeout):
+            stage, _, arm = directory.name.split('-')
+            row = self.v3.write_run(directory,arm,len(calls),gains[len(calls)])
+            calls.append(stage)
+            return row
+
+        with patch.object(e,'ROOT',root), patch.object(e.w,'asset_metadata_matches'), \
+             patch.object(e.w,'source_inventory',side_effect=lambda:{e.TARGET:e.sha(target.read_bytes())}), \
+             patch.object(e,'gpu_identity',return_value='synthetic GPU'), \
+             patch.object(e.subprocess,'run',return_value=SimpleNamespace(returncode=0)), \
+             patch.object(e,'collect',side_effect=collect), redirect_stdout(io.StringIO()):
+            decision = e.execute(args)
+        self.assertEqual(calls,['discovery']*4+['extension']*4)
+        self.assertEqual(decision['decision'],'accept')
+        self.assertEqual(e.verify(args.output)['decision'],'accept')
+
+    def test_v4_offline_mixed_discovery_cannot_omit_extension(self):
+        # A spread of 0.18 with gain 0.09 yields mixed_result (nextAction=extend_runs).
+        root = self.v3.fixture.path/'v4-omit-ext'
+        root.mkdir()
+        target = root/e.TARGET
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'baseline')
+        case = {**self.v3.case,'sampleId':'gpu-driven-sample','primeCameraOffset':[0,0,3]}
+        self.v3.case = self.v3.fixture.case = case
+        candidate = {'protocol':e.PROTOCOL,'id':'synthetic','hypothesis':'unit test only','path':e.TARGET,
+                     'baseSha256':e.sha(b'baseline'),'replacements':[{'before':'baseline','after':'candidate','count':1}]}
+        assets = {'protocol':'metallic-declared-assets-v1','stream':e.w.ASSETS[case['sampleId']]}
+        for name, value in (('Case.json',case),('Candidate.json',candidate),('Assets.json',assets)):
+            e.w.save(root/name,value)
+        build = root/'build'
+        executable = build/'Source/MetallicGPUDrivenSample.exe'
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'synthetic executable')
+        (build/'CMakeCache.txt').write_text(
+            f'CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_HOME_DIRECTORY:INTERNAL={root}\n')
+        args = SimpleNamespace(case=root/'Case.json',candidate=root/'Candidate.json',assets=root/'Assets.json',
+                               output=root/'result',timeout=30,build_dir=build,exe=executable)
+        gains = [0, .15, -.05, 0, 0, .25, .25, 0]
+        calls = []
+
+        def collect(case_arg, exe, directory, timeout):
+            stage, _, arm = directory.name.split('-')
+            row = self.v3.write_run(directory,arm,len(calls),gains[len(calls)])
+            calls.append(stage)
+            return row
+
+        with patch.object(e,'ROOT',root), patch.object(e.w,'asset_metadata_matches'), \
+             patch.object(e.w,'source_inventory',side_effect=lambda:{e.TARGET:e.sha(target.read_bytes())}), \
+             patch.object(e,'gpu_identity',return_value='synthetic GPU'), \
+             patch.object(e.subprocess,'run',return_value=SimpleNamespace(returncode=0)), \
+             patch.object(e,'collect',side_effect=collect), redirect_stdout(io.StringIO()):
+            e.execute(args)
+        out = args.output
+        manifest = e.w.load(out/'Manifest.json')
+        manifest['runs'] = manifest['runs'][:4]
+        e.w.save(out/'Decision.json',e.w.load(out/'discovery-Decision.json'))
+        self.v3.save_manifest(out,manifest)
+        with self.assertRaisesRegex(ValueError,'extension|extend_runs'):
+            e.verify(out)
 
 
 if __name__ == '__main__':

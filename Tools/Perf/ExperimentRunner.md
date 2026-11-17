@@ -31,14 +31,13 @@ python -B Tools/Perf/ExperimentRunner.py run `
 python -B Tools/Perf/ExperimentRunner.py verify build/my-new-experiment
 ```
 
-The output directory must be new. Fix both stage budgets before starting:
-defaults are three discovery ABBA blocks and, for a promising discovery result,
-five independent confirmation ABBA blocks. `--blocks` and
-`--confirmation-blocks` each accept 2–10 (at most 80 processes across both
-stages). Each process has a default 300-second timeout, configurable with
-`--timeout`; the case retains its per-process rounds and frame counts. Processes
-are serial. There is no adaptive sample extension or significance-based early
-stopping. Evidence or correctness failures can stop collection.
+The output directory must be new. The runner follows the repository A/B budget:
+it runs one `discovery` ABBA block (4 independent processes) by default, and
+extends with at most one `extension` ABBA block (8 processes total) only when
+the first 4 runs are mixed or the gap is comparable to the within-arm spread.
+Each process has a default 300-second timeout, configurable with `--timeout`; the
+case retains its per-process rounds and frame counts. Processes are serial.
+Evidence or correctness failures can stop collection.
 
 Build failures, process failures, missing evidence and restoration conflicts
 produce `inconclusive`, never a speedup. Exit code 0 means a completed
@@ -102,30 +101,23 @@ every run. Do not modify source/assets or run another GPU experiment concurrentl
    The standalone `WorkloadCase` A/A qualification rule is unchanged. Background
    GPU activity remains archived; it is not forcibly excluded or independently
    proven harmless.
-5. One complete ABBA block is the statistical unit. For each metric, take each
-   process's median, then compute the block's mean log ratio:
-   `(log(B1/A1) + log(B2/A2)) / 2`. The two adjacent pairs within a block are not
-   independent samples. Compute the two-sided 95% Student-t interval across
-   block log ratios, then transform the estimate and reversed interval bounds
-   to gains with `1 - exp(logRatio)`. Each stage has 2–10 blocks built from new
-   processes; frame samples are not independent experiments. This accounts for
-   pairing and within-block correlation, but does not establish independence
-   across blocks or rule out environmental drift.
-6. Discovery screens candidates using its full fixed budget. An upper gain bound
-   below zero establishes a software regression; a graph upper gain bound below
-   -2% exceeds the graph regression budget. A software upper gain bound of exactly
-   zero establishes no positive gain. These results reject. Otherwise, any positive
-   software point estimate is promising and schedules independent confirmation,
-   even when discovery cannot establish the final acceptance bounds. Other
-   uncertain results retain the candidate and evidence.
-7. Only confirmation can accept a new candidate. Its own software gain interval
-   must have a lower bound strictly above zero, and its own graph gain lower bound
-   must be at least -2%. Discovery data are not pooled into this decision.
-   Confirmation rejects established regression or no positive gain (upper bound
-   at most zero); intervals crossing or touching zero with a positive upper bound
-   remain inconclusive when the fixed budget is spent. Reliable gains below 3%
-   can be accepted; there is no minimum positive effect size.
-   No threshold tuning, automatic extension or repeated retries are performed.
+5. One complete ABBA block (4 independent processes) is the minimum unit. For
+   each metric, take each process's median. In v4 (`abba-separation`), each
+   block's gain is `1 - mean(B) / mean(A)` and its relative spread is
+   `max(max(A) - min(A), max(B) - min(B)) / mean(A)`; across pooled blocks,
+   the overall gain uses all process medians and the spread is the mean of
+   per-block relative spreads.
+6. Discovery (4 runs) rejects immediately on a consistent graph regression
+   exceeding 2% and its spread, or a consistent primary regression exceeding
+   its spread. A software gain below the 1% noise floor stops immediately as
+   `no_measurable_difference`. A candidate faster in every block with gain
+   exceeding its spread (and graph regression within 2%) is accepted as
+   `separated_gain` without extending. Otherwise, discovery is `mixed_result`
+   (`nextAction=extend_runs`) and triggers the single 4-run extension block.
+7. Extension pools all 8 runs (2 ABBA blocks) and re-evaluates the same
+   separation rule. If the 8-run result is still mixed, below the 1% noise
+   floor, or does not exceed spread, it stops as `no_measurable_difference`
+   (`nextAction=retain_baseline`). No further extension or reruns are performed.
 
 ## Result classification
 
@@ -142,9 +134,10 @@ same follow-up.
 | `confirmed_regression` | The interval gives evidence of a software slowdown or a graph regression beyond the 2% budget; `reject_candidate`. `stage` identifies where this was observed; rejection does not require independent confirmation. |
 | `below_target` | Historical v1/v2 result: the software interval's upper bound is below the declared 3% target; `reject_candidate` under that policy. Not produced by v3. |
 | `no_gain` | In v3, the software upper bound is exactly zero; `reject_candidate`. Negative upper bounds are classified as regression. |
-| `promising` | Discovery's software estimate is positive, without established regression; reason `promising_gain`, status `inconclusive`, `nextAction=run_confirmation`. |
-| `uncertain` | The fixed budget does not resolve the decision; `inconclusive` with `nextAction=retain_candidate`. |
-| `confirmed_gain` | Independent confirmation satisfies both lower bounds; `accept_candidate`, subject to successful restoration. |
+| `promising` | Historical v2/v3 result: discovery's software estimate is positive, without established regression; `nextAction=run_confirmation`. |
+| `uncertain` | In v4 discovery, `mixed_result` (`nextAction=extend_runs`) schedules the 4-run extension block; in v2/v3, fixed budget did not resolve the decision (`retain_candidate`). |
+| `no_measurable_difference` | In v4, the gain is below the 1% noise floor or remains mixed/within-spread after 8 runs; stops with `nextAction=retain_baseline`. |
+| `confirmed_gain` | In v4 (`separated_gain`), every block is faster and gain exceeds spread (with graph within 2%); in v2/v3, independent confirmation satisfies both lower bounds; `accept_candidate`, subject to successful restoration. |
 
 Every result retains the candidate patch and collected evidence. Spending the
 budget without confirmation does not disprove the hypothesis. A later independent
@@ -190,7 +183,7 @@ verifier checks those archived hashes without executing archived code and report
 its own hash separately.
 
 Candidate JSON remains `metallic-shader-experiment-v1`; new experiment manifests
-use `metallic-shader-experiment-v3`. The verifier selects the exact supported
+use `metallic-shader-experiment-v4`. The verifier selects the exact supported
 policy from the manifest protocol and requires agreement with saved decisions:
 
 | Manifest | Recomputed policy |
@@ -198,6 +191,7 @@ policy from the manifest protocol and requires agreement with saved decisions:
 | `metallic-shader-experiment-v1` | Original per-arm spread hard gate, adjacent-pair gain Student-t interval, and discovery acceptance before confirmation. |
 | `metallic-shader-experiment-v2` | Spread warnings, ABBA-block log-ratio interval, discovery screening, independent confirmation and explicit result classifications. |
 | `metallic-shader-experiment-v3` | Same evidence and confirmation requirements as v2; positive discovery estimate and strictly positive confirmation lower bound replace the 3% target. |
+| `metallic-shader-experiment-v4` | Default 1 ABBA block (4 runs) with optional 1-block extension (8 runs total), 1% noise floor, and per-block separation rule. |
 
 Unknown protocols or altered/unknown policies fail verification. Existing v1/v2
 archives retain their original decisions and are never rewritten or reclassified
