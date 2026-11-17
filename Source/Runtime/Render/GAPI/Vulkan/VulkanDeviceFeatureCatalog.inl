@@ -109,6 +109,10 @@ MT_VK_FEATURE(meshShader, desc.enableMeshShader, true,
 MT_VK_FEATURE(meshShader, desc.enableMeshShader, true, false, 8, , caps.meshShader = meshShader;)
 #endif
 
+MT_VK_FEATURE(shaderOutputLayer, desc.enableMeshShader, false,
+    request.shaderOutputLayer && probe.vulkan12Features.shaderOutputLayer == VK_TRUE, 0,
+    vulkan12Features.shaderOutputLayer = selection.shaderOutputLayer;, caps.shaderOutputLayer = shaderOutputLayer;)
+
 #ifdef VK_EXT_mesh_shader
 MT_VK_FEATURE(taskShader, desc.enableTaskShader || desc.enableTaskShaderSubgroupBallot || desc.preferredTaskSubgroupSize != 0, true,
     request.taskShader && taskShaderSupported, 8,

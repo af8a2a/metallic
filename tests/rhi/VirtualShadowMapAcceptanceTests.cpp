@@ -280,7 +280,7 @@ public:
                 "Unexpected VSM budget diagnostic layout");
             std::array<uint32_t, 8> budgetHeader;
             std::memcpy(budgetHeader.data(), rawBudget.data(), sizeof(budgetHeader));
-            requireAcceptance(budgetHeader[0] == 1, "Unsupported VSM budget diagnostic version");
+            requireAcceptance(budgetHeader[0] == 1 || budgetHeader[0] == 2, "Unsupported VSM budget diagnostic version");
             Json budgetFaces = Json::array();
             for (size_t offset = sizeof(budgetHeader); offset < rawBudget.size(); offset += 8 * sizeof(uint32_t)) {
                 std::array<uint32_t, 8> values;

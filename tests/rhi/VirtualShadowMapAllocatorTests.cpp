@@ -34,16 +34,19 @@ void requireAllocator(const Result<T>& result, const std::string& message)
     requireAllocator(bool(result), message + (result ? "" : ": " + std::string(resultToString(result))));
 }
 
-// Match the complete 216-byte production ShadowPush, including its LOD tail.
+// Match the complete 224-byte production ShadowPush, including its shared pool tail.
 // This probe binds only allocation fields; refined receiver geometry is absent.
 struct AllocatorPush
 {
     std::array<uint32_t, 52> words{};
     float lodScreenRayLength = 0.f;
     uint32_t receiverGeometry = UINT32_MAX;
+    uint32_t physicalPool = UINT32_MAX;
+    uint32_t poolFace = 0;
 };
-static_assert(sizeof(AllocatorPush) == 216);
+static_assert(sizeof(AllocatorPush) == 224);
 static_assert(offsetof(AllocatorPush, lodScreenRayLength) == 208 && offsetof(AllocatorPush, receiverGeometry) == 212);
+static_assert(offsetof(AllocatorPush, physicalPool) == 216 && offsetof(AllocatorPush, poolFace) == 220);
 
 struct AllocationCase
 {

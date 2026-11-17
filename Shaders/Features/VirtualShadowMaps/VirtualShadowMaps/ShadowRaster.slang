@@ -11,6 +11,16 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_PAGE_RASTER
 #define VSM_CLUSTER_PAGE_RASTER 0
 #endif
+#ifndef VSM_SHARED_PHYSICAL_POOL
+#define VSM_SHARED_PHYSICAL_POOL 0
+#endif
+
+#if VSM_SHARED_PHYSICAL_POOL
+struct ShadowAtlasPrimitive
+{
+    uint layer : SV_RenderTargetArrayIndex;
+};
+#endif
 
 struct ShadowClearVertex
 {
@@ -18,11 +28,19 @@ struct ShadowClearVertex
 };
 
 [shader("fragment")]
-float vsmClearFragmentMain(ShadowClearVertex input, uniform ShadowPush push) : SV_Depth
+float vsmClearFragmentMain(ShadowClearVertex input,
+#if VSM_SHARED_PHYSICAL_POOL
+    uint layer : SV_RenderTargetArrayIndex,
+#endif
+    uniform ShadowPush push) : SV_Depth
 {
     if ((push.cacheMode & 16u) != 0u && (push.rasterCoarse & 2u) == 0u) {
-        Texture2D<float> staticAtlas = resolveUniform(ResourceHandle<Texture2D<float>>(vsmCacheMetadata(push, 32u)));
-        return staticAtlas.Load(int3(int2(input.position.xy), 0));
+        VSMAtlas staticAtlas = resolveUniform(ResourceHandle<VSMAtlas>(vsmCacheMetadata(push, 32u)));
+        uint2 logicalTexel = uint2(input.position.xy);
+#if VSM_SHARED_PHYSICAL_POOL
+        logicalTexel.y += layer * push.physicalPagesY * push.pageSize;
+#endif
+        return vsmAtlasLoad(staticAtlas, logicalTexel, push);
     }
     return 0.0;
 }
@@ -31,11 +49,16 @@ float vsmClearFragmentMain(ShadowClearVertex input, uniform ShadowPush push) : S
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    out vertices ShadowClearVertex vertices[4], out indices uint3 triangles[2], uniform ShadowPush push)
+    out vertices ShadowClearVertex vertices[4], out indices uint3 triangles[2],
+#if VSM_SHARED_PHYSICAL_POOL
+    out primitives ShadowAtlasPrimitive primitives[2],
+#endif
+    uniform ShadowPush push)
 {
     StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    uint owner = owners[group.x];
+    uint physicalPage = push.workBase + group.x;
+    uint owner = owners[physicalPage];
     bool clear = false;
     if (owner != 0u && push.enabled != 0u) {
         uint4 entry = pages[owner - 1u];
@@ -50,9 +73,14 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     }
     if (lane < 4u) {
         float2 corner = float2(lane & 1u, lane >> 1u);
-        vertices[lane].position = float4(vsmAtlasPosition(corner, group.x, push), 0.0, 1.0);
+        vertices[lane].position = float4(vsmAtlasPosition(corner, physicalPage, push), 0.0, 1.0);
     }
-    if (lane < 2u) { triangles[lane] = lane == 0u ? uint3(0u, 2u, 1u) : uint3(1u, 2u, 3u); }
+    if (lane < 2u) {
+        triangles[lane] = lane == 0u ? uint3(0u, 2u, 1u) : uint3(1u, 2u, 3u);
+#if VSM_SHARED_PHYSICAL_POOL
+        primitives[lane].layer = vsmAtlasLayer(physicalPage, push);
+#endif
+    }
 }
 
 #if VSM_PAGE_WINDOW_RASTER
@@ -212,7 +240,11 @@ groupshared float4 g_vsmBounds;
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    out vertices ShadowRasterVertex vertices[9], out indices uint3 triangles[7], uniform ShadowPush push)
+    out vertices ShadowRasterVertex vertices[9], out indices uint3 triangles[7],
+#if VSM_SHARED_PHYSICAL_POOL
+    out primitives ShadowAtlasPrimitive primitives[7],
+#endif
+    uniform ShadowPush push)
 {
     if (lane == 0u) {
         vsmWorkAdd(push, (push.rasterCoarse & 1u) != 0u ? kVSMWorkRasterCoarseGroups : kVSMWorkRasterFineGroups, 1u);
@@ -242,7 +274,12 @@ void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     if (lane < vertexCount) {
         vertices[lane] = vsmRasterVertex(g_vsmPolygon[lane], g_vsmBounds, g_vsmPhysicalPage, g_vsmMaterial, push);
     }
-    if (lane < triangleCount) { triangles[lane] = uint3(0u, lane + 1u, lane + 2u); }
+    if (lane < triangleCount) {
+        triangles[lane] = uint3(0u, lane + 1u, lane + 2u);
+#if VSM_SHARED_PHYSICAL_POOL
+        primitives[lane].layer = vsmAtlasLayer(g_vsmPhysicalPage, push);
+#endif
+    }
 }
 
 #if VSM_CLUSTER_PAGE_RASTER
@@ -254,7 +291,11 @@ groupshared uint g_vsmPackedOffsets[17];
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    out vertices ShadowRasterVertex vertices[144], out indices uint3 triangles[112], uniform ShadowPush push)
+    out vertices ShadowRasterVertex vertices[144], out indices uint3 triangles[112],
+#if VSM_SHARED_PHYSICAL_POOL
+    out primitives ShadowAtlasPrimitive primitives[112],
+#endif
+    uniform ShadowPush push)
 {
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint4 ticket = work[1u + push.workBase + group.x];
@@ -295,6 +336,9 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
         }
         for (uint i = 2u; i < vertexCount; ++i) {
             triangles[(offsets >> 16u) + i - 2u] = uint3(firstVertex, firstVertex + i - 1u, firstVertex + i);
+#if VSM_SHARED_PHYSICAL_POOL
+            primitives[(offsets >> 16u) + i - 2u].layer = vsmAtlasLayer(physicalPage, push);
+#endif
         }
     }
 }
@@ -312,7 +356,11 @@ groupshared uint2 g_vsmWindowPageMaterial[4];
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmRasterWindowMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    out vertices ShadowRasterVertex vertices[28], out indices uint3 triangles[20], uniform ShadowPush push)
+    out vertices ShadowRasterVertex vertices[28], out indices uint3 triangles[20],
+#if VSM_SHARED_PHYSICAL_POOL
+    out primitives ShadowAtlasPrimitive primitives[20],
+#endif
+    uniform ShadowPush push)
 {
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint ticketIndex = 1u + push.workBase + group.x;
@@ -387,6 +435,9 @@ void vsmRasterWindowMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
     }
     if (vertex < (pageCounts >> 16u)) {
         triangles[(offset >> 16u) + vertex] = uint3(first, first + vertex + 1u, first + vertex + 2u);
+#if VSM_SHARED_PHYSICAL_POOL
+        primitives[(offset >> 16u) + vertex].layer = vsmAtlasLayer(g_vsmWindowPageMaterial[pageLane].x, push);
+#endif
     }
 }
 #endif

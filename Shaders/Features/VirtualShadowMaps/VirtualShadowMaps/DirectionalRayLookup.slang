@@ -178,7 +178,7 @@ struct VSMDirectionalRayCache
 
 ShadowLookup vsmSampleDirectionalAtlasPage(
     uint2 physical, uint level, float3 projected, uint2 virtualTexel,
-    VSMDirectionalRayBase rayBase, Texture2D<float> atlas, ShadowPush push)
+    VSMDirectionalRayBase rayBase, VSMAtlas atlas, ShadowPush push)
 {
     ShadowLookup result;
     result.projectionsHandle = push.projections;
@@ -195,7 +195,7 @@ ShadowLookup vsmSampleDirectionalAtlasPage(
         atlasTexel = vsmAtlasTexelFromVirtual(physical, virtualTexel, push.pageSize);
     }
 #endif
-    result.storedDepth = atlas.Load(int3(atlasTexel, 0));
+    result.storedDepth = vsmAtlasLoad(atlas, atlasTexel, push);
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
@@ -203,7 +203,7 @@ ShadowLookup vsmSampleDirectionalAtlasPage(
 
 ShadowLookup vsmSamplePhysicalPage(
     uint physicalPage, uint level, float3 projected, uint2 virtualTexel,
-    VSMDirectionalRayBase rayBase, Texture2D<float> atlas, ShadowPush push)
+    VSMDirectionalRayBase rayBase, VSMAtlas atlas, ShadowPush push)
 {
     uint2 physical = rayBase.powerOfTwoPhysical ?
         uint2(physicalPage & rayBase.physicalPagesXMask, physicalPage >> rayBase.physicalPagesXShift) :
@@ -216,7 +216,7 @@ ShadowLookup vsmDirectionalRayLookupSlow(
     float3 p, uint2 texel, uint page, uint4 mapping, bool inBounds,
     float time, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache)
+    VSMAtlas atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache)
 {
     ShadowLookup result;
     result.projectionsHandle = push.projections;
@@ -318,7 +318,7 @@ ShadowLookup vsmDirectionalRayLookupSlow(
         finalAtlasTexel = vsmAtlasTexelFromVirtual(coarsePhysicalCoord, result.virtualTexel, push.pageSize);
     }
 #endif
-    result.storedDepth = atlas.Load(int3(finalAtlasTexel, 0));
+    result.storedDepth = vsmAtlasLoad(atlas, finalAtlasTexel, push);
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
@@ -326,7 +326,7 @@ ShadowLookup vsmDirectionalRayLookupSlow(
 
 ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
+    VSMAtlas atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
 {
     ++counts.x;
     float3 p = ray.lookupOrigin + stepOffset;
@@ -396,7 +396,7 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
                 atlasTexel = physical * push.pageSize + localTexel;
             }
 #endif
-            float storedDepth = atlas.Load(int3(atlasTexel, 0));
+            float storedDepth = vsmAtlasLoad(atlas, atlasTexel, push);
             vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
             ShadowLookup result;
             result.projectionsHandle = push.projections;
@@ -414,14 +414,14 @@ ShadowLookup vsmDirectionalRayLookup(float time, float3 stepOffset, VSMDirection
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
+    VSMAtlas atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
 {
     return vsmDirectionalRayLookup(time, time * ray.step, ray, rayBase, projections, pages, atlas, push, counts, cache, useGroupCache);
 }
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirectionalRayBase rayBase,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, bool useGroupCache = false)
+    VSMAtlas atlas, ShadowPush push, inout uint3 counts, bool useGroupCache = false)
 {
     VSMDirectionalRayCache localCache;
     localCache.lastPage = 0xffffffffu;
@@ -434,20 +434,20 @@ ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRay ray, VSMDirec
     StructuredBuffer<ShadowProjection> projections, ShadowPush push, inout uint3 counts, bool useGroupCache = false)
 {
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
+    VSMAtlas atlas = resolveUniform(ResourceHandle<VSMAtlas>(push.atlas));
     return vsmDirectionalRayLookup(time, ray, rayBase, projections, pages, atlas, push, counts, useGroupCache);
 }
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
+    VSMAtlas atlas, ShadowPush push, inout uint3 counts, inout VSMDirectionalRayCache cache, bool useGroupCache = false)
 {
     return vsmDirectionalRayLookup(time, ray.ray, ray.base, projections, pages, atlas, push, counts, cache, useGroupCache);
 }
 
 ShadowLookup vsmDirectionalRayLookup(float time, VSMDirectionalRayState ray,
     StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    Texture2D<float> atlas, ShadowPush push, inout uint3 counts, bool useGroupCache = false)
+    VSMAtlas atlas, ShadowPush push, inout uint3 counts, bool useGroupCache = false)
 {
     return vsmDirectionalRayLookup(time, ray.ray, ray.base, projections, pages, atlas, push, counts, useGroupCache);
 }

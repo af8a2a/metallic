@@ -518,6 +518,7 @@ struct DeviceCapabilities {
     bool bindlessDescriptorHeap = false;
     bool shaderObject = false;
     bool meshShader = false;
+    bool shaderOutputLayer = false;
     bool taskShader = false;
     bool geometryShader = false;
     bool subgroupSizeControl = false;
@@ -682,6 +683,7 @@ struct TextureViewDesc {
     // Values mirror the portable component selection, independent of Vulkan.
     enum class Component : uint8_t { Identity, Zero, One, R, G, B, A };
     std::array<Component, 4> swizzle{};
+    bool forceArray = false; // Preserve an array shader type for a single-layer 1D/2D view.
 };
 
 enum class DisplayOutputMode : uint8_t {
@@ -1154,6 +1156,7 @@ struct RenderingDesc {
     Rect renderArea;
     std::span<const RenderingAttachmentDesc> colorAttachments;
     const RenderingAttachmentDesc* depthStencilAttachment = nullptr;
+    uint32_t layerCount = 1;
 };
 
 struct SemaphoreSubmitDesc {

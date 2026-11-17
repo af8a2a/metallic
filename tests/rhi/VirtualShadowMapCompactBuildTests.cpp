@@ -37,6 +37,8 @@ struct CompactProbePush
     std::array<uint32_t, 52> words{};
     float lodScreenRayLength = 0.f;
     uint32_t receiverGeometry = UINT32_MAX;
+    uint32_t physicalPool = UINT32_MAX;
+    uint32_t poolFace = 0;
 };
 struct CompactProbeProjection
 {
@@ -49,8 +51,9 @@ struct CompactProbeTriangle
     std::array<std::array<float, 8>, 3> vertices{};
     std::array<uint32_t, 4> material{};
 };
-static_assert(sizeof(CompactProbePush) == 216 && sizeof(CompactProbeProjection) == 112 && sizeof(CompactProbeTriangle) == 112);
+static_assert(sizeof(CompactProbePush) == 224 && sizeof(CompactProbeProjection) == 112 && sizeof(CompactProbeTriangle) == 112);
 static_assert(offsetof(CompactProbePush, lodScreenRayLength) == 208 && offsetof(CompactProbePush, receiverGeometry) == 212);
+static_assert(offsetof(CompactProbePush, physicalPool) == 216 && offsetof(CompactProbePush, poolFace) == 220);
 
 class VirtualShadowMapCompactBuildArgumentsTest final : public RHITest
 {

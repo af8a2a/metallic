@@ -4,6 +4,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapPhysicalPoolInterop.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
@@ -23,6 +24,7 @@
 #include <cassert>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <unordered_set>
 #include <vector>
@@ -285,7 +287,38 @@ struct ShadowAtlas
     std::shared_ptr<TextureView> view;
 };
 
+struct SharedShadowPoolStorage
+{
+    Device* device = nullptr;
+    uint32_t capacity = 0, pageSize = 0, pagesX = 0, pagesY = 0, layers = 0;
+    std::shared_ptr<ShadowAtlas> atlas, staticAtlas;
+    std::vector<std::shared_ptr<Buffer>> hzbBanks;
+    std::shared_ptr<Buffer> hzbTable;
+    std::vector<ResourceLease> leases;
+};
+
+struct SharedShadowPoolFrame
+{
+    std::shared_ptr<SharedShadowPoolStorage> storage;
+    std::shared_ptr<Buffer> metadata, history, jobs;
+    std::shared_ptr<Buffer> publicationFaces;
+    std::vector<std::shared_ptr<void>> pipelineOwners;
+    std::vector<ResourceLease> leases;
+    std::shared_ptr<SubmissionTransaction> submission;
+    GPUCompletionPoint completion;
+    uint32_t faceCount = 0, frameIndex = 0;
+};
+
 } // namespace
+
+struct VirtualShadowMapPhysicalPool::Impl
+{
+    Device* device = nullptr;
+    std::shared_ptr<SharedShadowPoolFrame> committed, pending, recording;
+    std::array<std::shared_ptr<ShaderModule>, 3> shaders;
+    std::array<std::shared_ptr<ComputePipeline>, 3> pipelines;
+    std::vector<std::shared_ptr<SharedShadowPoolFrame>> frames;
+};
 
 struct VirtualShadowMaps::Programs
 {
@@ -307,6 +340,7 @@ struct VirtualShadowMaps::Programs
     bool receiverMask = false;
     bool staticPageHZB = false;
     bool refinedReceiver = false;
+    bool sharedPhysicalPool = false;
     std::array<std::unique_ptr<ShaderModule>, 21> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 16> compute;
     std::array<std::unique_ptr<ShaderModule>, 2> onePassShaders;
@@ -340,6 +374,7 @@ struct VirtualShadowMaps::Cache
     bool receiverMask = false;
     GPUCompletionPoint completion;
     std::shared_ptr<SubmissionTransaction> submission;
+    std::shared_ptr<SharedShadowPoolFrame> physicalPoolFrame;
 };
 
 struct VirtualShadowMaps::ResourcePool
@@ -455,6 +490,7 @@ struct VirtualShadowMaps::State
         std::shared_ptr<Buffer> cacheDiagnostics;
         std::shared_ptr<ShadowAtlas> staticAtlas;
         std::shared_ptr<Buffer> staticHZB, staticHZBJobs, clusterVisibility;
+        std::shared_ptr<SharedShadowPoolStorage> physicalPoolStorage;
         std::array<std::shared_ptr<void>, 3> casterLayers;
         uint64_t layerBufferBytes = 0;
         std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
@@ -472,9 +508,339 @@ struct VirtualShadowMaps::State
     std::shared_ptr<Cache> previous;
     std::shared_ptr<Cache> next;
     bool projectionPending = true;
+    std::function<Result<>()> finish;
 };
 
 VirtualShadowMaps::VirtualShadowMaps() = default;
+
+VirtualShadowMapPhysicalPool::VirtualShadowMapPhysicalPool() = default;
+VirtualShadowMapPhysicalPool::~VirtualShadowMapPhysicalPool() = default;
+VirtualShadowMapPhysicalPool::VirtualShadowMapPhysicalPool(VirtualShadowMapPhysicalPool&&) noexcept = default;
+VirtualShadowMapPhysicalPool& VirtualShadowMapPhysicalPool::operator=(VirtualShadowMapPhysicalPool&&) noexcept = default;
+
+Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(VirtualShadowMapPhysicalPool& physicalPool,
+    Device& device, CommandBuffer& commands, TextureView& depth, const ViewConstants& view,
+    std::span<const VirtualShadowMapFaceRequest> faces, const VirtualShadowMapCasterResources& casters,
+    std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
+    const VirtualShadowMapSettings& inputSettings, uint32_t capacity, bool demandDriven,
+    std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+    const VirtualShadowMapReceiverResources* receiver)
+{
+    auto* context = RenderFrameContext::from(commands);
+    if (!context || !context->recording() || faces.empty() || faces.size() > 384 ||
+        capacity < faces.size() || capacity > 262144 || !validProjectionSettings(inputSettings)) {
+        log += "Shared VSM requires a recording frame, valid settings and enough physical pages for every face.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!device.capabilities().meshShader || !device.capabilities().shaderOutputLayer) {
+        log += "Shared VSM requires mesh shaders with layered rendering support.\n";
+        return makeError(Error::Unsupported);
+    }
+    std::unordered_set<VirtualShadowMaps*> uniqueFaces;
+    for (const auto& face : faces) {
+        if (!face.shadow || !face.light.enabled || !uniqueFaces.insert(face.shadow).second) {
+            log += "Shared VSM faces must be enabled, unique cache objects.\n";
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    if (!physicalPool.impl_ || physicalPool.impl_->device != &device) {
+        physicalPool.impl_ = std::make_unique<VirtualShadowMapPhysicalPool::Impl>();
+        physicalPool.impl_->device = &device;
+    }
+    auto& pool = *physicalPool.impl_;
+    if (pool.pending) {
+        if (pool.pending->submission->cancelled() || pool.pending->completion.isCancelled()) { pool.pending.reset(); }
+        else if (pool.pending->submission->resolved() && pool.pending->completion.isSubmitted()) { pool.committed = std::move(pool.pending); }
+        else {
+            log += "Previous shared VSM recording must be submitted or cancelled.\n";
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    auto registryResult = ResourceRegistry::forDevice(device);
+    if (!registryResult) { return std::unexpected(registryResult.error()); }
+    auto registry = *registryResult;
+    const bool layered = inputSettings.cacheEnabled && inputSettings.cacheLayering;
+    std::shared_ptr<SharedShadowPoolStorage> storage = pool.committed ? pool.committed->storage : nullptr;
+    const bool reuseStorage = storage && storage->capacity == capacity && storage->pageSize == inputSettings.pageSize &&
+        bool(storage->staticAtlas) == layered;
+    if (pool.committed) {
+        if (auto r = addCommandDependency(commands, pool.committed->completion); !r) { return std::unexpected(r.error()); }
+    }
+    if (!reuseStorage) {
+        storage = std::make_shared<SharedShadowPoolStorage>();
+        storage->device = &device; storage->capacity = capacity; storage->pageSize = inputSettings.pageSize;
+        storage->pagesX = capacity > 4096 ? 64u : uint32_t(std::ceil(std::sqrt(float(capacity))));
+        storage->pagesY = capacity > 4096 ? 64u : (capacity + storage->pagesX - 1u) / storage->pagesX;
+        storage->layers = (capacity + 4095u) / 4096u;
+        auto createAtlas = [&]() -> Result<std::shared_ptr<ShadowAtlas>> {
+            auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferSource |
+                TextureUsageBits::DepthStencilAttachment, .format = Format::D32Sfloat,
+                .width = storage->pagesX * storage->pageSize, .height = storage->pagesY * storage->pageSize,
+                .layerCount = storage->layers});
+            if (!texture) { return std::unexpected(texture.error()); }
+            auto atlasView = device.createTextureView(**texture, {.format = Format::D32Sfloat,
+                .range = {0, 1, 0, storage->layers}, .forceArray = true});
+            if (!atlasView) { return std::unexpected(atlasView.error()); }
+            return std::make_shared<ShadowAtlas>(ShadowAtlas{std::move(*texture), std::move(*atlasView)});
+        };
+        auto atlas = createAtlas();
+        if (!atlas) { return std::unexpected(atlas.error()); }
+        storage->atlas = *atlas;
+        if (layered) {
+            atlas = createAtlas();
+            if (!atlas) { return std::unexpected(atlas.error()); }
+            storage->staticAtlas = *atlas;
+            const uint32_t wordsPerPage = std::max(1u, (storage->pageSize * storage->pageSize - 1u) / 3u);
+            std::vector<uint32_t> bankHandles;
+            for (uint32_t first = 0; first < capacity; first += 4096u) {
+                auto bank = device.createBuffer({.size = uint64_t(std::min(4096u, capacity - first)) * wordsPerPage * 4u,
+                    .structureStride = 4, .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device});
+                if (!bank) { return std::unexpected(bank.error()); }
+                auto lease = registry->storageBuffer(**bank);
+                if (!lease) { return std::unexpected(lease.error()); }
+                bankHandles.push_back(lease->shaderIndex()); storage->leases.push_back(*lease);
+                storage->hzbBanks.push_back(std::move(*bank));
+            }
+            auto table = device.createBuffer({.size = bankHandles.size() * sizeof(uint32_t), .structureStride = 4,
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload});
+            if (!table) { return std::unexpected(table.error()); }
+            auto* mapped = (*table)->map();
+            if (!mapped) { return makeError(Error::Failure); }
+            std::memcpy(mapped, bankHandles.data(), bankHandles.size() * sizeof(uint32_t));
+            (*table)->flush(); (*table)->unmap();
+            storage->hzbTable = std::move(*table);
+        }
+    }
+    pool.recording.reset();
+    std::erase_if(pool.frames, [&](const auto& candidate) {
+        return candidate.use_count() == 1 && candidate->completion.isComplete() && candidate->storage != storage;
+    });
+    for (auto& candidate : pool.frames) {
+        if (candidate.use_count() == 1 && candidate->completion.isComplete()) {
+            pool.recording = candidate;
+            break;
+        }
+    }
+    if (!pool.recording) {
+        pool.recording = std::make_shared<SharedShadowPoolFrame>();
+        pool.frames.push_back(pool.recording);
+    }
+    auto recording = pool.recording;
+    recording->storage = storage; recording->leases.clear(); recording->pipelineOwners.clear();
+    recording->completion = context->completion();
+    recording->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+    recording->faceCount = uint32_t(faces.size()); recording->frameIndex = uint32_t(context->frameIndex());
+    auto acquire = [&](std::shared_ptr<Buffer>& buffer, uint64_t size, uint32_t stride, MemoryLocation location) -> Result<> {
+        if (!buffer || buffer->desc().size < size || buffer->desc().structureStride != stride) {
+            auto created = device.createBuffer({.size = size, .structureStride = stride,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource, .memoryLocation = location});
+            if (!created) { return std::unexpected(created.error()); }
+            buffer = std::move(*created);
+        }
+        return {};
+    };
+    if (auto r = acquire(recording->metadata, uint64_t(1u + faces.size() + capacity * 2u) * 16u, 16, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
+    if (auto r = acquire(recording->history, uint64_t(capacity) * 8u, 8, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
+    if (auto r = acquire(recording->jobs, faces.size() * sizeof(ShadowPush), sizeof(ShadowPush), MemoryLocation::HostUpload); !r) { return std::unexpected(r.error()); }
+    const char* entries[]{"vsmSharedPoolPrepareMain", "vsmSharedPoolPhysicalMain", "vsmSharedPoolPublishMain"};
+    for (size_t index = 0; index < pool.pipelines.size(); ++index) {
+        if (!pool.pipelines[index]) {
+            const std::array macros{SlangMacroDefine{"VSM_SHARED_PHYSICAL_POOL", "1"}};
+            auto shader = ShaderRegistry::instance().getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
+                .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = macros}, log);
+            if (!shader) { return std::unexpected(shader.error()); }
+            auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
+            if (!module) { return std::unexpected(module.error()); }
+            auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {module->get()},
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(VirtualShadowMapPhysicalPoolPush)});
+            if (!pipeline) { return std::unexpected(pipeline.error()); }
+            pool.shaders[index] = std::move(*module); pool.pipelines[index] = std::move(*pipeline);
+        }
+        recording->pipelineOwners.push_back(pool.shaders[index]);
+        recording->pipelineOwners.push_back(pool.pipelines[index]);
+    }
+    if (auto r = commands.retainResource(recording); !r) { return std::unexpected(r.error()); }
+    if (auto r = commands.addSubmissionTransaction(recording->submission); !r) { return std::unexpected(r.error()); }
+    // Publish pending now: any failure still leaves a transaction that must be
+    // cancelled with the failed recording, never a partially usable pool state.
+    pool.pending = recording;
+    std::vector<VirtualShadowMapResult> results;
+    std::vector<std::shared_ptr<State>> states;
+    auto settings = inputSettings;
+    settings.physicalPageCount = capacity;
+    std::vector<BufferBarrierDesc> hzbReady;
+    for (const auto& bank : storage->hzbBanks) {
+        hzbReady.push_back({.buffer = bank.get(), .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}});
+    }
+    if (!hzbReady.empty()) {
+        if (auto r = commands.synchronize({.buffers = hzbReady}); !r) { return std::unexpected(r.error()); }
+    }
+    for (uint32_t index = 0; index < faces.size(); ++index) {
+        const auto& face = faces[index];
+        auto result = face.shadow->recordInternal(device, commands, depth, view, face.light, casters,
+            materials, alphaTextures, settings, log, true, &face.output, profiler, gpuProfiler, receiver, &physicalPool, index);
+        if (!result) { return std::unexpected(result.error()); }
+        results.push_back(*result); states.push_back(face.shadow->state_);
+    }
+    auto* jobs = static_cast<ShadowPush*>(recording->jobs->map());
+    if (!jobs) { return makeError(Error::Failure); }
+    for (size_t index = 0; index < states.size(); ++index) { jobs[index] = states[index]->push; }
+    recording->jobs->flush(); recording->jobs->unmap();
+    VirtualShadowMapPhysicalPoolPush push{};
+    push.faceCount = uint32_t(faces.size()); push.capacity = capacity;
+    push.demandDriven = demandDriven; push.frameIndex = recording->frameIndex; push.previousHistory = UINT32_MAX;
+    auto bindBuffer = [&](Buffer& buffer, uint32_t& handle) -> Result<> {
+        auto lease = registry->storageBuffer(buffer);
+        if (!lease) { return std::unexpected(lease.error()); }
+        handle = lease->shaderIndex(); recording->leases.push_back(*lease);
+        return {};
+    };
+    if (auto r = bindBuffer(*recording->jobs, push.jobs); !r) { return std::unexpected(r.error()); }
+    if (auto r = bindBuffer(*recording->metadata, push.metadata); !r) { return std::unexpected(r.error()); }
+    if (auto r = bindBuffer(*recording->history, push.history); !r) { return std::unexpected(r.error()); }
+    if (reuseStorage && pool.committed) {
+        if (auto r = bindBuffer(*pool.committed->history, push.previousHistory); !r) { return std::unexpected(r.error()); }
+    }
+    if (auto r = registry->bind(commands, recording->leases); !r) { return std::unexpected(r.error()); }
+    auto publish = [&]() -> Result<> {
+        std::vector<BufferBarrierDesc> barriers;
+        auto append = [&](Buffer* buffer) { barriers.push_back({.buffer = buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}); };
+        append(recording->metadata.get()); append(recording->history.get());
+        if (reuseStorage && pool.committed) { append(pool.committed->history.get()); }
+        for (const auto& state : states) {
+            for (size_t index : {1u, 4u, 9u}) { append(state->resources->buffers[index].get()); }
+        }
+        return commands.synchronize({.buffers = barriers});
+    };
+    auto global = [&](size_t pipeline) -> Result<> {
+        if (auto r = commands.bindExecution(pool.pipelines[pipeline]->execution(), &push, sizeof(push)); !r) { return r; }
+        if (auto r = commands.dispatch(1); !r) { return r; }
+        return publish();
+    };
+    auto perFace = [&](size_t pipeline) -> Result<> {
+        for (const auto& state : states) {
+            if (auto r = commands.bindExecution(state->programs->compute[pipeline]->execution(), &state->push, sizeof(ShadowPush)); !r) { return r; }
+            if (auto r = commands.dispatch((state->push.totalPages + 255u) / 256u); !r) { return r; }
+        }
+        return publish();
+    };
+    commands.hostWriteBarrier();
+    if (auto r = publish(); !r) { return std::unexpected(r.error()); }
+    auto allocationGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM shared physical pool") : RenderGraphExecutionContext::ProfileScope{};
+    if (auto r = global(0); !r) { return std::unexpected(r.error()); }
+    if (auto r = perFace(7); !r) { return std::unexpected(r.error()); }
+    if (auto r = global(1); !r) { return std::unexpected(r.error()); }
+    if (auto r = perFace(9); !r) { return std::unexpected(r.error()); }
+    allocationGpu.end();
+    if (!reuseStorage) {
+        for (const auto& atlas : {storage->atlas, storage->staticAtlas}) {
+            if (!atlas) { continue; }
+            const TextureBarrierDesc begin{.texture = atlas->texture.get(), .oldLayout = TextureLayout::Undefined,
+                .newLayout = TextureLayout::DepthStencilAttachment,
+                .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite}, .range = {0, 1, 0, storage->layers}};
+            if (auto r = commands.synchronize({.textures = {&begin, 1}}); !r) { return std::unexpected(r.error()); }
+            const RenderingAttachmentDesc attachment{.view = atlas->view.get(), .layout = TextureLayout::DepthStencilAttachment,
+                .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
+            if (auto r = commands.beginRendering({.renderArea = {.width = atlas->texture->desc().width, .height = atlas->texture->desc().height},
+                .depthStencilAttachment = &attachment, .layerCount = storage->layers}); !r) { return std::unexpected(r.error()); }
+            commands.endRendering();
+            const TextureBarrierDesc ready{.texture = atlas->texture.get(), .oldLayout = TextureLayout::DepthStencilAttachment,
+                .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
+                .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead}, .range = {0, 1, 0, storage->layers}};
+            if (auto r = commands.synchronize({.textures = {&ready, 1}}); !r) { return std::unexpected(r.error()); }
+        }
+    }
+    for (const auto& state : states) {
+        if (auto r = state->finish(); !r) { return std::unexpected(r.error()); }
+        state->finish = {};
+    }
+    pool.recording.reset();
+    return results;
+}
+
+Result<> VirtualShadowMapPhysicalPool::publishAllocations(CommandBuffer& commands, Buffer& lights,
+    Buffer& budgetDiagnostics, std::span<const uint32_t> publicationFaces, std::string& log)
+{
+    if (!impl_ || !impl_->pending || publicationFaces.size() != impl_->pending->faceCount) {
+        log += "VSM allocation publication must match the recorded shared faces.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    auto frame = impl_->pending;
+    auto registryResult = ResourceRegistry::forDevice(*impl_->device);
+    if (!registryResult) { return std::unexpected(registryResult.error()); }
+    auto registry = *registryResult;
+    const uint64_t bytes = publicationFaces.size_bytes();
+    if (!frame->publicationFaces || frame->publicationFaces->desc().size < bytes) {
+        auto buffer = impl_->device->createBuffer({.size = bytes, .structureStride = 4,
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload});
+        if (!buffer) { return std::unexpected(buffer.error()); }
+        frame->publicationFaces = std::move(*buffer);
+    }
+    auto* mapped = frame->publicationFaces->map();
+    if (!mapped) { return makeError(Error::Failure); }
+    std::memcpy(mapped, publicationFaces.data(), bytes);
+    frame->publicationFaces->flush(); frame->publicationFaces->unmap();
+    VirtualShadowMapPhysicalPoolPublishPush push{};
+    push.faceCount = frame->faceCount; push.frameIndex = frame->frameIndex;
+    Buffer* buffers[]{frame->jobs.get(), frame->metadata.get(), frame->publicationFaces.get(), &lights, &budgetDiagnostics};
+    uint32_t* handles[]{&push.jobs, &push.metadata, &push.publicationFaces, &push.lights, &push.budgetDiagnostics};
+    std::vector<ResourceLease> leases;
+    for (size_t index = 0; index < std::size(buffers); ++index) {
+        auto lease = registry->storageBuffer(*buffers[index]);
+        if (!lease) { return std::unexpected(lease.error()); }
+        *handles[index] = lease->shaderIndex(); leases.push_back(*lease);
+    }
+    if (auto r = commands.retainResource(frame); !r) { return r; }
+    if (auto r = registry->bind(commands, leases); !r) { return r; }
+    commands.hostWriteBarrier();
+    const BufferBarrierDesc before[]{
+        {.buffer = frame->metadata.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}},
+        {.buffer = &lights, .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}},
+        {.buffer = &budgetDiagnostics, .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}}};
+    if (auto r = commands.synchronize({.buffers = before}); !r) { return r; }
+    if (auto r = commands.bindExecution(impl_->pipelines[2]->execution(), &push, sizeof(push)); !r) { return r; }
+    if (auto r = commands.dispatch(1); !r) { return r; }
+    const BufferBarrierDesc after[]{
+        {.buffer = &lights, .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}},
+        {.buffer = &budgetDiagnostics, .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead}}};
+    return commands.synchronize({.buffers = after});
+}
+
+VirtualShadowMapMemoryUsage VirtualShadowMapPhysicalPool::memoryUsage() const
+{
+    VirtualShadowMapMemoryUsage usage;
+    if (!impl_) { return usage; }
+    std::unordered_set<const Texture*> textures;
+    std::unordered_set<const Buffer*> buffers;
+    auto addBuffer = [&](const std::shared_ptr<Buffer>& buffer) {
+        if (buffer && buffers.insert(buffer.get()).second) { usage.bufferBytes += buffer->desc().size; }
+    };
+    for (const auto& frame : impl_->frames) {
+        if (frame->storage) {
+            const auto& storage = *frame->storage;
+            for (const auto& atlas : {storage.atlas, storage.staticAtlas}) {
+                if (!atlas || !textures.insert(atlas->texture.get()).second) { continue; }
+                const auto& desc = atlas->texture->desc();
+                const uint64_t bytes = uint64_t(desc.width) * desc.height * desc.layerCount * 4;
+                usage.atlasBytes += bytes;
+                if (atlas == storage.staticAtlas) { usage.staticAtlasBytes += bytes; }
+                usage.allocatedAtlasPages += uint64_t(desc.width / storage.pageSize) * (desc.height / storage.pageSize) * desc.layerCount;
+            }
+            for (const auto& bank : storage.hzbBanks) { addBuffer(bank); }
+            addBuffer(storage.hzbTable);
+        }
+        addBuffer(frame->metadata); addBuffer(frame->history); addBuffer(frame->jobs); addBuffer(frame->publicationFaces);
+    }
+    return usage;
+}
 
 Result<std::vector<VirtualShadowMapLODProjection>> VirtualShadowMaps::makeShadowLODProjections(
     const scene::Bounds& bounds, const ViewConstants& view, const VirtualShadowMapLight& light,
@@ -535,6 +901,19 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
     const VirtualShadowMapReceiverResources* receiver)
 {
+    return recordInternal(device, commands, depth, view, inputLight, casters, materials, alphaTextures,
+        settings, log, deferProjection, output, profiler, gpuProfiler, receiver, nullptr, 0);
+}
+
+Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device, CommandBuffer& commands,
+    TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& inputLight,
+    const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
+    std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
+    const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+    const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace)
+{
+    const bool sharedPhysicalPool = physicalPool != nullptr;
+    const auto poolFrame = sharedPhysicalPool ? physicalPool->impl_->recording : nullptr;
     CPUProfileScope total(profiler, "VSM face record");
     total.work("lightType", uint32_t(inputLight.type));
     total.work("face", inputLight.face);
@@ -547,7 +926,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     static const scene::RenderMaterial defaultMaterial;
     if (materials.empty()) { materials = {&defaultMaterial, 1}; }
     total.work("materials", materials.size());
-    if (!validProjectionSettings(settings) || settings.physicalPageCount == 0 || settings.physicalPageCount > 4096 ||
+    if (!validProjectionSettings(settings) || settings.physicalPageCount == 0 || settings.physicalPageCount > (sharedPhysicalPool ? 262144u : 4096u) ||
         settings.maxWorkItems == 0 || settings.maxWorkItems > 4 * 1024 * 1024 ||
         uint32_t(settings.filter) > uint32_t(VirtualShadowMapFilter::SMRT) ||
         !std::isfinite(settings.pcfRadius) || settings.pcfRadius < 0 || settings.pcfRadius > 8 ||
@@ -642,6 +1021,16 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     state->registry = *registry;
     auto& push = state->push;
     push.receiverGeometry = UINT32_MAX;
+    push.physicalPool = UINT32_MAX;
+    push.poolFace = poolFace;
+    if (sharedPhysicalPool) {
+        auto lease = state->registry->storageBuffer(*poolFrame->metadata);
+        if (!lease) { return std::unexpected(lease.error()); }
+        push.physicalPool = lease->shaderIndex();
+        state->leases.push_back(*lease);
+        state->resources->physicalPoolStorage = poolFrame->storage;
+        state->leases.insert(state->leases.end(), poolFrame->storage->leases.begin(), poolFrame->storage->leases.end());
+    }
     state->externalOutput = output != nullptr;
     // bit 0: canonical shared point-light layer.
     push.projectionFlags = output && output->sharedPointLayer ? 1u : 0u;
@@ -650,6 +1039,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     push.virtualPagesPerAxis = settings.virtualPagesPerAxis;
     push.physicalPagesX = static_cast<uint32_t>(std::ceil(std::sqrt(float(settings.physicalPageCount))));
     push.physicalPagesY = (settings.physicalPageCount + push.physicalPagesX - 1) / push.physicalPagesX;
+    if (sharedPhysicalPool) {
+        push.physicalPagesX = poolFrame->storage->pagesX;
+        push.physicalPagesY = poolFrame->storage->pagesY;
+    }
     push.physicalPageCount = settings.physicalPageCount;
     push.pageSize = settings.pageSize;
     push.workCapacity = settings.maxWorkItems;
@@ -723,6 +1116,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     bool reuse = cache_ && cache_->receiverMask == receiverMask && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
         cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey;
+    if (sharedPhysicalPool) {
+        // Only the immediately preceding pool frame certifies these addresses.
+        // Omitted or removed faces may have had their slots reassigned meanwhile.
+        reuse = reuse && cache_->physicalPoolFrame == physicalPool->impl_->committed &&
+            cache_->physicalPoolFrame && cache_->physicalPoolFrame->storage == poolFrame->storage;
+    } else {
+        reuse = reuse && !cache_->physicalPoolFrame;
+    }
     const bool compatibleCache = reuse;
     if (reuse && directional && casters.bounds.valid) {
         const auto [low, high] = projectedBounds(casters.bounds, cache_->projections.back());
@@ -945,7 +1346,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const uint64_t validReceiverMaskBytes = receiverMask ? ((uint64_t(push.totalPages) + 1u) / 2u) * 16u : 0u;
     // uint2(physicalSlot, lastRequestedFrame) in oldest-first order. Place this at
     // the end of the actual pooled page buffer; cached and current sizes can differ.
-    const uint64_t physicalHistoryBytes = settings.cacheEnabled ? ((push.physicalPageCount + 1u) / 2u) * 16u : 0u;
+    const uint64_t physicalHistoryBytes = settings.cacheEnabled && !sharedPhysicalPool ? ((push.physicalPageCount + 1u) / 2u) * 16u : 0u;
     const uint64_t workBytes = pageWindowRaster ? windowBytes :
         clusterPageRaster ? (uint64_t(push.workCapacity) + 1u) * 16u : uint64_t(push.workCapacity) * 8u;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 32u + validReceiverMaskBytes + physicalHistoryBytes,
@@ -1051,6 +1452,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
                 ++pool_->stats.viewCreates;
             }
             state->resources->views[index] = cached;
+        } else if (index == 0 && sharedPhysicalPool) {
+            state->resources->textures[index] = poolFrame->storage->atlas->texture;
+            state->resources->views[index] = poolFrame->storage->atlas->view;
         } else if (index == 0 && reuse) {
             state->resources->textures[index] = cache_->atlas->texture;
             state->resources->views[index] = cache_->atlas->view;
@@ -1078,7 +1482,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         return true;
     });
     if (layered) {
-        if (reuse) {
+        if (sharedPhysicalPool) {
+            state->resources->staticAtlas = poolFrame->storage->staticAtlas;
+        } else if (reuse) {
             state->resources->staticAtlas = cache_->staticAtlas;
         } else {
             auto atlas = pool_->texture(3, {.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferSource |
@@ -1105,7 +1511,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         }
     }
     if (staticPageHZB) {
-        if (reuse) {
+        if (sharedPhysicalPool) {
+            state->resources->staticHZB = poolFrame->storage->hzbTable;
+        } else if (reuse) {
             // Compatible layered directional snapshots always own the pyramid;
             // it is allocated before the cache snapshot is published.
             state->resources->staticHZB = cache_->staticHZB;
@@ -1116,9 +1524,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             if (!pyramid) { return std::unexpected(pyramid.error()); }
             state->resources->staticHZB = std::move(*pyramid);
         }
-        // Finalize writes the HZB job count/list and, when dynamic casters exist,
-        // the disjoint indirect arguments for cluster visibility after the list.
-        auto jobs = pool_->buffer(15, {.size = uint64_t(3u + push.physicalPageCount + visibilityBatches * 3u) * sizeof(uint32_t), .structureStride = 4,
+        // Finalize writes the HZB job count/list. Propagate publishes its 2D
+        // dispatch, followed by disjoint cluster-visibility indirect arguments.
+        auto jobs = pool_->buffer(15, {.size = uint64_t(6u + push.physicalPageCount + visibilityBatches * 3u) * sizeof(uint32_t), .structureStride = 4,
             .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect, .memoryLocation = MemoryLocation::Device}, completion);
         if (!jobs) { return std::unexpected(jobs.error()); }
         state->resources->staticHZBJobs = *jobs;
@@ -1218,7 +1626,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs_->dirtyPageHierarchy != dirtyPageHierarchy ||
         programs_->receiverMask != receiverMask ||
         programs_->staticPageHZB != staticPageHZB ||
-        programs_->refinedReceiver != refinedReceiver;
+        programs_->refinedReceiver != refinedReceiver || programs_->sharedPhysicalPool != sharedPhysicalPool;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
         std::filesystem::path generatedDirectory;
@@ -1244,6 +1652,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         programs->receiverMask = receiverMask;
         programs->staticPageHZB = staticPageHZB;
         programs->refinedReceiver = refinedReceiver;
+        programs->sharedPhysicalPool = sharedPhysicalPool;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
@@ -1254,6 +1663,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         const std::array capabilities{"spvMeshShadingEXT"};
         // Reuse Mark invariants only for local lights; directional hoisting regressed Mark.
         const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE", coverage->coverageProgramCount() ? "1" : "0"},
+            SlangMacroDefine{"VSM_SHARED_PHYSICAL_POOL", sharedPhysicalPool ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", settings.collectGPUWork ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", groupProjectionStatistics ? "1" : "0"},
             SlangMacroDefine{"VSM_LOCAL_MARK", !directional ? "1" : "0"},
@@ -1270,7 +1680,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
-            if (staticPageHZB && (index == 0 || buildEntry || index == 4 || index == 17 || index == 18 || index == 19)) {
+            if (staticPageHZB && (index == 0 || buildEntry || index == 4 || index == 15 || index == 17 || index == 18 || index == 19)) {
                 entryMacros.push_back({"VSM_STATIC_PAGE_HZB", "1"});
             }
             if (staticPageHZB && (index == 4 || index == 6 || index == 18 || index == 20)) {
@@ -1440,246 +1850,303 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     allocatorGpu.next("VSM allocator allocate");
     if (auto r = dispatch(2, 1); !r) { return std::unexpected(r.error()); }
     if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
-    allocatorGpu.next("VSM allocator admit");
-    if (auto r = dispatch(7, allocationBlocks); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
-    allocatorGpu.next("VSM allocator physical");
-    if (auto r = dispatch(8, 1); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
-    allocatorGpu.next("VSM allocator assign");
-    if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
+    if (!sharedPhysicalPool) {
+        allocatorGpu.next("VSM allocator admit");
+        if (auto r = dispatch(7, allocationBlocks); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
+        allocatorGpu.next("VSM allocator physical");
+        if (auto r = dispatch(8, 1); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
+        allocatorGpu.next("VSM allocator assign");
+        if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
+    }
     allocatorGpu.end();
-    gpu.next("VSM build");
-    if (dirtyPageHierarchy) {
-        auto hierarchyGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM build page hierarchy") :
-            RenderGraphExecutionContext::ProfileScope{};
-        if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: build page hierarchy"}); }
-        if (auto r = dispatch(12, (clusterPageBitsetWords + 63u) / 64u); !r) { return std::unexpected(r.error()); }
-        if (auto r = barrier({9}); !r) { return std::unexpected(r.error()); }
-        if (!gpuProfiler) { commands.endDebugLabel(); }
-    }
-    auto buildGpu = gpuProfiler && settings.profileBuildSubstages ?
-        gpuProfiler->profileScope(commands, instanceBuild ? "VSM build instance cull" : compactBuild ? "VSM build compact" : "VSM build direct") :
-        RenderGraphExecutionContext::ProfileScope{};
-    const bool buildTriangles = push.triangleCount && enabled;
-    if (buildTriangles) {
-        // A merge-only frame can directly select its short cluster list on GPU.
-        const uint32_t groups = instanceBuild ? std::max(cacheDiagnostics[kVSMCacheInstanceCount],
-            cacheDiagnostics[kVSMCacheMergeClusterCount]) : clusterCapacity;
-        for (uint32_t base = 0; base < groups;) {
-            push.workBase = instanceBuild ? base : base * 64u;
-            const uint32_t count = std::min(groups - base, kDrawBatchSize);
-            if (auto r = dispatch(compactBuild ? 10 : 3, count); !r) { return std::unexpected(r.error()); }
-            base += count;
-            if (base < groups) {
-                if (auto r = barrier(compactBuild ? std::initializer_list<size_t>{4, 7, 9} : std::initializer_list<size_t>{3, 4});
-                    !r) { return std::unexpected(r.error()); }
-            }
-        }
-    }
-    if (compactBuild) {
-        buildGpu.next("VSM build compact sync");
-        if (buildTriangles) {
-            // Both consumers share the compute-write source scope, so one
-            // publication dependency can cover shader and indirect reads.
-            if (auto r = barrier({9, 4, 7}, PipelineStageBits::ComputeShader | PipelineStageBits::DrawIndirect,
-                    AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::IndirectRead);
-                !r) { return std::unexpected(r.error()); }
-        }
-        buildGpu.next("VSM build indirect");
-        if (buildTriangles) {
-            for (uint32_t batch = 0; batch < compactBatches; ++batch) {
-                push.workBase = batch * kDrawBatchSize;
-                if (auto r = commands.bindExecution(state->programs->compute[3]->execution(), &push, sizeof(push));
-                    !r) { return std::unexpected(r.error()); }
-                auto arguments = state->resources->buffers[7]->slice({compactArgumentOffset + uint64_t(batch) * 12u, 12});
-                if (!arguments) { return std::unexpected(arguments.error()); }
-                if (auto r = commands.dispatchIndirect(*arguments); !r) { return std::unexpected(r.error()); }
-                if (batch + 1 < compactBatches) {
-                    if (auto r = barrier({3, 4}); !r) { return std::unexpected(r.error()); }
-                }
-            }
-            // Finalize's draw arguments are disjoint from these compact dispatch arguments.
-        }
-    }
-    buildGpu.next("VSM build finalize sync");
-    if (auto r = barrier(groupedFineRaster ? std::initializer_list<size_t>{3, 4} :
-        std::initializer_list<size_t>{4}); !r) { return std::unexpected(r.error()); }
-    buildGpu.next("VSM build finalize");
-    if (staticPageHZB) {
-        const BufferBarrierDesc jobsReady{.buffer = state->resources->staticHZBJobs.get(),
-            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
-        if (auto r = commands.synchronize({.buffers = {&jobsReady, 1}}); !r) { return std::unexpected(r.error()); }
-    }
-    if (auto r = dispatch(4, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63) / 64); !r) { return std::unexpected(r.error()); }
-    {
-        // Finalize may invalidate fine pages on work overflow. Read only its
-        // completed ownership entries; no propagation thread consumes the tail.
-        if (auto r = barrier({1}); !r) { return std::unexpected(r.error()); }
-        auto mappingGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM propagate mappings") : RenderGraphExecutionContext::ProfileScope{};
-        if (auto r = dispatch(11, (push.totalPages + 63u) / 64u); !r) { return std::unexpected(r.error()); }
-    }
-    if (auto r = barrier({3, 1, 9}, PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({7}, PipelineStageBits::DrawIndirect, AccessBits::IndirectRead); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({4}, settings.collectGPUWork ? PipelineStageBits::PreRasterization : PipelineStageBits::ComputeShader);
-        !r) { return std::unexpected(r.error()); }
-    buildGpu.end();
+    gpu.end();
     if (!gpuProfiler) { commands.endDebugLabel(); }
-    gpu.next("VSM raster");
-    phase.next("Record VSM raster commands");
-    phase.work("coarseBatches", push.coarseBatchCount);
-    phase.work("fineBatches", push.batchCount);
-    const uint32_t fullGeometry = push.geometry;
-    const BufferBarrierDesc diagnosticReady{.buffer = state->resources->cacheDiagnostics.get(),
-        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-        .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
-    if (auto r = commands.synchronize({.buffers = {&diagnosticReady, 1}}); !r) { return std::unexpected(r.error()); }
-    // Cache compatibility includes enabled state. A previously disabled face
-    // already owns cleared, shader-readable atlases. Cold faces still clear them.
-    const uint32_t rasterLayers = reuse && !enabled ? 0u : (layered ? 2u : 1u);
-    phase.work("recordedRasterLayers", rasterLayers);
-    for (uint32_t layer = 0; layer < rasterLayers; ++layer) {
-        const bool staticPass = layered && layer == 0;
-        auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
-            staticPass ? "VSM static raster" : "VSM dynamic raster and restore") : RenderGraphExecutionContext::ProfileScope{};
-        auto rasterGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster prepare") : RenderGraphExecutionContext::ProfileScope{};
-        auto* rasterTexture = staticPass ? state->resources->staticAtlas->texture.get() : state->resources->textures[0].get();
-        auto* rasterView = staticPass ? state->resources->staticAtlas->view.get() : state->resources->views[0].get();
-        push.geometry = layered ? cacheDiagnostics[33 + layer] : fullGeometry;
-        const TextureBarrierDesc depthBegin{.texture = rasterTexture, .oldLayout = reuse ? TextureLayout::ShaderRead : TextureLayout::Undefined,
-            .newLayout = TextureLayout::DepthStencilAttachment,
-            .before = {PipelineStageBits::AllCommands, reuse ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
-            .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite}};
-        if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
-        const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
-        const RenderingAttachmentDesc attachment{.view = rasterView, .layout = TextureLayout::DepthStencilAttachment,
-            .loadOp = reuse ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
-        if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"}); }
-        if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment}); !r) { return std::unexpected(r.error()); }
-        if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
-        commands.setScissor(area);
-        if (enabled) {
-            rasterGpu.next("VSM raster clear and restore");
-            if (reuse || (layered && !staticPass)) {
-                push.rasterCoarse = staticPass ? 2u : 0u;
-                if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                if (clusterPageRaster) {
-                    auto args = state->resources->buffers[7]->slice({uint64_t(clearDrawOffset) * 12, 12});
-                    if (!args) { return std::unexpected(args.error()); }
-                    if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
-                } else if (auto r = commands.drawMeshTasks(push.physicalPageCount); !r) { return std::unexpected(r.error()); }
+    // Store values, never references to this record() stack. State owns the
+    // callback and commands retain State until completion; the raw self pointer
+    // avoids a shared_ptr cycle. Shared allocation resolves before it is called.
+    state->finish = [=, state = state.get(), &commands]() -> Result<> {
+        auto& push = state->push;
+        CPUProfileScope phase(profiler, "Record VSM build and raster");
+        auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM build") : RenderGraphExecutionContext::ProfileScope{};
+        if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: build"}); }
+        auto dispatch = [&](size_t pipeline, uint32_t x, uint32_t y = 1) -> Result<> {
+            if (auto r = commands.bindExecution(state->programs->compute[pipeline]->execution(), &push, sizeof(push)); !r) { return r; }
+            return commands.dispatch(x, y);
+        };
+        auto barrier = [&](std::initializer_list<size_t> buffers, PipelineStageBits stages = PipelineStageBits::ComputeShader,
+            AccessBits access = AccessBits::ShaderRead | AccessBits::ShaderWrite) -> Result<> {
+            std::vector<BufferBarrierDesc> barriers;
+            for (auto index : buffers) {
+                barriers.push_back({.buffer = state->resources->buffers[index].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                    .after = {stages, access}});
             }
-            rasterGpu.next("VSM raster coarse");
-            const uint32_t rasterLayer = staticPass ? 2u : (visibilityBatches ? 4u : 0u);
-            const uint32_t drawOffset = mergeStatic && !staticPass ? mergeDrawOffset : 0u;
-            push.rasterCoarse = rasterLayer | 1u;
-            for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
-                push.workBase = batch * kDrawBatchSize;
-                if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + push.batchCount + batch) * 12, 12});
-                if (!args) { return std::unexpected(args.error()); }
-                if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
-            }
-            rasterGpu.next("VSM raster fine");
-            push.rasterCoarse = rasterLayer;
-            const auto& fineRaster = groupedFineRaster ? state->programs->packedRaster : state->programs->raster;
-            for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
-                push.workBase = batch * kDrawBatchSize;
-                if (auto r = commands.bindExecution(fineRaster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + batch) * 12, 12});
-                if (!args) { return std::unexpected(args.error()); }
-                if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
-            }
-        }
-        rasterGpu.next("VSM raster publish");
-        commands.endRendering();
-        if (!gpuProfiler) { commands.endDebugLabel(); }
-        const TextureBarrierDesc atlasReady{.texture = rasterTexture,
-            .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
-            .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
-            .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead}};
-        if (auto r = commands.synchronize({.textures = {&atlasReady, 1}}); !r) { return std::unexpected(r.error()); }
-        rasterGpu.end();
-        layerGpu.end();
-        if (staticPass && staticPageHZB) {
-            auto hzbGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM static page HZB") : RenderGraphExecutionContext::ProfileScope{};
-            if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM static page HZB"}); }
-            // Reset and Build have finished querying the old pyramid. All static
-            // depth writes are available via atlasReady, including clears.
-            const BufferBarrierDesc ready[]{
-                {.buffer = state->resources->staticHZB.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite},
-                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
-                {.buffer = state->resources->staticHZBJobs.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                    .after = {PipelineStageBits::ComputeShader | PipelineStageBits::DrawIndirect, AccessBits::ShaderRead | AccessBits::IndirectRead}},
-                {.buffer = state->resources->cacheDiagnostics.get(), .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite},
-                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}};
-            if (auto r = commands.synchronize({.buffers = ready}); !r) { return std::unexpected(r.error()); }
-            auto args = state->resources->staticHZBJobs->slice({0, 12});
-            if (!args) { return std::unexpected(args.error()); }
-            if (auto r = commands.bindExecution(state->programs->compute[13]->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-            if (auto r = commands.dispatchIndirect(*args); !r) { return std::unexpected(r.error()); }
-            if (!gpuProfiler) { commands.endDebugLabel(); }
-        }
-        if (staticPass && visibilityBatches) {
-            auto cullGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM dynamic cluster HZB cull") : RenderGraphExecutionContext::ProfileScope{};
-            if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM dynamic cluster HZB cull"}); }
-            std::vector<BufferBarrierDesc> cullReady{
-                {.buffer = state->resources->staticHZB.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}},
-                {.buffer = state->resources->clusterVisibility.get(), .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
-                {.buffer = state->resources->cacheDiagnostics.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}}};
-            if (settings.collectGPUWork) {
-                cullReady.push_back({.buffer = state->resources->buffers[4].get(),
-                    .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
+            return commands.synchronize({.buffers = barriers});
+        };
+
+        auto syncSharedHZB = [&]() -> Result<> {
+            if (!sharedPhysicalPool) { return {}; }
+            std::vector<BufferBarrierDesc> barriers;
+            for (const auto& bank : state->resources->physicalPoolStorage->hzbBanks) {
+                barriers.push_back({.buffer = bank.get(), .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
             }
-            if (auto r = commands.synchronize({.buffers = cullReady}); !r) { return std::unexpected(r.error()); }
-            push.geometry = cacheDiagnostics[34]; // The dynamic caster layer preserves the original cluster indices.
-            for (uint32_t batch = 0; batch < visibilityBatches; ++batch) {
-                push.workBase = batch * kDrawBatchSize;
-                if (auto r = commands.bindExecution(state->programs->compute[14]->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                auto args = state->resources->staticHZBJobs->slice({uint64_t(3u + push.physicalPageCount + batch * 3u) * sizeof(uint32_t), 12});
-                if (!args) { return std::unexpected(args.error()); }
-                if (auto r = commands.dispatchIndirect(*args); !r) { return std::unexpected(r.error()); }
-            }
-            const BufferBarrierDesc masksReady{.buffer = state->resources->clusterVisibility.get(),
-                .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                .after = {PipelineStageBits::PreRasterization, AccessBits::ShaderRead}};
-            if (auto r = commands.synchronize({.buffers = {&masksReady, 1}}); !r) { return std::unexpected(r.error()); }
+            return commands.synchronize({.buffers = barriers});
+        };
+        if (dirtyPageHierarchy) {
+            auto hierarchyGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM build page hierarchy") :
+                RenderGraphExecutionContext::ProfileScope{};
+            if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: build page hierarchy"}); }
+            if (auto r = dispatch(12, (clusterPageBitsetWords + 63u) / 64u); !r) { return std::unexpected(r.error()); }
+            if (auto r = barrier({9}); !r) { return std::unexpected(r.error()); }
             if (!gpuProfiler) { commands.endDebugLabel(); }
         }
-        if (layered && staticPass) {
-            std::vector<BufferBarrierDesc> layerReady{{.buffer = state->resources->cacheDiagnostics.get(),
-                .before = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}};
-            if (settings.collectGPUWork) {
-                layerReady.push_back({.buffer = state->resources->buffers[4].get(),
-                    .before = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                    .after = {PipelineStageBits::PreRasterization, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
+        auto buildGpu = gpuProfiler && settings.profileBuildSubstages ?
+            gpuProfiler->profileScope(commands, instanceBuild ? "VSM build instance cull" : compactBuild ? "VSM build compact" : "VSM build direct") :
+            RenderGraphExecutionContext::ProfileScope{};
+        const bool buildTriangles = push.triangleCount && enabled;
+        if (buildTriangles) {
+            // A merge-only frame can directly select its short cluster list on GPU.
+            const uint32_t groups = instanceBuild ? std::max(cacheDiagnostics[kVSMCacheInstanceCount],
+                cacheDiagnostics[kVSMCacheMergeClusterCount]) : clusterCapacity;
+            for (uint32_t base = 0; base < groups;) {
+                push.workBase = instanceBuild ? base : base * 64u;
+                const uint32_t count = std::min(groups - base, kDrawBatchSize);
+                if (auto r = dispatch(compactBuild ? 10 : 3, count); !r) { return std::unexpected(r.error()); }
+                base += count;
+                if (base < groups) {
+                    if (auto r = barrier(compactBuild ? std::initializer_list<size_t>{4, 7, 9} : std::initializer_list<size_t>{3, 4});
+                        !r) { return std::unexpected(r.error()); }
+                }
             }
-            if (auto r = commands.synchronize({.buffers = layerReady}); !r) { return std::unexpected(r.error()); }
         }
+        if (compactBuild) {
+            buildGpu.next("VSM build compact sync");
+            if (buildTriangles) {
+                // Both consumers share the compute-write source scope, so one
+                // publication dependency can cover shader and indirect reads.
+                if (auto r = barrier({9, 4, 7}, PipelineStageBits::ComputeShader | PipelineStageBits::DrawIndirect,
+                        AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::IndirectRead);
+                    !r) { return std::unexpected(r.error()); }
+            }
+            buildGpu.next("VSM build indirect");
+            if (buildTriangles) {
+                for (uint32_t batch = 0; batch < compactBatches; ++batch) {
+                    push.workBase = batch * kDrawBatchSize;
+                    if (auto r = commands.bindExecution(state->programs->compute[3]->execution(), &push, sizeof(push));
+                        !r) { return std::unexpected(r.error()); }
+                    auto arguments = state->resources->buffers[7]->slice({compactArgumentOffset + uint64_t(batch) * 12u, 12});
+                    if (!arguments) { return std::unexpected(arguments.error()); }
+                    if (auto r = commands.dispatchIndirect(*arguments); !r) { return std::unexpected(r.error()); }
+                    if (batch + 1 < compactBatches) {
+                        if (auto r = barrier({3, 4}); !r) { return std::unexpected(r.error()); }
+                    }
+                }
+                // Finalize's draw arguments are disjoint from these compact dispatch arguments.
+            }
+        }
+        buildGpu.next("VSM build finalize sync");
+        if (auto r = barrier(groupedFineRaster ? std::initializer_list<size_t>{3, 4} :
+            std::initializer_list<size_t>{4}); !r) { return std::unexpected(r.error()); }
+        buildGpu.next("VSM build finalize");
+        if (staticPageHZB) {
+            const BufferBarrierDesc jobsReady{.buffer = state->resources->staticHZBJobs.get(),
+                .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+            if (auto r = commands.synchronize({.buffers = {&jobsReady, 1}}); !r) { return std::unexpected(r.error()); }
+        }
+        if (auto r = dispatch(4, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63) / 64); !r) { return std::unexpected(r.error()); }
+        {
+            // Finalize may invalidate fine pages on work overflow. Read only its
+            // completed ownership entries; no propagation thread consumes the tail.
+            if (auto r = barrier({1}); !r) { return std::unexpected(r.error()); }
+            if (staticPageHZB) {
+                const BufferBarrierDesc jobsReady{.buffer = state->resources->staticHZBJobs.get(),
+                    .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+                if (auto r = commands.synchronize({.buffers = {&jobsReady, 1}}); !r) { return std::unexpected(r.error()); }
+            }
+            auto mappingGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM propagate mappings") : RenderGraphExecutionContext::ProfileScope{};
+            if (auto r = dispatch(11, (push.totalPages + 63u) / 64u); !r) { return std::unexpected(r.error()); }
+        }
+        if (auto r = barrier({3, 1, 9}, PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({7}, PipelineStageBits::DrawIndirect, AccessBits::IndirectRead); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({4}, settings.collectGPUWork ? PipelineStageBits::PreRasterization : PipelineStageBits::ComputeShader);
+            !r) { return std::unexpected(r.error()); }
+        buildGpu.end();
+        if (!gpuProfiler) { commands.endDebugLabel(); }
+        gpu.next("VSM raster");
+        phase.next("Record VSM raster commands");
+        phase.work("coarseBatches", push.coarseBatchCount);
+        phase.work("fineBatches", push.batchCount);
+        const uint32_t fullGeometry = push.geometry;
+        const BufferBarrierDesc diagnosticReady{.buffer = state->resources->cacheDiagnostics.get(),
+            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+        if (auto r = commands.synchronize({.buffers = {&diagnosticReady, 1}}); !r) { return std::unexpected(r.error()); }
+        // Cache compatibility includes enabled state. A previously disabled face
+        // already owns cleared, shader-readable atlases. Cold faces still clear them.
+        const uint32_t rasterLayers = reuse && !enabled ? 0u : (layered ? 2u : 1u);
+        phase.work("recordedRasterLayers", rasterLayers);
+        for (uint32_t layer = 0; layer < rasterLayers; ++layer) {
+            const bool staticPass = layered && layer == 0;
+            auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
+                staticPass ? "VSM static raster" : "VSM dynamic raster and restore") : RenderGraphExecutionContext::ProfileScope{};
+            auto rasterGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster prepare") : RenderGraphExecutionContext::ProfileScope{};
+            auto* rasterTexture = staticPass ? state->resources->staticAtlas->texture.get() : state->resources->textures[0].get();
+            auto* rasterView = staticPass ? state->resources->staticAtlas->view.get() : state->resources->views[0].get();
+            push.geometry = layered ? cacheDiagnostics[33 + layer] : fullGeometry;
+            const TextureBarrierDesc depthBegin{.texture = rasterTexture, .oldLayout = reuse || sharedPhysicalPool ? TextureLayout::ShaderRead : TextureLayout::Undefined,
+                .newLayout = TextureLayout::DepthStencilAttachment,
+                .before = {PipelineStageBits::AllCommands, reuse || sharedPhysicalPool ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
+                .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
+                .range = {0, 1, 0, rasterTexture->desc().layerCount}};
+            if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
+            const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
+            const RenderingAttachmentDesc attachment{.view = rasterView, .layout = TextureLayout::DepthStencilAttachment,
+                .loadOp = reuse || sharedPhysicalPool ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
+            if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"}); }
+            if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment, .layerCount = rasterTexture->desc().layerCount}); !r) { return std::unexpected(r.error()); }
+            if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
+            commands.setScissor(area);
+            if (enabled) {
+                rasterGpu.next("VSM raster clear and restore");
+                if (reuse || sharedPhysicalPool || (layered && !staticPass)) {
+                    push.rasterCoarse = staticPass ? 2u : 0u;
+                    push.workBase = 0;
+                    if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                    if (clusterPageRaster && !sharedPhysicalPool) {
+                        auto args = state->resources->buffers[7]->slice({uint64_t(clearDrawOffset) * 12, 12});
+                        if (!args) { return std::unexpected(args.error()); }
+                        if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+                    } else {
+                        for (uint32_t base = 0; base < push.physicalPageCount; base += kDrawBatchSize) {
+                            push.workBase = base;
+                            if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                            if (auto r = commands.drawMeshTasks(std::min(kDrawBatchSize, push.physicalPageCount - base)); !r) { return std::unexpected(r.error()); }
+                        }
+                    }
+                }
+                rasterGpu.next("VSM raster coarse");
+                const uint32_t rasterLayer = staticPass ? 2u : (visibilityBatches ? 4u : 0u);
+                const uint32_t drawOffset = mergeStatic && !staticPass ? mergeDrawOffset : 0u;
+                push.rasterCoarse = rasterLayer | 1u;
+                for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
+                    push.workBase = batch * kDrawBatchSize;
+                    if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                    auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + push.batchCount + batch) * 12, 12});
+                    if (!args) { return std::unexpected(args.error()); }
+                    if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+                }
+                rasterGpu.next("VSM raster fine");
+                push.rasterCoarse = rasterLayer;
+                const auto& fineRaster = groupedFineRaster ? state->programs->packedRaster : state->programs->raster;
+                for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
+                    push.workBase = batch * kDrawBatchSize;
+                    if (auto r = commands.bindExecution(fineRaster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                    auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + batch) * 12, 12});
+                    if (!args) { return std::unexpected(args.error()); }
+                    if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+                }
+            }
+            rasterGpu.next("VSM raster publish");
+            commands.endRendering();
+            if (!gpuProfiler) { commands.endDebugLabel(); }
+            const TextureBarrierDesc atlasReady{.texture = rasterTexture,
+                .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
+                .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
+                .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead},
+                .range = {0, 1, 0, rasterTexture->desc().layerCount}};
+            if (auto r = commands.synchronize({.textures = {&atlasReady, 1}}); !r) { return std::unexpected(r.error()); }
+            rasterGpu.end();
+            layerGpu.end();
+            if (staticPass && staticPageHZB) {
+                auto hzbGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM static page HZB") : RenderGraphExecutionContext::ProfileScope{};
+                if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM static page HZB"}); }
+                // Reset and Build have finished querying the old pyramid. All static
+                // depth writes are available via atlasReady, including clears.
+                const BufferBarrierDesc ready[]{
+                    {.buffer = state->resources->staticHZB.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
+                    {.buffer = state->resources->staticHZBJobs.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader | PipelineStageBits::DrawIndirect, AccessBits::ShaderRead | AccessBits::IndirectRead}},
+                    {.buffer = state->resources->cacheDiagnostics.get(), .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}};
+                if (auto r = commands.synchronize({.buffers = ready}); !r) { return std::unexpected(r.error()); }
+                if (auto r = syncSharedHZB(); !r) { return r; }
+                auto args = state->resources->staticHZBJobs->slice({uint64_t(3u + push.physicalPageCount) * sizeof(uint32_t), 12});
+                if (!args) { return std::unexpected(args.error()); }
+                if (auto r = commands.bindExecution(state->programs->compute[13]->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                if (auto r = commands.dispatchIndirect(*args); !r) { return std::unexpected(r.error()); }
+                if (auto r = syncSharedHZB(); !r) { return r; }
+                if (!gpuProfiler) { commands.endDebugLabel(); }
+            }
+            if (staticPass && visibilityBatches) {
+                auto cullGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM dynamic cluster HZB cull") : RenderGraphExecutionContext::ProfileScope{};
+                if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM dynamic cluster HZB cull"}); }
+                std::vector<BufferBarrierDesc> cullReady{
+                    {.buffer = state->resources->staticHZB.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}},
+                    {.buffer = state->resources->clusterVisibility.get(), .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
+                    {.buffer = state->resources->cacheDiagnostics.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}}};
+                if (settings.collectGPUWork) {
+                    cullReady.push_back({.buffer = state->resources->buffers[4].get(),
+                        .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
+                }
+                if (auto r = commands.synchronize({.buffers = cullReady}); !r) { return std::unexpected(r.error()); }
+                push.geometry = cacheDiagnostics[34]; // The dynamic caster layer preserves the original cluster indices.
+                for (uint32_t batch = 0; batch < visibilityBatches; ++batch) {
+                    push.workBase = batch * kDrawBatchSize;
+                    if (auto r = commands.bindExecution(state->programs->compute[14]->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                    auto args = state->resources->staticHZBJobs->slice({uint64_t(6u + push.physicalPageCount + batch * 3u) * sizeof(uint32_t), 12});
+                    if (!args) { return std::unexpected(args.error()); }
+                    if (auto r = commands.dispatchIndirect(*args); !r) { return std::unexpected(r.error()); }
+                }
+                const BufferBarrierDesc masksReady{.buffer = state->resources->clusterVisibility.get(),
+                    .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::PreRasterization, AccessBits::ShaderRead}};
+                if (auto r = commands.synchronize({.buffers = {&masksReady, 1}}); !r) { return std::unexpected(r.error()); }
+                if (!gpuProfiler) { commands.endDebugLabel(); }
+            }
+            if (layered && staticPass) {
+                std::vector<BufferBarrierDesc> layerReady{{.buffer = state->resources->cacheDiagnostics.get(),
+                    .before = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}};
+                if (settings.collectGPUWork) {
+                    layerReady.push_back({.buffer = state->resources->buffers[4].get(),
+                        .before = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::PreRasterization, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
+                }
+                if (auto r = commands.synchronize({.buffers = layerReady}); !r) { return std::unexpected(r.error()); }
+            }
+        }
+        push.geometry = fullGeometry;
+        push.rasterCoarse = 0;
+        auto diagnosticGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster diagnostics publish") : RenderGraphExecutionContext::ProfileScope{};
+        const BufferBarrierDesc diagnosticPublished{.buffer = state->resources->cacheDiagnostics.get(),
+            .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+        if (auto r = commands.synchronize({.buffers = {&diagnosticPublished, 1}}); !r) { return std::unexpected(r.error()); }
+        if (settings.collectGPUWork) {
+            const BufferBarrierDesc workReady{.buffer = state->resources->buffers[4].get(),
+                .before = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                .after = {PipelineStageBits::ComputeShader | PipelineStageBits::Transfer,
+                    AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::TransferRead}};
+            if (auto r = commands.synchronize({.buffers = {&workReady, 1}}); !r) { return std::unexpected(r.error()); }
+        }
+        diagnosticGpu.end();
+        gpu.end();
+        return {};
+    };
+    if (!sharedPhysicalPool) {
+        if (auto r = state->finish(); !r) { return std::unexpected(r.error()); }
+        state->finish = {};
     }
-    push.geometry = fullGeometry;
-    push.rasterCoarse = 0;
-    auto diagnosticGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster diagnostics publish") : RenderGraphExecutionContext::ProfileScope{};
-    const BufferBarrierDesc diagnosticPublished{.buffer = state->resources->cacheDiagnostics.get(),
-        .before = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization, AccessBits::ShaderWrite},
-        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
-    if (auto r = commands.synchronize({.buffers = {&diagnosticPublished, 1}}); !r) { return std::unexpected(r.error()); }
-    if (settings.collectGPUWork) {
-        const BufferBarrierDesc workReady{.buffer = state->resources->buffers[4].get(),
-            .before = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-            .after = {PipelineStageBits::ComputeShader | PipelineStageBits::Transfer,
-                AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::TransferRead}};
-        if (auto r = commands.synchronize({.buffers = {&workReady, 1}}); !r) { return std::unexpected(r.error()); }
-    }
-    diagnosticGpu.end();
-    gpu.end();
     phase.next("Prepare VSM cache snapshot");
     if (settings.cacheEnabled) {
         auto next = std::make_shared<Cache>();
@@ -1698,8 +2165,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         next->tessellationKey = casters.tessellationKey;
         next->dependencyKey = casters.dependencyKey; next->epoch = push.cacheEpoch; next->enabled = enabled;
         next->completion = frame->completion();
-        next->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
-        if (auto r = commands.addSubmissionTransaction(next->submission); !r) { return std::unexpected(r.error()); }
+        next->physicalPoolFrame = poolFrame;
+        next->submission = sharedPhysicalPool ? poolFrame->submission : std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+        if (auto r = sharedPhysicalPool ? Result<>{} : commands.addSubmissionTransaction(next->submission); !r) { return std::unexpected(r.error()); }
         state->next = next;
         pending_ = std::move(next);
     }
@@ -1930,6 +2398,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     CPUProfileScope phase(profiler, "Prepare VSM one-pass pipeline");
     if (!programs.onePassComputes[variant]) {
         const std::array macros{SlangMacroDefine{"VSM_ONE_PASS_PROJECTION", "1"},
+            SlangMacroDefine{"VSM_SHARED_PHYSICAL_POOL", programs.sharedPhysicalPool ? "1" : "0"},
             SlangMacroDefine{"VSM_LIGHT_GRID_PROJECTION", lightGrid ? "1" : "0"},
             SlangMacroDefine{"VSM_ADAPTIVE_RAY_COUNT", programs.adaptiveRayCount ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", programs.collectGPUWork ? "1" : "0"},
@@ -2132,19 +2601,23 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
     };
     const auto addCache = [&](const std::shared_ptr<Cache>& cache) {
         if (cache) {
-            addAtlas(cache->atlas->texture.get(), cache->settings.pageSize);
-            if (cache->staticAtlas) { addAtlas(cache->staticAtlas->texture.get(), cache->settings.pageSize, true); }
+            if (!cache->physicalPoolFrame) {
+                addAtlas(cache->atlas->texture.get(), cache->settings.pageSize);
+                if (cache->staticAtlas) { addAtlas(cache->staticAtlas->texture.get(), cache->settings.pageSize, true); }
+                addBuffer(cache->staticHZB.get());
+            }
             addBuffer(cache->pages.get());
-            addBuffer(cache->staticHZB.get());
         }
     };
     addCache(cache_);
     addCache(pending_);
     if (state_) {
-        addAtlas(state_->resources->textures[0].get(), state_->push.pageSize);
-        if (state_->resources->staticAtlas) { addAtlas(state_->resources->staticAtlas->texture.get(), state_->push.pageSize, true); }
+        if (!state_->resources->physicalPoolStorage) {
+            addAtlas(state_->resources->textures[0].get(), state_->push.pageSize);
+            if (state_->resources->staticAtlas) { addAtlas(state_->resources->staticAtlas->texture.get(), state_->push.pageSize, true); }
+            addBuffer(state_->resources->staticHZB.get());
+        }
         addBuffer(state_->resources->cacheDiagnostics.get());
-        addBuffer(state_->resources->staticHZB.get());
         addBuffer(state_->resources->staticHZBJobs.get());
         addBuffer(state_->resources->clusterVisibility.get());
         usage.bufferBytes += state_->resources->layerBufferBytes;

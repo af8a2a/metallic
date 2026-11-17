@@ -1,10 +1,8 @@
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/ClusterLightGrid.h"
-#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
-#include "Runtime/Render/Shadow/VirtualShadowMapBudget.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
@@ -27,55 +25,7 @@ struct ManagedLight
     uint64_t stableId = 0;
     VirtualShadowMapLight light;
     VirtualShadowMapLightEntry entry{};
-    std::array<uint32_t, 6> faceBudgets{};
 };
-
-struct LightDemand
-{
-    struct Face
-    {
-        VirtualShadowMapDemandHistory history;
-        uint64_t frame = 0;
-        uint32_t assignedPages = 0;
-    };
-    uint32_t kind = 0;
-    std::array<Face, 6> faces;
-};
-
-struct DemandFeedback
-{
-    struct Face
-    {
-        // Removing or changing a light invalidates its old asynchronous samples.
-        std::weak_ptr<LightDemand> light;
-        uint32_t face = 0;
-    };
-    std::shared_ptr<Buffer> buffer;
-    GPUCompletionPoint completion;
-    std::shared_ptr<SubmissionTransaction> submission;
-    std::vector<Face> faces;
-    uint64_t frame = 0;
-    bool pending = false;
-};
-
-uint64_t demandConfigurationKey(const VirtualShadowMapSettings& settings, const VisibilityBufferFrameInfo& raster, float nearPlane)
-{
-    uint64_t hash = 14695981039346656037ull;
-    const auto append = [&hash](const auto& value) {
-        const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
-        for (size_t i = 0; i < sizeof(value); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
-    };
-    append(raster.width); append(raster.height);
-    append(raster.lightGridViewIndex); append(raster.lightGridViewGeneration);
-    append(raster.rasterSettingsRevision);
-    append(settings.pageSize); append(settings.virtualPagesPerAxis); append(settings.clipmapCount);
-    append(settings.firstClipmapExtent); append(settings.receiverFootprint); append(settings.filter);
-    append(settings.pcfRadius); append(settings.smrtRayCount); append(settings.smrtSamplesPerRay);
-    append(settings.smrtMaxRayLength); append(settings.smrtRayLengthScale); append(settings.smrtMaxRayAngle);
-    append(settings.smrtTemporalSampling);
-    append(settings.cacheEnabled); append(settings.shadowBias); append(nearPlane);
-    return hash;
-}
 
 uint64_t temporalContentKey(const VirtualShadowMapCasterResources& casters, const VisibilityBufferFrameInfo& raster)
 {
@@ -140,7 +90,8 @@ public:
         }
         reflection.addBufferOutput("lights", "Current source-to-layer table and explicit light admission")
             .buffer(sizeof(VirtualShadowMapLightsHeader) + uint64_t(capacity) * sizeof(VirtualShadowMapLightEntry), 0)
-            .transferWrite();
+            .transferWrite()
+            .stageAccess(RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Compute);
         reflection.addBufferOutput("statistics", "Six 32-uint face blocks per light entry")
             .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapFaceStatisticsSize, sizeof(uint32_t))
             .bufferLayout("u32").transferWrite();
@@ -149,8 +100,9 @@ public:
             .bufferLayout("u32").transferWrite();
         reflection.addBufferOutput("lodStatistics", "Shared shadow LOD selection, page demand and selected cluster level histogram")
             .buffer(32 * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
-        reflection.addBufferOutput("budgetDiagnostics", "Demand budget header and eight uints per source face; completed GPU feedback only")
-            .buffer(uint64_t(8 + capacity * 6 * 8) * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+        reflection.addBufferOutput("budgetDiagnostics", "Current GPU shared-pool allocation header and eight uints per source face")
+            .buffer(uint64_t(8 + capacity * 6 * 8) * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite()
+            .stageAccess(RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Compute);
         if (properties().value("benchmarkGPUWork", false)) {
             reflection.addBufferOutput("projectionGridDiagnostics", "One-pass local light grid workload; eight low/high uint pairs")
                 .buffer(kVirtualShadowMapProjectionGridDiagnosticSize, sizeof(uint32_t))
@@ -255,8 +207,8 @@ public:
             return makeError(Error::Unsupported);
         }
         if (device_ != context.device) {
-            casterCache_ = {}; histories_.clear();
-            demands_.clear(); feedback_.clear();
+            casterCache_ = {}; histories_.clear(); caches_.clear();
+            physicalPool_ = {};
         }
         device_ = context.device;
         return {};
@@ -475,7 +427,7 @@ public:
         if (sceneIdentity_ != info.sceneIdentity) {
             caches_.clear();
             histories_.clear();
-            demands_.clear(); feedback_.clear();
+            physicalPool_ = {};
             casterCache_ = {};
             sceneIdentity_ = info.sceneIdentity;
         }
@@ -483,108 +435,20 @@ public:
         for (const auto& item : lights) {
             if (item.entry.status == kVirtualShadowMapLightAdmitted) { identities.insert(item.stableId); }
         }
-        // Admission owns persistent pool memory. Disabled/rejected lights must
-        // release their old pools when the global budget shrinks.
+        // Cache identity remains per light. The shared pool reconciles physical
+        // ownership across all admitted faces before allocating this frame.
         std::erase_if(caches_, [&](const auto& cache) { return !identities.contains(cache.first); });
-        std::erase_if(demands_, [&](const auto& demand) { return !identities.contains(demand.first); });
-        const uint64_t demandKey = demandConfigurationKey(settings, info, nearPlane);
-        if (!demandDriven || demandKey_ != demandKey) {
-            demands_.clear(); feedback_.clear();
-            demandKey_ = demandKey;
-        }
-        if (demandDriven) {
-            for (const auto& item : lights) {
-                if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
-                auto& demand = demands_[item.stableId];
-                if (!demand || demand->kind != item.entry.kind) {
-                    demand = std::make_shared<LightDemand>();
-                    demand->kind = item.entry.kind;
-                }
-            }
-            if (auto r = consumeDemandFeedback(); !r) { return r; }
-        }
-        std::vector<uint32_t> fineTargets;
-        std::vector<VirtualShadowMapBudgetRetentionFace> retentionFaces;
-        fineTargets.reserve(admittedFaces);
-        if (demandDriven) { retentionFaces.reserve(admittedFaces); }
-        for (uint32_t index : order) {
-            const auto& item = lights[index];
-            if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
-            for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
-                fineTargets.push_back(demandDriven ? demands_.at(item.stableId)->faces[face].history.targetFine : 4095u);
-                if (demandDriven) {
-                    const auto& state = demands_.at(item.stableId)->faces[face];
-                    retentionFaces.push_back({state.history.observedFine, state.assignedPages, state.history.known});
-                }
-            }
-        }
-        std::vector<uint32_t> budgets;
-        if (demandDriven && canRetainVirtualShadowMapPageBudgets(retentionFaces, budget)) {
-            // Capacity changes rebuild the atlas and change raster interpolation
-            // rounding. Preserve a layout that already serves every request;
-            // reclaim idle allocation only when another face needs its pages.
-            budgets.reserve(admittedFaces);
-            for (const auto& face : retentionFaces) { budgets.push_back(face.previousPages); }
-        } else {
-            budgets = allocateVirtualShadowMapPageBudgets(fineTargets, budget);
-        }
+        if (admittedFaces == 0) { physicalPool_ = {}; }
         std::vector<uint32_t> budgetData(8 + capacity_ * 6 * 8, 0);
-        budgetData[0] = 1; budgetData[1] = demandDriven; budgetData[2] = admittedFaces; budgetData[4] = budget;
-        const uint32_t equalExtra = admittedFaces ? remaining / admittedFaces : 0;
-        uint32_t equalRemainder = admittedFaces ? remaining % admittedFaces : 0;
-        size_t budgetIndex = 0;
-        for (uint32_t index : order) {
-            auto& item = lights[index];
-            if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
-            for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
-                const uint32_t assigned = budgets[budgetIndex++];
-                item.faceBudgets[face] = assigned;
-                item.entry.pageBudget += assigned;
-                budgetData[5] += assigned;
-                const size_t offset = 8 + (index * 6 + face) * 8;
-                budgetData[offset + 2] = 4095u;
-                budgetData[offset + 3] = assigned;
-                budgetData[offset + 4] = std::min(4096u, 1 + equalExtra + (equalRemainder ? (--equalRemainder, 1u) : 0u));
-                if (demandDriven) {
-                    auto& state = demands_.at(item.stableId)->faces[face];
-                    const auto& history = state.history;
-                    budgetData[3] += history.known;
-                    budgetData[6] += state.assignedPages != 0 && state.assignedPages != assigned;
-                    state.assignedPages = assigned;
-                    budgetData[offset] = history.known;
-                    budgetData[offset + 1] = history.observedFine;
-                    budgetData[offset + 2] = history.targetFine;
-                    budgetData[offset + 5] = history.known ? uint32_t(std::min(info.frameIndex - state.frame, uint64_t(UINT32_MAX))) : 0;
-                    budgetData[offset + 6] = history.known && history.observedFine > assigned - 1 ? history.observedFine - (assigned - 1) : 0;
-                    budgetData[offset + 7] = uint32_t(state.frame);
-                }
-            }
-        }
-        std::shared_ptr<DemandFeedback> feedback;
-        if (demandDriven && admittedFaces != 0) {
-            auto* frame = RenderFrameContext::from(context.commandBuffer());
-            if (!frame || !frame->recording()) {
-                spdlog::error("VSM demand budgets require a tracked recording frame");
-                return makeError(Error::InvalidArgument);
-            }
-            auto acquired = acquireDemandFeedback();
-            if (!acquired) { return std::unexpected(acquired.error()); }
-            feedback = std::move(acquired->first);
-            budgetData[7] = acquired->second;
-            feedback->completion = frame->completion();
-            feedback->frame = info.frameIndex;
-            feedback->faces.clear();
-            for (uint32_t index : order) {
-                const auto& item = lights[index];
-                if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
-                for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
-                    feedback->faces.push_back({demands_.at(item.stableId), face});
-                }
-            }
-        }
-        cpuTotal.work("budgetAssignedPages", budgetData[5]);
-        cpuTotal.work("budgetChangedFaces", budgetData[6]);
-        cpuTotal.work("budgetFeedbackCreates", budgetData[7]);
+        // Version 2 describes current-frame GPU demand and grants. The shared
+        // allocator publishes totals and face records after this zeroed header
+        // is uploaded; no delayed CPU demand sample controls physical capacity.
+        budgetData[0] = 2;
+        budgetData[1] = demandDriven;
+        budgetData[2] = admittedFaces;
+        budgetData[4] = budget;
+        std::vector<uint32_t> publicationFaces;
+        publicationFaces.reserve(admittedFaces);
         std::unordered_set<uint64_t> temporalIdentities;
         if (settings.smrtTemporalSampling) {
             for (const auto& item : lights) {
@@ -616,7 +480,7 @@ public:
                 return makeError(Error::InvalidArgument);
             }
             coverageHeader = {1, info.width, info.height, settings.pageSize, settings.virtualPagesPerAxis,
-                settings.clipmapCount, selected->faceBudgets[0], settings.smrtRayCount, settings.smrtSamplesPerRay,
+                settings.clipmapCount, budget, settings.smrtRayCount, settings.smrtSamplesPerRay,
                 std::bit_cast<uint32_t>(selected->light.angularRadius), uint32_t(selected - lights.begin()),
                 uint32_t(receiverCoverageRecords_), kVSMReceiverCoverageRecordWords, uint32_t(coverageProjections.desc().size),
                 uint32_t(coveragePages.desc().size), coverageMask.valid() ? uint32_t(coverageMask.desc().size) : 0u};
@@ -763,10 +627,8 @@ public:
                         for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
                             auto light = item.light;
                             light.face = face;
-                            auto faceSettings = settings;
-                            faceSettings.physicalPageCount = item.faceBudgets[face];
                             const auto faceProjections = VirtualShadowMaps::makeShadowLODProjections(
-                                casters->bounds, view, light, faceSettings, log);
+                                casters->bounds, view, light, settings, log);
                             if (!faceProjections) {
                                 spdlog::error("VirtualShadowMapLightsPass shadow LOD projections: {}", log);
                                 return makeError(faceProjections.error());
@@ -798,24 +660,37 @@ public:
                 }
                 if (!temporalIdentities.empty()) { contentKey = temporalContentKey(*casters, info); }
                 profile.next("VSM page demand, cache and raster");
-                cpuPhase.next("Record all faces");
+                cpuPhase.next("Record shared physical pool");
+                std::vector<VirtualShadowMapFaceRequest> faceRequests;
+                faceRequests.reserve(admittedFaces);
                 for (uint32_t index : order) {
-                    auto& item = lights[index];
+                    const auto& item = lights[index];
                     if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
                     auto& faces = caches_[item.stableId];
                     for (uint32_t face = item.entry.faceCount; face < faces.size(); ++face) { faces[face].reset(); }
+                    for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
+                        if (!faces[face]) { faces[face] = std::make_unique<VirtualShadowMaps>(); }
+                        auto light = item.light;
+                        light.face = face;
+                        faceRequests.push_back({faces[face].get(), light,
+                            {output.texture(), debugOutput_ ? debug.texture() : nullptr,
+                                item.entry.baseLayer + (compact_ ? 0u : face), compact_ && item.entry.faceCount == 6}});
+                        publicationFaces.push_back(index * 6 + face);
+                    }
+                }
+                auto sharedResults = VirtualShadowMaps::recordShared(physicalPool_, *device_, commands,
+                    *depth.view(), view, faceRequests, *casters, scene->materials(), alphaTextures, settings,
+                    budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr);
+                if (!sharedResults) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(sharedResults.error()); }
+                size_t resultIndex = 0;
+                for (uint32_t index : order) {
+                    const auto& item = lights[index];
+                    if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                    auto& faces = caches_[item.stableId];
                     const bool filteredPoint = item.entry.faceCount == 6 && settings.filter != VirtualShadowMapFilter::Hard;
                     std::array<VirtualShadowMapResult, 6> pointResults;
                     for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
-                        if (!faces[face]) { faces[face] = std::make_unique<VirtualShadowMaps>(); }
-                        item.light.face = face;
-                        settings.physicalPageCount = item.faceBudgets[face];
-                        const VirtualShadowMapProjectionTarget target{output.texture(), debugOutput_ ? debug.texture() : nullptr,
-                            item.entry.baseLayer + (compact_ ? 0u : face), compact_ && item.entry.faceCount == 6};
-                        auto shadow = faces[face]->record(*device_, commands, *depth.view(), view, item.light, *casters,
-                            scene->materials(), alphaTextures, settings, log, true, &target, cpu, gpuProfiler,
-                            receiver.stream ? &receiver : nullptr);
-                        if (!shadow) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(shadow.error()); }
+                        const auto* shadow = &(*sharedResults)[resultIndex++];
                         pointResults[face] = *shadow;
                         if (receiverCoverage_) {
                             auto appendCoverage = [&](Buffer* source, uint64_t offset, const auto& destination,
@@ -977,6 +852,9 @@ public:
             initializeUses.push_back({"shadows", RenderGraphResourceAccess::TextureTransferWrite});
             if (debugOutput_) { initializeUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite}); }
         }
+        const std::array allocationUses{
+            RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferStorageReadWrite},
+            RenderGraphStageUse{"budgetDiagnostics", RenderGraphResourceAccess::BufferStorageReadWrite}};
         const std::array stages{RenderGraphStage{"Initialize VSM light publication", initializeUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Initialize publication commands");
@@ -989,6 +867,14 @@ public:
                     }
                 }
                 return context.streamer()->copyStreamedData(cmd, *batch);
+            }}, RenderGraphStage{"Publish shared VSM allocations", allocationUses,
+            [&](CommandBuffer& cmd) -> Result<> {
+                if (publicationFaces.empty()) { return {}; }
+                CPUProfileScope stageCPU(cpu, "Publish current GPU page grants");
+                std::string log;
+                auto result = physicalPool_.publishAllocations(cmd, *table.buffer(), *budgetDiagnostics.buffer(), publicationFaces, log);
+                if (!result) { spdlog::error("VirtualShadowMapLightsPass allocation publication: {}", log); }
+                return result;
             }}, RenderGraphStage{"Project VSM lights", projectionUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Project all faces");
@@ -1011,7 +897,12 @@ public:
                         memoryData[7] += usage.staticAtlasBytes;
                     }
                 }
-                for (const auto& slot : feedback_) { memoryData[2] += slot->buffer->desc().size; }
+                const auto poolUsage = physicalPool_.memoryUsage();
+                memoryData[0] += poolUsage.atlasBytes;
+                memoryData[1] += poolUsage.privateOutputBytes;
+                memoryData[2] += poolUsage.bufferBytes;
+                memoryData[5] += poolUsage.allocatedAtlasPages;
+                memoryData[7] += poolUsage.staticAtlasBytes;
                 // R8 visibility and optional RGBA8 page-debug arrays.
                 memoryData[3] = uint64_t(context.width()) * context.height() * output.desc().layerCount;
                 if (debugOutput_) {
@@ -1032,30 +923,6 @@ public:
                         if (!copied) { return copied; }
                     }
                 }
-                if (feedback) {
-                    auto gpu = gpuProfiler ? gpuProfiler->profileScope(cmd, "VSM budget feedback") :
-                        RenderGraphExecutionContext::ProfileScope{};
-                    // Reuse only after CPU consumption and completion. Keep the
-                    // wrapper alive even when the pass or a light is removed.
-                    if (auto r = cmd.retainResource(feedback); !r) { return r; }
-                    feedback->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
-                    if (auto r = cmd.addSubmissionTransaction(feedback->submission); !r) { return r; }
-                    feedback->pending = true;
-                    const BufferBarrierDesc beforeCopy{.buffer = feedback->buffer.get(),
-                        .before = {PipelineStageBits::AllCommands | PipelineStageBits::Host, AccessBits::MemoryWrite | AccessBits::HostRead},
-                        .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
-                    if (auto r = cmd.synchronize({.buffers = {&beforeCopy, 1}}); !r) { return r; }
-                    for (size_t index = 0; index < publications.size(); ++index) {
-                        const auto source = publications[index].sourceStats.subslice({0, sizeof(uint32_t)});
-                        const auto destination = feedback->buffer->slice({index * sizeof(uint32_t), sizeof(uint32_t)});
-                        if (!source || !destination) { return makeError(Error::InvalidArgument); }
-                        if (auto r = cmd.copyBuffer(*source, *destination); !r) { return r; }
-                    }
-                    const BufferBarrierDesc ready{.buffer = feedback->buffer.get(),
-                        .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-                        .after = {PipelineStageBits::Host, AccessBits::HostRead}};
-                    if (auto r = cmd.synchronize({.buffers = {&ready, 1}}); !r) { return r; }
-                }
                 return {};
             }}, RenderGraphStage{"Stabilize SMRT shadows", temporalUses,
             [&](CommandBuffer& cmd) -> Result<> {
@@ -1067,11 +934,8 @@ public:
                     auto& history = histories_[item.stableId];
                     if (!history) { history = std::make_unique<VirtualShadowMapTemporal>(); }
                     auto temporalSettings = settings;
-                    temporalSettings.physicalPageCount = item.faceBudgets[0];
-                    uint64_t lightContentKey = contentKey;
-                    for (uint32_t faceBudget : item.faceBudgets) {
-                        lightContentKey = (lightContentKey ^ faceBudget) * 1099511628211ull;
-                    }
+                    temporalSettings.physicalPageCount = budget;
+                    const uint64_t lightContentKey = (contentKey ^ uint32_t(demandDriven)) * 1099511628211ull;
                     if (auto r = history->record(*device_, cmd, *depth.view(), *output.view(), view, info.frameIndex,
                         revision, lightContentKey, item.light, temporalSettings, historyFrames,
                         item.entry.baseLayer, item.entry.faceCount, compact_, log, gpuProfiler); !r) {
@@ -1096,50 +960,6 @@ public:
         return {};
     }
 private:
-    Result<> consumeDemandFeedback()
-    {
-        for (const auto& slot : feedback_) {
-            if (!slot->pending) { continue; }
-            if (slot->submission->cancelled() || slot->completion.isCancelled()) {
-                slot->pending = false;
-                continue;
-            }
-            // Frame completion alone also treats cancellation as complete. The
-            // copy's own transaction must have been accepted before host reads.
-            if (!slot->submission->resolved() || !slot->completion.isSubmitted() || !slot->completion.isComplete()) { continue; }
-            slot->buffer->invalidate();
-            const auto* values = static_cast<const uint32_t*>(slot->buffer->map());
-            if (!values) { return makeError(Error::Failure); }
-            for (size_t index = 0; index < slot->faces.size(); ++index) {
-                const auto& face = slot->faces[index];
-                if (auto light = face.light.lock()) {
-                    auto& state = light->faces[face.face];
-                    if (!state.history.known || slot->frame > state.frame) {
-                        state.history.observe(values[index]);
-                        state.frame = slot->frame;
-                    }
-                }
-            }
-            slot->buffer->unmap();
-            slot->pending = false;
-        }
-        return {};
-    }
-
-    Result<std::pair<std::shared_ptr<DemandFeedback>, bool>> acquireDemandFeedback()
-    {
-        for (const auto& slot : feedback_) {
-            if (!slot->pending && slot.use_count() == 1 && slot->completion.isComplete()) { return std::pair{slot, false}; }
-        }
-        auto buffer = device_->createBuffer({.size = uint64_t(capacity_) * 6 * sizeof(uint32_t),
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback});
-        if (!buffer) { return std::unexpected(buffer.error()); }
-        auto slot = std::make_shared<DemandFeedback>();
-        slot->buffer = std::move(*buffer);
-        feedback_.push_back(slot);
-        return std::pair{std::move(slot), true};
-    }
-
     Device* device_ = nullptr;
     VirtualShadowMapCasterCache casterCache_;
     uint32_t capacity_ = 8;
@@ -1149,9 +969,7 @@ private:
     bool receiverCoverage_ = false;
     bool receiverCoverageRecords_ = false;
     uint64_t sceneIdentity_ = 0;
-    uint64_t demandKey_ = 0;
-    std::unordered_map<uint64_t, std::shared_ptr<LightDemand>> demands_;
-    std::vector<std::shared_ptr<DemandFeedback>> feedback_;
+    VirtualShadowMapPhysicalPool physicalPool_;
     std::unordered_map<uint64_t, std::array<std::unique_ptr<VirtualShadowMaps>, 6>> caches_;
     std::unordered_map<uint64_t, std::unique_ptr<VirtualShadowMapTemporal>> histories_;
 };

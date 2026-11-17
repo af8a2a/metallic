@@ -1881,6 +1881,71 @@ void requireLocalReused(const LocalSnapshot& image, uint64_t identity, const std
     }
 }
 
+void requireSharedBudget(const LocalSnapshot& image, uint32_t capacity, bool demandDriven, const std::string& phase)
+{
+    std::map<std::pair<uint64_t, uint32_t>, uint32_t> orderedFaces;
+    for (uint32_t index = 0; index < image.header.count; ++index) {
+        const auto& entry = image.entries[index];
+        uint32_t lightGrant = 0;
+        for (uint32_t face = 0; face < entry.faceCount; ++face) {
+            const uint32_t layer = entry.baseLayer + face;
+            const auto& stats = image.statistics[layer];
+            const auto& budget = image.budgetFaces[layer];
+            if (entry.status != kVirtualShadowMapLightAdmitted) {
+                require(stats == std::array<uint32_t, 32>{} && budget == std::array<uint32_t, 8>{},
+                    phase + ": unadmitted face retained statistics or a grant");
+                continue;
+            }
+            orderedFaces[{localEntryId(entry), face}] = layer;
+            require(stats[0] == stats[1] + stats[2] && stats[12] == stats[1] + 1 && stats[12] <= capacity,
+                phase + ": requested/admitted/rejected grant accounting");
+            require(stats[5] == 0 && stats[9] == 0, phase + ": raster work overflow or invalid coarse coverage");
+            require(budget[0] == 1 && budget[1] == stats[0] && budget[2] == stats[0] &&
+                budget[3] == stats[12] && budget[5] == 0 && budget[6] == stats[2],
+                phase + ": diagnostics do not describe the executed current-frame request and grant");
+            lightGrant += stats[12];
+        }
+        require(lightGrant == entry.pageBudget, phase + ": light budget differs from its face grants");
+    }
+    const uint32_t faceCount = uint32_t(orderedFaces.size());
+    require(capacity >= faceCount, phase + ": whole-light admission exceeded coarse capacity");
+    std::vector<uint32_t> targets, expectedFine(faceCount, 0);
+    for (const auto& [identity, layer] : orderedFaces) {
+        targets.push_back(image.statistics[layer][0]);
+    }
+    const uint32_t available = capacity - faceCount;
+    if (demandDriven) {
+        // Independent reference: hand out one page per eligible face per round.
+        // This checks max-min fairness and stable-ID remainder order without
+        // reproducing the GPU allocator's binary-search water-level algorithm.
+        uint32_t remaining = available;
+        while (remaining != 0) {
+            bool progressed = false;
+            for (uint32_t face = 0; face < faceCount && remaining != 0; ++face) {
+                if (expectedFine[face] == targets[face]) { continue; }
+                ++expectedFine[face]; --remaining; progressed = true;
+            }
+            if (!progressed) { break; }
+        }
+    } else if (faceCount != 0) {
+        for (uint32_t face = 0; face < faceCount; ++face) {
+            expectedFine[face] = std::min(targets[face], available / faceCount + uint32_t(face < available % faceCount));
+        }
+    }
+    uint32_t assigned = 0, newFine = 0, reusedFine = 0, face = 0;
+    for (const auto& [identity, layer] : orderedFaces) {
+        const auto& stats = image.statistics[layer];
+        const auto& budget = image.budgetFaces[layer];
+        const uint32_t equalGrant = 1 + std::min(targets[face], available / faceCount + uint32_t(face < available % faceCount));
+        require(stats[1] == expectedFine[face] && budget[4] == equalGrant,
+            phase + ": GPU grant differs from independent current-demand allocation");
+        assigned += stats[12]; newFine += stats[20]; reusedFine += stats[17]; ++face;
+    }
+    require(image.budgetHeader == std::array<uint32_t, 8>{2, uint32_t(demandDriven), faceCount, faceCount,
+        capacity, assigned, newFine, reusedFine} && assigned <= capacity,
+        phase + ": shared-pool header does not match executed face grants and cache work");
+}
+
 scene::PunctualLight localLight(std::string name, bool spot, Point position)
 {
     scene::PunctualLight light; light.name = std::move(name);
@@ -2308,8 +2373,8 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapDemandBudget";
-        Json report{{"passed", false}, {"width", kWidth}, {"height", kHeight}, {"settlingFrames", 16}, {"slackFeedbackFrames", 10},
-            {"scope", "Completed-frame demand feedback, per-face allocation, independent geometry and cache correctness; diagnostic only"},
+        Json report{{"passed", false}, {"width", kWidth}, {"height", kHeight}, {"settlingFrames", 16}, {"slackStableFrames", 10},
+            {"scope", "Same-frame GPU demand and shared physical-pool grants, independent allocation/geometry and cache correctness; diagnostic only"},
             {"limits", "Resident floor fixture; point-face/seam and stream regressions remain in virtual_shadow_map_local_lights. Submission cancellation is covered separately by virtual_shadow_map_demand_feedback_lifecycle."},
             {"defaultPropertyOmitted", false}, {"defaultEquivalentFrames", 0},
             {"frames", Json::array()}, {"oracles", Json::array()}};
@@ -2458,33 +2523,7 @@ public:
                 for (uint32_t arm = 0; arm < arms.size(); ++arm) {
                     const auto& image = images[arm];
                     const uint32_t limit = arm == 4 ? referenceBudget : totalBudget;
-                    require(image.budgetHeader[0] == 1 && image.budgetHeader[1] == uint32_t(arm == 2 || arm == 3 || arm == 5),
-                        phase + ": invalid demand diagnostic version or mode");
-                    uint32_t assigned = 0, admittedFaces = 0;
-                    for (uint32_t index = 0; index < image.header.count; ++index) {
-                        const auto& entry = image.entries[index];
-                        uint32_t lightAssigned = 0;
-                        for (uint32_t face = 0; face < entry.faceCount; ++face) {
-                            const auto layer = entry.baseLayer + face;
-                            const auto& stats = image.statistics[layer];
-                            if (entry.status != kVirtualShadowMapLightAdmitted) {
-                                require(stats == std::array<uint32_t, 32>{}, phase + ": unadmitted face retained statistics");
-                                continue;
-                            }
-                            ++admittedFaces;
-                            require(stats[12] >= 1 && stats[12] <= 4096 && stats[1] <= stats[12] - 1,
-                                phase + ": invalid face capacity or fine admission");
-                            require(stats[0] == stats[1] + stats[2], phase + ": requested/admitted/rejected accounting");
-                            require(stats[5] == 0 && stats[9] == 0, phase + ": raster work overflow or invalid coarse coverage");
-                            require(image.budgetFaces[layer][3] == stats[12], phase + ": published quota differs from executed capacity");
-                            lightAssigned += stats[12];
-                        }
-                        require(lightAssigned == entry.pageBudget, phase + ": light budget differs from face capacities");
-                        assigned += lightAssigned;
-                    }
-                    require(assigned <= limit && image.budgetHeader[4] == limit &&
-                        image.budgetHeader[5] == assigned && image.budgetHeader[2] == admittedFaces,
-                        phase + ": global physical budget accounting");
+                    requireSharedBudget(image, limit, arm == 2 || arm == 3 || arm == 5, phase + "-" + arms[arm]);
                     require(image.depth == images[0].depth, phase + ": allocation policy changed primary depth");
                 }
                 const auto& defaultImage = images[5];
@@ -2505,7 +2544,7 @@ public:
                     require(image.shadows == redrawn.shadows, phase + ": cached and forced-redraw shadows differ");
                     for (uint32_t layer = 0; layer < kLocalLayers; ++layer) {
                         require(image.statistics[layer][12] == redrawn.statistics[layer][12],
-                            phase + ": paired feedback schedulers selected different quotas");
+                            phase + ": paired GPU allocators selected different grants");
                     }
                 }
                 for (uint32_t arm : {0u, 2u, 5u}) {
@@ -2536,13 +2575,13 @@ public:
                 const auto atlasBytes = images[2].memory[0], atlasPages = images[2].memory[5];
                 for (uint32_t arm : {2u, 5u}) {
                     require(images[arm].budgetHeader[3] == images[arm].budgetHeader[2],
-                        phase + "-" + arms[arm] + ": admitted faces did not receive completed GPU demand");
+                        phase + "-" + arms[arm] + ": admitted faces did not publish current GPU demand");
                 }
                 for (uint32_t frame = 0; frame < 3; ++frame) {
                     images = capture(phase + "-Stable" + std::to_string(frame));
                     require(faceState(images[2]) == stable, phase + ": stable quotas or cache epochs oscillate");
-                    require(images[2].budgetHeader[6] == 0 && images[2].budgetHeader[7] == 0,
-                        phase + ": stable demand recreated quotas or feedback buffers");
+                    require(images[2].budgetHeader[6] == 0 && images[2].budgetHeader[7] == totals(images[2])[1],
+                        phase + ": stable demand allocated fine pages or failed to reuse admitted depth");
                     require(images[2].memory[0] == atlasBytes && images[2].memory[5] == atlasPages,
                         phase + ": stable demand changed retained atlas memory");
                     for (uint32_t arm : {0u, 2u, 4u, 5u}) {
@@ -2559,23 +2598,23 @@ public:
             };
 
             auto images = capture("SlackCold");
-            require(images[2].budgetHeader[3] == 0 && images[2].shadows == images[0].shadows,
-                "Unknown cold demand did not use the equal-budget fallback");
+            require(images[2].budgetHeader[3] == 8 && images[2].shadows == images[0].shadows,
+                "Cold shared demand was delayed or changed the fully admitted equal-budget image");
             require(images[2].header.admittedCount == 3 && images[2].budgetHeader[2] == 8 &&
                 localEntry(images[2], pointId).faceCount == 6 && totals(images[2])[0] > 0 && totals(images[2])[2] == 0,
                 "Slack fixture did not admit the complete point and spot demand");
             const auto slackState = faceState(images[2]);
             const auto slackShadows = images[2].shadows;
             const auto slackAtlasBytes = images[2].memory[0], slackAtlasPages = images[2].memory[5];
-            // Cross-policy equality is required only while all requests fit the
-            // original equal quotas. Pressure below intentionally changes them.
+            // Both policies share the same atlas shape. When all requests fit,
+            // their current grants, images and stable residency must coincide.
             for (uint32_t frame = 0; frame < 10; ++frame) {
-                const std::string phase = "SlackFeedback" + std::to_string(frame);
+                const std::string phase = "SlackStable" + std::to_string(frame);
                 images = capture(phase);
                 const bool exact = images[2].shadows == images[0].shadows && images[2].shadows == slackShadows;
                 report["frames"].back()["slackEqualDemandByteExact"] = exact;
                 require(images[2].budgetHeader[3] == 8 && images[2].budgetHeader[6] == 0,
-                    phase + ": satisfied feedback changed quotas or did not become known");
+                    phase + ": current demand was not published or stable pages were reallocated");
                 require(faceState(images[2]) == slackState && images[2].memory[0] == slackAtlasBytes &&
                     images[2].memory[5] == slackAtlasPages, phase + ": satisfied demand changed the atlas layout or cache epochs");
                 require(totals(images[2])[2] == 0 && exact, phase + ": satisfied demand changed the equal-budget image");
@@ -2584,11 +2623,11 @@ public:
                 uint32_t emptyFaces = 0, busyFaces = 0;
                 for (uint32_t face = 0; face < point.faceCount; ++face) {
                     const auto& stats = images[2].statistics[point.baseLayer + face];
-                    if (stats[0] == 0) { ++emptyFaces; require(stats[12] > 1, phase + ": slack empty point face lost its retained quota"); }
+                    if (stats[0] == 0) { ++emptyFaces; require(stats[12] == 1, phase + ": empty point face reserved fine grants"); }
                     else { ++busyFaces; }
                 }
                 const auto& emptySpot = localEntry(images[2], emptyId);
-                require(point.faceCount == 6 && emptyFaces > 0 && busyFaces > 0 && emptySpot.pageBudget > 1 &&
+                require(point.faceCount == 6 && emptyFaces > 0 && busyFaces > 0 && emptySpot.pageBudget == 1 &&
                     images[2].statistics[emptySpot.baseLayer][0] == 0,
                     phase + ": slack fixture lost its six-face imbalance or empty spot coverage");
             }
@@ -2599,8 +2638,8 @@ public:
             images = settled("Pressure");
             const auto& equalEmpty = localEntry(images[0], emptyId);
             const auto& demandEmpty = localEntry(images[2], emptyId);
-            require(equalEmpty.pageBudget > 1 && demandEmpty.pageBudget == 1 &&
-                images[2].statistics[demandEmpty.baseLayer][0] == 0, "Empty light did not return fine-page capacity");
+            require(equalEmpty.pageBudget == 1 && demandEmpty.pageBudget == 1 &&
+                images[2].statistics[demandEmpty.baseLayer][0] == 0, "Empty light reserved fine-page grants");
             require(totals(images[2])[1] > totals(images[0])[1] && totals(images[2])[2] < totals(images[0])[2],
                 "Hot-light fixture did not improve fine admission at the same total budget");
             const auto& demandPoint = localEntry(images[2], pointId);
@@ -2692,8 +2731,9 @@ public:
                 const uint32_t expectedFaces = std::string_view(kind) == "point" ? 6u : 1u;
                 require(entry.faceCount == expectedFaces, phase + ": light kind did not change its full face set");
                 for (uint32_t face = 0; face < entry.faceCount; ++face) {
-                    require(images[2].budgetFaces[entry.baseLayer + face][0] == 0,
-                        phase + ": converted light inherited demand from the old projection kind");
+                    require(images[2].budgetFaces[entry.baseLayer + face][0] == 1 &&
+                        images[2].statistics[entry.baseLayer + face][21] == 1,
+                        phase + ": converted light did not immediately publish new demand and redraw coarse depth");
                 }
                 images = settled(phase);
                 oracle(images, phase);
@@ -2714,7 +2754,7 @@ public:
             report["passed"] = true;
             save();
             activeEvidence.reset();
-            return RHITestResult::pass("Omitted-default/explicit-demand equivalence, demand/equal cached-redraw pairs, ample-budget byte equality, completed GPU feedback, hot/empty lights, six point faces, stable quotas, budget changes, source identity and Hard/PCF/SMRT verified");
+            return RHITestResult::pass("Omitted-default/explicit-demand equivalence, demand/equal cached-redraw pairs, ample-budget byte equality, independent same-frame GPU grant oracle, hot/empty lights, six point faces, stable residency, budget changes, source identity and Hard/PCF/SMRT verified");
         } catch (const std::exception& error) {
             report["error"] = error.what();
             report["validation"] = validation.snapshot();
@@ -2739,16 +2779,16 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapDemandFeedbackLifecycle";
-        Json report{{"passed",false}, {"scope","Real LightsPass readback publication follows the copy command transaction, not aggregate frame submission"},
+        Json report{{"passed",false}, {"scope","Shared-pool allocation and publication follow the accepted command transaction; successful retries publish current demand immediately"},
             {"primingFrames",2},
-            {"limits","Equal-mode submissions initialize graph resources before cancelling the first demand readback. Cold whole-graph cancellation exposed non-aliased graph layout tracking ahead of the GPU in Focused2; graph rollback is outside this feedback test."},
+            {"limits","Equal-mode submissions initialize graph resources before cancellation. This covers a whole unsubmitted allocation/publication batch and an unrelated accepted prefix with cancelled tail; arbitrary intra-VSM segmentation and cold graph-layout rollback remain outside this test."},
             {"cases",Json::array()}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::ofstream(directory / "VirtualShadowMapDemandFeedbackLifecycle.json") << report.dump(2) << '\n'; };
         try {
             std::filesystem::create_directories(directory);
             static const bool registered = registerRenderGraphPassType("VSMFeedbackLifetimeEvidencePass",
-                "Test-only external-command VSM feedback readback",
+                "Test-only external-command shared VSM allocation readback",
                 [] { return std::make_unique<VSMLocalEvidencePass>(activeEvidence); });
             require(registered, "Register feedback-lifetime evidence pass");
             registerBuiltInRenderGraphPasses();
@@ -2812,10 +2852,10 @@ public:
                 std::string log;
                 require(executor.compile(*device, graph, kWidth, kHeight, log), "Compile feedback-lifetime graph: " + log);
                 graph.clearDirty();
-                // The whole real graph, including its feedback copy, goes in
+                // The whole real graph, including allocation and publication, goes in
                 // the tail. Only an unrelated empty command is ever accepted in
                 // the partial case. Its completed aggregate frame is not proof
-                // that the tail's feedback bytes were copied.
+                // that the shared pool's recorded state reached the GPU.
                 CacheCommands gpu(*device);
                 const auto record = [&](uint32_t cancelMode) {
                     gpu.begin();
@@ -2834,22 +2874,29 @@ public:
                     save();
                     require(image.header.admittedCount == 1 && image.budgetHeader[2] == 6,
                         label + ": real point-light six-face path was not executed");
-                    require(requested > 0 && receivers > 0, label + ": feedback case had no real receiver demand");
+                    require(requested > 0 && receivers > 0, label + ": cancellation case had no real receiver demand");
+                    const auto& entry = localEntry(image, scene.lighting().lights.front().stableId);
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        require(image.budgetFaces[entry.baseLayer + face][7] == uint32_t(gpu.index - 1),
+                            label + ": successful publication used an earlier or cancelled frame's demand");
+                    }
                 };
                 // A completed Equal frame establishes image layouts and scene
-                // uploads without creating demand feedback. Recompiling after
-                // cancellation would discard the very pass state being tested.
+                // uploads. Both policies already publish current demand on GPU.
+                // Recompiling after cancellation would discard the pass state
+                // whose submission transaction this test needs to exercise.
+                LocalSnapshot primed;
                 for (uint32_t prime = 0; prime < 2; ++prime) {
                     validation.phase(label + "-EqualPrime" + std::to_string(prime));
                     record(0);
                     const auto image = localSnapshot("Demand", true);
                     appendImage(image, output["priming"], prime);
-                    require(image.budgetHeader[1] == 0 && image.budgetHeader[3] == 0,
-                        label + ": priming unexpectedly enabled demand feedback");
+                    requireSharedBudget(image, 64, false, label + "-Prime");
+                    primed = image;
                 }
                 require(graph.setNodeRuntimeProperty(graph.findNode("Demand")->id, "demandDrivenBudget", true),
-                    "Enable feedback after graph initialization");
-                require(executor.syncRuntimeProperties(graph), "Synchronize feedback mode without recompiling the pass");
+                    "Enable demand allocation after graph initialization");
+                require(executor.syncRuntimeProperties(graph), "Synchronize allocation policy without recompiling the pass");
                 validation.phase(label + "-CancelledFirstDemand");
                 record(cancellation);
                 const bool aggregateSubmitted = gpu.frame.completion().isSubmitted();
@@ -2858,15 +2905,28 @@ public:
                     label + ": cancellation did not establish the intended aggregate completion state");
                 output["aggregateSubmitted"] = aggregateSubmitted;
                 output["aggregateCancelled"] = aggregateCancelled;
+                const auto cancelled = localSnapshot("Demand", true);
+                const bool cancelledOutputUnchanged = cancelled.budgetHeader == primed.budgetHeader &&
+                    cancelled.budgetFaces == primed.budgetFaces && cancelled.statistics == primed.statistics &&
+                    cancelled.shadows == primed.shadows && cancelled.depth == primed.depth &&
+                    std::memcmp(&cancelled.header, &primed.header, sizeof(primed.header)) == 0 &&
+                    std::memcmp(cancelled.entries.data(), primed.entries.data(), sizeof(primed.entries)) == 0;
+                output["cancelledOutputUnchanged"] = cancelledOutputUnchanged;
+                require(cancelledOutputUnchanged, label + ": unsubmitted allocation/publication changed completed output");
+                LocalSnapshot firstRetry;
                 for (uint32_t retry = 0; retry < 2; ++retry) {
                     validation.phase(label + "-Retry" + std::to_string(retry));
                     record(0);
                     const auto image = localSnapshot("Demand", true);
                     appendImage(image, output["frames"], retry);
-                    require(image.budgetHeader[1] == 1, label + ": valid retry did not enable demand feedback");
-                    require(image.budgetHeader[3] == (retry == 0 ? 0u : 6u),
-                        label + (retry == 0 ? ": cancelled feedback was consumed on the first valid retry" :
-                            ": completed valid feedback was not consumed on the next frame"));
+                    requireSharedBudget(image, 64, true, label + "-Retry" + std::to_string(retry));
+                    output["frames"].back()["oracle"] = verifyLocalOracle(image, fixture, scene.lighting(), directory,
+                        label + "-Retry" + std::to_string(retry), .001);
+                    if (retry == 0) { firstRetry = image; }
+                    else {
+                        require(image.shadows == firstRetry.shadows, label + ": recovered cache changed the accepted retry image");
+                        requireLocalReused(image, scene.lighting().lights.front().stableId, label + "-RecoveredStable");
+                    }
                 }
             }
             activeEvidence.reset();
@@ -2874,7 +2934,7 @@ public:
             requireValidPreview(report["validation"]);
             report["passed"] = true;
             save();
-            return RHITestResult::pass("LightsPass whole-frame and accepted-prefix/tail cancellation do not publish demand; the next completed valid frame does");
+            return RHITestResult::pass("Cancelled shared allocations leave completed output unchanged; the first accepted retry publishes six current face grants, matches geometry, and yields stable cached shadows");
         } catch (const std::exception& error) {
             activeEvidence.reset();
             report["error"] = error.what(); report["validation"] = validation.snapshot();

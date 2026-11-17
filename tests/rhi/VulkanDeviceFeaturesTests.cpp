@@ -323,6 +323,30 @@ TEST_F(DeviceFeatures, DescriptorHeapNeedsPropertiesAndAllIndexingBits)
 }
 
 #ifdef VK_EXT_mesh_shader
+TEST_F(DeviceFeatures, MeshLayerOutputIsOptionalAndPublishedWhenEnabled)
+{
+    desc.enableMeshShader = true;
+    extensions.meshShader = true;
+    probe.meshShaderFeatures.meshShader = VK_TRUE;
+    EXPECT_TRUE(request().shaderOutputLayer);
+    EXPECT_FALSE(select().shaderOutputLayer);
+    EXPECT_TRUE(select().matches(request()));
+
+    probe.vulkan12Features.shaderOutputLayer = VK_TRUE;
+    const auto selected = select();
+    EXPECT_TRUE(selected.shaderOutputLayer);
+    VulkanEnabledFeatureChain chain(selected);
+    EXPECT_EQ(chain.vulkan12Features.shaderOutputLayer, VK_TRUE);
+    DeviceCapabilities caps;
+    VulkanDeviceCapabilities backend;
+    selected.publish(caps, backend);
+    EXPECT_TRUE(caps.shaderOutputLayer);
+
+    desc.enableMeshShader = false;
+    EXPECT_FALSE(request().shaderOutputLayer);
+    EXPECT_FALSE(select().shaderOutputLayer);
+}
+
 TEST_F(DeviceFeatures, TaskAndMeshShareOneNodeAndRespectSubgroupProperties)
 {
     desc.enableMeshShader = true;

@@ -1,53 +1,69 @@
-# VSM 多灯需求预算
+# VSM 多灯共享物理页池与需求预算
 
-`VirtualShadowMapLightsPass` 的运行时属性 `demandDrivenBudget` 默认 `true`，未写该字段的 graph 使用需求驱动预算，显式 `false` 保留均分策略。该策略使用已完成 GPU 帧的真实细页请求分配各面的物理容量。整灯粗页准入顺序、公开灯表布局、光源槽与稳定 ID 的关系保持原契约。
+`VirtualShadowMapLightsPass` 为所有准入灯面使用一个 `VirtualShadowMapPhysicalPool`。`demandDrivenBudget` 默认 `true`；GPU 在同一帧完成各面的 receiver marking 后，根据真实请求分配全局物理页。显式 `false` 保留按面均分的逻辑上限，也使用共享图集。运行路径不再读回需求后由 CPU 重建每面 atlas。
 
-## 分配与反馈
+## 当帧分配与缓存
 
-先按 stable ID 保留完整粗页覆盖：方向/spot 一页，point 六页；预算不足以容纳整灯时仍发布 `budgetDropped`。全部需求已知、当前各面容量满足最近请求且配额总和仍在预算内时，保留现有容量。出现缺页、未知新面或预算收紧时，剩余细页使用 capped max-min 分配，先满足较小需求，再把余量分给仍缺页的面；余数按 stable ID / face 顺序分配，每面上限 4096 页。重新分配时总需求满足后允许额度闲置。
+CPU 仍按 stable light ID 顺序执行整灯粗页准入：方向/spot 一页，point 六页；预算不足以容纳整灯时发布 `budgetDropped`。全部面完成请求计数后，GPU 先保留这些粗页，再分配 `physicalPageBudget - admittedFaces` 个细页。Demand 使用 max-min 公平分配，先满足小需求，再把剩余容量分给仍缺页的面；不可整除的余数按 stable ID / face 顺序分配。fine target 就是当帧 `statistics[0]`，不含 coarse，不使用历史余量、量化或收缩滞回，也没有独立 atlas 的每面 4095 个细页上限。单个热点面可借用全部可用细页。
 
-这是受压时借用空闲配额的策略，不主动缩减已满足需求的 atlas。缩容会改变光栅 viewport 和深度插值舍入；保持充足布局既避免无用的缓存重建，也保留宽裕预算场景的逐字节结果。它不承诺自动归还宽裕预算下的闲置显存。保留的是上次录制配额；取消的 resize 不会成为有效 GPU 缓存，后续仍由 `VirtualShadowMaps` 的提交事务和容量兼容性决定是否重绘。
+Equal 策略为每面计算均分上限及确定性余数，实际 grant 是该上限与当帧请求的较小值。空面仅获得 coarse grant；其未使用的均分份额在 Equal 中不会转给其他面，Demand 则可以使用它。冷启动、重新启用及灯型变更都在首次成功执行的当帧得到真实请求和 grant，不存在未知需求的过渡帧。超出当帧 grant 的请求继续使用既有 ancestor/coarse fallback。
 
-每面 GPU `statistics[0]` 是未被物理配额截断的 requested fine pages，不含 coarse。Publish 阶段只拷贝这一项（4 B/面）到 manager 自有 HostReadback buffer。下次 execute 只读取 copy 自身 `SubmissionTransaction` 已接受且 frame completion 已提交、完成的样本；取消或未提交的样本不推进需求历史。没有新增 CPU wait；现有 Pass 的 `supportsFrameOverlap=false` 仍使 RenderGraph 在执行前等待前帧，本改动没有解除该限制。
+全局 allocator 先保护所有面本帧已准入的 resident 页，再从空闲槽和本帧未使用的 resident 页中安排新页。页表与 light ID/face 的缓存身份仍分离，grant 改变不重建图集，也不要求清空其他灯缓存。删除、禁用或整灯预算拒绝后的旧物理槽可由其他面复用；改变灯投影只使对应缓存失效。预算总量、page size 或静态分层模式改变会创建新的 pool storage generation，当前实现不迁移旧图集的深度内容，这类变化仍需要重绘。
 
-未知面以 4095 个 fine target 启动，精确复现旧均分。非零需求加 12.5% 余量、向上量化至 8 页，再限制为 4095；零需求 target 为零。首次样本和增长立即更新，只有连续八个已完成样本均不超过当前 target 的一半时才收缩，收缩到该窗口内最大的量化 target，避免低需求交替导致立即重新扩容。
+共享 pool 及每面缓存跟随录制命令的 `SubmissionTransaction` 提交。取消的命令不发布新 cache/history；仅提交无关前缀不代表 VSM 尾部已执行。后续成功帧从已接受的 pool 状态继续。资源仍由完成点及命令/读者寿命保护；这不是任意 graph 阶段部分提交后自动回滚的承诺。`supportsFrameOverlap=false` 保持不变，RenderGraph 仍在执行前等待前帧；共享池没有解除该限制。
 
-缓存和反馈按稳定 light ID 关联，灯表继续按 source slot 发布。删除、禁用、预算拒绝或 point/spot 类型转换使旧代反馈失效；scene/device、主视图身份、尺寸与需求设置变化清理不兼容历史。普通相机或光源移动由下一完成帧的需求跟踪；过渡帧仍使用既有 coarse/ancestor fallback，不保证与当帧精确需求分配等价。
+## 图集与统计范围
 
-反馈 buffer 只有在样本已消费、GPU 完成且命令不再持有 wrapper 时才复用。命令保留独立反馈资源，移除 Pass 或灯光不会释放在途 copy 的存储。不同 light generation 通过 weak ownership 隔离，取消样本不会变成零需求。
+共享深度图集为 `Texture2DArray`，最多 262144 个逻辑槽。容量不超过 4096 时，单层网格为 `X=ceil(sqrt(capacity))`、`Y=ceil(capacity/X)`；更大时每层固定 64×64 页，层数向上取整。`pageSize=128` 时单层最大为 8192×8192。所有灯使用同一 viewport 与层网格；mapping 保存全局 physical slot。静态分层使用同样布局的第二张图集；static HZB 按最多 4096 页一个 buffer bank 寻址。
 
-## 资源与统计范围
+`physicalPageBudget` 限制当代全局逻辑槽数及所有当帧 grant 之和，不是显存字节上限。网格/层取整、静态图集、HZB、各面页表和工作 buffer、仍被引用的旧 generation 以及 native allocation padding 需要分别计量。`memory[0]`/`[5]` 统计持有的图集 bytes/页数，`memory[2]` 包含共享 pool 与各面 buffer；不再有 manager 需求反馈 readback buffer 或 `VSM budget feedback` scope。独立 `VirtualShadowMaps::record` 路径仍可使用每面 atlas，不能与 LightsPass 的共享池结果混用。
 
-这一步仍使用每面独立 atlas，不是跨灯共享物理页池。`physicalPageCount` 变化会使该面缓存重建；量化和滞回减少稳定场景的反复调整，不能保证任意动态争用下无重绘。总逻辑配额不超过 `physicalPageBudget`，但 atlas 网格取整、静态深度分层、在途旧代资源及 native allocation padding 不属于这个逻辑页数硬上限。删除/缩容后的实际显存释放仍受完成与读者寿命约束。
+`budgetDiagnostics` 保持 8-word header 和 `lightCapacity * 6` 个 8-word face block 的 buffer 布局，语义版本升级为 **2**。face block 始终位于 `sourceEntryIndex * 6 + face`，与 compact 输出层数无关；GPU Publish 在所有 face Assign/Build 后写入诊断和灯表 `pageBudget`。
 
-新增 `budgetDiagnostics` 为 uint32 buffer，含 8-word header 和 `lightCapacity * 6` 个 8-word face block。face block 位置始终是 `sourceEntryIndex * 6 + face`，与 compact 输出层数无关。
-
-| Header word | 含义 |
+| Header word | 版本 2 含义 |
 |---|---|
-| 0–3 | 版本 1、策略启用、已准入面数、已获得完成反馈的面数 |
-| 4–5 | 总页预算、实际分配页数（含 coarse） |
-| 6 | 相对上次录制决策改变配额的面数，不是 GPU 已完成 resize 次数 |
-| 7 | 本次新建反馈 buffer 数 |
+| 0–3 | 版本 2、Demand 策略启用、准入面数、已发布当帧需求的面数 |
+| 4–5 | 全局逻辑页容量、当帧 grant 总和（含 coarse） |
+| 6 | 本帧新分配的 fine 页总数，即各面 `statistics[20]` 之和 |
+| 7 | 本帧重用的干净 fine 页总数，即各面 `statistics[17]` 之和 |
 
-| Face word | 含义 |
+| Face word | 版本 2 含义 |
 |---|---|
-| 0–2 | 需求已知、最近原始 requested fine pages、滞回后的 fine target |
-| 3–4 | 实际页配额（含 coarse）、同帧均分策略页配额 |
-| 5–7 | 反馈帧龄、最近需求相对当前配额的未满足细页数、反馈 frameIndex 低 32 位 |
+| 0–2 | 当帧有效标记、原始 requested fine pages、fine target（等于原始请求） |
+| 3–4 | 当帧实际 grant（含 coarse）、同请求下 Equal 策略的 grant（含 coarse） |
+| 5–7 | 0（无反馈帧龄）、当前拒绝细页数 `statistics[2]`、录制 `RenderFrameContext` 的 frameIndex 低 32 位 |
 
-未知需求不是已知零需求；disabled/rejected 面保持零 block。`memory[2]` 包含 manager 持有的反馈 buffer bytes，详细 GPU scope `VSM budget feedback` 单独记录拷贝与屏障成本。原 atlas load 计数与本次 CPU 读回无关。`statistics[6]` 在局部光域筛选前计数，不能作为每灯 receiver 需求权重。
+disabled/rejected 面保留全零 block。准入空面是有效零需求，不能与未准入混淆。`statistics[12]` 为执行后的 face grant，等于 `statistics[1]+1`；它不再表示独立 atlas 的预留容量。`statistics[6]` 在局部光域筛选前计数，仍不能作为每灯 receiver 需求权重。版本 1 的 quota-change/feedback-buffer 字段不能按版本 2 解读。
 
-## 验证计划与复现
+## 当前回归与证据要求
 
-CPU `virtual_shadow_map_budget_policy` 覆盖确定性余数、上限、预算单调性、max-min 公平性和需求滞回。GPU `virtual_shadow_map_demand_budget` 使用真实 point、热点 spot、空 spot，比较 Equal / EqualRedraw / Demand / DemandRedraw / 充足预算 Reference，保留冷启动、预算与光源变化过程；同策略 cached/forceRedraw 精确比较，Hard 阴影另用 authored-triangle oracle。反馈取消由单独的真实 graph 生命周期测试覆盖。
+GPU `virtual_shadow_map_demand_budget` 比较 Equal / EqualRedraw / Demand / DemandRedraw / 充足预算 Reference / 省略默认属性六个分支，保留 Hard authored-triangle oracle、同策略 cached/forceRedraw 阴影字节相等、宽裕预算跨策略字节相等，以及预算变化、source reorder、禁用/删除、灯型变化、PCF/SMRT 场景。新增 CPU 独立 round-robin oracle 校验每个已执行帧的 max-min grant、稳定余数顺序和版本 2 统计；它不复刻 GPU 的水位二分实现。历史 CPU `virtual_shadow_map_budget_policy` 仍测试旧 host policy helper，不能替代共享 GPU allocator 的验证。
 
-普通计时预先固定 OpenPBR/P4、1920×1080、SMRT 2×16、cache 开启、temporal smoothing 关闭。Slack=2048 页，Pressure=256 页；两组各 3 个 ABBA 区组，共 24 独立进程，每进程 96 帧、32 帧预热，不追加样本。五个独立诊断进程各 64 帧，在 32/63 帧保存图像；Pressure 另有 2048 页参考。Reference 是充足预算 VSM 图像，不替代独立几何真值。
+保留注册名 `virtual_shadow_map_demand_feedback_lifecycle` 以兼容现有测试调用，但当前覆盖的是共享 allocation/publication 的取消生命周期：初始化真实 graph 后，分别取消整个未提交帧和无关前缀已接受后的尾部；完成输出必须不变。首个成功重试立即发布六面当帧 grant，并检查录制帧号、独立几何 oracle、随后稳定帧的阴影字节及缓存复用。它不再要求一次额外成功帧才获得需求。
 
-Slack 要求 shadow/HDR、页配额与 atlas bytes 精确一致；Pressure 要求有效细页准入增加、拒绝减少，并且逐灯相对充足预算参考的 MAE 不恶化。更多有效细页可能增加光栅工作，时间、画质和资源利用率分别报告，不把此变化自动解释为加速。普通计时关闭 validation 与诊断读回；候选正常的需求反馈拷贝保留并计入性能。
+普通 A/B 应固定场景、预算、缓存预热与过滤参数，分别报告页准入、画质、共享图集内存和 pass/frame 时间。更多细页可能增加光栅工作，不自动代表加速。充足预算 VSM 图像仅是图像参考，不能替代独立几何真值。`Tools/Perf/VirtualShadowMapDemandBudget.py` 的输出须按对应诊断版本解释；旧证据目录不得作为共享池的新结果。
 
-工具为 `Tools/Perf/VirtualShadowMapDemandBudget.py`，提供 `prepare`、`run --phase diagnostic|timing`、`verify`、`report`。证据输出在 `build/vsm-demand-budget/`；GPU 结果以最终报告为准，计划本身不代表验收通过。
+## 2026-11-17 共享池验证结果
 
-## 2026-10-31 验证结果
+复用 `build-release` 完成 `Metallic`、`MetallicRHITests`、`MetallicVulkanDeviceFeaturesTests` 构建。22 项 Vulkan 特性 CPU 测试、9 项预算证据工具 Python 测试、441 个 Slang 文件的模块审计及 `git diff --check` 均通过。
+
+以 `--rhi-bindless --rhi-validation` 运行以下 13 项定向 GPU/RHI 测试，最终全部通过：
+
+- `virtual_shadow_map_physical_pool`、`virtual_shadow_map_local_lights`、`virtual_shadow_map_demand_budget`、`virtual_shadow_map_demand_feedback_lifecycle`、`virtual_shadow_map_compact`。
+- `virtual_shadow_map_cache_layers`、`virtual_shadow_map_physical_hzb`、`virtual_shadow_map_allocator`、`virtual_shadow_map_remap`、`virtual_shadow_map_propagated_mapping`、`virtual_shadow_map_projected_ray_state`。
+- `registry_identity_capacity_and_views`、`resource_range_and_shader_input_contract`。
+
+新共享池测试完成 36 组 cached/forceRedraw 比较，覆盖当帧借页、全局槽唯一性、增删/重排、跨灯实际槽转移、取消重试、预算缩放、点光六面、静态分层和第二图集层。5000 页预算下，热点面获得 4999 页（含一粗页），下一帧复用全部 4998 个细页且新分配为零；第二层具有实际深度写入，并通过独立 ground/blocker 几何 oracle。scalar、cluster 和 window mesh 光栅路径均通过跨层比较。Combined/Layered 阴影输出图像已检查。
+
+现有需求预算测试完成 254 帧、27 组独立几何 oracle；局部灯测试完成 88 帧序列；两种取消路径均保持已完成输出不变，并在首次重试立即发布当前需求。上述图像/预算/生命周期报告的 Vulkan validation 计数均为零。首次局部灯运行被并行源码注释更新触发的 shader source epoch 检测中止；冻结源码后单独重跑通过，未放宽断言。
+
+本机证据：[主回归日志](../build/vsm-shared-pool/regression.log)、[最终重跑日志](../build/vsm-shared-pool/final-gpu.log)、[共享池结果](../build/vsm-shared-pool/final-gpu/VirtualShadowMapPhysicalPool/Report.json)、[预算结果](../build/vsm-shared-pool/regression/VirtualShadowMapDemandBudget/VirtualShadowMapDemandBudget.json)。产物保留在忽略的构建目录中。
+
+本轮未做性能 A/B，也未运行 262144 页峰值显存或超过 65535 个同时脏静态页的极限场景；后者的二维 HZB 参数生成、边界保护及相关入口已通过编译和 SPIR-V 校验，不将这些检查表述为极限容量运行验证。
+
+## 历史：2026-10-31 独立 atlas 与 CPU 反馈验证结果
+
+本节及下节均记录共享池实现之前的每面独立 atlas / 版本 1 CPU 需求反馈路径。其配额、反馈延迟、显存和计时结论只属于当时版本，不能用于证明当前共享物理池的正确性或性能。
 
 Release `Metallic`、`MetallicRHITests` 构建通过。CPU 预算测试含 52,730 个枚举分配、边界/滞回和 18 个布局保留用例；Python 证据工具四项测试通过，包括图像、配额、atlas、需求、反馈和封存篡改负对照。最终 GPU 预算测试共 254 帧、27 组 authored-triangle oracle，另有两种反馈取消路径，均通过且 validation 为零。
 
@@ -78,7 +94,7 @@ RTX 5070 Ti / driver 621.01，24 个独立普通进程（每组 3 个 ABBA），
 
 本机完整结果：[汇总](../build/vsm-demand-budget/Report.md)、[诊断](../build/vsm-demand-budget/Diagnostic2Report/Report.md)、[普通 GPU A/B](../build/vsm-demand-budget/TimingReport/Report.md)。原始包、图表和日志均为本地构建输出，不纳入源码。
 
-## 默认启用与缺省属性验证
+## 历史：独立 atlas 路径的默认启用与缺省属性验证
 
 随后按用户要求，将注册的 runtime setting 和执行时的属性缺省值同时改为 `true`。仓库七个 VSM graph 均未显式填写该字段，无需迁移即可采用新默认；显式 `false` 仍选择均分。需求反馈需要绑定正在录制的 `RenderFrameContext`，即使 `cacheEnabled=false` 也需要；无跟踪帧的外部调用方可显式关闭需求预算。
 

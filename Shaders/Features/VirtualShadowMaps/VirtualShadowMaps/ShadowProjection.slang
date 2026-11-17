@@ -163,7 +163,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
             InterlockedAdd(statistics[9], 1u);
             return true;
         }
-        physicalPage = 0u;
+        physicalPage = pages[coarse.page.x].x;
         virtualTexel = vsmVirtualTexel(projected, coarse, push.pageSize);
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         if (push.filterMode != 0u) { projectionCounts |= 1u << 4u; }
@@ -209,8 +209,8 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     }
     uint2 physical = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
     uint2 texel = vsmAtlasTexel(physical, vsmPageLocalTexel(virtualTexel, push.pageSize), push.pageSize);
-    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
-    float storedDepth = atlas.Load(int3(texel, 0));
+    VSMAtlas atlas = resolveUniform(ResourceHandle<VSMAtlas>(push.atlas));
+    float storedDepth = vsmAtlasLoad(atlas, texel, push);
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     if (push.lodScreenRayLength > 0.0 && storedDepth != 0.0 && storedDepth > compareDepth) {
         float depthScale = length(projection.rowZ.xyz);

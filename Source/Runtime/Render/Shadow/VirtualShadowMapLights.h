@@ -22,7 +22,7 @@ VSM_PUBLIC struct VirtualShadowMapLightsHeader
     uint32_t admittedCount;
     uint32_t budgetDroppedCount;
     uint32_t disabledCount;
-    uint32_t physicalPageBudget;
+    uint32_t physicalPageBudget; // Capacity of the physical page pool shared by all admitted faces.
     uint32_t sceneIdentity[2];
     uint32_t frameIndex[2];
     uint32_t lightGeneration;
@@ -37,11 +37,20 @@ VSM_PUBLIC struct VirtualShadowMapLightEntry
     uint32_t baseLayer; // Entry index * 6, or entry index for compact publication.
     uint32_t faceCount;
     uint32_t stableId[2];
-    uint32_t pageBudget; // Total across this light's faces.
+    uint32_t pageBudget; // Current GPU grants across this light's faces, including one coarse page per face.
     uint32_t status; // 0 shadow disabled, 1 admitted, 2 coarse budget rejected.
     float positionRange[4];
     uint32_t reserved[4];
 };
+
+// budgetDiagnostics is a uint buffer with an eight-word header followed by
+// eight words per source entry/canonical face (entry * 6 + face).
+// Version 2 header: version, demandDriven, admittedFaces, publishedFaces,
+// physicalPoolCapacity, grantedPages, newlyAllocatedFinePages, reusedFinePages.
+// Version 2 face: published, requestedFine, targetFine (= requestedFine),
+// grantedPages (including coarse), equalPolicyPages (including coarse),
+// reserved zero, rejectedFine, recordingFrameIndex. Disabled/dropped faces are
+// all zero. These values describe this GPU recording, not delayed CPU feedback.
 
 #ifdef __cplusplus
 static_assert(sizeof(VirtualShadowMapLightsHeader) == 64);

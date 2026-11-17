@@ -420,7 +420,7 @@ public:
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry identity", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         render::ResourceRegistry registry;
-        REG_REQUIRE(registry.initialize(*device, {.maxSamplers = 2, .maxSampledImages = 2,
+        REG_REQUIRE(registry.initialize(*device, {.maxSamplers = 2, .maxSampledImages = 3,
             .maxStorageImages = 1, .maxBuffers = 2}));
         std::unique_ptr<render::Buffer> a, b, c;
         REG_REQUIRE(makeBuffer(*device, a));
@@ -462,11 +462,20 @@ public:
         REG_CHECK(generalImage.shaderValue() != imageA.shaderValue());
         REG_REQUIRE(registry.storageImage(*second).transform([&](auto value) { storageImage = std::move(value); }));
         REG_CHECK(storageImage.kind() == render::ShaderResourceKind::StorageImage);
+        // A one-layer array remains a different shader resource type from 2D.
+        // Both views must retain distinct descriptor cache identities.
+        std::unique_ptr<render::TextureView> arrayView;
+        REG_REQUIRE(device->createTextureView(*texture, {.forceArray = true})
+            .transform([&](auto value) { arrayView = std::move(value); }));
+        render::ResourceLease arrayImage;
+        REG_REQUIRE(registry.sampledImage(*arrayView, render::TextureLayout::ShaderRead)
+            .transform([&](auto value) { arrayImage = std::move(value); }));
+        REG_CHECK(arrayImage.shaderValue() != imageA.shaderValue());
         REG_CHECK(!render::vulkan::hasNativeImageView(*first) && !render::vulkan::hasNativeImageView(*second));
         std::weak_ptr<void> textureAllocation = first->retainTexture();
-        texture.reset(); first.reset(); second.reset();
+        texture.reset(); first.reset(); second.reset(); arrayView.reset();
         REG_CHECK(!textureAllocation.expired());
-        imageA = {}; imageB = {}; generalImage = {}; storageImage = {};
+        imageA = {}; imageB = {}; generalImage = {}; storageImage = {}; arrayImage = {};
         REG_CHECK(textureAllocation.expired());
         registry.collect();
         REG_CHECK(registry.stats().liveDescriptors == 2);
@@ -1274,6 +1283,22 @@ public:
             REG_CHECK(!invalid.valid(3, 2));
             REG_CHECK(render::hasError(device.createTextureView(**texture, {.range = invalid}), Error::InvalidArgument));
         }
+        auto volume = device.createTexture({.type = render::TextureType::Texture3D,
+            .usage = render::TextureUsageBits::Sampled, .format = render::Format::RGBA8Unorm,
+            .width = 2, .height = 2, .depth = 2});
+        REG_CHECK(volume);
+        REG_CHECK(render::hasError(device.createTextureView(**volume, {.forceArray = true}), Error::InvalidArgument));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, context.graphicsQueue));
+        REG_REQUIRE(recording.begin(0));
+        render::RenderingAttachmentDesc attachment{.view = view->get()};
+        REG_CHECK(render::hasError(recording.commands->beginRendering({.layerCount = 0}), Error::InvalidArgument));
+        REG_CHECK(render::hasError(recording.commands->beginRendering({.colorAttachments = {&attachment, 1},
+            .layerCount = 2}), Error::InvalidArgument));
+        REG_CHECK(render::hasError(recording.commands->beginRendering({.depthStencilAttachment = &attachment,
+            .layerCount = 2}), Error::InvalidArgument));
+        REG_REQUIRE(recording.commands->end());
+        recording.frame.cancel();
 
         // Word spans cannot represent misaligned byte lengths. Malformed word streams
         // must still be rejected before reaching Vulkan or the OMM transformer.

@@ -20,6 +20,7 @@ struct CPUProfileRecorder;
 struct ClusterLightGridSnapshot;
 class RenderGraphExecutionContext;
 class VirtualShadowMaps;
+class VirtualShadowMapPhysicalPool;
 
 enum class VirtualShadowMapLightType : uint32_t { Directional, Spot, PointFace };
 enum class VirtualShadowMapFilter : uint32_t { Hard, PCF, SMRT };
@@ -43,8 +44,9 @@ struct ShadowPush
     uint32_t samplePhase, sampleReserved;
     float lodScreenRayLength;
     uint32_t receiverGeometry;
+    uint32_t physicalPool, poolFace;
 };
-static_assert(sizeof(ShadowPush) == 216);
+static_assert(sizeof(ShadowPush) == 224);
 
 // Optional, same-frame primary visibility from the rasterInfo producer. The
 // pass supplies only ordinary (non-tessellated) stream publications; missing
@@ -145,6 +147,13 @@ struct VirtualShadowMapProjectionTarget
     bool sharedPointLayer = false;
 };
 
+struct VirtualShadowMapFaceRequest
+{
+    VirtualShadowMaps* shadow = nullptr;
+    VirtualShadowMapLight light;
+    VirtualShadowMapProjectionTarget output;
+};
+
 // Ordered per-light projections. Point lights contain all six canonical faces;
 // filtered point groups share one prepared face table. Other lights have one face.
 struct VirtualShadowMapProjectionGroup
@@ -183,14 +192,44 @@ struct VirtualShadowMapResourcePoolStats
     uint64_t retainedTextures = 0, retainedTextureBytes = 0;
 };
 
+// One physical address space for all admitted lights. Per-face virtual tables
+// retain their identities; the GPU transfers free/evictable slots between them.
+class VirtualShadowMapPhysicalPool
+{
+public:
+    VirtualShadowMapPhysicalPool();
+    ~VirtualShadowMapPhysicalPool();
+    VirtualShadowMapPhysicalPool(VirtualShadowMapPhysicalPool&&) noexcept;
+    VirtualShadowMapPhysicalPool& operator=(VirtualShadowMapPhysicalPool&&) noexcept;
+    VirtualShadowMapMemoryUsage memoryUsage() const;
+    Result<> publishAllocations(CommandBuffer& commands, Buffer& lights, Buffer& budgetDiagnostics,
+        std::span<const uint32_t> publicationFaces, std::string& log);
+
+private:
+    friend class VirtualShadowMaps;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 // A complete coarse projection plus directional clipmaps or local mip levels.
-// Physical page zero is reserved for complete coarse coverage. Fine allocation
-// failure or work overflow queries that rendered coarse page, never uninitialized depth.
+// A physical page is reserved for each face's complete coarse coverage (slot
+// zero only in standalone mode). Allocation failure or work overflow queries
+// that rendered coarse page, never uninitialized depth.
 class VirtualShadowMaps
 {
 public:
     VirtualShadowMaps();
     ~VirtualShadowMaps();
+    // Records all requests before global allocation, then renders each face.
+    // Results follow input order; projection is deferred until project/projectShared.
+    // The pool and every face commit or cancel in the same tracked frame.
+    static Result<std::vector<VirtualShadowMapResult>> recordShared(VirtualShadowMapPhysicalPool& pool,
+        Device& device, CommandBuffer& commands, TextureView& depth, const ViewConstants& view,
+        std::span<const VirtualShadowMapFaceRequest> faces, const VirtualShadowMapCasterResources& casters,
+        std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
+        const VirtualShadowMapSettings& settings, uint32_t physicalPageBudget, bool demandDriven,
+        std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
+        const VirtualShadowMapReceiverResources* receiver = nullptr);
     static Result<std::vector<VirtualShadowMapLODProjection>> makeShadowLODProjections(
         const scene::Bounds& bounds, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapSettings& settings, std::string& log);
@@ -233,6 +272,13 @@ public:
     VirtualShadowMapResourcePoolStats resourcePoolStats() const;
 
 private:
+    Result<VirtualShadowMapResult> recordInternal(Device& device, CommandBuffer& commands,
+        TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
+        const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
+        std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings,
+        std::string& log, bool deferProjection, const VirtualShadowMapProjectionTarget* output,
+        CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+        const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace);
     Result<> preparePointFaces(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
     Result<> projectPrepared(CommandBuffer& commands, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
     static Result<> projectOnePassPrepared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,

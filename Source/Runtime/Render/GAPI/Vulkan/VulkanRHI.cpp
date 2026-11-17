@@ -2498,7 +2498,7 @@ TextureImpl::~TextureImpl()
 VkImageViewCreateInfo TextureViewImpl::createInfo() const
 {
     auto type = toVkImageViewType(texture->desc.type);
-    if (desc.range.layerCount > 1) {
+    if (desc.forceArray || desc.range.layerCount > 1) {
         if (type == VK_IMAGE_VIEW_TYPE_1D) { type = VK_IMAGE_VIEW_TYPE_1D_ARRAY; }
         if (type == VK_IMAGE_VIEW_TYPE_2D) { type = VK_IMAGE_VIEW_TYPE_2D_ARRAY; }
     }
@@ -5209,7 +5209,8 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
     if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return makeError(Error::InvalidArgument);
     }
-    if ((desc.colorAttachments.size() > UINT32_MAX) ||
+    if (desc.layerCount == 0 || desc.layerCount > impl_->device->physicalProperties.core.limits.maxFramebufferLayers ||
+        (desc.colorAttachments.size() > UINT32_MAX) ||
         (desc.depthStencilAttachment && !desc.depthStencilAttachment->view)) {
         return makeError(Error::InvalidArgument);
     }
@@ -5221,7 +5222,8 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
 
     for (uint32_t index = 0; index < desc.colorAttachments.size(); ++index) {
         const RenderingAttachmentDesc& attachment = desc.colorAttachments[index];
-        if (attachment.view == nullptr || attachment.view->impl_ == nullptr) {
+        if (attachment.view == nullptr || attachment.view->impl_ == nullptr ||
+            attachment.view->desc().range.layerCount < desc.layerCount) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -5242,21 +5244,22 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
 
     if (desc.depthStencilAttachment != nullptr) {
         const RenderingAttachmentDesc& attachment = *desc.depthStencilAttachment;
-        if (attachment.view != nullptr && attachment.view->impl_ != nullptr) {
-            auto result = useNativeTextureView(*attachment.view);
-            if (!result) { return result; }
-            depthAttachment = {
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .imageView = attachment.view->impl_->view,
-                .imageLayout = imageLayout(attachment.layout, impl_->device->vulkanCapabilities.unifiedImageLayouts),
-                .loadOp = toVkLoadOp(attachment.loadOp),
-                .storeOp = toVkStoreOp(attachment.storeOp),
-                .clearValue = {
-                    .depthStencil = {attachment.clearDepth, attachment.clearStencil},
-                },
-            };
-            depthAttachmentPtr = &depthAttachment;
+        if (attachment.view->impl_ == nullptr || attachment.view->desc().range.layerCount < desc.layerCount) {
+            return makeError(Error::InvalidArgument);
         }
+        auto result = useNativeTextureView(*attachment.view);
+        if (!result) { return result; }
+        depthAttachment = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = attachment.view->impl_->view,
+            .imageLayout = imageLayout(attachment.layout, impl_->device->vulkanCapabilities.unifiedImageLayouts),
+            .loadOp = toVkLoadOp(attachment.loadOp),
+            .storeOp = toVkStoreOp(attachment.storeOp),
+            .clearValue = {
+                .depthStencil = {attachment.clearDepth, attachment.clearStencil},
+            },
+        };
+        depthAttachmentPtr = &depthAttachment;
     }
 
     VkRenderingInfo renderingInfo{
@@ -5265,7 +5268,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
             .offset = {desc.renderArea.x, desc.renderArea.y},
             .extent = {desc.renderArea.width, desc.renderArea.height},
         },
-        .layerCount = 1,
+        .layerCount = desc.layerCount,
         .colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size()),
         .pColorAttachments = colorAttachments.data(),
         .pDepthAttachment = depthAttachmentPtr,
@@ -8516,7 +8519,7 @@ Result<std::unique_ptr<TextureView>> Device::createTextureView(Texture& texture,
     // Images currently have no mutable-format flag. Validate semantic views now,
     // even if a native object is never needed.
     if (format != textureDesc.format || !desc.range.valid(textureDesc.mipCount, textureDesc.layerCount) ||
-        (textureDesc.type == TextureType::Texture3D && (desc.range.baseLayer != 0 || desc.range.layerCount != 1))) {
+        (textureDesc.type == TextureType::Texture3D && (desc.range.baseLayer != 0 || desc.range.layerCount != 1 || desc.forceArray))) {
         return makeError(Error::InvalidArgument);
     }
     for (auto component : desc.swizzle) {

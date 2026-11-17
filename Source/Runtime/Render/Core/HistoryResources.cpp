@@ -32,7 +32,8 @@ bool textureViewDescEquals(const TextureViewDesc& lhs, const TextureViewDesc& rh
         lhs.range.baseMip == rhs.range.baseMip &&
         lhs.range.mipCount == rhs.range.mipCount &&
         lhs.range.baseLayer == rhs.range.baseLayer &&
-        lhs.range.layerCount == rhs.range.layerCount;
+        lhs.range.layerCount == rhs.range.layerCount &&
+        lhs.forceArray == rhs.forceArray;
 }
 
 bool bufferDescEquals(const BufferDesc& lhs, const BufferDesc& rhs)

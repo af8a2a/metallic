@@ -42,9 +42,12 @@ struct RemapPush
     std::array<uint32_t, 52> words{};
     float lodScreenRayLength = 0.f;
     uint32_t receiverGeometry = UINT32_MAX;
+    uint32_t physicalPool = UINT32_MAX;
+    uint32_t poolFace = 0;
 };
-static_assert(sizeof(RemapPush) == 216);
+static_assert(sizeof(RemapPush) == 224);
 static_assert(offsetof(RemapPush, lodScreenRayLength) == 208 && offsetof(RemapPush, receiverGeometry) == 212);
+static_assert(offsetof(RemapPush, physicalPool) == 216 && offsetof(RemapPush, poolFace) == 220);
 
 struct LevelChange
 {

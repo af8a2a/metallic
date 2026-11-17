@@ -84,7 +84,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float2 normalSlope = float2(dot(normal, normX), dot(normal, normY)) * invDenom;
     float2 receiverScaledSlope = normalSlope * receiverExtent;
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(push.atlas));
+    VSMAtlas atlas = resolveUniform(ResourceHandle<VSMAtlas>(push.atlas));
     VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, pages, push, receiverLevel);
     VSMDirectionalRayCache rayCache;
     rayCache.lastPage = 0xffffffffu;
@@ -224,7 +224,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                         atlasTexel = physical * push.pageSize + localTexel;
                     }
 #endif
-                    storedDepth = atlas.Load(int3(atlasTexel, 0));
+                    storedDepth = vsmAtlasLoad(atlas, atlasTexel, push);
                     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
 
                     float relDepth = fma(time, raySlopeZ, dot(texelSlope, float2(texel)) + baseSlopeCorrection);
@@ -242,7 +242,7 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
                         atlasTexel = vsmAtlasTexelFromVirtual(physical, ancestorTexel, push.pageSize);
                     }
 #endif
-                    storedDepth = atlas.Load(int3(atlasTexel, 0));
+                    storedDepth = vsmAtlasLoad(atlas, atlasTexel, push);
                     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
 
                     float scale = asfloat((127u - (ancestorLevel - rayBase.receiverLevel)) << 23u);

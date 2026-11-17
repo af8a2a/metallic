@@ -23,6 +23,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_PAGE_BITSET
 #define VSM_CLUSTER_PAGE_BITSET 0
 #endif
+#ifndef VSM_SHARED_PHYSICAL_POOL
+#define VSM_SHARED_PHYSICAL_POOL 0
+#endif
 
 #if VSM_STATIC_PAGE_HZB
 // Support points give the extrema of an orthographic row over the entire world AABB.
@@ -85,7 +88,11 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 #if VSM_RECEIVER_MASK
         uint2 validReceiverMask = uint2(0u);
 #endif
-        uint4 entry = uint4(coarse ? 0u : 0xffffffffu, coarse && push.enabled != 0u ? 3u : 0u,
+        uint initialPhysical = 0xffffffffu;
+#if !VSM_SHARED_PHYSICAL_POOL
+        initialPhysical = coarse ? 0u : 0xffffffffu;
+#endif
+        uint4 entry = uint4(initialPhysical, coarse && push.enabled != 0u ? 3u : 0u,
             coarse ? push.clipmapCount : id.x / (push.virtualPagesPerAxis * push.virtualPagesPerAxis),
             2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u));
         uint mappingFlags = 0u;

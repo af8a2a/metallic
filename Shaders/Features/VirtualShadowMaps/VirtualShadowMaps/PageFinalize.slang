@@ -40,7 +40,7 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     uint clusterCount = push.triangleCount / 64u + uint((push.triangleCount & 63u) != 0u);
     if (id.x < (clusterCount + 65534u) / 65535u && vsmCacheMetadata(push, 40u) != 0xffffffffu) {
         RWStructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
-        uint offset = 3u + push.physicalPageCount + id.x * 3u;
+        uint offset = 6u + push.physicalPageCount + id.x * 3u;
         jobs[offset] = ((count != 0u && statistics[16] != 0u) || redrawCoarse) ? min(clusterCount - id.x * 65535u, 65535u) : 0u;
         jobs[offset + 1u] = 1u;
         jobs[offset + 2u] = 1u;
@@ -205,6 +205,18 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
 [numthreads(64, 1, 1)]
 void vsmPropagateMappingMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 {
+#if VSM_STATIC_PAGE_HZB
+    if (id.x == 0u) {
+        // Finalize has completed all appends. Keep its count intact for the
+        // rounded final row, and publish legal two-dimensional dispatch args.
+        RWStructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
+        uint count = jobs[0];
+        uint offset = 3u + push.physicalPageCount;
+        jobs[offset] = min(count, 65535u);
+        jobs[offset + 1u] = max(1u, (count + 65534u) / 65535u);
+        jobs[offset + 2u] = 1u;
+    }
+#endif
     vsmBuildPropagatedMapping(id, push);
 }
 

@@ -1,6 +1,10 @@
 #language slang 2026
 implementing VirtualShadowMaps;
 
+#ifndef VSM_SHARED_PHYSICAL_POOL
+#define VSM_SHARED_PHYSICAL_POOL 0
+#endif
+
 // Implementation units preprocess independently; retain this unit's permutation defaults.
 #ifndef VSM_DIRECTIONAL_PROJECTION
 #define VSM_DIRECTIONAL_PROJECTION 0
@@ -35,21 +39,34 @@ ShadowProjection vsmLookupProjection(ShadowLookup sample)
 // The directional mapping producer certifies a dyadic ancestor and shared Z.
 // Preserve its integer page ownership while continuing the continuous ray XY.
 // Only the derived mapping tail uses this address. The host caps physical
-// atlases at 64 by 64 pages, and the low half still holds the target level.
+// Each shared atlas layer holds at most 64 by 64 pages. Shared coordinates
+// retain logical Y across layers; standalone keeps its existing representation.
 uint vsmPackDirectionalMappingAddress(uint level, uint physicalPage, uint physicalPagesX)
 {
     uint2 physical = vsmPhysicalPageCoord(physicalPage, physicalPagesX);
+#if VSM_SHARED_PHYSICAL_POOL
+    return level | (physical.x << 4u) | (physical.y << 10u);
+#else
     return level | (physical.x << 16u) | (physical.y << 24u);
+#endif
 }
 
 uint vsmMappingLevel(uint address)
 {
+#if VSM_SHARED_PHYSICAL_POOL
+    return address & 0xfu;
+#else
     return address & 0xffffu;
+#endif
 }
 
 uint2 vsmMappingPhysicalCoord(uint address)
 {
+#if VSM_SHARED_PHYSICAL_POOL
+    return uint2((address >> 4u) & 0x3fu, (address >> 10u) & 0xfffu);
+#else
     return uint2((address >> 16u) & 0xffu, address >> 24u);
+#endif
 }
 
 void vsmMapDirectionalAncestor(uint4 mapping, float2 sourceTranslation, inout float3 projected,
@@ -194,11 +211,11 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
     uint2 physical = vsmPhysicalPageCoord(physicalPage, physicalPagesX);
     uint2 texel = vsmAtlasTexelFromVirtual(physical, result.virtualTexel, push.pageSize);
 #if VSM_DIRECTIONAL_PROJECTION
-    Texture2D<float> atlas = resolveUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
+    VSMAtlas atlas = resolveUniform(ResourceHandle<VSMAtlas>(atlasHandle));
 #else
-    Texture2D<float> atlas = resolveNonUniform(ResourceHandle<Texture2D<float>>(atlasHandle));
+    VSMAtlas atlas = resolveNonUniform(ResourceHandle<VSMAtlas>(atlasHandle));
 #endif
-    result.storedDepth = atlas.Load(int3(texel, 0));
+    result.storedDepth = vsmAtlasLoad(atlas, texel, push);
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;

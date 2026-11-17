@@ -40,6 +40,7 @@ public struct ShadowPush
     uint samplePhase, sampleReserved;
     float lodScreenRayLength;
     uint receiverGeometry;
+    uint physicalPool, poolFace;
 };
 
 // sampleReserved names a 32-word diagnostic prefix followed by immutable layer metadata.

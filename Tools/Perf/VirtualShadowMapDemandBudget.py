@@ -9,8 +9,8 @@ report SOURCE NEW_REPORT [--diagnostic DIAGNOSTIC_PACKAGE]
 Diagnostic uses five processes: Slack Equal/Demand and Pressure Equal/Demand/Reference.
 Reference has ample pages and is an image reference, not an independent geometry oracle.
 Timing uses exactly three ABBA blocks per workload (24 independent processes total).
-Runtime demand feedback is part of the candidate, including its ordinary GPU copy cost.
-Protocol v2 retains an already sufficient physical layout; only pressure redistributes pages.
+Current-frame shared physical allocation is included in both policies' GPU cost.
+Historical schema-1 packages retain their completed-frame feedback interpretation.
 """
 from __future__ import annotations
 
@@ -204,6 +204,10 @@ def check_seal(directory):
 def counter_frame(frame):
     shadow = frame["shadow"]
     header, entries, values = shadow["header"], shadow["entries"], shadow["statistics"]
+    budget = shadow["budgetDiagnostics"]
+    if len(budget["header"]) != 8 or budget["header"][0] not in (1, 2):
+        raise ValueError("Invalid actual budget-manager telemetry")
+    version = budget["header"][0]
     if header["budgetDroppedCount"] or len(entries) != header["count"]:
         raise ValueError("Fixture must retain all configured coarse-light admissions")
     faces, assigned = [], 0
@@ -213,7 +217,8 @@ def counter_frame(frame):
         total = 0
         for face in range(entry["faceCount"]):
             v = values[entry["index"] * 6 + face]
-            if not 1 <= v[12] <= 4096 or v[1] + v[2] != v[0] or v[1] > v[12] - 1 or v[5]:
+            maximum = 4096 if version == 1 else header["physicalPageBudget"]
+            if not 1 <= v[12] <= maximum or v[1] + v[2] != v[0] or v[1] > v[12] - 1 or v[5]:
                 raise ValueError("Invalid per-face budget, admission or work-overflow evidence")
             total += v[12]
             faces.append(dict(stableId=entry["stableId"], kind=entry["kind"], face=face, layer=entry["baseLayer"],
@@ -224,15 +229,32 @@ def counter_frame(frame):
     if assigned > header["physicalPageBudget"] or len(faces) != 9:
         raise ValueError("Invalid total allocation or changed mixed-light face count")
     memory = shadow["resourceMemory"]
-    budget = shadow["budgetDiagnostics"]
-    if (len(budget["header"]) != 8 or budget["header"][0] != 1 or len(budget["faces"]) != header["capacity"] * 6
+    if (len(budget["faces"]) != header["capacity"] * 6
             or budget["header"][2] != len(faces) or budget["header"][4] != header["physicalPageBudget"]
             or budget["header"][5] != assigned):
         raise ValueError("Invalid actual budget-manager telemetry")
     result = dict(frame=frame["frame"], warmup=frame["warmup"], faces=faces, entries=entries,
                   atlasBytes=memory[0], atlasPages=memory[5], resourceBufferBytes=memory[2])
-    result.update(demandDriven=bool(budget["header"][1]), knownFaces=budget["header"][3],
-                  changedFaceCount=budget["header"][6], feedbackBufferCreates=budget["header"][7], budgetFaces=budget["faces"])
+    result.update(budgetVersion=version, demandDriven=bool(budget["header"][1]), budgetFaces=budget["faces"])
+    if version == 1:
+        result.update(knownFaces=budget["header"][3], changedFaceCount=budget["header"][6],
+                      feedbackBufferCreates=budget["header"][7])
+    else:
+        result.update(currentDemandFaces=budget["header"][3], allocatedNewFine=budget["header"][6],
+                      reusedFine=budget["header"][7])
+        if (result["currentDemandFaces"] != len(faces)
+                or result["allocatedNewFine"] != sum(face["newPhysicalPages"] for face in faces)
+                or result["reusedFine"] != sum(face["cachedPages"] for face in faces)):
+            raise ValueError("Shared-pool totals differ from current face statistics")
+        for entry in entries:
+            if entry["status"] != 1:
+                continue
+            for face in range(entry["faceCount"]):
+                slot = entry["index"] * 6 + face
+                actual, diagnostic = values[slot], budget["faces"][slot]
+                if (diagnostic[:4] != [1, actual[0], actual[0], actual[12]]
+                        or diagnostic[6] != actual[2] or actual[12] != actual[1] + 1):
+                    raise ValueError("Shared-pool face record differs from current demand or grants")
     for name in COUNTERS:
         if name != "cacheEpoch":
             result[name] = sum(face[name] for face in faces)
@@ -245,6 +267,19 @@ def demand_signature(row):
     return [(f["stableId"], f["face"], f["requestedFine"]) for f in row["faces"]]
 
 
+def allocation_timing(node, arm):
+    feedback = [s for s in node["sections"] if s["name"] == "VSM budget feedback"]
+    shared = [s for s in node["sections"] if s["name"] == "VSM shared physical pool"]
+    if shared:
+        if len(shared) != 1 or feedback or shared[0].get("cpuOnly", False):
+            raise ValueError("Invalid shared physical allocation GPU scope")
+    elif len(feedback) != int(arm == "Demand") or any(s.get("cpuOnly", False) for s in feedback):
+        raise ValueError("Actual feedback-copy GPU scope does not match the allocation policy")
+    return dict(feedbackMs=sum(profile.duration(s["gpuMs"], "VSM budget feedback") for s in feedback),
+                sharedPoolMs=sum(profile.duration(s["gpuMs"], "VSM shared physical pool") for s in shared),
+                sharedPoolScope=bool(shared))
+
+
 def quality_gates(records):
     import numpy as np
     lookup = {(r["workload"], r["arm"]): r for r in records}
@@ -255,10 +290,16 @@ def quality_gates(records):
             if fa["frame"] >= 32 and demand_signature(fa) != demand_signature(fb):
                 errors.append(f"{workload}: canonical receiver page demand differs")
         stable = b["counters"][32:]
-        if any(not row["demandDriven"] or row["knownFaces"] != 9 for row in stable):
+        legacy = [row for row in stable if row.get("budgetVersion", 1) == 1]
+        shared = [row for row in stable if row.get("budgetVersion", 1) == 2]
+        if any(not row["demandDriven"] or row["knownFaces"] != 9 for row in legacy):
             errors.append(f"{workload}: completed per-face demand feedback missing")
-        if any(row["changedFaceCount"] or row["feedbackBufferCreates"] for row in stable):
+        if any(row["changedFaceCount"] or row["feedbackBufferCreates"] for row in legacy):
             errors.append(f"{workload}: post-warmup budget or feedback buffer allocation churn")
+        if any(not row["demandDriven"] or row["currentDemandFaces"] != 9 for row in shared):
+            errors.append(f"{workload}: current-frame shared demand missing")
+        if any(row["allocatedNewFine"] for row in shared):
+            errors.append(f"{workload}: post-warmup shared physical allocation churn")
         budget_vectors = [[f["assignedPages"] for f in row["faces"]] for row in stable]
         if any(v != budget_vectors[0] for v in budget_vectors[1:]):
             errors.append(f"{workload}: post-warmup allocation did not stabilize")
@@ -360,10 +401,7 @@ def verify(source, diagnostic=None):
         timings = [profile.profile_frame(f) for f in case["frames"]]
         for raw, timing in zip(case["frames"], timings, strict=True):
             node = next(n for n in raw["nodes"] if n["name"] == "Shadows")
-            feedback = [s for s in node["sections"] if s["name"] == "VSM budget feedback"]
-            if len(feedback) != int(arm == "Demand") or any(s.get("cpuOnly", False) for s in feedback):
-                raise ValueError("Actual feedback-copy GPU scope does not match the allocation policy")
-            timing["feedbackMs"] = sum(profile.duration(s["gpuMs"], "VSM budget feedback") for s in feedback)
+            timing.update(allocation_timing(node, arm))
         if any(f["faceCount"] != 9 or f["projectionMode"] != "one-pass" for f in timings):
             raise ValueError("Expected nine admitted faces with actual one-pass projection")
         inputs = [optimization.stream_signature(f, plan["phase"], f["frame"] >= 16) for f in case["frames"]]
@@ -372,7 +410,7 @@ def verify(source, diagnostic=None):
             raise ValueError("Canonical streaming/texture input changed between processes")
         stream_inputs[workload] = canonical
         row = dict(**scheduled, directory=str(captures[0][0].parent), timings=timings,
-                   metrics={m: statistics.median(f[m] for f in timings if not f["warmup"]) for m in (*METRICS, "feedbackMs")})
+                   metrics={m: statistics.median(f[m] for f in timings if not f["warmup"]) for m in (*METRICS, "feedbackMs", "sharedPoolMs")})
         if plan["phase"] == "diagnostic":
             validation = report["validationMessages"]
             if not report["validation"] or not case["synchronizationValidation"] or validation["captureFailed"] or validation["count"]:
@@ -384,6 +422,9 @@ def verify(source, diagnostic=None):
             row["counters"] = [counter_frame(f) for f in case["frames"]]
             if any(f["demandDriven"] != (arm == "Demand") for f in row["counters"]):
                 raise ValueError("Actual budget-manager mode differs from the declared arm")
+            if any((counter["budgetVersion"] == 2) != timing["sharedPoolScope"]
+                   for counter, timing in zip(row["counters"], timings, strict=True)):
+                raise ValueError("Budget diagnostic schema differs from the actual allocation GPU scope")
         elif report["validation"] or not report["performanceEligible"] or case["captures"] or case["comparisons"]:
             raise ValueError("Diagnostic work contaminated ordinary timing")
         records.append(row)
@@ -507,7 +548,7 @@ def report(args):
     output.mkdir(parents=True, exist_ok=False)
     acceptance.save(output / "Summary.json", result)
     text = ["# 多灯 VSM 需求预算验证", "", "同一 OpenPBR/P4 fixture，1920×1080、SMRT 2×16、9 个面，主视图/光源固定，时间平滑关闭。",
-            "需求预算只在页面压力下重分配，Slack 保留已足够的逐面物理布局；Pressure 的 Reference 单列使用充足预算，不是独立几何真值。", ""]
+            "当前 schema2 在共享物理页池内按当帧需求分配；schema1 历史包保留旧反馈解释。Pressure 的 Reference 单列使用充足预算，不是独立几何真值。", ""]
     if result["phase"] == "diagnostic":
         text += ["5 个诊断进程，64 帧 / 32 预热；包含 validation、统计和图像读回，不作为普通性能。",
                  "质量、需求输入、预算稳定性、闲置面释放、GPU validation 门槛全部通过。", ""]
@@ -554,7 +595,7 @@ def report(args):
         fig.savefig(output / "GPUProcessMedians.png", dpi=150)
         plt.close(fig)
         text += ["24 个普通进程，每场景 3 个完整 ABBA 区组、96 帧 / 32 预热；磁盘缓存保留，未锁 GPU 时钟或隔离其他应用。",
-                 "候选的生产反馈 copy 属于实际成本；诊断和 validation 关闭。帧不是独立样本，95% CI 以三个区组 log ratio、t(df=2)=4.303 计算。",
+                 "生产分配及旧版本的反馈 copy 均计入实际成本；诊断和 validation 关闭。帧不是独立样本，95% CI 以三个区组 log ratio、t(df=2)=4.303 计算。",
                  "Pressure 可能增加有效页光栅工作，时间变化不等同于相同画质加速；RenderGraph 不含 present。", "", "![GPU进程分布](GPUProcessMedians.png)", "",
                  "| 场景 | GPU 范围 | Equal ms | Demand ms | Demand 变化 | 95% CI |", "|---|---|---:|---:|---:|---|"]
         comparisons = []
@@ -565,10 +606,14 @@ def report(args):
                 text.append(f"| {workload} | {metric} | {medians[0]:.6f} | {medians[1]:.6f} | {change:+.2f}% | [{low:+.2f}%, {high:+.2f}%] |")
                 comparisons.append(dict(workload=workload, metric=metric, equalMs=medians[0], demandMs=medians[1], changePercent=change, lower95=low, upper95=high))
         save_csv(output / "Comparisons.csv", comparisons)
-        text += ["", "反馈复制单独时间（候选六个进程中位数的中位数，Equal 无此 scope；不计算零基线比值）："]
+        shared = any(frame["sharedPoolScope"] for record in result["records"] for frame in record["timings"])
+        text += ["", "共享物理页分配单独时间（各组进程中位数的中位数）：" if shared else
+                 "反馈复制单独时间（候选六个进程中位数的中位数，Equal 无此 scope；不计算零基线比值）："]
         for workload in WORKLOADS:
-            value = statistics.median(r["feedbackMs"] for r in rows if r["workload"] == workload and r["arm"] == "Demand")
-            text.append(f"- {workload}: {value:.6f} ms。")
+            for arm in ARMS if shared else ("Demand",):
+                value = statistics.median(r["sharedPoolMs" if shared else "feedbackMs"] for r in rows
+                                          if r["workload"] == workload and r["arm"] == arm)
+                text.append(f"- {workload}/{arm}: {value:.6f} ms。")
     acceptance.save(output / "ReportTools.json", dict(python=sys.version, matplotlib=matplotlib.__version__, tools=tool_hashes()))
     text += ["", f"原始封存证据：`{result['source']}`。所有结果来自当前 verifier 对原始回执的重验。",
              "", f"重建：`python -B Tools/Perf/VirtualShadowMapDemandBudget.py report \"{result['source']}\" <new-report-directory>`。"]

@@ -20,6 +20,7 @@ import Lighting;
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
+#include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapPhysicalPoolInterop.h"
 
 // Incompatible diagnostic permutations are rejected at the module boundary.
 #ifndef VSM_DIRECTIONAL_MARK
@@ -49,6 +50,7 @@ __include "VirtualShadowMaps/PageMarking.slang";
 __include "VirtualShadowMaps/PageReset.slang";
 __include "VirtualShadowMaps/ReceiverMarking.slang";
 __include "VirtualShadowMaps/PageAllocation.slang";
+__include "VirtualShadowMaps/SharedPhysicalPool.slang";
 __include "VirtualShadowMaps/ClusterCulling.slang";
 __include "VirtualShadowMaps/BuildWork.slang";
 __include "VirtualShadowMaps/PageFinalize.slang";

@@ -1,6 +1,35 @@
 #language slang 2026
 implementing VirtualShadowMaps;
 
+#ifndef VSM_SHARED_PHYSICAL_POOL
+#define VSM_SHARED_PHYSICAL_POOL 0
+#endif
+
+#if VSM_SHARED_PHYSICAL_POOL
+typealias VSMAtlas = Texture2DArray<float>;
+#else
+typealias VSMAtlas = Texture2D<float>;
+#endif
+
+float vsmAtlasLoad(VSMAtlas atlas, uint2 logicalTexel, ShadowPush push)
+{
+#if VSM_SHARED_PHYSICAL_POOL
+    uint layerHeight = push.physicalPagesY * push.pageSize;
+    return atlas.Load(int4(logicalTexel.x, logicalTexel.y % layerHeight, logicalTexel.y / layerHeight, 0));
+#else
+    return atlas.Load(int3(logicalTexel, 0));
+#endif
+}
+
+uint vsmAtlasLayer(uint physicalPage, ShadowPush push)
+{
+#if VSM_SHARED_PHYSICAL_POOL
+    return physicalPage / (push.physicalPagesX * push.physicalPagesY);
+#else
+    return 0u;
+#endif
+}
+
 // Implementation units preprocess independently; retain this unit's permutation defaults.
 #ifndef VSM_DIRECTIONAL_BUILD
 #define VSM_DIRECTIONAL_BUILD 0
@@ -243,6 +272,9 @@ uint2 vsmPhysicalPageCoord(uint physicalPage, uint physicalPagesX)
 float2 vsmAtlasPosition(float2 pagePosition, uint physicalPage, ShadowPush push)
 {
     uint2 page = vsmPhysicalPageCoord(physicalPage, push.physicalPagesX);
+#if VSM_SHARED_PHYSICAL_POOL
+    page.y %= push.physicalPagesY;
+#endif
     return (float2(page) + pagePosition) * (2.0 / float2(push.physicalPagesX, push.physicalPagesY)) - 1.0;
 }
 

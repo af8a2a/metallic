@@ -11,6 +11,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_PAGE_BITSET
 #define VSM_CLUSTER_PAGE_BITSET 0
 #endif
+#ifndef VSM_SHARED_PHYSICAL_POOL
+#define VSM_SHARED_PHYSICAL_POOL 0
+#endif
 
 // Allocation scratch follows the physical owner table in the same buffer:
 // local page ranks, block counts/prefixes, then free/evictable physical slots.
@@ -94,10 +97,12 @@ void vsmAllocateMain(uint lane : SV_GroupIndex, uniform ShadowPush push)
     }
     if (lane == 0u) {
         uint requested = gVsmAllocationTotal.x;
-        uint allocated = min(requested, push.physicalPageCount - 1u);
         statistics[0] = requested;
+#if !VSM_SHARED_PHYSICAL_POOL
+        uint allocated = min(requested, push.physicalPageCount - 1u);
         statistics[1] = allocated;
         statistics[2] = requested - allocated;
+#endif
     }
 }
 
@@ -112,6 +117,18 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
     uint3 counts = uint3(0u);
     uint rankOffset = push.physicalPageCount;
     uint blockOffset = rankOffset + push.totalPages;
+#if VSM_SHARED_PHYSICAL_POOL
+    RWStructuredBuffer<uint4> physicalPool = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.physicalPool));
+    uint admittedFine = physicalPool[1u + push.poolFace].x;
+    uint physicalOwnerBase = 1u + physicalPool[0].x;
+    if (id.x == 0u) {
+        statistics[1] = admittedFine;
+        statistics[2] = statistics[0] - admittedFine;
+        statistics[12] = admittedFine + 1u;
+    }
+#else
+    uint admittedFine = push.physicalPageCount - 1u;
+#endif
     if (id.x < push.totalPages) {
         uint4 entry = pages[id.x];
         bool fine = id.x + 1u < push.totalPages;
@@ -121,7 +138,7 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
             // budget on refinement. A missing fine page can then use a nearby
             // coarser mip instead of the complete low-resolution scene map.
             rank = statistics[0] - 1u - rank;
-            if (rank < push.physicalPageCount - 1u) {
+            if (rank < admittedFine) {
                 entry.y |= 2u;
 #if VSM_RECEIVER_MASK
                 // Reset carried coverage through the same oldIndex remap as
@@ -143,7 +160,15 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
             else { entry.x = 0xffffffffu; entry.w = 2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u); }
         }
         pages[id.x] = entry;
-        if (entry.x != 0xffffffffu) { owners[entry.x] = id.x + 1u; }
+        if (entry.x != 0xffffffffu) {
+            owners[entry.x] = id.x + 1u;
+#if VSM_SHARED_PHYSICAL_POOL
+            // Reset retained only this pool generation's mappings. Every slot
+            // therefore has one writer across all face Admit dispatches.
+            physicalPool[physicalOwnerBase + entry.x] = uint4(push.poolFace + 1u, id.x + 1u,
+                uint(!fine || (entry.y & 2u) != 0u), 0u);
+#endif
+        }
         if (fine && (entry.y & 2u) != 0u) {
             counts.x = entry.x == 0xffffffffu ? 1u : 0u;
             counts.y = entry.x != 0xffffffffu && (entry.w & 2u) != 0u ? 1u : 0u;
@@ -271,6 +296,49 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
     RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
     uint blockCount = (push.totalPages + 255u) / 256u;
     uint blockOffset = push.physicalPageCount + push.totalPages;
+#if VSM_SHARED_PHYSICAL_POOL
+    RWStructuredBuffer<uint4> physicalPool = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.physicalPool));
+    uint4 header = physicalPool[0];
+    uint4 face = physicalPool[1u + push.poolFace];
+    bool coarse = id.x + 1u == push.totalPages;
+    uint rank;
+    if (coarse) {
+        if (face.w == 0u) { return; }
+        rank = face.z + face.y;
+    } else {
+        uint localRank = owners[push.physicalPageCount + id.x];
+        if (localRank == 0xffffffffu) { return; }
+        rank = face.z + owners[blockOffset + group.x] + localRank;
+    }
+    uint ownerBase = 1u + header.x;
+    uint physical = physicalPool[ownerBase + push.physicalPageCount + rank].x;
+    uint4 evicted = physicalPool[ownerBase + physical];
+    if (evicted.x != 0u) {
+        // Global Physical selected only unrequested owners. A victim cannot
+        // also be an Assign invocation, even when it belongs to another face.
+        StructuredBuffer<ShadowPush> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowPush>>(header.z));
+        ShadowPush victim = jobs[evicted.x - 1u];
+        RWStructuredBuffer<uint4> victimPages = resolveNonUniform(ResourceHandle<RWStructuredBuffer<uint4>>(victim.pages));
+        RWStructuredBuffer<uint> victimOwners = resolveNonUniform(ResourceHandle<RWStructuredBuffer<uint>>(victim.owners));
+        uint virtualPage = evicted.y - 1u;
+        uint4 old = victimPages[virtualPage];
+        old.x = 0xffffffffu;
+        old.w = 2u | ((victim.cacheMode & 16u) != 0u ? 8u : 0u);
+        victimPages[virtualPage] = old;
+        victimOwners[physical] = 0u;
+        // Victim permutations may differ from this allocator's permutation.
+        // The producer enables this tail exactly for layered directional SMRT.
+        if (victim.lightType == 0u && (victim.cacheMode & 16u) != 0u && victim.filterMode == 2u) {
+            RWByteAddressBuffer validCoverage = resolveNonUniform(ResourceHandle<RWByteAddressBuffer>(victim.pages));
+            validCoverage.Store2(victim.totalPages * 32u + virtualPage * 8u, uint2(0u));
+        }
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmWorkAdd(push, kVSMWorkAllocatorLRUEvictions, 1u);
+        vsmWorkAdd(push, kVSMWorkAllocatorLRUEvictionAgeFrames, header.w - evicted.w);
+#endif
+    }
+    physicalPool[ownerBase + physical] = uint4(push.poolFace + 1u, id.x + 1u, 1u, header.w);
+#else
     uint localRank = owners[push.physicalPageCount + id.x];
     if (localRank == 0xffffffffu) { return; }
     uint rank = owners[blockOffset + group.x] + localRank;
@@ -287,6 +355,7 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
         validCoverage.Store2(vsmValidReceiverMaskByteOffset(push, evicted - 1u), uint2(0u));
 #endif
     }
+#endif
     uint4 entry = pages[id.x];
     entry.x = physical; entry.w = 2u | ((push.cacheMode & 16u) != 0u ? 8u : 0u);
     pages[id.x] = entry;
@@ -294,6 +363,8 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
 #if VSM_CLUSTER_PAGE_BITSET
     // This path handles only admitted missing pages. The writes above make
     // each one resident and dirty; no invocation reads another evicted page.
-    InterlockedOr(owners[vsmClusterPageBitsetOffset(push) + (id.x >> 5u)], 1u << (id.x & 31u));
+    if (id.x + 1u < push.totalPages) {
+        InterlockedOr(owners[vsmClusterPageBitsetOffset(push) + (id.x >> 5u)], 1u << (id.x & 31u));
+    }
 #endif
 }
