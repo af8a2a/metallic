@@ -8,35 +8,37 @@
 
 本文后续 Flat/Legacy/Smart/Refined 的开关与测量是历史记录。对应旧 LOD A/B 的 prepare/run 已退役，verify/report 和离线质量分析保留；本次实现收敛不追加性能结论。
 
-本次加入独立的阴影几何选择，不改变现有 one-pass projection 的默认开启状态，也不改变静态/动态深度分层的默认关闭状态。入口见 [VirtualShadowMapCasters.h](../Source/Runtime/Render/Shadow/VirtualShadowMapCasters.h)，误差计算见 [VirtualShadowMapLOD.h](../Source/Runtime/Render/Shadow/VirtualShadowMapLOD.h)。
+本次加入独立的阴影几何选择，不改变现有 one-pass projection 的默认开启状态，也不改变静态/动态深度分层的默认关闭状态。入口见 [VirtualShadowMapCasters.h](../Source/Runtime/Render/Shadow/VirtualShadowMapCasters.h)，GPU 选择见 [ShadowViewLOD.slang](../Shaders/Features/VirtualShadowMaps/VirtualShadowMaps/ShadowViewLOD.slang)，CPU 参考见 [VirtualShadowMapLOD.h](../Source/Runtime/Render/Shadow/VirtualShadowMapLOD.h)。
 
 ## 选择范围与误差
 
-每次 Pass 先准备原始 caster 快照。resident 快照是完整 authored 三角，stream 快照是所有 terminal 分支的完整 cut。随后从完整 bounds 构造实际阴影投影的 X、Y、W 行及虚拟分辨率；多灯 Pass 汇总全部准入光源、点光六面、各 clipmap 层和 coarse 投影，仅选择一次共享 cut。
+2026-11-17：生产 Pass 改为逐 shadow view 的 GPU 层级 LOD。CPU 准备原始 caster 快照、完整候选几何和不可变层级；GPU 为每个灯面内的 clipmap / local mip 及 coarse 投影独立选择 cut。不同灯面继续共享候选几何和物理页池，跨灯、跨面的 Build/Raster 批处理消费各自的选择结果。
 
-每个 group 使用所有投影中的最大误差。方向光按正交投影 texel 密度计算；局部光使用误差扩展球上的透视 Jacobian 上界，近裁剪面相交时保守要求细化。变换尺度使用包括非均匀缩放与 shear 的保守上界。方向光 coarse 的密度上界依据完整 caster bounds 的未 padding 范围，覆盖旧 coarse 缓存投影被复用时的情况。
+每个 group 仅使用当前 shadow view 的误差。方向光按正交投影 texel 密度计算；局部光使用误差扩展球上的透视 Jacobian 上界，近裁剪面相交时保守要求细化。变换尺度使用包括非均匀缩放与 shear 的保守上界。选择直接读取本次 VSM 的实际投影表，包括复用的 local/coarse 缓存投影；分辨率为该投影页数乘页尺寸。
 
 深度保护复用同一变换尺度上界，将 `group.error` 转为世界单位；只对至少一个阴影视图有投影需求的 group 增加细化条件。层级节点仅在投影和世界误差预算均允许时剪枝，平铺与层级叶使用相同条件。零预算仍允许零误差替换，terminal sentinel 不参加误差计算。这里的 `group.error` 来自 meshoptimizer absolute-error QEM 并合并前级误差，描述下一次替换，不能视作任意接收面或掠射角上的严格深度误差上界。固定一半 bias 的策略为原光栅误差保留余量，仍需图像验证。
 
 该需求独立于主相机的 visible/active cut，不以主相机屏幕外为由删除投影 caster。某个球位于一个阴影视图以外时，仅该视图的细化需求为零。最终遍历仍覆盖全部 terminal 分支；需要细化的 group 会把需求向所有 DAG 祖先传播，替换仅在所有 parent owner 生效时发生，以保留多父关系的完整覆盖。
 
-当前实现为 CPU 自适应层级选择与 CPU 打包上传。resident 利用已有 `meshletLodGroups/Clusters/Vertices/Triangles`，stream 使用资产完整 group/refinement 元数据，不复用主视图压缩列表。尚未加入 GPU LOD 遍历或 cut hysteresis。
+resident 利用已有 `meshletLodGroups/Clusters/Vertices/Triangles`，上传 authored 前缀及全部层级候选；stream 使用资产完整 group/refinement 元数据，不复用主视图压缩列表。triangle slot → cluster 映射和逐 view 选择掩码贯穿 Build、coarse raster、普通及 packed/window raster。resident 选择达到最细层时使用 authored 前缀，保持原三角顺序。CPU selector 保留为参考和测试接口，生产 Pass 不回读 cut 来决定本帧几何。
 
 ## 自适应层级遍历
 
 每个 primitive 在首次需要 LOD 时创建不可变元数据：原始 group/range/refinement、去重父关系、cluster→group 映射以及非 terminal group 的 BVH4。Pass 持有缓存，scene identity、结构版本或 stream geometry publication 变化时更换；transform/material 改变不重建 object-space 元数据。SceneLoader 完成 deferred meshlet 构建及 finalize 后才发布场景；旧录制通过 resource snapshot 保留自己的缓存生命期。
 
-遍历先用所有准入光源的最大投影误差上界判断子树，再对未剪枝的叶 group 使用原误差函数。透视 group 度量在合并球上并不单调，因此节点上界分别约束 error、球半径、最小 W、clipXY 和原 Jacobian 的各项，而非直接把合并球代入 group 公式。近面穿越保守下降，大坐标计算使用向外余量，阈值边界只允许增加遍历。Terminal stop sentinel 不进入 BVH，所有 terminal 分支始终单独纳入需求。
+`vsmLODSelectMain` 按 `(instance, shadow view)` 分派任务，使用 stackless BVH 遍历，再对未剪枝叶 group 计算误差。透视 group 度量在合并球上并不单调，因此节点上界分别约束 error、球半径、最小 W、clipXY 和原 Jacobian 的各项，而非直接把合并球代入 group 公式。近面穿越保守下降，大坐标计算使用向外余量，阈值边界只允许增加遍历。Terminal stop sentinel 不进入 BVH，所有 terminal 分支始终单独纳入需求。
 
-命中的需求沿缓存父链求闭包，再按 group ID 降序进行 all-parent 驻留激活；缺页请求不受父页是否就绪限制。仅遍历实际 active 的 cluster range，并以原升序输出稳定 cut。零误差直接请求所有 group，跳过误差计算。Stream 打包通过缓存的 cluster→group 映射访问选中 cluster，不再完整扫描所有 cluster；resident 最细路径也不生成最终不会上传的替换顶点数组。
+命中的需求按拓扑顺序向所有 parent 求闭包，再按 group ID 降序进行 all-parent 驻留激活；缺页请求不受父页是否就绪限制。GPU 写入稳定 slot 布局上的 cluster 选择掩码。零误差直接请求所有 group，跳过误差计算；resident 零误差直接选择 authored 前缀。
 
-仍然保留 dense active/wanted 数组，stream 每个实例仍需读取全部 group 的 drawable residency。因此减少的是昂贵误差计算、拓扑边遍历、元数据重建及完整 cluster 重扫，不能称为消除了全部线性工作。本版不包含 GPU 层级遍历、LOD hysteresis 或逐页独立 cut。
+仍然保留 dense active/wanted 数组和完整 cluster 掩码。当前每个任务由一个 lane 执行有序 DAG 遍历，不包含 UE Nanite 的持久化并行遍历队列、仅 dirty view 的 compact 调度、cut hysteresis 或逐虚拟页独立 cut。候选几何容量仍覆盖全部层级，尤其 resident 还保留 authored 前缀；不能把逐 view 选层等同于减少全部上传/内存开销或已经获得性能收益。
+
+对照本机 Unreal 5.7.4：`VirtualShadowMapArray.cpp` 创建 clipmap/局部光面视图，`VirtualShadowMapCompactViews.usf` 为 mip 缩放 LODScales，`NaniteClusterCulling.usf` 在 node/cluster 候选中传播 ViewId 并按该视图选择层级，`NaniteHierarchyTraversal.ush` 仅继续遍历可见且已加载的子节点。本实现对齐逐 view GPU 选择与驻留回退的职责，保留 Metallic 的误差度量、完整 DAG cut 和深度保护约束。
 
 ## 材质与 streaming
 
 MASK 与 displacement caster 保留基准几何；这一版本不对 alpha 覆盖或位移误差做额外简化。没有 resident hierarchy 的 primitive 同样保留完整原始三角，并计入 fallback。这里的 stream 基准是原有完整 terminal cut，不表示所有原始三角已驻留。
 
-Stream 只从 `pageResident()` 为真的 group 选 drawable cut，缺页会保留安全的驻留祖先，不把缺页当成空几何。需要的细化页通过 `requestShadowPages` 独立请求，选中的驻留页先 touch；资源录制先登记 geometry-use completion，页范围不能在本次 GPU 使用完成前回收。页仍沿用普通 stream 预算、异步加载及 publication 路径，不永久锁住 refined 页。
+Stream 在 GPU page table 中检查 drawable residency，缺页会保留完整的驻留祖先 cut。各 view 将需要细化的页和已选择的页合并写入请求标记；提交完成后，独立反馈队列回读这些标记并在正常 maintenance 阶段调用 `requestShadowPages`，先 touch 驻留页，再申请缺页。反馈不依赖主相机的请求结果，不回读选择掩码。资源录制先登记 geometry-use completion，页范围不能在本次 GPU 使用完成前回收。页仍沿用普通 stream 预算、异步加载及 publication 路径，不永久锁住 refined 页；取消的录制不发布反馈。
 
 深度保护提高细化需求，但不绕过驻留约束：细页缺失时仍保留完整祖先 cut，因此启用 guard 不表示当前回退几何已经满足预算。不得为了满足预算而丢弃 caster。
 
@@ -44,37 +46,60 @@ Stream 只从 `pageResident()` 为真的 group 选 drawable cut，缺页会保�
 
 ## 缓存身份
 
-选中 cut 的 cluster ID 序列单独形成每个 caster 的 `lodKey`，原始 cut 使用零。`contentKey`、`transformKey`、`materialKey`、完整 caster bounds 与几何 publication 依赖保持来自 base authored 快照；不使用全局 page-table mutation serial 作为阴影内容键。
+生产 GPU 路径保留 base authored 快照的 `contentKey`、`transformKey`、`materialKey`、完整 caster bounds 与几何 publication 依赖，不使用全局 page-table mutation serial 作为阴影内容键。每个 face 缓存已提交的逐 view 选择掩码；CPU layout key 只标识候选槽位与拓扑身份，GPU 精确比较本帧和已提交掩码。
 
-仅 `lodKey` 变化时，使旧、新 footprint 的合成深度失效；若 caster 仍属于静态层，也使对应静态深度失效。LOD 切换本身不会将静态 caster 晋升为动态。真正的内容、变换或阴影材质变化仍沿用原缓存分类逻辑。选择后的连续 slot 范围用于现有静态/动态 layer mask；提交与取消沿用原有缓存事务，未提交 cut 不成为下一帧的已提交缓存依据。多灯 temporal content key 也包含 `lodKey`。
+LOD 掩码变化在当帧 Reset 阶段使该 view 的 caster footprint 和 coarse 深度失效，并覆盖静态层；LOD 切换本身不会将静态 caster 晋升为动态。内容、变换和阴影材质变化继续由原有 CPU 差分处理旧、新 footprint。提交与取消沿用原有缓存事务，未提交掩码不成为下一帧依据。多灯时域 resolve 读取各 face 的 GPU LOD 变化计数，有变化时拒绝该灯的旧历史；无需 CPU 回读 cut。保留的 CPU 参考路径仍使用 `lodKey`。
 
 ## 诊断
 
-两个 Pass 新增独立 `lodStatistics` 输出，固定 32 个 uint。它记录一次共享选择，不按光源面重复累计，也不改变现有 `statistics`、`workload` 或 `buildDiagnostics` 的字段含义。
+两个 Pass 的 `lodStatistics` 输出固定 32 个 uint，格式升级为 3。GPU 在每个 view 上累加实例统计，再汇总所有灯面；计数按 view 重复累计，不能与旧版共享 cut 计数直接比较。关闭 LOD 时仍报告一次 base geometry。现有 `statistics`、`workload` 和 `buildDiagnostics` 字段不变。
 
 | 字段 | 内容 |
 |---|---|
-| 0 | 格式版本，目前为 2；字段 11–15 新增层级统计 |
+| 0 | 格式版本，目前为 3 |
 | 1 | `shadowLOD` 配置是否启用 |
 | 2 | 汇总的 shadow projection 数 |
-| 3 | CPU selector 实际访问的拓扑 group 数；平铺为全部 group，层级为需求闭包 |
-| 4 | 已选择的可简化层级 cluster 数；stream 受保护 caster 的 terminal cluster 也计入 |
-| 5 | 最终 geometry triangle slot capacity |
-| 6 | 本次缺页需求中已分配/排队的页数，不等于新驻留页数 |
-| 7 | 冻结或 admission 预算等原因阻塞的缺页数 |
+| 3 | GPU selector 实际访问的需求闭包 group 数 |
+| 4 | 已选 cluster 数，包含 authored/protected 前缀 |
+| 5 | 所有 view 的已选 triangle slots 之和 |
+| 6 | 允许请求时发现的缺页引用数，尚未 CPU 准入；不是去重页数 |
+| 7 | 冻结期间发现的缺页引用数 |
 | 8 | 无 resident hierarchy 或 stream 缺细化页的 caster 数 |
 | 9 | MASK/displacement 受保护 caster 数 |
-| 10 | 原始 base geometry triangle slot capacity |
+| 10 | 各 view 的原始 base geometry triangle slots 之和；stream 为 terminal cut |
 | 11 | 执行原始 group 误差测试的非 terminal group 数 |
 | 12 | 层级 BVH 节点访问数；平铺为零 |
 | 13 | 子树剪枝跳过的 group 误差测试数；零误差 fast path 不计入 |
-| 14 | 本次新建的 primitive 元数据数量 |
-| 15 | 本次复用的 primitive 元数据次数，按实例消费计数 |
+| 14–15 | GPU 格式保留为零；CPU 元数据构建/复用不在这里累计 |
 | 16–31 | 所选 cluster 的 LOD 0–15 直方图，15 包含更高层级 |
 
-CPU resources 还保留 `(render node, primitive-local group, local cluster)` 列表以核查 cut。没有可选 hierarchy 的 resident caster 或材质保护的 resident caster 不生成伪造 cluster ID，因此 cluster/histogram 不能直接等同于所有 caster 的完整三角工作量。Stream triangle slots 按 cluster 的 128 槽 padding 计数；base producer 还可保留隐藏 instance 的候选，不能把 slot capacity 当成真正光栅化三角数。
+`VirtualShadowMapResult` 提供逐 view 的 `lodSelection`、`lodStatistics`、`lodChanges` 供调试和测试读取。resident authored 前缀按一个 cluster 记录，不能拿直方图直接比较其 meshlet 数。Stream triangle slots 按 cluster 的 128 槽 padding 计数，不能把 slot capacity 当成真正光栅化三角数。CPU 参考接口仍保留 `(render node, primitive-local group, local cluster)` 列表。
 
 `cacheDiagnostics[29]` 为 `lodChangedCasters`，只在兼容缓存的 caster 差分中累计。整缓存重建仍由全局原因位解释；该字段为零不保证没有发生 LOD 配置或投影变化。参见 [缓存分层说明](VirtualShadowMapCacheLayers.md)。
+
+## 逐 shadow view GPU 版本验证
+
+2026-11-17，RTX 5060 / driver 621.01，复用 MSVC Release 构建树，仅启用测试目标，未更换编译器、生成器或 SDK。`Metallic`、`MetallicRHITests`、`MetallicShaderRequestsTests` 构建通过，12 个 `NativeShaderWarmupRequests.*` 测试通过。17 个离线 shader 排列通过 Slang 编译及 `spirv-val --target-env vulkan1.4`；模块所有权审计为 444 files / 280 modules / 164 implementation units。
+
+`virtual_shadow_map_gpu_shadow_lod` 使用真实 Bunny + plane，覆盖 resident / stream 各 11 个阶段，每阶段比较批处理、逐面执行和强制重绘三路，每路包含方向光、近/远 spot 和 point 的六面，共 9 faces / 36 projections。逐 view 选择掩码逐位对照独立的平铺 CPU DAG oracle；三路请求/准入、可查询 D32 和最终 visibility 精确一致。覆盖零预算、暖缓存、阈值切换、取消回滚、重试，以及 compact hierarchy、instance packed hierarchy 和 page-window 路径；后三者同时与普通 direct 路径对照，overflow 为零。
+
+resident 零预算与独立冷缓存的关闭 LOD 基线在全部 9 faces 上 D32 / visibility 精确一致。近/远 spot 的首 view 分别选择 8,669 / 1,084 triangle slots，方向光四个投影分别为 136 / 1,084 / 2,166 / 1,084，证明每个 view 独立选层。LOD 切换使静态页按需失效，稳定 cut 的暖帧不重复失效，也不会将静态 caster 晋升为动态。
+
+stream 相机始终朝向场景外，未运行主视图 visible cut。冻结时保留完整 terminal 回退且不请求细页；解冻后 GPU 阴影反馈的 missing group references 在两轮更新内从 1,872 降至 0。取消测试先提交合法的 stream publication，再单独取消 shadow 录制；驻留映射及 CPU residency / IO / 上传队列保持不变。页表 `lastRequestFrame` 的正常更新单独记录，不作为驻留变化。这里只覆盖 raster-only 的 `freezeRasterSnapshot`，未运行需要 RT 资源的 `freezeSourceResidency` 路径。
+
+最终取消审计在没有新有效 shadow 请求的条件下，另提交一帧 stream-only publication；通过 CPU profile 确认 `Shadow page feedback` consumer 实际执行，消费前后上述队列和驻留计数精确相等，避免同帧 maintenance 去重导致测试未进入消费逻辑。
+
+193 × 157 的方向光 hard-shadow 输出已人工检查：1 texel 相比最细表示，resident / stream 分别改变 45 / 69 像素，归一化 visibility MAE 为 0.0014851 / 0.0022772；差异位于轮廓边缘。该检查只证明固定场景的近似表现，不是任意场景或连续运动的质量保证。
+
+`virtual_shadow_map_shadow_lod_pass` 另验证实际 Single/Lights RenderGraph 的 off / zero / adaptive、v3 统计及点光移除后的投影数；`virtual_shadow_map_temporal_lifecycle` 新增六帧验证稳定 cut 复用、cut 变化拒绝、无已提交 cut 拒绝及恢复历史。上述测试和新 GPU LOD 测试均通过，Vulkan validation messages 为 0。
+
+额外回归 `virtual_shadow_map_physical_pool`、`virtual_shadow_map_remap`、`virtual_shadow_map_shadow_lod_smart_bias_quality`、`virtual_shadow_map_smrt_temporal` 和保留的 CPU 参考 `virtual_shadow_map_shadow_lod` 全部通过；SMRT 时域覆盖 360 帧。共 8 项 GPU/RHI 测试的 Vulkan validation messages 均为 0，没有以 skipped 结果计入通过。
+
+证据保存在本地 `build/vsm-gpu-view-lod/`。`Run1/` 包含 Pass 与 temporal 结果；`FinalRegression/` 包含最终 22 阶段 GPU 回归、取消 consumer 审计、共享池 / remap / Smart Bias / SMRT 回归及原始阴影和差分图；`CPUReferenceRegression/` 包含 CPU 参考的最终通过结果。该参考测试原先在 `1e9 → 2e9` 预算探测后未恢复原预算，与下一路要求缓存命中的断言冲突，现恢复预算并保留几何身份断言；初次失败记录保留。
+
+早期失败与诊断亦保留：零预算对照最初复用了不同物理池历史，导致物理 tile 迁移后的深度舍入差异；改为独立冷基线后精确相等。stream fixture 最初一起取消了页表 publication，后又误将页请求时间戳视为驻留变化，均修正测试契约，未放宽渲染结果的精确比较。
+
+本轮没有进行性能 A/B，不报告 GPU 或整帧加速。仍未验证大型场景长时间驻留压力、连续运动的 LOD 跳变和软阴影质量；遍历调度及内存开销限制见上文。
 
 ## 层级版本验证
 

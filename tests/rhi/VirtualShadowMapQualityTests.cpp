@@ -3473,33 +3473,21 @@ public:
                     const std::string prefix = lights ? "Lights" : "Single";
                     const auto off = readLODPass(prefix + "Off", lights), zero = readLODPass(prefix + "Zero", lights);
                     const auto adaptive = readLODPass(prefix + "Adaptive", lights);
-                    if (!report["frames"].empty()) {
-                        // An unchanged resident cut returns its retained geometry
-                        // without visiting metadata. A changed projection reuses
-                        // the hierarchy while selecting a new cut.
-                        const auto requireCachedSelection = [&](const std::array<uint32_t, 32>& lod, const char* key) {
-                            const auto& previous = report["frames"].back().at(prefix).at(key);
-                            const bool residentCutReused = lod[3] == 0 && lod[11] == 0 && lod[12] == 0 &&
-                                lod[13] == 0 && lod[15] == 0 && lod[4] == previous.at(4).get<uint32_t>() &&
-                                lod[5] == previous.at(5).get<uint32_t>();
-                            require(lod[14] == 0 && (residentCutReused || lod[15] > 0),
-                                prefix + ": unchanged resident cut or hierarchy was not reused: " + Json(lod).dump());
-                        };
-                        requireCachedSelection(adaptive.lod, "adaptiveLOD");
-                        requireCachedSelection(zero.lod, "zeroLOD");
-                    } else {
-                        require(zero.lod[3] > 0, prefix + ": initial zero-error cut did not exercise selection");
-                    }
-                    require(adaptive.lod[0] == 2 && adaptive.lod[1] == 1 && adaptive.lod[4] > 0,
+                    // Selection runs on the GPU for every view. Zero error uses
+                    // the authored resident prefix without traversing its DAG.
+                    require(zero.lod[11] == 0 && zero.lod[12] == 0 &&
+                        zero.lod[14] == 0 && zero.lod[15] == 0,
+                        prefix + ": zero-error GPU selection unexpectedly traversed CPU/GPU metadata");
+                    require(adaptive.lod[0] == 3 && adaptive.lod[1] == 1 && adaptive.lod[4] > 0,
                         prefix + ": adaptive LOD omitted its selected geometry");
                     require(off.shadows == zero.shadows, prefix + ": zero-error LOD changed exact final visibility");
-                    require(off.lod[0] == 2 && off.lod[1] == 0 && off.lod[2] == 0,
+                    require(off.lod[0] == 3 && off.lod[1] == 0 && off.lod[2] == 0,
                         prefix + ": disabled LOD readback ABI or activation differs");
-                    require(zero.lod[0] == 2 && zero.lod[1] == 1 && zero.lod[2] == (lights ? expectedFaces : 1) * 5,
+                    require(zero.lod[0] == 3 && zero.lod[1] == 1 && zero.lod[2] == (lights ? expectedFaces : 1) * 5,
                         prefix + ": LOD projections do not match every admitted face and level");
-                    require(zero.lod[4] > 0 && zero.lod[5] == off.lod[5] && zero.lod[5] == zero.lod[10],
+                    require(zero.lod[4] > 0 && zero.lod[5] == off.lod[5] * zero.lod[2] && zero.lod[5] == zero.lod[10],
                         prefix + ": zero-error complete terminal fixture has wrong selection or slot accounting");
-                    require(zero.lod[6] == 0 && zero.lod[7] == 0 && zero.lod[8] == 0 && zero.lod[9] == 0,
+                    require(zero.lod[6] == 0 && zero.lod[7] == 0 && zero.lod[9] == 0,
                         prefix + ": complete opaque terminal fixture unexpectedly requested, blocked or protected geometry");
                     uint64_t histogram = 0;
                     for (size_t index = 16; index < zero.lod.size(); ++index) { histogram += zero.lod[index]; }

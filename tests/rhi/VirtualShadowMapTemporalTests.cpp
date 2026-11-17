@@ -2,6 +2,7 @@
 #include "harness/ValidationRecorder.h"
 #include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapLODInterop.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 
 #include <algorithm>
@@ -182,6 +183,46 @@ std::array<uint8_t, kLayers> rawLayers(uint32_t layer, uint8_t value)
     return result;
 }
 
+struct TemporalLODCache
+{
+    std::shared_ptr<ResourceRegistry> registry;
+    std::unique_ptr<Buffer> context, diagnostics;
+    ResourceLease contextLease;
+    uint32_t changedCasters = 0;
+    bool previousValid = true;
+
+    explicit TemporalLODCache(Device& device)
+    {
+        check(ResourceRegistry::forDevice(device).transform([&](auto r) { registry = std::move(r); }), "Temporal LOD registry");
+        check(device.createBuffer({.size = sizeof(VirtualShadowMapLODContextGPU),
+            .structureStride = sizeof(VirtualShadowMapLODContextGPU), .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::HostUpload})
+            .transform([&](auto b) { context = std::move(b); }), "Temporal LOD context");
+        check(device.createBuffer({.size = 51u * sizeof(uint32_t), .structureStride = sizeof(uint32_t),
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload})
+            .transform([&](auto b) { diagnostics = std::move(b); }), "Temporal LOD diagnostics");
+        check(registry->storageBuffer(*context).transform([&](auto lease) { contextLease = std::move(lease); }),
+            "Temporal LOD context lease");
+    }
+
+    void upload(CommandBuffer& commands)
+    {
+        // The selector's completed output is injected at its consumer boundary;
+        // the temporal kernel still reads the production GPU context ABI.
+        VirtualShadowMapLODContextGPU value{};
+        value.previousValid = previousValid ? 1u : 0u;
+        auto* destination = context->map(); check(destination != nullptr, "Map temporal LOD context");
+        std::memcpy(destination, &value, sizeof(value));
+        context->flush(); context->unmap();
+        auto* words = static_cast<uint32_t*>(diagnostics->map()); check(words != nullptr, "Map temporal LOD diagnostics");
+        std::fill_n(words, 51u, 0u);
+        words[29] = changedCasters; words[50] = contextLease.shaderIndex();
+        diagnostics->flush(); diagnostics->unmap();
+        check(registry->retain(commands, contextLease), "Retain temporal LOD context");
+        commands.hostWriteBarrier();
+    }
+};
+
 class VirtualShadowMapTemporalLifecycleTest final : public RHITest
 {
 public:
@@ -218,10 +259,17 @@ public:
             uint32_t maxFrames = 16, baseLayer = 1, faceCount = 1;
             bool compact = true;
             std::string log;
+            std::unique_ptr<TemporalLODCache> lodCache;
             auto record = [&](VirtualShadowMapTemporal& target, uint64_t index) {
                 const auto view = camera.constants(index, images->width, images->height, images->width, images->height);
+                std::array<Buffer*, 1> lodCaches{};
+                if (lodCache) {
+                    lodCache->upload(*gpu.commands);
+                    lodCaches[0] = lodCache->diagnostics.get();
+                }
                 return target.record(device, *gpu.commands, *images->depthView, *images->shadowView, view,
-                    index, invalidation, content, light, settings, maxFrames, baseLayer, faceCount, compact, log);
+                    index, invalidation, content, light, settings, maxFrames, baseLayer, faceCount, compact, log,
+                    nullptr, {lodCaches.data(), lodCache ? 1u : 0u});
             };
             auto render = [&](VirtualShadowMapTemporal& target, const std::string& name, uint64_t index,
                 const std::array<uint8_t, kLayers>& raw) {
@@ -324,6 +372,23 @@ public:
             settings.shadowLODScreenRayLength = .01f;
             (void)uniform("ScreenRayLengthChange", 53, 255, 1, 0);
             (void)uniform("AfterScreenRayLength", 54, 0, .5);
+
+            // GPU cut changes must reject history even though the CPU caster
+            // content key and all temporal settings remain unchanged.
+            history = VirtualShadowMapTemporal();
+            lodCache = std::make_unique<TemporalLODCache>(device);
+            (void)uniform("GPUCutFirst", 0, 0, 0, 0);
+            (void)uniform("GPUCutStableWarm", 1, 255, .5);
+            lodCache->changedCasters = 1;
+            (void)uniform("GPUCutChangedRejectsHistory", 2, 0, 0, 0);
+            lodCache->changedCasters = 0;
+            (void)uniform("GPUCutStableResumesHistory", 3, 255, .5);
+            lodCache->previousValid = false;
+            (void)uniform("GPUCutUncommittedRejectsHistory", 4, 0, 0, 0);
+            lodCache->previousValid = true;
+            (void)uniform("GPUCutCommittedResumesHistory", 5, 255, .5);
+            lodCache.reset();
+
             // Point visibility is one signal per light, even when six public
             // layers are used. Distinct face inputs expose accidental wrapping.
             check(camera.setCamera({.eye = {0, 0, 4}, .center = {0, 0, 0}, .nearPlane = .01f,
@@ -371,7 +436,7 @@ public:
             report["validation"] = validation.snapshot();
             check(!validation.failed(), "Temporal lifecycle Vulkan validation error");
             report["passed"] = true; save();
-            return RHITestResult::pass("Temporal history preserves submission, repeat-frame, invalidation, point-layer and bounded-memory contracts");
+            return RHITestResult::pass("Temporal history preserves submission, repeat-frame, GPU cut invalidation, point-layer and bounded-memory contracts");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());

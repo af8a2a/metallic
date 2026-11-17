@@ -10,7 +10,7 @@
 
 namespace metallic::render {
 namespace {
-constexpr uint64_t kTemporalABI = 0x56534d54454d5034ull;
+constexpr uint64_t kTemporalABI = 0x56534d54454d5035ull;
 
 bool sameProjection(const ViewConstants& a, const ViewConstants& b)
 {
@@ -109,7 +109,8 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
     TextureView& shadows, const ViewConstants& view, uint64_t frameIndex,
     uint64_t invalidationRevision, uint64_t contentKey, const VirtualShadowMapLight& light,
     const VirtualShadowMapSettings& settings, uint32_t maxFrames, uint32_t baseLayer,
-    uint32_t faceCount, bool compact, std::string& log, RenderGraphExecutionContext* gpuProfiler)
+    uint32_t faceCount, bool compact, std::string& log, RenderGraphExecutionContext* gpuProfiler,
+    std::span<Buffer* const> lodCaches)
 {
     auto* frame = RenderFrameContext::from(commands);
     if (!frame || !frame->recording() || maxFrames == 0 || maxFrames > 64 ||
@@ -182,6 +183,21 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
     params.compact = compact ? 1u : 0u; params.lightType = uint32_t(light.type);
     params.maxFrames = maxFrames; params.hasHistory = hasHistory && maxFrames > 1 ? 1u : 0u;
     params.lightX = light.position[0]; params.lightY = light.position[1]; params.lightZ = light.position[2];
+    if (!lodCaches.empty()) {
+        std::vector<uint32_t> handles;
+        std::vector<BufferBarrierDesc> barriers;
+        for (auto* cache : lodCaches) {
+            auto lease = (*registry)->storageBuffer(*cache);
+            if (!lease) { return std::unexpected(lease.error()); }
+            if (auto r = (*registry)->retain(commands, *lease); !r) { return r; }
+            handles.push_back(lease->shaderIndex());
+            barriers.push_back({.buffer = cache,
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}});
+        }
+        if (auto r = commands.synchronize({.buffers = barriers}); !r) { return r; }
+        params.lodCaches = writer.dataSpan(handles.data(), handles.size() * sizeof(uint32_t));
+    }
     auto encoded = writer.encode(params, kTemporalABI, ParameterTransport::InlinePush);
     if (!encoded) { return std::unexpected(encoded.error()); }
 

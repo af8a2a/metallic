@@ -118,8 +118,12 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
     if (matches("Features/VirtualShadowMaps/VirtualShadowMaps", {
             "vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
-            "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain"})) {
+            "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
+            "vsmLODSelectMain"})) {
         return static_cast<uint32_t>(sizeof(ShadowPush));
+    }
+    if (matches("Features/VirtualShadowMaps/VirtualShadowMapLODStatistics", {"vsmAggregateLODStatisticsMain"})) {
+        return 3u * sizeof(uint32_t); // Source table, output handle and source count.
     }
     if (matches("Features/VirtualShadowMaps/VirtualShadowMapTemporal", {"vsmTemporalMain"})) {
         return static_cast<uint32_t>(sizeof(VirtualShadowMapTemporalParams));

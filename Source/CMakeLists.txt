@@ -68,6 +68,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Shadow/VirtualShadowMapTemporal.cpp
     Runtime/Render/Shadow/VirtualShadowMapCasters.cpp
     Runtime/Render/Shadow/VirtualShadowMapLOD.cpp
+    Runtime/Render/Shadow/VirtualShadowMapLODStatistics.cpp
     Runtime/Render/MeshletLOD.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp

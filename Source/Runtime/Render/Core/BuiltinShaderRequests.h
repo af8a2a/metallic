@@ -205,6 +205,18 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
             .coverageInclude = defaultCoverage})) {
         requests.push_back(std::move(req));
     }
+    for (bool directional : {true, false}) {
+        for (auto& req : makeVirtualShadowMapRequests({
+                .directional = directional,
+                .receiverMask = directional,
+                .staticPageHZB = directional,
+                .refinedReceiver = directional,
+                .gpuLOD = true,
+                .coverageInclude = defaultCoverage})) {
+            requests.push_back(std::move(req));
+        }
+    }
+    add("Features/VirtualShadowMaps/VirtualShadowMapLODStatistics", {"vsmAggregateLODStatisticsMain"});
     requests.push_back(makeVirtualShadowMapTemporalRequest());
     // The runtime appends SINGLE_SAMPLE after its Base/SHARC_QUERY defines.
     // Append coverage without changing the existing ordered request prefix.

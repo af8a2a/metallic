@@ -22,6 +22,7 @@ import Lighting;
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapPhysicalPoolInterop.h"
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapBatchInterop.h"
+#include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapLODInterop.h"
 
 // Incompatible diagnostic permutations are rejected at the module boundary.
 #ifndef VSM_DIRECTIONAL_MARK
@@ -43,6 +44,7 @@ using Metallic.Lighting;
 __include "VirtualShadowMaps/ParametersAndDiagnostics.slang";
 __include "VirtualShadowMaps/BatchExecution.slang";
 __include "VirtualShadowMaps/ProjectionGeometry.slang";
+__include "VirtualShadowMaps/ShadowViewLOD.slang";
 __include "VirtualShadowMaps/ReceiverReconstruction.slang";
 __include "VirtualShadowMaps/ShadowSampling.slang";
 __include "VirtualShadowMaps/PageLookup.slang";

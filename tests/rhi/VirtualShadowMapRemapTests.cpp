@@ -249,8 +249,9 @@ public:
                 arguments.fill(0xcdcdcdcdu);
                 std::vector<uint32_t> owners(kPool * 2 + count + blocks, 0xcdcdcdcdu);
                 // Reset writes invalidated resident-page counters even without
-                // layered caching. Production binds 32 diagnostic + 16 metadata words.
-                std::array<uint32_t, 48> cacheDiagnostics{};
+                // Reset also reads the optional GPU LOD context at word 50.
+                std::array<uint32_t, 51> cacheDiagnostics{};
+                cacheDiagnostics[50] = UINT32_MAX;
                 const std::array<uint64_t, 7> bytes{initial.size() * sizeof(Page), previous.size() * sizeof(Page),
                     compact.size() * sizeof(Page), sizeof(statistics), sizeof(arguments), owners.size() * sizeof(uint32_t), sizeof(cacheDiagnostics)};
                 const std::array<const void*, 7> data{initial.data(), previous.data(), compact.data(), statistics.data(), arguments.data(), owners.data(), cacheDiagnostics.data()};
@@ -319,7 +320,8 @@ public:
                 expectedStatistics[22] = !input.reuse; expectedStatistics[23] = 7; expectedStatistics[25] = input.dirtyBounds;
                 expectedStatistics[26] = input.force; expectedStatistics[27] = 1; expectedStatistics[28] = 3;
                 const std::array<uint32_t, 9> expectedArguments{0,1,1,0,1,1,0,1,1};
-                std::array<uint32_t, 48> expectedCacheDiagnostics{};
+                std::array<uint32_t, 51> expectedCacheDiagnostics{};
+                expectedCacheDiagnostics[50] = UINT32_MAX;
                 expectedCacheDiagnostics[kVSMCacheCompositeInvalidatedResidentPages] = invalidated;
                 const std::array<Buffer*, 5> actual{buffers[0].get(), buffers[3].get(), buffers[4].get(), flagReadback->get(), buffers[6].get()};
                 const std::array<const void*, 5> expectedData{expected.data(), expectedStatistics.data(), expectedArguments.data(), expectedFlags.data(), expectedCacheDiagnostics.data()};

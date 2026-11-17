@@ -13,6 +13,7 @@
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <bit>
+#include <cassert>
 #include <numeric>
 #include <unordered_map>
 #include <unordered_set>
@@ -98,7 +99,7 @@ public:
         reflection.addBufferOutput("cacheDiagnostics", "Six cache invalidation and static/dynamic page-work blocks per light entry")
             .buffer(uint64_t(capacity) * 6 * kVirtualShadowMapCacheDiagnosticSize, sizeof(uint32_t))
             .bufferLayout("u32").transferWrite();
-        reflection.addBufferOutput("lodStatistics", "Shared shadow LOD selection, page demand and selected cluster level histogram")
+        reflection.addBufferOutput("lodStatistics", "Per-view shadow LOD selection, page demand and selected cluster level histogram")
             .buffer(32 * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         reflection.addBufferOutput("budgetDiagnostics", "Current GPU shared-pool allocation header and eight uints per source face")
             .buffer(uint64_t(8 + capacity * 6 * 8) * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite()
@@ -552,8 +553,7 @@ public:
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
-            RenderGraphStageUse{"budgetDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
-            RenderGraphStageUse{"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite}};
+            RenderGraphStageUse{"budgetDiagnostics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             initializeUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
@@ -566,8 +566,9 @@ public:
         projections.reserve(header.admittedCount);
         ViewConstants view{};
         uint64_t contentKey = 0;
+        std::shared_ptr<Buffer> gpuLODStatistics;
         std::array<uint32_t, 32> lodStatistics{};
-        lodStatistics[0] = 2;
+        lodStatistics[0] = 3;
         lodStatistics[1] = settings.shadowLOD;
         auto recordFaces = [&](CommandBuffer&) -> Result<> {
             cpuPhase.next("Caster textures and geometry");
@@ -620,45 +621,12 @@ public:
                 auto casters = casterCache_.prepare(*device_, commands, *scene,
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }
+                lodStatistics[5] = casters->triangleCapacity;
                 lodStatistics[10] = casters->triangleCapacity;
                 if (settings.shadowLOD) {
-                    std::vector<VirtualShadowMapLODProjection> lodProjections;
-                    for (uint32_t index : order) {
-                        const auto& item = lights[index];
-                        if (item.entry.status != kVirtualShadowMapLightAdmitted) { continue; }
-                        for (uint32_t face = 0; face < item.entry.faceCount; ++face) {
-                            auto light = item.light;
-                            light.face = face;
-                            const auto faceProjections = VirtualShadowMaps::makeShadowLODProjections(
-                                casters->bounds, view, light, settings, log);
-                            if (!faceProjections) {
-                                spdlog::error("VirtualShadowMapLightsPass shadow LOD projections: {}", log);
-                                return makeError(faceProjections.error());
-                            }
-                            lodProjections.insert(lodProjections.end(), faceProjections->begin(), faceProjections->end());
-                        }
-                    }
-                    lodStatistics[2] = uint32_t(lodProjections.size());
-                    casters = casterCache_.prepareShadowLOD(*device_, commands, *scene,
-                        scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
-                        lodProjections, settings.shadowLODErrorTexels, log, 0.5f * settings.shadowBias);
+                    casters = casterCache_.prepareGPUShadowLOD(*device_, commands, *scene,
+                        scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings, log);
                     if (!casters) { spdlog::error("VirtualShadowMapLightsPass shadow LOD: {}", log); return makeError(casters.error()); }
-                }
-                const auto& lod = casters->shadowLOD;
-                lodStatistics[3] = lod.testedGroups;
-                lodStatistics[4] = lod.selectedClusters;
-                lodStatistics[5] = casters->triangleCapacity;
-                lodStatistics[6] = lod.requestedPages;
-                lodStatistics[7] = lod.blockedPages;
-                lodStatistics[8] = lod.fallbackCasters;
-                lodStatistics[9] = lod.protectedCasters;
-                lodStatistics[11] = lod.metricGroups;
-                lodStatistics[12] = lod.hierarchyNodes;
-                lodStatistics[13] = lod.prunedGroups;
-                lodStatistics[14] = lod.metadataBuilds;
-                lodStatistics[15] = lod.metadataCacheHits;
-                for (size_t level = 0; level < lod.selectedLevels.size(); ++level) {
-                    lodStatistics[16 + std::min(level, size_t(15))] += lod.selectedLevels[level];
                 }
                 if (!temporalIdentities.empty()) { contentKey = temporalContentKey(*casters, info); }
                 profile.next("VSM page demand, cache and raster");
@@ -684,6 +652,9 @@ public:
                     *depth.view(), view, faceRequests, *casters, scene->materials(), alphaTextures, settings,
                     budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr);
                 if (!sharedResults) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(sharedResults.error()); }
+                auto aggregatedLOD = VirtualShadowMaps::aggregateLODStatistics(*device_, commands, *sharedResults, log);
+                if (!aggregatedLOD) { spdlog::error("VirtualShadowMapLightsPass LOD statistics: {}", log); return makeError(aggregatedLOD.error()); }
+                gpuLODStatistics = *aggregatedLOD;
                 size_t resultIndex = 0;
                 for (uint32_t index : order) {
                     const auto& item = lights[index];
@@ -768,10 +739,22 @@ public:
             return {};
         };
         if (auto r = recordFaces(context.commandBuffer()); !r) { (void)context.streamer()->cancelCopyBatch(*batch); return r; }
-        const StreamDataChunk lodChunk{lodStatistics.data(), sizeof(lodStatistics)};
-        const auto lodUpload = context.streamer()->streamBufferData({.dataChunks = {&lodChunk, 1},
-            .placementAlignment = 16, .dstBuffer = lodStatisticsOutput.buffer(), .copyBatch = *batch});
-        if (!lodUpload.valid()) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(Error::OutOfMemory); }
+        BufferSlice sourceLODStatistics, destinationLODStatistics;
+        if (gpuLODStatistics) {
+            auto source = gpuLODStatistics->slice();
+            auto destination = lodStatisticsOutput.buffer()->slice({0, sizeof(lodStatistics)});
+            if (!source || !destination) {
+                (void)context.streamer()->cancelCopyBatch(*batch);
+                return makeError(Error::InvalidArgument);
+            }
+            sourceLODStatistics = *source; destinationLODStatistics = *destination;
+        } else {
+            const StreamDataChunk lodChunk{lodStatistics.data(), sizeof(lodStatistics)};
+            const auto lodUpload = context.streamer()->streamBufferData({.dataChunks = {&lodChunk, 1},
+                .placementAlignment = 16, .dstBuffer = lodStatisticsOutput.buffer(), .copyBatch = *batch});
+            if (!lodUpload.valid()) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(Error::OutOfMemory); }
+            initializeUses.push_back({"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite});
+        }
         cpuPhase.next("Publication stage setup");
         // Build views only after the owning names have reached their final
         // addresses. Projection writes the public arrays directly; only face
@@ -791,6 +774,11 @@ public:
         bufferImports.reserve(publications.size() * 2);
         publishUses.reserve(4 + publications.size() * 2);
         projectionUses.reserve(3 + publications.size());
+        if (gpuLODStatistics) {
+            bufferImports.push_back({"privateLODStatistics", sourceLODStatistics, RenderGraphResourceAccess::BufferTransferRead});
+            publishUses.push_back({"privateLODStatistics", RenderGraphResourceAccess::BufferTransferRead});
+            publishUses.push_back({"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite});
+        }
         if (projectionGrid.grid) {
             const auto& grid = *projectionGrid.grid;
             const std::array gridBuffers{
@@ -823,6 +811,11 @@ public:
         if (!temporalIdentities.empty()) {
             temporalUses.push_back({"shadows", RenderGraphResourceAccess::TextureStorageReadWrite});
             temporalUses.push_back({"depth", RenderGraphResourceAccess::TextureSampleRead});
+            if (gpuLODStatistics) {
+                for (const auto& publication : publications) {
+                    temporalUses.push_back({publication.cacheName, RenderGraphResourceAccess::BufferStorageRead});
+                }
+            }
         }
         std::array<uint64_t, 8> memoryData{};
         const uint32_t outputLayerCount = output.desc().layerCount;
@@ -913,6 +906,9 @@ public:
                 for (const auto& publication : coveragePublications) {
                     if (auto copied = cmd.copyBuffer(publication.source, publication.destination); !copied) { return copied; }
                 }
+                if (gpuLODStatistics) {
+                    if (auto copied = cmd.copyBuffer(sourceLODStatistics, destinationLODStatistics); !copied) { return copied; }
+                }
                 for (const auto& publication : publications) {
                     auto copied = cmd.copyBuffer(publication.sourceStats, publication.destinationStats);
                     if (!copied) { return copied; }
@@ -938,9 +934,21 @@ public:
                     auto temporalSettings = settings;
                     temporalSettings.physicalPageCount = budget;
                     const uint64_t lightContentKey = (contentKey ^ uint32_t(demandDriven)) * 1099511628211ull;
+                    std::array<Buffer*, 6> lodCaches{};
+                    uint32_t lodCacheCount = 0;
+                    if (gpuLODStatistics) {
+                        const auto group = std::find_if(projections.begin(), projections.end(),
+                            [index](const auto& projection) { return projection.lightIndex == index; });
+                        assert(group != projections.end());
+                        lodCacheCount = group->faceCount;
+                        for (uint32_t face = 0; face < lodCacheCount; ++face) {
+                            lodCaches[face] = group->results[face].cacheDiagnostics;
+                        }
+                    }
                     if (auto r = history->record(*device_, cmd, *depth.view(), *output.view(), view, info.frameIndex,
                         revision, lightContentKey, item.light, temporalSettings, historyFrames,
-                        item.entry.baseLayer, item.entry.faceCount, compact_, log, gpuProfiler); !r) {
+                        item.entry.baseLayer, item.entry.faceCount, compact_, log, gpuProfiler,
+                        {lodCaches.data(), lodCacheCount}); !r) {
                         spdlog::error("VirtualShadowMapLightsPass temporal: {}", log);
                         return r;
                     }

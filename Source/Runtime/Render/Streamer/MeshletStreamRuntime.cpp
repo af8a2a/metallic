@@ -1237,6 +1237,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 {
     profiling::CPUPhase phase("streamInit.reset");
     reset();
+    device_ = &device;
     log.clear();
 
     phase.next("streamInit.openAsset");
@@ -2742,6 +2743,8 @@ void MeshletStreamRuntime::reset()
     requestBuffer_.reset();
     requestReadbackBuffer_.reset();
     requestReadbacks_.clear();
+    shadowRequestReadbacks_.clear();
+    device_ = nullptr;
     consumedRequestFrame_ = 0;
     maintenancePrepared_ = false;
     requestClearBuffer_.reset();
@@ -3154,6 +3157,7 @@ void MeshletStreamRuntime::prepareMaintenance(CPUProfileRecorder* profiler, bool
     residency_.beginFrame(profiler);
     profile.next("GPU request feedback");
     consumeGpuRequestReadback(profiler, allowLegacyReadback);
+    consumeShadowPageRequests(profiler);
     profile.next("Joint cold page reclaim");
     if (coldPageRetentionFrames_ != 0) {
         const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamCLASPoolStats{};
@@ -3825,14 +3829,14 @@ MeshletStreamRuntime::ShadowPageRequests MeshletStreamRuntime::requestShadowPage
     ShadowPageRequests result;
     // Refresh all resident readers before admitting requests that may trigger
     // budget eviction. The recording already owns their geometry-use fence.
-    if (!sourceResidencyFrozen_ && !rasterSnapshotFrozen_) {
+    if (shadowPageRequestsEnabled()) {
         for (const uint32_t page : pageIndices) {
             if (residency_.pageResident(page)) { residency_.requestPage(page); }
         }
     }
     for (const uint32_t page : pageIndices) {
         if (residency_.pageResident(page)) { continue; }
-        if (sourceResidencyFrozen_ || rasterSnapshotFrozen_) {
+        if (!shadowPageRequestsEnabled()) {
             ++result.blockedPages;
             continue;
         }
@@ -3845,6 +3849,47 @@ MeshletStreamRuntime::ShadowPageRequests MeshletStreamRuntime::requestShadowPage
         result.blockedPages += admitted ? 0u : 1u;
     }
     return result;
+}
+
+Result<> MeshletStreamRuntime::cmdCollectShadowPageRequests(CommandBuffer& commandBuffer, Buffer& flags,
+    uint32_t pageCount)
+{
+    auto* frame = RenderFrameContext::from(commandBuffer);
+    if (!ready() || !frame || !frame->recording() || pageCount != asset_.pageCount()) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!shadowPageRequestsEnabled() || pageCount == 0) { return {}; }
+    const uint64_t bytes = uint64_t(pageCount) * sizeof(uint32_t);
+    auto source = flags.slice({0, bytes});
+    if (!source) { return std::unexpected(source.error()); }
+    auto slot = std::find_if(shadowRequestReadbacks_.begin(), shadowRequestReadbacks_.end(), [](const auto& candidate) {
+        // A cancelled recording can still own an accepted GPU prefix. Its
+        // allocation becomes reusable only after that prefix has completed.
+        return !candidate.submission || (candidate.submission->cancelled() && candidate.completion.isComplete());
+    });
+    if (slot == shadowRequestReadbacks_.end()) {
+        auto buffer = device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback, .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+        if (!buffer) { return std::unexpected(buffer.error()); }
+        shadowRequestReadbacks_.push_back({.buffer = std::move(*buffer)});
+        slot = std::prev(shadowRequestReadbacks_.end());
+    }
+    auto destination = slot->buffer->slice({0, bytes});
+    if (!destination) { return std::unexpected(destination.error()); }
+    const BufferBarrierDesc copyReady{.buffer = &flags,
+        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .range = {0, bytes}};
+    if (auto result = commandBuffer.synchronize({.buffers = {&copyReady, 1}}); !result) { return result; }
+    if (auto result = commandBuffer.copyBuffer(*source, *destination); !result) { return result; }
+    const BufferBarrierDesc shaderReady{.buffer = &flags,
+        .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}, .range = {0, bytes}};
+    if (auto result = commandBuffer.synchronize({.buffers = {&shaderReady, 1}}); !result) { return result; }
+    auto transaction = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+    if (auto result = commandBuffer.addSubmissionTransaction(transaction); !result) { return result; }
+    slot->completion = frame->completion();
+    slot->submission = std::move(transaction);
+    return {};
 }
 
 Result<> MeshletStreamRuntime::cmdPrepareShadowGeometry(CommandBuffer& commandBuffer)
@@ -5348,6 +5393,34 @@ Result<> MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& c
     return {};
 }
 
+void MeshletStreamRuntime::consumeShadowPageRequests(CPUProfileRecorder* profiler)
+{
+    if (shadowRequestReadbacks_.empty()) { return; }
+    CPUProfileScope profile(profiler, "Shadow page feedback");
+    std::vector<uint32_t> pages;
+    for (auto& readback : shadowRequestReadbacks_) {
+        if (!readback.submission || readback.submission->cancelled() || !readback.submission->resolved() ||
+            !readback.completion.isSubmitted() || !readback.completion.isComplete()) { continue; }
+        readback.buffer->invalidate();
+        const auto* flags = static_cast<const uint32_t*>(readback.buffer->map());
+        if (!flags) {
+            spdlog::error("MeshletStreamRuntime could not map completed shadow page feedback");
+            continue;
+        }
+        for (uint32_t page = 0; page < asset_.pageCount(); ++page) {
+            if (flags[page] != 0) { pages.push_back(page); }
+        }
+        readback.buffer->unmap();
+        readback.submission.reset();
+        readback.completion = {};
+    }
+    // Consume every completed pass, including equal frame indices. Touch the
+    // union of selected pages before any missing-page admission can evict them.
+    std::ranges::sort(pages);
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    if (!pages.empty()) { (void)requestShadowPages(pages); }
+}
+
 void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profiler, bool allowLegacyReadback, bool consumeResidency)
 {
     RequestReadback* latest = nullptr;
@@ -5846,6 +5919,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"latency", std::move(latencyJson)},
         {"requestBufferBytes", requestBuffer_ ? requestBuffer_->desc().size : 0},
         {"requestReadbackBytes", requestReadbackBuffer_ ? requestReadbackBuffer_->desc().size * (requestReadbacks_.size() + 1u) : 0},
+        {"shadowRequestReadbackBytes", uint64_t(shadowRequestReadbacks_.size()) * asset_.pageCount() * sizeof(uint32_t)},
         {"consumedRequestFrame", consumedRequestFrame_}, {"maintenancePrepared", maintenancePrepared_},
         {"lodTopologyBytes", lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0},
         {"groupsBytes", groupBuffer_ ? groupBuffer_->desc().size : 0},

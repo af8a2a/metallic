@@ -816,6 +816,12 @@ public:
     // Touch selected pages and enqueue missing refinements without borrowing
     // the primary-view cut. Accepted requests are not necessarily resident.
     ShadowPageRequests requestShadowPages(std::span<const uint32_t> pageIndices);
+    bool shadowPageRequestsEnabled() const { return !sourceResidencyFrozen_ && !rasterSnapshotFrozen_; }
+    // One compute-written uint per asset page: wanted missing or selected pages
+    // are nonzero. Feedback only drives later IO/touch, never CPU cut selection.
+    // Each recording has its own completion ticket, including multiple passes
+    // in one frame. Frozen residency neither records nor consumes feedback.
+    Result<> cmdCollectShadowPageRequests(CommandBuffer& commandBuffer, Buffer& flags, uint32_t pageCount);
     uint32_t frameIndex() const { return frameIndex_; }
     uint32_t visibleClusterCapacity() const;
     uint32_t rasterCandidateCapacity() const { return rasterCandidateCapacity_; }
@@ -907,7 +913,9 @@ private:
     Result<> updateParamsBuffer(const MeshletStreamFrameDesc& frame);
     Result<> transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
     void consumeGpuRequestReadback(CPUProfileRecorder* profiler, bool allowLegacyReadback, bool consumeResidency = true);
+    void consumeShadowPageRequests(CPUProfileRecorder* profiler);
 
+    Device* device_ = nullptr;
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
@@ -931,6 +939,12 @@ private:
         uint32_t frame = 0;
     };
     std::vector<RequestReadback> requestReadbacks_;
+    struct ShadowRequestReadback {
+        std::unique_ptr<Buffer> buffer;
+        GPUCompletionPoint completion;
+        std::shared_ptr<SubmissionTransaction> submission;
+    };
+    std::vector<ShadowRequestReadback> shadowRequestReadbacks_;
     uint32_t consumedRequestFrame_ = 0;
     std::unique_ptr<Buffer> requestClearBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;

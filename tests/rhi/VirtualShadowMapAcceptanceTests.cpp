@@ -191,7 +191,7 @@ public:
         requireAcceptance(rawLOD.size() == 32 * sizeof(uint32_t), "Unexpected VSM LOD statistics layout");
         std::array<uint32_t, 32> lodStatistics;
         std::memcpy(lodStatistics.data(), rawLOD.data(), sizeof(lodStatistics));
-        requireAcceptance(lodStatistics[0] == 2, "Unsupported VSM LOD statistics version");
+        requireAcceptance(lodStatistics[0] == 3, "Unsupported VSM LOD statistics version");
         result["lodStatistics"] = lodStatistics;
         if (captureCacheDiagnostics) {
             const auto cache = read("Shadows.cacheDiagnostics");

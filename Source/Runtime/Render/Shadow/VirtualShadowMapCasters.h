@@ -2,12 +2,27 @@
 
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapLOD.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapLODInterop.h"
 #include "Runtime/Scene/Scene.h"
 
 namespace metallic::render {
 
 struct MeshletStreamShadowGeometryView;
+class MeshletStreamRuntime;
 struct VirtualShadowMapLODMetadataCache;
+
+struct VirtualShadowMapGPUHierarchy
+{
+    VirtualShadowMapLODContextGPU context{};
+    std::shared_ptr<void> owner;
+    std::vector<ResourceLease> leases;
+    // Immutable groups, parents, nodes, metrics, instances, clusters, triangle map.
+    std::array<Buffer*, 7> metadataBuffers{};
+    Buffer* pageRequests = nullptr;
+    std::shared_ptr<MeshletStreamRuntime> stream;
+    uint32_t pageCount = 0;
+    uint64_t layoutKey = 0;
+};
 
 // Matches the fine-work compute group. Stream candidates retain their native
 // 128-triangle cluster; its bounds serve two adjacent groups.
@@ -90,6 +105,7 @@ struct VirtualShadowMapCasterResources
     VirtualShadowMapShadowLODDiagnostics shadowLOD;
     // CPU-only immutable primitive topology, shared across base upload snapshots.
     std::shared_ptr<VirtualShadowMapLODMetadataCache> lodMetadata;
+    std::shared_ptr<VirtualShadowMapGPUHierarchy> gpuLOD;
     // Sorted by id. Hidden/deleted casters are absent so the cache can invalidate
     // their previous bounds when comparing committed snapshots.
     std::vector<VirtualShadowMapCasterState> states;
@@ -118,6 +134,13 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
     std::span<const VirtualShadowMapLODProjection> projections, float maxErrorTexels, std::string& log,
     float maxWorldError = std::numeric_limits<float>::max());
 
+// Publishes every hierarchy candidate once. GPU selection is independent for
+// each shadow view; no projection-dependent cut is chosen or read back here.
+Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapGPUShadowLOD(
+    Device& device, CommandBuffer& commands, const scene::Scene& scene,
+    const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
+    const VirtualShadowMapCasterSettings& settings, std::string& log);
+
 // Selects one layer from a complete producer snapshot. IDs are sorted and use
 // the source structural revision. Geometry slot IDs/capacity and complete scene
 // bounds stay unchanged; states contains only the selected layer's casters.
@@ -142,6 +165,10 @@ public:
         const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
         const VirtualShadowMapCasterSettings& settings, std::span<const VirtualShadowMapLODProjection> projections,
         float maxErrorTexels, std::string& log, float maxWorldError);
+    Result<VirtualShadowMapCasterResources> prepareGPUShadowLOD(
+        Device& device, CommandBuffer& commands, const scene::Scene& scene,
+        const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
+        const VirtualShadowMapCasterSettings& settings, std::string& log);
 
 private:
     struct Resident;

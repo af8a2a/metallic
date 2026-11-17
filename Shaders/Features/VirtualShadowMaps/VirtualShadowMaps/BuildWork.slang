@@ -136,13 +136,13 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     GroupMemoryBarrierWithGroupSync();
 #if VSM_WORKLOAD_DIAGNOSTICS
     // Keep the predicate's diagnostic side effects inside the lane/valid guard.
-    if (lane < push.clipmapCount && g_vsmClusterValid != 0u) {
+    if (lane < push.clipmapCount && g_vsmClusterValid != 0u && vsmLODSelectedRange(push, firstTriangle, lane)) {
         if (vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
             InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
         }
     }
 #else
-    if (lane < push.clipmapCount && g_vsmClusterValid != 0u &&
+    if (lane < push.clipmapCount && g_vsmClusterValid != 0u && vsmLODSelectedRange(push, firstTriangle, lane) &&
         vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
         InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
     }
@@ -189,7 +189,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
 #endif
     for (uint level = 0u; level < push.clipmapCount; ++level) {
-        if ((levelMask & (1u << level)) == 0u) { continue; }
+        if ((levelMask & (1u << level)) == 0u || !vsmLODSelected(push, triangleIndex, level)) { continue; }
         ShadowProjection projection = projections[level];
         float3 lo, hi;
 #if !VSM_DIRECTIONAL_BUILD

@@ -7,6 +7,7 @@ using Metallic;
 using Metallic.Shadow;
 
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
+#include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapLODInterop.h"
 [[vk::push_constant]] ConstantBuffer<VirtualShadowMapTemporalParams> params;
 [SpecializationConstant]
 const bool kTemporalIsOrtho = false;
@@ -147,11 +148,25 @@ bool temporalProject(float3 position, TemporalViewBasis basis, out float2 pixel)
 groupshared TemporalViewBasis gTemporalViews[2];
 groupshared float4 gTemporalPositions[100];
 groupshared float gTemporalRawDepth[100];
+groupshared uint gTemporalLODChanged;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    if (lane == 0u) {
+        gTemporalLODChanged = 0u;
+        if (kTemporalHasHistory) {
+            for (uint index = 0u; index < params.lodCaches.count; ++index) {
+                StructuredBuffer<uint> cache = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.lodCaches.load(index)));
+                gTemporalLODChanged |= cache[29u];
+                StructuredBuffer<VirtualShadowMapLODContextGPU> contexts =
+                    resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapLODContextGPU>>(cache[50u]));
+                // A disabled/rebuilt page cache has no committed cut to compare.
+                gTemporalLODChanged |= contexts[0].previousValid == 0u ? 1u : 0u;
+            }
+        }
+    }
     if (lane < (kTemporalHasHistory ? 2u : 1u)) {
         gTemporalViews[lane] = createTemporalViewBasis(params.views, lane);
     }
@@ -203,7 +218,7 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
     float result = raw;
     uint count = 1u;
 
-    if (kTemporalHasHistory && params.hasHistory != 0u) {
+    if (kTemporalHasHistory && params.hasHistory != 0u && gTemporalLODChanged == 0u) {
         TemporalViewBasis previous = gTemporalViews[1];
         float2 previousPixel;
         if (temporalProject(position, previous, previousPixel)) {

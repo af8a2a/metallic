@@ -6,6 +6,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapPhysicalPoolInterop.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapBatchInterop.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapLODInterop.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
@@ -345,8 +346,10 @@ struct VirtualShadowMaps::Programs
     bool refinedReceiver = false;
     bool sharedPhysicalPool = false;
     bool batchBuildRaster = false;
-    std::array<std::unique_ptr<ShaderModule>, 21> shaders;
+    bool gpuLOD = false;
+    std::array<std::unique_ptr<ShaderModule>, 22> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 16> compute;
+    std::unique_ptr<ComputePipeline> selectLOD;
     std::array<std::unique_ptr<ShaderModule>, 2> onePassShaders;
     std::array<std::unique_ptr<ComputePipeline>, 2> onePassComputes;
     std::unique_ptr<GraphicsPipeline> raster;
@@ -364,6 +367,8 @@ struct VirtualShadowMaps::Cache
     std::vector<DynamicCaster> dynamic; // Sorted indices into this submitted snapshot.
     uint64_t cacheFrame = 0;
     std::shared_ptr<Buffer> pages;
+    std::shared_ptr<Buffer> lodSelection;
+    uint64_t lodLayoutKey = 0;
     std::vector<ShadowProjection> projections;
     std::vector<std::array<int64_t, 2>> origins;
     std::weak_ptr<void> casterOwner;
@@ -395,7 +400,7 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 17> buffers;
+    std::array<std::vector<BufferEntry>, 22> buffers;
     std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     VirtualShadowMapResourcePoolStats stats;
@@ -494,6 +499,8 @@ struct VirtualShadowMaps::State
         std::shared_ptr<Buffer> cacheDiagnostics;
         std::shared_ptr<ShadowAtlas> staticAtlas;
         std::shared_ptr<Buffer> staticHZB, staticHZBJobs, clusterVisibility;
+        std::shared_ptr<Buffer> lodContext, lodGroupStates, lodSelection, lodChanges, lodStatistics;
+        std::shared_ptr<VirtualShadowMapGPUHierarchy> gpuLOD;
         std::shared_ptr<SharedShadowPoolStorage> physicalPoolStorage;
         std::array<std::shared_ptr<void>, 3> casterLayers;
         uint64_t layerBufferBytes = 0;
@@ -774,6 +781,10 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         }
     }
     for (const auto& state : states) { state->finish = {}; }
+    if (casters.gpuLOD && casters.gpuLOD->stream) {
+        if (auto r = casters.gpuLOD->stream->cmdCollectShadowPageRequests(commands,
+            *casters.gpuLOD->pageRequests, casters.gpuLOD->pageCount); !r) { return std::unexpected(r.error()); }
+    }
     pool.recording.reset();
     return results;
 }
@@ -1257,6 +1268,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
 {
     const bool sharedPhysicalPool = physicalPool != nullptr;
     const auto poolFrame = sharedPhysicalPool ? physicalPool->impl_->recording : nullptr;
+    const bool gpuLOD = bool(casters.gpuLOD);
     CPUProfileScope total(profiler, "VSM face record");
     total.work("lightType", uint32_t(inputLight.type));
     total.work("face", inputLight.face);
@@ -1438,7 +1450,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    std::array<uint32_t, 50> cacheDiagnostics{};
+    std::array<uint32_t, 51> cacheDiagnostics{};
+    cacheDiagnostics[50] = UINT32_MAX;
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
     auto& reasons = cacheDiagnostics[kVSMCacheReasons];
@@ -1455,10 +1468,12 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         if (cache_->texturePublicationRevision != casters.texturePublicationRevision) { reasons |= kVSMCacheReasonTexturePublication; }
         if (cache_->tessellationKey != casters.tessellationKey) { reasons |= kVSMCacheReasonTessellation; }
         if (cache_->settings.cacheLayering != settings.cacheLayering) { reasons |= kVSMCacheReasonLayerMode; }
+        if (bool(cache_->lodSelection) != gpuLOD) { reasons |= kVSMCacheReasonSettings; }
     }
     bool reuse = cache_ && cache_->receiverMask == receiverMask && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
-        cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey;
+        cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey &&
+        bool(cache_->lodSelection) == gpuLOD;
     if (sharedPhysicalPool) {
         // Only the immediately preceding pool frame certifies these addresses.
         // Omitted or removed faces may have had their slots reassigned meanwhile.
@@ -1890,6 +1905,54 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             cacheDiagnostics[40] = maskLease->shaderIndex(); state->leases.push_back(*maskLease);
         }
     }
+    if (gpuLOD) {
+        state->resources->gpuLOD = casters.gpuLOD;
+        auto context = casters.gpuLOD->context;
+        context.viewCount = push.clipmapCount + 1;
+        context.maxErrorTexels = settings.shadowLODErrorTexels;
+        context.maxWorldError = 0.5f * settings.shadowBias;
+        context.previousValid = reuse && cache_->lodSelection && cache_->lodLayoutKey == casters.gpuLOD->layoutKey;
+        context.previous = UINT32_MAX;
+        auto acquireLOD = [&](size_t slot, uint64_t words, std::shared_ptr<Buffer>& target,
+            uint32_t& handle, bool upload = false, uint32_t stride = sizeof(uint32_t)) -> Result<> {
+            auto buffer = pool_->buffer(slot, {.size = std::max<uint64_t>(words, 1) * sizeof(uint32_t), .structureStride = stride,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                .memoryLocation = upload ? MemoryLocation::HostUpload : MemoryLocation::Device}, completion);
+            if (!buffer) { return std::unexpected(buffer.error()); }
+            target = *buffer;
+            auto lease = state->registry->storageBuffer(*target);
+            if (!lease) { return std::unexpected(lease.error()); }
+            handle = lease->shaderIndex(); state->leases.push_back(*lease);
+            return {};
+        };
+        if (auto r = acquireLOD(18, uint64_t(context.viewCount) * context.groupStateCount,
+            state->resources->lodGroupStates, context.groupStates); !r) { return std::unexpected(r.error()); }
+        if (auto r = acquireLOD(19, uint64_t(context.viewCount) * context.clusterCount,
+            state->resources->lodSelection, context.selected); !r) { return std::unexpected(r.error()); }
+        if (auto r = acquireLOD(20, uint64_t(context.viewCount) * context.instanceCount,
+            state->resources->lodChanges, context.changed); !r) { return std::unexpected(r.error()); }
+        if (auto r = acquireLOD(21, uint64_t(context.viewCount) * kVirtualShadowMapLODStatisticsWords,
+            state->resources->lodStatistics, context.statistics, true); !r) { return std::unexpected(r.error()); }
+        auto* statistics = static_cast<uint32_t*>(state->resources->lodStatistics->map());
+        if (!statistics) { return makeError(Error::Failure); }
+        std::fill_n(statistics, size_t(context.viewCount) * kVirtualShadowMapLODStatisticsWords, 0u);
+        for (uint32_t viewIndex = 0; viewIndex < context.viewCount; ++viewIndex) {
+            auto* row = statistics + viewIndex * kVirtualShadowMapLODStatisticsWords;
+            row[0] = 3; row[1] = 1; row[2] = 1;
+        }
+        state->resources->lodStatistics->flush(); state->resources->lodStatistics->unmap();
+        if (context.previousValid) {
+            auto lease = state->registry->storageBuffer(*cache_->lodSelection);
+            if (!lease) { return std::unexpected(lease.error()); }
+            context.previous = lease->shaderIndex(); state->leases.push_back(*lease);
+        }
+        if (auto r = acquireLOD(17, sizeof(context) / sizeof(uint32_t),
+            state->resources->lodContext, cacheDiagnostics[50], true, sizeof(context)); !r) { return std::unexpected(r.error()); }
+        auto* contextData = state->resources->lodContext->map();
+        if (!contextData) { return makeError(Error::Failure); }
+        std::memcpy(contextData, &context, sizeof(context));
+        state->resources->lodContext->flush(); state->resources->lodContext->unmap();
+    }
     auto diagnostics = pool_->buffer(12, {.size = sizeof(cacheDiagnostics), .structureStride = 4,
         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
         .memoryLocation = MemoryLocation::HostUpload}, completion);
@@ -1970,7 +2033,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs_->receiverMask != receiverMask ||
         programs_->staticPageHZB != staticPageHZB ||
         programs_->refinedReceiver != refinedReceiver || programs_->sharedPhysicalPool != sharedPhysicalPool ||
-        programs_->batchBuildRaster != (sharedPhysicalPool && settings.batchBuildRaster);
+        programs_->batchBuildRaster != (sharedPhysicalPool && settings.batchBuildRaster) || programs_->gpuLOD != gpuLOD;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
         std::filesystem::path generatedDirectory;
@@ -1998,17 +2061,19 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs->refinedReceiver = refinedReceiver;
         programs->sharedPhysicalPool = sharedPhysicalPool;
         programs->batchBuildRaster = sharedPhysicalPool && settings.batchBuildRaster;
+        programs->gpuLOD = gpuLOD;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
             "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
-            pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain"};
+            pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain", "vsmLODSelectMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
         // Reuse Mark invariants only for local lights; directional hoisting regressed Mark.
         const std::array macros{SlangMacroDefine{"METALLIC_CUSTOM_COVERAGE", coverage->coverageProgramCount() ? "1" : "0"},
             SlangMacroDefine{"VSM_SHARED_PHYSICAL_POOL", sharedPhysicalPool ? "1" : "0"},
+            SlangMacroDefine{"VSM_GPU_LOD", gpuLOD ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", settings.collectGPUWork ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", groupProjectionStatistics ? "1" : "0"},
             SlangMacroDefine{"VSM_LOCAL_MARK", !directional ? "1" : "0"},
@@ -2022,6 +2087,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             if (index == 17 && !staticPageHZB) { continue; }
             if (index == 18 && !staticPageHZB) { continue; }
             if (index == 20 && !groupedFineRaster) { continue; }
+            if (index == 21 && !gpuLOD) { continue; }
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
@@ -2097,6 +2163,12 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
                 if (!pipeline) { return std::unexpected(pipeline.error()); }
                 programs->compute[index < 6 ? index : index - 4] = std::move(*pipeline);
             }
+            if (index == 21) {
+                auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
+                    .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
+                if (!pipeline) { return std::unexpected(pipeline.error()); }
+                programs->selectLOD = std::move(*pipeline);
+            }
         }
         GraphicsPipelineDesc rasterDesc{.meshShader = {programs->shaders[6].get()},
             .fragmentShader = {programs->shaders[7].get()}, .depthStencilFormat = Format::D32Sfloat,
@@ -2140,6 +2212,34 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         return commands.synchronize({.buffers = barriers});
     };
     phase.next("Record VSM demand and build commands");
+    if (gpuLOD) {
+        auto lodGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM per-view hierarchy LOD") : RenderGraphExecutionContext::ProfileScope{};
+        commands.hostWriteBarrier();
+        std::vector<BufferBarrierDesc> lodReady;
+        for (const auto& buffer : {state->resources->lodGroupStates, state->resources->lodSelection, state->resources->lodChanges}) {
+            lodReady.push_back({.buffer = buffer.get(),
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}});
+        }
+        if (reuse && cache_->lodSelection) {
+            lodReady.push_back({.buffer = cache_->lodSelection.get(),
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}});
+        }
+        if (auto r = commands.synchronize({.buffers = lodReady}); !r) { return std::unexpected(r.error()); }
+        for (uint32_t base = 0; base < casters.gpuLOD->context.instanceCount; base += kDrawBatchSize) {
+            auto lodPush = push; lodPush.workBase = base;
+            if (auto r = commands.bindExecution(state->programs->selectLOD->execution(), &lodPush, sizeof(lodPush)); !r) { return std::unexpected(r.error()); }
+            if (auto r = commands.dispatch(std::min(kDrawBatchSize, casters.gpuLOD->context.instanceCount - base), push.clipmapCount + 1); !r) { return std::unexpected(r.error()); }
+        }
+        lodReady.clear();
+        for (const auto& buffer : {state->resources->lodSelection, state->resources->lodChanges, state->resources->lodStatistics}) {
+            lodReady.push_back({.buffer = buffer.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                .after = {PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::Transfer,
+                    AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::TransferRead}});
+        }
+        if (auto r = commands.synchronize({.buffers = lodReady}); !r) { return std::unexpected(r.error()); }
+    }
     auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM reset") : RenderGraphExecutionContext::ProfileScope{};
     auto resetGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM reset prepare") : RenderGraphExecutionContext::ProfileScope{};
     commands.hostWriteBarrier();
@@ -2517,6 +2617,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     if (!sharedPhysicalPool) {
         if (auto r = state->finish(); !r) { return std::unexpected(r.error()); }
         state->finish = {};
+        if (gpuLOD && casters.gpuLOD->stream) {
+            if (auto r = casters.gpuLOD->stream->cmdCollectShadowPageRequests(commands,
+                *casters.gpuLOD->pageRequests, casters.gpuLOD->pageCount); !r) { return std::unexpected(r.error()); }
+        }
     }
     phase.next("Prepare VSM cache snapshot");
     if (settings.cacheEnabled) {
@@ -2524,6 +2628,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         next->device = &device;
         next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->resources->textures[0], state->resources->views[0]});
         next->pages = state->resources->buffers[1]; next->projections = std::move(projections); next->origins = origins;
+        next->lodSelection = state->resources->lodSelection;
+        next->lodLayoutKey = gpuLOD ? casters.gpuLOD->layoutKey : 0;
         next->casterOwner = casters.owner;
         next->casters = unchangedCasters ? cache_->casters : std::make_shared<const std::vector<VirtualShadowMapCasterState>>(casters.states);
         next->settings = settings; next->light = light; next->farPlane = farPlane;
@@ -2553,7 +2659,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         state->resources->buffers[4].get(), state->resources->textures[0].get(), state->resources->views[0].get(), state->resources->buffers[1].get(), state->resources->buffers[5].get(), push.physicalPagesX, push.clipmapCount, push.pageSize,
         state->resources, state->resources->cacheDiagnostics.get(),
         receiverMask ? state->resources->buffers[9].get() : nullptr,
-        (allocationWords + clusterPageBitsetWords) * sizeof(uint32_t)};
+        (allocationWords + clusterPageBitsetWords) * sizeof(uint32_t),
+        state->resources->lodSelection.get(), state->resources->lodStatistics.get(), state->resources->lodChanges.get(),
+        gpuLOD ? casters.gpuLOD->context.clusterCount : 0, gpuLOD ? casters.gpuLOD->context.instanceCount : 0};
 }
 
 Result<> VirtualShadowMaps::preparePointFaces(CommandBuffer& commands,
@@ -2978,6 +3086,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
                 addBuffer(cache->staticHZB.get());
             }
             addBuffer(cache->pages.get());
+            addBuffer(cache->lodSelection.get());
         }
     };
     addCache(cache_);
@@ -2989,6 +3098,11 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
             addBuffer(state_->resources->staticHZB.get());
         }
         addBuffer(state_->resources->cacheDiagnostics.get());
+        addBuffer(state_->resources->lodContext.get());
+        addBuffer(state_->resources->lodGroupStates.get());
+        addBuffer(state_->resources->lodSelection.get());
+        addBuffer(state_->resources->lodChanges.get());
+        addBuffer(state_->resources->lodStatistics.get());
         addBuffer(state_->resources->staticHZBJobs.get());
         addBuffer(state_->resources->clusterVisibility.get());
         usage.bufferBytes += state_->resources->layerBufferBytes;

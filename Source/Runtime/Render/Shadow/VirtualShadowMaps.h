@@ -87,7 +87,7 @@ struct VirtualShadowMapSettings
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.
     bool instanceBuild = false; // Directional instance culling and indirect fine Build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.
-    bool shadowLOD = false; // Shared caster cut driven by all admitted shadow projections.
+    bool shadowLOD = false; // GPU hierarchy cuts for each face's clipmap/mip and coarse view.
     float shadowLODErrorTexels = 1.0f; // Zero requests the finest available complete cut.
     bool shadowLODSmartBias = false; // Hard directional shadows: screen-depth constrained receiver bias.
     float shadowLODScreenRayLength = 0.015f; // Fraction of vertical view extent at the receiver.
@@ -135,6 +135,11 @@ struct VirtualShadowMapResult
     // Current-frame requested subtile words in allocator scratch, before admission restricts residency.
     Buffer* requestedReceiverMasks = nullptr;
     uint64_t requestedReceiverMaskOffset = 0;
+    Buffer* lodSelection = nullptr; // View-major uint[clusterCount], including the coarse view.
+    Buffer* lodStatistics = nullptr; // View-major 32-word v3 diagnostics.
+    Buffer* lodChanges = nullptr; // View-major uint[instanceCount], compared with the committed cut.
+    uint32_t lodClusterCount = 0;
+    uint32_t lodInstanceCount = 0;
 };
 
 // The caller owns these graph textures through GPU completion and transitions
@@ -234,6 +239,8 @@ public:
     static Result<std::vector<VirtualShadowMapLODProjection>> makeShadowLODProjections(
         const scene::Bounds& bounds, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapSettings& settings, std::string& log);
+    static Result<std::shared_ptr<Buffer>> aggregateLODStatistics(Device& device, CommandBuffer& commands,
+        std::span<const VirtualShadowMapResult> faces, std::string& log);
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
         const VirtualShadowMapCasterResources& casters,

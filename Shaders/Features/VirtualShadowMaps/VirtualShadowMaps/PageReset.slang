@@ -67,6 +67,7 @@ bool vsmStaticPageHidesBounds(ShadowPush push, ShadowProjection projection, uint
 [numthreads(64, 1, 1)]
 void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 {
+    if (id.x == 0u) { vsmLODPublishChangedCasters(push); }
 #if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
     if (id.x == 0u) {
         RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
@@ -123,9 +124,11 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                 // Only resident pages need rectangle tests. Count consumes these
                 // flags before replacing the same scratch words with scan ranks.
                 if (old.x != 0xffffffffu) {
+                    bool lodDirty = vsmLODPageChanged(push, entry.z, page, coarse);
+                    mappingDirty = mappingDirty || lodDirty;
                     uint staticFlags = 0u;
                     if ((push.cacheMode & 16u) != 0u) {
-                        bool staticDirty = (push.cacheMode & 4u) != 0u || (coarse && vsmCacheMetadata(push, 35u) != 0u);
+                        bool staticDirty = lodDirty || (push.cacheMode & 4u) != 0u || (coarse && vsmCacheMetadata(push, 35u) != 0u);
                         if (!coarse) {
                             uint4 staticChange = changes[vsmCacheMetadata(push, 36u) + entry.z];
                             for (uint rectangle = 0u; !staticDirty && rectangle < staticChange.w; ++rectangle) {

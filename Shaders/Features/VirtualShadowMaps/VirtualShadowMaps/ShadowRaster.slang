@@ -137,7 +137,7 @@ bool vsmRasterPageLayerActive(inout uint triangleIndex, uint4 page, ShadowPush p
             layerPageActive = (mask & (1u << (triangleIndex & 31u))) != 0u;
         }
     }
-    return layerPageActive;
+    return layerPageActive && vsmLODSelected(push, triangleIndex, page.z);
 }
 
 float4 vsmDirectionalPageBounds(uint virtualPage, inout ShadowProjection projection)
@@ -191,7 +191,8 @@ uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, boo
             layerPageActive = (mask & (1u << (triangleIndex & 31u))) != 0u;
         }
     }
-    if (layerPageActive && loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
+    if (layerPageActive && vsmLODSelected(push, triangleIndex, pages[virtualPage].z) &&
+        loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
         vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
 #if VSM_WORKLOAD_DIAGNOSTICS
         if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <iterator>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -540,6 +541,7 @@ struct VirtualShadowMapShaderOptions {
     bool pageWindowRaster = false;
     bool refinedReceiver = true;
     bool adaptiveRayCount = true;
+    bool gpuLOD = false;
     uint32_t clipmapCount = 8;
     uint32_t pageSize = 128;
     std::string coverageInclude;
@@ -551,7 +553,7 @@ inline std::vector<ShaderRequest> makeVirtualShadowMapRequests(const VirtualShad
         "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
         "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
         "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
-        options.pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain"};
+        options.pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain", "vsmLODSelectMain"};
 
     const std::vector<std::string> capabilities{"spvMeshShadingEXT"};
     std::vector<std::string> searchPaths;
@@ -561,6 +563,7 @@ inline std::vector<ShaderRequest> makeVirtualShadowMapRequests(const VirtualShad
 
     const std::vector<std::pair<std::string, std::string>> baseMacros{
         {"METALLIC_CUSTOM_COVERAGE", "0"},
+        {"VSM_GPU_LOD", options.gpuLOD ? "1" : "0"},
         {"VSM_WORKLOAD_DIAGNOSTICS", "0"},
         {"VSM_OPTIMIZE_PROJECTION_STATISTICS", "0"},
         {"VSM_LOCAL_MARK", options.directional ? "0" : "1"},
@@ -573,12 +576,13 @@ inline std::vector<ShaderRequest> makeVirtualShadowMapRequests(const VirtualShad
     const std::string markPageShiftDefine = std::to_string(markPageShift);
 
     std::vector<ShaderRequest> requests;
-    for (size_t index = 0; index < 21; ++index) {
+    for (size_t index = 0; index < std::size(entries); ++index) {
         if (index == 14 && !options.compactBuild) { continue; }
         if (index == 16 && !options.dirtyPageHierarchy) { continue; }
         if (index == 17 && !options.staticPageHZB) { continue; }
         if (index == 18 && !options.staticPageHZB) { continue; }
         if (index == 20 && !options.groupedFineRaster) { continue; }
+        if (index == 21 && !options.gpuLOD) { continue; }
 
         const bool buildEntry = index == 3 || index == 14;
         const bool compactEntry = index == 0 || buildEntry;

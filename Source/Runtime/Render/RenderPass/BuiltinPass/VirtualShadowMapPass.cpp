@@ -289,44 +289,19 @@ public:
             if (receiverStream) { receiver = {visibility.view(), receiverStream}; }
         }
         std::array<uint32_t, 32> lodStatistics{};
-        lodStatistics[0] = 2;
+        lodStatistics[0] = 3;
         lodStatistics[1] = settings.shadowLOD;
+        lodStatistics[5] = casters->triangleCapacity;
         lodStatistics[10] = casters->triangleCapacity;
         if (settings.shadowLOD && settings.enabled &&
             (light.flags & (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) ==
                 (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) {
-            VirtualShadowMapLight shadowLight;
-            std::copy_n(light.direction, 3, shadowLight.direction.begin());
-            shadowLight.angularRadius = light.angularRadius;
-            const auto projections = VirtualShadowMaps::makeShadowLODProjections(casters->bounds, view, shadowLight, settings, log);
-            if (!projections) {
-                spdlog::error("VirtualShadowMapPass shadow LOD projections: {}", log);
-                return makeError(projections.error());
-            }
-            lodStatistics[2] = uint32_t(projections->size());
-            casters = casterCache_.prepareShadowLOD(*device_, commands, *scene,
-                scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings,
-                *projections, settings.shadowLODErrorTexels, log, 0.5f * settings.shadowBias);
+            casters = casterCache_.prepareGPUShadowLOD(*device_, commands, *scene,
+                scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings, log);
             if (!casters) {
                 spdlog::error("VirtualShadowMapPass shadow LOD: {}", log);
                 return makeError(casters.error());
             }
-        }
-        const auto& lod = casters->shadowLOD;
-        lodStatistics[3] = lod.testedGroups;
-        lodStatistics[4] = lod.selectedClusters;
-        lodStatistics[5] = casters->triangleCapacity;
-        lodStatistics[6] = lod.requestedPages;
-        lodStatistics[7] = lod.blockedPages;
-        lodStatistics[8] = lod.fallbackCasters;
-        lodStatistics[9] = lod.protectedCasters;
-        lodStatistics[11] = lod.metricGroups;
-        lodStatistics[12] = lod.hierarchyNodes;
-        lodStatistics[13] = lod.prunedGroups;
-        lodStatistics[14] = lod.metadataBuilds;
-        lodStatistics[15] = lod.metadataCacheHits;
-        for (size_t level = 0; level < lod.selectedLevels.size(); ++level) {
-            lodStatistics[16 + std::min(level, size_t(15))] += lod.selectedLevels[level];
         }
         profile.next("VSM demand, raster and resolve");
         cpuPhase.next("Record shadow face");
@@ -337,6 +312,12 @@ public:
             spdlog::error("VirtualShadowMapPass: {}", log);
             return makeError(shadow.error());
         }
+        auto aggregatedLOD = VirtualShadowMaps::aggregateLODStatistics(*device_, commands, {&*shadow, 1}, log);
+        if (!aggregatedLOD) {
+            spdlog::error("VirtualShadowMapPass LOD statistics: {}", log);
+            return makeError(aggregatedLOD.error());
+        }
+        const auto gpuLODStatistics = *aggregatedLOD;
 
         ScreenSpaceShadowParameters parameters{};
         cpuPhase.next("Publication setup and commands");
@@ -362,12 +343,23 @@ public:
             (void)context.streamer()->cancelCopyBatch(*copyBatch);
             return makeError(Error::OutOfMemory);
         }
-        const StreamDataChunk lodChunk{lodStatistics.data(), sizeof(lodStatistics)};
-        const auto lodUploaded = context.streamer()->streamBufferData({.dataChunks = {&lodChunk, 1},
-            .placementAlignment = 16, .dstBuffer = lodStatisticsOutput.buffer(), .copyBatch = *copyBatch});
-        if (!lodUploaded.valid()) {
-            (void)context.streamer()->cancelCopyBatch(*copyBatch);
-            return makeError(Error::OutOfMemory);
+        BufferSlice sourceLODStatistics, destinationLODStatistics;
+        if (gpuLODStatistics) {
+            auto source = gpuLODStatistics->slice();
+            auto destination = lodStatisticsOutput.buffer()->slice({0, sizeof(lodStatistics)});
+            if (!source || !destination) {
+                (void)context.streamer()->cancelCopyBatch(*copyBatch);
+                return makeError(Error::InvalidArgument);
+            }
+            sourceLODStatistics = *source; destinationLODStatistics = *destination;
+        } else {
+            const StreamDataChunk lodChunk{lodStatistics.data(), sizeof(lodStatistics)};
+            const auto lodUploaded = context.streamer()->streamBufferData({.dataChunks = {&lodChunk, 1},
+                .placementAlignment = 16, .dstBuffer = lodStatisticsOutput.buffer(), .copyBatch = *copyBatch});
+            if (!lodUploaded.valid()) {
+                (void)context.streamer()->cancelCopyBatch(*copyBatch);
+                return makeError(Error::OutOfMemory);
+            }
         }
         auto sourceStats = shadow->statistics->slice({0, kVirtualShadowMapStatisticsSize});
         auto destinationStats = statisticsOutput.buffer()->slice({0, kVirtualShadowMapStatisticsSize});
@@ -403,7 +395,7 @@ public:
                 ResourceState::ShaderRead, ResourceState::ShaderRead},
             RenderGraphTextureImport{"privateDebug", shadow->debugTexture, shadow->debug,
                 ResourceState::ShaderRead, ResourceState::ShaderRead}};
-        const std::array bufferImports{RenderGraphBufferImport{"privateStatistics", *importedStats,
+        std::vector<RenderGraphBufferImport> bufferImports{RenderGraphBufferImport{"privateStatistics", *importedStats,
             RenderGraphResourceAccess::BufferStorageReadWrite},
             RenderGraphBufferImport{"privateCacheDiagnostics", *sourceCacheDiagnostics,
                 RenderGraphResourceAccess::BufferStorageReadWrite}};
@@ -418,6 +410,10 @@ public:
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite}};
+        if (gpuLODStatistics) {
+            bufferImports.push_back({"privateLODStatistics", sourceLODStatistics, RenderGraphResourceAccess::BufferTransferRead});
+            uses.push_back({"privateLODStatistics", RenderGraphResourceAccess::BufferTransferRead});
+        }
         if (collectGPUWork_) {
             uses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             uses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
@@ -434,6 +430,10 @@ public:
                 if (!copied) { return copied; }
                 copied = stageCommands.copyBuffer(*sourceCacheDiagnostics, *destinationCacheDiagnostics);
                 if (!copied) { return copied; }
+                if (gpuLODStatistics) {
+                    copied = stageCommands.copyBuffer(sourceLODStatistics, destinationLODStatistics);
+                    if (!copied) { return copied; }
+                }
                 if (collectGPUWork_) {
                     copied = stageCommands.copyBuffer(sourceWorkload, destinationWorkload);
                     if (!copied) { return copied; }

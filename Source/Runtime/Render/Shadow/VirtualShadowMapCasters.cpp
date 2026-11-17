@@ -8,9 +8,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <cmath>
+#include <type_traits>
 
 namespace metallic::render {
 
@@ -61,6 +63,7 @@ struct ShadowCasterSelection
 {
     bool replaceResident = false;
     bool replaceStream = false;
+    bool includeBase = false;
     std::vector<uint32_t> residentClusters;
     std::vector<std::array<uint32_t, 2>> streamClusters; // Global group, local cluster.
     uint64_t lodKey = 0;
@@ -214,6 +217,13 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
         const bool indexed = !primitive.indices.empty();
         std::vector<uint32_t> vertices;
         if (replace) {
+            if (selection->includeBase) {
+                if (indexed) { vertices = primitive.indices; }
+                else {
+                    vertices.resize(primitive.positions.size());
+                    for (uint32_t vertex = 0; vertex < vertices.size(); ++vertex) { vertices[vertex] = vertex; }
+                }
+            }
             for (const uint32_t clusterIndex : selection->residentClusters) {
                 const auto& cluster = primitive.meshletLodClusters[clusterIndex];
                 for (uint32_t vertex = 0; vertex < cluster.triangleCount * 3u; ++vertex) {
@@ -833,6 +843,246 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapShadowLOD(
         maxWorldError, nullptr);
 }
 
+Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapGPUShadowLOD(
+    Device& device, CommandBuffer& commands, const scene::Scene& scene,
+    const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
+    const VirtualShadowMapCasterSettings& settings, std::string& log)
+{
+    auto registry = ResourceRegistry::forDevice(device);
+    if (!registry) { return std::unexpected(registry.error()); }
+    auto& metadata = base.lodMetadata->primitives;
+    if (metadata.empty()) {
+        metadata.resize(stream ? stream->asset->primitives().size() : scene.renderPrimitives().size());
+    }
+    std::vector<uint32_t> streamInstances(scene.renderNodes().size(), UINT32_MAX);
+    if (stream) {
+        for (uint32_t instance = 0; instance < stream->asset->instances().size(); ++instance) {
+            streamInstances[stream->runtimeRenderNodeIndices[instance]] = instance;
+        }
+    }
+    std::vector<ShadowCasterSelection> selections(scene.renderNodes().size());
+    std::vector<const VirtualShadowMapLODHierarchy*> hierarchies;
+    std::vector<bool> protectedCasters;
+    VirtualShadowMapShadowLODDiagnostics diagnostics;
+    for (const auto& state : base.states) {
+        const auto& node = scene.renderNodes()[state.id];
+        const scene::RenderMaterial defaultMaterial;
+        const auto& material = scene.materials().empty() ? defaultMaterial : scene.materials()[std::max(node.materialIndex, 0)];
+        const bool protectedCaster = material.alphaMode == "MASK" || displacementBound(material) != 0;
+        protectedCasters.push_back(protectedCaster);
+        if (protectedCaster) {
+            ++diagnostics.protectedCasters;
+            hierarchies.push_back(nullptr);
+            continue;
+        }
+        const uint32_t primitiveIndex = stream ? stream->asset->instances()[streamInstances[state.id]].primitiveIndex :
+            uint32_t(node.renderPrimitiveIndex);
+        if (!stream && (scene.renderPrimitives()[primitiveIndex].meshletLodGroups.empty() ||
+            scene.renderPrimitives()[primitiveIndex].meshletLodClusters.empty())) {
+            ++diagnostics.fallbackCasters;
+            hierarchies.push_back(nullptr);
+            continue;
+        }
+        if (!metadata[primitiveIndex]) {
+            std::vector<MeshletLODGroupRecord> groups;
+            std::vector<MeshletLODGroupRange> ranges;
+            std::vector<uint32_t> refined;
+            if (stream) {
+                const auto& asset = *stream->asset;
+                const auto& primitive = asset.primitives()[primitiveIndex];
+                for (uint32_t local = 0; local < primitive.groupCount; ++local) {
+                    const auto& source = asset.groups()[primitive.groupOffset + local];
+                    MeshletLODGroupRecord group;
+                    std::copy_n(source.boundsCenterRadius, 4, group.sphere.begin());
+                    group.error = source.maxQuadricError; group.level = source.lodLevel; group.flags = source.flags;
+                    groups.push_back(group);
+                    ranges.push_back({uint32_t(refined.size()), source.clusterCount});
+                    for (uint32_t cluster = 0; cluster < source.clusterCount; ++cluster) {
+                        const uint32_t child = asset.refinedGroups()[source.clusterRefinedOffset + cluster];
+                        refined.push_back(child == UINT32_MAX ? child : child - primitive.groupOffset);
+                    }
+                }
+            } else {
+                const auto& primitive = scene.renderPrimitives()[primitiveIndex];
+                if (!buildMeshletLodMetadata(primitive, groups, log)) { return makeError(Error::InvalidArgument); }
+                for (const auto& group : primitive.meshletLodGroups) { ranges.push_back({group.clusterOffset, group.clusterCount}); }
+                for (const auto& cluster : primitive.meshletLodClusters) {
+                    refined.push_back(cluster.refinedGroupIndex < 0 ? UINT32_MAX : uint32_t(cluster.refinedGroupIndex));
+                }
+            }
+            auto hierarchy = std::make_unique<VirtualShadowMapLODHierarchy>();
+            if (!buildVirtualShadowMapLODHierarchy(groups, ranges, refined, *hierarchy, log)) {
+                return makeError(Error::InvalidArgument);
+            }
+            metadata[primitiveIndex] = std::move(hierarchy);
+            ++diagnostics.metadataBuilds;
+        } else { ++diagnostics.metadataCacheHits; }
+        const auto& hierarchy = *metadata[primitiveIndex];
+        hierarchies.push_back(&hierarchy);
+        auto& selection = selections[state.id];
+        if (stream) {
+            selection.replaceStream = true;
+            const auto& primitive = stream->asset->primitives()[primitiveIndex];
+            for (uint32_t group = 0; group < hierarchy.groups.size(); ++group) {
+                for (uint32_t cluster = 0; cluster < hierarchy.ranges[group].clusterCount; ++cluster) {
+                    selection.streamClusters.push_back({primitive.groupOffset + group, cluster});
+                }
+            }
+        } else {
+            selection.replaceResident = selection.includeBase = true;
+            selection.residentClusters.resize(hierarchy.clusterGroups.size());
+            for (uint32_t cluster = 0; cluster < selection.residentClusters.size(); ++cluster) {
+                selection.residentClusters[cluster] = cluster;
+            }
+        }
+    }
+    auto result = prepareCasterGeometry(device, commands, scene, stream, log, settings, selections, base.lodMetadata);
+    if (!result) { return std::unexpected(result.error()); }
+    result->bounds = base.bounds;
+    result->dependencyKey = base.dependencyKey;
+    result->geometryRevision = base.geometryRevision;
+    result->texturePublicationRevision = base.texturePublicationRevision;
+    result->tessellationKey = base.tessellationKey;
+    auto owner = std::make_shared<CasterUploads>();
+    owner->sourceOwner = result->owner;
+    auto gpu = std::make_shared<VirtualShadowMapGPUHierarchy>();
+    gpu->owner = owner;
+    auto& context = gpu->context;
+    context.pageTable = context.pageRequests = context.groupStates = context.selected = context.previous = UINT32_MAX;
+    context.changed = context.statistics = UINT32_MAX;
+    std::vector<VirtualShadowMapLODGroupGPU> groups;
+    std::vector<VirtualShadowMapLODNodeGPU> nodes;
+    std::vector<VirtualShadowMapLODClusterGPU> clusters;
+    std::vector<VirtualShadowMapLODInstanceGPU> instances;
+    std::vector<uint32_t> parents, metrics, triangleClusters(result->triangleCapacity, UINT32_MAX);
+    ContentHash layout;
+    for (uint32_t instanceIndex = 0; instanceIndex < result->states.size(); ++instanceIndex) {
+        auto& state = result->states[instanceIndex];
+        assert(state.id == base.states[instanceIndex].id);
+        const uint32_t triangleFirst = state.triangleFirst, triangleCount = state.triangleCount;
+        state = base.states[instanceIndex];
+        state.triangleFirst = triangleFirst; state.triangleCount = triangleCount;
+        const auto& node = scene.renderNodes()[state.id];
+        VirtualShadowMapLODInstanceGPU instance{};
+        std::copy_n(node.worldMatrix.a, 4, instance.world0.begin());
+        std::copy_n(node.worldMatrix.a + 4, 4, instance.world1.begin());
+        std::copy_n(node.worldMatrix.a + 8, 4, instance.world2.begin());
+        std::copy_n(node.worldMatrix.a + 12, 4, instance.world3.begin());
+        instance.boundsMin = {state.bounds.min.x, state.bounds.min.y, state.bounds.min.z, 0};
+        instance.boundsMax = {state.bounds.max.x, state.bounds.max.y, state.bounds.max.z, 0};
+        instance.groupOffset = uint32_t(groups.size()); instance.nodeOffset = uint32_t(nodes.size());
+        instance.metricOffset = uint32_t(metrics.size()); instance.clusterOffset = uint32_t(clusters.size());
+        instance.stateOffset = context.groupStateCount;
+        instance.baseTriangleCount = base.states[instanceIndex].triangleCount;
+        instance.flags = (stream ? 0u : kVirtualShadowMapLODInstanceResident) |
+            (protectedCasters[instanceIndex] ? kVirtualShadowMapLODInstanceProtected : 0u);
+        uint32_t nextTriangle = state.triangleFirst;
+        const auto addCluster = [&](uint32_t group, uint32_t refined, uint32_t count, uint32_t level, uint32_t flags) {
+            const uint32_t id = uint32_t(clusters.size());
+            clusters.push_back({group, refined, nextTriangle, count, level, instanceIndex, flags, 0});
+            std::fill_n(triangleClusters.begin() + nextTriangle, count, id);
+            nextTriangle += count;
+        };
+        const auto* hierarchy = hierarchies[instanceIndex];
+        if (!stream || !hierarchy) {
+            const uint32_t baseCount = hierarchy ? base.states[instanceIndex].triangleCount : state.triangleCount;
+            addCluster(UINT32_MAX, UINT32_MAX, baseCount, 0, kVirtualShadowMapLODClusterBase);
+            instance.baseClusterCount = 1;
+        }
+        if (hierarchy) {
+            instance.groupCount = uint32_t(hierarchy->groups.size());
+            instance.nodeCount = uint32_t(hierarchy->bvh.size());
+            instance.metricGroupCount = uint32_t(hierarchy->metricGroupIDs.size());
+            context.groupStateCount += instance.groupCount;
+            for (uint32_t groupIndex = 0; groupIndex < hierarchy->groups.size(); ++groupIndex) {
+                const auto& group = hierarchy->groups[groupIndex];
+                const auto& range = hierarchy->ranges[groupIndex];
+                uint32_t page = UINT32_MAX;
+                if (stream) {
+                    const auto& primitive = stream->asset->primitives()[stream->asset->instances()[streamInstances[state.id]].primitiveIndex];
+                    page = stream->asset->groups()[primitive.groupOffset + groupIndex].pageIndex;
+                }
+                groups.push_back({group.sphere, group.error, group.level, group.flags, uint32_t(parents.size()),
+                    uint32_t(hierarchy->parents[groupIndex].size()), instance.clusterOffset + instance.baseClusterCount + range.clusterOffset,
+                    range.clusterCount, page});
+                parents.insert(parents.end(), hierarchy->parents[groupIndex].begin(), hierarchy->parents[groupIndex].end());
+            }
+            for (const auto& source : hierarchy->bvh) {
+                nodes.push_back({source.sphere, source.maxError, source.escapeIndex, source.groupOffset, source.groupCount});
+            }
+            metrics.insert(metrics.end(), hierarchy->metricGroupIDs.begin(), hierarchy->metricGroupIDs.end());
+            for (uint32_t cluster = 0; cluster < hierarchy->clusterGroups.size(); ++cluster) {
+                const uint32_t group = hierarchy->clusterGroups[cluster];
+                const uint32_t count = stream ? kStreamTrianglesPerCluster :
+                    scene.renderPrimitives()[node.renderPrimitiveIndex].meshletLodClusters[cluster].triangleCount;
+                addCluster(group, hierarchy->refinedGroups[cluster], count, hierarchy->groups[group].level, 0);
+            }
+        }
+        assert(nextTriangle == state.triangleFirst + state.triangleCount);
+        instance.clusterCount = uint32_t(clusters.size()) - instance.clusterOffset;
+        layout.append(state.id); layout.append(node.renderPrimitiveIndex);
+        layout.append(&instance.groupOffset, 12 * sizeof(uint32_t));
+        instances.push_back(instance);
+    }
+    context.instanceCount = uint32_t(instances.size()); context.clusterCount = uint32_t(clusters.size());
+    auto uploadRecords = [&](const auto& records, uint32_t& handle, size_t bufferIndex) -> Result<> {
+        using Record = typename std::decay_t<decltype(records)>::value_type;
+        layout.append(records.data(), records.size() * sizeof(Record));
+        auto uploaded = upload(device, **registry, *owner, gpu->leases, records.data(), records.size() * sizeof(Record), sizeof(Record));
+        if (!uploaded) { return std::unexpected(uploaded.error()); }
+        handle = *uploaded;
+        gpu->metadataBuffers[bufferIndex] = owner->buffers.back().get();
+        return {};
+    };
+    if (auto r = uploadRecords(groups, context.groups, 0); !r) { return std::unexpected(r.error()); }
+    if (auto r = uploadRecords(parents, context.parents, 1); !r) { return std::unexpected(r.error()); }
+    if (auto r = uploadRecords(nodes, context.nodes, 2); !r) { return std::unexpected(r.error()); }
+    if (auto r = uploadRecords(metrics, context.metrics, 3); !r) { return std::unexpected(r.error()); }
+    if (auto r = uploadRecords(clusters, context.clusters, 5); !r) { return std::unexpected(r.error()); }
+    if (auto r = uploadRecords(triangleClusters, context.triangleClusters, 6); !r) { return std::unexpected(r.error()); }
+    // Transforms and bounds affect selection, but do not rename previous slots.
+    auto instanceHandle = upload(device, **registry, *owner, gpu->leases, instances.data(),
+        instances.size() * sizeof(instances[0]), sizeof(instances[0]));
+    if (!instanceHandle) { return std::unexpected(instanceHandle.error()); }
+    context.instances = *instanceHandle;
+    gpu->metadataBuffers[4] = owner->buffers.back().get();
+    gpu->layoutKey = layout.value;
+    if (stream) {
+        gpu->stream = stream->owner;
+        gpu->pageCount = uint32_t(stream->asset->pages().size());
+        context.requestsEnabled = stream->owner->shadowPageRequestsEnabled();
+        auto pageTable = (*registry)->storageBuffer(*stream->pageTableBuffer);
+        if (!pageTable) { return std::unexpected(pageTable.error()); }
+        context.pageTable = pageTable->shaderIndex(); gpu->leases.push_back(*pageTable);
+        auto requests = device.createBuffer({.size = std::max<uint64_t>(gpu->pageCount, 1u) * sizeof(uint32_t),
+            .structureStride = sizeof(uint32_t), .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload});
+        if (!requests) { return std::unexpected(requests.error()); }
+        void* destination = (*requests)->map();
+        if (!destination) { log += "Unable to map VSM LOD page requests.\n"; return makeError(Error::Failure); }
+        std::memset(destination, 0, size_t((*requests)->desc().size));
+        (*requests)->flush(); (*requests)->unmap();
+        gpu->pageRequests = requests->get();
+        auto lease = (*registry)->storageBuffer(**requests);
+        if (!lease) { return std::unexpected(lease.error()); }
+        context.pageRequests = lease->shaderIndex(); gpu->leases.push_back(*lease);
+        owner->buffers.push_back(std::move(*requests));
+        const BufferBarrierDesc ready{.buffer = gpu->pageRequests,
+            .before = {PipelineStageBits::Host, AccessBits::HostWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+        if (auto r = commands.synchronize({.buffers = {&ready, 1}}); !r) { return std::unexpected(r.error()); }
+    }
+    if (auto r = commands.retainResource(owner); !r) { return std::unexpected(r.error()); }
+    for (const auto& lease : gpu->leases) {
+        if (auto r = (*registry)->retain(commands, lease); !r) { return std::unexpected(r.error()); }
+    }
+    result->leases.insert(result->leases.end(), gpu->leases.begin(), gpu->leases.end());
+    result->gpuLOD = std::move(gpu);
+    result->shadowLOD = std::move(diagnostics);
+    commands.hostWriteBarrier();
+    return result;
+}
+
 Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasterLayer(
     Device& device, CommandBuffer& commands, const VirtualShadowMapCasterResources& source,
     std::span<const uint64_t> dynamicCasterIds, bool staticLayer, std::string& log)
@@ -907,7 +1157,42 @@ struct VirtualShadowMapCasterCache::Resident
         VirtualShadowMapCasterResources geometry;
     };
     std::optional<Cut> cut;
+    struct GPUHierarchy
+    {
+        std::shared_ptr<void> baseOwner;
+        VirtualShadowMapCasterResources geometry;
+    };
+    std::optional<GPUHierarchy> gpuHierarchy;
 };
+
+Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepareGPUShadowLOD(
+    Device& device, CommandBuffer& commands, const scene::Scene& scene,
+    const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
+    const VirtualShadowMapCasterSettings& settings, std::string& log)
+{
+    if (stream) { return prepareVirtualShadowMapGPUShadowLOD(device, commands, scene, stream, base, settings, log); }
+    // prepare() owns the complete resident settings/texture-publication key.
+    // GPU metadata can be reused only with that exact immutable base upload.
+    auto& cached = resident_->gpuHierarchy;
+    if (cached && cached->baseOwner == base.owner) {
+        const auto& geometry = cached->geometry;
+        auto registry = ResourceRegistry::forDevice(device);
+        if (!registry) { return std::unexpected(registry.error()); }
+        if (auto r = commands.retainResource(geometry.owner); !r) { return std::unexpected(r.error()); }
+        if (auto r = commands.retainResource(geometry.gpuLOD->owner); !r) { return std::unexpected(r.error()); }
+        for (const auto& lease : geometry.leases) {
+            if (auto r = (*registry)->retain(commands, lease); !r) { return std::unexpected(r.error()); }
+        }
+        auto result = geometry;
+        result.shadowLOD.metadataCacheHits += result.shadowLOD.metadataBuilds;
+        result.shadowLOD.metadataBuilds = 0;
+        return result;
+    }
+    auto geometry = prepareVirtualShadowMapGPUShadowLOD(device, commands, scene, nullptr, base, settings, log);
+    if (!geometry) { return std::unexpected(geometry.error()); }
+    cached.emplace(Resident::GPUHierarchy{base.owner, *geometry});
+    return geometry;
+}
 
 Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepareShadowLOD(
     Device& device, CommandBuffer& commands, const scene::Scene& scene,
