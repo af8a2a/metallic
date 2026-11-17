@@ -347,6 +347,39 @@ TEST_F(DeviceFeatures, MeshLayerOutputIsOptionalAndPublishedWhenEnabled)
     EXPECT_FALSE(select().shaderOutputLayer);
 }
 
+TEST_F(DeviceFeatures, MeshMultiDrawIsOptionalAndRequiresSelectedMeshSupport)
+{
+    desc.enableMeshShader = true;
+    extensions.meshShader = true;
+    probe.meshShaderFeatures.meshShader = VK_TRUE;
+    EXPECT_TRUE(request().multiDrawIndirect);
+    EXPECT_FALSE(select().multiDrawIndirect);
+    EXPECT_TRUE(select().matches(request()));
+
+    DeviceCapabilities caps;
+    EXPECT_FALSE(caps.multiDrawIndirect);
+    EXPECT_EQ(caps.maxDrawIndirectCount, 1u);
+    probe.features.features.multiDrawIndirect = VK_TRUE;
+    const auto selected = select();
+    EXPECT_TRUE(selected.multiDrawIndirect);
+    VulkanEnabledFeatureChain chain(selected);
+    EXPECT_EQ(chain.features.features.multiDrawIndirect, VK_TRUE);
+    VulkanDeviceCapabilities backend;
+    selected.publish(caps, backend);
+    EXPECT_TRUE(caps.multiDrawIndirect);
+
+    probe.meshShaderFeatures.meshShader = VK_FALSE;
+    EXPECT_FALSE(select().multiDrawIndirect);
+    probe.meshShaderFeatures.meshShader = VK_TRUE;
+    desc.enableMeshShader = false;
+    EXPECT_FALSE(request().multiDrawIndirect);
+    const auto disabled = select();
+    EXPECT_FALSE(disabled.multiDrawIndirect);
+    EXPECT_EQ(VulkanEnabledFeatureChain(disabled).features.features.multiDrawIndirect, VK_FALSE);
+    disabled.publish(caps, backend);
+    EXPECT_FALSE(caps.multiDrawIndirect);
+}
+
 TEST_F(DeviceFeatures, TaskAndMeshShareOneNodeAndRespectSubgroupProperties)
 {
     desc.enableMeshShader = true;

@@ -4,6 +4,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_SHARED_PHYSICAL_POOL
 #define VSM_SHARED_PHYSICAL_POOL 0
 #endif
+#ifndef VSM_BATCHED_BUILD_RASTER
+#define VSM_BATCHED_BUILD_RASTER 0
+#endif
 
 // Each physical slot stores the minimum (furthest reversed-Z) of every 2x2
 // static depth footprint, up to the page root. Store coarse mips first so the
@@ -62,10 +65,21 @@ groupshared float gVsmStaticHZBTileMin[1024];
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void vsmBuildStaticPageHZBMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+void vsmBuildStaticPageHZBMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
 {
-    StructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+    uint job = group.x;
+#else
     uint job = group.x + group.y * 65535u;
+#endif
+    StructuredBuffer<uint> jobs = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 38u)));
     if (job >= jobs[0]) { return; }
     uint physical = jobs[3u + job];
     uint2 origin = uint2(physical % push.physicalPagesX, physical / push.physicalPagesX) * push.pageSize;

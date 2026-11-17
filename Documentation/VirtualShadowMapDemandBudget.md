@@ -12,6 +12,18 @@ Equal 策略为每面计算均分上限及确定性余数，实际 grant 是该�
 
 共享 pool 及每面缓存跟随录制命令的 `SubmissionTransaction` 提交。取消的命令不发布新 cache/history；仅提交无关前缀不代表 VSM 尾部已执行。后续成功帧从已接受的 pool 状态继续。资源仍由完成点及命令/读者寿命保护；这不是任意 graph 阶段部分提交后自动回滚的承诺。`supportsFrameOverlap=false` 保持不变，RenderGraph 仍在执行前等待前帧；共享池没有解除该限制。
 
+## 跨灯、跨面的 Build/Raster 批处理
+
+共享池路径的 `batchBuildRaster` 默认 `true`。全部面的请求与物理分配完成后，Build 按兼容 shader permutation 分组，用任务表选择各面的 `ShadowPush` 和工作范围；Raster 按兼容 pipeline 分组，通过间接多绘制提交各面的 coarse/fine 工作。每个深度层的共享物理槽仅扫描一次；开启静态分层时，静态深度和合成深度各使用一个 rendering instance，静态 HZB 与动态遮挡阶段按依赖衔接。每面的页表、溢出处理、统计和缓存事务仍独立。
+
+显式 `batchBuildRaster=false` 保留共享图集上的逐面 Build/Raster 录制，作为等价性与计时参考；它不会切回旧的每面独立 atlas。批处理开关不改变物理分配策略，切换时应保留兼容缓存。独立 `VirtualShadowMaps::record` 路径继续逐面执行。
+
+CPU profile 中，`Record VSM build and raster batches` 发布实际录制计数 `faces`、`computeDispatches`、`prepareDispatches`、`meshDraws`、`renderingPasses`、`computeBins`、`rasterBins`。`computeDispatches` 不含任务参数准备的 dispatch；`meshDraws` 计 RHI 调用次数而非间接命令中的 draw 数。逐面参考路径在 `Record VSM build and raster` 下发布相同字段。GPU profile 保留逐面的 reset/mark/allocator，批处理 Build 和 Raster 各为一个全帧 scope；不能再用这两个 scope 的数量推断面数。
+
+共享池回归增加 batched cached / batched forceRedraw / serial cached 三臂，比较可见性、页所有权和完整 D32 图集。独立 `SchedulingCapture` 从实际 RHI 命令观察 draw、dispatch 和 rendering instance 次数，避免只用批处理代码自己的统计证明命令合并。混合方向光、spot 和六面点光、静态/动态 caster 转换、开关切换以及跨图集层的三种 mesh 光栅路径均纳入同一夹具。命令数减少不代表已测得 GPU 加速，计时须关闭 validation 和诊断读回，并使用固定 workload 做独立 A/B。
+
+当前批处理夹具包含 60 组三臂对照。新增 compact Build + dirty-page hierarchy，以及 directional instance Build + page-window raster + hierarchy 两种组合，各在 combined/layered 模式下覆盖冷帧与 caster 移动；断言细页脏工作非空，分层时通过 GPU 诊断确认静态深度重绘、HZB 构建和动态几何合成都实际执行。实例分支同时向 caster producer 请求并验证 instance table，避免设置开启却退回普通 Build。
+
 ## 图集与统计范围
 
 共享深度图集为 `Texture2DArray`，最多 262144 个逻辑槽。容量不超过 4096 时，单层网格为 `X=ceil(sqrt(capacity))`、`Y=ceil(capacity/X)`；更大时每层固定 64×64 页，层数向上取整。`pageSize=128` 时单层最大为 8192×8192。所有灯使用同一 viewport 与层网格；mapping 保存全局 physical slot。静态分层使用同样布局的第二张图集；static HZB 按最多 4096 页一个 buffer bank 寻址。
@@ -43,7 +55,41 @@ GPU `virtual_shadow_map_demand_budget` 比较 Equal / EqualRedraw / Demand / Dem
 
 普通 A/B 应固定场景、预算、缓存预热与过滤参数，分别报告页准入、画质、共享图集内存和 pass/frame 时间。更多细页可能增加光栅工作，不自动代表加速。充足预算 VSM 图像仅是图像参考，不能替代独立几何真值。`Tools/Perf/VirtualShadowMapDemandBudget.py` 的输出须按对应诊断版本解释；旧证据目录不得作为共享池的新结果。
 
-## 2026-11-17 共享池验证结果
+## 2026-11-17 Build/Raster 批处理验证结果
+
+复用 `build-release` 完成 `Metallic`、`MetallicRHITests`、`MetallicVulkanDeviceFeaturesTests` 构建。23 项 Vulkan 特性 CPU 测试、57 项 GPU profile 工具测试、9 项预算工具测试、442 文件 Slang 模块审计及 `git diff --check` 通过；20 个批处理 shader 入口/变体与 3 个 standalone 入口通过 Slang 编译及 Vulkan 1.4 SPIR-V 校验。
+
+最终通过 14 项定向 GPU/RHI 测试：`mesh_indirect_batch_contract`、`virtual_shadow_map_physical_pool`、`virtual_shadow_map_local_lights`、`virtual_shadow_map_demand_budget`、`virtual_shadow_map_demand_feedback_lifecycle`、`virtual_shadow_map_profiling`、`virtual_shadow_map_compact_build_equivalence`、`virtual_shadow_map_compact_build_arguments`、`virtual_shadow_map_page_hierarchy`、`virtual_shadow_map_compact`、`virtual_shadow_map_shadow_lod_pass`、`virtual_shadow_map_receiver_mask_cache`、`virtual_shadow_map_physical_hzb`、`virtual_shadow_map_cache_layers`。共享池的 60 组三臂比较启用同步 validation，完整 D32 图集、页所有权和可见性对照通过，validation 为零；多灯测试完成 88 帧，需求预算完成 254 帧，profiling 完成 28 帧且没有时间戳缺失或溢出。已检查共享池、房间点光及完整 OpenPBR 场景图像。
+
+8 面混合光源的实际 RHI 计数如下；compute 不含单列的参数准备 dispatch，draw 是命令调用次数。分层行取移动 caster 的帧，覆盖静态 HZB 与动态合成。
+
+| 路径 | 串行 → 批处理 compute | 新增 prepare | 串行 → 批处理 draw | 串行 → 批处理 rendering instance |
+|---|---:|---:|---:|---:|
+| direct、单层 | 24 → 4 | 1 | 24 → 2 | 8 → 1 |
+| compact + hierarchy、单层 | 40 → 7 | 3 | 24 → 2 | 8 → 1 |
+| direct、静态分层 | 26 → 8 | 6 | 48 → 6 | 16 → 2 |
+| instance + window + hierarchy、静态分层 | 42 → 11 | 10 | 48 → 8 | 16 → 2 |
+
+首次 profiling 回归把两套多灯详细计时放在同一帧，耗尽串行 RenderGraph 共享的 256 对动态时间戳配额。测试现让 Timing/Both 分别在新建场景中计时，同时保持每轮四臂同步推进及全部图像/统计断言。重测中单个多灯计时节点有 105 个 scope，Raster 有 55 个 scope，无缺失。新增共享池夹具还修正了重复设置相同矩阵时把“没有变化”误判为失败的问题；渲染器和 Scene API 合同未因此改变。
+
+普通 A/B 使用 RTX 5060 / driver 621.01，OpenPBR/P4，1920×1080，sun + moon + 六面 point + spot，共 9 面，2048 共享页，SMRT 2×16，静态分层关闭。两臂仅 `batchBuildRaster` 不同。诊断先预热两种 shader，并在第 16/63 帧确认原始 depth、visibility、shadow、HDR 完全相同，48 个稳态帧的缓存/分配统计相同，同步 validation 为零。
+
+计时为四个独立进程的一个 ABBA 区组，每进程 64 帧 / 16 帧预热，关闭 validation、读回、GPU work atomics 和 Build 子阶段计时。保留磁盘 shader/asset 缓存，逐进程新建设备和页池，第 8 帧冻结 streaming 并重置相机历史。未锁 GPU 时钟、未强制重绘，测量的是固定相机下的稳态缓存复用，不是持续脏页场景。以下均为该进程 48 个稳态帧的中位数，单位 ms：
+
+| 进程 | Build | Raster | Shadows | RenderGraph（不含 present） |
+|---|---:|---:|---:|---:|
+| Serial 1 | 0.114656 | 0.034352 | 20.494336 | 36.202896 |
+| Batched 1 | 0.056032 | 0.016896 | 21.209296 | 35.337712 |
+| Batched 2 | 0.063264 | 0.018832 | 19.331808 | 31.299120 |
+| Serial 2 | 0.112848 | 0.032464 | 12.697824 | 19.523904 |
+
+两进程中位数的均值：Build 为 0.113752 → 0.059648 ms（−47.6%），Raster 为 0.033408 → 0.017864 ms（−46.5%）；Shadows 为 16.596080 → 20.270552 ms，RenderGraph 为 27.863400 → 33.318416 ms。后两项进程间波动显著，且批处理组均值更高；一个区组不足以归因或给出可靠整体性能结论。本轮只报告命令合并与这组 Build/Raster 实测，不宣称端到端加速。
+
+本机证据：[主回归日志](../build/vsm-batch/regression.log)、[profiling 重测](../build/vsm-batch/final-gpu/VirtualShadowMapProfiling/VirtualShadowMapProfiling.json)、[60 组共享池结果](../build/vsm-batch/final-pool/VirtualShadowMapPhysicalPool/Report.json)、[A/B 汇总](../build/vsm-batch/Perf/Run2/Summary.json)、[A/B 条件与脚本](../build/vsm-batch/Perf/README.md)。失败诊断保留在原目录；`Perf/Run1` 仅为缺少 manifest 版本字段的启动失败，正式六个进程封存在 `Perf/Run2`。所有产物均在忽略的构建目录。
+
+本轮未运行 262144 页峰值显存、超过 65535 个同阶段任务行或同时脏静态页的极限场景，也未测持续脏页性能；分块和硬件 draw-count 上限处理不能替代这些极限运行验证。
+
+## 2026-11-17 共享池验证结果（批处理之前）
 
 复用 `build-release` 完成 `Metallic`、`MetallicRHITests`、`MetallicVulkanDeviceFeaturesTests` 构建。22 项 Vulkan 特性 CPU 测试、9 项预算证据工具 Python 测试、441 个 Slang 文件的模块审计及 `git diff --check` 均通过。
 

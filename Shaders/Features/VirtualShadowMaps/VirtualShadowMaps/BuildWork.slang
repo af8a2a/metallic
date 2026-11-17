@@ -23,6 +23,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_INSTANCE_BUILD
 #define VSM_INSTANCE_BUILD 0
 #endif
+#ifndef VSM_BATCHED_BUILD_RASTER
+#define VSM_BATCHED_BUILD_RASTER 0
+#endif
 
 #if VSM_CLUSTER_PAGE_RASTER
 void vsmAppendClusterPage(uint page, uint triangleIndex, RWStructuredBuffer<uint4> work,
@@ -61,8 +64,18 @@ void vsmAppendClusterPage(uint page, uint triangleIndex, RWStructuredBuffer<uint
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
-    uint lane : SV_GroupIndex, uniform ShadowPush push)
+    uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+    id = uint3(group.x * 64u + lane, 0u, 0u);
+#endif
 #if VSM_COMPACT_BUILD
     StructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     uint candidate = vsmCompactCandidateOffset(push) + 1u + (push.workBase + group.x) * 2u;

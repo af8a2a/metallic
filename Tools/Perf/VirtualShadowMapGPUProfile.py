@@ -26,6 +26,7 @@ BUILD_SUBSTAGES = {
     "VSM build page hierarchy": "hierarchyMs",
     "VSM build direct": "directMs",
     "VSM build compact": "compactMs",
+    "VSM build instance cull": "instanceCullMs",
     "VSM build compact sync": "compactSyncMs",
     "VSM build indirect": "indirectMs",
     "VSM build finalize sync": "finalizeSyncMs",
@@ -34,6 +35,7 @@ BUILD_SUBSTAGES = {
 BUILD_SUBSTAGE_PATTERNS = {
     "direct": ("directMs", "finalizeSyncMs", "finalizeMs"),
     "compact": ("compactMs", "compactSyncMs", "indirectMs", "finalizeSyncMs", "finalizeMs"),
+    "instance": ("instanceCullMs", "compactSyncMs", "indirectMs", "finalizeSyncMs", "finalizeMs"),
 }
 ROOT_PARENT = 0xffffffff
 WORK_COUNTERS = (
@@ -194,10 +196,16 @@ def profile_frame(frame, allow_disabled=False):
         spans[stage].append(duration(section["gpuMs"], section["name"]))
         one_pass_count += section["name"] == ONE_PASS_PROJECTION_SECTION
     counts = {stage: len(values) for stage, values in spans.items()}
-    face_counts = {value for stage, value in counts.items() if stage != "projection"}
+    face_counts = {counts[stage] for stage in ("reset", "mark", "allocator")}
     if len(face_counts) != 1:
         raise ValueError(f"Missing or inconsistent per-face VSM stage spans: {counts}")
     face_count = counts["reset"]
+    if counts["build"] == counts["raster"] == face_count:
+        build_raster_mode = "per-face" if face_count else "disabled"
+    elif face_count > 1 and counts["build"] == counts["raster"] == 1:
+        build_raster_mode = "batched"
+    else:
+        raise ValueError(f"Missing or inconsistent per-face/batched Build/Raster spans: {counts}")
     if face_count == 0 and allow_disabled and counts["projection"] == 0:
         projection_mode = "disabled"
     elif one_pass_count:
@@ -217,6 +225,7 @@ def profile_frame(frame, allow_disabled=False):
     return {"frame": frame["frame"], "warmup": frame["warmup"], "graphMs": frame["graphMs"],
             "shadowsMs": shadow_ms, "stageSumMs": measured, "otherShadowsMs": max(0., shadow_ms - measured),
             "faceCount": face_count, "projectionCount": counts["projection"], "projectionMode": projection_mode,
+            "buildRasterMode": build_raster_mode, "buildCount": counts["build"], "rasterCount": counts["raster"],
             **{f"{stage}Ms": value for stage, value in totals.items()}}
 
 
@@ -261,7 +270,7 @@ def build_substage_frame(frame, required=False):
         if names == ("hierarchyMs",):
             branch = "hierarchyOnly"
         if branch is None:
-            raise ValueError("Missing, duplicated, reordered or inconsistent per-face build substages")
+            raise ValueError("Missing, duplicated, reordered or inconsistent per-face/batched build substages")
         parent_ms = duration(sections[index]["gpuMs"], "VSM build")
         measured = sum(value for _, value in children)
         if measured > parent_ms + max(1e-5, parent_ms * 1e-5):
@@ -271,6 +280,7 @@ def build_substage_frame(frame, required=False):
         for name, value in values.items():
             totals[name] = totals.get(name, 0.) + value
     return {**result, "buildSubstagesAvailable": True, "faceCount": aggregate["faceCount"],
+            "buildRasterMode": aggregate["buildRasterMode"], "buildCount": aggregate["buildCount"],
             "buildMs": aggregate["buildMs"], "faces": faces, **totals}
 
 

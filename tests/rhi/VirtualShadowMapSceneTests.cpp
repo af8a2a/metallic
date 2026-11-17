@@ -3124,7 +3124,7 @@ public:
     {
         bench::ValidationRecorder validation;
         const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapProfiling";
-        Json report{{"passed", false}, {"frames", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
+        Json report{{"passed", false}, {"frames", Json::array()}, {"timestampChecks", Json::array()}, {"counterNames", kVirtualShadowMapWorkCounterNames},
             {"buildDiagnosticCounterNames", kVirtualShadowMapBuildDiagnosticCounterNames}};
         try {
             std::filesystem::create_directories(directory);
@@ -3135,11 +3135,23 @@ public:
             constexpr std::array stages{"VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster", "VSM projection", "VSM one-pass projection"};
             constexpr std::array buildStages{"VSM build direct", "VSM build compact", "VSM build compact sync",
                 "VSM build indirect", "VSM build finalize sync", "VSM build finalize"};
-            for (uint32_t variant = 0; variant < 5; ++variant) {
+            struct ProfileCase { uint32_t variant, timedArm; };
+            constexpr std::array<ProfileCase, 7> cases{{
+                {0, UINT32_MAX}, {1, 1}, {1, 3}, {2, 1}, {2, 3}, {3, UINT32_MAX}, {4, UINT32_MAX}}};
+            for (const auto profileCase : cases) {
+                const uint32_t variant = profileCase.variant;
                 const bool local = variant == 1 || variant == 2, compact = variant == 2, streamed = variant == 3, tiny = variant == 4;
                 const bool compactBuild = variant == 2, splitBuild = !tiny;
-                const std::string label = local ? (compact ? "CompactSMRT" : "LegacyPCF") : streamed ? "StreamSingleHard" :
+                const std::string baseLabel = local ? (compact ? "CompactSMRT" : "LegacyPCF") : streamed ? "StreamSingleHard" :
                     tiny ? "TinySingleHard" : "SingleHard";
+                const std::string timedArm = local ? modes[profileCase.timedArm] : "all";
+                const std::string label = baseLabel + (local ? "-" + timedArm : "");
+                // Serial graph nodes share a bounded timestamp pool. Keep all
+                // four arms advancing together, but measure each eight-face
+                // arm in a fresh run so diagnostic scopes fit that pool.
+                const auto timingEnabled = [&](uint32_t mode) {
+                    return (mode & 1) != 0 && (profileCase.timedArm == UINT32_MAX || profileCase.timedArm == mode);
+                };
                 // Small allocations exercise reset's diagnostic-driven dispatch size.
                 // These short scans do not prove reuse of previously nonzero high histogram bins.
                 const uint32_t pagesPerAxis = tiny ? 2 : kPagesPerAxis;
@@ -3171,7 +3183,7 @@ public:
                     {"meshletNormalConeCull", false}, {"hybridRaster", false}, {"enableClas", false}, {"enableClusterRtx", false}});
                 for (uint32_t mode = 0; mode < modes.size(); ++mode) {
                     const std::string name = modes[mode], evidence = name + "Evidence";
-                    const bool timing = (mode & 1) != 0, work = (mode & 2) != 0;
+                    const bool timing = timingEnabled(mode), work = (mode & 2) != 0;
                     // Isolate instrumentation from demand feedback reallocations:
                     // the second frame must reuse the same per-face physical pools.
                     graph.addNode(local ? "VirtualShadowMapLightsPass" : "VirtualShadowMapPass", name,
@@ -3211,14 +3223,31 @@ public:
                     renderAndRequire(preview, graph, "OffEvidence.color");
                     auto completed = preview.collectCompletedGpuExecutionStats();
                     require(completed, "Read profiling timestamps");
+                    Json timestampCheck{{"variant", label}, {"phase", phase}, {"timedArm", timedArm},
+                        {"completedFrames", completed->size()}, {"frames", Json::array()}};
+                    for (const auto& completedFrame : *completed) {
+                        Json frameCheck{{"executionId", completedFrame.executionId},
+                            {"gpuTimingAvailable", completedFrame.gpuTimingAvailable},
+                            {"profilingOverflow", completedFrame.profilingOverflow}, {"nodes", Json::array()}};
+                        for (const auto& node : completedFrame.nodes) {
+                            const auto missing = std::count_if(node.sections.begin(), node.sections.end(), [](const auto& section) {
+                                return !section.cpuOnly && !section.gpuTimingAvailable;
+                            });
+                            frameCheck["nodes"].push_back({{"name", node.name}, {"sections", node.sections.size()},
+                                {"gpuTimingAvailable", node.gpuTimingAvailable}, {"missingGPUSections", missing}});
+                        }
+                        timestampCheck["frames"].push_back(std::move(frameCheck));
+                    }
+                    report["timestampChecks"].push_back(std::move(timestampCheck));
                     require(completed->size() == 1 && completed->front().gpuTimingAvailable && !completed->front().profilingOverflow,
-                        "Missing or overflowed profiling timestamp frame");
+                        label + "-" + phase + ": missing or overflowed profiling timestamp frame; see timestampChecks");
                     const auto& timings = completed->front();
                     std::array<ProfilingSnapshot, 4> snapshots;
-                    report["frames"].push_back({{"variant", label}, {"phase", phase}, {"timings", Json::object()}, {"arms", Json::object()}});
+                    report["frames"].push_back({{"variant", label}, {"phase", phase}, {"timedArm", timedArm},
+                        {"timings", Json::object()}, {"arms", Json::object()}});
                     auto& entry = report["frames"].back();
                     for (uint32_t mode = 0; mode < modes.size(); ++mode) {
-                        const bool timing = (mode & 1) != 0, work = (mode & 2) != 0;
+                        const bool timing = timingEnabled(mode), work = (mode & 2) != 0;
                         snapshots[mode] = profilingSnapshot(modes[mode], {layers, faces, work}, work);
                         entry["arms"][modes[mode]] = {{"statistics", snapshots[mode].statistics}, {"workload", snapshots[mode].workload},
                             {"buildDiagnostics", snapshots[mode].buildDiagnostics},
@@ -3239,8 +3268,10 @@ public:
                                 require(section.parent == UINT32_MAX || section.parent < node->sections.size(), "Invalid GPU stage parent");
                                 total += section.gpuMilliseconds;
                             }
-                            const size_t expected = std::string_view(stage) == "VSM one-pass projection" ? (local ? 1u : 0u) :
-                                std::string_view(stage) == "VSM projection" && local ? 0u : activeFaces;
+                            const std::string_view stageName(stage);
+                            const size_t expected = stageName == "VSM one-pass projection" ? (local ? 1u : 0u) :
+                                stageName == "VSM projection" && local ? 0u :
+                                local && (stageName == "VSM build" || stageName == "VSM raster") ? 1u : activeFaces;
                             require(count == (timing ? expected : 0), std::string("GPU stage toggle/count mismatch: ") + stage);
                             durations[stage] = {{"count", count}, {"gpuMs", total}};
                         }
@@ -3262,7 +3293,7 @@ public:
                                 ++childCounts[section.parent];
                                 total += section.gpuMilliseconds;
                             }
-                            require(count == (timing && splitBuild && branch ? activeFaces : 0),
+                            require(count == (timing && splitBuild && branch ? (local ? 1u : activeFaces) : 0u),
                                 std::string("Build substage toggle/branch/count mismatch: ") + stage);
                             durations[stage] = {{"count", count}, {"gpuMs", total}};
                         }
@@ -3270,7 +3301,7 @@ public:
                             const auto& section = node->sections[index];
                             if (section.name != "VSM build") { continue; }
                             require(childCounts[index] == (splitBuild ? (compactBuild ? 5u : 3u) : 0u),
-                                "Incomplete per-face build substage intervals");
+                                "Incomplete build substage intervals");
                             require(childTimes[index] <= section.gpuMilliseconds + std::max(1e-5, section.gpuMilliseconds * 1e-5),
                                 "Build substages exceed their aggregate interval");
                         }

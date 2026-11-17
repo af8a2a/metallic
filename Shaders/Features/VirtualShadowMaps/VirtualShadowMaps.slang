@@ -21,6 +21,7 @@ import Lighting;
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 #include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapPhysicalPoolInterop.h"
+#include "../../../Source/Runtime/Render/Shadow/VirtualShadowMapBatchInterop.h"
 
 // Incompatible diagnostic permutations are rejected at the module boundary.
 #ifndef VSM_DIRECTIONAL_MARK
@@ -40,6 +41,7 @@ using Metallic.Lighting;
 
 // Keep pass entry points and shared implementation under one stable module.
 __include "VirtualShadowMaps/ParametersAndDiagnostics.slang";
+__include "VirtualShadowMaps/BatchExecution.slang";
 __include "VirtualShadowMaps/ProjectionGeometry.slang";
 __include "VirtualShadowMaps/ReceiverReconstruction.slang";
 __include "VirtualShadowMaps/ShadowSampling.slang";

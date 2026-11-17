@@ -161,6 +161,7 @@ public:
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
             runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", true),
+            runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
@@ -310,6 +311,7 @@ public:
         settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
+        settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
         settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);

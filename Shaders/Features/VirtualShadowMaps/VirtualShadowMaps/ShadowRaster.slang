@@ -14,6 +14,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_SHARED_PHYSICAL_POOL
 #define VSM_SHARED_PHYSICAL_POOL 0
 #endif
+#ifndef VSM_BATCHED_BUILD_RASTER
+#define VSM_BATCHED_BUILD_RASTER 0
+#endif
 
 #if VSM_SHARED_PHYSICAL_POOL
 struct ShadowAtlasPrimitive
@@ -53,11 +56,32 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 #if VSM_SHARED_PHYSICAL_POOL
     out primitives ShadowAtlasPrimitive primitives[2],
 #endif
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
     uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    // Global ownership lets the entire atlas be scanned once, even when its
+    // resident pages belong to different light faces or shader permutations.
+    uint physicalPage = batchPush.workBase + group.x;
+    StructuredBuffer<uint4> metadata = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(batchPush.physicalPool));
+    uint4 header = metadata[0];
+    uint ownerFace = metadata[1u + header.x + physicalPage].x;
+    if (ownerFace == 0u) {
+        SetMeshOutputCounts(0u, 0u);
+        return;
+    }
+    StructuredBuffer<ShadowPush> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowPush>>(header.z));
+    ShadowPush push = jobs[ownerFace - 1u];
+    push.rasterCoarse = batchPush.rasterCoarse;
+    push.workBase = batchPush.workBase;
+#else
+    uint physicalPage = push.workBase + group.x;
+#endif
     StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    uint physicalPage = push.workBase + group.x;
     uint owner = owners[physicalPage];
     bool clear = false;
     if (owner != 0u && push.enabled != 0u) {
@@ -240,12 +264,22 @@ groupshared float4 g_vsmBounds;
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmRasterMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uint drawIndex : SV_DrawIndex,
+#endif
     out vertices ShadowRasterVertex vertices[9], out indices uint3 triangles[7],
 #if VSM_SHARED_PHYSICAL_POOL
     out primitives ShadowAtlasPrimitive primitives[7],
 #endif
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
     uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push = vsmBatchJob(batchPush, drawIndex).push;
+#endif
     if (lane == 0u) {
         vsmWorkAdd(push, (push.rasterCoarse & 1u) != 0u ? kVSMWorkRasterCoarseGroups : kVSMWorkRasterFineGroups, 1u);
         uint triangleIndex = push.workBase + group.x;
@@ -291,12 +325,22 @@ groupshared uint g_vsmPackedOffsets[17];
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uint drawIndex : SV_DrawIndex,
+#endif
     out vertices ShadowRasterVertex vertices[144], out indices uint3 triangles[112],
 #if VSM_SHARED_PHYSICAL_POOL
     out primitives ShadowAtlasPrimitive primitives[112],
 #endif
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
     uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push = vsmBatchJob(batchPush, drawIndex).push;
+#endif
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint4 ticket = work[1u + push.workBase + group.x];
     uint bits = ticket.z != 0u ? ticket.z : ticket.w;
@@ -356,12 +400,22 @@ groupshared uint2 g_vsmWindowPageMaterial[4];
 [numthreads(32, 1, 1)]
 [outputtopology("triangle")]
 void vsmRasterWindowMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uint drawIndex : SV_DrawIndex,
+#endif
     out vertices ShadowRasterVertex vertices[28], out indices uint3 triangles[20],
 #if VSM_SHARED_PHYSICAL_POOL
     out primitives ShadowAtlasPrimitive primitives[20],
 #endif
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
     uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push = vsmBatchJob(batchPush, drawIndex).push;
+#endif
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint ticketIndex = 1u + push.workBase + group.x;
     uint4 ticket = work[ticketIndex];

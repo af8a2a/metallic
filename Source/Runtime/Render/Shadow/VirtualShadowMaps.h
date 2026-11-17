@@ -77,6 +77,7 @@ struct VirtualShadowMapLight
 // One projection view: directional clipmaps, a spot frustum or one point face.
 struct VirtualShadowMapSettings
 {
+    bool batchBuildRaster = true; // Shared pools batch compatible faces; false retains the serial reference path.
     bool collectReceiverCoverage = false; // Diagnostic per-pixel records; requires GPU work diagnostics.
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.
@@ -286,6 +287,9 @@ private:
         const VirtualShadowMapProjectionGridResources* grid);
     struct Programs;
     struct State;
+    static Result<> recordBatched(VirtualShadowMapPhysicalPool& physicalPool, CommandBuffer& commands,
+        std::span<const std::shared_ptr<State>> states, const VirtualShadowMapSettings& settings,
+        std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
     struct Cache;
     struct ResourcePool;
     std::shared_ptr<ResourcePool> pool_;

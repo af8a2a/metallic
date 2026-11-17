@@ -14,11 +14,25 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_PAGE_RASTER
 #define VSM_CLUSTER_PAGE_RASTER 0
 #endif
+#ifndef VSM_BATCHED_BUILD_RASTER
+#define VSM_BATCHED_BUILD_RASTER 0
+#endif
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void vsmFinalizeMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
+void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    uint3 group = uint3(id.x / 64u, id.y, 0u);
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+    id = uint3(group.x * 64u + id.x % 64u, 0u, 0u);
+#endif
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
@@ -203,8 +217,19 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void vsmPropagateMappingMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
+void vsmPropagateMappingMain(uint3 id : SV_DispatchThreadID,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    uint3 group = uint3(id.x / 64u, id.y, 0u);
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+    id = uint3(group.x * 64u + id.x % 64u, 0u, 0u);
+#endif
 #if VSM_STATIC_PAGE_HZB
     if (id.x == 0u) {
         // Finalize has completed all appends. Keep its count intact for the

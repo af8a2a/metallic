@@ -1,7 +1,10 @@
 #include "RHITest.h"
 #include "harness/ValidationRecorder.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
+#include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Scene/SceneDocument.h"
 
@@ -110,6 +113,7 @@ struct PoolFace
 struct PoolFaceSnapshot
 {
     std::array<uint32_t, 32> stats{};
+    std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount> cache{};
     std::vector<Page> pages;
     std::vector<uint8_t> visibility;
 };
@@ -120,7 +124,22 @@ struct PoolSnapshot
     std::vector<uint32_t> atlas;
     uint32_t atlasWidth = 0, atlasHeight = 0, atlasLayers = 0, pagesX = 0, pageSize = 0;
     VirtualShadowMapMemoryUsage memory;
+    std::map<std::string, uint64_t> commands;
+    profiling::SchedulingMetrics nativeCommands;
 };
+
+std::map<std::string, uint64_t> poolRecordingCommands(const CPUProfileRecorder& recorder)
+{
+    std::map<std::string, uint64_t> counts;
+    for (const auto& section : recorder.sections) {
+        if (section.name != "Record VSM build and raster batches" && section.name != "Record VSM build and raster") { continue; }
+        for (const auto& work : section.cpuWork) { counts[work.name] += work.value; }
+    }
+    for (const char* name : {"faces", "computeDispatches", "prepareDispatches", "meshDraws", "renderingPasses", "computeBins", "rasterBins"}) {
+        requirePool(counts.contains(name), std::string("Missing actual VSM recording counter: ") + name);
+    }
+    return counts;
+}
 
 void requireUniqueOwners(const PoolSnapshot& snapshot, uint32_t budget)
 {
@@ -179,6 +198,7 @@ public:
         bench::ValidationRecorder validation;
         const auto save = [&] { std::filesystem::create_directories(directory); std::ofstream(directory / "Report.json") << report.dump(2); };
         try {
+            requirePool(VirtualShadowMapSettings{}.batchBuildRaster, "Shared Build/Raster batching must default on");
             scene::SceneDocument scene;
             requirePool(scene.load(writePoolFixture(directory)), "Load pool scene");
             auto created = createDevice({.applicationName = "VSM shared physical pool",
@@ -220,19 +240,23 @@ public:
             gpu.finish();
 
             for (bool layered : {false, true}) {
-                VirtualShadowMapPhysicalPool cachedPool, referencePool;
-                std::array<VirtualShadowMaps, 9> cached, reference;
+                VirtualShadowMapPhysicalPool cachedPool, referencePool, serialPool;
+                std::array<VirtualShadowMaps, 9> cached, reference, serial;
                 VirtualShadowMapCasterCache casterCache;
                 VirtualShadowMapSettings settings;
                 settings.pageSize = 16; settings.virtualPagesPerAxis = 16; settings.clipmapCount = 3;
                 settings.cacheEnabled = true; settings.cacheLayering = layered;
+                settings.framesStaticThreshold = 2;
                 settings.firstClipmapExtent = 4; settings.maxWorkItems = 65535;
                 auto record = [&](std::span<const PoolFace> specs, uint32_t budget, bool force, bool cancel = false,
-                                  bool pointGroup = false, bool demandDriven = true) {
+                                  bool pointGroup = false, bool demandDriven = true, bool serialized = false) {
                     gpu.begin();
                     std::string log;
-                    auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log);
+                    auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log,
+                        {.instanceBuild = settings.instanceBuild});
                     requirePool(casters, "Prepare shared pool casters: " + log);
+                    requirePool(!settings.instanceBuild || casters->instanceTable != UINT32_MAX,
+                        "Instance Build test did not publish an instance table");
                     const uint32_t layers = pointGroup ? 1u : uint32_t(specs.size());
                     auto output = device.createTexture({.usage = TextureUsageBits::Storage | TextureUsageBits::TransferSource,
                         .format = Format::R8Unorm, .width = kWidth, .height = kHeight, .layerCount = layers});
@@ -243,16 +267,22 @@ public:
                     requirePool(gpu.commands->synchronize({.textures = {&outputBegin, 1}}), "Pool output ready");
                     std::vector<VirtualShadowMapFaceRequest> requests;
                     for (uint32_t index = 0; index < specs.size(); ++index) {
-                        requests.push_back({.shadow = &(force ? reference : cached)[specs[index].identity], .light = specs[index].light,
+                        requests.push_back({.shadow = &(serialized ? serial : force ? reference : cached)[specs[index].identity], .light = specs[index].light,
                             .output = {.shadow = output->get(), .layer = pointGroup ? 0u : index, .sharedPointLayer = pointGroup}});
                     }
                     auto frameSettings = settings;
                     frameSettings.forceRedraw = force;
+                    if (serialized) { frameSettings.batchBuildRaster = false; }
                     frameSettings.filter = pointGroup ? VirtualShadowMapFilter::PCF : VirtualShadowMapFilter::Hard;
                     const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);
-                    auto& pool = force ? referencePool : cachedPool;
-                    auto results = VirtualShadowMaps::recordShared(pool, device, *gpu.commands, **depthView, view, requests,
-                        *casters, scene.materials(), {}, frameSettings, budget, demandDriven, log);
+                    auto& pool = serialized ? serialPool : force ? referencePool : cachedPool;
+                    CPUProfileRecorder cpu;
+                    profiling::SchedulingMetrics nativeCommands;
+                    auto results = [&] {
+                        profiling::SchedulingCapture capture(&nativeCommands);
+                        return VirtualShadowMaps::recordShared(pool, device, *gpu.commands, **depthView, view, requests,
+                            *casters, scene.materials(), {}, frameSettings, budget, demandDriven, log, &cpu);
+                    }();
                     requirePool(results, "Record shared pool: " + log);
                     std::vector<VirtualShadowMapProjectionGroup> groups(pointGroup ? 1 : specs.size());
                     for (uint32_t index = 0; index < specs.size(); ++index) {
@@ -266,6 +296,12 @@ public:
                     }
                     requirePool(VirtualShadowMaps::projectShared(*gpu.commands, groups, log), "Project shared pool: " + log);
                     PoolSnapshot snapshot;
+                    snapshot.commands = poolRecordingCommands(cpu);
+                    snapshot.nativeCommands = nativeCommands;
+                    requirePool(snapshot.commands.at("faces") == specs.size(), "Recording counters omitted an admitted face");
+                    requirePool(nativeCommands.invalidScopes == 0 && nativeCommands.drawCalls == snapshot.commands.at("meshDraws") &&
+                        nativeCommands.dispatchCalls >= snapshot.commands.at("computeDispatches") + snapshot.commands.at("prepareDispatches"),
+                        "Build/Raster counters disagree with the independent RHI command observer");
                     snapshot.memory = pool.memoryUsage();
                     const auto& atlasDesc = results->front().atlas->desc();
                     snapshot.atlasWidth = atlasDesc.width; snapshot.atlasHeight = atlasDesc.height;
@@ -280,7 +316,7 @@ public:
                         auto& face = snapshot.faces[specs[index].identity];
                         face.pages.resize((*results)[index].clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1u);
                         offsets.push_back(bytes);
-                        bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page);
+                        bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
                     }
                     auto readback = device.createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
                         .memoryLocation = MemoryLocation::HostReadback});
@@ -294,7 +330,7 @@ public:
                             .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .range = {0, 1, 0, atlasDesc.layerCount}}};
                     std::vector<BufferBarrierDesc> bufferReady;
                     for (const auto& result : *results) {
-                        for (auto* buffer : {result.statistics, result.pageTable}) {
+                        for (auto* buffer : {result.statistics, result.pageTable, result.cacheDiagnostics}) {
                             bufferReady.push_back({.buffer = buffer,
                                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}});
@@ -313,7 +349,8 @@ public:
                         const auto& face = snapshot.faces.at(specs[index].identity);
                         uint64_t offset = offsets[index];
                         for (const auto& [buffer, size] : {std::pair{(*results)[index].statistics, uint64_t(sizeof(face.stats))},
-                            std::pair{(*results)[index].pageTable, uint64_t(face.pages.size() * sizeof(Page))}}) {
+                            std::pair{(*results)[index].pageTable, uint64_t(face.pages.size() * sizeof(Page))},
+                            std::pair{(*results)[index].cacheDiagnostics, uint64_t(sizeof(face.cache))}}) {
                             auto from = buffer->slice({0, size}), to = (*readback)->slice({offset, size});
                             requirePool(from, "Pool readback source"); requirePool(to, "Pool readback destination");
                             requirePool(gpu.commands->copyBuffer(*from, *to), "Pool buffer readback");
@@ -335,6 +372,7 @@ public:
                         auto& face = snapshot.faces.at(specs[index].identity);
                         std::memcpy(face.stats.data(), data + offsets[index], sizeof(face.stats));
                         std::memcpy(face.pages.data(), data + offsets[index] + sizeof(face.stats), face.pages.size() * sizeof(Page));
+                        std::memcpy(face.cache.data(), data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page), sizeof(face.cache));
                         const uint64_t offset = uint64_t(pointGroup ? 0u : index) * kPixels;
                         face.visibility.assign(data + offset, data + offset + kPixels);
                     }
@@ -349,11 +387,37 @@ public:
                     report["activeCase"] = {{"name", label}, {"layered", layered}};
                     auto actual = record(faces, budget, false, false, pointGroup, demandDriven);
                     const auto expected = record(faces, budget, true, false, pointGroup, demandDriven);
-                    Json entry{{"name", label}, {"layered", layered}, {"budget", budget}, {"faces", Json::array()}};
+                    const auto serialResult = record(faces, budget, false, false, pointGroup, demandDriven, true);
+                    requirePool(actual.atlas == serialResult.atlas,
+                        std::string("Batched shared D32 atlas differs from serialized rendering at ") + label);
+                    Json entry{{"name", label}, {"layered", layered}, {"budget", budget}, {"faces", Json::array()},
+                        {"batchBuildRaster", settings.batchBuildRaster}, {"commands", actual.commands},
+                        {"compactBuild", settings.compactBuild}, {"instanceBuild", settings.instanceBuild},
+                        {"dirtyPageHierarchy", settings.dirtyPageHierarchy}, {"pageWindowRaster", settings.pageWindowRaster},
+                        {"collectGPUWork", settings.collectGPUWork},
+                        {"redrawCommands", expected.commands}, {"serialCommands", serialResult.commands},
+                        {"nativeCommands", actual.nativeCommands}, {"serialNativeCommands", serialResult.nativeCommands}};
                     for (const auto& [identity, face] : actual.faces) {
                         requirePool(face.visibility == expected.faces.at(identity).visibility,
                             std::string("Cached shared visibility differs from forced redraw at ") + label);
-                        entry["faces"].push_back({{"identity", identity}, {"stats", face.stats}});
+                        requirePool(face.visibility == serialResult.faces.at(identity).visibility &&
+                            face.pages == serialResult.faces.at(identity).pages,
+                            std::string("Batched visibility or page ownership differs from serialized rendering at ") + label);
+                        entry["faces"].push_back({{"identity", identity}, {"stats", face.stats}, {"cache", face.cache}});
+                    }
+                    if (settings.batchBuildRaster) {
+                        requirePool(actual.commands.at("renderingPasses") == (layered ? 2u : 1u),
+                            "Shared batch did not use one rendering instance per depth layer");
+                        requirePool(actual.commands.at("renderingPasses") < serialResult.commands.at("renderingPasses"),
+                            "Batching did not reduce rendering instances across faces");
+                        if (pointGroup || faces.size() == 8) {
+                            requirePool(actual.commands.at("computeDispatches") < serialResult.commands.at("computeDispatches") &&
+                                actual.commands.at("meshDraws") < serialResult.commands.at("meshDraws") &&
+                                actual.nativeCommands.dispatchCalls < serialResult.nativeCommands.dispatchCalls &&
+                                actual.nativeCommands.drawCalls < serialResult.nativeCommands.drawCalls &&
+                                actual.nativeCommands.renderingScopes < serialResult.nativeCommands.renderingScopes,
+                                "Compatible light faces were not submitted through shared compute and raster batches");
+                        }
                     }
                     report["frames"].push_back(entry); save();
                     return actual;
@@ -423,6 +487,80 @@ public:
                 }
                 (void)compare("point-six-cold", pointFaces, 64, true);
                 (void)compare("point-six-warm", pointFaces, 64, true);
+                faces = {{0, directional}, {1, hot}};
+                faces.insert(faces.end(), pointFaces.begin(), pointFaces.end());
+                (void)compare("mixed-eight-cold", faces, 256);
+                auto mixedWarm = compare("mixed-eight-warm", faces, 256);
+                settings.batchBuildRaster = false;
+                auto switched = compare("mixed-eight-serial-switch", faces, 256);
+                requirePool(switched.atlas == mixedWarm.atlas, "Switching to serial recording invalidated shared depth");
+                settings.batchBuildRaster = true;
+                auto restored = compare("mixed-eight-batch-switch", faces, 256);
+                requirePool(restored.atlas == switched.atlas, "Switching back to batching invalidated shared depth");
+                const auto originalMatrix = scene.nodes()[1].localMatrix;
+                auto translated = originalMatrix;
+                translated.SetupByTranslation({.25f, 0.f, .1f});
+                requirePool(scene.setNodeLocalMatrix(1, translated * originalMatrix), "Move shared batched caster");
+                auto moving = compare("mixed-eight-dynamic", faces, 256);
+                if (layered) {
+                    requirePool(moving.faces.at(0).cache[kVSMCacheDynamicCasters] == 1 &&
+                        moving.faces.at(0).cache[kVSMCachePromotedCasters] == 1,
+                        "Mixed batch did not promote the moving caster from static depth");
+                }
+                (void)compare("mixed-eight-settle", faces, 256);
+                auto merged = compare("mixed-eight-static-merge", faces, 256);
+                if (layered) {
+                    requirePool(merged.faces.at(0).cache[kVSMCacheDynamicCasters] == 0 &&
+                        merged.faces.at(0).cache[kVSMCacheStaticDirtyCoarsePages] == 1,
+                        "Mixed batch did not merge the settled caster into static depth");
+                }
+                requirePool(scene.setNodeLocalMatrix(1, originalMatrix), "Restore shared batched caster");
+                (void)compare("mixed-eight-restore", faces, 256);
+                // Exercise indirect Build with real dirty work, first through
+                // compact clusters and then directional instances/windows.
+                // Local lights retain compact scalar raster in both variants,
+                // so the second variant also mixes distinct compute/raster bins.
+                settings.compactBuild = true;
+                settings.dirtyPageHierarchy = true;
+                settings.collectGPUWork = true;
+                for (bool instanceWindow : {false, true}) {
+                    settings.instanceBuild = instanceWindow;
+                    settings.pageWindowRaster = instanceWindow;
+                    // A new directional projection starts from a static base
+                    // before promotion exercises static raster -> HZB -> dynamic.
+                    directional.direction = {instanceWindow ? 1.25f : .75f, 0, -1};
+                    faces[0].light = directional;
+                    const auto branchCold = compare(instanceWindow ? "instance-window-hierarchy-cold" : "compact-hierarchy-cold", faces, 256);
+                    const auto& coldFace = branchCold.faces.at(0);
+                    requirePool(coldFace.stats[16] > 0 && coldFace.stats[4] > 0,
+                        "Indirect batch cold case did not generate dirty fine raster work");
+                    if (layered) {
+                        requirePool(coldFace.cache[kVSMCacheStaticCasters] == 2 &&
+                            coldFace.cache[kVSMCacheStaticHZBBuiltPages] > 0,
+                            "Indirect batch cold case did not establish static depth and HZB");
+                    }
+                    auto branchTranslation = originalMatrix;
+                    branchTranslation.SetupByTranslation({instanceWindow ? .35f : .2f, 0.f, .1f});
+                    requirePool(scene.setNodeLocalMatrix(1, branchTranslation * originalMatrix), "Move indirect batch caster");
+                    const auto branchDirty = compare(instanceWindow ? "instance-window-hierarchy-dirty" : "compact-hierarchy-dirty", faces, 256);
+                    const auto& dirtyFace = branchDirty.faces.at(0);
+                    requirePool(dirtyFace.stats[16] > 0 && dirtyFace.stats[4] > 0,
+                        "Indirect batch motion case did not generate dirty fine raster work");
+                    if (layered) {
+                        requirePool(dirtyFace.cache[kVSMCachePromotedCasters] == 1 &&
+                            dirtyFace.cache[kVSMCacheStaticCasters] == 1 && dirtyFace.cache[kVSMCacheDynamicCasters] == 1 &&
+                            dirtyFace.cache[kVSMCacheStaticDirtyFinePages] > 0 && dirtyFace.cache[kVSMCacheStaticHZBBuiltPages] > 0 &&
+                            dirtyFace.cache[kVSMCacheStaticDecodedTriangles] > 0 && dirtyFace.cache[kVSMCacheDynamicDecodedTriangles] > 0,
+                            "Indirect batch did not execute nonempty static/HZB/dynamic composition after promotion");
+                    }
+                    requirePool(scene.setNodeLocalMatrix(1, originalMatrix), "Restore indirect batch caster");
+                }
+                settings.compactBuild = false;
+                settings.instanceBuild = false;
+                settings.dirtyPageHierarchy = false;
+                settings.pageWindowRaster = false;
+                settings.collectGPUWork = false;
+                settings.framesStaticThreshold = 100;
                 // Four-texel tiles keep this two-layer atlas small. Fine-only
                 // receiver selection makes one face demand more than 4096
                 // pages, exercising raster, projection and static HZB bank 1.
@@ -476,7 +614,7 @@ public:
             report["validation"] = validation.snapshot();
             requirePool(!validation.failed(), "Shared pool Vulkan validation error");
             report["passed"] = true; save();
-            return RHITestResult::pass("Shared physical ownership, same-frame borrowing, retention, cancellation, resize and six-face projection match forced redraw");
+            return RHITestResult::pass("Batched and serialized shared rendering preserve depth, visibility, ownership and caches while reducing actual RHI submissions");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());

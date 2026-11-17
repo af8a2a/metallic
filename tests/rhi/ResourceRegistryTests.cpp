@@ -1314,6 +1314,114 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(ResourceRangeContractTest);
 
+#ifdef VK_EXT_mesh_shader
+struct MeshIndirectEncodingCapture {
+    inline static MeshIndirectEncodingCapture* active = nullptr;
+    PFN_vkCmdDrawMeshTasksIndirect2EXT& entry;
+    PFN_vkCmdDrawMeshTasksIndirect2EXT original;
+    uint32_t calls = 0;
+    VkDrawIndirect2InfoKHR info{};
+
+    explicit MeshIndirectEncodingCapture(render::Device& device)
+        : entry(const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)->vkCmdDrawMeshTasksIndirect2EXT),
+          original(entry)
+    {
+        active = this;
+        entry = capture;
+    }
+    ~MeshIndirectEncodingCapture()
+    {
+        entry = original;
+        active = nullptr;
+    }
+    static VKAPI_ATTR void VKAPI_CALL capture(VkCommandBuffer, const VkDrawIndirect2InfoKHR* info)
+    {
+        ++active->calls;
+        active->info = *info;
+    }
+};
+
+class MeshIndirectBatchContractTest final : public RHITest {
+public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"mesh.indirect.batch.encoding", "mesh.indirect.batch.lifetime"},
+            bench::Layer::RHI, "core", "binding");
+    }
+
+    MeshIndirectBatchContractTest() { type = RHITestType::Command; name = "mesh_indirect_batch_contract"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Mesh indirect batch contract",
+            .enableValidation = context.enableValidation, .enableMeshShader = true})
+            .transform([&](auto value) { device = std::move(value); }));
+        if (!device->capabilities().meshShader) { return RHITestResult::skip("Requires mesh shaders"); }
+        const auto& caps = device->capabilities();
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(vulkan::nativeDevice(*device).physicalDevice, &properties);
+        REG_CHECK(caps.maxDrawIndirectCount == (caps.multiDrawIndirect ? properties.limits.maxDrawIndirectCount : 1u));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(*device, *device->getQueue(QueueType::Graphics)));
+        REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect({}, 0), Error::InvalidArgument));
+        REG_REQUIRE(recording.begin(0));
+        MeshIndirectEncodingCapture capture(*device);
+        REG_REQUIRE(recording.commands->drawMeshTasksIndirect({}, 0));
+        REG_CHECK(capture.calls == 0);
+        std::weak_ptr<void> allocation;
+        {
+            std::unique_ptr<Buffer> buffer;
+            REG_REQUIRE(makeBuffer(*device, buffer));
+            auto full = buffer->slice();
+            auto small = buffer->slice({0, 11});
+            auto unaligned = buffer->slice({2, 36});
+            auto two = buffer->slice({4, 24});
+            REG_CHECK(full && small && unaligned && two);
+            REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect({}, 1), Error::InvalidArgument));
+            REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect(*small), Error::InvalidArgument));
+            REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect(*unaligned), Error::InvalidArgument));
+            REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect(*two, 3), Error::InvalidArgument));
+            // A 32-bit count multiplied by 12 must not wrap into this short range.
+            REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect(*full, UINT32_MAX), Error::InvalidArgument));
+            if (caps.maxDrawIndirectCount < UINT32_MAX) {
+                REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect(*full, caps.maxDrawIndirectCount + 1), Error::InvalidArgument));
+            }
+            auto noIndirect = device->createBuffer({.size = 64, .usage = BufferUsageBits::Storage});
+            REG_CHECK(noIndirect);
+            auto invalidUsage = (*noIndirect)->slice();
+            REG_CHECK(invalidUsage);
+            REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect(*invalidUsage), Error::InvalidArgument));
+            std::unique_ptr<Buffer> foreignBuffer;
+            REG_REQUIRE(makeBuffer(context.device, foreignBuffer));
+            auto foreign = foreignBuffer->slice();
+            REG_CHECK(foreign);
+            REG_CHECK(hasError(recording.commands->drawMeshTasksIndirect(*foreign), Error::InvalidArgument));
+            REG_CHECK(capture.calls == 0);
+
+            const uint32_t count = caps.multiDrawIndirect ? std::min(3u, caps.maxDrawIndirectCount) : 1u;
+            auto selected = buffer->slice({16, uint64_t(count) * 12});
+            REG_CHECK(selected);
+            REG_REQUIRE(recording.commands->drawMeshTasksIndirect(*selected, count));
+            REG_CHECK(capture.calls == 1 && capture.info.sType == VK_STRUCTURE_TYPE_DRAW_INDIRECT_2_INFO_KHR);
+            REG_CHECK(capture.info.drawCount == count && capture.info.addressRange.address == selected->deviceAddress());
+            REG_CHECK(capture.info.addressRange.size == uint64_t(count) * 12 && capture.info.addressRange.stride == 12);
+            REG_REQUIRE(recording.commands->drawMeshTasksIndirect(*full));
+            REG_CHECK(capture.calls == 2 && capture.info.drawCount == 1 && capture.info.addressRange.size == 12);
+            allocation = buffer->retainAllocation();
+        }
+        REG_CHECK(!allocation.expired()); // Recording retained the whole native allocation.
+        REG_REQUIRE(recording.commands->end());
+        recording.frame.cancel();
+        REG_REQUIRE(recording.pool->reset());
+        REG_REQUIRE(recording.frame.reset());
+        REG_CHECK(allocation.expired());
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MeshIndirectBatchContractTest);
+#endif
+
 
 class SynchronizationScopesTest final : public RHITest {
 public:

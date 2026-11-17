@@ -113,6 +113,10 @@ MT_VK_FEATURE(shaderOutputLayer, desc.enableMeshShader, false,
     request.shaderOutputLayer && probe.vulkan12Features.shaderOutputLayer == VK_TRUE, 0,
     vulkan12Features.shaderOutputLayer = selection.shaderOutputLayer;, caps.shaderOutputLayer = shaderOutputLayer;)
 
+MT_VK_FEATURE(multiDrawIndirect, desc.enableMeshShader, false,
+    request.multiDrawIndirect && result.meshShader && probe.features.features.multiDrawIndirect == VK_TRUE, 0,
+    features.features.multiDrawIndirect = selection.multiDrawIndirect;, caps.multiDrawIndirect = multiDrawIndirect;)
+
 #ifdef VK_EXT_mesh_shader
 MT_VK_FEATURE(taskShader, desc.enableTaskShader || desc.enableTaskShaderSubgroupBallot || desc.preferredTaskSubgroupSize != 0, true,
     request.taskShader && taskShaderSupported, 8,

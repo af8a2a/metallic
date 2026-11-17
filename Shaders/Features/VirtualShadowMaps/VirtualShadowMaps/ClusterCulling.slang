@@ -17,6 +17,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_DIRTY_PAGE_HIERARCHY
 #define VSM_DIRTY_PAGE_HIERARCHY 0
 #endif
+#ifndef VSM_BATCHED_BUILD_RASTER
+#define VSM_BATCHED_BUILD_RASTER 0
+#endif
 
 
 groupshared float3 g_vsmClusterMinimum, g_vsmClusterMaximum;
@@ -62,8 +65,19 @@ public void vsmBuildPageHierarchy(uint index, ShadowPush push)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void vsmBuildPageHierarchyMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
+void vsmBuildPageHierarchyMain(uint3 id : SV_DispatchThreadID,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    uint3 group = uint3(id.x / 64u, id.y, 0u);
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+    id = uint3(group.x * 64u + id.x % 64u, 0u, 0u);
+#endif
     vsmBuildPageHierarchy(id.x, push);
 }
 
@@ -154,8 +168,17 @@ bool vsmClusterVisibleInStaticHZB(int2 first, int2 last, float3 minimum, float3 
 #if VSM_CLUSTER_HZB
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void vsmCullDynamicClustersHZBMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+void vsmCullDynamicClustersHZBMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+#endif
     uint cluster = push.workBase + group.x;
     uint firstTriangle = cluster * 64u;
     if (lane == 0u) {
@@ -365,8 +388,17 @@ groupshared uint g_vsmInstanceTicketBase;
 #endif
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+#endif
 #if VSM_INSTANCE_BUILD
     StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
     uint input = push.workBase + group.x;

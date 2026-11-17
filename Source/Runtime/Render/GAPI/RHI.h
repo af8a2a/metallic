@@ -519,6 +519,8 @@ struct DeviceCapabilities {
     bool shaderObject = false;
     bool meshShader = false;
     bool shaderOutputLayer = false;
+    bool multiDrawIndirect = false;
+    uint32_t maxDrawIndirectCount = 1;
     bool taskShader = false;
     bool geometryShader = false;
     bool subgroupSizeControl = false;
@@ -1945,7 +1947,9 @@ class CommandBuffer {
     [[nodiscard]] Result<> draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
     // Direct mesh dispatch for CPU-known counts; distinct from GPU-generated indirect draws.
     [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
-    [[nodiscard]] Result<> drawMeshTasksIndirect(const BufferSlice& arguments);
+    // Tightly packed 12-byte mesh dispatch commands; zero draws is a no-op.
+    // Counts above DeviceCapabilities::maxDrawIndirectCount are invalid.
+    [[nodiscard]] Result<> drawMeshTasksIndirect(const BufferSlice& arguments, uint32_t drawCount = 1);
     [[nodiscard]] Result<> dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     // Uses the immutable SBT retained by the currently bound RT execution.
     [[nodiscard]] Result<> traceRays(uint32_t width, uint32_t height, uint32_t depth = 1);

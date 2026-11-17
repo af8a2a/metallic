@@ -5741,10 +5741,15 @@ Result<> CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY
     return {};
 }
 
-Result<> CommandBuffer::drawMeshTasksIndirect(const BufferSlice& arguments)
+Result<> CommandBuffer::drawMeshTasksIndirect(const BufferSlice& arguments, uint32_t drawCount)
 {
-    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT) ||
-        !arguments.validate(deviceIdentity(), BufferUsageBits::Indirect, 4, sizeof(VkDrawMeshTasksIndirectCommandEXT))) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!drawCount) { return {}; }
+    const uint64_t argumentBytes = uint64_t(drawCount) * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+    if (drawCount > impl_->device->capabilities.maxDrawIndirectCount ||
+        !arguments.validate(deviceIdentity(), BufferUsageBits::Indirect, 4, argumentBytes)) {
         return makeError(Error::InvalidArgument);
     }
 #ifdef VK_EXT_mesh_shader
@@ -5755,9 +5760,9 @@ Result<> CommandBuffer::drawMeshTasksIndirect(const BufferSlice& arguments)
     if (!retained) { return retained; }
     const VkDrawIndirect2InfoKHR info{
         .sType = VK_STRUCTURE_TYPE_DRAW_INDIRECT_2_INFO_KHR,
-        .addressRange = {arguments.deviceAddress(), sizeof(VkDrawMeshTasksIndirectCommandEXT), 0},
+        .addressRange = {arguments.deviceAddress(), argumentBytes, sizeof(VkDrawMeshTasksIndirectCommandEXT)},
         .addressFlags = detail::BufferAddressCommandAccess::flags(arguments),
-        .drawCount = 1,
+        .drawCount = drawCount,
     };
     impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
     observeRHICommand(RHICommandEvent::Draw, this);
@@ -10951,6 +10956,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
     selectedFeatures.publish(deviceImpl->capabilities, deviceImpl->vulkanCapabilities);
+    deviceImpl->capabilities.maxDrawIndirectCount = selectedFeatures.multiDrawIndirect
+        ? selectedProperties.limits.maxDrawIndirectCount : 1u;
 #ifdef VK_EXT_ray_tracing_invocation_reorder
     deviceImpl->capabilities.rayTracingInvocationReorderReorderingHint = selectedFeatures.rayTracingInvocationReorder &&
         deviceImpl->physicalProperties.rayTracingInvocationReorder.rayTracingInvocationReorderReorderingHint ==

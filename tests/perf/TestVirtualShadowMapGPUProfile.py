@@ -45,6 +45,15 @@ def add_substages(row, compact=False):
     return row
 
 
+def batched_frame(index, faces=8):
+    row = frame(index, faces)
+    sections = row["nodes"][0]["sections"]
+    sections[:] = [part for part in sections if part["name"] not in ("VSM build", "VSM raster")]
+    sections.extend({"name": name, "parent": 0, "cpuOnly": False, "gpuMs": 2.}
+                    for name in ("VSM build", "VSM raster"))
+    return row
+
+
 def add_build(row):
     counters = dict.fromkeys(profile.BUILD_COUNTERS, 0)
     counters.update(clusterGroups=3, clusterBoundsValidGroups=2, clusterSurvivingGroups=1,
@@ -114,6 +123,47 @@ class GPUProfileTests(unittest.TestCase):
         self.assertEqual(result["stageSumMs"], 12.)
         self.assertEqual(result["otherShadowsMs"], 48.)
         self.assertEqual(result["faceCount"], 2)
+
+    def test_batched_build_and_raster_keep_real_face_count(self):
+        result = profile.profile_frame(batched_frame(1))
+        self.assertEqual(result["faceCount"], 8)
+        self.assertEqual(result["buildRasterMode"], "batched")
+        self.assertEqual(result["buildCount"], 1)
+        self.assertEqual(result["rasterCount"], 1)
+        self.assertEqual(result["buildMs"], 2.)
+        self.assertEqual(result["rasterMs"], 2.)
+        self.assertEqual(result["stageSumMs"], 36.)
+
+    def test_batched_build_substages_count_one_aggregate(self):
+        for compact in (False, True):
+            split = profile.build_substage_frame(add_substages(batched_frame(1), compact), required=True)
+            self.assertEqual(split["faceCount"], 8)
+            self.assertEqual(split["buildRasterMode"], "batched")
+            self.assertEqual(split["buildCount"], 1)
+            self.assertEqual(len(split["faces"]), 1)
+            self.assertEqual(split["faces"][0]["branch"], "compact" if compact else "direct")
+
+    def test_incomplete_or_partially_batched_work_is_rejected(self):
+        for name in ("VSM reset", "VSM mark", "VSM allocator", "VSM build", "VSM raster"):
+            row = batched_frame(1)
+            sections = row["nodes"][0]["sections"]
+            sections.pop(next(index for index, part in enumerate(sections) if part["name"] == name))
+            with self.subTest(stage=name), self.assertRaises(ValueError):
+                profile.profile_frame(row)
+        row = batched_frame(1)
+        row["nodes"][0]["sections"].append({"name": "VSM build", "parent": 0, "gpuMs": 1.})
+        with self.assertRaises(ValueError):
+            profile.profile_frame(row)
+
+    def test_batched_instance_cull_build_substages(self):
+        row = add_substages(batched_frame(1), compact=True)
+        sections = row["nodes"][0]["sections"]
+        next(part for part in sections if part["name"] == "VSM build compact")["name"] = "VSM build instance cull"
+        split = profile.build_substage_frame(row, required=True)
+        self.assertEqual(split["faces"][0]["branch"], "instance")
+        self.assertEqual(split["faceCount"], 8)
+        self.assertEqual(split["buildCount"], 1)
+        self.assertGreater(split["instanceCullMs"], 0.)
 
     def test_optional_build_substages_do_not_change_inclusive_totals(self):
         for compact in (False, True):
