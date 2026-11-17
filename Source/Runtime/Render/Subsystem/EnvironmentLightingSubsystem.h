@@ -32,6 +32,9 @@ struct EnvironmentLightingSnapshot {
     Buffer* sphericalHarmonicsBuffer = nullptr;
     // Eight 256x128 lat-long layers, linear perceptual roughness, GGX filtered.
     Buffer* prefilteredSpecularBuffer = nullptr;
+    // Optional filterable copy of the same publication; the buffer remains the reference.
+    TextureView* prefilteredSpecularView = nullptr;
+    const SamplerDesc* prefilteredSpecularSampler = nullptr;
     Buffer* celestialLightsBuffer = nullptr;
     Buffer* atmosphereParametersBuffer = nullptr;
     TextureView* transmittanceView = nullptr;

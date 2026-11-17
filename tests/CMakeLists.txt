@@ -858,6 +858,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicRequiredTestLaneTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestRunRequiredTests.py")
     set_tests_properties(MetallicRequiredTestLaneTests PROPERTIES LABELS "tools;cpu;skip-policy" TIMEOUT 60)
+    add_test(NAME MetallicSceneSkipReceiptTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestSceneSkipReceipt.py"
+            --executable "$<TARGET_FILE:MetallicSceneTests>")
+    set_tests_properties(MetallicSceneSkipReceiptTests PROPERTIES LABELS "tools;cpu;skip-policy" TIMEOUT 30)
     add_test(NAME MetallicFinalBlitPipelineInventoryTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestFinalBlitPipelineInventory.py")
     set_tests_properties(MetallicFinalBlitPipelineInventoryTests PROPERTIES LABELS "tools;cpu;skip-policy" TIMEOUT 30)

@@ -682,13 +682,12 @@ public:
                 .placementAlignment = 16, .dstBuffer = destinations[index], .copyBatch = *batch});
             if (!upload.valid()) { (void)context.streamer()->cancelCopyBatch(*batch); return makeError(Error::OutOfMemory); }
         }
-        std::vector<RenderGraphStageUse> initializeUses{RenderGraphStageUse{"shadows", RenderGraphResourceAccess::TextureTransferWrite},
+        std::vector<RenderGraphStageUse> initializeUses{
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"budgetDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite}};
-        if (debugOutput_) { initializeUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite}); }
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
             initializeUses.push_back({"buildDiagnostics", RenderGraphResourceAccess::BufferTransferWrite});
@@ -949,14 +948,45 @@ public:
             temporalUses.push_back({"depth", RenderGraphResourceAccess::TextureSampleRead});
         }
         std::array<uint64_t, 8> memoryData{};
+        const uint32_t outputLayerCount = output.desc().layerCount;
+        uint32_t projectedFaceCount = 0;
+        for (const auto& group : projections) { projectedFaceCount += group.faceCount; }
+        const bool onePassProjection = projectedFaceCount > 1 && !settings.optimizeProjectionStatistics &&
+            device_->capabilities().computeSubgroupBallotArithmetic;
+        std::vector<uint8_t> coveredLayers(outputLayerCount, 0);
+        if (!onePassProjection) {
+            for (const auto& group : projections) {
+                if (group.lightIndex >= lights.size()) { continue; }
+                const auto& entry = lights[group.lightIndex].entry;
+                const bool sharedPointLayer = compact_ && entry.faceCount == 6;
+                if (sharedPointLayer) { continue; }
+                for (uint32_t face = 0; face < group.faceCount; ++face) {
+                    const uint32_t layer = entry.baseLayer + face;
+                    if (layer < outputLayerCount) { coveredLayers[layer] = 1; }
+                }
+            }
+        }
+        std::vector<TextureSubresourceRange> clearLayerRanges;
+        for (uint32_t layer = 0; layer < outputLayerCount;) {
+            if (coveredLayers[layer]) { ++layer; continue; }
+            const uint32_t start = layer;
+            while (layer < outputLayerCount && !coveredLayers[layer]) { ++layer; }
+            clearLayerRanges.push_back({0, output.desc().mipCount, start, layer - start});
+        }
+        if (!clearLayerRanges.empty()) {
+            initializeUses.push_back({"shadows", RenderGraphResourceAccess::TextureTransferWrite});
+            if (debugOutput_) { initializeUses.push_back({"debug", RenderGraphResourceAccess::TextureTransferWrite}); }
+        }
         const std::array stages{RenderGraphStage{"Initialize VSM light publication", initializeUses,
             [&](CommandBuffer& cmd) -> Result<> {
                 CPUProfileScope stageCPU(cpu, "Initialize publication commands");
-                auto cleared = cmd.clearColorTexture(*output.texture(), TextureLayout::TransferDestination, {1, 1, 1, 1});
-                if (!cleared) { return cleared; }
-                if (debugOutput_) {
-                    cleared = cmd.clearColorTexture(*debug.texture(), TextureLayout::TransferDestination, {1, 0, 1, 1});
+                for (const auto& range : clearLayerRanges) {
+                    auto cleared = cmd.clearColorTexture(*output.texture(), TextureLayout::TransferDestination, {1, 1, 1, 1}, range);
                     if (!cleared) { return cleared; }
+                    if (debugOutput_) {
+                        cleared = cmd.clearColorTexture(*debug.texture(), TextureLayout::TransferDestination, {1, 0, 1, 1}, range);
+                        if (!cleared) { return cleared; }
+                    }
                 }
                 return context.streamer()->copyStreamedData(cmd, *batch);
             }}, RenderGraphStage{"Project VSM lights", projectionUses,

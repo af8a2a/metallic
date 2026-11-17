@@ -28,12 +28,16 @@ MATERIAL_SOURCE = "Modules/Material/SceneMaterial.slang"
 RUNTIME_SOURCE = "Modules/Material/MaterialRuntime.slang"
 COVERAGE_SOURCE = "Modules/Material/Coverage.slang"
 FIBER_SOURCE = "Modules/RTXCRMaterialParameters.slang"
-SOURCE_FILES = (OWNER_SOURCE, VERTEX_SOURCE, SURFACE_SOURCE, GUIDES_SOURCE,
+SCENE_SURFACE_SOURCES = ("Modules/SceneSurface/SceneResources.slang",
+                        "Modules/SceneSurface/EnvironmentSampling.slang",
+                        "Modules/SceneSurface/MaterialTextureSampling.slang",
+                        "Modules/SceneSurface/SurfaceMath.slang")
+SOURCE_FILES = (OWNER_SOURCE, *SCENE_SURFACE_SOURCES, VERTEX_SOURCE, SURFACE_SOURCE, GUIDES_SOURCE,
                 MATERIAL_SOURCE, RUNTIME_SOURCE, COVERAGE_SOURCE, FIBER_SOURCE)
 CPU_ABI_HEADER = "Source/Runtime/Render/Material/SceneMaterialData.h"
 OFFSETS = dict(base_alpha=12, cutoff=40, program_id=56, alpha_mode=60,
                has_program=92, fiber=112, base_color_texture=176)
-OWNER_ANCHOR = 'import StreamTextureSampling;\nimport WorkingColor;'
+OWNER_ANCHOR = '__include "SceneSurface/SceneResources.slang";'
 VERTEX_LOAD = "    SceneMaterialData transport = loadSceneMaterial(hit.materialIndex);"
 GUIDE_LOAD = "    let transport = loadSceneMaterial(hit.materialIndex);"
 DOMAIN_BRANCH = "    if (materialDomain(transport) == kMaterialDomainFiber) {"
@@ -255,6 +259,8 @@ def plan_overlay(shader_root: Path, arm: str) -> dict:
                             (COVERAGE_SOURCE, "implementing Material;"),
                             (FIBER_SOURCE, "module RTXCRMaterialParameters;")):
         validate_owned(sources[relative], owner)
+    for relative in SCENE_SURFACE_SOURCES:
+        validate_owned(sources[relative], "implementing SceneSurface;")
     validate_layout(sources)
     vertex = replace_once(sources[VERTEX_SOURCE], VERTEX_LOAD,
                           "    let materialHeader = loadSceneMaterialReadHeader(hit.materialIndex);")

@@ -261,13 +261,21 @@ public SpectralSegment integrateSpectral(GPUAtmosphereParameters p, Texture2D<fl
 public SpectralSegment integrateEnvironment(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     Texture2D<float4> multiScattering, float3 position, float3 direction, float distance, bool groundBounce)
 {
-    SpectralSegment sun = integrateSpectral(p, transmittance, multiScattering, position, direction, distance,
-        p.sunDirectionRadius.xyz, p.sunIrradianceEnabled.xyz * p.sunIrradianceEnabled.w, false, true, groundBounce);
-    if (p.moonIrradianceEnabled.w <= 0.0 || all(p.moonIrradianceEnabled.xyz <= 0.0)) { return sun; }
-    SpectralSegment moon = integrateSpectral(p, transmittance, multiScattering, position, direction, distance,
-        p.moonDirectionRadius.xyz, p.moonIrradianceEnabled.xyz * p.moonIrradianceEnabled.w, false, true, groundBounce);
-    sun.radiance += moon.radiance;
-    return sun;
+    SpectralSegment result;
+    result.radiance = float3(0.0);
+    result.transmittance = float3(1.0);
+    result.scatteringResponse = float3(0.0);
+    [loop]
+    for (uint slot = 0u; slot < 2u; ++slot) {
+        float4 dir = slot == 0u ? p.sunDirectionRadius : p.moonDirectionRadius;
+        float4 irr = slot == 0u ? p.sunIrradianceEnabled : p.moonIrradianceEnabled;
+        if (slot == 1u && (irr.w <= 0.0 || all(irr.xyz <= 0.0))) { break; }
+        SpectralSegment seg = integrateSpectral(p, transmittance, multiScattering, position, direction, distance,
+            dir.xyz, irr.xyz * irr.w, false, true, groundBounce);
+        if (slot == 0u) { result = seg; }
+        else { result.radiance += seg.radiance; }
+    }
+    return result;
 }
 public AtmosphereSegment segmentIntegration(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     Texture2D<float4> multiScattering, float3 positionKm, float3 direction, float distanceKm)
@@ -293,10 +301,10 @@ public float3 solarIrradiance(GPUAtmosphereParameters p, Texture2D<float4> trans
     float3 direction = slot == 0 ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz;
     return solarIrradiance(p, transmittance, positionKm, slot, Metallic.Clouds::transmittance(p, positionKm, direction));
 }
-public float cloudShadowTransmittance(GPUAtmosphereParameters p, Texture2D<float4> shadow,
-    float3 positionKm, uint slot)
+public bool tryCloudShadowMap(GPUAtmosphereParameters p, Texture2D<float4> shadow,
+    float3 positionKm, uint slot, out float transmittance)
 {
-    if (!Metallic.Clouds::enabled(p)) { return 1.0; }
+    if (!Metallic.Clouds::enabled(p)) { transmittance = 1.0; return true; }
     float3 up, east, north; radialBasis(p, up, east, north);
     float3 sourceDirection = slot == 0u ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz;
     float radius = length(positionKm), altitude = radius - p.observerPlanetBottom.w;
@@ -313,9 +321,19 @@ public float cloudShadowTransmittance(GPUAtmosphereParameters p, Texture2D<float
         altitude >= 0.0 && altitude < min(p.cloudLayer.x, 0.5)) {
         float4 sampled = sampleLinear(shadow, uv);
         if ((slot == 0u ? sampled.z : sampled.w) > 0.99) {
-            return saturate(slot == 0u ? sampled.x : sampled.y);
+            transmittance = saturate(slot == 0u ? sampled.x : sampled.y);
+            return true;
         }
     }
+    transmittance = 1.0;
+    return false;
+}
+public float cloudShadowTransmittance(GPUAtmosphereParameters p, Texture2D<float4> shadow,
+    float3 positionKm, uint slot)
+{
+    float cached;
+    if (tryCloudShadowMap(p, shadow, positionKm, slot, cached)) { return cached; }
+    float3 sourceDirection = slot == 0u ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz;
     return Metallic.Clouds::transmittance(p, positionKm, sourceDirection);
 }
 public float3 latLongDirection(float2 uv)
@@ -427,8 +445,12 @@ public float3 sourceDiskSolidAngleEstimate(GPUAtmosphereParameters p, Texture2D<
 public float3 visibleSourceDisks(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     float3 positionKm, float3 worldDirection)
 {
-    return sourceDiskRadiance(p, transmittance, 0u, positionKm, worldDirection) +
-        sourceDiskRadiance(p, transmittance, 1u, positionKm, worldDirection);
+    float3 sum = float3(0.0);
+    [loop]
+    for (uint slot = 0u; slot < 2u; ++slot) {
+        sum += sourceDiskRadiance(p, transmittance, slot, positionKm, worldDirection);
+    }
+    return sum;
 }
 public float3 visibleSky(GPUAtmosphereParameters p, Texture2D<float4> skyView,
     Texture2D<float4> transmittance, float3 worldDirection, bool includeDisks)

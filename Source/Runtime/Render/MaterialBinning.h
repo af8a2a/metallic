@@ -27,6 +27,7 @@ struct MaterialBinningDesc {
     // Empty selects the retained fixed-five-class baseline.
     std::span<const uint32_t> materialProgramBins;
     uint32_t programBinCount = 0;
+    bool trustVisibilityHits = false;
 };
 
 struct MaterialBinningResult {
@@ -49,7 +50,12 @@ public:
 
 private:
     struct Allocation;
-    std::array<ComputeKernel, 5> programs_;
+    ComputeKernel resetProgram_;
+    ComputeKernel countProgram_;
+    ComputeKernel allocateProgram_;
+    // 0: fixed 5-class, 1: two-pass sparse (>2 bins), 2: single foreground validated (2 bins), 3: single foreground trusted (2 bins).
+    std::array<ComputeKernel, 4> classifyPrograms_;
+    ComputeKernel argumentsProgram_;
     std::vector<std::shared_ptr<Allocation>> allocations_;
 };
 

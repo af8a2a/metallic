@@ -1,5 +1,27 @@
 # VSM 已接受优化的生产路径
 
+## 2026-11-10 方向光 receiver-mask Mark 哈希容量
+
+将 `VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK` 的共享哈希容量由 256 降至 128，其余排列保持 256。数组、hash 取位、初始化和 flush 统一使用容量常量；碰撞仍沿原全局 OR 路径发布，不改变 page 集合与 receiver-mask union。没有改变采样、阴影分辨率、资源布局或时域设置，也没有新增运行时开关。
+
+固定 Sponza 的暖缓存诊断中，原每组平均占用 10.29 槽，P95 不超过 32。128 槽将 key 与两个 mask word 的初始化从每组 768 个 word 减为 384 个，但 claim 碰撞比例由 3.079% 升至 4.420%，page publication 和全局 mask OR 分别增加约 25% 和 22%。这些诊断包含额外原子操作和屏障，仅用于解释取舍，不作为时间收益证据。
+
+独立确认使用 RTX 5060、驱动 621.01，Sponza 1920×1080、SMRT 2×16、history32、layered2048、6 clipmaps、page128/VPA128、无 jitter。第 16 帧冻结 streaming 并 camera cut；每进程 192 帧，前 48 帧预热，全部 144 个有效帧保留。磁盘缓存保留、频率未锁定、未强制 GPU 独占。普通计时保留相同 GPU 阶段 timestamp，关闭 validation、Work/Build 诊断和图像回读。
+
+| GPU 范围 | A 基线 ms | B 128 槽 ms | 区组收益 | 95% CI |
+| --- | ---: | ---: | ---: | ---: |
+| Mark | 0.596304 | 0.547160 | 8.29% | [8.15%, 8.44%] |
+| Shadows 整体 | 2.339272 | 2.292272 | 2.02% | [1.97%, 2.06%] |
+| RenderGraph | 7.892720 | 7.872432 | 0.58% | [−0.56%, 1.70%] |
+
+每列绝对值为该侧 6 个进程中位数的中位数；收益与区间来自 3 个独立 ABBA 区组的 log ratio，不要求等于表中绝对时间的直接比值。初筛与独立确认各 3 个区组，不合并统计。确认满足 Shadows、Mark 收益区间下界大于零及 Graph 下界不低于 −2% 的预定门槛，因此采用；Graph 改善未确认，也不据此宣称呈现 FPS 提升。
+
+正确性：两臂各 4/4 项现有 RHI 测试通过、无跳过、validation 为零；覆盖页面层级、27 帧 receiver-mask 缓存生命周期、页尺寸切换及 compact outputs。尺寸切换和 compact 夹具使用保留 256 槽的非 mask 排列；128 槽路径由 receiver-mask 夹具与 Sponza 覆盖。Sponza 第 16/47/79 帧 PNG、HDR、shadow、depth、visibility 及 page/mask/projection 原始字节完全一致，已检查画面；第 16–79 帧 canonical 输入、stats32、Build60 和稳定 Work31 一致，仅保留既有 `markPageRequests`、`markReceiverMaskAtomicOrs` 调度计数例外。实际运行绑定只有 `vsmMarkMain` 改变。Slang 模块所有权审查通过，未新增多灯实景性能或长期显存压力结论。
+
+确认第 2 次启动因 `E:/` 上级目录 source-epoch 通知在编译阶段中断，实际完成帧为零，前后源码与二进制身份一致，具体通知来源未知。原失败包和已完成的 A01 保留；显式进行一次零帧启动替代后继续原序列，共 13 次启动、12 个有效计时进程。首区组 A01 与替代 B02 间暂停约 313 秒；没有剔除有效帧、追加有效样本或改变门槛。原始帧由独立脚本重新计算，结果一致。
+
+证据位于本地 `build/vsm-next-20261110/`：`Plan.json`、`MarkCorrectness.json`、`mark/MarkDiagnosticSummary.json`、`mark-discovery/Summary.json`、`mark-confirmation-resumed/{Summary,RecoveryDetails}.json` 及 `mark-audit/IndependentConfirmationAudit.json`。生成物不入库。Projection 的 Slow metadata 传递另完成源码与 SPIR-V 审计，未实施 GPU A/B，也未混入本次生产改动。
+
 ## 2026-11-09 VSM 定向光投影视线步进斜率外提与短路优化
 
 在完成了物理/虚拟页二次幂解耦与祖先投影元数据提升（Commit `f9243dc8`）后，进一步针对 SMRT 视线步进循环（`vsmFilterVisibility`）执行代数折叠与几何斜率外提优化：

@@ -6854,7 +6854,7 @@ TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)
 
 TEST(SceneLoading, ZorahFullOpenReportsMissingCook)
 {
-    if (!std::getenv("METALLIC_TEST_ZORAH_FULL")) { GTEST_SKIP(); }
+    if (!std::getenv("METALLIC_TEST_ZORAH_FULL")) { GTEST_SKIP() << "Set METALLIC_TEST_ZORAH_FULL=1 for the local asset"; }
     using namespace metallic;
     const auto initialized = task::initializeTaskSystem({.workerCount = 2});
     ASSERT_TRUE(initialized.has_value());

@@ -35,10 +35,9 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
 {
     if (isPathTraceShaderRequest(request) || isDeferredShaderRequest(request)) {
         const auto policy = parsePathTraceShaderPolicy(request);
-        // Deferred's inline transport retains checked packet access and does not
-        // enable the path tracer's texture-feedback reconvergence policy.
-        if (policy && isDeferredShaderRequest(request) &&
-            (policy->trustedSceneParameters || policy->textureFeedbackWave)) { return std::nullopt; }
+        // Deferred shares the inline/trusted Scene packet transport contracts and
+        // does not enable the path tracer's texture-feedback reconvergence policy.
+        if (policy && isDeferredShaderRequest(request) && policy->textureFeedbackWave) { return std::nullopt; }
         return policy ? std::optional<uint32_t>(policy->userPushDataSize()) : std::nullopt;
     }
     const auto matches = [&](std::string_view module, std::initializer_list<std::string_view> entries) {
@@ -58,7 +57,7 @@ inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
     if (matches("Features/Lighting/BuildReGIR", {"buildReGIRMain"})) { return static_cast<uint32_t>(sizeof(BuildReGIRParams)); }
     if (matches("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"})) { return static_cast<uint32_t>(sizeof(ClusterLightGridBuildParams)); }
     if (matches("Features/Lighting/PrepareLightsPdf", {"prepareLightsPdfMain"})) { return static_cast<uint32_t>(sizeof(PrepareLightsPdfParams)); }
-    if (matches("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"})) {
+    if (matches("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReducePartialMain", "autoExposureReduceMain", "autoExposureApplyMain"})) {
         return static_cast<uint32_t>(sizeof(AutoExposureParams));
     }
     if (matches("Features/PostProcess/FinalBlit", {"finalBlitMain", "finalBlitUvMain"})) { return static_cast<uint32_t>(sizeof(FinalBlitParams)); }
@@ -162,6 +161,7 @@ inline std::vector<NativeComputeWarmupVariant> nativeComputeWarmupVariants(const
     if (!specialized && !splitPrimary && !splitContinuation) { return {{*pushSize, false, {}}}; }
     SceneShaderOptions options{.customMaterials = define("METALLIC_CUSTOM_MATERIALS") == "1",
         .globalView = define("METALLIC_GLOBAL_VIEW") == "1", .hasRTXCR = define("METALLIC_HAS_RTXCR") == "1",
+        .deferredStochasticFiltering = define("METALLIC_DEFERRED_STOCHASTIC_FILTERING") == "1",
         .customCoverage = define("METALLIC_CUSTOM_COVERAGE") == "1"};
     if (options.customMaterials && !request.searchPaths.empty()) { options.materialInclude = request.searchPaths.front(); }
     const size_t coveragePathIndex = options.customMaterials ? 1u : 0u;

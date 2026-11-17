@@ -10,6 +10,8 @@ public interface IOpenPBRContext
 {
     public static const bool kEnableSheenAndCoat;
     public static const bool kEnableDispersion;
+    public static const bool kEnableThinFilm;
+    public static const bool kEnableSampling;
     public static bool enableSheenAndCoat();
     public static bool enableDispersion();
     public static bool enableTranslucency();

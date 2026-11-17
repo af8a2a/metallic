@@ -31,6 +31,7 @@ using Metallic.SceneSurface;
 
 
 
+[ForceInline]
 public float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
 #if SHARC_UPDATE
@@ -38,10 +39,13 @@ public float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 #else
     let resources = getSceneResourceParameterField<SceneOpenPBRLUTResourceParameters>(kSceneOpenPBRLUTsOffset);
 #endif
-    let texture = ResourceHandle<Texture2D<float4>>(resources.openPBRLut2D.load(openPBRLut2DSlot(lutId)));
-    return sampleOpenPBRTexture2D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uv);
+    let texture = ResourceHandle<Texture2D<float4>>(
+        resolveUniform(resources.openPBRLut2D.resource).Load<uint>(
+            resources.openPBRLut2D.byteOffset + openPBRLut2DSlot(lutId) * sizeof(uint)));
+    return sampleOpenPBRTexture2D(resolveUniform(texture), resolveUniform(resources.openPBRLutSampler), uv);
 }
 
+[ForceInline]
 public float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
 #if SHARC_UPDATE
@@ -49,8 +53,10 @@ public float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 #else
     let resources = getSceneResourceParameterField<SceneOpenPBRLUTResourceParameters>(kSceneOpenPBRLUTsOffset);
 #endif
-    let texture = ResourceHandle<Texture3D<float4>>(resources.openPBRLut3D.load(openPBRLut3DSlot(lutId)));
-    return sampleOpenPBRTexture3D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uvw);
+    let texture = ResourceHandle<Texture3D<float4>>(
+        resolveUniform(resources.openPBRLut3D.resource).Load<uint>(
+            resources.openPBRLut3D.byteOffset + openPBRLut3DSlot(lutId) * sizeof(uint)));
+    return sampleOpenPBRTexture3D(resolveUniform(texture), resolveUniform(resources.openPBRLutSampler), uvw);
 }
 
 // The closure module receives a statically specialized BSDF LUT context.
@@ -63,6 +69,8 @@ public struct SceneOpenPBRContext : IOpenPBRContext
     public static const bool kEnableSheenAndCoat = false;
 #endif
     public static const bool kEnableDispersion = false;
+    public static const bool kEnableThinFilm = false;
+    public static const bool kEnableSampling = true;
     public static bool enableSheenAndCoat()
     {
 #if METALLIC_CUSTOM_MATERIALS
@@ -233,9 +241,10 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     ScenePathTracePush push,
     RayCone rayCone,
     float3 rayDirection,
-    inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal)
+    inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal,
+    int fixedMetalness = -1, bool opaquePrimary = false)
 {
-    bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
+    bool deterministicGlassTextures = !opaquePrimary && materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
     MaterialValueTextureContext valueContext;
     valueContext.normalizedRayLod = footprint.isotropicLod0;
@@ -303,20 +312,24 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
             rayDirection,
             deterministicGlassTextures,
             seed, footprint, sampled);
-        transmissionSample = source.loadTexture(
-            material.transmissionTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            rayCone,
-            hit,
-            rayDirection,
-            deterministicGlassTextures,
-            seed, footprint, sampled);
-        specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
-            float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, sampled);
-        specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
-            float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, specularColorSampled);
+        if (!opaquePrimary) {
+            transmissionSample = source.loadTexture(
+                material.transmissionTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                rayCone,
+                hit,
+                rayDirection,
+                deterministicGlassTextures,
+                seed, footprint, sampled);
+        }
+        if (fixedMetalness != 1) {
+            specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
+                float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, sampled);
+            specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
+                float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, specularColorSampled);
+        }
     }
     bool disableTextures = openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures);
     // Keep bound-slot sampling and RNG advancement unchanged in debug mode.
@@ -330,10 +343,11 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     }
     float3 baseColor = saturate(modulateSceneMaterialColor(material.baseColor.rgb,
         baseColorSample.rgb, material.baseColorTexture, baseColorSampled, disableTextures));
-    float metallic = saturate(material.params.x * metallicRoughnessSample.b);
+    float metallic = fixedMetalness >= 0 ? float(fixedMetalness)
+        : saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
-    float transmission = saturate(material.glassParams.x * transmissionSample.r);
-    if (openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission)) {
+    float transmission = opaquePrimary ? 0.0 : saturate(material.glassParams.x * transmissionSample.r);
+    if (opaquePrimary || openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission)) {
         transmission = 0.0;
     }
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
@@ -346,6 +360,8 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     if ((surface.overrideMask & 4u) != 0u) { roughness = clamp(material.params.y, 0.001, 1.0); }
     if ((surface.overrideMask & 8u) != 0u) { emissive = material.emissive.rgb; }
 #endif
+    if (fixedMetalness >= 0) { metallic = float(fixedMetalness); }
+    if (opaquePrimary) { transmission = 0.0; }
 
     OpenPBRClosure<TSource.Context> result;
     result.context = source.context();
@@ -358,16 +374,21 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     result.inputs.base_diffuse_roughness = 0.0;
     result.inputs.base_metalness = metallic;
 
-    result.inputs.specular_weight = lerp(saturate(material.specular.w * specularSample.a), 1.0, metallic);
-    result.inputs.specular_color = lerp(saturate(modulateSceneMaterialColor(material.specular.rgb,
-        specularColorSample.rgb, material.specularColorTexture, specularColorSampled, disableTextures)), float3(1.0), metallic);
+    const float dielectricSpecularWeight = saturate(material.specular.w * specularSample.a);
+    result.inputs.specular_weight = (fixedMetalness == 1) ? 1.0
+        : ((fixedMetalness == 0) ? dielectricSpecularWeight : lerp(dielectricSpecularWeight, 1.0, metallic));
+    const float3 dielectricSpecularColor = (fixedMetalness == 1) ? float3(1.0)
+        : saturate(modulateSceneMaterialColor(material.specular.rgb,
+            specularColorSample.rgb, material.specularColorTexture, specularColorSampled, disableTextures));
+    result.inputs.specular_color = (fixedMetalness == 1) ? float3(1.0)
+        : ((fixedMetalness == 0) ? dielectricSpecularColor : lerp(dielectricSpecularColor, float3(1.0), metallic));
     result.inputs.specular_roughness = roughness;
     result.inputs.specular_roughness_anisotropy = 0.0;
     result.inputs.specular_ior = ior;
     result.inputs.specular_anisotropy_rotation_cos_sin = float2(1.0, 0.0);
 
-    result.inputs.transmission_weight = transmission * (1.0 - metallic);
-    result.inputs.transmission_color = powColor(baseColor, 0.5);
+    result.inputs.transmission_weight = (fixedMetalness == 1 || opaquePrimary) ? 0.0 : transmission * (1.0 - metallic);
+    result.inputs.transmission_color = (!opaquePrimary && result.inputs.transmission_weight > 0.0) ? powColor(baseColor, 0.5) : float3(1.0);
     result.inputs.transmission_depth = 0.0;
     result.inputs.transmission_scatter = float3(0.0, 0.0, 0.0);
     result.inputs.transmission_scatter_anisotropy = 0.0;
@@ -460,17 +481,16 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
     {
         material = source.loadParameters(instance);
         updateSceneSurfaceHit(hit, context, instance.parameterOffset / kSceneMaterialRecordBytes);
-        if (materialNeedsRayFootprint(source.hasTextures(push), materialNeedsDeterministicTextureMip0(material))) {
+        bool deterministicMip0 = !opaquePrimary && materialNeedsDeterministicTextureMip0(material);
+        if (materialNeedsRayFootprint(source.hasTextures(push), deterministicMip0)) {
             context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
         }
         resolveSceneSurfaceNormal(hit, material.normalTexture, material.textureParams.x, push,
-            rayCone, rayDirection, materialNeedsDeterministicTextureMip0(material), faceForwardNormal,
+            rayCone, rayDirection, deterministicMip0, faceForwardNormal,
             applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
         SurfaceMaterialResult<Closure> result = (SurfaceMaterialResult<Closure>)0;
         result.closure = resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed, source,
-            context.footprint, context.shadingNormalWS, faceForwardNormal);
-        if (fixedMetalness >= 0) { result.closure.inputs.base_metalness = float(fixedMetalness); }
-        if (opaquePrimary) { result.closure.inputs.transmission_weight = 0.0; }
+            context.footprint, context.shadingNormalWS, faceForwardNormal, fixedMetalness, opaquePrimary);
         result.emission = result.closure.inputs.emission_luminance * result.closure.inputs.emission_color;
         result.flags = 0u;
         summary = summarizeOpenPBRSurface(result.closure, material.emissive.w != 0.0);
@@ -635,7 +655,7 @@ public float3 sceneSurfaceEnvironment<TPrepared : IPreparedSurfaceClosure>(TPrep
             float misWeight = useEnvironmentMis
                 ? environmentBsdfMisWeight(push, scatter.pdf, scatter.wiWS, (scatter.flags & kBSDFDelta) != 0u)
                 : 1.0;
-            radiance += max(scatter.weight, float3(0)) * environmentRadiance(scatter.wiWS, push, false) * misWeight;
+            radiance += max(scatter.weight, float3(0)) * environmentIndirectRadiance(scatter.wiWS, push) * misWeight;
         }
     }
     return radiance / float(count);

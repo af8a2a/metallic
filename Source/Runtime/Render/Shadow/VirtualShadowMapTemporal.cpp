@@ -10,7 +10,7 @@
 
 namespace metallic::render {
 namespace {
-constexpr uint64_t kTemporalABI = 0x56534d54454d5031ull;
+constexpr uint64_t kTemporalABI = 0x56534d54454d5034ull;
 
 bool sameProjection(const ViewConstants& a, const ViewConstants& b)
 {
@@ -63,7 +63,7 @@ struct VirtualShadowMapTemporal::Impl
         std::shared_ptr<SubmissionTransaction> submission;
     };
     Device* device = nullptr;
-    ComputeKernel kernel;
+    std::array<ComputeKernel, 4> kernels;
     std::array<std::shared_ptr<Resource>, 3> pool;
     // No snapshot owns another snapshot: repeated frames cannot grow a chain.
     std::shared_ptr<Snapshot> committed, predecessor, pending;
@@ -135,19 +135,27 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
             return makeError(Error::InvalidArgument);
         }
     }
-    if (!state.kernel.valid()) {
-        auto result = ShaderRegistry::instance().getComputeKernel(device,
-            {.moduleName = "Features/VirtualShadowMaps/VirtualShadowMapTemporal",
-                .entryPointName = "vsmTemporalMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-            {.parameters = parameterAbi<VirtualShadowMapTemporalParams>(kTemporalABI, ParameterTransport::InlinePush),
-                .debugName = "VSM temporal visibility"}, state.kernel, log);
-        if (!result) { return result; }
-    }
+
     auto previous = state.committed && state.committed->frameIndex == frameIndex ? state.predecessor : state.committed;
     const bool hasHistory = previous && previous->frameIndex + 1 == frameIndex &&
         previous->invalidationRevision == invalidationRevision && previous->contentKey == contentKey &&
         previous->maxFrames == maxFrames && sameProjection(previous->view, view) &&
         sameLight(previous->light, light) && sameSettings(previous->settings, settings);
+    const bool isOrtho = view.current.upProjection[3] > 0.5f;
+    const bool useHistory = hasHistory && maxFrames > 1;
+    const size_t kernelIndex = (isOrtho ? 2u : 0u) | (useHistory ? 1u : 0u);
+    auto& kernel = state.kernels[kernelIndex];
+    if (!kernel.valid()) {
+        const std::array<ShaderSpecializationConstant, 2> specs{
+            ShaderSpecializationConstant{0u, ShaderSpecializationType::Bool32, isOrtho ? 1u : 0u},
+            ShaderSpecializationConstant{1u, ShaderSpecializationType::Bool32, useHistory ? 1u : 0u}};
+        auto result = ShaderRegistry::instance().getComputeKernel(device,
+            {.moduleName = "Features/VirtualShadowMaps/VirtualShadowMapTemporal",
+                .entryPointName = "vsmTemporalMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            {.parameters = parameterAbi<VirtualShadowMapTemporalParams>(kTemporalABI, ParameterTransport::InlinePush),
+                .debugName = "VSM temporal visibility", .specializationConstants = specs}, kernel, log);
+        if (!result) { return result; }
+    }
     if (hasHistory) {
         if (auto result = addCommandDependency(commands, previous->completion); !result) { return result; }
     }
@@ -209,7 +217,7 @@ Result<> VirtualShadowMapTemporal::record(Device& device, CommandBuffer& command
     current->layout = TextureLayout::General;
     current->completion = frame->completion();
     gpu.next("VSM temporal dispatch");
-    if (auto result = state.kernel.dispatch(commands, *encoded, (width + 7u) / 8u, (height + 7u) / 8u); !result) { return result; }
+    if (auto result = kernel.dispatch(commands, *encoded, (width + 7u) / 8u, (height + 7u) / 8u); !result) { return result; }
     gpu.next("VSM temporal publish");
     // The public whole-array view is shared by successive light resolves.
     const MemoryBarrierDesc ready{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},

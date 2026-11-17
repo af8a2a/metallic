@@ -110,6 +110,13 @@ public int openPBRSelectLobe<TContext : IOpenPBRContext>(TContext context, const
 public void openPBRInitializeLobe<TContext : IOpenPBRContext>(TContext context, inout OpenPBRAggregateLobe lobe,
                                                        const float3 view_direction, const float3 path_throughput)
 {
+    if (!TContext.kEnableSampling) {
+        [unroll]
+        for (int lobe_index = 0; lobe_index < OpenPBRNumBaseLobes; ++lobe_index)
+            lobe.lobe_weights[lobe_index] = 0.0f;
+        return;
+    }
+
     lobe.lobe_weights[OpenPBRSpecularLobeIndex] =
         openPBREstimateLobeContribution(context, lobe.specular_lobe, view_direction, path_throughput);
     if (TContext.enableTranslucency())
@@ -147,6 +154,15 @@ public OpenPBRDiffuseSpecular openPBRCalculateLobeValue<TContext : IOpenPBRConte
                                                                              const float3 view_direction,
                                                                              const float3 light_direction)
 {
+    if (dot(lobe.specular_lobe.normal_ff, light_direction) <= 0.0f &&
+        (!TContext.enableTranslucency() ||
+         (openPBRIsZero3(lobe.specular_lobe.refl_trans_coeff.transmission) &&
+          openPBRIsZero3(lobe.dielectric_mms_lobe.scale_trans) &&
+          openPBRIsZero3(lobe.thin_wall_specular_trans_lobe.flipped_lobe.refl_trans_coeff.color) &&
+          openPBRIsZero3(lobe.thin_wall_diffuse_trans_lobe.flipped_lobe.diffuse_albedo)))) {
+        return openPBRMakeZeroDiffuseSpecular();
+    }
+
     OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
 
     result = openPBRAddDiffuseSpecular(

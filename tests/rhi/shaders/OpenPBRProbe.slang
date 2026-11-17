@@ -48,6 +48,8 @@ public struct ProbeOpenPBRContext : IOpenPBRContext
 {
     public static const bool kEnableSheenAndCoat = false;
     public static const bool kEnableDispersion = false;
+    public static const bool kEnableThinFilm = true;
+    public static const bool kEnableSampling = true;
     public ProbeParams probe;
     public static bool enableSheenAndCoat() { return false; }
     public static bool enableDispersion() { return false; }
@@ -63,6 +65,8 @@ public struct StatefulOpenPBRContext : IOpenPBRContext
 {
     public static const bool kEnableSheenAndCoat = true;
     public static const bool kEnableDispersion = false;
+    public static const bool kEnableThinFilm = true;
+    public static const bool kEnableSampling = true;
     public ProbeOpenPBRContext base;
     public float scale;
     public static bool enableSheenAndCoat() { return true; }

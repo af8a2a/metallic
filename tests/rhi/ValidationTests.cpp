@@ -628,7 +628,13 @@ public:
             }
         }
         if (!hasError(command.copyTexture({.source = texture->get(), .destination = texture->get()}), Error::InvalidArgument) ||
-            !hasError(command.clearColorTexture(**texture, TextureLayout::ShaderRead), Error::InvalidArgument)) {
+            !hasError(command.clearColorTexture(**texture, TextureLayout::ShaderRead), Error::InvalidArgument) ||
+            !hasError(command.clearColorTexture(**texture, TextureLayout::TransferDestination, {1, 0, 1, 1}, {0, 2, 0, 1}),
+                Error::InvalidArgument) ||
+            !hasError(command.clearColorTexture(**texture, TextureLayout::TransferDestination, {1, 0, 1, 1}, {0, 1, 1, 1}),
+                Error::InvalidArgument) ||
+            !hasError(command.clearColorTexture(**texture, TextureLayout::TransferDestination, {1, 0, 1, 1}, {0, 0, 0, 1}),
+                Error::InvalidArgument)) {
             return RHITestResult::fail("invalid texture command did not report InvalidArgument");
         }
         for (const float width : {0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN()}) {

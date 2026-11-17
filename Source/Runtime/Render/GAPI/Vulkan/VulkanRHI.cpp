@@ -5159,23 +5159,33 @@ void CommandBuffer::hostWriteBarrier()
 
 Result<> CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color)
 {
+    if (texture.impl_ == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
+    const TextureDesc& desc = texture.impl_->desc;
+    return clearColorTexture(texture, layout, color, {0, desc.mipCount, 0, desc.layerCount});
+}
+
+Result<> CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color,
+    const TextureSubresourceRange& range)
+{
     if (!validCommandRecording(impl_.get(), recording_) || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE ||
         texture.impl_->device != impl_->device ||
         (layout != TextureLayout::TransferDestination && layout != TextureLayout::General)) {
         return makeError(Error::InvalidArgument);
     }
     const TextureDesc& desc = texture.impl_->desc;
-    if (aspectForFormat(desc.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
+    if (aspectForFormat(desc.format) != VK_IMAGE_ASPECT_COLOR_BIT || !range.valid(desc.mipCount, desc.layerCount)) {
         return makeError(Error::InvalidArgument);
     }
 
     const VkClearColorValue clearValue{{color.r, color.g, color.b, color.a}};
-    const VkImageSubresourceRange range{
+    const VkImageSubresourceRange vkRange{
         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .baseMipLevel = 0,
-        .levelCount = desc.mipCount,
-        .baseArrayLayer = 0,
-        .layerCount = desc.layerCount,
+        .baseMipLevel = range.baseMip,
+        .levelCount = range.mipCount,
+        .baseArrayLayer = range.baseLayer,
+        .layerCount = range.layerCount,
     };
     impl_->device->functions.vkCmdClearColorImage(
         impl_->commandBuffer,
@@ -5183,7 +5193,7 @@ Result<> CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout
         imageLayout(layout, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         &clearValue,
         1,
-        &range);
+        &vkRange);
     return {};
 }
 

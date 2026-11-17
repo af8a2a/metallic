@@ -69,29 +69,41 @@ float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
 }
 #endif
 
-#define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentIrradianceSHOffset))
+#define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentIrradianceSHOffset))
 
 
-#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridParamsOffset))
-#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridLightsOffset))
-#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCandidatesOffset))
-#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCellsOffset))
-#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridIndicesOffset))
+#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridParamsOffset))
+#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridLightsOffset))
+#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCandidatesOffset))
+#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCellsOffset))
+#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightGridIndicesOffset))
 
 
-#define gRealtimeShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
-#define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
-#define gRealtimeMoonShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneMoonShadowVisibilityOffset))
-#define gRealtimeMoonShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMoonShadowParametersOffset))
-#define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kScenePreviousEnvironmentIrradianceSHOffset))
+#define gRealtimeShadow resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
+#define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
+#define gRealtimeMoonShadow resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneMoonShadowVisibilityOffset))
+#define gRealtimeMoonShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMoonShadowParametersOffset))
+#define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kScenePreviousEnvironmentIrradianceSHOffset))
 
 public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
 {
     float3 local = environmentLocalDirectionToWorld(direction, -push.environmentRotationRadians);
     float level = saturate(roughness) * float(kEnvironmentFilterLayers - 1u);
     uint lo = uint(floor(level)), hi = min(lo + 1u, kEnvironmentFilterLayers - 1u);
+    let textureHandle = getSceneResourceParameterField<ResourceHandle<Texture2DArray<float4>>>(kSceneEnvironmentSpecularTextureOffset);
+    if (textureHandle.index != 0xffffffffu) {
+        let source = resolveUniform(textureHandle);
+        let samplerState = resolveUniform(getSceneResourceParameterField<SamplerHandle>(kSceneEnvironmentSpecularSamplerOffset));
+        float2 uv = environmentFilterUv(local);
+        // Mirror reflections retain the original HDRI, including its full HDR range.
+        float3 a = lo == 0u ? environmentIndirectRadiance(direction, push)
+            : environmentFilterLayer(source, samplerState, uv, lo) * push.environmentIntensity;
+        float3 b = environmentFilterLayer(source, samplerState, uv, hi) * push.environmentIntensity;
+        return lerp(a, b, frac(level));
+    }
+    // RGBA32F linear filtering is optional on Vulkan devices.
     // Retain the original HDRI resolution for mirror reflections.
-    float3 a = lo == 0u ? environmentRadiance(direction, push, false)
+    float3 a = lo == 0u ? environmentIndirectRadiance(direction, push)
         : environmentFilterLayer(gEnvironmentSpecular, local, lo) * push.environmentIntensity;
     float3 b = environmentFilterLayer(gEnvironmentSpecular, local, hi) * push.environmentIntensity;
     return lerp(a, b, frac(level));
@@ -126,7 +138,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
         if (index < kCelestialLightCount) {
             result.source = celestialSourceIdentity(index);
             light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameterField<SceneResourceParameters, EnvironmentResourceParameters>(kSceneEnvironmentOffset).celestialLights), index, position);
+                getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentOffset)), index, position);
         } else {
             index -= kCelestialLightCount;
             result.source = index < lookup.count
@@ -143,22 +155,29 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
     public float3 visibility(SurfaceLightSample light)
     {
         if ((debugFlags & kOpenPBRDebugDisableShadows) != 0u) { return float3(1); }
-        let tableHandle = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
+        let tableHandle = getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneVirtualShadowLightsOffset);
         if (tableHandle.index != 0xffffffffu) {
             let table = resolveUniform(tableHandle);
-            VirtualShadowMapLightsHeader header = table.Load<VirtualShadowMapLightsHeader>(0);
             // A connected multi-light publication owns this domain, including
             // explicit disabled/budget-rejected entries; legacy pins are ignored.
+            // VirtualShadowMapLightsHeader::count is at byte offset 4.
+            uint headerCount = table.Load(4u);
             uint index = (light.source & kCelestialSourceBit) != 0u
                 ? light.source & ~kCelestialSourceBit : light.source + kCelestialLightCount;
-            if (index >= header.count) { return float3(1); }
-            VirtualShadowMapLightEntry entry = table.Load<VirtualShadowMapLightEntry>(64u + index * 64u);
-            if (entry.status != 1u) { return float3(1); }
-            uint face = entry.kind == 2u && (header.reserved[0] & 1u) == 0u ? Metallic.Shadow::virtualShadowMapPointFace(
-                position - float3(entry.positionRange[0], entry.positionRange[1], entry.positionRange[2])) : 0u;
-            let shadows = resolveUniform(getResourceParameterField<SceneResourceParameters,
-                ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
-            return float3(shadows.Load(int4(uint2(pixel), entry.baseLayer + face, 0)));
+            if (index >= headerCount) { return float3(1); }
+            uint entryOffset = 64u + index * 64u;
+            // VirtualShadowMapLightEntry::status is at byte offset 28.
+            if (table.Load(entryOffset + 28u) != 1u) { return float3(1); }
+            // VirtualShadowMapLightEntry::kind (offset 4) and baseLayer (offset 8).
+            uint2 kindAndBaseLayer = table.Load2(entryOffset + 4u);
+            uint face = 0u;
+            // VirtualShadowMapLightsHeader::reserved[0] is at byte offset 56; positionRange[0..2] at entryOffset + 32.
+            if (kindAndBaseLayer.x == 2u && (table.Load(56u) & 1u) == 0u) {
+                float3 lightPosition = asfloat(table.Load3(entryOffset + 32u));
+                face = Metallic.Shadow::virtualShadowMapPointFace(position - lightPosition);
+            }
+            let shadows = resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2DArray<float>>>(kSceneVirtualShadowsOffset));
+            return float3(shadows.Load(int4(uint2(pixel), kindAndBaseLayer.y + face, 0)));
         }
         ShadowParameters shadow = gRealtimeShadowParameters[0];
         if (shadow.control.x != 0u && light.source == shadow.control.z) {
@@ -176,9 +195,11 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
     }
 };
 
-public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
+[ForceInline]
+internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, inout HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed, int fixedMetalness, bool opaquePrimary, out bool applyAerial)
 {
+    applyAerial = true;
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
         propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t), ray.direction, false),
         sceneMaterialInstanceRef(hit.materialIndex));
@@ -188,9 +209,10 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     float4 normalSample = program.program.sampledNormal();
     SceneSurfaceSummary summary = program.program.surfaceSummary();
     if (push.debugView != kOpenPBRDebugViewFinal) {
+        applyAerial = false;
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, summary, ray.direction);
     }
-    if (summary.unlit) { return applyPrimaryAerialPerspective(summary.baseColor, hit.position, ray.origin); }
+    if (summary.unlit) { return summary.baseColor; }
     float3 viewDirection = -ray.direction;
     ClusterLightGridParams gridParams = gDeferredGridParams[0];
     VisibilitySurfaceLights lights;
@@ -199,18 +221,23 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     lights.pixel = samplePixel;
     lights.globalLightCount = clusterLightGridGlobalLightCount(gridParams);
     lights.globalLightCandidateOffset = gridParams.counts.x;
-    lights.lookup = clusterLightGridLookup(gridParams, gDeferredGridCells,
-        uint2(samplePixel), cameraLinearDepth(hit.position, push));
+    lights.lookup = gridParams.counts.x > 0u
+        ? clusterLightGridLookup(gridParams, gDeferredGridCells, uint2(samplePixel), cameraLinearDepth(hit.position, push))
+        : (ClusterLightGridLookup)0;
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);
     sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
     sampling.exteriorIor = OpenPBRVacuumIor;
+#if METALLIC_CUSTOM_MATERIALS
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     float3 radiance = shaded.radiance;
-#if METALLIC_CUSTOM_MATERIALS
     if (summary.numericalEnvironment) {
-        return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(shaded.prepared, push) * summary.occlusion, hit.position, ray.origin);
+        return radiance + sceneSurfaceEnvironment(shaded.prepared, push) * summary.occlusion;
     }
+#else
+    let prepared = evaluated.closure.prepare(viewDirection, TransportMode.Radiance, sampling);
+    float3 emission = max(prepared.surfaceEmission(evaluated.emission), float3(0));
+    float3 radiance = integrateDirectLighting(prepared, lights, emission);
 #endif
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 normal = hit.normal;
@@ -291,9 +318,61 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
         radiance += (diffuse + specular + transmitted) * summary.occlusion;
 #endif
     }
-    return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
+    return radiance;
 }
 
+public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
+{
+    bool applyAerial;
+    float3 radiance = shadeSceneVisibilitySurfaceRadiance(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary, applyAerial);
+    return applyAerial ? applyPrimaryAerialPerspective(radiance, hit.position, ray.origin) : radiance;
+}
+
+
+public struct DeferredOpenPBRContext : IOpenPBRContext
+{
+#if METALLIC_CUSTOM_MATERIALS
+    public static const bool kEnableSheenAndCoat = true;
+#else
+    public static const bool kEnableSheenAndCoat = false;
+#endif
+    public static const bool kEnableDispersion = false;
+    public static const bool kEnableThinFilm = false;
+    public static const bool kEnableSampling = false;
+    public static bool enableSheenAndCoat()
+    {
+#if METALLIC_CUSTOM_MATERIALS
+        return true;
+#else
+        return false;
+#endif
+    }
+    public static bool enableDispersion() { return false; }
+    public static bool enableTranslucency() { return true; }
+    public static bool enableMetallic() { return true; }
+    public float4 sample2D(int id, float2 uv) { return sampleOpenPBRLut2D(id, uv); }
+    public float4 sample3D(int id, float3 uvw) { return sampleOpenPBRLut3D(id, uvw); }
+};
+
+public struct DeferredOpenPBRMaterialSource : IOpenPBRMaterialSource
+{
+    public bool hasTextures(ScenePathTracePush push) { return sceneHasMaterialTextures(push); }
+    public typealias Context = DeferredOpenPBRContext;
+    public Context context() { return DeferredOpenPBRContext(); }
+    public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
+    {
+        return loadSceneOpenPBRMaterial(instance.parameterOffset / kSceneMaterialRecordBytes);
+    }
+    public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
+        ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
+    {
+        SceneMaterialTextureSource source;
+        return source.loadTexture(textureInfo, uv, fallback, push, cone, hit, rayDirection,
+            deterministicMip0, seed, footprint, sampled);
+    }
+};
 
 public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
@@ -315,7 +394,14 @@ public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
         return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
     }
 #endif
-    var program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+    Material<OpenPBRMaterialProgram<DeferredOpenPBRMaterialSource>> program = {};
+    program.program.hit = hit;
+    program.program.push = push;
+    program.program.rayCone = cone;
+    program.program.rayDirection = ray.direction;
+    program.program.seed = seed;
+    program.program.faceForwardNormal = true;
+    program.program.applyDebugNormalOverrides = false;
     program.program.fixedMetalness = fixedMetalness;
     program.program.opaquePrimary = opaquePrimary;
     return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);

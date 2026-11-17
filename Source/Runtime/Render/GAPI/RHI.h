@@ -1918,6 +1918,8 @@ class CommandBuffer {
     [[nodiscard]] Result<> copyTextureToBuffer(const BufferTextureRegion& desc);
     [[nodiscard]] Result<> copyBufferToTexture(const BufferTextureRegion& desc);
     [[nodiscard]] Result<> clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color = {});
+    [[nodiscard]] Result<> clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color,
+        const TextureSubresourceRange& range);
     Result<> beginRendering(const RenderingDesc& desc);
     // Native SDK consumers retain the view itself as well as its image.
     Result<> useNativeTextureView(TextureView& view);

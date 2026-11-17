@@ -294,6 +294,18 @@ public:
         CASE_REQUIRE(commands.copyBufferToTexture({.texture = source->get(), .buffer = *uploadSlice,
             .width = 4, .height = 4, .mipLevel = 1, .layerCount = layers}));
         CASE_REQUIRE(commands.clearColorTexture(**destination, TextureLayout::TransferDestination, {0, 0, 0, 1}));
+        for (const TextureSubresourceRange& invalidRange : {
+            TextureSubresourceRange{0, 3, 0, 1},
+            TextureSubresourceRange{0, 1, layers, 1},
+            TextureSubresourceRange{0, 0, 0, 1},
+            TextureSubresourceRange{0, 1, 0, 0},
+        }) {
+            if (!hasError(commands.clearColorTexture(**destination, TextureLayout::TransferDestination, {1, 0, 0, 1}, invalidRange),
+                Error::InvalidArgument)) {
+                return RHITestResult::fail("out-of-range clearColorTexture subresource accepted");
+            }
+        }
+        CASE_REQUIRE(commands.clearColorTexture(**destination, TextureLayout::TransferDestination, {1, 0, 0, 1}, {0, 1, 1, 2}));
         for (auto& barrier : barriers) {
             barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = barrier.after;
         }
@@ -328,6 +340,10 @@ public:
         CASE_REQUIRE(recording.submitAndWait());
         std::vector<std::byte> expected((mipBytes + baseBytes) * layers);
         for (size_t i = 3; i < expected.size(); i += 4) { expected[i] = std::byte{255}; }
+        for (uint32_t layer = 1; layer < 3; ++layer) {
+            const size_t baseOffset = mipBytes * layers + layer * baseBytes;
+            for (size_t i = 0; i < baseBytes; i += 4) { expected[baseOffset + i] = std::byte{255}; }
+        }
         for (uint32_t layer = 2; layer < 4; ++layer) {
             std::copy_n(data.begin() + (layer - 1) * mipBytes, mipBytes, expected.begin() + layer * mipBytes);
         }

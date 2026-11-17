@@ -429,6 +429,8 @@ def main():
                     "Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang",
                     "Source/Runtime/Render/Streamer/MeshletStreamRuntime.h",
                     "Source/Editor/EditorRayQualityCapture.h"]
+    source_paths.extend(path.relative_to(repository).as_posix() for path in sorted(
+        (repository / "Shaders/Features/GPUDriven/GPUDrivenStreamAsset").glob("*.slang")))
     current_source = [identity(repository / path) for path in source_paths]
     decoded, comparisons, plots, failures, warnings = [], [], [], [], []
     variants = capture["controlledBlas"]["variants"]

@@ -961,7 +961,7 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
         auto runtime = makeSceneShaderRequest(program, options);
         if (program == SceneShaderProgram::Deferred) {
             EXPECT_TRUE(contains(requests, runtime));
-            applyPathTraceShaderPolicy(runtime, {.trustedSceneParameters = false});
+            applyPathTraceShaderPolicy(runtime, {.trustedSceneParameters = true});
         }
         const auto warmed = std::find(requests.begin(), requests.end(), runtime);
         ASSERT_NE(warmed, requests.end());
@@ -1002,7 +1002,7 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
         const auto descriptorRequest = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, binnedOptions, {&define, 1});
         for (const bool inlineRoot : {false, true}) {
             auto runtime = descriptorRequest;
-            applyPathTraceShaderPolicy(runtime, {.inlineComputeRoot = inlineRoot, .trustedSceneParameters = false});
+            applyPathTraceShaderPolicy(runtime, {.inlineComputeRoot = inlineRoot, .trustedSceneParameters = inlineRoot});
             EXPECT_EQ(std::count(binnedRequests.begin(), binnedRequests.end(), runtime), 1);
         }
     }
@@ -1255,7 +1255,7 @@ TEST(ShaderRequests, DLSSRRWarmupContainsCompleteDefaultGuideRequests)
         for (const auto& defines : permutations) {
             auto expected = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
             expected.defines.emplace_back("METALLIC_INLINE_COMPUTE_ROOT", "1");
-            expected.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "408");
+            expected.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "416");
             const auto runtime = makePathTraceShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
             EXPECT_EQ(runtime, expected);
             EXPECT_EQ(std::count(catalog.begin(), catalog.end(), runtime), 1);
@@ -1298,7 +1298,7 @@ TEST(ShaderRequests, SingleSampleGuideWarmupRetainsBothRuntimePolicies)
         const SlangMacroDefine base[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
         const SlangMacroDefine query[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
         ASSERT_EQ(legacyWarmupPrefixSize(catalog), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
-            ? (include.empty() ? 203u : 199u) : (include.empty() ? 211u : 212u));
+            ? (include.empty() ? 207u : 203u) : (include.empty() ? 215u : 216u));
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const size_t singleRequests = shared ? 1u : 2u;
         const size_t legacySize = legacyWarmupPrefixSize(catalog);
@@ -1386,7 +1386,7 @@ TEST(ShaderRequests, HZBSPDWarmupAppendsRuntimeOrderedDescriptors)
     for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
         const auto catalog = builtinShaderWarmupRequests(include);
         ASSERT_EQ(legacyWarmupPrefixSize(catalog), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
-            ? (include.empty() ? 203u : 199u) : (include.empty() ? 211u : 212u));
+            ? (include.empty() ? 207u : 203u) : (include.empty() ? 215u : 216u));
         for (uint32_t wave = 0; wave < 2; ++wave) {
             const ShaderRequest runtime{.module = kHZBSPDModule, .entry = kHZBSPDEntryPoint,
                 .defines = {{kHZBSPDWaveOpsDefine, wave ? "1" : "0"}}};
@@ -1510,16 +1510,18 @@ TEST(ShaderRequests, PrimaryGuideSplitIsOptInAndKeepsSingleSourcePolicy)
     EXPECT_EQ(continuation.defines, fused.defines);
     EXPECT_EQ(primary.searchPaths, fused.searchPaths);
     EXPECT_EQ(continuation.capabilities, fused.capabilities);
-    EXPECT_EQ(sizeof(SceneResourceParameters), 408u);
+    EXPECT_EQ(sizeof(SceneResourceParameters), 416u);
     EXPECT_EQ(offsetof(SceneResourceParameters, moonShadowParameters), 392u);
     EXPECT_EQ(offsetof(SceneResourceParameters, moonShadowVisibility), 396u);
     EXPECT_EQ(offsetof(SceneResourceParameters, virtualShadows), 400u);
     EXPECT_EQ(offsetof(SceneResourceParameters, virtualShadowLights), 404u);
-    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, primaryHits), 408u);
-    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, reserved), 412u);
-    EXPECT_EQ(sizeof(ScenePrimarySplitResourceParameters), 416u);
-    EXPECT_EQ(offsetof(ScenePathDiagnosticResourceParameters, pathDiagnostics), 408u);
-    EXPECT_EQ(sizeof(ScenePathDiagnosticResourceParameters), 416u);
+    EXPECT_EQ(offsetof(SceneResourceParameters, environmentSpecularTexture), 408u);
+    EXPECT_EQ(offsetof(SceneResourceParameters, environmentSpecularSampler), 412u);
+    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, primaryHits), 416u);
+    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, reserved), 420u);
+    EXPECT_EQ(sizeof(ScenePrimarySplitResourceParameters), 424u);
+    EXPECT_EQ(offsetof(ScenePathDiagnosticResourceParameters, pathDiagnostics), 416u);
+    EXPECT_EQ(sizeof(ScenePathDiagnosticResourceParameters), 424u);
     EXPECT_EQ(kOpenPBRPrimaryHitStride, 100u);
 }
 
@@ -1647,7 +1649,7 @@ TEST(ShaderRequests, DeferredRuntimeGuidesKeepCatalogAndOtherProgramAxes)
     for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
         const auto catalog = builtinShaderWarmupRequests(include);
         EXPECT_EQ(legacyWarmupPrefixSize(catalog), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
-            ? (include.empty() ? 203u : 199u) : (include.empty() ? 211u : 212u));
+            ? (include.empty() ? 207u : 203u) : (include.empty() ? 215u : 216u));
         EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
             return request.module == "Features/VisibilityBuffer/VisibilityBufferDeferred";
         }), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg ? 6 : 22);
@@ -1687,7 +1689,7 @@ TEST(ShaderRequests, DeferredRuntimeGuidesKeepPushAndPacketLayout)
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
     static_assert(offsetof(ScenePathTracePush, textureFeedbackEnabled) == 252);
     EXPECT_EQ(ScenePathTracePush{}.textureFeedbackEnabled, 0u);
-    static_assert(sizeof(metallic::render::SceneResourceParameters) == 408);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 416);
     static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
     static_assert((kScenePathTraceExportUpscalerGuides & ((1u << 26u) - 1u)) == 0);
     const auto binPush = kScenePathTraceExportUpscalerGuides | 4u;
@@ -1766,7 +1768,7 @@ TEST(ShaderRequests, DeferredRuntimeGlobalViewKeepsPushPacketRootAndIndependentF
     using metallic::render::builtin_pass::kScenePathTraceUseGlobalView;
     static_assert(sizeof(ScenePathTracePush) == 256);
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
-    static_assert(sizeof(metallic::render::SceneResourceParameters) == 408);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 416);
     static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);
     static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
     static_assert(kScenePathTraceUseGlobalView == (1u << 27u));
@@ -1941,6 +1943,41 @@ TEST(ShaderRequests, DeferredRuntimePrecisionMacroIsFactoryOwned)
     }
 }
 
+TEST(ShaderRequests, DeferredStochasticFilteringCompileTimeMacroFollowsMaterialScope)
+{
+    const SceneShaderOptions base;
+    auto stf = base;
+    stf.deferredStochasticFiltering = true;
+    const SlangMacroDefine bg{"MATERIAL_CLASS", "0"};
+    const SlangMacroDefine dielectric{"MATERIAL_CLASS", "1"};
+    const SlangMacroDefine bgOverride[]{bg, {"METALLIC_DEFERRED_STOCHASTIC_FILTERING", "1"}};
+
+    // Default off emits no extra macro; non-deferred programs ignore the Deferred gate.
+    for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::OpenPBRPathTrace,
+            SceneShaderProgram::RealtimeLighting}) {
+        EXPECT_EQ(makeSceneShaderRequest(program, base), makeSceneShaderRequest(program, stf));
+    }
+
+    // Background-only class zero skips STF unless explicitly requested.
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, base, {&bg, 1}),
+        makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, stf, {&bg, 1}));
+    const auto explicitBg = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, stf, bgOverride);
+    EXPECT_EQ(std::count(explicitBg.defines.begin(), explicitBg.defines.end(),
+        std::pair<std::string, std::string>{"METALLIC_DEFERRED_STOCHASTIC_FILTERING", "1"}), 2);
+
+    // Deferred flat and material classes keep closed specialization IDs with the macro appended.
+    for (const auto& [program, extra] : {
+            std::pair{SceneShaderProgram::Deferred, std::vector<SlangMacroDefine>{}},
+            std::pair{SceneShaderProgram::DeferredBinned, std::vector<SlangMacroDefine>{dielectric}}}) {
+        const auto enabled = makeSceneShaderRequest(program, stf, extra);
+        EXPECT_NE(enabled, makeSceneShaderRequest(program, base, extra));
+        EXPECT_EQ(std::count(enabled.defines.begin(), enabled.defines.end(),
+            std::pair<std::string, std::string>{"METALLIC_DEFERRED_STOCHASTIC_FILTERING", "1"}), 1);
+        EXPECT_EQ(sceneShaderSpecializationConstants(program, stf, extra).size(),
+            sceneShaderSpecializationConstants(program, base, extra).size());
+    }
+}
+
 TEST(ShaderRequests, DeferredRuntimePrecisionKeepsPushPacketRootAndAllHighFlags)
 {
     using metallic::render::builtin_pass::ScenePathTracePush;
@@ -1949,7 +1986,7 @@ TEST(ShaderRequests, DeferredRuntimePrecisionKeepsPushPacketRootAndAllHighFlags)
     using metallic::render::builtin_pass::kScenePathTraceUseFP16Precision;
     static_assert(sizeof(ScenePathTracePush) == 256);
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
-    static_assert(sizeof(metallic::render::SceneResourceParameters) == 408);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 416);
     static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);
     static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
     static_assert(kScenePathTraceUseGlobalView == (1u << 27u));
@@ -2218,7 +2255,7 @@ TEST(ShaderRequests, OpenPBRCacheQueryCatalogRetainsAllRuntimePolicies)
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const auto catalog = builtinShaderWarmupRequests(include);
         EXPECT_EQ(legacyWarmupPrefixSize(catalog), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
-            ? (include.empty() ? 203u : 199u) : (include.empty() ? 211u : 212u));
+            ? (include.empty() ? 207u : 203u) : (include.empty() ? 215u : 216u));
         EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options) ==
             makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options), shared);
         for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
@@ -2400,7 +2437,7 @@ TEST(ShaderRequests, StandardPathCacheQueryCatalogRetainsBothRuntimePolicies)
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const auto catalog = builtinShaderWarmupRequests(include);
         EXPECT_EQ(legacyWarmupPrefixSize(catalog), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
-            ? (include.empty() ? 203u : 199u) : (include.empty() ? 211u : 212u));
+            ? (include.empty() ? 207u : 203u) : (include.empty() ? 215u : 216u));
         const SlangMacroDefine query{"SHARC_QUERY", "1"}, update{"SHARC_UPDATE", "1"};
         const auto off = makeSceneShaderRequest(program, options);
         const auto on = makeSceneShaderRequest(program, options, {&query, 1});
@@ -2548,7 +2585,7 @@ TEST(ShaderRequests, SingleGuideCacheQueryCatalogRetainsBothRuntimePolicies)
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const auto catalog = builtinShaderWarmupRequests(include);
         EXPECT_EQ(legacyWarmupPrefixSize(catalog), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
-            ? (include.empty() ? 203u : 199u) : (include.empty() ? 211u : 212u));
+            ? (include.empty() ? 207u : 203u) : (include.empty() ? 215u : 216u));
         const SlangMacroDefine offDefines[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
         const SlangMacroDefine onDefines[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
         const auto off = makeSceneShaderRequest(program, options, offDefines);

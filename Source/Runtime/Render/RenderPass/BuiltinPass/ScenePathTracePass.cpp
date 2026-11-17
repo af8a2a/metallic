@@ -516,7 +516,9 @@ public:
                 halfPrecision.rebuildGraph = true;
                 settings.push_back(halfPrecision);
                 settings.push_back(runtimeBoolSetting("debugDisableTransmission", "Disable Transmission", false, true));
-                settings.push_back(runtimeBoolSetting("stochasticTextureFiltering", "Stochastic Texture Filtering", false, true));
+                auto stochasticTextureFiltering = runtimeBoolSetting("stochasticTextureFiltering", "Stochastic Texture Filtering", false, true);
+                stochasticTextureFiltering.rebuildGraph = true;
+                settings.push_back(stochasticTextureFiltering);
                 settings.push_back(runtimeEnumSetting("debugView", "Surface Debug", "final",
                     {{"Final", "final"}, {"Base Color", "baseColor"}, {"Geometry Normal", "geometryNormal"},
                         {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}, {"Material ID", "material"}}));
@@ -679,6 +681,7 @@ public:
             (compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true) ||
                 compiledProgramBinning_ != boolProperty(properties(), "programBinning", true) ||
                 compiledHalfPrecision_ != boolProperty(properties(), "halfPrecision", true) ||
+                compiledStochasticFiltering_ != boolProperty(properties(), "stochasticTextureFiltering", false) ||
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false))) {
             return compile(context, log);
         }
@@ -820,6 +823,7 @@ public:
             "|trustedSceneParameters=" + (trustedSceneParameters ? "1" : "0") +
             "|textureFeedbackWave=" + (textureFeedbackWave ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
+            "|stochasticTextureFiltering=" + (visibilityDeferred_ && boolProperty(properties(), "stochasticTextureFiltering", false) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
@@ -868,6 +872,7 @@ public:
             .globalView = globalView,
             .hasRTXCR = METALLIC_HAS_RTXCR != 0,
             .deferredFloat16 = boolProperty(properties(), "halfPrecision", true),
+            .deferredStochasticFiltering = visibilityDeferred_ && boolProperty(properties(), "stochasticTextureFiltering", false),
             .upscalerGuides = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false),
             .materialInclude = valueSearchPath,
             .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR,
@@ -939,6 +944,8 @@ public:
             }
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularTexture), .kind = ComputeResourceBindingKind::SampledImage, .optional = true});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularSampler), .kind = ComputeResourceBindingKind::Sampler, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, moonShadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
@@ -1319,6 +1326,7 @@ public:
         compiledSimpleBSDF_ = false;
         compiledInvocationReorder_ = false;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
+        compiledStochasticFiltering_ = boolProperty(properties(), "stochasticTextureFiltering", false);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
@@ -1882,6 +1890,12 @@ public:
             }
             {
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .buffer = environment.prefilteredSpecularBuffer});
+                if (environment.prefilteredSpecularView != nullptr) {
+                    bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularTexture),
+                        .textureViews = {&environment.prefilteredSpecularView, 1}});
+                    bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentSpecularSampler),
+                        .sampler = environment.prefilteredSpecularSampler});
+                }
                 constexpr std::array shadowInputs{"shadow", "moonShadow"};
                 constexpr std::array parameterInputs{"shadowParameters", "moonShadowParameters"};
                 constexpr std::array shadowMembers{METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility),
@@ -1963,6 +1977,8 @@ public:
                 std::string binningLog;
                 const bool sparsePrograms = boolProperty(context.properties(), "programBinning", true);
                 if (sparsePrograms) { updateMaterialProgramBins(); }
+                // The frame/view/scene checks above bind the matching VBuffer and
+                // GPUScene publication, whose producer guarantees valid hit records.
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
                     .visibility = visibilityView,
                     .streamRecords = deferredStream->visibleClusterBuffer,
@@ -1971,7 +1987,8 @@ public:
                     .shadingMaterials = sceneResources_.materialBuffer(),
                     .width = push.width, .height = push.height,
                     .materialProgramBins = sparsePrograms ? std::span<const uint32_t>(materialInstanceProgramBins_) : std::span<const uint32_t>{},
-                    .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u},
+                    .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u,
+                    .trustVisibilityHits = true},
                     binningLog).transform([&](auto value) { materialBins = std::move(value); });
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
                 bindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialBins), .buffer = materialBins.bins});
@@ -2201,16 +2218,16 @@ private:
     bool trustedSceneParametersEnabled(const RenderGraphProperties& properties) const
     {
         return boolProperty(properties, "trustedSceneParameters",
-            !visibilityDeferred_ && !properties.contains("diagnosticPixels") &&
+            !properties.contains("diagnosticPixels") &&
                 supportsInlineComputeRoot(properties) && inlineComputeRootEnabled(properties));
     }
 
     bool validateTrustedSceneParameters(const RenderGraphProperties& properties, std::string& log) const
     {
         if (trustedSceneParametersEnabled(properties) &&
-            (visibilityDeferred_ || properties.contains("diagnosticPixels") ||
+            (properties.contains("diagnosticPixels") ||
                 !supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
-            log += "trustedSceneParameters requires the unextended Scene packet and unsplit compute path tracer with inlineComputeRoot\n";
+            log += "trustedSceneParameters requires the unextended Scene packet and unsplit compute path tracer or visibility-buffer Deferred with inlineComputeRoot\n";
             return false;
         }
         return true;
@@ -3193,6 +3210,7 @@ private:
     bool compiledSimpleBSDF_ = false;
     bool compiledInvocationReorder_ = false;
     bool compiledHalfPrecision_ = true;
+    bool compiledStochasticFiltering_ = false;
     bool compiledExportUpscalerGuides_ = false;
     bool compiledGlobalView_ = false;
     SceneLightResources lights_;

@@ -42,20 +42,19 @@ public struct OpenPBRDielectricMicrofacetMultipleScatteringLobe
 public float openPBRClampedTabulatedFactors<TContext : IOpenPBRContext>(
     TContext context, const OpenPBRDielectricMicrofacetMultipleScatteringLobe lobe, float odotn)
 {
-    float ior_to_use;
-    if (odotn > 0.0f) {
-        ior_to_use = lobe.eta_t_over_eta_i;
-    } else {
+    float ior = lobe.eta_t_over_eta_i;
+    if (odotn < 0.0f) {
         odotn *= -1.0f;
-        const float eta_i_over_eta_t = 1.0f / lobe.eta_t_over_eta_i;
-        ior_to_use = eta_i_over_eta_t;
+        ior = 1.0f / ior;
     }
 
-    const float tabulated_factors =
-        lobe.energy_complement_ti_idotn *
-        openPBRLookUpIdealDielectricEnergyComplement(context, ior_to_use, lobe.alpha, odotn) /
-        openPBRClampAverageEnergyComplementAboveZero(
-            openPBRLookUpIdealDielectricAverageEnergyComplement(context, ior_to_use, lobe.alpha));
+    const float uv_alpha = openPBRRemapExactIndex(openPBRAlphaToExactIndex(lobe.alpha));
+    const float uv_ior = openPBRRemapExactIndex(openPBRIorToExactIndex(ior));
+    const float uv_odotn = openPBRRemapExactIndex(openPBRCosThetaToExactIndex(odotn));
+    const float energy_complement_odotn = context.sample3D(0, float3(uv_odotn, uv_alpha, uv_ior)).r;
+    const float avg_energy_complement = context.sample2D(1, float2(uv_alpha, uv_ior)).r;
+    const float tabulated_factors = lobe.energy_complement_ti_idotn * energy_complement_odotn /
+                                    openPBRClampAverageEnergyComplementAboveZero(avg_energy_complement);
 
     // This clamping can prevent weights from getting out of control near grazing angles at low roughnesses.
     return min(tabulated_factors, openPBRSafeDivide(1.0f, odotn, 0.0f));
@@ -64,22 +63,21 @@ public float openPBRClampedTabulatedFactors<TContext : IOpenPBRContext>(
 public float openPBRClampedTabulatedFactorsIncludingRatio<TContext : IOpenPBRContext>(
     TContext context, const OpenPBRDielectricMicrofacetMultipleScatteringLobe lobe, float odotn)
 {
-    float ior_to_use;
-    float ratio_to_use;
-    if (odotn > 0.0f) {
-        ior_to_use = lobe.eta_t_over_eta_i;
-        ratio_to_use = lobe.reflection_ratio_ti;
-    } else {
+    float ior = lobe.eta_t_over_eta_i;
+    float ratio_to_use = lobe.reflection_ratio_ti;
+    if (odotn < 0.0f) {
         odotn *= -1.0f;
-        const float eta_i_over_eta_t = 1.0f / lobe.eta_t_over_eta_i;
-        ior_to_use = eta_i_over_eta_t;
-        ratio_to_use = 1.0f - lobe.reflection_ratio_ti;
+        ior = 1.0f / ior;
+        ratio_to_use = 1.0f - ratio_to_use;
     }
 
-    float tabulated_factors = lobe.energy_complement_ti_idotn *
-                              openPBRLookUpIdealDielectricEnergyComplement(context, ior_to_use, lobe.alpha, odotn) /
-                              openPBRClampAverageEnergyComplementAboveZero(
-                                  openPBRLookUpIdealDielectricAverageEnergyComplement(context, ior_to_use, lobe.alpha));
+    const float uv_alpha = openPBRRemapExactIndex(openPBRAlphaToExactIndex(lobe.alpha));
+    const float uv_ior = openPBRRemapExactIndex(openPBRIorToExactIndex(ior));
+    const float uv_odotn = openPBRRemapExactIndex(openPBRCosThetaToExactIndex(odotn));
+    const float energy_complement_odotn = context.sample3D(0, float3(uv_odotn, uv_alpha, uv_ior)).r;
+    const float avg_energy_complement = context.sample2D(1, float2(uv_alpha, uv_ior)).r;
+    float tabulated_factors = lobe.energy_complement_ti_idotn * energy_complement_odotn /
+                              openPBRClampAverageEnergyComplementAboveZero(avg_energy_complement);
     tabulated_factors *= ratio_to_use;
 
     // This clamping is necessary to avoid weights from getting out of control near grazing angles at low roughnesses.
@@ -102,16 +100,25 @@ public void openPBRInitializeLobe<TContext : IOpenPBRContext>(TContext context,
     if (lobe.alpha < OpenPBRMinAlphaWithVisibleEnergyLoss)
         return;
 
+    const bool has_energy = openPBRIsNonZero3(scale_refl) || openPBRIsNonZero3(scale_trans);
+    if (!TContext.kEnableSampling && !has_energy) {
+        lobe.reflection_ratio_ti = 0.0f;
+        lobe.energy_complement_ti_idotn = 0.0f;
+        return;
+    }
+
     // Derived properties.
-    // Even a zero-energy lobe retains its standalone reflection/transmission PDF.
-    lobe.reflection_ratio_ti = openPBRLookUpIdealDielectricReflectionRatio(context, lobe.eta_t_over_eta_i, lobe.alpha);
-    if (all(scale_refl == float3(0)) && all(scale_trans == float3(0))) {
+    const float uv_alpha = openPBRRemapExactIndex(openPBRAlphaToExactIndex(lobe.alpha));
+    const float uv_ior = openPBRRemapExactIndex(openPBRIorToExactIndex(lobe.eta_t_over_eta_i));
+    // Even a zero-energy lobe retains its standalone reflection/transmission PDF when sampling is active.
+    lobe.reflection_ratio_ti = context.sample2D(2, float2(uv_alpha, uv_ior)).r;
+    if (!has_energy) {
         lobe.energy_complement_ti_idotn = 0.0f;
         return;
     }
     const float idotn = dot(view_direction, lobe.normal_ff);
-    lobe.energy_complement_ti_idotn =
-        openPBRLookUpIdealDielectricEnergyComplement(context, lobe.eta_t_over_eta_i, lobe.alpha, idotn);
+    const float uv_idotn = openPBRRemapExactIndex(openPBRCosThetaToExactIndex(idotn));
+    lobe.energy_complement_ti_idotn = context.sample3D(0, float3(uv_idotn, uv_alpha, uv_ior)).r;
 }
 
 public uint openPBRGetLobeType<TContext : IOpenPBRContext>(TContext context,
@@ -126,19 +133,16 @@ openPBRCalculateLobeValue<TContext : IOpenPBRContext>(TContext context,
                                                       const float3 view_direction, const float3 light_direction)
 {
     // Physical zero multiplier; leave the sampling distribution unchanged.
-    if (all(lobe.scale_refl == float3(0)) && all(lobe.scale_trans == float3(0))) { return openPBRMakeZeroDiffuseSpecular(); }
+    if (openPBRIsZero3(lobe.scale_refl) && openPBRIsZero3(lobe.scale_trans)) { return openPBRMakeZeroDiffuseSpecular(); }
 
     if (lobe.alpha < OpenPBRMinAlphaWithVisibleEnergyLoss)
         return openPBRMakeZeroDiffuseSpecular();
 
     const float odotn = dot(light_direction, lobe.normal_ff);
+    const float3 active_scale = (odotn > 0.0f) ? lobe.scale_refl : lobe.scale_trans;
+    if (odotn == 0.0f || openPBRIsZero3(active_scale)) { return openPBRMakeZeroDiffuseSpecular(); }
     const float unscaled = openPBRClampedTabulatedFactorsIncludingRatio(context, lobe, odotn) * OpenPBRRcpPi;
-    const float unscaled_cos = unscaled * abs(odotn);
-    if (odotn > 0.0f) {
-        return openPBRMakeDiffuseSpecularFromSpecular(lobe.scale_refl * unscaled_cos);
-    } else {
-        return openPBRMakeDiffuseSpecularFromSpecular(lobe.scale_trans * unscaled_cos);
-    }
+    return openPBRMakeDiffuseSpecularFromSpecular(active_scale * (unscaled * abs(odotn)));
 }
 
 public float openPBRCalculateLobePdf<TContext : IOpenPBRContext>(TContext context,
@@ -230,15 +234,17 @@ public struct OpenPBRMetalMicrofacetMultipleScatteringLobe
     public float alpha;
     public float3 scale;
     public float energy_complement_idotn;
+    public float avg_energy_complement;
 };
 
 public float openPBRClampedTabulatedFactors<TContext : IOpenPBRContext>(
     TContext context, const OpenPBRMetalMicrofacetMultipleScatteringLobe lobe, const float odotn)
 {
-    const float tabulated_factors = lobe.energy_complement_idotn *
-                                    openPBRLookUpIdealMetalEnergyComplement(context, lobe.alpha, odotn) /
-                                    openPBRClampAverageEnergyComplementAboveZero(
-                                        openPBRLookUpIdealMetalAverageEnergyComplement(context, lobe.alpha));
+    const float uv_alpha = openPBRRemapExactIndex(openPBRAlphaToExactIndex(lobe.alpha));
+    const float uv_odotn = openPBRRemapExactIndex(openPBRCosThetaToExactIndex(odotn));
+    const float energy_complement_odotn = context.sample2D(5, float2(uv_odotn, uv_alpha)).r;
+    const float tabulated_factors = lobe.energy_complement_idotn * energy_complement_odotn /
+                                    openPBRClampAverageEnergyComplementAboveZero(lobe.avg_energy_complement);
     // This clamping can prevent weights from getting out of control near grazing angles at low roughnesses.
     return min(tabulated_factors, openPBRSafeDivide(1.0f, odotn, 0.0f));
 }
@@ -252,18 +258,21 @@ public void openPBRInitializeLobe<TContext : IOpenPBRContext>(TContext context,
     lobe.normal_ff = normal_ff;
     lobe.alpha = alpha;
     lobe.scale = scale;
+    lobe.energy_complement_idotn = 0.0f;
+    lobe.avg_energy_complement = 1.0f;
 
     if (lobe.alpha < OpenPBRMinAlphaWithVisibleEnergyLoss)
         return;
 
-    if (all(scale == float3(0))) {
-        lobe.energy_complement_idotn = 0.0f;
+    if (openPBRIsZero3(scale))
         return;
-    }
 
     // Derived properties.
+    const float uv_alpha = openPBRRemapExactIndex(openPBRAlphaToExactIndex(lobe.alpha));
     const float idotn = dot(view_direction, lobe.normal_ff);
-    lobe.energy_complement_idotn = openPBRLookUpIdealMetalEnergyComplement(context, lobe.alpha, idotn);
+    const float uv_idotn = openPBRRemapExactIndex(openPBRCosThetaToExactIndex(idotn));
+    lobe.energy_complement_idotn = context.sample2D(5, float2(uv_idotn, uv_alpha)).r;
+    lobe.avg_energy_complement = context.sample2D(6, float2(uv_alpha, 0.5f)).r;
 }
 
 public uint openPBRGetLobeType<TContext : IOpenPBRContext>(TContext context,
@@ -278,7 +287,7 @@ openPBRCalculateLobeValue<TContext : IOpenPBRContext>(TContext context,
                                                       const float3 view_direction, const float3 light_direction)
 {
     // Physical zero multiplier; leave the sampling distribution unchanged.
-    if (all(lobe.scale == float3(0))) { return openPBRMakeZeroDiffuseSpecular(); }
+    if (openPBRIsZero3(lobe.scale)) { return openPBRMakeZeroDiffuseSpecular(); }
 
     if (lobe.alpha < OpenPBRMinAlphaWithVisibleEnergyLoss)
         return openPBRMakeZeroDiffuseSpecular();

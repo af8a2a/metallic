@@ -6,7 +6,7 @@ declared shader candidate, runs independent processes in ABBA order, checks
 outputs and workload identity, makes a decision, and restores the baseline.
 No candidate is installed permanently, including an accepted candidate.
 
-For optimization, use the [Nsight-guided workflow](../../Skills/metallic-shader-optimization/references/nsight-guided-optimization.md)
+For optimization, use the [Nsight-guided workflow](../../.agents/skills/metallic-shader-optimization/references/nsight-guided-optimization.md)
 to connect the candidate hypothesis to GPU Trace counters and Shader Profiler
 hotspots, then compare matched baseline/candidate captures. This runner owns
 ordinary timing, correctness and the performance verdict; it does not collect

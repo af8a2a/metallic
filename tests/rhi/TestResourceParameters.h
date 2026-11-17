@@ -8,6 +8,7 @@ namespace metallic::tests {
 #define TEST_PUBLIC
 #define TEST_BUFFER render::GPUResourceHandle<render::ResourceViewKind::RawBuffer>
 #define TEST_SAMPLED(T) render::GPUResourceHandle<render::ResourceViewKind::SampledImage>
+#define TEST_SAMPLED_ARRAY(T) render::GPUResourceHandle<render::ResourceViewKind::SampledImage>
 #define TEST_STORAGE(T) render::GPUResourceHandle<render::ResourceViewKind::StorageImage>
 #define TEST_SPAN render::GPUBufferSpan
 #define TEST_SAMPLER render::GPUSamplerHandle
@@ -15,6 +16,7 @@ namespace metallic::tests {
 #define TEST_PUBLIC public
 #define TEST_BUFFER ResourceHandle<ByteAddressBuffer>
 #define TEST_SAMPLED(T) ResourceHandle<Texture2D<T>>
+#define TEST_SAMPLED_ARRAY(T) ResourceHandle<Texture2DArray<T>>
 #define TEST_STORAGE(T) ResourceHandle<RWTexture2D<T>>
 #define TEST_SPAN BufferSpan<uint>
 #define TEST_SAMPLER SamplerHandle
@@ -91,6 +93,17 @@ TEST_PUBLIC struct EnvironmentPrefilterFieldProbeResources
 };
 #ifdef __cplusplus
 static_assert(sizeof(EnvironmentPrefilterFieldProbeResources) == 12);
+#endif
+
+TEST_PUBLIC struct EnvironmentPrefilterSamplingProbeResources
+{
+    TEST_PUBLIC TEST_BUFFER output;
+    TEST_PUBLIC TEST_BUFFER coefficients;
+    TEST_PUBLIC TEST_SAMPLED_ARRAY(float4) prefilter;
+    TEST_PUBLIC TEST_SAMPLER sampler;
+};
+#ifdef __cplusplus
+static_assert(sizeof(EnvironmentPrefilterSamplingProbeResources) == 16);
 #endif
 
 TEST_PUBLIC struct FrameEnvironmentProbeResources
@@ -307,6 +320,7 @@ static_assert(sizeof(ViewConstantsProbeResources) == 8);
 #undef TEST_PUBLIC
 #undef TEST_BUFFER
 #undef TEST_SAMPLED
+#undef TEST_SAMPLED_ARRAY
 #undef TEST_STORAGE
 #undef TEST_SPAN
 #undef TEST_SAMPLER

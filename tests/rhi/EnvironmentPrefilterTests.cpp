@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "stb/stb_image_write.h"
@@ -15,6 +16,8 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <numbers>
 #include <thread>
 
@@ -22,6 +25,8 @@ namespace metallic::tests {
 namespace {
 constexpr uint32_t kWidth = 256, kHeight = 128, kLayers = 8;
 constexpr uint32_t kTexels = kWidth * kHeight * kLayers;
+constexpr uint32_t kSamplingCasesPerLayer = 256;
+constexpr uint32_t kSamplingCases = kSamplingCasesPerLayer * kLayers;
 
 class EnvironmentPrefilterFieldProbe final : public render::ComputePass {
 public:
@@ -67,6 +72,191 @@ public:
     }
 private:
     render::ComputeProgram program_;
+};
+
+class EnvironmentPrefilterSamplingProbe final : public render::ComputePass {
+public:
+    std::span<const render::RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array ids{render::EnvironmentLightingSubsystem::kSubsystemId};
+        return ids;
+    }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("samples").buffer((kTexels + uint64_t(kSamplingCases) * 4) * 16, 16).storageReadWrite();
+        return reflection;
+    }
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    {
+        auto shader = render::compileSlangShaderToSpirv({.moduleName = "EnvironmentPrefilterSamplingProbe",
+            .entryPointName = "environmentPrefilterSamplingProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+        if (!shader) { return render::makeError(shader.error()); }
+        const render::ComputeResourceBindingDesc bindings[] = {
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, output)},
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, coefficients)},
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, prefilter), .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, sampler), .kind = render::ComputeResourceBindingKind::Sampler}};
+        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings,
+            .requiresRayQuery = false, .resourceParameterSize = sizeof(EnvironmentPrefilterSamplingProbeResources)}, log);
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        const auto& environment = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
+        // An unavailable filtered publication is an explicit test skip after
+        // source loading completes, not an attempt to bind a null descriptor.
+        if (environment.prefilteredSpecularView == nullptr || environment.prefilteredSpecularSampler == nullptr) { return {}; }
+        auto* view = environment.prefilteredSpecularView;
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, output), .buffer = context.outputBuffer("samples").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, coefficients), .buffer = environment.prefilteredSpecularBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, prefilter), .textureViews = {&view, 1}},
+            {.binding = METALLIC_RESOURCE_MEMBER(EnvironmentPrefilterSamplingProbeResources, sampler), .sampler = environment.prefilteredSpecularSampler}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
+            .groupCountX = (kTexels + kSamplingCases + 63) / 64});
+    }
+private:
+    render::ComputeProgram program_;
+};
+
+class EnvironmentPrefilterTextureSamplingTest final : public RHITest {
+public:
+    EnvironmentPrefilterTextureSamplingTest() { type = RHITestType::Rendering; name = "environment_prefilter_texture_sampling"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::filesystem::create_directories(context.outputDirectory);
+        const auto path = std::filesystem::absolute(context.outputDirectory / "PrefilterSampling.hdr");
+        std::vector<float> source(uint64_t(kWidth) * kHeight * 3);
+        for (uint32_t y = 0; y < kHeight; ++y) {
+            for (uint32_t x = 0; x < kWidth; ++x) {
+                const size_t pixel = (uint64_t(y) * kWidth + x) * 3;
+                source[pixel] = 0.5f + float(x) / kWidth * 16.0f;
+                source[pixel + 1] = 0.25f + float(y) / kHeight * 8.0f;
+                source[pixel + 2] = ((x / 7 + y / 5) & 1u) != 0u ? 32.0f : 0.125f;
+            }
+        }
+        for (const auto xy : {std::array<uint32_t, 2>{0, 0}, {kWidth - 1, kHeight - 1}, {kWidth / 2, kHeight / 2}}) {
+            const size_t pixel = (uint64_t(xy[1]) * kWidth + xy[0]) * 3;
+            source[pixel] = 32768.0f;
+            source[pixel + 1] = 8192.0f;
+            source[pixel + 2] = 2048.0f;
+        }
+        if (!stbi_write_hdr(path.string().c_str(), kWidth, kHeight, 3, source.data())) {
+            return RHITestResult::fail("Write prefilter sampling HDR fixture");
+        }
+        auto created = render::createDevice({.applicationName = "Environment texture sampling regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true});
+        if (render::hasError(created, render::Error::Unsupported)) { return RHITestResult::skip("Requires native bindless resources"); }
+        if (!created) { return RHITestResult::fail("Create prefilter sampling device"); }
+        auto device = std::move(*created);
+        const uint32_t precisionBits = render::vulkan::nativeDevice(*device).properties->core.limits.subTexelPrecisionBits;
+        const double fractionStep = std::ldexp(1.0, -static_cast<int>(precisionBits));
+        render::registerRenderGraphPassType("EnvironmentPrefilterSamplingProbe", "Prefilter texture sampling",
+            [] { return std::make_unique<EnvironmentPrefilterSamplingProbe>(); });
+        render::RenderWorld world;
+        world.setEnvironment({.enabled = true, .path = path});
+        render::RenderGraph graph;
+        graph.addNode("EnvironmentPrefilterSamplingProbe", "Probe");
+        graph.markOutput("Probe.samples");
+        render::RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        std::string log;
+        if (!executor.compile(*device, graph, 1, 1, log)) { return RHITestResult::fail(log); }
+        bool ready = false;
+        for (uint32_t frame = 0; frame < 200 && !ready; ++frame) {
+            if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
+                !executor.waitForSubmittedWork()) { return RHITestResult::fail("Prefilter texture sampling dispatch"); }
+            ready = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot().mapAvailable;
+            if (!ready) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+        }
+        if (!ready) { return RHITestResult::fail("Prefilter sampling environment publication timeout"); }
+        const auto& environment = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot();
+        if (environment.prefilteredSpecularView == nullptr || environment.prefilteredSpecularSampler == nullptr) {
+            return RHITestResult::skip("Device has no RGBA32F linearly filtered environment publication; buffer path remains active");
+        }
+        auto* buffer = executor.outputResource("Probe.samples")->buffer;
+        buffer->invalidate();
+        const auto* values = static_cast<const std::array<float, 4>*>(buffer->map());
+        if (values == nullptr) { return RHITestResult::fail("Prefilter sampling readback"); }
+        uint32_t rawMismatches = 0, centerMismatches = 0, nonfiniteTexels = 0;
+        float maximumRadiance = 0.0f;
+        for (uint32_t texel = 0; texel < kTexels; ++texel) {
+            rawMismatches += values[texel][0] != 0.0f;
+            centerMismatches += values[texel][1] != 0.0f;
+            nonfiniteTexels += values[texel][2] != 0.0f;
+            maximumRadiance = std::max(maximumRadiance, values[texel][3]);
+        }
+        struct LayerStatistics {
+            double maximumError = 0;
+            double squaredError = 0;
+            double maximumBoundRatio = 0;
+            uint32_t failures = 0;
+        };
+        std::array<LayerStatistics, kLayers> statistics{};
+        double maximumContrast = 0;
+        uint32_t samplingFailures = 0;
+        std::ofstream report(context.outputDirectory / "PrefilterTextureSampling.txt");
+        report << std::setprecision(10) << "subTexelPrecisionBits=" << precisionBits
+            << " texels=" << kTexels << " samples=" << kSamplingCases
+            << " rawBitMismatches=" << rawMismatches << " centerBitMismatches=" << centerMismatches
+            << " nonfiniteTexels=" << nonfiniteTexels << " maximumRadiance=" << maximumRadiance << '\n';
+        for (uint32_t sample = 0; sample < kSamplingCases; ++sample) {
+            const uint32_t base = kTexels + sample * 4;
+            const auto& actual = values[base];
+            const auto& expected = values[base + 1];
+            const auto& contrast = values[base + 2];
+            const auto& coordinates = values[base + 3];
+            auto& layer = statistics[sample / kSamplingCasesPerLayer];
+            bool valid = true;
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                if (!std::isfinite(actual[channel]) || !std::isfinite(expected[channel]) ||
+                    !std::isfinite(contrast[channel]) || contrast[channel] < 0.0f) {
+                    valid = false;
+                    continue;
+                }
+                const double error = std::abs(double(actual[channel]) - expected[channel]);
+                // Each bilinear axis can quantize by at most one advertised
+                // fractional step. Its derivative is bounded by the local
+                // four-tap range; add FP32 arithmetic error independently.
+                const double rounding = 16.0 * std::numeric_limits<float>::epsilon() *
+                    (std::max(std::abs(double(actual[channel])), std::abs(double(expected[channel]))) + contrast[channel] + 1.0);
+                const double bound = 2.0 * fractionStep * contrast[channel] + rounding;
+                valid &= error <= bound;
+                maximumContrast = std::max(maximumContrast, double(contrast[channel]));
+                layer.maximumError = std::max(layer.maximumError, error);
+                layer.squaredError += error * error;
+                layer.maximumBoundRatio = std::max(layer.maximumBoundRatio, error / bound);
+            }
+            if (!valid) {
+                ++layer.failures;
+                if (samplingFailures++ < 12) {
+                    report << "failure sample=" << sample << " uv=" << coordinates[0] << ',' << coordinates[1]
+                        << " layer=" << coordinates[2] << " actual=" << actual[0] << ',' << actual[1] << ',' << actual[2]
+                        << " expected=" << expected[0] << ',' << expected[1] << ',' << expected[2]
+                        << " contrast=" << contrast[0] << ',' << contrast[1] << ',' << contrast[2] << '\n';
+                }
+            }
+        }
+        buffer->unmap();
+        for (uint32_t index = 0; index < kLayers; ++index) {
+            const auto& layer = statistics[index];
+            const double rmse = std::sqrt(layer.squaredError / (kSamplingCasesPerLayer * 3));
+            report << "layer=" << index << " maxAbs=" << layer.maximumError << " rgbRmse=" << rmse
+                << " maxBoundRatio=" << layer.maximumBoundRatio << " failures=" << layer.failures << '\n';
+            spdlog::info("[Prefilter sampling] layer={} maxAbs={} rgbRmse={} maxBoundRatio={} failures={}",
+                index, layer.maximumError, rmse, layer.maximumBoundRatio, layer.failures);
+        }
+        report << "maximumContrast=" << maximumContrast << " samplingFailures=" << samplingFailures << '\n';
+        if (!report) { return RHITestResult::fail("Write prefilter sampling summary"); }
+        if (rawMismatches != 0 || centerMismatches != 0 || nonfiniteTexels != 0) {
+            return RHITestResult::fail("Filtered environment must preserve every FP32 texel and texel-center sample exactly");
+        }
+        if (maximumRadiance <= 64.0f || maximumContrast <= 1.0) {
+            return RHITestResult::fail("Prefilter sampling fixture must exercise nonconstant HDR data");
+        }
+        if (samplingFailures != 0) { return RHITestResult::fail("Environment hardware filtering exceeds device subtexel precision bound"); }
+        return RHITestResult::pass("RGBA32F storage and texel centers are bit-exact; all eight layers, seam, poles and HDR subtexel samples match buffer reference within device filtering precision");
+    }
 };
 
 class EnvironmentPrefilterImpulseTest final : public RHITest {
@@ -274,6 +464,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterImpulseTest);
+METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterTextureSamplingTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentLDRColorSpaceTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterCaptureViewTest);
 } // namespace

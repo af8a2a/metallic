@@ -68,7 +68,7 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/Lighting/BuildReGIR", {"buildReGIRMain"});
     add("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"});
     add("Features/Lighting/PrepareLightsPdf", {"prepareLightsPdfMain"});
-    add("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"});
+    add("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReducePartialMain", "autoExposureReduceMain", "autoExposureApplyMain"});
     for (bool hdr : {false, true}) {
         for (bool scRgb : {false, true}) {
             for (bool sRGB : {false, true}) {
@@ -103,10 +103,20 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/VisibilityBuffer/VisibilityBufferMaterial", {"visibilityBufferMaterialMain"});
     add("Features/VisibilityBuffer/VisibilityHybridRaster", {"hybridResetMain", "hybridArgumentsMain", "hybridRasterMain", "hybridResolveVertexMain", "hybridResolveFragmentMain", "hybridClusterResetMain", "hybridClusterHistogramMain", "hybridClusterArgumentsMain", "hybridClusterScatterMain"});
     add("Features/Samples/Triangle", {"triangleVertexMain", "triangleFragmentMain"});
+    const std::vector<std::string> binningCapabilities{"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"};
     add("Features/VisibilityBuffer/VisibilityMaterialBinning",
-        {"materialBinningResetMain", "materialBinningCountMain", "materialBinningAllocateMain",
-            "materialBinningClassifyMain", "materialBinningArgumentsMain"},
-        {"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"});
+        {"materialBinningResetMain", "materialBinningAllocateMain", "materialBinningArgumentsMain"},
+        binningCapabilities);
+    add("Features/VisibilityBuffer/VisibilityMaterialBinning",
+        {"materialBinningCountMain"},
+        binningCapabilities,
+        {{"METALLIC_MATERIAL_BINNING_MODE", "1"}});
+    for (const char* mode : {"0", "1", "2", "3"}) {
+        add("Features/VisibilityBuffer/VisibilityMaterialBinning",
+            {"materialBinningClassifyMain"},
+            binningCapabilities,
+            {{"METALLIC_MATERIAL_BINNING_MODE", mode}});
+    }
     add("Features/Debug/SceneRayQueryVisualize", {"sceneRayQueryVisualizeMain"}, {"spvRayQueryKHR"});
     add("Features/Debug/SceneRayQueryVisualize", {"sceneRayQueryVisualizeMain"},
         {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"},
@@ -205,14 +215,14 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     // Match VisibilityBufferPass LDS and optional wave SPD startup requests.
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "0"}});
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "1"}});
-    // Runtime defaults use an inline root: trusted for PT, checked for Deferred.
+    // Runtime defaults use an inline trusted root for PT and Deferred.
     // Keep legacy transport recipes and warm the exact default sources too.
     const size_t legacyRequestCount = requests.size();
     for (size_t index = 0; index < legacyRequestCount; ++index) {
         const bool deferred = isDeferredShaderRequest(requests[index]);
         if (!isPathTraceShaderRequest(requests[index]) && !deferred) { continue; }
         auto request = requests[index];
-        applyPathTraceShaderPolicy(request, {.trustedSceneParameters = !deferred});
+        applyPathTraceShaderPolicy(request, {.trustedSceneParameters = true});
         requests.push_back(std::move(request));
     }
     // Deduplicate complete requests, preserving macro/capability/search-path

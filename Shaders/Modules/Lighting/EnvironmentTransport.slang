@@ -25,6 +25,7 @@ public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCe
     uint slot, float3 worldPosition)
 {
     PunctualLightSample result = sampleCelestialLight(lights, slot);
+    if (!any(result.illuminance > 0.0)) { return result; }
     GPUAtmosphereParameters atmosphere;
 #if SHARC_UPDATE
     let resources = getSceneResourceParameters().environment;
@@ -33,10 +34,12 @@ public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCe
 #endif
     if (resources.transmittance.index != 0xffffffffu && loadPhysicalAtmosphere(resources, atmosphere)) {
         float3 positionKm = Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, worldPosition);
-        float cloudT = resources.cloudShadow.index != 0xffffffffu ?
-            Metallic.Atmosphere::cloudShadowTransmittance(atmosphere, resolveUniform(resources.cloudShadow), positionKm, slot) :
-            Metallic.Clouds::transmittance(atmosphere, positionKm,
+        float cloudT = 1.0;
+        if (resources.cloudShadow.index == 0xffffffffu ||
+            !Metallic.Atmosphere::tryCloudShadowMap(atmosphere, resolveUniform(resources.cloudShadow), positionKm, slot, cloudT)) {
+            cloudT = Metallic.Clouds::transmittance(atmosphere, positionKm,
                 slot == 0u ? atmosphere.sunDirectionRadius.xyz : atmosphere.moonDirectionRadius.xyz);
+        }
         result.illuminance = Metallic.Atmosphere::solarIrradiance(atmosphere,
             resolveUniform(resources.transmittance), positionKm, slot, cloudT);
     }

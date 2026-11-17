@@ -412,6 +412,12 @@ public:
         if (!executor.compile(*device, graph, 1, 1, log) || !frame(0.18f * 1024.0f) || !near(values[1], 10.0f)) {
             return RHITestResult::fail("resize/single-pixel exposure history reset failed: " + log);
         }
+        // Exercise full 64-group parallel reduction (272 tiles) with multi-iteration group aggregation.
+        if (!executor.compile(*device, graph, 272, 256, log) ||
+            !frame(0.18f * 1024.0f) || !near(values[1], 10.0f) ||
+            !frame(0.18f) || !near(values[1], 9.9f)) {
+            return RHITestResult::fail("multi-wave 64-group parallel reduction failed: " + log);
+        }
         return RHITestResult::pass("GPU gray calibration, percentiles, limits, compensation, adaptation, resets and finite output");
     }
 };
