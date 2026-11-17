@@ -71,6 +71,27 @@ ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
 来源记录、许可证和使用说明见 [ShaderToHuman](Modules/ShaderToHuman/README.md)。
 外部 vendor 算法和许可证保持原有内容；项目维护的 NRD Slang 包装显式声明 module。
 
+## 按职责拆分 shader
+
+组织方式参考 Unreal 对 [入口 shader 与共享代码](https://dev.epicgames.com/documentation/unreal-engine/overview-of-shaders-in-plugins-unreal-engine) 的区分，
+但使用 Slang 原生模块，不引入 `.usf` / `.ush` 或文本包含 `.slang`。
+稳定的入口文件保留模块名、CPU/管线注册路径和入口名称；复杂实现放入同名目录，
+按算法阶段或数据职责命名，由 owner 显式 `__include`。少量 pass 编排可以留在入口文件。
+
+| 模块入口 | 实现目录与职责 |
+| --- | --- |
+| [GPUDrivenStreamAsset](Features/GPUDriven/GPUDrivenStreamAsset.slang) | [GPUDrivenStreamAsset/](Features/GPUDriven/GPUDrivenStreamAsset/)：页请求、层级遍历与 LOD、Active Group、RT 表示与 BLAS、硬件/软件光栅、Deferred |
+| [VirtualShadowMaps](Features/VirtualShadowMaps/VirtualShadowMaps.slang) | [VirtualShadowMaps/](Features/VirtualShadowMaps/VirtualShadowMaps/)：参数与诊断、接收点重建、页查询/标记/分配、过滤、剔除与工作构建、光栅、投影 |
+| [SceneRTXDI](Features/ReSTIR/SceneRTXDI.slang) | [SceneRTXDI/](Features/ReSTIR/SceneRTXDI/)：公共类型、相机、表面、光源采样/求值与 Reservoir；fused compute 入口保留在 owner |
+| [VisibilityBufferShading](Features/VisibilityBuffer/VisibilityBufferShading.slang) | [VisibilityBufferShading/](Features/VisibilityBuffer/VisibilityBufferShading/)：公共工具、几何、流式可见性解码与材质着色 |
+| [SceneSurface](Modules/SceneSurface.slang) | [SceneSurface/](Modules/SceneSurface/)：场景资源 getter、环境采样、材质纹理采样、表面数学；生成的 MaterialValueDispatch 仍由 owner 包含 |
+
+实现文件必须声明匹配的 `implementing`。同模块函数和类型直接共享；只有跨子系统复用的
+接口才拆为独立 `module` 并显式 `import`。保持完整函数和同步阶段，避免按固定行数截断算法。
+`__include` 的实现单元独立预处理：局部宏及其第三方文本 include 应留在同一文件，
+全局排列继续由编译请求传入；共享 C++/Slang 头的宏可在唯一 owner 中转换为 typed constant。
+拆分后运行模块审计、受影响入口及排列编译，并按行为执行 GPU 回归。
+
 ## 使用库
 
 ```slang
