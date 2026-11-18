@@ -8,6 +8,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapResolution.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapTemporal.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -106,6 +107,8 @@ public:
         reflection.addBufferOutput("budgetDiagnostics", "Current GPU shared-pool allocation header and eight uints per source face")
             .buffer(uint64_t(8 + capacity * 6 * 8) * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite()
             .stageAccess(RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Compute);
+        reflection.addBufferOutput("resolutionDiagnostics", "Completed pool demand and current receiver resolution LOD bias")
+            .buffer(sizeof(VirtualShadowMapResolutionController::Diagnostics), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         if (properties().value("benchmarkGPUWork", false)) {
             reflection.addBufferOutput("projectionGridDiagnostics", "One-pass local light grid workload; eight low/high uint pairs")
                 .buffer(kVirtualShadowMapProjectionGridDiagnosticSize, sizeof(uint32_t))
@@ -170,6 +173,8 @@ public:
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
             runtimeIntSetting("maxWorkItems", "Per-face Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Directional Half-width (m)", 4, 0.01f, 10000),
+            runtimeFloatSetting("maxPagePoolLoadFactor", "Target Page Pool Load (0 Off)", VirtualShadowMapResolutionController::kDefaultLoadFactor, 0, 1),
+            runtimeFloatSetting("maxResolutionLodBias", "Maximum Resolution LOD Bias", VirtualShadowMapResolutionController::kDefaultMaxBias, 0, 12),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0, 1),
             runtimeEnumSetting("filter", "Shadow Filter", "hard", {{"Hard", "hard"}, {"PCF", "pcf"}, {"SMRT", "smrt"}}),
             runtimeFloatSetting("pcfRadius", "PCF Radius (texels)", 1, 0, 8),
@@ -213,6 +218,7 @@ public:
         if (device_ != context.device) {
             casterCache_ = {}; histories_.clear(); caches_.clear();
             physicalPool_ = {};
+            resolution_ = {};
         }
         device_ = context.device;
         return {};
@@ -249,6 +255,7 @@ public:
         const auto cacheDiagnostics = context.outputBuffer("cacheDiagnostics");
         const auto lodStatisticsOutput = context.outputBuffer("lodStatistics");
         const auto budgetDiagnostics = context.outputBuffer("budgetDiagnostics");
+        const auto resolutionOutput = context.outputBuffer("resolutionDiagnostics");
         const auto workload = context.outputBuffer("workload");
         const auto buildDiagnostics = context.outputBuffer("buildDiagnostics");
         const auto projectionGridDiagnostics = context.outputBuffer("projectionGridDiagnostics");
@@ -267,7 +274,8 @@ public:
         if (!scene || !gpuScene || !context.streamer() || !depth.valid() || !depth.view() ||
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
-            !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !cacheDiagnostics.valid() || !lodStatisticsOutput.valid() || !budgetDiagnostics.valid() || !memory.valid() ||
+            !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !cacheDiagnostics.valid() ||
+            !lodStatisticsOutput.valid() || !budgetDiagnostics.valid() || !resolutionOutput.valid() || !memory.valid() ||
             (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid() || !projectionGridDiagnostics.valid())) ||
             (receiverCoverage_ && (!coverageSettings.valid() || !coverageProjections.valid() || !coveragePages.valid())) ||
             (receiverCoverageRecords_ && !coverageRecords.valid())) {
@@ -433,6 +441,7 @@ public:
             caches_.clear();
             histories_.clear();
             physicalPool_ = {};
+            resolution_ = {};
             casterCache_ = {};
             sceneIdentity_ = info.sceneIdentity;
         }
@@ -444,6 +453,11 @@ public:
         // ownership across all admitted faces before allocating this frame.
         std::erase_if(caches_, [&](const auto& cache) { return !identities.contains(cache.first); });
         if (admittedFaces == 0) { physicalPool_ = {}; }
+        auto resolutionWords = resolution_.update(
+            properties.value("maxPagePoolLoadFactor", VirtualShadowMapResolutionController::kDefaultLoadFactor),
+            properties.value("maxResolutionLodBias", VirtualShadowMapResolutionController::kDefaultMaxBias), admittedFaces != 0);
+        if (!resolutionWords) { return makeError(resolutionWords.error()); }
+        settings.resolutionLodBias = resolution_.bias();
         std::vector<uint32_t> budgetData(8 + capacity_ * 6 * 8, 0);
         // Version 2 describes current-frame GPU demand and grants. The shared
         // allocator publishes totals and face records after this zeroed header
@@ -532,8 +546,9 @@ public:
         std::vector<StreamDataChunk> chunks{{tableData.data(), tableData.size()},
             {zeroStatistics.data(), zeroStatistics.size() * sizeof(uint32_t)},
             {zeroCacheDiagnostics.data(), zeroCacheDiagnostics.size() * sizeof(uint32_t)},
-            {budgetData.data(), budgetData.size() * sizeof(uint32_t)}};
-        std::vector<Buffer*> destinations{table.buffer(), statistics.buffer(), cacheDiagnostics.buffer(), budgetDiagnostics.buffer()};
+            {budgetData.data(), budgetData.size() * sizeof(uint32_t)}, {resolutionWords->data(), sizeof(*resolutionWords)}};
+        std::vector<Buffer*> destinations{table.buffer(), statistics.buffer(), cacheDiagnostics.buffer(),
+            budgetDiagnostics.buffer(), resolutionOutput.buffer()};
         if (collectGPUWork_) {
             chunks.push_back({zeroWorkload.data(), zeroWorkload.size() * sizeof(uint32_t)});
             destinations.push_back(workload.buffer());
@@ -555,6 +570,7 @@ public:
             RenderGraphStageUse{"lights", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
+            RenderGraphStageUse{"resolutionDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"budgetDiagnostics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
@@ -661,6 +677,7 @@ public:
                     *depth.view(), view, faceRequests, *casters, scene->materials(), alphaTextures, settings,
                     budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr);
                 if (!sharedResults) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(sharedResults.error()); }
+                if (auto recorded = resolution_.record(*device_, commands, *sharedResults, budget, &physicalPool_); !recorded) { return recorded; }
                 auto aggregatedLOD = VirtualShadowMaps::aggregateLODStatistics(*device_, commands, *sharedResults, log);
                 if (!aggregatedLOD) { spdlog::error("VirtualShadowMapLightsPass LOD statistics: {}", log); return makeError(aggregatedLOD.error()); }
                 gpuLODStatistics = *aggregatedLOD;
@@ -989,6 +1006,7 @@ private:
     bool receiverCoverageRecords_ = false;
     uint64_t sceneIdentity_ = 0;
     VirtualShadowMapPhysicalPool physicalPool_;
+    VirtualShadowMapResolutionController resolution_;
     std::unordered_map<uint64_t, std::array<std::unique_ptr<VirtualShadowMaps>, 6>> caches_;
     std::unordered_map<uint64_t, std::unique_ptr<VirtualShadowMapTemporal>> histories_;
 };

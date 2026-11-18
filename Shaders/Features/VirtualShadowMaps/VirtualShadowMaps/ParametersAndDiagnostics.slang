@@ -35,7 +35,7 @@ public struct ShadowPush
     float lightRange;
     uint projectionFace, filterMode, pointFaces;
     float pcfRadius, rayLength, sourceRadius, angularRadius;
-    uint rayCount, samplesPerRay, receiverFootprint, projectionFlags;
+    uint rayCount, samplesPerRay, receiverLOD, projectionFlags;
     float rayLengthScale, maxRayAngle;
     uint samplePhase, sampleReserved;
     float lodScreenRayLength;

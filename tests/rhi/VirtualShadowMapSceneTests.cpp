@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -176,6 +177,7 @@ struct ReadbackLayout {
 };
 
 constexpr ReadbackLayout kReadback;
+constexpr uint64_t kResolutionDiagnosticSize = 8 * sizeof(uint32_t);
 
 class VSMEvidencePass final : public UnsafePass {
 public:
@@ -192,7 +194,12 @@ public:
         reflection.addBufferInput("parameters").buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).transferRead();
         reflection.addBufferInput("rasterInfo").buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo))
             .shaderRead().memoryLocation = MemoryLocation::HostUpload;
-        reflection.addBufferOutput("data").buffer(kReadback.size).transferWrite().hostReadback();
+        const bool captureResolution = properties().value("captureResolution", false);
+        if (captureResolution) {
+            reflection.addBufferInput("resolutionDiagnostics").buffer(kResolutionDiagnosticSize).transferRead();
+        }
+        reflection.addBufferOutput("data").buffer(kReadback.size +
+            (captureResolution ? kResolutionDiagnosticSize : 0)).transferWrite().hostReadback();
         reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
         return reflection;
     }
@@ -221,6 +228,13 @@ public:
             auto source = context.inputBuffer(bufferFields[index]).buffer()->slice({0, bufferSizes[index]});
             if (!source) { return std::unexpected(source.error()); }
             auto destination = buffer->slice({bufferOffsets[index], bufferSizes[index]});
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        }
+        if (context.properties().value("captureResolution", false)) {
+            auto source = context.inputBuffer("resolutionDiagnostics").buffer()->slice({0, kResolutionDiagnosticSize});
+            auto destination = buffer->slice({kReadback.size, kResolutionDiagnosticSize});
+            if (!source) { return std::unexpected(source.error()); }
             if (!destination) { return std::unexpected(destination.error()); }
             if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
         }
@@ -400,11 +414,12 @@ struct Snapshot {
     std::vector<uint32_t> debug;
     std::vector<float> rasterDepth, receiverDepth;
     std::array<uint32_t, 32> statistics{};
+    std::array<uint32_t, 8> resolution{};
     VisibilityBufferFrameInfo camera;
     ScreenSpaceShadowParameters parameters;
 };
 
-Snapshot snapshot(const EvidenceState& evidence, const std::string& name = {})
+Snapshot snapshot(const EvidenceState& evidence, const std::string& name = {}, bool captureResolution = false)
 {
     auto* readback = name.empty() ? evidence.readback : evidence.namedReadbacks.at(name);
     require(readback != nullptr, "VSM evidence pass did not execute");
@@ -423,6 +438,7 @@ Snapshot snapshot(const EvidenceState& evidence, const std::string& name = {})
     std::memcpy(result.receiverDepth.data(), mapped + kReadback.receiverDepth, kPixels * 4);
     std::memcpy(result.statistics.data(), mapped + kReadback.statistics, sizeof(result.statistics));
     std::memcpy(&result.parameters, mapped + kReadback.parameters, sizeof(result.parameters));
+    if (captureResolution) { std::memcpy(result.resolution.data(), mapped + kReadback.size, sizeof(result.resolution)); }
     readback->unmap();
     require(result.parameters.view.current.viewport[1] == float(kWidth) &&
         result.parameters.view.current.viewport[2] == float(kHeight),
@@ -1446,9 +1462,10 @@ public:
         if (captureBudget) {
             reflection.addBufferInput("memory").buffer(64).transferRead();
             reflection.addBufferInput("budgetDiagnostics").buffer(kLocalBudgetDiagnosticSize).transferRead();
+            reflection.addBufferInput("resolutionDiagnostics").buffer(kResolutionDiagnosticSize).transferRead();
         }
         reflection.addBufferOutput("data").buffer(kLocalReadbackSize +
-            (captureBudget ? 64 + kLocalBudgetDiagnosticSize : 0)).transferWrite().hostReadback();
+            (captureBudget ? 64 + kLocalBudgetDiagnosticSize + kResolutionDiagnosticSize : 0)).transferWrite().hostReadback();
         reflection.addTextureOutput("color").transferWrite().format = Format::RGBA8Unorm;
         return reflection;
     }
@@ -1480,7 +1497,8 @@ public:
         }
         if (context.properties().value("captureBudget", false)) {
             for (const auto& [name, offset, size] : {std::tuple{"memory", kLocalReadbackSize, uint64_t(64)},
-                std::tuple{"budgetDiagnostics", kLocalReadbackSize + 64, kLocalBudgetDiagnosticSize}}) {
+                std::tuple{"budgetDiagnostics", kLocalReadbackSize + 64, kLocalBudgetDiagnosticSize},
+                std::tuple{"resolutionDiagnostics", kLocalReadbackSize + 64 + kLocalBudgetDiagnosticSize, kResolutionDiagnosticSize}}) {
                 auto source = context.inputBuffer(name).buffer()->slice({0, size});
                 auto destination = buffer->slice({offset, size});
                 if (!source) { return std::unexpected(source.error()); }
@@ -1512,6 +1530,7 @@ struct LocalSnapshot {
     std::array<uint64_t, 8> memory{};
     std::array<uint32_t, 8> budgetHeader{};
     std::array<std::array<uint32_t, 8>, kLocalLayers> budgetFaces{};
+    std::array<uint32_t, 8> resolution{};
 };
 
 LocalSnapshot localSnapshot(const std::string& name, bool captureBudget = false)
@@ -1535,6 +1554,7 @@ LocalSnapshot localSnapshot(const std::string& name, bool captureBudget = false)
         std::memcpy(result.memory.data(), mapped + kLocalReadbackSize, sizeof(result.memory));
         std::memcpy(result.budgetHeader.data(), mapped + kLocalReadbackSize + 64, sizeof(result.budgetHeader));
         std::memcpy(result.budgetFaces.data(), mapped + kLocalReadbackSize + 64 + sizeof(result.budgetHeader), sizeof(result.budgetFaces));
+        std::memcpy(result.resolution.data(), mapped + kLocalReadbackSize + 64 + kLocalBudgetDiagnosticSize, sizeof(result.resolution));
     }
     buffer->unmap();
     result.camera = activeEvidence->camera;
@@ -1657,7 +1677,7 @@ RenderGraph makeLocalGraph(const LocalFixture& fixture, float nearPlane = .001f)
         // Cache invalidation and consumer additivity require fixed face quotas;
         // the demand-budget test separately exercises the omitted default.
         graph.addNode("VirtualShadowMapLightsPass", name, {{"lightCapacity",kLocalCapacity},{"physicalPageBudget",512},
-            {"demandDrivenBudget",false},
+            {"demandDrivenBudget",false},{"maxPagePoolLoadFactor",0},
             {"pageSize",kPageSize},{"virtualPagesPerAxis",kPagesPerAxis},{"clipmapCount",kClipmapCount},
             {"maxWorkItems",65535},{"shadowBias",.002},{"nearPlane",nearPlane},{"cacheEnabled",true},
             {"forceRedraw",std::string_view(name) == "Redraw"},{"receiverFootprint",false}});
@@ -2441,7 +2461,7 @@ public:
                 graph.addEdge("Raster.rasterInfo", name + ".rasterInfo");
                 graph.addNode("VSMDemandBudgetEvidencePass", evidenceName,
                     {{"evidenceName",name},{"captureBudget",true}});
-                for (const char* field : {"shadows", "debug", "lights", "statistics", "memory", "budgetDiagnostics"}) {
+                for (const char* field : {"shadows", "debug", "lights", "statistics", "memory", "budgetDiagnostics", "resolutionDiagnostics"}) {
                     graph.addEdge(name + "." + field, evidenceName + "." + field);
                 }
                 graph.addEdge("Raster.depth", evidenceName + ".depth");
@@ -2767,6 +2787,236 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDemandBudgetTest);
 
+class VirtualShadowMapResolutionPressureTest final : public RHITest
+{
+public:
+    VirtualShadowMapResolutionPressureTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_resolution_pressure"; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapResolutionPressure";
+        Json report{{"passed",false}, {"frames",Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "ResolutionPressure.json") << report.dump(2) << '\n'; };
+        try {
+            static const bool registered = registerRenderGraphPassType("VSMResolutionPressureEvidencePass",
+                "Test-only shared VSM pressure and receiver demand readback",
+                [] { return std::make_unique<VSMLocalEvidencePass>(activeEvidence); });
+            require(registered, "Register VSM pressure evidence pass");
+            registerFixturePasses();
+            const auto fixture = writeLocalFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load pressure fixture");
+            environment::WorldEnvironment world;
+            world.sun.enabled = true; world.sun.direction = float3(1, -1, 0); world.sun.illuminance = 3;
+            world.moon.enabled = false;
+            RenderView view;
+            RenderGraphPreviewRenderer preview;
+            configureCachePreview(preview, scene, view, context, validation, world);
+            const auto floorCamera = view.camera();
+            scene::LightingSettings lighting;
+            lighting.autoExposure.enabled = false;
+            lighting.lights.push_back(localLight("Point", false, {-1,4,0}));
+            lighting.lights.push_back(localLight("Spot", true, {1,4,0}));
+            require(scene.setLighting(lighting), "Set pressure fixture lights");
+            require(preview.setLighting(scene.lighting()), "Publish pressure fixture lights");
+            activeEvidence = std::make_shared<EvidenceState>();
+            const auto floorGraph = makeLocalGraph(fixture);
+            RenderGraph graph;
+            graph.setName("VirtualShadowMapResolutionPressure");
+            graph.setViewProperties({{"temporalJitter",false},
+                {"renderResolution",{{"width",kWidth},{"height",kHeight},{"adaptive",false}}}});
+            graph.addNode("VisibilityBufferPass", "Raster", floorGraph.findNode("Raster")->properties);
+            uint32_t capacity = 32;
+            auto settings = floorGraph.findNode("Cached")->properties;
+            settings["physicalPageBudget"] = capacity;
+            settings["demandDrivenBudget"] = true;
+            settings.erase("maxPagePoolLoadFactor");
+            graph.addNode("VirtualShadowMapLightsPass", "VSM", settings);
+            graph.addNode("VSMResolutionPressureEvidencePass", "Evidence", {{"evidenceName","Pressure"},{"captureBudget",true}});
+            for (const char* field : {"shadows", "debug", "lights", "statistics", "memory", "budgetDiagnostics", "resolutionDiagnostics"}) {
+                graph.addEdge(std::string("VSM.") + field, std::string("Evidence.") + field);
+            }
+            for (const char* node : {"VSM", "Evidence"}) {
+                graph.addEdge("Raster.depth", std::string(node) + ".depth");
+                graph.addEdge("Raster.rasterInfo", std::string(node) + ".rasterInfo");
+            }
+            graph.markOutput("Evidence.color");
+            constexpr uint32_t singleCapacity = 16;
+            graph.addNode("VirtualShadowMapPass", "Sun", {{"physicalPageCount",singleCapacity},{"pageSize",32},
+                {"virtualPagesPerAxis",kPagesPerAxis},{"clipmapCount",kClipmapCount},{"firstClipmapExtent",kFirstExtent},
+                {"receiverFootprint",true},{"shadowBias",.002},{"shadowDebug",true}});
+            graph.addEdge("Raster.depth", "Sun.depth");
+            graph.addEdge("Raster.rasterInfo", "Sun.rasterInfo");
+            graph.addNode("VSMEvidencePass", "SunEvidence", {{"evidenceName","Sun"},{"captureResolution",true}});
+            for (const char* field : {"shadow","debug","parameters","statistics","resolutionDiagnostics"}) {
+                graph.addEdge(std::string("Sun.") + field, std::string("SunEvidence.") + field);
+            }
+            graph.addEdge("Raster.depth", "SunEvidence.rasterDepth");
+            graph.addEdge("Raster.depth", "SunEvidence.receiverDepth");
+            graph.addEdge("Raster.rasterInfo", "SunEvidence.rasterInfo");
+            graph.markOutput("SunEvidence.color");
+            struct Frame {
+                std::array<uint32_t, 3> fine{}; // Directional, spot, point.
+                uint32_t requested = 0;
+                float bias = 0;
+                uint32_t lowSamples = 0;
+                uint32_t singleRequested = 0;
+                float singleBias = 0;
+            };
+            Frame previous;
+            const auto capture = [&](const std::string& phase, bool expectFeedback, bool inspectFilter = false) {
+                validation.phase(phase);
+                renderAndRequire(preview, graph, "Evidence.color");
+                const auto image = localSnapshot("Pressure", true);
+                const auto sun = snapshot(*activeEvidence, "Sun", true);
+                const auto& diagnostic = image.resolution;
+                Frame frame;
+                frame.singleRequested = sun.statistics[0] + 1;
+                frame.singleBias = std::bit_cast<float>(sun.resolution[5]);
+                require(sun.resolution[0] == 1, phase + ": missing single-light pressure diagnostics");
+                if (expectFeedback) {
+                    require(sun.resolution[1] == 1 && sun.resolution[2] == previous.singleRequested &&
+                        sun.resolution[3] == singleCapacity && std::bit_cast<float>(sun.resolution[4]) == previous.singleBias,
+                        phase + ": single-light feedback did not match its own completed allocation");
+                } else {
+                    require(sun.resolution == std::array<uint32_t, 8>{1}, phase + ": stale single-light pressure state");
+                }
+                frame.bias = std::bit_cast<float>(diagnostic[5]);
+                frame.lowSamples = diagnostic[6];
+                require(image.header.admittedCount == 3 && image.budgetHeader[2] == 8, phase + ": incomplete mixed-light admission");
+                for (uint32_t index = 0; index < image.header.count; ++index) {
+                    const auto& entry = image.entries[index];
+                    if (entry.status != kVirtualShadowMapLightAdmitted) { continue; }
+                    for (uint32_t face = 0; face < entry.faceCount; ++face) {
+                        frame.fine.at(entry.kind) += image.statistics[entry.baseLayer + face][0];
+                    }
+                    if (entry.kind == 0 && (phase == "Cold" || phase == "Hot5")) {
+                        saveImage(directory / (phase + "-DirectionalLevels.png"), image.debug[entry.baseLayer]);
+                    }
+                    if (inspectFilter && entry.kind == 0) {
+                        const auto& shadow = image.shadows[entry.baseLayer];
+                        uint32_t lit = 0, partial = 0;
+                        for (size_t pixel = 0; pixel < kPixels; ++pixel) {
+                            if (image.depth[pixel] <= 0) { continue; }
+                            lit += shadow[pixel] == 255;
+                            partial += shadow[pixel] > 0 && shadow[pixel] < 255;
+                        }
+                        require(lit > 0 && partial > 0, phase + ": filter produced no lit receivers or no partial visibility");
+                        saveVisibility(directory / (phase + "-SunShadow.png"), shadow);
+                    }
+                }
+                frame.requested = image.budgetHeader[2] + frame.fine[0] + frame.fine[1] + frame.fine[2];
+                report["frames"].push_back({{"phase",phase},{"fineRequestsByKind",frame.fine},{"requested",frame.requested},
+                    {"granted",image.budgetHeader[5]},{"feedback",diagnostic},{"appliedBias",frame.bias},
+                    {"singleRequested",frame.singleRequested},{"singleFeedback",sun.resolution},{"singleAppliedBias",frame.singleBias}});
+                if (phase == "Hot5") {
+                    require(std::ranges::find(sun.shadow, 0) != sun.shadow.end() && std::ranges::find(sun.shadow, 255) != sun.shadow.end(),
+                        "Single-light pressure frame did not contain both shadowed and lit pixels");
+                    saveVisibility(directory / "SingleSun-Shadow.png", sun.shadow);
+                }
+                require(diagnostic[0] == 1 && std::isfinite(frame.bias) && frame.bias >= 0 && frame.bias <= 2,
+                    phase + ": invalid pressure diagnostics or out-of-range bias");
+                if (expectFeedback) {
+                    require(diagnostic[1] == 1 && diagnostic[2] == previous.requested && diagnostic[3] == capacity &&
+                        std::bit_cast<float>(diagnostic[4]) == previous.bias,
+                        phase + ": feedback does not describe the completed allocation at its recording bias");
+                    const float ratio = float(previous.requested) / (capacity * .85f);
+                    const float target = std::max(0.f, previous.bias + std::log2(ratio));
+                    const float rate = ratio > 1 ? .5f : (frame.lowSamples > 10 ? .1f : 0.f);
+                    const float expected = std::min(2.f, previous.bias + rate * (target - previous.bias));
+                    require(std::abs(frame.bias - expected) < 1e-5f, phase + ": applied bias differs from the pressure response");
+                } else {
+                    require(diagnostic[1] == 0, phase + ": cold or disabled controller consumed a sample");
+                }
+                previous = frame;
+                return frame;
+            };
+            const auto cold = capture("Cold", false);
+            require(cold.bias == 0 && cold.requested > capacity, "Cold fixture did not overcommit the shared pool");
+            Frame hot;
+            for (uint32_t index = 0; index < 6; ++index) { hot = capture("Hot" + std::to_string(index), true); }
+            require(hot.bias > 1 && hot.lowSamples == 0, "Sustained pressure did not coarsen shadow resolution");
+            require(cold.singleRequested > singleCapacity && hot.singleBias > 0 && hot.singleRequested < cold.singleRequested,
+                "Standalone pool pressure did not reduce footprint-matched directional requests");
+            for (size_t kind = 0; kind < hot.fine.size(); ++kind) {
+                require(hot.fine[kind] < cold.fine[kind], "Resolution bias did not reduce fine demand for light kind " + std::to_string(kind));
+            }
+            auto skyCamera = floorCamera;
+            skyCamera.center = {0,10,12};
+            require(view.setCamera(skyCamera), "Rotate camera away from pressure receivers");
+            const auto sky = capture("Sky", true);
+            require(sky.requested == 8 && sky.lowSamples == 0, "Sky view must request only the admitted coarse pages");
+            for (uint32_t count = 1; count <= 11; ++count) {
+                const auto recovering = capture("Low" + std::to_string(count), true);
+                require(recovering.lowSamples == count, "Recovery delay did not count completed low-pressure samples");
+                if (count <= 10) { require(recovering.bias == sky.bias, "Resolution recovered before the ten-sample hold ended"); }
+                else { require(recovering.bias < sky.bias, "Resolution did not recover after the ten-sample hold"); }
+            }
+            require(graph.setNodeRuntimeProperty(graph.findNode("VSM")->id, "maxPagePoolLoadFactor", 0), "Disable pressure feedback");
+            require(graph.setNodeRuntimeProperty(graph.findNode("Sun")->id, "maxResolutionLodBias", 0), "Disable standalone pressure bias");
+            require(view.setCamera(floorCamera), "Restore floor receivers");
+            for (uint32_t index = 0; index < 2; ++index) {
+                const auto fixed = capture("Disabled" + std::to_string(index), false);
+                require(fixed.bias == 0 && fixed.fine == cold.fine, "Disabled feedback did not restore full-resolution demand");
+                require(fixed.singleRequested == cold.singleRequested, "Disabled standalone bias did not restore receiver demand");
+            }
+            require(graph.setNodeRuntimeProperty(graph.findNode("VSM")->id, "maxPagePoolLoadFactor", .85), "Re-enable pool feedback");
+            require(graph.setNodeRuntimeProperty(graph.findNode("Sun")->id, "maxResolutionLodBias", 2), "Re-enable standalone bias");
+            capacity = (cold.requested + 1) / 2;
+            require(graph.setNodeRuntimeProperty(graph.findNode("VSM")->id, "physicalPageBudget", capacity), "Set moderate pressure budget");
+            const auto restarted = capture("Restart", false);
+            require(restarted.bias == 0 && restarted.singleRequested == cold.singleRequested, "Re-enabled pressure started with stale feedback");
+            bool reducedDemand = false;
+            for (uint32_t index = 0; index < 4; ++index) {
+                const auto moderate = capture("Moderate" + std::to_string(index), true);
+                if (index == 0) {
+                    require(moderate.bias > 0 && moderate.bias < 2, "Moderate pressure did not produce an unsaturated bias");
+                }
+                reducedDemand |= moderate.requested < restarted.requested;
+            }
+            require(reducedDemand, "Moderate pressure did not reduce actual page requests");
+            world.sun.angularRadius = .06f;
+            require(preview.setWorldEnvironment(world), "Set finite sun radius for filtered pressure");
+            lighting = scene.lighting();
+            for (auto& light : lighting.lights) { light.properties.sourceRadius = .2f; }
+            require(scene.setLighting(lighting), "Set local source radii for filtered pressure");
+            require(preview.setLighting(scene.lighting()), "Publish filtered pressure lights");
+            const auto poolNode = graph.findNode("VSM")->id;
+            capacity = 32;
+            require(graph.setNodeRuntimeProperty(poolNode, "physicalPageBudget", capacity), "Restore high filter pressure");
+            require(graph.setNodeRuntimeProperty(poolNode, "smrtTemporalEnabled", false), "Fix SMRT ray phases");
+            require(graph.setNodeRuntimeProperty(poolNode, "smrtRayCount", 4), "Set SMRT ray count");
+            require(graph.setNodeRuntimeProperty(poolNode, "smrtSamplesPerRay", 8), "Set SMRT samples per ray");
+            for (const std::string filter : {"pcf", "smrt"}) {
+                require(graph.setNodeRuntimeProperty(poolNode, "filter", filter), "Set pressure filter");
+                require(graph.setNodeRuntimeProperty(poolNode, "maxPagePoolLoadFactor", 0), "Disable filtered pool feedback");
+                require(graph.setNodeRuntimeProperty(graph.findNode("Sun")->id, "maxResolutionLodBias", 0), "Reset standalone feedback");
+                const auto fixed = capture(filter + "-Fixed", false, true);
+                require(graph.setNodeRuntimeProperty(poolNode, "maxPagePoolLoadFactor", .85), "Enable filtered pool feedback");
+                require(graph.setNodeRuntimeProperty(graph.findNode("Sun")->id, "maxResolutionLodBias", 2), "Restart standalone feedback");
+                const auto initial = capture(filter + "-Cold", false);
+                const auto adjusted = capture(filter + "-Pressure", true, true);
+                require(fixed.bias == 0 && initial.fine == fixed.fine && adjusted.bias > 0 && adjusted.requested < fixed.requested,
+                    filter + ": feedback did not reduce fine page demand at the same filter and source sizes");
+            }
+            report["validation"] = validation.snapshot();
+            requireValidPreview(report["validation"]);
+            report["passed"] = true;
+            save();
+            activeEvidence.reset();
+            return RHITestResult::pass("Shared-pool pressure reduced directional, spot and point requests; low pressure held then restored resolution");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot();
+            save();
+            activeEvidence.reset();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapResolutionPressureTest);
+
 class VirtualShadowMapDemandFeedbackLifecycleTest final : public RHITest
 {
 public:
@@ -2829,7 +3079,7 @@ public:
                 graph.addEdge("Raster.depth", "Demand.depth");
                 graph.addEdge("Raster.rasterInfo", "Demand.rasterInfo");
                 graph.addNode("VSMFeedbackLifetimeEvidencePass", "Evidence", {{"evidenceName","Demand"},{"captureBudget",true}});
-                for (const char* field : {"shadows", "debug", "lights", "statistics", "memory", "budgetDiagnostics"}) {
+                for (const char* field : {"shadows", "debug", "lights", "statistics", "memory", "budgetDiagnostics", "resolutionDiagnostics"}) {
                     graph.addEdge(std::string("Demand.") + field, std::string("Evidence.") + field);
                 }
                 graph.addEdge("Raster.depth", "Evidence.depth");
@@ -2928,6 +3178,23 @@ public:
                         requireLocalReused(image, scene.lighting().lights.front().stableId, label + "-RecoveredStable");
                     }
                 }
+                require(graph.setNodeRuntimeProperty(graph.findNode("Demand")->id, "maxPagePoolLoadFactor", .85),
+                    "Enable pressure sampling on the warmed pool");
+                require(executor.syncRuntimeProperties(graph), "Synchronize pressure feedback setting");
+                record(cancellation);
+                record(0);
+                const auto coldRetry = localSnapshot("Demand", true);
+                require(coldRetry.resolution == std::array<uint32_t, 8>{1},
+                    label + ": a cancelled pressure sample changed the accepted retry resolution");
+                record(0);
+                const auto resumed = localSnapshot("Demand", true);
+                uint32_t requested = coldRetry.budgetHeader[2];
+                for (const auto& face : coldRetry.statistics) { requested += face[0]; }
+                require(resumed.resolution[1] == 1 && resumed.resolution[2] == requested &&
+                    resumed.resolution[3] == 64 && std::bit_cast<float>(resumed.resolution[5]) > 0,
+                    label + ": the first accepted pressure sample did not drive the following frame");
+                output["pressureRetry"] = coldRetry.resolution;
+                output["pressureResumed"] = resumed.resolution;
             }
             activeEvidence.reset();
             report["validation"] = validation.snapshot();

@@ -7,8 +7,10 @@
 
 #include <memory>
 #include <array>
+#include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace metallic::scene { struct RenderMaterial; struct Bounds; }
 
@@ -39,7 +41,7 @@ struct ShadowPush
     float lightRange;
     uint32_t projectionFace, filterMode, pointFaces;
     float pcfRadius, rayLength, sourceRadius, angularRadius;
-    uint32_t rayCount, samplesPerRay, receiverFootprint, projectionFlags;
+    uint32_t rayCount, samplesPerRay, receiverLOD, projectionFlags;
     float rayLengthScale, maxRayAngle;
     uint32_t samplePhase, sampleReserved;
     float lodScreenRayLength;
@@ -106,7 +108,8 @@ struct VirtualShadowMapSettings
     float smrtRayLengthScale = 0.0f; // Zero keeps fixed search; otherwise cap by camera distance times this scale.
     float smrtMaxRayAngle = 0.03f; // Maximum local-light angular span, in radians.
     bool smrtTemporalSampling = false; // Rotate raw samples; the lights pass owns the separate history resolve.
-    bool receiverFootprint = true; // All filters share receiver-selected resolution; false starts at the finest level.
+    bool receiverFootprint = true; // All filters share the projected receiver footprint when enabled.
+    float resolutionLodBias = 0.0f; // Additional clipmap/mip levels selected under physical page pressure.
     bool enabled = true;
     bool cacheEnabled = false;
     bool cacheLayering = false; // Separate static base depth from dynamic composition; requires caching.
@@ -140,6 +143,29 @@ struct VirtualShadowMapResult
     Buffer* lodChanges = nullptr; // View-major uint[instanceCount], compared with the committed cut.
     uint32_t lodClusterCount = 0;
     uint32_t lodInstanceCount = 0;
+};
+
+// Demand before physical-page admission, including each face's coarse page.
+struct VirtualShadowMapPressureSample
+{
+    uint64_t sequence = 0, frameIndex = 0;
+    uint32_t requestedPages = 0, capacity = 0;
+    float appliedBias = 0;
+};
+
+// Pass-owned across frames and reset with its device. Only completed copies
+// from submitted command buffers can contribute a pressure observation.
+class VirtualShadowMapPressureFeedback
+{
+public:
+    Result<> record(Device& device, CommandBuffer& commands, std::span<const VirtualShadowMapResult> faces,
+        uint32_t capacity, float appliedBias, const VirtualShadowMapPhysicalPool* pool = nullptr);
+    Result<std::optional<VirtualShadowMapPressureSample>> poll();
+
+private:
+    struct Slot;
+    std::vector<std::shared_ptr<Slot>> slots_;
+    uint64_t nextSequence_ = 1, consumedSequence_ = 0;
 };
 
 // The caller owns these graph textures through GPU completion and transitions
@@ -213,6 +239,7 @@ public:
 
 private:
     friend class VirtualShadowMaps;
+    friend class VirtualShadowMapPressureFeedback;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

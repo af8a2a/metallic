@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -8,6 +9,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapResolution.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -92,6 +94,8 @@ public:
             .buffer(kVirtualShadowMapCacheDiagnosticSize, sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         reflection.addBufferOutput("lodStatistics", "Shadow LOD selection, page demand and selected cluster level histogram")
             .buffer(32 * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+        reflection.addBufferOutput("resolutionDiagnostics", "Completed pool demand and current receiver resolution LOD bias")
+            .buffer(sizeof(VirtualShadowMapResolutionController::Diagnostics), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         if (properties().value("benchmarkGPUWork", false)) {
             reflection.addBufferOutput("workload", "VSM GPU workload counters; sixteen low/high uint pairs")
                 .buffer(kVirtualShadowMapWorkloadSize, sizeof(uint32_t)).bufferLayout("u32").transferWrite();
@@ -120,6 +124,8 @@ public:
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap Levels", 4, 1, 12),
             runtimeIntSetting("physicalPageCount", "Physical Page Budget", 256, 1, 4096),
+            runtimeFloatSetting("maxPagePoolLoadFactor", "Target Page Pool Load (0 Off)", VirtualShadowMapResolutionController::kDefaultLoadFactor, 0, 1),
+            runtimeFloatSetting("maxResolutionLodBias", "Maximum Resolution LOD Bias", VirtualShadowMapResolutionController::kDefaultMaxBias, 0, 12),
             runtimeIntSetting("maxWorkItems", "Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Clipmap Half-width (m)", 4.0f, 0.01f, 10000.0f),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0.0f, 1.0f),
@@ -154,7 +160,7 @@ public:
             log = "VirtualShadowMapPass requires mesh shaders and bindless descriptors";
             return makeError(Error::Unsupported);
         }
-        if (device_ != context.device) { casterCache_ = {}; }
+        if (device_ != context.device) { casterCache_ = {}; resolution_ = {}; }
         device_ = context.device;
         return {};
     }
@@ -188,6 +194,7 @@ public:
         const auto statisticsOutput = context.outputBuffer("statistics");
         const auto cacheDiagnosticsOutput = context.outputBuffer("cacheDiagnostics");
         const auto lodStatisticsOutput = context.outputBuffer("lodStatistics");
+        const auto resolutionOutput = context.outputBuffer("resolutionDiagnostics");
         const auto workloadOutput = context.outputBuffer("workload");
         const auto buildDiagnosticsOutput = context.outputBuffer("buildDiagnostics");
         auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
@@ -195,7 +202,8 @@ public:
         const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
         if (!device_ || !context.streamer() || !scene || !gpuScene ||
             !depth.valid() || !depth.view() || !metadata.valid() || !output.valid() ||
-            !debugOutput.valid() || !parametersOutput.valid() || !statisticsOutput.valid() || !cacheDiagnosticsOutput.valid() || !lodStatisticsOutput.valid() ||
+            !debugOutput.valid() || !parametersOutput.valid() || !statisticsOutput.valid() || !cacheDiagnosticsOutput.valid() ||
+            !lodStatisticsOutput.valid() || !resolutionOutput.valid() ||
             (collectGPUWork_ && (!workloadOutput.valid() || !buildDiagnosticsOutput.valid())) ||
             metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
@@ -266,7 +274,7 @@ public:
         const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
         const bool textureDependent = std::any_of(alphaTextures.begin(), alphaTextures.end(), hasTexture) ||
             std::any_of(displacementTextures.begin(), displacementTextures.end(), hasTexture);
-        const auto settings = shadowSettings(context.properties());
+        auto settings = shadowSettings(context.properties());
         const VirtualShadowMapCasterSettings casterSettings{
             .tessellationEnabled = (info.reserved & 1u) != 0,
             .tessellationFactor = context.properties().value("tessellationFactor", 4u),
@@ -285,6 +293,19 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const auto light = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()))[lightIndex];
+        const bool active = settings.enabled && (light.flags & kGPUCelestialLightEnabled) && (light.flags & kGPUCelestialLightCastsShadow);
+        if (sceneIdentity_ != info.sceneIdentity) {
+            resolution_ = {};
+            sceneIdentity_ = info.sceneIdentity;
+        }
+        // External one-shot command buffers can render uncached shadows without a frame completion point.
+        const auto* frame = RenderFrameContext::from(commands);
+        auto resolutionWords = resolution_.update(
+            context.properties().value("maxPagePoolLoadFactor", VirtualShadowMapResolutionController::kDefaultLoadFactor),
+            context.properties().value("maxResolutionLodBias", VirtualShadowMapResolutionController::kDefaultMaxBias),
+            active && frame && frame->recording());
+        if (!resolutionWords) { return makeError(resolutionWords.error()); }
+        settings.resolutionLodBias = resolution_.bias();
         VirtualShadowMapReceiverResources receiver{};
         if (settings.shadowLOD && settings.shadowLODSmartBias &&
             visibility.valid() && (info.reserved & 1u) == 0) {
@@ -300,9 +321,7 @@ public:
         lodStatistics[1] = settings.shadowLOD;
         lodStatistics[5] = casters->triangleCapacity;
         lodStatistics[10] = casters->triangleCapacity;
-        if (settings.shadowLOD && settings.enabled &&
-            (light.flags & (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) ==
-                (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow)) {
+        if (settings.shadowLOD && active) {
             casters = casterCache_.prepareGPUShadowLOD(*device_, commands, *scene,
                 scene->hasStreamGeometry() ? stream : nullptr, *casters, casterSettings, log);
             if (!casters) {
@@ -319,6 +338,8 @@ public:
             spdlog::error("VirtualShadowMapPass: {}", log);
             return makeError(shadow.error());
         }
+        result = resolution_.record(*device_, commands, {&*shadow, 1}, settings.physicalPageCount);
+        if (!result) { return result; }
         auto aggregatedLOD = VirtualShadowMaps::aggregateLODStatistics(*device_, commands, {&*shadow, 1}, log);
         if (!aggregatedLOD) {
             spdlog::error("VirtualShadowMapPass LOD statistics: {}", log);
@@ -335,8 +356,7 @@ public:
         }
         parameters.light.colorIntensity[3] = 1.0f;
         parameters.trace[2] = settings.shadowBias;
-        parameters.control[0] = settings.enabled && (light.flags & kGPUCelestialLightEnabled) != 0 &&
-            (light.flags & kGPUCelestialLightCastsShadow) != 0;
+        parameters.control[0] = active;
         parameters.control[1] = 1;
         parameters.control[2] = kCelestialLightSourceTag | lightIndex;
 
@@ -346,7 +366,10 @@ public:
         const StreamDataChunk chunk{&parameters, sizeof(parameters)};
         const auto uploaded = context.streamer()->streamBufferData({.dataChunks = {&chunk, 1},
             .placementAlignment = 16, .dstBuffer = parametersOutput.buffer(), .copyBatch = *copyBatch});
-        if (!uploaded.valid()) {
+        const StreamDataChunk resolutionChunk{resolutionWords->data(), sizeof(*resolutionWords)};
+        const auto uploadedResolution = context.streamer()->streamBufferData({.dataChunks = {&resolutionChunk, 1},
+            .placementAlignment = 16, .dstBuffer = resolutionOutput.buffer(), .copyBatch = *copyBatch});
+        if (!uploaded.valid() || !uploadedResolution.valid()) {
             (void)context.streamer()->cancelCopyBatch(*copyBatch);
             return makeError(Error::OutOfMemory);
         }
@@ -416,6 +439,7 @@ public:
             RenderGraphStageUse{"parameters", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
+            RenderGraphStageUse{"resolutionDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (gpuLODStatistics) {
             bufferImports.push_back({"privateLODStatistics", sourceLODStatistics, RenderGraphResourceAccess::BufferTransferRead});
@@ -469,6 +493,8 @@ public:
 private:
     bool collectGPUWork_ = false;
     Device* device_ = nullptr;
+    uint64_t sceneIdentity_ = 0;
+    VirtualShadowMapResolutionController resolution_;
     VirtualShadowMapCasterCache casterCache_;
     VirtualShadowMaps shadows_;
 };

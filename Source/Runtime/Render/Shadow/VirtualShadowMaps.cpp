@@ -103,6 +103,7 @@ bool validProjectionSettings(const VirtualShadowMapSettings& settings)
         settings.clipmapCount != 0 && settings.clipmapCount <= 12 &&
         std::isfinite(settings.firstClipmapExtent) && settings.firstClipmapExtent > 0 &&
         std::isfinite(settings.shadowBias) && settings.shadowBias >= 0 &&
+        std::isfinite(settings.resolutionLodBias) && settings.resolutionLodBias >= 0 &&
         std::isfinite(settings.shadowLODErrorTexels) && settings.shadowLODErrorTexels >= 0 &&
         std::isfinite(settings.shadowLODScreenRayLength) && settings.shadowLODScreenRayLength >= 0 &&
         settings.shadowLODScreenRayLength <= 1;
@@ -536,6 +537,105 @@ VirtualShadowMapPhysicalPool::~VirtualShadowMapPhysicalPool() = default;
 VirtualShadowMapPhysicalPool::VirtualShadowMapPhysicalPool(VirtualShadowMapPhysicalPool&&) noexcept = default;
 VirtualShadowMapPhysicalPool& VirtualShadowMapPhysicalPool::operator=(VirtualShadowMapPhysicalPool&&) noexcept = default;
 
+struct VirtualShadowMapPressureFeedback::Slot
+{
+    std::shared_ptr<Buffer> fineDemand;
+    std::shared_ptr<SubmissionTransaction> submission;
+    GPUCompletionPoint completion;
+    VirtualShadowMapPressureSample sample;
+};
+
+Result<> VirtualShadowMapPressureFeedback::record(Device& device, CommandBuffer& commands,
+    std::span<const VirtualShadowMapResult> faces, uint32_t capacity, float appliedBias,
+    const VirtualShadowMapPhysicalPool* pool)
+{
+    auto* frame = RenderFrameContext::from(commands);
+    if (!frame || !frame->recording()) { return makeError(Error::InvalidArgument); }
+    Buffer* source = nullptr;
+    uint64_t offset = 0;
+    if (!faces.empty()) {
+        if (pool) {
+            if (!pool->impl_ || !pool->impl_->pending) { return makeError(Error::InvalidArgument); }
+            const auto& allocation = pool->impl_->pending;
+            if (allocation->faceCount != faces.size() || allocation->storage->capacity != capacity) {
+                return makeError(Error::InvalidArgument);
+            }
+            source = allocation->metadata.get();
+            offset = (1u + faces.size() + capacity * 2u) * 16u;
+            if (auto r = commands.retainResource(allocation); !r) { return r; }
+        } else {
+            if (faces.size() != 1 || !faces.front().statistics) { return makeError(Error::InvalidArgument); }
+            source = faces.front().statistics; // statistics[0] counts all unique requested fine pages.
+            if (auto r = commands.retainResource(faces.front().resourceOwner); !r) { return r; }
+        }
+    }
+
+    // A cancelled tail can share a frame completion with a submitted prefix.
+    // Reuse the host buffer only after every accepted use has finished.
+    auto available = std::ranges::find_if(slots_, [&](const auto& slot) {
+        return !slot->submission || (slot->completion.isComplete() &&
+            (slot->submission->cancelled() || slot->sample.sequence <= consumedSequence_));
+    });
+    const auto slot = available == slots_.end() ? slots_.emplace_back(std::make_shared<Slot>()) : *available;
+    if (source && !slot->fineDemand) {
+        auto buffer = device.createBuffer({.size = sizeof(uint32_t), .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback, .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+        if (!buffer) { return std::unexpected(buffer.error()); }
+        slot->fineDemand = std::move(*buffer);
+    }
+    auto transaction = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+    if (auto r = commands.retainResource(slot); !r) { return r; }
+    if (auto r = commands.addSubmissionTransaction(transaction); !r) { return r; }
+    slot->submission = std::move(transaction);
+    slot->completion = frame->completion();
+    // The slot stays in flight even if recording the copy fails partway.
+    slot->sample = {};
+    if (source) {
+        const BufferRange range{offset, sizeof(uint32_t)};
+        auto from = source->slice(range);
+        if (!from) { return std::unexpected(from.error()); }
+        auto to = slot->fineDemand->slice();
+        if (!to) { return std::unexpected(to.error()); }
+        const BufferBarrierDesc before{.buffer = source,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .range = range};
+        if (auto r = commands.synchronize({.buffers = {&before, 1}}); !r) { return r; }
+        if (auto r = commands.copyBuffer(*from, *to); !r) { return r; }
+        const BufferBarrierDesc after[]{
+            {.buffer = source, .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}, .range = range},
+            {.buffer = slot->fineDemand.get(), .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::Host, AccessBits::HostRead}}};
+        if (auto r = commands.synchronize({.buffers = after}); !r) { return r; }
+    }
+    slot->sample = {nextSequence_++, frame->frameIndex(), uint32_t(faces.size()), capacity, appliedBias};
+    return {};
+}
+
+Result<std::optional<VirtualShadowMapPressureSample>> VirtualShadowMapPressureFeedback::poll()
+{
+    Slot* newest = nullptr;
+    uint64_t sequence = consumedSequence_;
+    for (const auto& slot : slots_) {
+        if (slot->sample.sequence > sequence && slot->submission && slot->submission->resolved() &&
+            !slot->submission->cancelled() && slot->completion.isSubmitted() && slot->completion.isComplete()) {
+            newest = slot.get();
+            sequence = slot->sample.sequence;
+        }
+    }
+    if (!newest) { return std::optional<VirtualShadowMapPressureSample>{}; }
+    auto sample = newest->sample;
+    if (sample.requestedPages != 0) {
+        auto* fine = static_cast<const uint32_t*>(newest->fineDemand->map());
+        if (!fine) { return makeError(Error::Failure); }
+        newest->fineDemand->invalidate();
+        sample.requestedPages += *fine;
+        newest->fineDemand->unmap();
+    }
+    consumedSequence_ = sequence;
+    return std::optional{sample};
+}
+
 Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(VirtualShadowMapPhysicalPool& physicalPool,
     Device& device, CommandBuffer& commands, TextureView& depth, const ViewConstants& view,
     std::span<const VirtualShadowMapFaceRequest> faces, const VirtualShadowMapCasterResources& casters,
@@ -657,7 +757,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         }
         return {};
     };
-    if (auto r = acquire(recording->metadata, uint64_t(1u + faces.size() + capacity * 2u) * 16u, 16, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
+    if (auto r = acquire(recording->metadata, uint64_t(2u + faces.size() + capacity * 2u) * 16u, 16, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
     if (auto r = acquire(recording->history, uint64_t(capacity) * 8u, 8, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
     if (auto r = acquire(recording->jobs, faces.size() * sizeof(ShadowPush), sizeof(ShadowPush), MemoryLocation::HostUpload); !r) { return std::unexpected(r.error()); }
     const char* entries[]{"vsmSharedPoolPrepareMain", "vsmSharedPoolPhysicalMain", "vsmSharedPoolPublishMain", "vsmBatchPrepareMain"};
@@ -1424,7 +1524,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     push.angularRadius = light.angularRadius;
     push.rayCount = settings.smrtRayCount;
     push.samplesPerRay = settings.smrtSamplesPerRay;
-    push.receiverFootprint = settings.receiverFootprint;
+    // A nonnegative float needs 31 bits. The low bit retains the footprint flag,
+    // preserving the original push word for zero bias.
+    push.receiverLOD = (std::bit_cast<uint32_t>(settings.resolutionLodBias) << 1u) | uint32_t(settings.receiverFootprint);
     push.lodScreenRayLength = settings.shadowLOD && settings.shadowLODSmartBias && directional && push.filterMode == 0u ?
         settings.shadowLODScreenRayLength : 0.f;
     push.enabled = enabled;
@@ -2947,7 +3049,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
                 state.programs->refinedReceiver == programs.refinedReceiver);
             assert(p.depth == push.depth && p.pageSize == push.pageSize && p.virtualPagesPerAxis == push.virtualPagesPerAxis && p.pcfRadius == push.pcfRadius &&
                 p.rayLength == push.rayLength && p.rayLengthScale == push.rayLengthScale && p.maxRayAngle == push.maxRayAngle &&
-                p.rayCount == push.rayCount && p.samplesPerRay == push.samplesPerRay && p.receiverFootprint == push.receiverFootprint);
+                p.rayCount == push.rayCount && p.samplesPerRay == push.samplesPerRay && p.receiverLOD == push.receiverLOD);
             assert(state.outputTextures[0]->desc().width == outputDesc.width &&
                 state.outputTextures[0]->desc().height == outputDesc.height);
             jobs.push_back({p.pages, p.statistics, p.projections, p.atlas,

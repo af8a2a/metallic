@@ -38,6 +38,7 @@ struct VirtualShadowMapPhysicalPoolPublishPush
 //   [1 + face]            = {grantFine, missingFine, missingBase, missingCoarse}
 //   [1 + faceCount + p]   = {face + 1, virtualPage + 1, pinned, lastRequestedFrame}
 //   [1 + faceCount + capacity + rank] = {physicalPage, lastRequestedFrame, 0, 0}
+//   [1 + faceCount + capacity * 2] = {total requested fine before admission, 0, 0, 0}
 // History contains capacity uint2(physicalPage, lastRequestedFrame) records in
 // oldest-first order. All current owners are rebuilt after Prepare and before
 // Physical, including unrequested cached pages; every admitted page is pinned.

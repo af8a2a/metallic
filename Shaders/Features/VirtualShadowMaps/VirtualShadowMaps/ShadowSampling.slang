@@ -155,9 +155,14 @@ float3 vsmRayDither(float3 position, ShadowProjection projection, ShadowPush pus
     return (right * offset.x + up * offset.y) * vsmWorldTexelSize(position, projection, push.pageSize, push.lightType);
 }
 
+bool vsmUsesReceiverFootprint(ShadowPush push)
+{
+    return (push.receiverLOD & 1u) != 0u;
+}
+
 float vsmPixelFootprint(float linearDepth, ViewConstants view, ShadowPush push)
 {
-    if (push.receiverFootprint == 0u) { return 0.0; }
+    if (!vsmUsesReceiverFootprint(push)) { return 0.0; }
     return view.current.upProjection.w > 0.5 ? view.current.clipOrtho.z / view.current.viewport.z :
         2.0 * linearDepth * tan(view.current.viewport.w * 0.5) / view.current.viewport.z;
 }
@@ -181,7 +186,7 @@ float vsmSearchLength(float3 position, float linearDepth, ViewConstants view, Sh
 float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,
     VSMReceiverBasis basis, ShadowProjection projection, ShadowPush push)
 {
-    if (push.receiverFootprint == 0u) { return 0.0; }
+    if (!vsmUsesReceiverFootprint(push)) { return 0.0; }
     float footprint = basis.isOrtho ? (basis.orthoHalfHeight * 2.0) * basis.invViewport.y :
         (2.0 * linearDepth * basis.tanHalfFov) * basis.invViewport.y;
     float3 viewRay = basis.isOrtho ? basis.forward : position - basis.eye;
@@ -249,10 +254,24 @@ ShadowProjection vsmGetCachedProjection(StructuredBuffer<ShadowProjection> proje
 uint vsmReceiverLevel(float3 position, StructuredBuffer<ShadowProjection> projections,
     ShadowPush push, float footprint, bool useGroupCache = false)
 {
-    uint level = 0u;
-    while (level + 1u < push.clipmapCount &&
-        vsmWorldTexelSize(position, projections[level], push.pageSize, push.lightType) < footprint * 0.5) { ++level; }
-    return level;
+    uint lastLevel = push.clipmapCount - 1u;
+    float bias = min(asfloat(push.receiverLOD >> 1u), float(lastLevel));
+    uint wholeLevels = uint(bias);
+    float scale = exp2(bias - float(wholeLevels));
+    float targetTexelSize = footprint * 0.5 * scale;
+    for (uint level = 0u; level < lastLevel - wholeLevels; ++level) {
+        ShadowProjection projection = vsmGetCachedProjection(projections, level, useGroupCache);
+        if (vsmWorldTexelSize(position, projection, push.pageSize, push.lightType) < targetTexelSize) { continue; }
+        if (push.lightType == 0u && bias > 0.0) {
+            // Bias the first covering clipmap even when footprint matching is disabled.
+            // Its snapped projection and one-texel inset match page marking and lookup.
+            float3 projected = vsmProjectPosition(position, projection);
+            projected.xy *= scale;
+            if (!vsmContains(projected, projection, push.pageSize, true)) { continue; }
+        }
+        return level + wholeLevels;
+    }
+    return lastLevel;
 }
 
 float3 vsmPCFPosition(float3 position, float3 normal, ShadowProjection projection,

@@ -43,8 +43,10 @@ void vsmSharedPoolPrepareMain(uint lane : SV_GroupIndex, uniform VirtualShadowMa
                 remainder -= min(vsmSharedRequestedFine(jobs[face]), waterLevel);
             }
         }
+        uint requestedFine = 0u;
         for (uint face = 0u; face < push.faceCount; ++face) {
             uint target = vsmSharedRequestedFine(jobs[face]);
+            requestedFine += target;
             uint grant = min(target, waterLevel);
             if (push.demandDriven != 0u) {
                 if (target > waterLevel && remainder != 0u) { ++grant; --remainder; }
@@ -53,6 +55,7 @@ void vsmSharedPoolPrepareMain(uint lane : SV_GroupIndex, uniform VirtualShadowMa
             }
             metadata[1u + face] = uint4(grant, 0u, 0u, 0u);
         }
+        metadata[1u + push.faceCount + push.capacity * 2u] = uint4(requestedFine, 0u, 0u, 0u);
     }
 }
 

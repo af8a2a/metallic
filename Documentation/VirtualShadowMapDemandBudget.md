@@ -12,6 +12,16 @@ Equal 策略为每面计算均分上限及确定性余数，实际 grant 是该�
 
 共享 pool 及每面缓存跟随录制命令的 `SubmissionTransaction` 提交。取消的命令不发布新 cache/history；仅提交无关前缀不代表 VSM 尾部已执行。后续成功帧从已接受的 pool 状态继续。资源仍由完成点及命令/读者寿命保护；这不是任意 graph 阶段部分提交后自动回滚的承诺。`supportsFrameOverlap=false` 保持不变，RenderGraph 仍在执行前等待前帧；共享池没有解除该限制。
 
+## 页池压力与分辨率调节
+
+`VirtualShadowMapLightsPass` 为共享池维护一个全局 receiver 分辨率偏置，方向光 clipmap、spot 和 point 各面共用。`VirtualShadowMapPass` 对独立池使用同一策略。`maxPagePoolLoadFactor` 默认 0.85，`maxResolutionLodBias` 默认 2。任一设为 0 即关闭反馈、清空控制器并恢复零偏置。偏置作用于页请求和采样的起始层级，物理池容量、灯的准入以及 caster 的几何 LOD 仍各由原设置控制。
+
+负载为 **（所有准入面的原始细页请求之和 + 每面的一个粗页）/ 该帧池容量**，超额请求可使负载大于 1。GPU 每帧只需回传一个 32 位细页总数。CPU 在后续录制时读取最新且已完成的提交，同时使用该样本录制时的偏置。目标为 `max(0, 样本偏置 + log2(负载 / 目标负载))`，零需求的目标为零。超目标时向目标移动 50%；负载回落时先保持 10 个连续完成的低压样本，从第 11 个起每次移动 10%。最终偏置限制在 `[0, maxResolutionLodBias]`。取消提交或没有新反馈时不会推进恢复计数。
+
+图输出 `resolutionDiagnostics` 含八个 32 位字。依次为版本（1）、本次是否消费了新样本、最近样本的请求总数、其池容量、其偏置、本帧应用的偏置、连续低压样本数（饱和在 11）、保留字。两个偏置字按 IEEE 754 float 解读。冷启动时两者均为零。页缓存允许复用兼容的驻留页；SMRT 历史在偏置改变时重新累积。
+
+`virtual_shadow_map_resolution_pressure` 在同一场景验证八个共享灯面和一个独立池。32 页共享池达到偏置上限时，总请求由 805 降至 76；403 页池在偏置 1.19 时请求 233 页，可全部分配。16 页独立池的请求由 114 降至 14。回归另覆盖低压恢复、关闭和重新开启控制器，以及向有光源半径的场景应用 PCF 和 SMRT。`virtual_shadow_map_demand_feedback_lifecycle` 验证整帧取消、仅提交前缀两种情况下，下一帧只使用成功提交的样本。
+
 ## 跨灯、跨面的 Build/Raster 批处理
 
 共享池路径的 `batchBuildRaster` 默认 `true`。全部面的请求与物理分配完成后，Build 按兼容 shader permutation 分组，用任务表选择各面的 `ShadowPush` 和工作范围；Raster 按兼容 pipeline 分组，通过间接多绘制提交各面的 coarse/fine 工作。每个深度层的共享物理槽仅扫描一次；开启静态分层时，静态深度和合成深度各使用一个 rendering instance，静态 HZB 与动态遮挡阶段按依赖衔接。每面的页表、溢出处理、统计和缓存事务仍独立。
@@ -28,7 +38,7 @@ CPU profile 中，`Record VSM build and raster batches` 发布实际录制计数
 
 共享深度图集为 `Texture2DArray`，最多 262144 个逻辑槽。容量不超过 4096 时，单层网格为 `X=ceil(sqrt(capacity))`、`Y=ceil(capacity/X)`；更大时每层固定 64×64 页，层数向上取整。`pageSize=128` 时单层最大为 8192×8192。所有灯使用同一 viewport 与层网格；mapping 保存全局 physical slot。静态分层使用同样布局的第二张图集；static HZB 按最多 4096 页一个 buffer bank 寻址。
 
-`physicalPageBudget` 限制当代全局逻辑槽数及所有当帧 grant 之和，不是显存字节上限。网格/层取整、静态图集、HZB、各面页表和工作 buffer、仍被引用的旧 generation 以及 native allocation padding 需要分别计量。`memory[0]`/`[5]` 统计持有的图集 bytes/页数，`memory[2]` 包含共享 pool 与各面 buffer；不再有 manager 需求反馈 readback buffer 或 `VSM budget feedback` scope。独立 `VirtualShadowMaps::record` 路径仍可使用每面 atlas，不能与 LightsPass 的共享池结果混用。
+`physicalPageBudget` 限制当代全局逻辑槽数及所有当帧 grant 之和，不是显存字节上限。网格/层取整、静态图集、HZB、各面页表和工作 buffer、仍被引用的旧 generation 以及 native allocation padding 需要分别计量。`memory[0]`/`[5]` 统计持有的图集 bytes/页数，`memory[2]` 包含共享 pool 与各面 buffer。分辨率反馈的 4 字节主机读回槽单独持有。独立 `VirtualShadowMaps::record` 路径仍可使用每面 atlas，不能与 LightsPass 的共享池结果混用。
 
 `budgetDiagnostics` 保持 8-word header 和 `lightCapacity * 6` 个 8-word face block 的 buffer 布局，语义版本升级为 **2**。face block 始终位于 `sourceEntryIndex * 6 + face`，与 compact 输出层数无关；GPU Publish 在所有 face Assign/Build 后写入诊断和灯表 `pageBudget`。
 
