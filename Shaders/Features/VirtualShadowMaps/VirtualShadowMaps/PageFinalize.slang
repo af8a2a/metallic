@@ -40,17 +40,28 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     uint count = min(statistics[3], push.workCapacity);
+    uint fineDrawCount = count;
+#if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
+    StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
+    fineDrawCount = work[0].x;
+#endif
     if (id.x == 0u) { statistics[4] = count; }
     uint coarsePage = push.totalPages - 1u;
     bool redrawCoarse = statistics[21] != 0u;
     bool mergeFrame = (push.cacheMode & 32u) != 0u;
-#if VSM_CLUSTER_HYBRID_RASTER
+#if VSM_CLUSTER_HYBRID_RASTER || VSM_TWO_PASS_HZB
     if (id.x < push.batchCount) {
-        uint first = (vsmCacheMetadata(push, kVSMHybridDrawOffset) + id.x) * 3u;
-        uint second = first + push.batchCount * 3u;
-        arguments[first] = arguments[second] = 0u;
-        arguments[first + 1u] = arguments[second + 1u] = 1u;
-        arguments[first + 2u] = arguments[second + 2u] = 1u;
+        uint first = vsmCacheMetadata(push, kVSMHybridDrawOffset) + id.x;
+#if VSM_TWO_PASS_HZB
+        const uint ranges = 6u; // Main draw, deferred retest and recovered draw, one pair per layer.
+#else
+        const uint ranges = 2u;
+#endif
+        for (uint range = 0u; range < ranges; ++range) {
+            uint word = (first + range * push.batchCount) * 3u;
+            arguments[word] = 0u;
+            arguments[word + 1u] = arguments[word + 2u] = 1u;
+        }
     }
 #endif
 #if VSM_CLUSTER_PAGE_RASTER
@@ -99,6 +110,18 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
                 vsmCacheAdd(push, id.x == coarsePage ? kVSMCacheStaticDirtyCoarsePages : kVSMCacheStaticDirtyFinePages, 1u);
             }
             pages[id.x] = entry;
+#if VSM_TWO_PASS_HZB
+            // Both HZB builds consume this list. A warm face emits no page
+            // groups. New/reassigned slots on reuse frames get a zero history.
+            if (fineDrawCount != 0u && id.x != coarsePage && (push.cacheMode & 1u) != 0u) {
+                if ((entry.w & 1u) != 0u && vsmRasterClearsEntry(entry, 0u)) {
+                    vsmQueueRasterHZBPage(id.x, 0u, push);
+                }
+                if ((entry.w & 4u) != 0u && vsmRasterClearsEntry(entry, 2u)) {
+                    vsmQueueRasterHZBPage(id.x, 1u, push);
+                }
+            }
+#endif
 #if VSM_RECEIVER_MASK
             // The pending cache publishes this tail with the page table only
             // after submission; the same validity bit gates projection while
@@ -128,11 +151,6 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
         uint first = (coarse ? id.x - push.batchCount : id.x) * 65535u;
         // Every demotion touches the complete coarse static page, even when its
         // previously composed depth is still exact.
-        uint fineDrawCount = count;
-#if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
-        StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
-        fineDrawCount = work[0].x;
-#endif
         uint drawCount = coarse ? ((redrawCoarse || (mergeFrame && push.enabled != 0u)) ? push.triangleCount : 0u) : fineDrawCount;
         uint dynamicCount = (coarse ? redrawCoarse : statistics[16] != 0u) ? drawCount : 0u;
         if (coarse && mergeFrame && drawCount != 0u) {

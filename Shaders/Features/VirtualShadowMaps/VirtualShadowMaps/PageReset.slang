@@ -27,7 +27,7 @@ implementing VirtualShadowMaps;
 #define VSM_SHARED_PHYSICAL_POOL 0
 #endif
 
-#if VSM_STATIC_PAGE_HZB
+#if VSM_STATIC_PAGE_HZB || VSM_TWO_PASS_HZB
 // Support points give the extrema of an orthographic row over the entire world AABB.
 // Bound dot/clip rounding by operand magnitude even when translation nearly cancels.
 float2 vsmHZBProjectedRange(float3 minimum, float3 maximum, float4 row)
@@ -38,7 +38,9 @@ float2 vsmHZBProjectedRange(float3 minimum, float3 maximum, float4 row)
         (256.0 * 5.960464477539063e-8);
     return float2(low - error, high + error);
 }
+#endif
 
+#if VSM_STATIC_PAGE_HZB
 bool vsmStaticPageHidesBounds(ShadowPush push, ShadowProjection projection, uint2 page,
     uint physicalPage, float3 minimum, float3 maximum)
 {
@@ -85,6 +87,15 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
     RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
+#if VSM_TWO_PASS_HZB
+    if (id.x < vsmRasterHZBPageBatches(push)) {
+        for (uint layer = 0u; layer < 2u; ++layer) {
+            uint word = vsmRasterHZBPageArgument(layer, id.x, push) * 3u;
+            arguments[word] = 0u;
+            arguments[word + 1u] = arguments[word + 2u] = 1u;
+        }
+    }
+#endif
     if (id.x < push.totalPages) {
         bool coarse = id.x == push.totalPages - 1u;
 #if VSM_RECEIVER_MASK

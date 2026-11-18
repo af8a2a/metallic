@@ -277,7 +277,7 @@ bool compatibleSettings(const VirtualShadowMapSettings& a, const VirtualShadowMa
     return a.pageSize == b.pageSize && a.virtualPagesPerAxis == b.virtualPagesPerAxis &&
         a.clipmapCount == b.clipmapCount && a.physicalPageCount == b.physicalPageCount &&
         a.firstClipmapExtent == b.firstClipmapExtent && a.shadowBias == b.shadowBias && a.enabled == b.enabled &&
-        a.clusterHybridRaster == b.clusterHybridRaster;
+        a.clusterHybridRaster == b.clusterHybridRaster && a.twoPassHZB == b.twoPassHZB;
 }
 
 std::vector<std::array<int64_t, 2>> pageOrigins(const ViewConstants& view, Vector direction,
@@ -308,7 +308,7 @@ struct SharedShadowPoolStorage
     std::shared_ptr<ShadowAtlas> atlas, staticAtlas;
     std::vector<std::shared_ptr<Buffer>> hzbBanks;
     std::shared_ptr<Buffer> hzbTable;
-    std::shared_ptr<Buffer> hybridDepth;
+    std::shared_ptr<Buffer> hybridDepth, rasterHZB;
     std::vector<ResourceLease> leases;
 };
 
@@ -352,6 +352,7 @@ struct VirtualShadowMaps::Programs
     bool pageWindowRaster = false;
     bool clusterPageRaster = false;
     bool clusterHybridRaster = false;
+    bool twoPassHZB = false;
     bool instanceBuild = false;
     bool dirtyPageHierarchy = false;
     bool receiverMask = false;
@@ -360,10 +361,11 @@ struct VirtualShadowMaps::Programs
     bool sharedPhysicalPool = false;
     bool batchBuildRaster = false;
     bool gpuLOD = false;
-    std::array<std::unique_ptr<ShaderModule>, 24> shaders;
+    std::array<std::unique_ptr<ShaderModule>, 26> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 16> compute;
     std::unique_ptr<ComputePipeline> selectLOD;
     std::unique_ptr<ComputePipeline> hybridClear, hybridRaster;
+    std::unique_ptr<ComputePipeline> buildRasterHZB, retestRasterHZB;
     std::array<std::unique_ptr<ShaderModule>, 2> onePassShaders;
     std::array<std::unique_ptr<ComputePipeline>, 2> onePassComputes;
     std::unique_ptr<GraphicsPipeline> raster;
@@ -414,7 +416,7 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 23> buffers;
+    std::array<std::vector<BufferEntry>, 24> buffers;
     std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     VirtualShadowMapResourcePoolStats stats;
@@ -511,7 +513,7 @@ struct VirtualShadowMaps::State
         std::shared_ptr<Buffer> projectionGrid;
         std::shared_ptr<Buffer> receiverGeometry;
         std::shared_ptr<Buffer> cacheDiagnostics;
-        std::shared_ptr<Buffer> hybridDepth;
+        std::shared_ptr<Buffer> hybridDepth, rasterHZB;
         std::shared_ptr<ShadowAtlas> staticAtlas;
         std::shared_ptr<Buffer> staticHZB, staticHZBJobs, clusterVisibility;
         std::shared_ptr<Buffer> lodContext, lodGroupStates, lodSelection, lodChanges, lodStatistics;
@@ -924,7 +926,7 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
     };
     using Stage = std::map<uint64_t, Bin>;
     Stage hierarchy, initialBuild, indirectBuild, finalize, propagate, hzb, dynamicCull;
-    std::array<Stage, 2> raster, softwareRaster;
+    std::array<Stage, 2> raster, classify, historyHZB, currentHZB, retest, postRaster;
     const auto add = [](Stage& stage, auto& pipeline, ShadowPush push, uint32_t upperBound,
         uint32_t countBuffer = UINT32_MAX, uint32_t countWord = 0) {
         if (!upperBound) { return; }
@@ -980,14 +982,35 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             }
             push.rasterCoarse = rasterLayer;
             auto& finePipeline = programs.packedRaster ? *programs.packedRaster : *programs.raster;
-            const uint32_t fineDrawOffset = programs.clusterHybridRaster ?
+            const bool classifyFine = programs.clusterHybridRaster || programs.twoPassHZB;
+            const uint32_t fineDrawOffset = classifyFine ?
                 work.hybridDrawOffset + (staticPass ? push.batchCount : 0u) : drawOffset;
+            const bool retestHistory = programs.twoPassHZB && (push.cacheMode & 1u);
+            if (retestHistory) {
+                const uint32_t maxPages = std::min(push.totalPages - 1u, push.physicalPageCount);
+                const uint32_t pageBatches = (maxPages + kDrawBatchSize - 1u) / kDrawBatchSize;
+                const uint32_t hzbOffset = work.hybridDrawOffset + 6u * push.batchCount + (staticPass ? pageBatches : 0u);
+                for (uint32_t batch = 0; batch < pageBatches; ++batch) {
+                    push.workBase = batch * kDrawBatchSize;
+                    const uint32_t groups = std::min(kDrawBatchSize, maxPages - push.workBase);
+                    add(historyHZB[layer], *programs.buildRasterHZB, push, groups, push.arguments, (hzbOffset + batch) * 3u);
+                    auto current = push;
+                    current.rasterCoarse |= 8u;
+                    add(currentHZB[layer], *programs.buildRasterHZB, current, groups, push.arguments, (hzbOffset + batch) * 3u);
+                }
+            }
             for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
                 push.workBase = batch * kDrawBatchSize;
                 add(raster[layer], finePipeline, push, kDrawBatchSize, push.arguments, (fineDrawOffset + batch) * 3u);
-                if (programs.clusterHybridRaster) {
-                    add(softwareRaster[layer], *programs.hybridRaster, push, kDrawBatchSize,
+                if (classifyFine) {
+                    add(classify[layer], *programs.hybridRaster, push, kDrawBatchSize,
                         push.arguments, (drawOffset + batch) * 3u);
+                }
+                if (retestHistory) {
+                    add(retest[layer], *programs.retestRasterHZB, push, kDrawBatchSize, push.arguments,
+                        (fineDrawOffset + 2u * push.batchCount + batch) * 3u);
+                    add(postRaster[layer], finePipeline, push, kDrawBatchSize, push.arguments,
+                        (fineDrawOffset + 4u * push.batchCount + batch) * 3u);
                 }
             }
         }
@@ -1008,7 +1031,10 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
     };
     for (auto* stage : {&hierarchy, &initialBuild, &indirectBuild, &finalize, &propagate, &hzb, &dynamicCull}) { appendStage(*stage, false); }
     for (auto& stage : raster) { appendStage(stage, true); }
-    for (auto& stage : softwareRaster) { appendStage(stage, false); }
+    for (auto& stage : postRaster) { appendStage(stage, true); }
+    for (auto* stages : {&classify, &historyHZB, &currentHZB, &retest}) {
+        for (auto& stage : *stages) { appendStage(stage, false); }
+    }
     auto acquire = [&](std::shared_ptr<Buffer>& buffer, uint64_t size, uint32_t stride, MemoryLocation memory) -> Result<> {
         if (!buffer || buffer->desc().size < size) {
             auto created = pool.device->createBuffer({.size = size, .structureStride = stride,
@@ -1143,11 +1169,26 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
             staticPass ? "VSM static raster" : "VSM dynamic raster and restore") : RenderGraphExecutionContext::ProfileScope{};
         auto rasterGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster prepare") : RenderGraphExecutionContext::ProfileScope{};
-        if (first.programs->clusterHybridRaster) {
-            rasterGpu.next("VSM cluster software raster");
-            BufferBarrierDesc scratch{.buffer = storage.hybridDepth.get(),
+        const auto buildRasterHZB = [&](Stage& stage) -> Result<> {
+            BufferBarrierDesc hzbBuffer{.buffer = storage.rasterHZB.get(),
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+            if (auto r = commands.synchronize({.buffers = {&hzbBuffer, 1}}); !r) { return r; }
+            if (auto r = buffersReady({4}, true, false); !r) { return r; }
+            if (auto r = compute(stage); !r) { return r; }
+            hzbBuffer.before = hzbBuffer.after;
+            hzbBuffer.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
+            return commands.synchronize({.buffers = {&hzbBuffer, 1}});
+        };
+        if (!historyHZB[layer].empty()) {
+            rasterGpu.next("VSM history page HZB");
+            if (auto r = buildRasterHZB(historyHZB[layer]); !r) { return r; }
+        }
+        BufferBarrierDesc scratch{.buffer = storage.hybridDepth.get(),
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+        if (first.programs->clusterHybridRaster) {
+            rasterGpu.next("VSM cluster software raster");
             if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
             auto clearPush = first.push;
             clearPush.rasterCoarse = staticPass ? 2u : 0u;
@@ -1161,64 +1202,85 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             scratch.before = scratch.after;
             scratch.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite};
             if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
+        }
+        if (!classify[layer].empty()) {
+            if (!first.programs->clusterHybridRaster) { rasterGpu.next("VSM main cluster HZB cull"); }
             if (auto r = buffersReady({3, 4, 7}, true, false); !r) { return r; }
-            if (auto r = compute(softwareRaster[layer]); !r) { return r; }
-            scratch.before = scratch.after;
-            scratch.after = {PipelineStageBits::FragmentShader, AccessBits::ShaderRead};
-            if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
+            if (auto r = compute(classify[layer]); !r) { return r; }
+            if (first.programs->clusterHybridRaster) {
+                scratch.before = scratch.after;
+                scratch.after = {PipelineStageBits::FragmentShader, AccessBits::ShaderRead};
+                if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
+            }
             if (auto r = buffersReady({3, 4, 7}, true, false,
                 PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader,
                 AccessBits::ShaderRead | AccessBits::ShaderWrite); !r) { return r; }
             rasterGpu.next("VSM raster prepare");
         }
-        for (const auto& [key, bin] : raster[layer]) {
-            if (auto r = prepare(bin, 0, bin.argumentWord, true, 0, uint32_t(bin.jobs.size())); !r) { return r; }
-        }
-        auto& atlas = staticPass ? *storage.staticAtlas : *storage.atlas;
-        const TextureBarrierDesc begin{.texture = atlas.texture.get(), .oldLayout = TextureLayout::ShaderRead,
-            .newLayout = TextureLayout::DepthStencilAttachment,
-            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-            .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
-            .range = {0, 1, 0, storage.layers}};
-        if (auto r = commands.synchronize({.textures = {&begin, 1}}); !r) { return r; }
-        const Rect area{.width = storage.pagesX * storage.pageSize, .height = storage.pagesY * storage.pageSize};
-        const RenderingAttachmentDesc attachment{.view = atlas.view.get(), .layout = TextureLayout::DepthStencilAttachment,
-            .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
-        if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment, .layerCount = storage.layers}); !r) { return r; }
-        ++renderingPasses;
-        if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return r; }
-        commands.setScissor(area);
-        rasterGpu.next("VSM raster clear and restore");
-        auto common = first.push;
-        common.rasterCoarse = staticPass ? 2u : 0u;
-        for (uint32_t base = 0; base < storage.capacity; base += kDrawBatchSize) {
-            common.workBase = base;
-            if (auto r = commands.bindExecution(first.programs->clear->execution(), &common, sizeof(common)); !r) { return r; }
-            if (auto r = commands.drawMeshTasks(std::min(kDrawBatchSize, storage.capacity - base)); !r) { return r; }
-            ++meshDraws;
-        }
-        rasterGpu.next("VSM raster coarse and fine batches");
-        common.physicalPool = jobLease->shaderIndex();
-        for (const auto& [key, bin] : raster[layer]) {
-            ++rasterBins;
-            const uint32_t limit = pool.device->capabilities().maxDrawIndirectCount;
-            for (uint32_t start = 0; start < bin.jobs.size();) {
-                const uint32_t count = std::min(limit, uint32_t(bin.jobs.size()) - start);
-                common.poolFace = bin.firstJob + start;
-                if (auto r = commands.bindExecution(bin.execution, &common, sizeof(common)); !r) { return r; }
-                auto args = frame.batchArguments->slice({uint64_t(bin.argumentWord + start * 3u) * 4u, uint64_t(count) * 12u});
-                if (!args) { return std::unexpected(args.error()); }
-                if (auto r = commands.drawMeshTasksIndirect(*args, count); !r) { return r; }
-                ++meshDraws; start += count;
+        const auto draw = [&](const Stage& stage, bool mainPass) -> Result<> {
+            for (const auto& [key, bin] : stage) {
+                if (auto r = prepare(bin, 0, bin.argumentWord, true, 0, uint32_t(bin.jobs.size())); !r) { return r; }
             }
+            auto& atlas = staticPass ? *storage.staticAtlas : *storage.atlas;
+            const TextureBarrierDesc begin{.texture = atlas.texture.get(), .oldLayout = TextureLayout::ShaderRead,
+                .newLayout = TextureLayout::DepthStencilAttachment,
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
+                .range = {0, 1, 0, storage.layers}};
+            if (auto r = commands.synchronize({.textures = {&begin, 1}}); !r) { return r; }
+            const Rect area{.width = storage.pagesX * storage.pageSize, .height = storage.pagesY * storage.pageSize};
+            const RenderingAttachmentDesc attachment{.view = atlas.view.get(), .layout = TextureLayout::DepthStencilAttachment,
+                .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
+            if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment, .layerCount = storage.layers}); !r) { return r; }
+            ++renderingPasses;
+            if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return r; }
+            commands.setScissor(area);
+            auto common = first.push;
+            if (mainPass) {
+                rasterGpu.next("VSM raster clear and restore");
+                common.rasterCoarse = staticPass ? 2u : 0u;
+                for (uint32_t base = 0; base < storage.capacity; base += kDrawBatchSize) {
+                    common.workBase = base;
+                    if (auto r = commands.bindExecution(first.programs->clear->execution(), &common, sizeof(common)); !r) { return r; }
+                    if (auto r = commands.drawMeshTasks(std::min(kDrawBatchSize, storage.capacity - base)); !r) { return r; }
+                    ++meshDraws;
+                }
+            }
+            rasterGpu.next(mainPass ? "VSM raster coarse and fine batches" : "VSM post raster fine batches");
+            common.physicalPool = jobLease->shaderIndex();
+            for (const auto& [key, bin] : stage) {
+                ++rasterBins;
+                const uint32_t limit = pool.device->capabilities().maxDrawIndirectCount;
+                for (uint32_t start = 0; start < bin.jobs.size();) {
+                    const uint32_t count = std::min(limit, uint32_t(bin.jobs.size()) - start);
+                    common.poolFace = bin.firstJob + start;
+                    if (auto r = commands.bindExecution(bin.execution, &common, sizeof(common)); !r) { return r; }
+                    auto args = frame.batchArguments->slice({uint64_t(bin.argumentWord + start * 3u) * 4u, uint64_t(count) * 12u});
+                    if (!args) { return std::unexpected(args.error()); }
+                    if (auto r = commands.drawMeshTasksIndirect(*args, count); !r) { return r; }
+                    ++meshDraws; start += count;
+                }
+            }
+            commands.endRendering();
+            rasterGpu.next("VSM raster publish");
+            const TextureBarrierDesc ready{.texture = atlas.texture.get(), .oldLayout = TextureLayout::DepthStencilAttachment,
+                .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
+                .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead},
+                .range = {0, 1, 0, storage.layers}};
+            return commands.synchronize({.textures = {&ready, 1}});
+        };
+        if (auto r = draw(raster[layer], true); !r) { return r; }
+        if (!retest[layer].empty()) {
+            rasterGpu.next("VSM current page HZB");
+            if (auto r = buildRasterHZB(currentHZB[layer]); !r) { return r; }
+            rasterGpu.next("VSM post cluster HZB retest");
+            if (auto r = buffersReady({3, 4, 7}, true, false); !r) { return r; }
+            if (auto r = compute(retest[layer]); !r) { return r; }
+            if (auto r = buffersReady({3, 4, 7}, true, false,
+                PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader,
+                AccessBits::ShaderRead | AccessBits::ShaderWrite); !r) { return r; }
+            if (auto r = draw(postRaster[layer], false); !r) { return r; }
         }
-        commands.endRendering();
-        rasterGpu.next("VSM raster publish");
-        const TextureBarrierDesc ready{.texture = atlas.texture.get(), .oldLayout = TextureLayout::DepthStencilAttachment,
-            .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
-            .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead},
-            .range = {0, 1, 0, storage.layers}};
-        if (auto r = commands.synchronize({.textures = {&ready, 1}}); !r) { return r; }
         rasterGpu.end(); layerGpu.end();
         if (staticPass) {
             if (auto r = buffersReady({4}, true, true); !r) { return r; }
@@ -1339,6 +1401,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMapPhysicalPool::memoryUsage() const
             for (const auto& bank : storage.hzbBanks) { addBuffer(bank); }
             addBuffer(storage.hzbTable);
             addBuffer(storage.hybridDepth);
+            addBuffer(storage.rasterHZB);
         }
         addBuffer(frame->metadata); addBuffer(frame->history); addBuffer(frame->jobs); addBuffer(frame->publicationFaces);
         addBuffer(frame->batchJobs); addBuffer(frame->batchArguments);
@@ -1423,6 +1486,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool clusterHybridRaster = settings.clusterHybridRaster && caps.computeSubgroupBallotArithmetic &&
         caps.subPixelPrecisionBits >= 1 && caps.subPixelPrecisionBits <= 8 && !casters.displacedGeometry;
     settings.clusterHybridRaster = clusterHybridRaster;
+    const bool twoPassHZB = settings.twoPassHZB && caps.computeSubgroupBallotArithmetic && !casters.displacedGeometry;
+    settings.twoPassHZB = twoPassHZB;
+    const bool classifyFine = clusterHybridRaster || twoPassHZB;
     const bool gpuLOD = bool(casters.gpuLOD);
     CPUProfileScope total(profiler, "VSM face record");
     total.work("lightType", uint32_t(inputLight.type));
@@ -1471,9 +1537,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     // Keep the bindless view inside Vulkan's guaranteed storage-buffer range.
     const uint64_t windowBytes = 16u + uint64_t(settings.maxWorkItems) * 16u +
         uint64_t(std::min(casters.triangleCapacity, settings.maxWorkItems)) * 64u;
-    const bool pageWindowRaster = !clusterHybridRaster && directional && settings.pageWindowRaster &&
+    const bool pageWindowRaster = !classifyFine && directional && settings.pageWindowRaster &&
         std::has_single_bit(settings.virtualPagesPerAxis) && windowBytes <= (128ull << 20);
-    const bool clusterPageRaster = clusterHybridRaster ||
+    const bool clusterPageRaster = classifyFine ||
         (!settings.pageWindowRaster && settings.clusterPageRaster && caps.computeSubgroupBallotArithmetic);
     const bool groupedFineRaster = pageWindowRaster || clusterPageRaster;
     const bool dirtyPageHierarchy = settings.dirtyPageHierarchy || instanceBuild;
@@ -1608,7 +1674,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    std::array<uint32_t, kVSMHybridDrawOffset + 1> cacheDiagnostics{};
+    std::array<uint32_t, kVSMHZBPageCount + 2> cacheDiagnostics{};
     cacheDiagnostics[50] = UINT32_MAX;
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
@@ -1869,18 +1935,22 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     // uint2(physicalSlot, lastRequestedFrame) in oldest-first order. Place this at
     // the end of the actual pooled page buffer; cached and current sizes can differ.
     const uint64_t physicalHistoryBytes = settings.cacheEnabled && !sharedPhysicalPool ? ((push.physicalPageCount + 1u) / 2u) * 16u : 0u;
-    // One uint per accepted hardware ticket. Both layers can reuse the same
-    // index list after their mesh draws finish consuming it.
-    const uint64_t hybridIndexBytes = clusterHybridRaster ? uint64_t((push.workCapacity + 3u) / 4u) * 16u : 0u;
+    // Both layers reuse the compact HW list. History-occluded tickets occupy
+    // a second list until the current-depth retest overwrites the consumed HW list.
+    const uint32_t indexLists = uint32_t(classifyFine) + uint32_t(twoPassHZB);
+    const uint32_t maxHZBPages = twoPassHZB ? std::min(push.totalPages - 1u, push.physicalPageCount) : 0u;
+    const uint32_t hzbPageBatches = (maxHZBPages + kDrawBatchSize - 1u) / kDrawBatchSize;
+    const uint64_t indexWords = uint64_t(push.workCapacity) * indexLists + 2u * maxHZBPages;
+    const uint64_t indexBytes = ((indexWords + 3u) / 4u) * 16u;
     const uint64_t workBytes = pageWindowRaster ? windowBytes :
-        clusterPageRaster ? (uint64_t(push.workCapacity) + 1u) * 16u + hybridIndexBytes : uint64_t(push.workCapacity) * 8u;
+        clusterPageRaster ? (uint64_t(push.workCapacity) + 1u) * 16u + indexBytes : uint64_t(push.workCapacity) * 8u;
     const uint64_t sizes[]{gpuMaterials.size() * sizeof(ShadowMaterial), uint64_t(push.totalPages) * 32u + validReceiverMaskBytes + physicalHistoryBytes,
         coverage->inputBytes().size(), workBytes, 128 + (settings.collectGPUWork ?
             kVirtualShadowMapWorkloadSize + kVirtualShadowMapBuildDiagnosticSize : 0u) +
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
                 kVSMReceiverCoverageRecordWords * sizeof(uint32_t) : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants),
-        uint64_t(hybridDrawOffset + (clusterHybridRaster ? 2u * push.batchCount : 0u)) * 12u,
+        uint64_t(hybridDrawOffset + (twoPassHZB ? 6u : clusterHybridRaster ? 2u : 0u) * push.batchCount + 2u * hzbPageBatches) * 12u,
         remapUploadBytes + rectangleCapacity * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + receiverMaskWords + hierarchyWords + compactWords) * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, groupedFineRaster ? 16u : 8u, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
@@ -2144,7 +2214,28 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         cacheDiagnostics[kVSMHybridDepth] = lease->shaderIndex();
         cacheDiagnostics[kVSMHybridPageCount] = pageCount;
         cacheDiagnostics[kVSMHybridSubpixelBits] = caps.subPixelPrecisionBits;
-        cacheDiagnostics[kVSMHybridDrawOffset] = hybridDrawOffset;
+    }
+    cacheDiagnostics[kVSMHybridDrawOffset] = hybridDrawOffset;
+    if (twoPassHZB) {
+        const BufferDesc desc{.size = uint64_t(push.physicalPageCount) * kVSMRasterHZBWordsPerSlot * sizeof(float),
+            .structureStride = sizeof(float), .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device};
+        if (sharedPhysicalPool) {
+            auto& pyramid = poolFrame->storage->rasterHZB;
+            if (!pyramid) {
+                auto buffer = device.createBuffer(desc);
+                if (!buffer) { return std::unexpected(buffer.error()); }
+                pyramid = std::move(*buffer);
+            }
+            state->resources->rasterHZB = pyramid;
+        } else {
+            auto pyramid = pool_->buffer(23, desc, completion);
+            if (!pyramid) { return std::unexpected(pyramid.error()); }
+            state->resources->rasterHZB = std::move(*pyramid);
+        }
+        auto lease = state->registry->storageBuffer(*state->resources->rasterHZB);
+        if (!lease) { return std::unexpected(lease.error()); }
+        cacheDiagnostics[kVSMRasterHZB] = lease->shaderIndex();
+        state->leases.push_back(*lease);
     }
     auto diagnostics = pool_->buffer(12, {.size = sizeof(cacheDiagnostics), .structureStride = 4,
         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
@@ -2222,6 +2313,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift ||
         programs_->compactBuild != compactBuild || programs_->instanceBuild != instanceBuild || programs_->clusterPageRaster != clusterPageRaster ||
         programs_->pageWindowRaster != pageWindowRaster || programs_->clusterHybridRaster != clusterHybridRaster ||
+        programs_->twoPassHZB != twoPassHZB ||
         programs_->dirtyPageHierarchy != dirtyPageHierarchy ||
         programs_->receiverMask != receiverMask ||
         programs_->staticPageHZB != staticPageHZB ||
@@ -2247,6 +2339,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs->compactBuild = compactBuild;
         programs->clusterPageRaster = clusterPageRaster;
         programs->clusterHybridRaster = clusterHybridRaster;
+        programs->twoPassHZB = twoPassHZB;
         programs->pageWindowRaster = pageWindowRaster;
         programs->instanceBuild = instanceBuild;
         programs->dirtyPageHierarchy = dirtyPageHierarchy;
@@ -2261,7 +2354,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
             "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
             pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain", "vsmLODSelectMain",
-            "vsmHybridClearMain", "vsmHybridRasterMain"};
+            "vsmHybridClearMain", "vsmHybridRasterMain", "vsmBuildRasterHZBMain", "vsmRetestRasterHZBMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -2283,7 +2376,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             if (index == 18 && !staticPageHZB) { continue; }
             if (index == 20 && !groupedFineRaster) { continue; }
             if (index == 21 && !gpuLOD) { continue; }
-            if (index >= 22 && !clusterHybridRaster) { continue; }
+            if (index == 22 && !clusterHybridRaster) { continue; }
+            if (index == 23 && !classifyFine) { continue; }
+            if (index >= 24 && !twoPassHZB) { continue; }
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
@@ -2300,8 +2395,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             if (groupedFineRaster && (index == 0 || index == 3 || index == 4 || index == 20 || index == 23)) {
                 entryMacros.push_back({pageWindowRaster ? "VSM_PAGE_WINDOW_RASTER" : "VSM_CLUSTER_PAGE_RASTER", "1"});
             }
-            if (clusterHybridRaster && (index == 4 || index == 9 || index == 20 || index >= 22)) {
+            if (clusterHybridRaster && (index == 4 || index == 9 || index == 20 || index == 22 || index == 23 || index == 25)) {
                 entryMacros.push_back({"VSM_CLUSTER_HYBRID_RASTER", "1"});
+            }
+            if (twoPassHZB && (index == 0 || index == 4 || index == 20 || index >= 23)) {
+                entryMacros.push_back({"VSM_TWO_PASS_HZB", "1"});
             }
             if (dirtyPageHierarchy && (compactEntry || index == 16)) {
                 entryMacros.push_back({"VSM_DIRTY_PAGE_HIERARCHY", "1"});
@@ -2366,8 +2464,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
                 auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {programs->shaders[index].get()},
                     .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
                 if (!pipeline) { return std::unexpected(pipeline.error()); }
-                auto& destination = index == 21 ? programs->selectLOD : index == 22 ? programs->hybridClear : programs->hybridRaster;
-                destination = std::move(*pipeline);
+                const std::array destinations{&programs->selectLOD, &programs->hybridClear, &programs->hybridRaster,
+                    &programs->buildRasterHZB, &programs->retestRasterHZB};
+                *destinations[index - 21] = std::move(*pipeline);
             }
         }
         GraphicsPipelineDesc rasterDesc{.meshShader = {programs->shaders[6].get()},
@@ -2633,7 +2732,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         }
         if (auto r = barrier({3, 1, 9}, PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead); !r) { return std::unexpected(r.error()); }
         if (auto r = barrier({7}, PipelineStageBits::DrawIndirect, AccessBits::IndirectRead); !r) { return std::unexpected(r.error()); }
-        const auto rasterStages = clusterHybridRaster ? PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization :
+        const auto rasterStages = classifyFine ? PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization :
             PipelineStageBits::PreRasterization;
         if (auto r = barrier({4}, settings.collectGPUWork ? rasterStages : PipelineStageBits::ComputeShader);
             !r) { return std::unexpected(r.error()); }
@@ -2662,120 +2761,164 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             push.geometry = layered ? cacheDiagnostics[33 + layer] : fullGeometry;
             const uint32_t rasterLayer = staticPass ? 2u : (visibilityBatches ? 4u : 0u);
             const uint32_t drawOffset = mergeStatic && !staticPass ? mergeDrawOffset : 0u;
-            if (clusterHybridRaster && enabled) {
-                rasterGpu.next("VSM software cluster raster");
-                auto* scratch = state->resources->hybridDepth.get();
-                auto* work = state->resources->buffers[3].get();
-                // The next layer can overwrite scratch and the compacted indices
-                // after the restore fragments and packed mesh groups consume them.
-                const BufferBarrierDesc beginSoftware[]{
-                    {.buffer = scratch, .before = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader,
-                        AccessBits::ShaderRead | AccessBits::ShaderWrite}, .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}},
-                    {.buffer = work, .before = {rasterStages, AccessBits::ShaderRead | AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}},
-                    {.buffer = state->resources->buffers[7].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite},
-                        .range = {uint64_t(hybridDrawOffset + (staticPass ? push.batchCount : 0u)) * 12u, uint64_t(push.batchCount) * 12u}}};
-                if (auto r = commands.synchronize({.buffers = beginSoftware}); !r) { return r; }
-                push.rasterCoarse = rasterLayer;
-                const uint32_t scratchPages = hybridScratchPageCount(push.physicalPageCount, push.pageSize);
-                for (uint32_t base = 0; base < scratchPages; base += kDrawBatchSize) {
-                    push.workBase = base;
-                    if (auto r = commands.bindExecution(state->programs->hybridClear->execution(), &push, sizeof(push)); !r) { return r; }
-                    if (auto r = commands.dispatch(std::min(scratchPages - base, kDrawBatchSize)); !r) { return r; }
-                    ++computeDispatches;
-                }
-                const BufferBarrierDesc scratchCleared{.buffer = scratch, .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
-                if (auto r = commands.synchronize({.buffers = {&scratchCleared, 1}}); !r) { return r; }
-                for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
+            const uint32_t mainFineOffset = classifyFine ?
+                hybridDrawOffset + (staticPass ? push.batchCount : 0u) : drawOffset;
+            const bool retestHistory = twoPassHZB && reuse && enabled;
+            const auto dispatchBatches = [&](ComputePipeline& pipeline, uint32_t count, uint32_t offset) -> Result<> {
+                for (uint32_t batch = 0; batch < count; ++batch) {
                     push.workBase = batch * kDrawBatchSize;
-                    if (auto r = commands.bindExecution(state->programs->hybridRaster->execution(), &push, sizeof(push)); !r) { return r; }
-                    auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + batch) * 12, 12});
+                    if (auto r = commands.bindExecution(pipeline.execution(), &push, sizeof(push)); !r) { return r; }
+                    auto args = state->resources->buffers[7]->slice({uint64_t(offset + batch) * 12u, 12});
                     if (!args) { return std::unexpected(args.error()); }
                     if (auto r = commands.dispatchIndirect(*args); !r) { return r; }
                     ++computeDispatches;
                 }
-                const BufferBarrierDesc softwareReady[]{
-                    {.buffer = scratch, .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::FragmentShader, AccessBits::ShaderRead}},
-                    {.buffer = work, .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::PreRasterization, AccessBits::ShaderRead}},
-                    {.buffer = state->resources->buffers[7].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead}},
-                    {.buffer = state->resources->cacheDiagnostics.get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}},
-                    {.buffer = state->resources->buffers[4].get(), .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-                        .after = {PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}};
-                if (auto r = commands.synchronize({.buffers = softwareReady}); !r) { return r; }
+                return {};
+            };
+            // The same queue is consumed by mesh draws and then reused by the
+            // post classifier and by the following layer. Arguments are read by
+            // DrawIndirect while classifiers append to disjoint argument slices.
+            const auto syncTicketBuffers = [&]() -> Result<> {
+                const SyncScope before{PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite};
+                const SyncScope shaders{PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader,
+                    AccessBits::ShaderRead | AccessBits::ShaderWrite};
+                const BufferBarrierDesc buffers[]{
+                    {.buffer = state->resources->buffers[3].get(), .before = before, .after = shaders},
+                    {.buffer = state->resources->buffers[4].get(), .before = before, .after = shaders},
+                    {.buffer = state->resources->cacheDiagnostics.get(), .before = before, .after = shaders},
+                    {.buffer = state->resources->buffers[7].get(), .before = before,
+                        .after = {PipelineStageBits::ComputeShader | PipelineStageBits::DrawIndirect,
+                            AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::IndirectRead}}};
+                return commands.synchronize({.buffers = buffers});
+            };
+            const auto buildRasterHZB = [&](bool current) -> Result<> {
+                rasterGpu.next(current ? "VSM current page HZB" : "VSM history page HZB");
+                BufferBarrierDesc hzb{.buffer = state->resources->rasterHZB.get(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+                if (auto r = commands.synchronize({.buffers = {&hzb, 1}}); !r) { return r; }
+                const uint32_t maxPages = std::min(push.totalPages - 1u, push.physicalPageCount);
+                const uint32_t pageBatches = (maxPages + kDrawBatchSize - 1u) / kDrawBatchSize;
+                const uint32_t pageOffset = hybridDrawOffset + 6u * push.batchCount + (staticPass ? pageBatches : 0u);
+                push.rasterCoarse = rasterLayer | (current ? 8u : 0u);
+                if (auto r = dispatchBatches(*state->programs->buildRasterHZB, pageBatches, pageOffset); !r) { return r; }
+                push.rasterCoarse = rasterLayer;
+                hzb.before = hzb.after;
+                hzb.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
+                return commands.synchronize({.buffers = {&hzb, 1}});
+            };
+            push.rasterCoarse = rasterLayer;
+            if (classifyFine && enabled) {
+                if (auto r = syncTicketBuffers(); !r) { return r; }
+                if (retestHistory) {
+                    if (auto r = buildRasterHZB(false); !r) { return r; }
+                }
+                BufferBarrierDesc scratch{.buffer = state->resources->hybridDepth.get(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+                if (clusterHybridRaster) {
+                    rasterGpu.next("VSM software cluster raster");
+                    if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
+                    const uint32_t scratchPages = hybridScratchPageCount(push.physicalPageCount, push.pageSize);
+                    for (uint32_t base = 0; base < scratchPages; base += kDrawBatchSize) {
+                        push.workBase = base;
+                        if (auto r = commands.bindExecution(state->programs->hybridClear->execution(), &push, sizeof(push)); !r) { return r; }
+                        if (auto r = commands.dispatch(std::min(scratchPages - base, kDrawBatchSize)); !r) { return r; }
+                        ++computeDispatches;
+                    }
+                    scratch.before = scratch.after;
+                    scratch.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite};
+                    if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
+                } else { rasterGpu.next("VSM main cluster HZB cull"); }
+                if (auto r = dispatchBatches(*state->programs->hybridRaster, push.batchCount, drawOffset); !r) { return r; }
+                if (clusterHybridRaster) {
+                    scratch.before = scratch.after;
+                    scratch.after = {PipelineStageBits::FragmentShader, AccessBits::ShaderRead};
+                    if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
+                }
+                if (auto r = syncTicketBuffers(); !r) { return r; }
             }
-            const TextureBarrierDesc depthBegin{.texture = rasterTexture, .oldLayout = reuse || sharedPhysicalPool ? TextureLayout::ShaderRead : TextureLayout::Undefined,
-                .newLayout = TextureLayout::DepthStencilAttachment,
-                .before = {PipelineStageBits::AllCommands, reuse || sharedPhysicalPool ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
-                .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
-                .range = {0, 1, 0, rasterTexture->desc().layerCount}};
-            if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
-            const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
-            const RenderingAttachmentDesc attachment{.view = rasterView, .layout = TextureLayout::DepthStencilAttachment,
-                .loadOp = reuse || sharedPhysicalPool ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
-            if (!gpuProfiler) { commands.beginDebugLabel({.name = "VSM: dirty coarse and fine depth"}); }
-            if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment, .layerCount = rasterTexture->desc().layerCount}); !r) { return std::unexpected(r.error()); }
-            ++renderingPasses;
-            if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
-            commands.setScissor(area);
-            if (enabled) {
-                rasterGpu.next("VSM raster clear and restore");
-                if (clusterHybridRaster || reuse || sharedPhysicalPool || (layered && !staticPass)) {
-                    push.rasterCoarse = staticPass ? 2u : 0u;
-                    push.workBase = 0;
-                    if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                    if (clusterPageRaster && !sharedPhysicalPool) {
-                        auto args = state->resources->buffers[7]->slice({uint64_t(clearDrawOffset) * 12, 12});
+            const auto draw = [&](bool mainPass) -> Result<> {
+                const bool loadDepth = !mainPass || reuse || sharedPhysicalPool;
+                const TextureBarrierDesc depthBegin{.texture = rasterTexture, .oldLayout = loadDepth ? TextureLayout::ShaderRead : TextureLayout::Undefined,
+                    .newLayout = TextureLayout::DepthStencilAttachment,
+                    .before = {PipelineStageBits::AllCommands, loadDepth ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
+                    .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
+                    .range = {0, 1, 0, rasterTexture->desc().layerCount}};
+                if (auto r = commands.synchronize({.textures = {&depthBegin, 1}}); !r) { return std::unexpected(r.error()); }
+                const Rect area{.width = push.physicalPagesX * push.pageSize, .height = push.physicalPagesY * push.pageSize};
+                const RenderingAttachmentDesc attachment{.view = rasterView, .layout = TextureLayout::DepthStencilAttachment,
+                    .loadOp = loadDepth ? LoadOp::Load : LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0};
+                if (!gpuProfiler) { commands.beginDebugLabel({.name = mainPass ? "VSM: dirty coarse and fine depth" : "VSM: recovered fine depth"}); }
+                if (auto r = commands.beginRendering({.renderArea = area, .depthStencilAttachment = &attachment, .layerCount = rasterTexture->desc().layerCount}); !r) { return std::unexpected(r.error()); }
+                ++renderingPasses;
+                if (auto r = commands.setViewport({.width = float(area.width), .height = float(area.height), .maxDepth = 1}); !r) { return std::unexpected(r.error()); }
+                commands.setScissor(area);
+                if (enabled && mainPass) {
+                    rasterGpu.next("VSM raster clear and restore");
+                    if (clusterHybridRaster || reuse || sharedPhysicalPool || (layered && !staticPass)) {
+                        push.rasterCoarse = staticPass ? 2u : 0u;
+                        push.workBase = 0;
+                        if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                        if (clusterPageRaster && !sharedPhysicalPool) {
+                            auto args = state->resources->buffers[7]->slice({uint64_t(clearDrawOffset) * 12, 12});
+                            if (!args) { return std::unexpected(args.error()); }
+                            if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+                            ++meshDraws;
+                        } else {
+                            for (uint32_t base = 0; base < push.physicalPageCount; base += kDrawBatchSize) {
+                                push.workBase = base;
+                                if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                                if (auto r = commands.drawMeshTasks(std::min(kDrawBatchSize, push.physicalPageCount - base)); !r) { return std::unexpected(r.error()); }
+                                ++meshDraws;
+                            }
+                        }
+                    }
+                    rasterGpu.next("VSM raster coarse");
+                    push.rasterCoarse = rasterLayer | 1u;
+                    for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
+                        push.workBase = batch * kDrawBatchSize;
+                        if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                        auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + push.batchCount + batch) * 12, 12});
                         if (!args) { return std::unexpected(args.error()); }
                         if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
                         ++meshDraws;
-                    } else {
-                        for (uint32_t base = 0; base < push.physicalPageCount; base += kDrawBatchSize) {
-                            push.workBase = base;
-                            if (auto r = commands.bindExecution(state->programs->clear->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                            if (auto r = commands.drawMeshTasks(std::min(kDrawBatchSize, push.physicalPageCount - base)); !r) { return std::unexpected(r.error()); }
-                            ++meshDraws;
-                        }
                     }
                 }
-                rasterGpu.next("VSM raster coarse");
-                push.rasterCoarse = rasterLayer | 1u;
-                for (uint32_t batch = 0; batch < push.coarseBatchCount; ++batch) {
-                    push.workBase = batch * kDrawBatchSize;
-                    if (auto r = commands.bindExecution(state->programs->raster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                    auto args = state->resources->buffers[7]->slice({uint64_t(drawOffset + push.batchCount + batch) * 12, 12});
-                    if (!args) { return std::unexpected(args.error()); }
-                    if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
-                    ++meshDraws;
+                if (enabled) {
+                    rasterGpu.next(mainPass ? "VSM raster fine" : "VSM post raster fine");
+                    push.rasterCoarse = rasterLayer;
+                    const auto& fineRaster = groupedFineRaster ? state->programs->packedRaster : state->programs->raster;
+                    const uint32_t fineDrawOffset = mainPass ? mainFineOffset : mainFineOffset + 4u * push.batchCount;
+                    for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
+                        push.workBase = batch * kDrawBatchSize;
+                        if (auto r = commands.bindExecution(fineRaster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
+                        auto args = state->resources->buffers[7]->slice({uint64_t(fineDrawOffset + batch) * 12, 12});
+                        if (!args) { return std::unexpected(args.error()); }
+                        if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
+                        ++meshDraws;
+                    }
                 }
-                rasterGpu.next("VSM raster fine");
-                push.rasterCoarse = rasterLayer;
-                const auto& fineRaster = groupedFineRaster ? state->programs->packedRaster : state->programs->raster;
-                const uint32_t fineDrawOffset = clusterHybridRaster ?
-                    hybridDrawOffset + (staticPass ? push.batchCount : 0u) : drawOffset;
-                for (uint32_t batch = 0; batch < push.batchCount; ++batch) {
-                    push.workBase = batch * kDrawBatchSize;
-                    if (auto r = commands.bindExecution(fineRaster->execution(), &push, sizeof(push)); !r) { return std::unexpected(r.error()); }
-                    auto args = state->resources->buffers[7]->slice({uint64_t(fineDrawOffset + batch) * 12, 12});
-                    if (!args) { return std::unexpected(args.error()); }
-                    if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return std::unexpected(r.error()); }
-                    ++meshDraws;
-                }
+                rasterGpu.next("VSM raster publish");
+                commands.endRendering();
+                if (!gpuProfiler) { commands.endDebugLabel(); }
+                const TextureBarrierDesc atlasReady{.texture = rasterTexture,
+                    .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
+                    .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
+                    .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead},
+                    .range = {0, 1, 0, rasterTexture->desc().layerCount}};
+                return commands.synchronize({.textures = {&atlasReady, 1}});
+            };
+            if (auto r = draw(true); !r) { return r; }
+            if (retestHistory) {
+                if (auto r = syncTicketBuffers(); !r) { return r; }
+                if (auto r = buildRasterHZB(true); !r) { return r; }
+                rasterGpu.next("VSM post cluster HZB retest");
+                if (auto r = dispatchBatches(*state->programs->retestRasterHZB, push.batchCount,
+                    mainFineOffset + 2u * push.batchCount); !r) { return r; }
+                if (auto r = syncTicketBuffers(); !r) { return r; }
+                if (auto r = draw(false); !r) { return r; }
             }
-            rasterGpu.next("VSM raster publish");
-            commands.endRendering();
-            if (!gpuProfiler) { commands.endDebugLabel(); }
-            const TextureBarrierDesc atlasReady{.texture = rasterTexture,
-                .oldLayout = TextureLayout::DepthStencilAttachment, .newLayout = TextureLayout::ShaderRead,
-                .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilWrite},
-                .after = {PipelineStageBits::ComputeShader | PipelineStageBits::FragmentShader, AccessBits::ShaderRead},
-                .range = {0, 1, 0, rasterTexture->desc().layerCount}};
-            if (auto r = commands.synchronize({.textures = {&atlasReady, 1}}); !r) { return std::unexpected(r.error()); }
             rasterGpu.end();
             layerGpu.end();
             if (staticPass && staticPageHZB) {
@@ -3349,6 +3492,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
             if (state_->resources->staticAtlas) { addAtlas(state_->resources->staticAtlas->texture.get(), state_->push.pageSize, true); }
             addBuffer(state_->resources->staticHZB.get());
             addBuffer(state_->resources->hybridDepth.get());
+            addBuffer(state_->resources->rasterHZB.get());
         }
         addBuffer(state_->resources->cacheDiagnostics.get());
         addBuffer(state_->resources->lodContext.get());

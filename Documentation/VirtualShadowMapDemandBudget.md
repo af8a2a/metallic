@@ -46,6 +46,16 @@ GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view �
 
 `virtual_shadow_map_cluster_hybrid_raster` 将混合路径与纯硬件逐页对照，检查 D32、投影可见性和实际提交的细页 mesh 工作组。Sponza 的 960×540 双层硬阴影对照使用 32 像素页、每轴 16 个虚页、2048 个物理页。第 0 帧冷启动、第 50 帧移动相机和第 63 帧缓存复用的阴影、HDR 与最终画面逐字节一致。冷帧细页硬件工作组由 229800 减到 54575，移动帧由 21516 减到 11563。这些数字是工作组计数。
 
+## 通用两阶段 HZB 遮挡剔除
+
+在 `VirtualShadowMapLightsPass` 或独立 `VirtualShadowMapPass` 上设置 `twoPassHZB=true`，可对各灯面的细页启用两阶段 cluster 遮挡剔除。该选项默认关闭。启用时使用按 cluster/page 打包的 Build，可与 `clusterHybridRaster` 同时使用。设备需要支持计算着色器 subgroup ballot 和算术操作。含位移几何的 caster 批次沿用原有光栅路径。
+
+主阶段在清页之前，从将要重绘的细页生成反向深度最小值金字塔。只有历史虚页与当前页对应到同一物理槽，历史深度才可用于推迟 ticket。主阶段光栅结束后，GPU 从同一灯面、同一光栅层的当前 D32 深度重建金字塔，复测推迟队列。仍被遮挡的 ticket 可跳过，重新暴露的 ticket 在当前帧以间接硬件 mesh draw 补画。粗页和不能保守判定的边界继续直接绘制。分层模式分别处理静态层与合成层，静态深度增量合并页保留原有语义。
+
+每个物理槽的金字塔有 8×8、4×4、2×2 和 1×1 四层，共 340 字节。共享池的所有灯面复用这份缓冲，两次构建使用同一份存储。每面另有紧凑的硬件和推迟 ticket 索引、脏页列表与间接参数。启用 `benchmarkGPUWork` 后，私有 cache diagnostics 的字 59–61 依次记录推迟、最终剔除和补画的 ticket 数，可按 `推迟 = 剔除 + 补画` 核对。`virtual_shadow_map_two_pass_hzb` 用逐页 D32 和投影可见性验证遮挡物移开当帧的结果。
+
+OpenPBR 的 641×361 实景对照包含 4 盏灯、9 个灯面，运行 16 帧。关闭和开启 `twoPassHZB` 时，第 0、8、9、12、15 帧的阴影、HDR、主视图深度、可见性和最终画面逐字节一致。移动 caster 的第 9、12 帧，细页硬件 mesh 工作组分别从 111828 降至 86410、从 110139 降至 94779。这里统计的是光栅工作量。见[实景对照](../build/vsm-two-pass-hzb/Comparison.json)和[遮挡恢复回归](../build/vsm-two-pass-hzb/regression/VirtualShadowMapTwoPassHZB/Report.json)。
+
 ## 图集与统计范围
 
 共享深度图集为 `Texture2DArray`，最多 262144 个逻辑槽。容量不超过 4096 时，单层网格为 `X=ceil(sqrt(capacity))`、`Y=ceil(capacity/X)`；更大时每层固定 64×64 页，层数向上取整。`pageSize=128` 时单层最大为 8192×8192。所有灯使用同一 viewport 与层网格；mapping 保存全局 physical slot。静态分层使用同样布局的第二张图集；static HZB 按最多 4096 页一个 buffer bank 寻址。

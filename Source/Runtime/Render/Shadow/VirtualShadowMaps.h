@@ -88,6 +88,7 @@ struct VirtualShadowMapSettings
     bool pageWindowRaster = false; // Share directional fine geometry across bounded page windows.
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.
     bool clusterHybridRaster = false; // Route eligible fine cluster/page work to software depth rasterization.
+    bool twoPassHZB = false; // Defer history-occluded fine tickets and retest after the main raster.
     bool instanceBuild = false; // Directional instance culling and indirect fine Build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.
     bool shadowLOD = false; // GPU hierarchy cuts for each face's clipmap/mip and coarse view.

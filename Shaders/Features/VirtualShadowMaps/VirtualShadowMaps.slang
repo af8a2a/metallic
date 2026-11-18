@@ -59,7 +59,10 @@ __include "VirtualShadowMaps/ClusterCulling.slang";
 __include "VirtualShadowMaps/BuildWork.slang";
 __include "VirtualShadowMaps/PageFinalize.slang";
 __include "VirtualShadowMaps/ShadowRaster.slang";
-#if VSM_CLUSTER_HYBRID_RASTER
+#if VSM_TWO_PASS_HZB
+__include "VirtualShadowMaps/RasterHZB.slang";
+#endif
+#if VSM_CLUSTER_HYBRID_RASTER || VSM_TWO_PASS_HZB
 __include "VirtualShadowMaps/HybridRaster.slang";
 #endif
 __include "VirtualShadowMaps/ShadowProjection.slang";

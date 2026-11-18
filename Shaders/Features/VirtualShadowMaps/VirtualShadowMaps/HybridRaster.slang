@@ -8,16 +8,43 @@ implementing VirtualShadowMaps;
 #define VSM_WORKLOAD_DIAGNOSTICS 0
 #endif
 
-uint vsmHybridDepthAddress(uint slot, uint2 texel, ShadowPush push)
-{
-    return (slot * push.pageSize + texel.y) * push.pageSize + texel.x;
-}
-
-// Packed tickets stay immutable until both raster layers finish. Each layer
-// reuses the uint queue directly following the last allocated uint4 ticket.
+// Packed tickets stay immutable. The mesh queue follows the uint4 tickets,
+// followed by a disjoint queue of history-occluded tickets for HZB retest.
 uint vsmHardwareTicketByteOffset(uint index, ShadowPush push)
 {
     return (1u + push.workCapacity) * 16u + index * 4u;
+}
+
+static const uint kVSMMainDraw = 0u, kVSMDeferredRetest = 1u, kVSMRecoveredDraw = 2u;
+
+void vsmQueueRasterTicket(ShadowPush push, uint ticketIndex, uint stage)
+{
+    uint layer = (push.rasterCoarse >> 1u) & 1u;
+    uint index;
+#if VSM_TWO_PASS_HZB
+    if (stage != kVSMMainDraw) {
+        RWStructuredBuffer<uint> counters = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.sampleReserved));
+        uint counter = stage == kVSMDeferredRetest ? kVSMHZBDeferredCount : kVSMHZBPostCount;
+        InterlockedAdd(counters[counter + layer], 1u, index);
+    } else
+#endif
+    {
+        RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+        if (layer != 0u) { InterlockedAdd(work[0].z, 1u, index); }
+        else { InterlockedAdd(work[0].y, 1u, index); }
+    }
+    RWByteAddressBuffer queue = resolveUniform(ResourceHandle<RWByteAddressBuffer>(push.workItems));
+    uint queueIndex = index + (stage == kVSMDeferredRetest ? push.workCapacity : 0u);
+    queue.Store(vsmHardwareTicketByteOffset(queueIndex, push), ticketIndex);
+    uint batch = vsmCacheMetadata(push, kVSMHybridDrawOffset) + (2u * stage + layer) * push.batchCount + index / 65535u;
+    RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
+    InterlockedAdd(arguments[batch * 3u], 1u);
+}
+
+#if VSM_CLUSTER_HYBRID_RASTER
+uint vsmHybridDepthAddress(uint slot, uint2 texel, ShadowPush push)
+{
+    return (slot * push.pageSize + texel.y) * push.pageSize + texel.x;
 }
 
 [shader("compute")]
@@ -117,6 +144,7 @@ uint vsmSoftwareTriangle(VSMSoftwareVertex a, VSMSoftwareVertex b, VSMSoftwareVe
 
 groupshared uint gVsmHybridCandidate;
 groupshared uint gVsmHybridMasked;
+#endif
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
@@ -131,22 +159,41 @@ void vsmHybridRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     ShadowPush push;
     if (!vsmBatchComputePush(group, batchPush, push)) { return; }
 #endif
-    RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+    StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint ticketIndex = 1u + push.workBase + group.x;
     uint4 ticket = work[ticketIndex];
     uint firstTriangle = ticket.x;
     if (lane == 0u) {
         StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
         uint4 page = pages[ticket.y];
-        bool eligible = false;
-        if (vsmRasterClearsEntry(page, push.rasterCoarse) && page.x < vsmCacheMetadata(push, kVSMHybridPageCount)) {
-            StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-            eligible = vsmHybridClusterFits(firstTriangle, projections[page.z], push);
+#if VSM_TWO_PASS_HZB
+        if (vsmRasterTicketOccluded(ticket, page, push)) {
+            vsmQueueRasterTicket(push, ticketIndex, kVSMDeferredRetest);
+#if VSM_WORKLOAD_DIAGNOSTICS
+            vsmCacheAdd(push, kVSMHZBDeferredTickets, 1u);
+#endif
+#if VSM_CLUSTER_HYBRID_RASTER
+            gVsmHybridCandidate = 2u;
+#endif
+        } else
+#endif
+        {
+#if VSM_CLUSTER_HYBRID_RASTER
+            bool eligible = false;
+            if (vsmRasterClearsEntry(page, push.rasterCoarse) && page.x < vsmCacheMetadata(push, kVSMHybridPageCount)) {
+                StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+                eligible = vsmHybridClusterFits(firstTriangle, projections[page.z], push);
+            }
+            gVsmHybridCandidate = uint(eligible);
+            gVsmHybridMasked = 0u;
+#else
+            vsmQueueRasterTicket(push, ticketIndex, kVSMMainDraw);
+#endif
         }
-        gVsmHybridCandidate = uint(eligible);
-        gVsmHybridMasked = 0u;
     }
+#if VSM_CLUSTER_HYBRID_RASTER
     GroupMemoryBarrierWithGroupSync();
+    if (gVsmHybridCandidate == 2u) { return; }
     uint bits = ticket.z != 0u ? ticket.z : ticket.w;
     uint quarter = (ticket.z != 0u ? 0u : 32u) + ((bits & 0xffffu) != 0u ? 0u : 16u);
     bool active = lane < 16u && (((bits >> (quarter & 31u)) >> lane) & 1u) != 0u;
@@ -165,15 +212,7 @@ void vsmHybridRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     bool softwareRoute = gVsmHybridCandidate != 0u && gVsmHybridMasked == 0u;
     if (lane == 0u) {
         if (!softwareRoute) {
-            uint index;
-            bool staticPass = (push.rasterCoarse & 2u) != 0u;
-            if (staticPass) { InterlockedAdd(work[0].z, 1u, index); }
-            else { InterlockedAdd(work[0].y, 1u, index); }
-            RWByteAddressBuffer queue = resolveUniform(ResourceHandle<RWByteAddressBuffer>(push.workItems));
-            queue.Store(vsmHardwareTicketByteOffset(index, push), ticketIndex);
-            uint batch = vsmCacheMetadata(push, kVSMHybridDrawOffset) + (staticPass ? push.batchCount : 0u) + index / 65535u;
-            RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
-            InterlockedAdd(arguments[batch * 3u], 1u);
+            vsmQueueRasterTicket(push, ticketIndex, kVSMMainDraw);
         }
 #if VSM_WORKLOAD_DIAGNOSTICS
         vsmCacheAdd(push, softwareRoute ? kVSMHybridSoftwareTickets : kVSMHybridHardwareTickets, 1u);
@@ -194,4 +233,35 @@ void vsmHybridRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 #if VSM_WORKLOAD_DIAGNOSTICS
     vsmCacheAdd(push, kVSMHybridCoveredSamples, covered);
 #endif
+#endif
 }
+
+#if VSM_TWO_PASS_HZB
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void vsmRetestRasterHZBMain(uint3 group : SV_GroupID,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
+{
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+#endif
+    ByteAddressBuffer queue = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
+    uint ticketIndex = queue.Load(vsmHardwareTicketByteOffset(push.workCapacity + push.workBase + group.x, push));
+    StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    uint4 ticket = work[ticketIndex];
+    bool occluded = vsmRasterTicketOccluded(ticket, pages[ticket.y], push);
+    if (!occluded) { vsmQueueRasterTicket(push, ticketIndex, kVSMRecoveredDraw); }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    vsmCacheAdd(push, occluded ? kVSMHZBRejectedTickets : kVSMHZBRecoveredTickets, 1u);
+#if VSM_CLUSTER_HYBRID_RASTER
+    if (!occluded) { vsmCacheAdd(push, kVSMHybridHardwareTickets, 1u); }
+#endif
+#endif
+}
+#endif

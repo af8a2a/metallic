@@ -155,6 +155,8 @@ bool vsmRasterPageLayerActive(inout uint triangleIndex, uint4 page, ShadowPush p
     return layerPageActive && vsmLODSelected(push, triangleIndex, page.z);
 }
 
+#endif
+
 float4 vsmDirectionalPageBounds(uint virtualPage, inout ShadowProjection projection)
 {
     uint local = virtualPage - projection.page.x;
@@ -167,7 +169,6 @@ float4 vsmDirectionalPageBounds(uint virtualPage, inout ShadowProjection project
     projection.rowY.w = -center.y * (2.0 * halfPage);
     return float4(-halfPage, -halfPage, halfPage, halfPage);
 }
-#endif
 
 // Fine packed and single-triangle raster must produce the same fan, UVs and
 // canonical page coordinates, including for alpha-masked materials.
@@ -222,17 +223,7 @@ uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, boo
         ShadowProjection projection = projections[page.z];
         bounds = vsmPageBounds(virtualPage, projection);
         if (projection.metric.w < 0.5 && (push.rasterCoarse & 1u) == 0u) {
-            uint local = virtualPage - projection.page.x;
-            uint2 pageXY = uint2(local % projection.page.y, local / projection.page.y);
-            // Directional originNear.xy carries the snapped page-grid
-            // origin. Form a canonical world-page translation before the
-            // vertex dot product: subtracting rolling clipmap bounds after
-            // projection changes clipping/depth rounding in cached pages.
-            float2 center = projection.originNear.xy + float2(pageXY) + 0.5 - 0.5 * float(projection.page.y);
-            float halfPage = 1.0 / float(projection.page.y);
-            projection.rowX.w = -center.x * (2.0 * halfPage);
-            projection.rowY.w = -center.y * (2.0 * halfPage);
-            bounds = float4(-halfPage, -halfPage, halfPage, halfPage);
+            bounds = vsmDirectionalPageBounds(virtualPage, projection);
         }
         bool inside = skipInteriorClip;
         for (uint i = 0u; i < 3u; ++i) {
@@ -362,7 +353,7 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
 #endif
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint packedIndex = push.workBase + group.x;
-#if VSM_CLUSTER_HYBRID_RASTER
+#if VSM_CLUSTER_HYBRID_RASTER || VSM_TWO_PASS_HZB
     ByteAddressBuffer queue = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
     uint ticketIndex = queue.Load(vsmHardwareTicketByteOffset(packedIndex, push));
 #else

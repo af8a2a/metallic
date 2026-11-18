@@ -64,6 +64,15 @@ static const uint32_t kVSMHybridSoftwareTickets = 54;
 static const uint32_t kVSMHybridHardwareTickets = 55;
 static const uint32_t kVSMHybridCoveredSamples = 56;
 static const uint32_t kVSMHybridDrawOffset = 57; // First composite HW indirect triple; static follows one fine batch range later.
+static const uint32_t kVSMRasterHZB = 58;
+static const uint32_t kVSMHZBDeferredTickets = 59;
+static const uint32_t kVSMHZBRejectedTickets = 60;
+static const uint32_t kVSMHZBRecoveredTickets = 61;
+// Live queue counters for the composite and static layers, independent of diagnostics.
+static const uint32_t kVSMHZBDeferredCount = 62;
+static const uint32_t kVSMHZBPostCount = 64;
+static const uint32_t kVSMHZBPageCount = 66;
+static const uint32_t kVSMRasterHZBWordsPerSlot = 85; // 8x8, 4x4, 2x2, 1x1.
 
 static const uint32_t kVSMCacheReasonCacheDisabled = 1u << 0;
 static const uint32_t kVSMCacheReasonCold = 1u << 1;

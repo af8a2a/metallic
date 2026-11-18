@@ -169,6 +169,7 @@ public:
             runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", true),
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
             runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
+            runtimeBoolSetting("twoPassHZB", "Two-Pass Shadow HZB", false),
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
@@ -325,6 +326,7 @@ public:
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
         settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
+        settings.twoPassHZB = boolProperty(&properties, "twoPassHZB", settings.twoPassHZB);
         settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
