@@ -20,6 +20,11 @@ void vsmSharedPoolPrepareMain(uint lane : SV_GroupIndex, uniform VirtualShadowMa
     for (uint physical = lane; physical < push.capacity; physical += 256u) {
         metadata[1u + push.faceCount + physical] = uint4(0u);
     }
+    uint clearHeaderQuad = vsmSharedPoolClearHeaderQuad(push.faceCount, push.capacity);
+    uint clearInitCount = 1u + 2u * vsmSharedPoolClearBatches(push.capacity);
+    for (uint i = lane; i < clearInitCount; i += 256u) {
+        metadata[clearHeaderQuad + i] = (i == 0u) ? uint4(0u) : uint4(0u, 1u, 1u, 0u);
+    }
     if (lane == 0u) {
         metadata[0] = uint4(push.faceCount, push.capacity, push.jobs, push.frameIndex);
         if (push.faceCount == 0u) { return; }

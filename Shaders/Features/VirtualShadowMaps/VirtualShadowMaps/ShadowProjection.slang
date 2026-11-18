@@ -145,6 +145,9 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, inout VSMProjectionReceiver r
     // Any fine-work overflow invalidates the entire partial fine atlas. The
     // independent coarse draw always traverses every caster slot.
     bool allowClipmaps = statistics[5] == 0u;
+#if VSM_DIRECTIONAL_PROJECTION
+    bool ownReceiverMapping = false;
+#endif
     if (allowClipmaps) {
         for (uint level = receiverLevel; level < push.clipmapCount; ++level) {
             ShadowProjection projection = vsmGetCachedProjection(projections, level, useGroupCache);
@@ -154,9 +157,17 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, inout VSMProjectionReceiver r
             uint2 texel = vsmVirtualTexel(p, projection, push.pageSize);
             uint page = vsmVirtualPage(texel, projection, push.pageSize);
             uint mappedPhysical, mappedLevel;
+#if VSM_DIRECTIONAL_PROJECTION
+            bool isOwnMapping;
+            if (vsmLookupPropagated(position, float2(projection.rowX.w, projection.rowY.w),
+                    page, p, texel, projections, pages, push, level,
+                    mappedPhysical, mappedLevel, isOwnMapping, useGroupCache)) {
+                if (level == receiverLevel && isOwnMapping) { ownReceiverMapping = true; }
+#else
             if (vsmLookupPropagated(position, float2(projection.rowX.w, projection.rowY.w),
                     page, p, texel, projections, pages, push, level,
                     mappedPhysical, mappedLevel, useGroupCache)) {
+#endif
                 if (mappedLevel == push.clipmapCount) { break; }
                 physicalPage = mappedPhysical; selectedLevel = mappedLevel;
                 projected = p; virtualTexel = texel;
@@ -203,13 +214,19 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, inout VSMProjectionReceiver r
         }
         debugValue = float4(float(selectedLevel + 1u) / float(push.clipmapCount), 0.5, 0.0, 1.0);
     }
-    ShadowProjection projection = vsmGetCachedProjection(projections, selectedLevel, useGroupCache);
     if (push.filterMode != 0u) {
         ShadowPush trace = push;
         trace.rayLength = receiver.searchLength;
+#if VSM_DIRECTIONAL_PROJECTION
+        visibility = vsmFilterVisibilityDirectional(position, normal, receiverLevel, id.xy,
+            allowClipmaps, ownReceiverMapping, virtualTexel, physicalPage,
+            projections, trace, filterCounts, useGroupCache);
+#else
         visibility = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, trace, filterCounts, useGroupCache);
+#endif
         return true;
     }
+    ShadowProjection projection = vsmGetCachedProjection(projections, selectedLevel, useGroupCache);
     float compareDepth;
 #if !VSM_DIRECTIONAL_PROJECTION
     if (projection.metric.w > 0.5) {

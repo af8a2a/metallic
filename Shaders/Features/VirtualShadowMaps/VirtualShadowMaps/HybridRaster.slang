@@ -51,7 +51,16 @@ uint vsmHybridDepthAddress(uint slot, uint2 texel, ShadowPush push)
 [numthreads(64, 1, 1)]
 void vsmHybridClearMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ShadowPush clearPush)
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ByteAddressBuffer poolBytes = resolveUniform(ResourceHandle<ByteAddressBuffer>(clearPush.physicalPool));
+    uint2 poolHeader = poolBytes.Load2(0u);
+    uint staticLayer = (clearPush.rasterCoarse & 2u) != 0u ? 1u : 0u;
+    uint listByte = vsmSharedPoolClearListQuad(poolHeader.x, poolHeader.y) * 16u +
+        (staticLayer * poolHeader.y + clearPush.workBase + group.x) * 4u;
+    uint slot = poolBytes.Load(listByte);
+#else
     uint slot = clearPush.workBase + group.x;
+#endif
     if (slot >= vsmCacheMetadata(clearPush, kVSMHybridPageCount)) { return; }
     ShadowPush push;
     if (!vsmRasterClearsPage(slot, clearPush, push)) { return; }

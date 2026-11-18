@@ -70,7 +70,7 @@ struct VSMDirectionalRayState
 };
 
 VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
-    ShadowProjection first, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel)
+    ShadowProjection first, bool allowClipmaps, ShadowPush push, uint receiverLevel)
 {
     VSMDirectionalRayBase rayBase;
     rayBase.comparisonOrigin = vsmProjectPosition(position, first);
@@ -84,8 +84,7 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
     float receiverResolution = float(push.virtualPagesPerAxis * push.pageSize);
     rayBase.halfReceiverResolution = 0.5 * receiverResolution;
     rayBase.receiverMarginMax = 1.0 - (1.0 / receiverResolution);
-    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
-    rayBase.allowClipmaps = statistics[5] == 0u;
+    rayBase.allowClipmaps = allowClipmaps;
     bool isPow2PhysicalX = (push.physicalPagesX & (push.physicalPagesX - 1u)) == 0u && push.physicalPagesX != 0u;
     bool isPow2VirtualPages = (push.virtualPagesPerAxis & (push.virtualPagesPerAxis - 1u)) == 0u && push.virtualPagesPerAxis != 0u;
 #if VSM_PROJECTION_PAGE_SHIFT >= 0
@@ -101,6 +100,13 @@ VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
     rayBase.physicalPagesXMask = isPow2PhysicalX ? (push.physicalPagesX - 1u) : 0u;
     rayBase.virtualPagesPerAxisShift = isPow2VirtualPages ? uint(firstbitlow(push.virtualPagesPerAxis)) : 0u;
     return rayBase;
+}
+
+VSMDirectionalRayBase vsmCreateDirectionalRayBase(float3 position,
+    ShadowProjection first, StructuredBuffer<uint4> pages, ShadowPush push, uint receiverLevel)
+{
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    return vsmCreateDirectionalRayBase(position, first, statistics[5] == 0u, push, receiverLevel);
 }
 
 VSMDirectionalRayState vsmCreateDirectionalRayState(float3 position, float3 endpoint, float3 dither,

@@ -21,6 +21,21 @@ implementing VirtualShadowMaps;
 #define VSM_BATCHED_BUILD_RASTER 0
 #endif
 
+#if VSM_BATCHED_BUILD_RASTER
+void vsmQueueBatchedClearPage(uint physicalPage, uint staticLayer, ShadowPush push)
+{
+    RWByteAddressBuffer poolBytes = resolveUniform(ResourceHandle<RWByteAddressBuffer>(push.physicalPool));
+    uint2 header = poolBytes.Load2(0u);
+    uint headerByte = vsmSharedPoolClearHeaderQuad(header.x, header.y) * 16u;
+    uint index;
+    poolBytes.InterlockedAdd(headerByte + staticLayer * 4u, 1u, index);
+    uint listByte = vsmSharedPoolClearListQuad(header.x, header.y) * 16u + (staticLayer * header.y + index) * 4u;
+    poolBytes.Store(listByte, physicalPage);
+    uint argByte = vsmSharedPoolClearArgumentQuad(header.x, header.y, staticLayer, index / 65535u) * 16u;
+    poolBytes.InterlockedAdd(argByte, 1u);
+}
+#endif
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
@@ -110,6 +125,14 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
                 vsmCacheAdd(push, id.x == coarsePage ? kVSMCacheStaticDirtyCoarsePages : kVSMCacheStaticDirtyFinePages, 1u);
             }
             pages[id.x] = entry;
+#if VSM_BATCHED_BUILD_RASTER
+            if (entry.x != 0xffffffffu) {
+                if ((entry.w & 2u) != 0u) { vsmQueueBatchedClearPage(entry.x, 0u, push); }
+                if ((push.cacheMode & 16u) != 0u && (entry.w & (8u | kVSMPageMergeStatic)) == 8u) {
+                    vsmQueueBatchedClearPage(entry.x, 1u, push);
+                }
+            }
+#endif
 #if VSM_TWO_PASS_HZB
             // Both HZB builds consume this list. A warm face emits no page
             // groups. New/reassigned slots on reuse frames get a zero history.
@@ -175,26 +198,28 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
 
 // Projection-only metadata follows the unchanged residency/ownership prefix.
 // Finalize must publish all validity bits before this independent dispatch.
-void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
+uint4 vsmComputePropagatedMapping(uint index, ShadowPush push, RWStructuredBuffer<uint4> pages)
 {
-    if (id.x >= push.totalPages) { return; }
-    RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
-    pages[push.totalPages + id.x] = uint4(0xffffffffu, push.clipmapCount, 0u, 0u);
-    if (id.x == push.totalPages - 1u) { return; }
-    uint axis = push.virtualPagesPerAxis, stride = axis * axis;
-    uint level = id.x / stride, local = id.x % stride;
-    uint4 entry = pages[id.x];
+    const uint4 unmapped = uint4(0xffffffffu, push.clipmapCount, 0u, 0u);
+    if (index == push.totalPages - 1u) { return unmapped; }
+    uint axis = push.virtualPagesPerAxis;
+    bool pow2Axis = axis != 0u && (axis & (axis - 1u)) == 0u;
+    uint axisShift = pow2Axis ? uint(firstbitlow(axis)) : 0u;
+    uint axisMask = axis - 1u;
+    uint stride = pow2Axis ? (1u << (2u * axisShift)) : (axis * axis);
+    uint level = pow2Axis ? (index >> (2u * axisShift)) : (index / stride);
+    uint local = pow2Axis ? (index & (stride - 1u)) : (index % stride);
+    uint4 entry = pages[index];
     if (entry.x != 0xffffffffu && (entry.y & 2u) != 0u && (entry.w & 1u) != 0u) {
         uint address = push.lightType == 0u ?
             vsmPackDirectionalMappingAddress(level, entry.x, push.physicalPagesX) : level;
-        pages[push.totalPages + id.x] = uint4(entry.x, address, 0u, 1u);
-        return;
+        return uint4(entry.x, address, 0u, 1u);
     }
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     ShadowProjection source = projections[level];
     if (push.lightType != 0u) {
         uint sourceAxis = source.page.y;
-        if ((sourceAxis & (sourceAxis - 1u)) != 0u || local >= sourceAxis * sourceAxis) { return; }
+        if ((sourceAxis & (sourceAxis - 1u)) != 0u || local >= sourceAxis * sourceAxis) { return unmapped; }
         uint2 sourcePage = uint2(local % sourceAxis, local / sourceAxis);
         uint target = push.clipmapCount, physical = 0xffffffffu;
         for (uint next = level + 1u; next < push.clipmapCount; ++next) {
@@ -202,7 +227,7 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
             ShadowProjection parent = projections[next];
             if (parent.page.y != max(1u, sourceAxis >> delta) ||
                 any(parent.rowX != source.rowX) || any(parent.rowY != source.rowY) ||
-                any(parent.rowZ != source.rowZ) || any(parent.rowW != source.rowW)) { return; }
+                any(parent.rowZ != source.rowZ) || any(parent.rowW != source.rowW)) { return unmapped; }
             // Local projections share identical normalized coordinates and
             // inclusive containment. Scaling their nonnegative address by a
             // power of two commutes with floor, including upper-edge clamping.
@@ -213,12 +238,11 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
                 break;
             }
         }
-        pages[push.totalPages + id.x] = uint4(physical, target, 0u, 3u);
-        return;
+        return uint4(physical, target, 0u, 3u);
     }
-    if (axis < 2u || (axis & (axis - 1u)) != 0u) { return; }
-    if (any(abs(source.originNear.xy) >= 67108864.0)) { return; }
-    int2 basePage = int2(local % axis, local / axis) + int2(source.originNear.xy) - int(axis / 2u);
+    if (axis < 2u || !pow2Axis) { return unmapped; }
+    if (any(abs(source.originNear.xy) >= 67108864.0)) { return unmapped; }
+    int2 basePage = int2(local & axisMask, local >> axisShift) + int2(source.originNear.xy) - int(axis / 2u);
     uint packedParentPage = 0u;
     uint address = push.clipmapCount, physicalPage = 0xffffffffu;
     for (uint next = level + 1u; next < push.clipmapCount; ++next) {
@@ -228,12 +252,12 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
         if (any(abs(parent.originNear.xy) >= 67108864.0) ||
             any(parent.rowX.xyz != source.rowX.xyz * scale) ||
             any(parent.rowY.xyz != source.rowY.xyz * scale) ||
-            any(parent.rowZ != source.rowZ)) { return; }
+            any(parent.rowZ != source.rowZ)) { return unmapped; }
         int2 parentPage = (basePage >> delta) - int2(parent.originNear.xy) + int(axis / 2u);
         if (any(parentPage < 0) || any(parentPage >= int(axis))) { continue; }
         // The half-texel containment inset cuts through outer page interiors.
         // Preserve that domain with the original search on these pages.
-        if (any(parentPage == 0) || any(parentPage == int(axis) - 1)) { return; }
+        if (any(parentPage == 0) || any(parentPage == int(axis) - 1)) { return unmapped; }
         uint4 parentEntry = pages[parent.page.x + uint(parentPage.y) * axis + uint(parentPage.x)];
         if (parentEntry.x != 0xffffffffu && (parentEntry.y & 2u) != 0u && (parentEntry.w & 1u) != 0u) {
             physicalPage = parentEntry.x;
@@ -242,7 +266,14 @@ void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
             break;
         }
     }
-    pages[push.totalPages + id.x] = uint4(physicalPage, address, packedParentPage, 2u);
+    return uint4(physicalPage, address, packedParentPage, 2u);
+}
+
+void vsmBuildPropagatedMapping(uint3 id, ShadowPush push)
+{
+    if (id.x >= push.totalPages) { return; }
+    RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
+    pages[push.totalPages + id.x] = vsmComputePropagatedMapping(id.x, push, pages);
 }
 
 [shader("compute")]

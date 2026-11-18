@@ -101,7 +101,16 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 #endif
     uniform ShadowPush clearPush)
 {
+#if VSM_BATCHED_BUILD_RASTER
+    ByteAddressBuffer poolBytes = resolveUniform(ResourceHandle<ByteAddressBuffer>(clearPush.physicalPool));
+    uint2 poolHeader = poolBytes.Load2(0u);
+    uint staticLayer = (clearPush.rasterCoarse & 2u) != 0u ? 1u : 0u;
+    uint listByte = vsmSharedPoolClearListQuad(poolHeader.x, poolHeader.y) * 16u +
+        (staticLayer * poolHeader.y + clearPush.workBase + group.x) * 4u;
+    uint physicalPage = poolBytes.Load(listByte);
+#else
     uint physicalPage = clearPush.workBase + group.x;
+#endif
     ShadowPush push;
     bool clear = vsmRasterClearsPage(physicalPage, clearPush, push);
     SetMeshOutputCounts(clear ? 4u : 0u, clear ? 2u : 0u);

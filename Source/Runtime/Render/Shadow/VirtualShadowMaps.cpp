@@ -764,16 +764,20 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     recording->completion = context->completion();
     recording->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
     recording->faceCount = uint32_t(faces.size()); recording->frameIndex = uint32_t(context->frameIndex());
-    auto acquire = [&](std::shared_ptr<Buffer>& buffer, uint64_t size, uint32_t stride, MemoryLocation location) -> Result<> {
-        if (!buffer || buffer->desc().size < size || buffer->desc().structureStride != stride) {
+    auto acquire = [&](std::shared_ptr<Buffer>& buffer, uint64_t size, uint32_t stride, MemoryLocation location,
+        BufferUsageBits extraUsage = BufferUsageBits::None) -> Result<> {
+        if (!buffer || buffer->desc().size < size || buffer->desc().structureStride != stride ||
+            !hasFlag(buffer->desc().usage, extraUsage)) {
             auto created = device.createBuffer({.size = size, .structureStride = stride,
-                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource, .memoryLocation = location});
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource | extraUsage, .memoryLocation = location});
             if (!created) { return std::unexpected(created.error()); }
             buffer = std::move(*created);
         }
         return {};
     };
-    if (auto r = acquire(recording->metadata, uint64_t(2u + faces.size() + capacity * 2u) * 16u, 16, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
+    if (auto r = acquire(recording->metadata,
+        uint64_t(vsmSharedPoolTotalMetadataQuads(uint32_t(faces.size()), capacity)) * 16u,
+        16, MemoryLocation::Device, BufferUsageBits::Indirect); !r) { return std::unexpected(r.error()); }
     if (auto r = acquire(recording->history, uint64_t(capacity) * 8u, 8, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
     if (auto r = acquire(recording->jobs, faces.size() * sizeof(ShadowPush), sizeof(ShadowPush), MemoryLocation::HostUpload); !r) { return std::unexpected(r.error()); }
     const char* entries[]{"vsmSharedPoolPrepareMain", "vsmSharedPoolPhysicalMain", "vsmSharedPoolPublishMain", "vsmBatchPrepareMain"};
@@ -1160,9 +1164,12 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         AccessBits::ShaderRead | AccessBits::ShaderWrite); !r) { return r; }
     const BufferBarrierDesc ownershipReady{.buffer = frame.metadata.get(),
         .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-        .after = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+        .after = {PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader | PipelineStageBits::DrawIndirect,
+            AccessBits::ShaderRead | AccessBits::IndirectRead}};
     if (auto r = commands.synchronize({.buffers = {&ownershipReady, 1}}); !r) { return r; }
     buildGpu.end(); gpu.end();
+    const uint32_t clearBatches = vsmSharedPoolClearBatches(storage.capacity);
+    const uint32_t faceCount = frame.faceCount;
     gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster") : RenderGraphExecutionContext::ProfileScope{};
     for (uint32_t layer = 0; layer < (layered ? 2u : 1u); ++layer) {
         const bool staticPass = layered && layer == 0;
@@ -1192,11 +1199,13 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
             auto clearPush = first.push;
             clearPush.rasterCoarse = staticPass ? 2u : 0u;
-            const auto pageCount = hybridScratchPageCount(storage.capacity, storage.pageSize);
-            for (uint32_t base = 0; base < pageCount; base += kDrawBatchSize) {
-                clearPush.workBase = base;
+            for (uint32_t batch = 0; batch < clearBatches; ++batch) {
+                clearPush.workBase = batch * kDrawBatchSize;
                 if (auto r = commands.bindExecution(first.programs->hybridClear->execution(), &clearPush, sizeof(clearPush)); !r) { return r; }
-                if (auto r = commands.dispatch(std::min(kDrawBatchSize, pageCount - base)); !r) { return r; }
+                const uint64_t argOffset = uint64_t(vsmSharedPoolClearArgumentQuad(faceCount, storage.capacity, staticPass ? 1u : 0u, batch)) * 16u;
+                auto args = frame.metadata->slice({argOffset, 12u});
+                if (!args) { return std::unexpected(args.error()); }
+                if (auto r = commands.dispatchIndirect(*args); !r) { return r; }
                 ++computeDispatches;
             }
             scratch.before = scratch.after;
@@ -1239,10 +1248,13 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             if (mainPass) {
                 rasterGpu.next("VSM raster clear and restore");
                 common.rasterCoarse = staticPass ? 2u : 0u;
-                for (uint32_t base = 0; base < storage.capacity; base += kDrawBatchSize) {
-                    common.workBase = base;
+                for (uint32_t batch = 0; batch < clearBatches; ++batch) {
+                    common.workBase = batch * kDrawBatchSize;
                     if (auto r = commands.bindExecution(first.programs->clear->execution(), &common, sizeof(common)); !r) { return r; }
-                    if (auto r = commands.drawMeshTasks(std::min(kDrawBatchSize, storage.capacity - base)); !r) { return r; }
+                    const uint64_t argOffset = uint64_t(vsmSharedPoolClearArgumentQuad(faceCount, storage.capacity, staticPass ? 1u : 0u, batch)) * 16u;
+                    auto args = frame.metadata->slice({argOffset, 12u});
+                    if (!args) { return std::unexpected(args.error()); }
+                    if (auto r = commands.drawMeshTasksIndirect(*args); !r) { return r; }
                     ++meshDraws;
                 }
             }

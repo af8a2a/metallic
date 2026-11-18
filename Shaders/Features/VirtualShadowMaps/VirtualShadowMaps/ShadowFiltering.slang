@@ -33,7 +33,9 @@ float vsmRayDepth(float depth, ShadowProjection projection, uint2 virtualTexel, 
 #endif
 }
 
-float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, uint2 pixel,
+#if VSM_DIRECTIONAL_PROJECTION
+float vsmFilterVisibilityDirectional(float3 position, float3 normal, uint receiverLevel, uint2 pixel,
+    bool allowClipmaps, bool seedReceiverPage, uint2 receiverVirtualTexel, uint receiverPhysicalPage,
     StructuredBuffer<ShadowProjection> projections, ShadowPush push, inout uint3 filterCounts, bool useGroupCache = false)
 {
     ShadowProjection receiverProj = vsmGetCachedProjection(projections, receiverLevel, useGroupCache);
@@ -61,18 +63,11 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     // zero at contact and would request entire fine clipmaps, starving the
     // receiver pages and forcing nearly all samples onto the coarse map.
     ShadowProjection proj0 = vsmGetCachedProjection(projections, 0u, useGroupCache);
-#if VSM_DIRECTIONAL_PROJECTION
     float3 toLight = normalize(proj0.rowZ.xyz);
     float receiverTexelSize = receiverProj.metric.y;
-#else
-    float3 toLight = push.lightType == 0u ? normalize(proj0.rowZ.xyz) :
-        normalize(proj0.originNear.xyz - position);
-    float receiverTexelSize = vsmWorldTexelSize(position, receiverProj, push.pageSize, push.lightType);
-#endif
     float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
     float3 up = cross(toLight, right);
     float tanAngularRadius = tan(push.angularRadius);
-#if VSM_DIRECTIONAL_PROJECTION
     float receiverExtent = receiverProj.metric.x;
     float3 normX = normalize(proj0.rowX.xyz);
     float3 normY = normalize(proj0.rowY.xyz);
@@ -85,48 +80,42 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float2 receiverScaledSlope = normalSlope * receiverExtent;
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     VSMAtlas atlas = resolveUniform(ResourceHandle<VSMAtlas>(push.atlas));
-    VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, pages, push, receiverLevel);
+    VSMDirectionalRayBase rayBase = vsmCreateDirectionalRayBase(position, receiverProj, allowClipmaps, push, receiverLevel);
     VSMDirectionalRayCache rayCache;
-    rayCache.lastPage = 0xffffffffu;
-    rayCache.lastPhysicalCoord = uint2(0u);
-    rayCache.lastPageHit = false;
+    if (seedReceiverPage) {
+        rayCache.lastPage = vsmVirtualPage(receiverVirtualTexel, receiverProj, push.pageSize);
+        rayCache.lastPhysicalCoord = rayBase.powerOfTwoPhysical ?
+            uint2(receiverPhysicalPage & rayBase.physicalPagesXMask, receiverPhysicalPage >> rayBase.physicalPagesXShift) :
+            vsmPhysicalPageCoord(receiverPhysicalPage, push.physicalPagesX);
+        rayCache.lastPageHit = true;
+    } else {
+        rayCache.lastPage = 0xffffffffu;
+        rayCache.lastPhysicalCoord = uint2(0u);
+        rayCache.lastPageHit = false;
+    }
     float2 texelSlope = -receiverScaledSlope * receiverInvResolution;
     float2 baseOffset = float2(0.5 * receiverInvResolution - 1.0) - rayBase.comparisonOrigin.xy;
     float baseSlopeCorrection = -dot(receiverScaledSlope, baseOffset) + biasZ;
-#endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float2 disk = vsmDiskSample(ray, invRayCount, pixel, push.samplePhase);
         float3 rayOffset = right * disk.x + up * disk.y;
-#if VSM_DIRECTIONAL_PROJECTION
         float3 endpoint = vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength);
-#else
-        float3 endpoint = (push.lightType == 0u) ?
-            vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength) :
-            vsmRayEndpoint(position, proj0, push, toLight, rayOffset);
-#endif
         float2 ditherOffset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
             vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
         float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
-#if VSM_DIRECTIONAL_PROJECTION
         VSMDirectionalRay dirRay;
         float3 direction = endpoint - position;
         dirRay.lookupOrigin = vsmProjectPosition(position + dither, receiverProj);
         dirRay.step = float3(dot(receiverProj.rowX.xyz, direction), dot(receiverProj.rowY.xyz, direction), dot(receiverProj.rowZ.xyz, direction));
         float raySlopeZ = dirRay.step.z + dot(receiverScaledSlope, dirRay.step.xy);
         float maxSlope = 0.05;
-#else
-        float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
-            1.0 / length(endpoint - proj0.originNear.xyz) -
-            1.0 / length(position - proj0.originNear.xyz));
-#endif
         float historyDepth = 0.0, historyTime = 0.0, historySlope = 0.0, previousReference = 0.0;
         bool hasHistory = false;
         bool blocked = false;
         // Trace back toward the receiver, including t=0. Depth discontinuities
         // can expose only the front layer: continue the preceding surface with
         // bounded slope through that gap instead of inventing an intersection.
-#if VSM_DIRECTIONAL_PROJECTION
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom, invSamplesPerRay);
             ++filterCounts.x;
@@ -297,7 +286,91 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             if (blocked) { break; }
             previousReference = reference;
         }
+        visibility += blocked ? 0.0 : 1.0;
+#if VSM_ADAPTIVE_RAY_COUNT
+        if (ray + 1u < push.rayCount) {
+            // Vote only among this light's active receivers. This heuristic
+            // assumes full light after one miss, or umbra after two hits in
+            // every participating lane; it is not the fixed-ray estimator.
+            bool keepTracing = ray == 0u ? blocked : (visibility > 0.0);
+            if (!WaveActiveAnyTrue(keepTracing)) {
+                tracedRays = ray + 1u;
+                vsmWorkAdd(push, ray == 0u ? kVSMWorkProjectionAdaptiveLitReceivers :
+                    kVSMWorkProjectionAdaptiveUmbraReceivers, 1u);
+                vsmWorkAdd(push, kVSMWorkProjectionAdaptiveSavedRays, push.rayCount - tracedRays);
+                break;
+            }
+        }
+#endif
+    }
+#if VSM_ADAPTIVE_RAY_COUNT
+    return visibility / float(tracedRays);
 #else
+    return visibility / float(push.rayCount);
+#endif
+}
+
+float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, uint2 pixel,
+    StructuredBuffer<ShadowProjection> projections, ShadowPush push, inout uint3 filterCounts, bool useGroupCache = false)
+{
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    return vsmFilterVisibilityDirectional(position, normal, receiverLevel, pixel,
+        statistics[5] == 0u, false, uint2(0u), 0xffffffffu, projections, push, filterCounts, useGroupCache);
+}
+#else
+float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, uint2 pixel,
+    StructuredBuffer<ShadowProjection> projections, ShadowPush push, inout uint3 filterCounts, bool useGroupCache = false)
+{
+    ShadowProjection receiverProj = vsmGetCachedProjection(projections, receiverLevel, useGroupCache);
+    if (push.filterMode == 1u) {
+        float sum = 0.0;
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                float3 tap = vsmPCFPosition(position, normal, receiverProj, push, int2(x, y));
+                ShadowLookup sample = vsmFilterLookup(tap, push, receiverLevel, filterCounts);
+                float compare = sample.valid ? vsmComparisonDepth(tap, normal, sample.projected,
+                    sample.virtualTexel, vsmLookupProjection(sample), push.pageSize) : 1.0;
+                sum += !sample.valid || sample.storedDepth == 0.0 || compare >= sample.storedDepth ? 1.0 : 0.0;
+            }
+        }
+        return sum / 9.0;
+    }
+    float visibility = 0.0;
+    float stepRandom = vsmSampleRandom(pixel, 2u, push.samplePhase);
+    float invSamplesPerRay = 1.0 / float(push.samplesPerRay);
+    float invRayCount = 1.0 / float(push.rayCount);
+#if VSM_ADAPTIVE_RAY_COUNT
+    uint tracedRays = push.rayCount;
+#endif
+    // A ray keeps its receiver's resolution. An angular footprint shrinks to
+    // zero at contact and would request entire fine clipmaps, starving the
+    // receiver pages and forcing nearly all samples onto the coarse map.
+    ShadowProjection proj0 = vsmGetCachedProjection(projections, 0u, useGroupCache);
+    float3 toLight = push.lightType == 0u ? normalize(proj0.rowZ.xyz) :
+        normalize(proj0.originNear.xyz - position);
+    float receiverTexelSize = vsmWorldTexelSize(position, receiverProj, push.pageSize, push.lightType);
+    float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+    float3 up = cross(toLight, right);
+    float tanAngularRadius = tan(push.angularRadius);
+    for (uint ray = 0u; ray < push.rayCount; ++ray) {
+        vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
+        float2 disk = vsmDiskSample(ray, invRayCount, pixel, push.samplePhase);
+        float3 rayOffset = right * disk.x + up * disk.y;
+        float3 endpoint = (push.lightType == 0u) ?
+            vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength) :
+            vsmRayEndpoint(position, proj0, push, toLight, rayOffset);
+        float2 ditherOffset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
+            vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
+        float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
+        float maxSlope = push.lightType == 0u ? 0.05 : 0.05 * abs(
+            1.0 / length(endpoint - proj0.originNear.xyz) -
+            1.0 / length(position - proj0.originNear.xyz));
+        float historyDepth = 0.0, historyTime = 0.0, historySlope = 0.0, previousReference = 0.0;
+        bool hasHistory = false;
+        bool blocked = false;
+        // Trace back toward the receiver, including t=0. Depth discontinuities
+        // can expose only the front layer: continue the preceding surface with
+        // bounded slope through that gap instead of inventing an intersection.
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom, invSamplesPerRay);
             float3 point = vsmRayPosition(position, endpoint, time, proj0, push);
@@ -330,7 +403,6 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
             if (blocked) { break; }
             previousReference = reference;
         }
-#endif
         visibility += blocked ? 0.0 : 1.0;
 #if VSM_ADAPTIVE_RAY_COUNT
         if (ray + 1u < push.rayCount) {
@@ -354,4 +426,5 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     return visibility / float(push.rayCount);
 #endif
 }
+#endif
 

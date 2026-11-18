@@ -102,8 +102,10 @@ void vsmMapDirectionalAncestor(uint4 mapping, float2 sourceTranslation, inout fl
 
 bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourcePage, inout float3 projected,
     inout uint2 texel, StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
-    ShadowPush push, uint level, out uint physicalPage, out uint targetLevel, bool useGroupCache = false)
+    ShadowPush push, uint level, out uint physicalPage, out uint targetLevel,
+    out bool isOwnMapping, bool useGroupCache)
 {
+    isOwnMapping = false;
     // One-pass jobs carry their own clipmapCount; fixed VPA^2 level strides
     // also apply to local mips, whose unused prefix slots remain unmapped.
     uint tableSize = push.clipmapCount * push.virtualPagesPerAxis * push.virtualPagesPerAxis + 1u;
@@ -115,7 +117,10 @@ bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourceP
         vsmWorkAdd(push, kVSMWorkProjectionMappingSlowPaths, 1u);
         return false;
     }
-    if (mapping.w == 1u) { return true; }
+    if (mapping.w == 1u) {
+        isOwnMapping = true;
+        return true;
+    }
     if (targetLevel == push.clipmapCount) { return true; }
     if (mapping.w == 2u) {
         vsmMapDirectionalAncestor(mapping, sourceTranslation, projected, texel, projections, push, level, useGroupCache);
@@ -133,6 +138,15 @@ bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourceP
     texel = vsmVirtualTexel(targetPosition, target, push.pageSize);
     vsmWorkAdd(push, kVSMWorkProjectionMappedAncestors, 1u);
     return true;
+}
+
+bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourcePage, inout float3 projected,
+    inout uint2 texel, StructuredBuffer<ShadowProjection> projections, StructuredBuffer<uint4> pages,
+    ShadowPush push, uint level, out uint physicalPage, out uint targetLevel, bool useGroupCache = false)
+{
+    bool isOwnMapping;
+    return vsmLookupPropagated(position, sourceTranslation, sourcePage, projected, texel,
+        projections, pages, push, level, physicalPage, targetLevel, isOwnMapping, useGroupCache);
 }
 
 ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, inout uint3 filterCounts)

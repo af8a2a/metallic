@@ -2,8 +2,8 @@
 
 In the Shadows runtime settings, enable **Detailed GPU Profile**
 (`benchmarkGPUProfile`) and, for build details, **Profile Build Substages**
-(`benchmarkBuildSubstages`). The Sponza VSM sample enables both. Other graphs keep
-the existing opt-in behavior. Disable detailed profiling before collecting a
+(`benchmarkBuildSubstages`). Sample graphs keep both disabled by default; enable
+them opt-in when collecting marker attribution. Disable detailed profiling before collecting a
 normal, minimally instrumented performance baseline. CPU attribution
 (`benchmarkCPUProfile`) and detailed GPU profiling remain mutually exclusive.
 
