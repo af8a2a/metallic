@@ -94,7 +94,10 @@ std::vector<Mapping> denseReference(const RemapCase& input)
             }
         }
     }
-    result.back() = {uint32_t(result.size() - 1), input.dirtyBounds != 0 || input.force ? 1u : 0u};
+    // Local coarse covers the same frustum as each fine mip.
+    const bool coarseOverlap = input.lightType == 0 ? input.dirtyBounds != 0 :
+        !input.levels.front().rectangles.empty();
+    result.back() = {uint32_t(result.size() - 1), coarseOverlap || input.force ? 1u : 0u};
     return result;
 }
 
@@ -138,6 +141,7 @@ std::vector<RemapCase> remapCases()
     edges.levels[1].rectangles = {{0, 0, 6, 6}, {0, 0, 6, 6}};
     edges.levels[2].rectangles = {{0, 0, 0, 6}};
     append("CoarseDirtyWithNoValidRectangle", 7, 3, 0).dirtyBounds = 1;
+    append("PointChangeOutsideFace", 7, 3, 2).dirtyBounds = 1;
     append("ForceRedraw", 127, 3, 0).force = true;
     for (uint32_t type : {1u, 2u}) {
         auto& local = append(type == 1 ? "SpotPackedMipHoles" : "PointPackedMipHoles", 7, 5, type);

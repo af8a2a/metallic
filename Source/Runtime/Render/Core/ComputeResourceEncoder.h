@@ -97,6 +97,9 @@ namespace detail { struct ComputeSampledImageTable; }
 struct ComputeSampledImageSnapshot {
     std::shared_ptr<const void> owner;
     std::vector<std::shared_ptr<TextureView>> views;
+    // The material streamer publishes these with the views. Only replaced
+    // image/mip slots advance when it publishes another snapshot.
+    std::vector<uint64_t> slotPublicationRevisions;
 private:
     Result<std::shared_ptr<detail::ComputeSampledImageTable>> table(
         Device& device, ResourceRegistry& registry, uint32_t count, ComputeDispatchStats* stats) const;

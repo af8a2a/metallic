@@ -243,17 +243,24 @@ public:
         const auto logicalTextures = materialResources.logicalTextureIndices();
         std::vector<TextureView*> alphaTextures(scene->materials().size());
         std::vector<TextureView*> displacementTextures(scene->materials().size());
+        std::vector<VirtualShadowMapMaterialTextureRevisions> textureRevisions(scene->materials().size());
         for (size_t materialIndex = 0; materialIndex < scene->materials().size(); ++materialIndex) {
             const auto& material = scene->materials()[materialIndex];
             const auto logical = material.baseColorTexture.textureIndex;
             if (material.alphaMode == "MASK" && logical >= 0 && size_t(logical) < logicalTextures.size()) {
                 const uint32_t slot = logicalTextures[logical];
-                if (slot < textures->views.size()) { alphaTextures[materialIndex] = textures->views[slot].get(); }
+                if (slot < textures->views.size()) {
+                    alphaTextures[materialIndex] = textures->views[slot].get();
+                    textureRevisions[materialIndex].alpha = textures->slotPublicationRevisions[slot];
+                }
             }
             const auto displacement = material.displacementTexture.textureIndex;
             if (material.displacementMagnitude != 0 && displacement >= 0 && size_t(displacement) < logicalTextures.size()) {
                 const uint32_t slot = logicalTextures[displacement];
-                if (slot < textures->views.size()) { displacementTextures[materialIndex] = textures->views[slot].get(); }
+                if (slot < textures->views.size()) {
+                    displacementTextures[materialIndex] = textures->views[slot].get();
+                    textureRevisions[materialIndex].height = textures->slotPublicationRevisions[slot];
+                }
             }
         }
         const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
@@ -265,7 +272,7 @@ public:
             .tessellationFactor = context.properties().value("tessellationFactor", 4u),
             .subdivisionDepth = context.properties().value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
             .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0,
-            .instanceBuild = settings.instanceBuild};
+            .instanceBuild = settings.instanceBuild, .materialTextureRevisions = textureRevisions};
         auto casters = casterCache_.prepare(*device_, commands, *scene,
             scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
         if (!casters) {

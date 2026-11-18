@@ -272,7 +272,7 @@ bool vsmLODPageChanged(ShadowPush push, uint view, uint2 page, bool coarse)
     ShadowProjection projection = projections[view];
     for (uint instanceIndex = 0u; instanceIndex < context.instanceCount; ++instanceIndex) {
         if (changed[view * context.instanceCount + instanceIndex] == 0u) { continue; }
-        if (coarse) { return true; }
+        if (coarse && push.lightType == 0u) { return true; }
         VirtualShadowMapLODInstanceGPU instance = instances[instanceIndex];
         uint4 rectangle;
         if (vsmChangedBoundRect(instance.boundsMin.xyz, instance.boundsMax.xyz, projection, rectangle) &&

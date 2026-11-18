@@ -376,7 +376,7 @@ struct VirtualShadowMaps::Cache
     VirtualShadowMapSettings settings;
     VirtualShadowMapLight light;
     float farPlane = 0;
-    uint64_t sceneIdentity = 0, structuralRevision = 0, dependencyKey = 0;
+    uint64_t sceneIdentity = 0, dependencyKey = 0;
     uint64_t geometryRevision = 0, texturePublicationRevision = 0, tessellationKey = 0;
     uint32_t epoch = 0;
     bool enabled = false;
@@ -1463,7 +1463,6 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         if (!compatibleLight(cache_->light, light) || cache_->enabled != enabled) { reasons |= kVSMCacheReasonLight; }
         if (!compatibleSettings(cache_->settings, settings) || cache_->receiverMask != receiverMask) { reasons |= kVSMCacheReasonSettings; }
         if (cache_->sceneIdentity != casters.sceneIdentity) { reasons |= kVSMCacheReasonScene; }
-        if (cache_->structuralRevision != casters.structuralRevision) { reasons |= kVSMCacheReasonStructure; }
         if (cache_->geometryRevision != casters.geometryRevision) { reasons |= kVSMCacheReasonGeometryPublication; }
         if (cache_->texturePublicationRevision != casters.texturePublicationRevision) { reasons |= kVSMCacheReasonTexturePublication; }
         if (cache_->tessellationKey != casters.tessellationKey) { reasons |= kVSMCacheReasonTessellation; }
@@ -1472,7 +1471,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     }
     bool reuse = cache_ && cache_->receiverMask == receiverMask && cache_->settings.cacheLayering == settings.cacheLayering && cache_->device == &device && compatibleLight(cache_->light, light) && cache_->enabled == enabled &&
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
-        cache_->structuralRevision == casters.structuralRevision && cache_->dependencyKey == casters.dependencyKey &&
+        cache_->dependencyKey == casters.dependencyKey &&
         bool(cache_->lodSelection) == gpuLOD;
     if (sharedPhysicalPool) {
         // Only the immediately preceding pool frame certifies these addresses.
@@ -1543,19 +1542,25 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
                 ++newIndex;
             } else {
                 const bool lodChanged = old->lodKey != next->lodKey;
+                const bool textureChanged = old->textureKey != next->textureKey;
+                const bool tessellationChanged = old->tessellationKey != next->tessellationKey;
+                const bool displacementEdit = (old->tessellationKey != 0 || next->tessellationKey != 0) &&
+                    old->displacementMaterialKey != next->displacementMaterialKey;
+                if (textureChanged) { reasons |= kVSMCacheReasonTexturePublication; }
+                if (tessellationChanged) { reasons |= kVSMCacheReasonTessellation; }
                 uint64_t lastChanged = wasDynamic ? cache_->dynamic[dynamicIndex++].lastChanged : 0u;
                 cacheDiagnostics[kVSMCacheLODChangedCasters] += lodChanged;
-                if (old->contentKey != next->contentKey) {
+                if (old->contentKey != next->contentKey || displacementEdit) {
                     dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
                     ++cacheDiagnostics[kVSMCacheChangedCasters];
                     cacheDiagnostics[kVSMCacheTransformChanges] += old->transformKey != next->transformKey;
-                    cacheDiagnostics[kVSMCacheMaterialChanges] += old->materialKey != next->materialKey;
+                    cacheDiagnostics[kVSMCacheMaterialChanges] += old->materialKey != next->materialKey || displacementEdit;
                     if (layered && lastChanged == 0) {
                         staticDirtyBounds.push_back(old->bounds);
                         ++cacheDiagnostics[kVSMCachePromotedCasters];
                     }
                     if (layered) { lastChanged = cacheFrame; }
-                } else if (lodChanged) {
+                } else if (lodChanged || textureChanged || tessellationChanged) {
                     dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
                     if (layered && lastChanged == 0) {
                         staticDirtyBounds.push_back(old->bounds); staticDirtyBounds.push_back(next->bounds);
@@ -2634,7 +2639,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         next->casters = unchangedCasters ? cache_->casters : std::make_shared<const std::vector<VirtualShadowMapCasterState>>(casters.states);
         next->settings = settings; next->light = light; next->farPlane = farPlane;
         next->receiverMask = receiverMask;
-        next->sceneIdentity = casters.sceneIdentity; next->structuralRevision = casters.structuralRevision;
+        next->sceneIdentity = casters.sceneIdentity;
         next->staticAtlas = state->resources->staticAtlas;
         next->dynamic = std::move(dynamic); next->cacheFrame = cacheFrame;
         next->staticHZB = state->resources->staticHZB;

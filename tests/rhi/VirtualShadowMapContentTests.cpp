@@ -1271,7 +1271,7 @@ public:
                     light.direction = variant < 3 ? std::array<float,3>{1,0,-1} : std::array<float,3>{0,0,-1};
                     light.type = point ? VirtualShadowMapLightType::PointFace :
                         variant == 3 ? VirtualShadowMapLightType::Spot : VirtualShadowMapLightType::Directional;
-                    light.position = {0,0,3}; light.outerConeAngle = 1.2f; light.range = 20;
+                    light.position = {0,0,3}; light.outerConeAngle = variant == 3 ? .8f : 1.2f; light.range = 20;
                     light.angularRadius = .03f; light.sourceRadius = .08f;
                     VirtualShadowMapSettings settings;
                     settings.pageSize = 32; settings.virtualPagesPerAxis = 8; settings.clipmapCount = 3;
@@ -1283,6 +1283,7 @@ public:
                     HeightImage* currentHeight = &heightA;
                     std::array<std::array<VirtualShadowMaps, 6>, 3> maps;
                     VirtualShadowMapCasterCache casterCache;
+                    uint64_t structuralRevisionOffset = 0;
                     const auto move = [&](float x) {
                         float4x4 matrix; matrix.SetupByTranslation(float3(x, 0, 0));
                         check(scene.setNodeLocalMatrix(1, matrix), "Move layer caster");
@@ -1294,8 +1295,9 @@ public:
                         stream.owner = runtime;
                         std::array<TextureView*, 2> heightViews{nullptr, currentHeight->view.get()};
                         casterSettings.displacementTextures = heightViews;
-                        const auto casters = casterCache.prepare(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, casterSettings);
+                        auto casters = casterCache.prepare(device, *gpu.commands, scene, runtime ? &stream : nullptr, log, casterSettings);
                         check(casters, "Layer casters: " + log);
+                        casters->structuralRevision += structuralRevisionOffset;
                         auto selected = settings;
                         selected.cacheLayering = arm == 0;
                         selected.forceRedraw = arm == 2;
@@ -1400,6 +1402,9 @@ public:
                             }
                             const auto staticDirty = counters[kVSMCacheStaticDirtyFinePages] + counters[kVSMCacheStaticDirtyCoarsePages];
                             const auto compositeDirty = counters[kVSMCacheCompositeDirtyFinePages] + counters[kVSMCacheCompositeDirtyCoarsePages];
+                            // At x=0..0.4, the small caster at z=1 lies wholly on
+                            // -Z from the point light at z=3, including its old bounds.
+                            const bool seesMove = !point || face == 5;
                             if (std::string_view(phase) == "Cold") {
                                 check((counters[kVSMCacheReasons] & kVSMCacheReasonCold) != 0 && counters[kVSMCacheDynamicCasters] == 0,
                                     "Cold layer classification/reason missing");
@@ -1411,12 +1416,14 @@ public:
                                 }
                             } else if (std::string_view(phase) == "FirstDynamicMove") {
                                 check(counters[kVSMCachePromotedCasters] == 1 && counters[kVSMCacheTransformChanges] == 1 &&
-                                    counters[kVSMCacheDynamicCasters] == 1 && staticDirty > 0,
+                                    counters[kVSMCacheDynamicCasters] == 1 && (staticDirty > 0) == seesMove &&
+                                    (compositeDirty > 0) == seesMove,
                                     "First motion did not migrate caster and erase old static depth");
                             } else if (std::string_view(phase) == "RepeatedDynamicMove") {
                                 check(counters[kVSMCachePromotedCasters] == 0 && counters[kVSMCacheTransformChanges] == 1 &&
-                                    counters[kVSMCacheDynamicCasters] == 1 && staticDirty == 0 && compositeDirty > 0 &&
-                                    counters[kVSMCacheStaticDecodedTriangles] == 0 && counters[kVSMCacheDynamicDecodedTriangles] > 0,
+                                    counters[kVSMCacheDynamicCasters] == 1 && staticDirty == 0 && (compositeDirty > 0) == seesMove &&
+                                    counters[kVSMCacheStaticDecodedTriangles] == 0 &&
+                                    (counters[kVSMCacheDynamicDecodedTriangles] > 0) == seesMove,
                                     "Repeated dynamic motion redrew static geometry or did not redraw dynamic geometry");
                             } else if (std::string_view(phase) == "ShadowMaterialEdit") {
                                 check(counters[kVSMCacheMaterialChanges] == 1, "Shadow material invalidation was not attributed");
@@ -1484,10 +1491,61 @@ public:
                     };
                     (void)compare("Cold");
                     (void)compare("Warm");
+                    if (!streamed && variant == 0) {
+                        // Exercise the record() snapshot boundary: graph structure
+                        // advanced, but the same scene publishes identical casters.
+                        ++structuralRevisionOffset;
+                        const auto edit = compare("NonCasterGraphRevision");
+                        const auto& counters = edit.front().cacheDiagnostics;
+                        check(counters[kVSMCacheReused] == 1 && counters[kVSMCacheDirtyBounds] == 0 &&
+                            counters[kVSMCacheCompositeDirtyFinePages] == 0 && counters[kVSMCacheCompositeDirtyCoarsePages] == 0,
+                            "A graph-only publication discarded unchanged shadow depth");
+                    }
                     move(.2f); (void)record(0, true); move(0);
                     (void)compare("CancelledPromotionRollback");
                     move(.2f); (void)compare("FirstDynamicMove");
                     move(.4f); (void)compare("RepeatedDynamicMove");
+                    if (point) {
+                        const auto compareCoarse = [&](const char* phase, uint32_t compositeMask, uint32_t staticMask) {
+                            const auto captures = compare(phase);
+                            for (uint32_t face = 0; face < captures.size(); ++face) {
+                                const auto& c = captures[face].cacheDiagnostics;
+                                check(c[kVSMCacheReused] == 1 &&
+                                    c[kVSMCacheCompositeDirtyCoarsePages] == ((compositeMask >> face) & 1u) &&
+                                    c[kVSMCacheStaticDirtyCoarsePages] == ((staticMask >> face) & 1u),
+                                    label + "-" + phase + ": wrong coarse invalidation on face " + std::to_string(face));
+                            }
+                        };
+                        constexpr uint32_t negativeZ = 1u << 5, positiveX = 1u;
+                        move(3.2f); // x=2.45..3.95, z-light.z=-2 lies wholly on +X.
+                        compareCoarse("CrossPointFace", negativeZ | positiveX, 0);
+                        check(scene.setObjectVisible(scene.objectForNode(1).entity(), false), "Hide point caster");
+                        compareCoarse("HidePointCaster", positiveX, 0);
+                        check(scene.setObjectVisible(scene.objectForNode(1).entity(), true), "Show point caster");
+                        compareCoarse("ShowPointCaster", positiveX, positiveX);
+                        compareCoarse("PointCasterWarm", 0, 0);
+                        move(.4f);
+                        compareCoarse("ReturnPointCaster", negativeZ | positiveX, positiveX);
+                    }
+                    if (variant == 3) {
+                        move(3.2f); // The nearest x edge exceeds tan(.8) * 2.
+                        const auto exit = compare("ExitSpotCone");
+                        check(exit.front().cacheDiagnostics[kVSMCacheCompositeDirtyCoarsePages] == 1,
+                            "Caster leaving the spot cone retained its old shadow");
+                        for (bool visible : {false, true}) {
+                            check(scene.setObjectVisible(scene.objectForNode(1).entity(), visible), "Change off-cone caster visibility");
+                            const auto outside = compare(visible ? "ShowOutsideSpotCone" : "HideOutsideSpotCone");
+                            const auto& c = outside.front().cacheDiagnostics;
+                            check(c[kVSMCacheReused] == 1 && c[kVSMCacheStaticDirtyCoarsePages] == 0 &&
+                                c[kVSMCacheCompositeDirtyCoarsePages] == 0 && c[kVSMCacheCompositeDirtyFinePages] == 0,
+                                "Off-cone caster invalidated the spot projection");
+                        }
+                        move(.4f);
+                        const auto enter = compare("EnterSpotCone");
+                        check(enter.front().cacheDiagnostics[kVSMCacheCompositeDirtyCoarsePages] == 1 &&
+                            enter.front().cacheDiagnostics[kVSMCacheStaticDirtyCoarsePages] == 0,
+                            "Spot re-entry did not isolate old static and new dynamic footprints");
+                    }
                     if (variant == 0) {
                         check(scene.setObjectVisible(scene.objectForNode(1).entity(), false), "Hide layered caster");
                         (void)compare("HiddenDynamicCaster");
@@ -1510,6 +1568,53 @@ public:
                     settings.maxWorkItems = 65535;
                     (void)compare("OverflowRecovery");
                     (void)compare("RecoveredWarm");
+                    if (variant == 0) {
+                        std::vector<VirtualShadowMapMaterialTextureRevisions> revisions(scene.materials().size());
+                        revisions[1] = {.alpha = 1, .height = 1};
+                        casterSettings.materialTextureRevisions = revisions;
+                        const auto casterEntity = scene.objectForNode(1).entity();
+                        check(scene.setObjectVisible(casterEntity, false), "Hide caster before scoped publication");
+                        (void)compare("ScopedPublicationHidden");
+                        check(scene.setObjectVisible(casterEntity, true), "Publish static displaced caster");
+                        const auto displaced = compare("ScopedHeightBaseline");
+                        const auto checkPublication = [&](const Capture& capture, uint32_t reason, bool dirty) {
+                            const auto& c = capture.cacheDiagnostics;
+                            check(c[kVSMCacheReused] == 1 && c[kVSMCacheDynamicCasters] == 0 &&
+                                c[kVSMCachePromotedCasters] == 0 && c[kVSMCacheChangedCasters] == 0,
+                                "Resource publication reset the cache or promoted an authored caster");
+                            if (dirty) {
+                                check((c[kVSMCacheReasons] & reason) != 0 && c[kVSMCacheStaticDirtyBounds] > 0 &&
+                                    c[kVSMCacheStaticDirtyCoarsePages] == 1 && c[kVSMCacheCompositeDirtyCoarsePages] == 1 &&
+                                    c[kVSMCacheStaticReusedFinePages] > 0,
+                                    "Resource publication did not restrict redraw to the affected caster");
+                            } else {
+                                check(c[kVSMCacheDirtyBounds] == 0 && c[kVSMCacheStaticDirtyBounds] == 0 &&
+                                    c[kVSMCacheCompositeDirtyFinePages] == 0 && c[kVSMCacheCompositeDirtyCoarsePages] == 0,
+                                    "Unsampled texture publication invalidated shadow pages");
+                            }
+                        };
+                        ++revisions[0].height; ++revisions[1].alpha; // Ground is flat and the displaced caster is opaque.
+                        ++casterSettings.texturePublicationRevision;
+                        checkPublication(compare("UnsampledTexturePublication").front(), 0, false);
+                        currentHeight = &heightB; ++revisions[1].height; ++casterSettings.texturePublicationRevision;
+                        const auto heightChanged = compare("ScopedHeightPublication");
+                        checkPublication(heightChanged.front(), kVSMCacheReasonTexturePublication, true);
+                        check(displaced.front().atlas != heightChanged.front().atlas, "Height publication did not alter caster depth");
+                        casterSettings.tessellationFactor = 3;
+                        checkPublication(compare("ScopedTessellationFactor").front(), kVSMCacheReasonTessellation, true);
+                        check(scene.setObjectVisible(casterEntity, false), "Hide displaced caster");
+                        (void)compare("ScopedDisplacedHidden");
+                        casterSettings.tessellationEnabled = false;
+                        material.alphaMode = "MASK"; material.displacementMagnitude = 0;
+                        check(scene.setMaterialProperties(1, material), "Prepare scoped alpha caster");
+                        currentHeight = &heightA; ++revisions[1].alpha; ++casterSettings.texturePublicationRevision;
+                        check(scene.setObjectVisible(casterEntity, true), "Publish static alpha caster");
+                        const auto masked = compare("ScopedAlphaBaseline");
+                        currentHeight = &heightB; ++revisions[1].alpha; ++casterSettings.texturePublicationRevision;
+                        const auto transparent = compare("ScopedAlphaPublication");
+                        checkPublication(transparent.front(), kVSMCacheReasonTexturePublication, true);
+                        check(masked.front().visibility != transparent.front().visibility, "Alpha publication did not alter coverage");
+                    }
                 }
             }
             report["validation"] = validation.snapshot();

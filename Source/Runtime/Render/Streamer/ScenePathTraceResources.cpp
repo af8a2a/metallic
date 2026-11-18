@@ -88,6 +88,7 @@ struct ScenePathTraceTextureMipUpload {
 };
 
 struct ScenePathTraceMaterialTexture {
+    uint64_t publicationRevision = 0;
     std::vector<ScenePathTraceTextureMipUpload> mipUploads;
     std::shared_ptr<Buffer> uploadBuffer;
     uint64_t uploadBufferOffset = 0;
@@ -1134,20 +1135,29 @@ struct ScenePathTraceResources::Impl {
     void refreshTextureGeneration()
     {
         emptyTextureFeedback = {};
+        static std::atomic<uint64_t> nextPublicationRevision{1};
+        materialTexturePublicationRevision = nextPublicationRevision.fetch_add(1, std::memory_order_relaxed);
         auto generation = std::make_shared<TextureGeneration>();
         generation->reserve(materialTextures.size());
         for (size_t slot = 0; slot < materialTextures.size(); ++slot) {
+            // Both initial uploads and completed mip migrations install a new
+            // image with a zero revision. Untouched slots retain their revision.
+            if (materialTextures[slot].publicationRevision == 0) {
+                materialTextures[slot].publicationRevision = materialTexturePublicationRevision;
+            }
             generation->push_back({materialTextures[slot].texture,materialTextures[slot].view});
             materialTextureViews[slot] = materialTextures[slot].view.get();
         }
         auto snapshot = std::make_shared<ComputeSampledImageSnapshot>();
         snapshot->owner = generation;
         snapshot->views.reserve(generation->size());
-        for (const auto& image : *generation) { snapshot->views.push_back(image.view); }
+        snapshot->slotPublicationRevisions.reserve(generation->size());
+        for (const auto& image : materialTextures) {
+            snapshot->views.push_back(image.view);
+            snapshot->slotPublicationRevisions.push_back(image.publicationRevision);
+        }
         textureGeneration = std::move(generation);
         materialTextureSnapshot = std::move(snapshot);
-        static std::atomic<uint64_t> nextPublicationRevision{1};
-        materialTexturePublicationRevision = nextPublicationRevision.fetch_add(1, std::memory_order_relaxed);
     }
 
     void initializeTextureStreaming()

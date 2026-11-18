@@ -96,13 +96,21 @@ struct ContentHash
     }
 };
 
-Result<std::vector<uint64_t>> gatherMaterialKeys(const scene::Scene& scene, std::string& log)
+struct ShadowMaterialKeys
 {
-    std::vector<uint64_t> keys;
+    uint64_t material = 0, texture = 0, tessellation = 0, displacementMaterial = 0;
+};
+
+Result<std::vector<ShadowMaterialKeys>> gatherMaterialKeys(const scene::Scene& scene,
+    const VirtualShadowMapCasterSettings& settings, std::string& log)
+{
+    std::vector<ShadowMaterialKeys> keys;
     const scene::RenderMaterial defaultMaterial;
+    const bool scoped = !settings.materialTextureRevisions.empty();
     try {
         for (size_t i = 0; i < std::max<size_t>(scene.materials().size(), 1); ++i) {
             const auto& material = scene.materials().empty() ? defaultMaterial : scene.materials()[i];
+            ShadowMaterialKeys key;
             ContentHash hash;
             hash.append(material.doubleSided);
             const bool masked = material.alphaMode == "MASK";
@@ -127,17 +135,33 @@ Result<std::vector<uint64_t>> gatherMaterialKeys(const scene::Scene& scene, std:
                     hash.append(material.baseColorFactor.w);
                     hash.append(material.baseColorTexture.textureIndex);
                     hash.append(material.baseColorTexture.uvTransform);
+                    if (scoped && material.baseColorTexture.textureIndex >= 0) {
+                        key.texture = settings.materialTextureRevisions[i].alpha;
+                    }
                 }
             }
             const bool displaced = material.displacementMagnitude != 0 && material.displacementTexture.textureIndex >= 0;
-            hash.append(displaced);
+            if (!scoped) { hash.append(displaced); }
             if (displaced) {
-                hash.append(material.displacementMagnitude);
-                hash.append(material.displacementCenter);
-                hash.append(material.displacementTexture.textureIndex);
-                hash.append(material.displacementTexture.uvTransform);
+                ContentHash heightMaterial;
+                auto& target = scoped ? heightMaterial : hash;
+                target.append(material.displacementMagnitude);
+                target.append(material.displacementCenter);
+                target.append(material.displacementTexture.textureIndex);
+                target.append(material.displacementTexture.uvTransform);
+                if (scoped) {
+                    key.displacementMaterial = heightMaterial.value;
+                    if (settings.tessellationEnabled) {
+                        ContentHash tessellation;
+                        tessellation.append(settings.tessellationFactor);
+                        tessellation.append(settings.subdivisionDepth);
+                        key.tessellation = tessellation.value;
+                        key.texture = settings.materialTextureRevisions[i].height;
+                    }
+                }
             }
-            keys.push_back(hash.value);
+            key.material = hash.value;
+            keys.push_back(key);
         }
     } catch (const std::exception& error) {
         log = std::string("VSM caster Coverage: ") + error.what();
@@ -193,7 +217,7 @@ Result<uint32_t> upload(Device& device, ResourceRegistry& registry, CasterUpload
 }
 
 Result<> gatherResidentTriangles(const scene::Scene& scene,
-    std::span<const uint64_t> materialKeys, std::vector<VirtualShadowMapPrototypeTriangle>& triangles,
+    std::span<const ShadowMaterialKeys> materialKeys, std::vector<VirtualShadowMapPrototypeTriangle>& triangles,
     std::vector<std::array<float, 4>>& normals, std::vector<std::array<uint32_t, 2>>& candidates,
     std::vector<scene::Bounds>& clusterBounds, uint32_t patchTriangleCount,
     VirtualShadowMapCasterResources& resources, std::string& log,
@@ -261,11 +285,15 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
         ContentHash transform;
         transform.append(node.worldMatrix.a, sizeof(node.worldMatrix.a));
         state.transformKey = transform.value;
-        state.materialKey = materialKeys[static_cast<size_t>(std::max(node.materialIndex, 0))];
+        const auto& keys = materialKeys[static_cast<size_t>(std::max(node.materialIndex, 0))];
+        state.materialKey = keys.material;
+        state.textureKey = keys.texture;
+        state.tessellationKey = keys.tessellation;
+        ContentHash heightMaterial{keys.displacementMaterial};
         state.triangleFirst = static_cast<uint32_t>(resources.displacedGeometry ? candidates.size() : triangles.size());
         ContentHash hash;
         hash.append(node.worldMatrix.a, sizeof(node.worldMatrix.a));
-        hash.append(materialKeys[static_cast<size_t>(std::max(node.materialIndex, 0))]);
+        hash.append(state.materialKey);
         hash.append(count);
         for (size_t triangleIndex = 0; triangleIndex < count; triangleIndex += 3) {
             VirtualShadowMapPrototypeTriangle triangle;
@@ -289,6 +317,10 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
                 triangleBounds.include(position);
                 hash.append(triangle.vertices[vertex].position);
                 hash.append(triangle.vertices[vertex].uv);
+                if (keys.displacementMaterial != 0 && index < primitive.normals.size()) {
+                    const auto local = primitive.normals[index];
+                    heightMaterial.append(local.x); heightMaterial.append(local.y); heightMaterial.append(local.z);
+                }
                 if (resources.displacedGeometry) {
                     float3 normal(0, 1, 0);
                     if (index < primitive.normals.size()) {
@@ -299,7 +331,7 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
                         normal *= reflected ? -1.0f : 1.0f;
                     }
                     normals.push_back({normal.x, normal.y, normal.z, 0});
-                    if (displaced) { hash.append(normals.back()); }
+                    if (displaced && keys.displacementMaterial == 0) { hash.append(normals.back()); }
                 }
             }
             // Microtriangles stay inside the base triangle plus the maximum
@@ -320,6 +352,7 @@ Result<> gatherResidentTriangles(const scene::Scene& scene,
         }
         expandDisplacedBounds(state.bounds, displaced ? displacementBound(material) : 0.0f);
         state.contentKey = hash.value;
+        state.displacementMaterialKey = heightMaterial.value;
         state.triangleCount = static_cast<uint32_t>(resources.displacedGeometry ? candidates.size() : triangles.size()) - state.triangleFirst;
         resources.bounds.include(state.bounds);
         resources.states.push_back(state);
@@ -336,8 +369,9 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
     std::shared_ptr<VirtualShadowMapLODMetadataCache> lodMetadata = {})
 {
     if (settings.tessellationFactor == 0 || settings.tessellationFactor > kTessellationMaxFactor || settings.subdivisionDepth > 2 ||
-        (!settings.displacementTextures.empty() && settings.displacementTextures.size() != scene.materials().size())) {
-        log = "VSM caster settings require tessellationFactor 1..8, subdivisionDepth 0..2 and one height slot per material";
+        (!settings.displacementTextures.empty() && settings.displacementTextures.size() != scene.materials().size()) ||
+        (!settings.materialTextureRevisions.empty() && settings.materialTextureRevisions.size() != scene.materials().size())) {
+        log = "VSM caster settings require tessellationFactor 1..8, subdivisionDepth 0..2 and matching material slot counts";
         return makeError(Error::InvalidArgument);
     }
     for (const auto& node : scene.renderNodes()) {
@@ -357,8 +391,9 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
     resources.owner = owner;
     resources.sceneIdentity = scene.resourceIdentity();
     resources.structuralRevision = scene.sceneGraph().structuralRevision();
-    resources.texturePublicationRevision = settings.texturePublicationRevision;
-    auto materialKeys = gatherMaterialKeys(scene, log);
+    const bool scoped = !settings.materialTextureRevisions.empty();
+    resources.texturePublicationRevision = scoped ? 0 : settings.texturePublicationRevision;
+    auto materialKeys = gatherMaterialKeys(scene, settings, log);
     if (!materialKeys) { return std::unexpected(materialKeys.error()); }
     GeometryParameters parameters;
     uint32_t patchTriangleCount = 1;
@@ -432,12 +467,15 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
                 ContentHash hash;
                 hash.append(instance.primitiveIndex);
                 hash.append(node.worldMatrix.a, sizeof(node.worldMatrix.a));
-                hash.append((*materialKeys)[static_cast<size_t>(std::max(node.materialIndex, 0))]);
+                const auto& keys = (*materialKeys)[static_cast<size_t>(std::max(node.materialIndex, 0))];
+                hash.append(keys.material);
                 resources.states.push_back({.id = nodeIndex,
                     .bounds = transformedBounds(asset.primitives()[instance.primitiveIndex].bounds, node.worldMatrix),
                     .contentKey = hash.value,
                     .transformKey = transform.value,
-                    .materialKey = (*materialKeys)[static_cast<size_t>(std::max(node.materialIndex, 0))],
+                    .materialKey = keys.material,
+                    .textureKey = keys.texture, .tessellationKey = keys.tessellation,
+                    .displacementMaterialKey = keys.displacementMaterial,
                     .triangleFirst = firstTriangle});
                 expandDisplacedBounds(resources.states.back().bounds, displacement);
                 resources.bounds.include(resources.states.back().bounds);
@@ -545,8 +583,8 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
         tessellation.append(settings.tessellationFactor);
         tessellation.append(settings.subdivisionDepth);
     }
-    resources.tessellationKey = tessellation.value;
-    if (settings.texturePublicationRevision != 0 || resources.displacedGeometry) {
+    resources.tessellationKey = scoped ? 0 : tessellation.value;
+    if (!scoped && (settings.texturePublicationRevision != 0 || resources.displacedGeometry)) {
         ContentHash dependency;
         dependency.append(resources.dependencyKey);
         dependency.append(settings.texturePublicationRevision);
@@ -1149,6 +1187,7 @@ struct VirtualShadowMapCasterCache::Resident
 
     Key key;
     std::vector<TextureView*> displacementTextures;
+    std::vector<VirtualShadowMapMaterialTextureRevisions> materialTextureRevisions;
     VirtualShadowMapCasterResources resources;
     struct Cut
     {
@@ -1261,12 +1300,14 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
         .geometryTransformRevision = scene.geometryTransformRevision(),
         .visibilityRevision = scene.visibilityRevision(),
         .materialRevision = scene.materialRevision(),
-        .texturePublicationRevision = settings.texturePublicationRevision,
+        .texturePublicationRevision = settings.materialTextureRevisions.empty() ? settings.texturePublicationRevision :
+            uint64_t(settings.texturePublicationRevision != 0),
         .tessellationEnabled = settings.tessellationEnabled,
         .instanceBuild = settings.instanceBuild,
         .tessellationFactor = settings.tessellationFactor,
         .subdivisionDepth = settings.subdivisionDepth};
     if (resident_ && resident_->key == key &&
+        std::ranges::equal(resident_->materialTextureRevisions, settings.materialTextureRevisions) &&
         std::ranges::equal(resident_->displacementTextures, settings.displacementTextures)) {
         auto registry = ResourceRegistry::forDevice(device);
         if (!registry) { return std::unexpected(registry.error()); }
@@ -1285,6 +1326,7 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
     resident_ = std::make_shared<Resident>(Resident{
         .key = key,
         .displacementTextures = {settings.displacementTextures.begin(), settings.displacementTextures.end()},
+        .materialTextureRevisions = {settings.materialTextureRevisions.begin(), settings.materialTextureRevisions.end()},
         .resources = *resources});
     return resources;
 }

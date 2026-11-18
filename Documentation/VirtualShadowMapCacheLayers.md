@@ -4,7 +4,7 @@
 
 | 字段 | 内容 |
 |---|---|
-| 0 | 全局原因位：禁用缓存、冷启动、设备、光源/启用状态、设置、场景、结构、几何 publication、纹理 publication、位移依赖、投影范围、强制重画、分层模式变化 |
+| 0 | 失效原因位。场景、几何 publication、投影等可使整面失效；纹理 publication 与细分也可仅影响局部 caster。旧结构原因位保留。 |
 | 1–4 | 分层是否生效、缓存是否复用、静态/动态 caster 数 |
 | 5–10 | 新增、移除、内容变化、变换变化、阴影材质变化、首次动态晋升数 |
 | 11–15 | 合成/静态 dirty bounds 与 rectangles、取消录制数 |
@@ -18,11 +18,23 @@
 
 ## 分类与提交
 
-场景目前没有 authored mobility 字段。分类来自已提交的 caster 内容快照：初始 caster 进入静态层，内容发生变化后单向迁移到动态层。首次迁移必须使静态层旧 footprint 失效，以清除旧阴影；后续移动只使合成层的旧、新 footprint 失效。全局缓存重置时重新分类，不按若干静止帧自动回迁。
+场景目前没有 authored mobility 字段。分类来自已提交的 caster 内容快照。初始 caster 进入静态层，内容发生变化后迁移到动态层。首次迁移使静态层旧 footprint 失效，以清除旧阴影。后续移动只使合成层的旧、新 footprint 失效。全局缓存重置时重新分类；启用 `framesStaticThreshold` 时，连续稳定达到阈值的 caster 可以合并回静态层。
 
 阴影专用 LOD 的 `lodKey` 独立于 authored `contentKey`。仅 cut 变化会使对应静态/合成深度失效，不触发静态向动态晋升；细节见 [阴影专用 LOD](VirtualShadowMapShadowLOD.md)。
 
-pending 录制只有在提交后才能发布分类和缓存；取消不能使未执行的迁移成为后续帧依据。caster 身份仅在同一结构代次内有效。变换键与阴影材质键由 producer 分别生成，不能从旧混合 `contentKey` 推断原因；材质 RGB 等与阴影无关的变化仍沿用现有阴影内容契约。
+pending 录制只有在提交后才能发布分类和缓存。caster 的 render node 索引在同一 scene identity 内稳定，SceneGraph 结构版本变化后仍可对照已提交的快照，识别新增、移除及变更的 caster。场景重载、重新组合或 stream 发布新几何时仍重建深度缓存。
+
+## 场景变化的失效范围
+
+Single 和 Lights Pass 按材质记录实际参与 MASK 覆盖和位移采样的纹理版本。纹理重发布或细分采样密度变化时，使用该资源的 caster 以旧、新范围更新深度；静态 caster 保持静态。改变生效的 authored 遮挡材质或变换仍按原规则晋升动态。直接调用者仅提供全局纹理版本时，继续使用全局失效。诊断中的纹理和细分原因位也可伴随 `reused=1` 出现，此时页计数表示局部更新。
+
+spot 和 point 的 coarse 页与本面 fine mip 具有相同视锥。合成层、静态层和静态合并各自复用本面 level 0 的投影结果，只有与对应旧、新范围相交的灯面需要更新。穿过近面的包围盒若完全位于同一侧平面之外，也可排除。仍可能进入视锥的跨近面包围盒保守覆盖整个灯面。方向光 coarse 继续覆盖完整场景，投影范围增长超出缓存时仍重建。逐 view GPU LOD 变化也按对应局部灯面的范围处理。候选槽位布局变化使旧 GPU LOD 掩码无法直接比较时，当前 caster 的覆盖范围会保守失效。
+
+对照本机 UE 5.7.4，`VirtualShadowMapCacheManager.cpp` 在场景更新前后收集旧实例和新实例，`VirtualShadowMapCacheInvalidation.ush` 按 VSM 视锥和已分配页筛选。Metallic 使用已提交的 caster 快照与当前快照的世界 AABB，检查驻留页，包括本帧未请求的页。RenderGraph 的场景绑定刷新仍可重置时域历史；stream runtime 重新发布几何也有独立的缓存代次。
+
+2026-11-18，Release，RTX 5060。扩展的 `virtual_shadow_map_cache_layers` 通过 102 个状态，比较分层缓存、普通缓存、强制重绘的可见性和可查询 D32，Vulkan validation 消息为 0。点光 caster 从 −Z 进入 +X 后，两面的 coarse 各重绘 1 页，其余四面为 0；聚光灯锥外的显隐均复用 68 个静态 fine 页。resident / stream 的实际采样高度或 alpha 纹理换版均重绘 8 个静态 fine 页，复用 14 页，未采样纹理换版的脏页为 0。另以 `ktx2_texture_feedback_submission_contract` 验证真实 mip 迁移只更新被替换槽位的版本。原始结果见 [缓存回归报告](../build/vsm-invalidation/Run1/VirtualShadowMapCacheLayers/VirtualShadowMapCacheLayers.json)。
+
+实际 Single/Lights RenderGraph、逐 view GPU LOD 的 22 个状态、共享物理池的 60 个状态及 remap 独立参考也通过，以上 VSM 报告的 Vulkan validation 消息均为 0。共享池首次运行因 Slang 源码目录变更通知而中断，单独复跑完整通过。[共享池复跑结果](../build/vsm-invalidation/PoolRetry/VirtualShadowMapPhysicalPool/Report.json)。
 
 ## 深度与工作量
 

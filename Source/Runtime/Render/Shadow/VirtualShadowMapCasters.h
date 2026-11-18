@@ -28,6 +28,12 @@ struct VirtualShadowMapGPUHierarchy
 // 128-triangle cluster; its bounds serve two adjacent groups.
 inline constexpr uint32_t kVirtualShadowMapCasterClusterSize = 64;
 
+struct VirtualShadowMapMaterialTextureRevisions
+{
+    uint64_t alpha = 0, height = 0;
+    bool operator==(const VirtualShadowMapMaterialTextureRevisions&) const = default;
+};
+
 struct VirtualShadowMapCasterSettings
 {
     bool tessellationEnabled = false; // Must match the receiver producer's explicit mode.
@@ -43,16 +49,26 @@ struct VirtualShadowMapCasterSettings
     // Zero is appropriate only when no shadow material samples a texture.
     uint64_t texturePublicationRevision = 0;
     bool instanceBuild = false;
+    // One entry per material when individual image publications are available.
+    // Direct producers with only a global revision leave this empty.
+    std::span<const VirtualShadowMapMaterialTextureRevisions> materialTextureRevisions;
 };
 
 struct VirtualShadowMapCasterState
 {
-    // Render-node identity is stable within the published structural revision.
+    // Load and composition assign a new scene identity before renumbering render nodes.
     uint64_t id = 0;
     scene::Bounds bounds;
     uint64_t contentKey = 0;
     uint64_t transformKey = 0;
     uint64_t materialKey = 0;
+    // Sampled image and displaced surface changes invalidate cached depth
+    // without classifying an authored static caster as moving.
+    uint64_t textureKey = 0;
+    uint64_t tessellationKey = 0;
+    // Independent of whether tessellation currently runs. Compare authored
+    // height inputs only when either snapshot actually displaces the surface.
+    uint64_t displacementMaterialKey = 0;
     // Independent of authored content: a cut change invalidates depth without
     // classifying an otherwise static caster as moving. Zero is the base cut.
     uint64_t lodKey = 0;
@@ -142,7 +158,7 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapGPUShadowLOD(
     const VirtualShadowMapCasterSettings& settings, std::string& log);
 
 // Selects one layer from a complete producer snapshot. IDs are sorted and use
-// the source structural revision. Geometry slot IDs/capacity and complete scene
+// the source scene identity. Geometry slot IDs/capacity and complete scene
 // bounds stay unchanged; states contains only the selected layer's casters.
 // The immutable variant retains the source uploads and descriptor leases.
 Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasterLayer(

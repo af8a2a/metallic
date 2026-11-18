@@ -91,11 +91,13 @@ bool vsmChangedBoundRect(float3 minimum, float3 maximum, ShadowProjection projec
         lo = min(lo, xy); hi = max(hi, xy);
     }
     rectangle = uint4(0u);
+    // Even across the near plane, x > max(w, near) at all eight corners
+    // proves x > w throughout the box (likewise for the other three sides).
+    if (any(hi < -1.0) || any(lo > 1.0)) { return false; }
     if (perspective && loW <= projection.originNear.w) {
         if (hiW < projection.originNear.w) { return false; }
         lo = float2(-1.0); hi = float2(1.0);
     }
-    if (any(hi < -1.0) || any(lo > 1.0)) { return false; }
     float4 edges = clamp(float4(lo, hi), -1.0, 1.0);
     float4 halfUnit = float4(.5), axis = float4(float(projection.page.y));
     float4 guard = float4(-.0001, -.0001, .0001, .0001);

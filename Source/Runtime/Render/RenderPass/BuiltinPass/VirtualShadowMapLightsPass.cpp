@@ -35,10 +35,12 @@ uint64_t temporalContentKey(const VirtualShadowMapCasterResources& casters, cons
         const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
         for (size_t i = 0; i < sizeof(value); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
     };
-    append(casters.sceneIdentity); append(casters.structuralRevision); append(casters.dependencyKey);
+    append(casters.sceneIdentity); append(casters.dependencyKey);
     append(raster.sceneIdentity); append(raster.rasterSettingsRevision);
     for (const auto& caster : casters.states) {
-        append(caster.id); append(caster.contentKey); append(caster.lodKey); append(caster.bounds.valid);
+        append(caster.id); append(caster.contentKey); append(caster.lodKey);
+        append(caster.textureKey); append(caster.tessellationKey); append(caster.bounds.valid);
+        if (caster.tessellationKey != 0) { append(caster.displacementMaterialKey); }
         append(caster.bounds.min.x); append(caster.bounds.min.y); append(caster.bounds.min.z);
         append(caster.bounds.max.x); append(caster.bounds.max.y); append(caster.bounds.max.z);
     }
@@ -596,17 +598,24 @@ public:
                 const auto logicalTextures = materialResources.logicalTextureIndices();
                 std::vector<TextureView*> alphaTextures(scene->materials().size());
                 std::vector<TextureView*> displacementTextures(scene->materials().size());
+                std::vector<VirtualShadowMapMaterialTextureRevisions> textureRevisions(scene->materials().size());
                 for (size_t index = 0; index < scene->materials().size(); ++index) {
                     const auto& material = scene->materials()[index];
                     const auto logical = material.baseColorTexture.textureIndex;
                     if (material.alphaMode == "MASK" && logical >= 0 && size_t(logical) < logicalTextures.size()) {
                         const uint32_t slot = logicalTextures[logical];
-                        if (slot < textures->views.size()) { alphaTextures[index] = textures->views[slot].get(); }
+                        if (slot < textures->views.size()) {
+                            alphaTextures[index] = textures->views[slot].get();
+                            textureRevisions[index].alpha = textures->slotPublicationRevisions[slot];
+                        }
                     }
                     const auto displacement = material.displacementTexture.textureIndex;
                     if (material.displacementMagnitude != 0 && displacement >= 0 && size_t(displacement) < logicalTextures.size()) {
                         const uint32_t slot = logicalTextures[displacement];
-                        if (slot < textures->views.size()) { displacementTextures[index] = textures->views[slot].get(); }
+                        if (slot < textures->views.size()) {
+                            displacementTextures[index] = textures->views[slot].get();
+                            textureRevisions[index].height = textures->slotPublicationRevisions[slot];
+                        }
                     }
                 }
                 const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
@@ -617,7 +626,7 @@ public:
                     .tessellationFactor = properties.value("tessellationFactor", 4u),
                     .subdivisionDepth = properties.value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
                     .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0,
-                    .instanceBuild = settings.instanceBuild};
+                    .instanceBuild = settings.instanceBuild, .materialTextureRevisions = textureRevisions};
                 auto casters = casterCache_.prepare(*device_, commands, *scene,
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }

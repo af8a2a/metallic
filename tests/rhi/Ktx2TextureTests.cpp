@@ -948,6 +948,9 @@ public:
         const uint32_t slot = resources.logicalTextureIndices()[1];
         const uint32_t baseMip = resources.materialTextureFirstMips()[1];
         const uint64_t baseline = resources.textureStats().residentAllocationBytes;
+        const auto initialRevisions = resources.materialTextureSnapshot()->slotPublicationRevisions;
+        require(initialRevisions.size() == resources.materialTextureCount() && initialRevisions.at(slot) != 0,
+            "Every published texture view needs its corresponding slot revision");
         ShaderCompileResult shader;
         require(compileSlangShaderToSpirv({.moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
@@ -1122,6 +1125,11 @@ public:
         require(frame.wait(), "feedback shared-demand completion");
         require(resources.materialTextureFirstMips()[1] == 1 && resources.textureStats().upgrades == 2,
             "Graph-end readback lost the second consumer's fine mip demand");
+        const auto& published = resources.materialTextureSnapshot()->slotPublicationRevisions;
+        for (size_t index = 0; index < initialRevisions.size(); ++index) {
+            require((published.at(index) != initialRevisions[index]) == (index == slot),
+                "A mip migration must change only its shadow texture slot revision");
+        }
         for (auto& command : commands) { command.reset(); }
         require(frame.reset(), "feedback contract final reset");
         resources.clear();

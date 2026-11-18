@@ -120,7 +120,10 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
             if (oldIndex != 0xffffffffu) {
                 StructuredBuffer<uint4> previous = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.previousPages));
                 uint4 old = previous[oldIndex];
-                bool mappingDirty = (push.cacheMode & 4u) != 0u || (coarse && push.dirtyBoundsCount != 0u);
+                // Local mips and coarse share a frustum. A level-zero
+                // rectangle exists exactly when a changed bound hits this face.
+                bool mappingDirty = (push.cacheMode & 4u) != 0u || (coarse &&
+                    (push.lightType == 0u ? push.dirtyBoundsCount : changes[0].w) != 0u);
                 // Only resident pages need rectangle tests. Count consumes these
                 // flags before replacing the same scratch words with scan ranks.
                 if (old.x != 0xffffffffu) {
@@ -128,9 +131,11 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                     mappingDirty = mappingDirty || lodDirty;
                     uint staticFlags = 0u;
                     if ((push.cacheMode & 16u) != 0u) {
-                        bool staticDirty = lodDirty || (push.cacheMode & 4u) != 0u || (coarse && vsmCacheMetadata(push, 35u) != 0u);
+                        uint staticBase = vsmCacheMetadata(push, 36u);
+                        bool staticDirty = lodDirty || (push.cacheMode & 4u) != 0u || (coarse &&
+                            (push.lightType == 0u ? vsmCacheMetadata(push, 35u) : changes[staticBase].w) != 0u);
                         if (!coarse) {
-                            uint4 staticChange = changes[vsmCacheMetadata(push, 36u) + entry.z];
+                            uint4 staticChange = changes[staticBase + entry.z];
                             for (uint rectangle = 0u; !staticDirty && rectangle < staticChange.w; ++rectangle) {
                                 uint4 bounds = changes[staticChange.z + rectangle];
                                 staticDirty = all(page >= bounds.xy) && all(page <= bounds.zw);
@@ -178,9 +183,10 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 #endif
                     }
                     if ((push.cacheMode & 32u) != 0u) {
-                        bool transitioned = coarse;
+                        uint mergeBase = vsmCacheMetadata(push, kVSMCacheMergeRemap);
+                        bool transitioned = coarse && (push.lightType == 0u || changes[mergeBase].w != 0u);
                         if (!coarse) {
-                            uint4 merge = changes[vsmCacheMetadata(push, kVSMCacheMergeRemap) + entry.z];
+                            uint4 merge = changes[mergeBase + entry.z];
                             for (uint rectangle = 0u; !transitioned && rectangle < merge.w; ++rectangle) {
                                 uint4 bounds = changes[merge.z + rectangle];
                                 transitioned = all(page >= bounds.xy) && all(page <= bounds.zw);
