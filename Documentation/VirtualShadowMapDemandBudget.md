@@ -34,6 +34,18 @@ CPU profile 中，`Record VSM build and raster batches` 发布实际录制计数
 
 当前批处理夹具包含 60 组三臂对照。新增 compact Build + dirty-page hierarchy，以及 directional instance Build + page-window raster + hierarchy 两种组合，各在 combined/layered 模式下覆盖冷帧与 caster 移动；断言细页脏工作非空，分层时通过 GPU 诊断确认静态深度重绘、HZB 构建和动态几何合成都实际执行。实例分支同时向 caster producer 请求并验证 instance table，避免设置开启却退回普通 Build。
 
+## Cluster 级混合光栅
+
+在 `VirtualShadowMapLightsPass` 或独立 `VirtualShadowMapPass` 上将 `clusterHybridRaster` 设为 `true`，可为细页启用计算光栅。该运行时选项默认关闭，启用后使用按 cluster/page 打包的 Build。跨灯批处理、共享池逐面录制、独立池均走各自原有的 Build、缓存与投影入口。
+
+GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view 的当前 clipmap 或 mip 中计算投影范围。屏幕对角线不超过 **32 个阴影 texel** 的 cluster 才进入软件候选，页边裁剪不会把大 cluster 误分成微三角。Unreal 的对应判定使用离线记录的最大三角边长，Metallic 的包围盒判定更保守。软件与硬件复用同一页裁剪和 GPU LOD 选择。需要近面裁剪、需要 MASK 材质覆盖计算的工作和粗页交给硬件。位移 caster 批次及缺少所需 subgroup 能力或子像素精度不兼容的设备沿用硬件路径。
+
+软件光栅用整数子像素边函数执行 top-left 覆盖测试，在共享临时缓冲内以 `InterlockedMax` 写入反向深度。分类阶段将剩余的硬件 ticket 索引紧凑写入列表，同时生成每批间接 mesh draw 的组数。交给软件的 ticket 不启动硬件 mesh group。现有清页／静态深度恢复 draw 将软件结果合入 D32，再执行硬件光栅、静态 HZB 和投影。只需在会重绘的页上清临时深度。每份临时深度缓冲最多使用 64 MiB，同一代共享池的所有灯面复用一份。超出缓冲容量的物理槽以及保留旧静态深度的增量合并页继续使用硬件。切换光栅模式会重新绘制受影响的页缓存。
+
+打开 `benchmarkGPUWork` 可在每面的私有 cache diagnostics 中读取软件 tickets、硬件 tickets 和软件覆盖样本数（字 54–56）。一个 ticket 是原始 cluster 内最多 16 个槽在某一页上的工作。覆盖样本数包含遮挡竞争时对同一 texel 的多次写入。图中既有 `cacheDiagnostics` 输出仍为每面前 32 个字。
+
+`virtual_shadow_map_cluster_hybrid_raster` 将混合路径与纯硬件逐页对照，检查 D32、投影可见性和实际提交的细页 mesh 工作组。Sponza 的 960×540 双层硬阴影对照使用 32 像素页、每轴 16 个虚页、2048 个物理页。第 0 帧冷启动、第 50 帧移动相机和第 63 帧缓存复用的阴影、HDR 与最终画面逐字节一致。冷帧细页硬件工作组由 229800 减到 54575，移动帧由 21516 减到 11563。这些数字是工作组计数。
+
 ## 图集与统计范围
 
 共享深度图集为 `Texture2DArray`，最多 262144 个逻辑槽。容量不超过 4096 时，单层网格为 `X=ceil(sqrt(capacity))`、`Y=ceil(capacity/X)`；更大时每层固定 64×64 页，层数向上取整。`pageSize=128` 时单层最大为 8192×8192。所有灯使用同一 viewport 与层网格；mapping 保存全局 physical slot。静态分层使用同样布局的第二张图集；static HZB 按最多 4096 页一个 buffer bank 寻址。

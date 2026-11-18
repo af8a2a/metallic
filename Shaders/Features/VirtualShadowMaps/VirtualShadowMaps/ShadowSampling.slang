@@ -183,18 +183,34 @@ float vsmSearchLength(float3 position, float linearDepth, ViewConstants view, Sh
     return min(push.rayLength, push.rayLengthScale * distance);
 }
 
-float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,
-    VSMReceiverBasis basis, ShadowProjection projection, ShadowPush push)
+struct VSMReceiverFootprint
 {
-    if (!vsmUsesReceiverFootprint(push)) { return 0.0; }
-    float footprint = basis.isOrtho ? (basis.orthoHalfHeight * 2.0) * basis.invViewport.y :
+    float width;
+    float3 dx, dy;
+    bool hasDifferentials;
+};
+
+VSMReceiverFootprint vsmReceiverFootprint(float3 position, float3 normal, float linearDepth,
+    VSMReceiverBasis basis, ShadowPush push)
+{
+    VSMReceiverFootprint footprint = {};
+    if (!vsmUsesReceiverFootprint(push)) { return footprint; }
+    footprint.width = basis.isOrtho ? (basis.orthoHalfHeight * 2.0) * basis.invViewport.y :
         (2.0 * linearDepth * basis.tanHalfFov) * basis.invViewport.y;
     float3 viewRay = basis.isOrtho ? basis.forward : position - basis.eye;
     float denominator = dot(normal, viewRay);
     // An undefined or edge-on depth plane has no finite pixel differential.
     if (abs(denominator) <= 1e-5 * length(viewRay)) { return footprint; }
-    float3 dx = basis.right - viewRay * (dot(normal, basis.right) / denominator);
-    float3 dy = basis.up - viewRay * (dot(normal, basis.up) / denominator);
+    footprint.dx = basis.right - viewRay * (dot(normal, basis.right) / denominator);
+    footprint.dy = basis.up - viewRay * (dot(normal, basis.up) / denominator);
+    footprint.hasDifferentials = true;
+    return footprint;
+}
+
+float vsmProjectedReceiverFootprint(float3 position, VSMReceiverFootprint footprint, ShadowProjection projection, ShadowPush push)
+{
+    if (!footprint.hasDifferentials) { return footprint.width; }
+    float3 dx = footprint.dx, dy = footprint.dy;
     float3 lightRight = normalize(projection.rowX.xyz), lightUp = normalize(projection.rowY.xyz);
     if (push.lightType != 0u) {
         float3 fromLight = position - projection.originNear.xyz;
@@ -213,7 +229,13 @@ float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linear
     float maximumSquared = 0.5 * (aa + bb + length(float2(aa - bb, 2.0 * ab)));
     // The smaller singular value preserves resolution along the compressed
     // axis at grazing incidence. An area ratio misses projection shear.
-    return footprint * abs(a.x * b.y - a.y * b.x) * rsqrt(maximumSquared);
+    return footprint.width * abs(a.x * b.y - a.y * b.x) * rsqrt(maximumSquared);
+}
+
+float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,
+    VSMReceiverBasis basis, ShadowProjection projection, ShadowPush push)
+{
+    return vsmProjectedReceiverFootprint(position, vsmReceiverFootprint(position, normal, linearDepth, basis, push), projection, push);
 }
 
 float vsmProjectedReceiverFootprint(float3 position, float3 normal, float linearDepth,

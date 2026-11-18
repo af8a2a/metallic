@@ -71,6 +71,7 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
 #if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
     if (id.x == 0u) {
         RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+        // x counts all packed tickets, y/z count hardware tickets for the composite/static pass.
         work[0] = uint4(0u);
     }
 #endif

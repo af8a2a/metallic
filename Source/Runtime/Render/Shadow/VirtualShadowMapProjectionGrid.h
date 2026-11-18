@@ -33,8 +33,11 @@ static const uint32_t kVSMGridWaveLocalJobs = 4;
 static const uint32_t kVSMGridSkippedWaveLocalJobs = 5;
 static const uint32_t kVSMGridProjectedLaneJobs = 6;
 static const uint32_t kVSMGridPossibleLaneJobs = 7;
-static const uint32_t kVirtualShadowMapProjectionGridCounterCount = 8;
-static const uint32_t kVirtualShadowMapProjectionGridDiagnosticSize = 64;
+static const uint32_t kVSMGridReceiverCenterLoads = 8;
+static const uint32_t kVSMGridReceiverNormalBuilds = 9;
+static const uint32_t kVSMGridReceiverNormalUses = 10;
+static const uint32_t kVirtualShadowMapProjectionGridCounterCount = kVSMGridReceiverNormalUses + 1;
+static const uint32_t kVirtualShadowMapProjectionGridDiagnosticSize = kVirtualShadowMapProjectionGridCounterCount * 8;
 
 #ifdef __cplusplus
 static_assert(sizeof(VirtualShadowMapProjectionJobRange) == 8);
@@ -42,7 +45,8 @@ static_assert(sizeof(VirtualShadowMapProjectionGrid) == 544);
 inline constexpr std::array<std::string_view, kVirtualShadowMapProjectionGridCounterCount>
     kVirtualShadowMapProjectionGridCounterNames{
         "receiverLookups", "gridFallback", "localCandidates", "localMemberships",
-        "waveLocalJobs", "skippedWaveLocalJobs", "projectedLaneJobs", "possibleLaneJobs"};
+        "waveLocalJobs", "skippedWaveLocalJobs", "projectedLaneJobs", "possibleLaneJobs",
+        "receiverCenterLoads", "receiverNormalBuilds", "receiverNormalUses"};
 } // namespace metallic::render
 #endif
 #undef VSM_GRID_PUBLIC

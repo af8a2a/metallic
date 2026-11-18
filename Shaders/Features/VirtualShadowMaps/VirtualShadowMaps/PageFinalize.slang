@@ -14,6 +14,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_CLUSTER_PAGE_RASTER
 #define VSM_CLUSTER_PAGE_RASTER 0
 #endif
+#ifndef VSM_CLUSTER_HYBRID_RASTER
+#define VSM_CLUSTER_HYBRID_RASTER 0
+#endif
 #ifndef VSM_BATCHED_BUILD_RASTER
 #define VSM_BATCHED_BUILD_RASTER 0
 #endif
@@ -41,6 +44,15 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
     uint coarsePage = push.totalPages - 1u;
     bool redrawCoarse = statistics[21] != 0u;
     bool mergeFrame = (push.cacheMode & 32u) != 0u;
+#if VSM_CLUSTER_HYBRID_RASTER
+    if (id.x < push.batchCount) {
+        uint first = (vsmCacheMetadata(push, kVSMHybridDrawOffset) + id.x) * 3u;
+        uint second = first + push.batchCount * 3u;
+        arguments[first] = arguments[second] = 0u;
+        arguments[first + 1u] = arguments[second + 1u] = 1u;
+        arguments[first + 2u] = arguments[second + 2u] = 1u;
+    }
+#endif
 #if VSM_CLUSTER_PAGE_RASTER
     if (id.x == 0u) {
         uint clearOffset = vsmCacheMetadata(push, kVSMCacheMergeDrawOffset) +

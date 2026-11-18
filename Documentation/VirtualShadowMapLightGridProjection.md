@@ -26,10 +26,10 @@ and filter eligibility checks still apply.
   jobs; membership gates per-pixel work, while the existing per-job subgroup
   reductions remain outside that branch. Descriptor indices remain uniform
   within each subgroup.
-- Celestial and local jobs share one filtering call site. Actual projection
-  retains its original per-job receiver reconstruction. An earlier candidate
-  shared that reconstruction and used two call sites; it failed exact image
-  comparison and is not retained.
+- Celestial and local jobs share one filtering call site. Each in-bounds pixel
+  loads its center depth once and shares the reconstructed receiver position
+  and linear depth across jobs. Jobs that need a receiver normal reuse its
+  depth-derived normal. Grid selection uses the same center sample.
 - LightsPass clears the external visibility array to white before projection,
   so omitted local receivers need no store. Debug pixels and receiver/background
   counters may differ where an omitted job previously wrote or counted them.
@@ -42,9 +42,10 @@ producer preserve lifetime through command completion.
 
 ## Diagnostics
 
-`benchmarkGPUWork: true` exposes `Shadows.projectionGridDiagnostics`, eight
-unsigned 64-bit counters stored as low/high uint pairs. Ordinary timing disables
-these atomics.
+`benchmarkGPUWork: true` exposes `Shadows.projectionGridDiagnostics`.
+The first 64 bytes contain the eight grid counters. The following 24 bytes
+contain the receiver reuse counters. Each counter uses a low/high uint pair.
+Ordinary timing disables these atomics.
 
 | Counter | Meaning |
 |---|---|
@@ -56,6 +57,9 @@ these atomics.
 | skippedWaveLocalJobs | Local face jobs absent from subgroup unions |
 | projectedLaneJobs | Per-pixel local face-helper calls, before canonical-face/domain rejection |
 | possibleLaneJobs | Full-screen local face-helper calls in the original path |
+| receiverCenterLoads | Center-depth samples loaded to reconstruct in-bounds one-pass receivers, including background pixels |
+| receiverNormalBuilds | Depth-derived receiver normals computed by one-pass projection |
+| receiverNormalUses | Per-face projection jobs consuming a receiver normal, counted per pixel |
 
 Use `benchmarkProjectionProfile: true` with `benchmarkGPUProfile: false` to
 collect Projection scopes without exhausting the render graph's 256-section

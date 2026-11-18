@@ -31,6 +31,7 @@ VirtualShadowMapSettings shadowSettings(const RenderGraphProperties& properties)
     settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
     settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", false);
     settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
+    settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
     settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
     settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
     settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
@@ -114,6 +115,7 @@ public:
             runtimeIntSetting("lightIndex", "Celestial Light (0 Sun, 1 Moon)", 0, 0, 1),
             runtimeBoolSetting("cacheEnabled", "Cache Shadow Pages", false),
             runtimeBoolSetting("cacheLayering", "Separate Static and Dynamic Depth", false),
+            runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
             runtimeIntSetting("framesStaticThreshold", "Frames Before Caster Becomes Static (0 Off)", 100, 0, 65535),
             runtimeBoolSetting("shadowLOD", "Shadow-specific Geometry LOD", false),
             runtimeBoolSetting("shadowLODSmartBias", "Shadow LOD Screen Depth Bias", false),

@@ -110,7 +110,7 @@ public:
         reflection.addBufferOutput("resolutionDiagnostics", "Completed pool demand and current receiver resolution LOD bias")
             .buffer(sizeof(VirtualShadowMapResolutionController::Diagnostics), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         if (properties().value("benchmarkGPUWork", false)) {
-            reflection.addBufferOutput("projectionGridDiagnostics", "One-pass local light grid workload; eight low/high uint pairs")
+            reflection.addBufferOutput("projectionGridDiagnostics", "One-pass light grid and shared receiver counters in low/high uint pairs")
                 .buffer(kVirtualShadowMapProjectionGridDiagnosticSize, sizeof(uint32_t))
                 .bufferLayout("u32").transferWrite()
                 .stageAccess(RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Compute);
@@ -168,6 +168,7 @@ public:
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
             runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", true),
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
+            runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
@@ -323,6 +324,7 @@ public:
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
+        settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
         settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);

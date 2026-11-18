@@ -6,6 +6,7 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapLights.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProjectionGrid.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -90,7 +91,8 @@ constexpr uint64_t kReadbackSize = kDebugOffset + kPixels * 4 * kLayers;
 constexpr uint64_t kHDROffset = (kReadbackSize + 15) & ~uint64_t(15);
 constexpr uint64_t kWorkOffset = kHDROffset + kPixels * 16;
 constexpr uint64_t kBuildOffset = kWorkOffset + kLayers * kVirtualShadowMapWorkloadSize;
-constexpr uint64_t kWorkReadbackSize = kBuildOffset + kLayers * kVirtualShadowMapBuildDiagnosticSize;
+constexpr uint64_t kProjectionGridOffset = kBuildOffset + kLayers * kVirtualShadowMapBuildDiagnosticSize;
+constexpr uint64_t kWorkReadbackSize = kProjectionGridOffset + kVirtualShadowMapProjectionGridDiagnosticSize;
 constexpr uint64_t kCacheOffset = kWorkReadbackSize;
 constexpr uint64_t kCacheReadbackSize = kCacheOffset + kLayers * kVirtualShadowMapCacheDiagnosticSize;
 
@@ -116,6 +118,7 @@ public:
         if (captureWork) {
             reflection.addBufferInput("workload").buffer(kLayers * kVirtualShadowMapWorkloadSize).transferRead();
             reflection.addBufferInput("buildDiagnostics").buffer(kLayers * kVirtualShadowMapBuildDiagnosticSize).transferRead();
+            reflection.addBufferInput("projectionGridDiagnostics").buffer(kVirtualShadowMapProjectionGridDiagnosticSize).transferRead();
         }
         const bool captureCache = properties().value("captureCache", false);
         if (captureCache) {
@@ -163,7 +166,8 @@ public:
         if (context.properties().value("captureWork", false)) {
             for (const auto& [field, offset, size] : {
                      std::tuple{"workload", kWorkOffset, uint64_t(kLayers * kVirtualShadowMapWorkloadSize)},
-                     std::tuple{"buildDiagnostics", kBuildOffset, uint64_t(kLayers * kVirtualShadowMapBuildDiagnosticSize)}}) {
+                     std::tuple{"buildDiagnostics", kBuildOffset, uint64_t(kLayers * kVirtualShadowMapBuildDiagnosticSize)},
+                     std::tuple{"projectionGridDiagnostics", kProjectionGridOffset, uint64_t(kVirtualShadowMapProjectionGridDiagnosticSize)}}) {
                 auto source = context.inputBuffer(field).buffer()->slice({0, size});
                 auto destination = buffer->slice({offset, size});
                 if (!source) { return std::unexpected(source.error()); }
@@ -210,6 +214,7 @@ struct Snapshot {
     std::array<std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount>, kLayers> cacheDiagnostics{};
     std::array<std::array<uint64_t, kVirtualShadowMapWorkCounterCount>, kLayers> workload{};
     std::array<std::array<uint64_t, kVirtualShadowMapBuildDiagnosticCounterCount>, kLayers> buildDiagnostics{};
+    std::array<uint64_t, kVirtualShadowMapProjectionGridCounterCount> projectionGrid{};
     std::array<std::vector<uint8_t>, kLayers> shadows;
     std::array<std::vector<uint8_t>, kLayers> debug;
     std::array<uint64_t, 8> memory{};
@@ -244,6 +249,7 @@ Snapshot snapshot(const std::string& name, bool captureDebug = false, bool captu
     if (captureWork) {
         std::memcpy(result.workload.data(), mapped + kWorkOffset, sizeof(result.workload));
         std::memcpy(result.buildDiagnostics.data(), mapped + kBuildOffset, sizeof(result.buildDiagnostics));
+        std::memcpy(result.projectionGrid.data(), mapped + kProjectionGridOffset, sizeof(result.projectionGrid));
     }
     if (captureCache) { std::memcpy(result.cacheDiagnostics.data(), mapped + kCacheOffset, sizeof(result.cacheDiagnostics)); }
     if (captureHDR) {
@@ -1246,7 +1252,7 @@ public:
                             graph.addEdge(node + ".lights", deferred + ".virtualShadowLights");
                             graph.addNode("VSMQualityEvidencePass", capture,
                                 {{"evidenceName",node},{"captureDebug",debug},{"debugInput",debug},{"captureHDR",true},{"captureWork",true},{"captureCache",layered_}});
-                            for (const char* field : {"shadows","lights","statistics","memory","workload","buildDiagnostics"}) {
+                            for (const char* field : {"shadows","lights","statistics","memory","workload","buildDiagnostics","projectionGridDiagnostics"}) {
                                 graph.addEdge(node + "." + field, capture + "." + field);
                             }
                             if (layered_) { graph.addEdge(node + ".cacheDiagnostics", capture + ".cacheDiagnostics"); }
@@ -1399,6 +1405,27 @@ public:
                                     {"entries", std::move(lightEntries)}};
                                 frameReport["workload"][names[arm]] = image.workload;
                                 frameReport["buildDiagnostics"][names[arm]] = image.buildDiagnostics;
+                                const uint64_t centerLoads = image.projectionGrid[kVSMGridReceiverCenterLoads];
+                                const uint64_t normalBuilds = image.projectionGrid[kVSMGridReceiverNormalBuilds];
+                                const uint64_t normalUses = image.projectionGrid[kVSMGridReceiverNormalUses];
+                                frameReport["receiverReuse"][names[arm]] = {{"centerLoads",centerLoads},
+                                    {"normalBuilds",normalBuilds},{"normalUses",normalUses}};
+                                if (arm != 2 && activeFaces > 1) {
+                                    uint64_t projectedReceivers = 0;
+                                    for (const auto& counts : image.workload) {
+                                        projectedReceivers += counts[kVSMWorkProjectionReceivers];
+                                    }
+                                    require(centerLoads == kPixels && normalBuilds <= foregroundPixels &&
+                                        normalBuilds <= normalUses && normalUses == projectedReceivers,
+                                        phase + ": one-pass receiver work disagrees with depth or per-face projection counts");
+                                    if (isRoom && frame == 0) {
+                                        require(normalBuilds > 0 && normalUses > normalBuilds,
+                                            phase + ": overlapping lights did not reuse any receiver normal");
+                                    }
+                                } else {
+                                    require(centerLoads == 0 && normalBuilds == 0 && normalUses == 0,
+                                        phase + ": per-face projection reported one-pass receiver work");
+                                }
                                 std::array<uint64_t, kLayers> omittedForeground{}, omittedBackground{};
                                 uint64_t omittedSentinelPixels = 0;
                                 if (arm == 1) {
@@ -3589,7 +3616,7 @@ public:
                 captureProperties["captureWork"] = true;
                 captureProperties["captureCache"] = true;
                 require(graph.setNodeProperties(captureNode->id, std::move(captureProperties)), "Declare receiver-mask workload/cache inputs");
-                for (const char* field : {"workload", "buildDiagnostics", "cacheDiagnostics"}) {
+                for (const char* field : {"workload", "buildDiagnostics", "projectionGridDiagnostics", "cacheDiagnostics"}) {
                     graph.addEdge(std::string(name) + "." + field, capture + "." + field);
                 }
             }
@@ -3777,7 +3804,7 @@ public:
             auto properties = output->properties;
             properties["captureWork"] = true; properties["captureCache"] = true;
             require(graph.setNodeProperties(output->id, std::move(properties)), "Declare HZB readback");
-            for (const char* field : {"workload", "buildDiagnostics", "cacheDiagnostics"}) {
+            for (const char* field : {"workload", "buildDiagnostics", "projectionGridDiagnostics", "cacheDiagnostics"}) {
                 graph.addEdge(std::string("Compact.") + field, std::string("CompactEvidence.") + field);
             }
             const auto move = [&](uint32_t node, float x) {

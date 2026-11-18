@@ -5,11 +5,13 @@
 #include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapProfiling.h"
 #include "Runtime/Render/Shadow/VirtualShadowMaps.h"
 #include "Runtime/Scene/SceneDocument.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -110,12 +112,61 @@ struct PoolFace
     VirtualShadowMapLight light;
 };
 
+std::filesystem::path writeHybridFixture(const std::filesystem::path& directory)
+{
+    std::filesystem::create_directories(directory);
+    std::vector<std::array<float, 3>> positions;
+    // Each grid is exactly one resident 64-triangle group. The small blocker
+    // crosses two virtual page boundaries over the hardware-rasterized floor.
+    const auto grid = [&](float extent, float height) {
+        for (uint32_t y = 0; y < 4; ++y) {
+            for (uint32_t x = 0; x < 8; ++x) {
+                const float x0 = extent * (float(x) / 4.0f - 1.0f);
+                const float x1 = x0 + extent / 4.0f;
+                const float y0 = extent * (float(y) / 2.0f - 1.0f);
+                const float y1 = y0 + extent / 2.0f;
+                const std::array<float, 3> a{x0, y0, height}, b{x1, y0, height}, c{x1, y1, height}, d{x0, y1, height};
+                if (height > 0 && x >= 4) {
+                    positions.insert(positions.end(), {a,c,b, a,d,c});
+                } else {
+                    positions.insert(positions.end(), {a,b,c, a,c,d});
+                }
+            }
+        }
+    };
+    grid(4, 0);
+    grid(.1875f, 1);
+    const auto bytes = positions.size() * sizeof(positions.front());
+    std::ofstream binary(directory / "Clusters.bin", std::ios::binary);
+    binary.write(reinterpret_cast<const char*>(positions.data()), bytes);
+    requirePool(binary.good(), "Write hybrid cluster geometry");
+    auto model = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
+      "nodes":[{"mesh":0},{"mesh":1}],"buffers":[{"uri":"Clusters.bin"}],"bufferViews":[{"buffer":0}],
+      "accessors":[{"bufferView":0,"componentType":5126,"type":"VEC3","min":[-4,-4,0],"max":[4,4,0]},
+        {"bufferView":0,"componentType":5126,"type":"VEC3","min":[-0.1875,-0.1875,1],"max":[0.1875,0.1875,1]}],
+      "materials":[{"doubleSided":true},{"doubleSided":false}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]},
+        {"primitives":[{"attributes":{"POSITION":1},"material":1}]}]})");
+    model["accessors"][0]["count"] = positions.size() / 2;
+    model["accessors"][1]["count"] = positions.size() / 2;
+    model["accessors"][1]["byteOffset"] = bytes / 2;
+    model["buffers"][0]["byteLength"] = bytes;
+    model["bufferViews"][0]["byteLength"] = bytes;
+    const auto path = directory / "Clusters.gltf";
+    std::ofstream file(path);
+    file << model.dump(2);
+    requirePool(file.good(), "Write hybrid cluster fixture");
+    return path;
+}
+
 struct PoolFaceSnapshot
 {
     std::array<uint32_t, 32> stats{};
     std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount> cache{};
     std::vector<Page> pages;
     std::vector<uint8_t> visibility;
+    std::array<uint32_t, 3> hybrid{};
+    uint64_t hardwarePrimitives = 0;
+    uint64_t hardwareFineGroups = 0;
 };
 
 struct PoolSnapshot
@@ -186,21 +237,70 @@ uint32_t requireRetainedDepth(const PoolSnapshot& previous, const PoolSnapshot& 
     return retained;
 }
 
-class VirtualShadowMapPhysicalPoolTest final : public RHITest
+float compareHybridDepth(const PoolSnapshot& actual, const PoolSnapshot& hardware, uint32_t identity, float depthTolerance = 0.0f)
+{
+    const auto& face = actual.faces.at(identity);
+    const auto& reference = hardware.faces.at(identity);
+    requirePool(face.visibility == reference.visibility, "Hybrid visibility differs from hardware");
+    const auto texel = [](const PoolSnapshot& snapshot, uint32_t slot, uint32_t x, uint32_t y) {
+        const uint32_t tile = slot % 4096u;
+        return snapshot.atlas[(uint64_t(slot / 4096u) * snapshot.atlasHeight + (tile / snapshot.pagesX) * snapshot.pageSize + y)
+            * snapshot.atlasWidth + (tile % snapshot.pagesX) * snapshot.pageSize + x];
+    };
+    uint32_t mixedFinePages = 0;
+    float maxError = 0.0f;
+    for (size_t page = 0; page < face.pages.size(); ++page) {
+        requirePool((face.pages[page][1] & 2u) == (reference.pages[page][1] & 2u), "Hybrid changed page residency");
+        if ((face.pages[page][1] & 2u) == 0) { continue; }
+        bool floor = false, blocker = false;
+        for (uint32_t y = 0; y < actual.pageSize; ++y) {
+            for (uint32_t x = 0; x < actual.pageSize; ++x) {
+                const uint32_t depth = texel(actual, face.pages[page][0], x, y);
+                const uint32_t expected = texel(hardware, reference.pages[page][0], x, y);
+                const float z = std::bit_cast<float>(depth);
+                const float difference = std::abs(z - std::bit_cast<float>(expected));
+                const bool sameDepth = depthTolerance == 0 ? depth == expected :
+                    ((depth == 0u) == (expected == 0u) && difference <= depthTolerance);
+                if (!sameDepth) {
+                    throw std::runtime_error("Hybrid D32 mismatch on face " + std::to_string(identity) +
+                        " page " + std::to_string(page) + " texel (" + std::to_string(x) + ", " + std::to_string(y) +
+                        "): " + std::to_string(depth) + " vs hardware " + std::to_string(expected));
+                }
+                maxError = std::max(maxError, difference);
+                floor |= z > 0.0f && z < 0.5f;
+                blocker |= z > 0.5f;
+            }
+        }
+        mixedFinePages += floor && blocker && page + 1 < face.pages.size();
+    }
+    if (depthTolerance == 0) {
+        requirePool(mixedFinePages > 0, "No fine page contains both the large floor and the microtriangle blocker");
+    }
+    requirePool(std::ranges::find(face.visibility, uint8_t(0)) != face.visibility.end() &&
+        std::ranges::find(face.visibility, uint8_t(255)) != face.visibility.end(), "Missing blocked or lit receivers");
+    return maxError;
+}
+
+class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
 public:
-    VirtualShadowMapPhysicalPoolTest() { name = "virtual_shadow_map_physical_pool"; type = RHITestType::Rendering; }
+    explicit VirtualShadowMapPhysicalPoolTest(bool hybrid = false) : hybrid_(hybrid)
+    {
+        name = hybrid ? "virtual_shadow_map_cluster_hybrid_raster" : "virtual_shadow_map_physical_pool";
+        type = RHITestType::Rendering;
+    }
 
     RHITestResult run(RHITestContext& context) override
     {
-        const auto directory = std::filesystem::absolute(context.outputDirectory / "VirtualShadowMapPhysicalPool");
+        const auto directory = std::filesystem::absolute(context.outputDirectory /
+            (hybrid_ ? "VirtualShadowMapClusterHybridRaster" : "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::filesystem::create_directories(directory); std::ofstream(directory / "Report.json") << report.dump(2); };
         try {
             requirePool(VirtualShadowMapSettings{}.batchBuildRaster, "Shared Build/Raster batching must default on");
             scene::SceneDocument scene;
-            requirePool(scene.load(writePoolFixture(directory)), "Load pool scene");
+            requirePool(scene.load(hybrid_ ? writeHybridFixture(directory) : writePoolFixture(directory)), "Load pool scene");
             auto created = createDevice({.applicationName = "VSM shared physical pool",
                 .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
@@ -210,6 +310,9 @@ public:
             if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and bindless"); }
             requirePool(created, "Pool device");
             auto& device = **created;
+            if (hybrid_ && (!device.capabilities().computeSubgroupBallotArithmetic || device.capabilities().subPixelPrecisionBits > 8)) {
+                return RHITestResult::skip("Hybrid raster requires subgroup ballot/arithmetic and at most 8 subpixel bits");
+            }
             PoolCommands gpu(device);
             RenderView camera;
             requirePool(camera.setCamera({.eye = {0,0,4}, .center = {0,0,0}, .nearPlane = .01f,
@@ -249,7 +352,8 @@ public:
                 settings.framesStaticThreshold = 2;
                 settings.firstClipmapExtent = 4; settings.maxWorkItems = 65535;
                 auto record = [&](std::span<const PoolFace> specs, uint32_t budget, bool force, bool cancel = false,
-                                  bool pointGroup = false, bool demandDriven = true, bool serialized = false) {
+                                  bool pointGroup = false, bool demandDriven = true, bool serialized = false,
+                                  bool standalone = false) {
                     gpu.begin();
                     std::string log;
                     auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log,
@@ -272,14 +376,23 @@ public:
                     }
                     auto frameSettings = settings;
                     frameSettings.forceRedraw = force;
+                    if (hybrid_ && force) { frameSettings.clusterHybridRaster = false; }
                     if (serialized) { frameSettings.batchBuildRaster = false; }
                     frameSettings.filter = pointGroup ? VirtualShadowMapFilter::PCF : VirtualShadowMapFilter::Hard;
                     const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);
                     auto& pool = serialized ? serialPool : force ? referencePool : cachedPool;
                     CPUProfileRecorder cpu;
                     profiling::SchedulingMetrics nativeCommands;
-                    auto results = [&] {
+                    auto results = [&]() -> Result<std::vector<VirtualShadowMapResult>> {
                         profiling::SchedulingCapture capture(&nativeCommands);
+                        if (standalone) {
+                            frameSettings.physicalPageCount = budget;
+                            const auto& request = requests.front();
+                            auto single = request.shadow->record(device, *gpu.commands, **depthView, view, request.light,
+                                *casters, scene.materials(), {}, frameSettings, log, true, &request.output, &cpu);
+                            if (!single) { return std::unexpected(single.error()); }
+                            return std::vector<VirtualShadowMapResult>{std::move(*single)};
+                        }
                         return VirtualShadowMaps::recordShared(pool, device, *gpu.commands, **depthView, view, requests,
                             *casters, scene.materials(), {}, frameSettings, budget, demandDriven, log, &cpu);
                     }();
@@ -296,13 +409,15 @@ public:
                     }
                     requirePool(VirtualShadowMaps::projectShared(*gpu.commands, groups, log), "Project shared pool: " + log);
                     PoolSnapshot snapshot;
-                    snapshot.commands = poolRecordingCommands(cpu);
                     snapshot.nativeCommands = nativeCommands;
-                    requirePool(snapshot.commands.at("faces") == specs.size(), "Recording counters omitted an admitted face");
-                    requirePool(nativeCommands.invalidScopes == 0 && nativeCommands.drawCalls == snapshot.commands.at("meshDraws") &&
-                        nativeCommands.dispatchCalls >= snapshot.commands.at("computeDispatches") + snapshot.commands.at("prepareDispatches"),
-                        "Build/Raster counters disagree with the independent RHI command observer");
-                    snapshot.memory = pool.memoryUsage();
+                    if (!hybrid_) {
+                        snapshot.commands = poolRecordingCommands(cpu);
+                        requirePool(snapshot.commands.at("faces") == specs.size(), "Recording counters omitted an admitted face");
+                        requirePool(nativeCommands.invalidScopes == 0 && nativeCommands.drawCalls == snapshot.commands.at("meshDraws") &&
+                            nativeCommands.dispatchCalls >= snapshot.commands.at("computeDispatches") + snapshot.commands.at("prepareDispatches"),
+                            "Build/Raster counters disagree with the independent RHI command observer");
+                    }
+                    snapshot.memory = standalone ? requests.front().shadow->memoryUsage() : pool.memoryUsage();
                     const auto& atlasDesc = results->front().atlas->desc();
                     snapshot.atlasWidth = atlasDesc.width; snapshot.atlasHeight = atlasDesc.height;
                     snapshot.atlasLayers = atlasDesc.layerCount; snapshot.pagesX = results->front().physicalPagesX;
@@ -317,6 +432,7 @@ public:
                         face.pages.resize((*results)[index].clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1u);
                         offsets.push_back(bytes);
                         bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
+                        if (hybrid_) { bytes += sizeof(face.hybrid) + sizeof(face.hardwarePrimitives) + sizeof(face.hardwareFineGroups); }
                     }
                     auto readback = device.createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
                         .memoryLocation = MemoryLocation::HostReadback});
@@ -348,13 +464,25 @@ public:
                     for (uint32_t index = 0; index < specs.size(); ++index) {
                         const auto& face = snapshot.faces.at(specs[index].identity);
                         uint64_t offset = offsets[index];
-                        for (const auto& [buffer, size] : {std::pair{(*results)[index].statistics, uint64_t(sizeof(face.stats))},
-                            std::pair{(*results)[index].pageTable, uint64_t(face.pages.size() * sizeof(Page))},
-                            std::pair{(*results)[index].cacheDiagnostics, uint64_t(sizeof(face.cache))}}) {
-                            auto from = buffer->slice({0, size}), to = (*readback)->slice({offset, size});
+                        const auto copyCounterRange = [&](Buffer* buffer, uint64_t sourceOffset, uint64_t size) {
+                            auto from = buffer->slice({sourceOffset, size}), to = (*readback)->slice({offset, size});
                             requirePool(from, "Pool readback source"); requirePool(to, "Pool readback destination");
                             requirePool(gpu.commands->copyBuffer(*from, *to), "Pool buffer readback");
                             offset += size;
+                        };
+                        for (const auto& [buffer, size] : {std::pair{(*results)[index].statistics, uint64_t(sizeof(face.stats))},
+                            std::pair{(*results)[index].pageTable, uint64_t(face.pages.size() * sizeof(Page))},
+                            std::pair{(*results)[index].cacheDiagnostics, uint64_t(sizeof(face.cache))}}) {
+                            copyCounterRange(buffer, 0, size);
+                        }
+                        if (hybrid_) {
+                            if (frameSettings.clusterHybridRaster) {
+                                copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMHybridSoftwareTickets, sizeof(face.hybrid));
+                            } else { offset += sizeof(face.hybrid); }
+                            copyCounterRange((*results)[index].statistics, sizeof(face.stats) + sizeof(uint64_t) * kVSMWorkRasterOutputPrimitives,
+                                sizeof(face.hardwarePrimitives));
+                            copyCounterRange((*results)[index].statistics, sizeof(face.stats) + sizeof(uint64_t) * kVSMWorkRasterFineGroups,
+                                sizeof(face.hardwareFineGroups));
                         }
                     }
                     const TextureBarrierDesc atlasReady{.texture = results->front().atlas, .oldLayout = TextureLayout::TransferSource,
@@ -373,14 +501,129 @@ public:
                         std::memcpy(face.stats.data(), data + offsets[index], sizeof(face.stats));
                         std::memcpy(face.pages.data(), data + offsets[index] + sizeof(face.stats), face.pages.size() * sizeof(Page));
                         std::memcpy(face.cache.data(), data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page), sizeof(face.cache));
+                        if (hybrid_) {
+                            const auto* counters = data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
+                            if (frameSettings.clusterHybridRaster) { std::memcpy(face.hybrid.data(), counters, sizeof(face.hybrid)); }
+                            std::memcpy(&face.hardwarePrimitives, counters + sizeof(face.hybrid), sizeof(face.hardwarePrimitives));
+                            std::memcpy(&face.hardwareFineGroups, counters + sizeof(face.hybrid) + sizeof(face.hardwarePrimitives),
+                                sizeof(face.hardwareFineGroups));
+                        }
                         const uint64_t offset = uint64_t(pointGroup ? 0u : index) * kPixels;
                         face.visibility.assign(data + offset, data + offset + kPixels);
                     }
                     (*readback)->unmap();
-                    requireUniqueOwners(snapshot, budget);
+                    if (!standalone) { requireUniqueOwners(snapshot, budget); }
                     requirePool((snapshot.memory.staticAtlasBytes != 0) == layered, "Layered shared atlas memory missing or double counted");
                     return snapshot;
                 };
+                if (hybrid_) {
+                    static_assert(kVSMHybridHardwareTickets == kVSMHybridSoftwareTickets + 1 &&
+                        kVSMHybridCoveredSamples == kVSMHybridHardwareTickets + 1);
+                    settings.clusterPageRaster = true;
+                    settings.clusterHybridRaster = true;
+                    settings.collectGPUWork = true;
+                    settings.receiverFootprint = false;
+                    VirtualShadowMapLight light;
+                    light.direction = {0, 0, -1};
+                    const std::array faces{PoolFace{0, light}, PoolFace{1, light}};
+                    const std::array single{PoolFace{2, light}};
+                    auto compareCold = [&](const char* path, const PoolSnapshot& mixed, const PoolSnapshot& hardware) {
+                        for (const auto& [identity, face] : mixed.faces) {
+                            const auto& reference = hardware.faces.at(identity);
+                            report["frames"].push_back({{"path", path}, {"layered", layered}, {"face", identity},
+                                {"softwareTickets", face.hybrid[0]}, {"hardwareTickets", face.hybrid[1]}, {"coveredSamples", face.hybrid[2]},
+                                {"hardwarePrimitives", face.hardwarePrimitives}, {"referencePrimitives", reference.hardwarePrimitives},
+                                {"hardwareFineGroups", face.hardwareFineGroups}, {"referenceFineGroups", reference.hardwareFineGroups}});
+                            compareHybridDepth(mixed, hardware, identity);
+                            requirePool(face.hybrid[0] > 0 && face.hybrid[1] > 0 && face.hybrid[2] > 0,
+                                "No mixed software/hardware fine tickets or covered samples on " + std::string(path));
+                            requirePool(face.hardwarePrimitives > 0 && face.hardwarePrimitives < reference.hardwarePrimitives,
+                                "Hybrid fine tickets were also emitted by the hardware mesh shader on " + std::string(path));
+                            requirePool(face.hardwareFineGroups == face.hybrid[1] && face.hardwareFineGroups < reference.hardwareFineGroups,
+                                "Packed mesh group count does not match the compact hardware ticket list on " + std::string(path));
+                        }
+                    };
+                    const auto baseline = record(faces, 512, true);
+                    const auto batch = record(faces, 512, false);
+                    compareCold("batched", batch, baseline);
+                    const auto& shadow = batch.faces.at(0).visibility;
+                    constexpr size_t center = (kHeight / 2u) * kWidth + kWidth / 2u;
+                    requirePool(shadow[center - 2] != shadow[center + 2],
+                        "Opposite windings of the single-sided software blocker cast the same shadow");
+                    compareCold("serial", record(faces, 512, false, false, false, true, true), baseline);
+                    const auto warm = record(faces, 512, false);
+                    for (const auto& [identity, face] : warm.faces) {
+                        requirePool(face.hybrid == std::array<uint32_t, 3>{} && face.stats[17] > 0, "Clean frame reran hybrid raster");
+                        compareHybridDepth(warm, baseline, identity);
+                        requireRetainedDepth(batch, warm, identity);
+                    }
+                    const auto soloBaseline = record(single, 256, true, false, false, true, false, true);
+                    const auto solo = record(single, 256, false, false, false, true, false, true);
+                    compareCold("standalone", solo, soloBaseline);
+                    const auto original = scene.nodes()[1].localMatrix;
+                    auto translation = original;
+                    // Align a blocker edge halfway between two raster subpixels at a texel center.
+                    const float texelWorldSize = 2.0f * settings.firstClipmapExtent /
+                        float(settings.virtualPagesPerAxis * settings.pageSize);
+                    const float subpixel = std::ldexp(1.0f, -int(device.capabilities().subPixelPrecisionBits));
+                    const float edgeOffset = 0.5f * (1.0f + subpixel) * texelWorldSize;
+                    translation.SetupByTranslation({.75f + edgeOffset, -.5f - edgeOffset, 0.f});
+                    requirePool(scene.setNodeLocalMatrix(1, translation * original), "Move software blocker");
+                    const auto moved = record(faces, 512, false);
+                    const auto movedHardware = record(faces, 512, true);
+                    for (const auto& [identity, face] : moved.faces) {
+                        compareHybridDepth(moved, movedHardware, identity);
+                        requirePool(face.visibility != batch.faces.at(identity).visibility && face.hybrid[0] && face.hybrid[2],
+                            "Moving the software blocker did not change the shadow using software samples");
+                        if (layered) {
+                            requirePool(face.cache[kVSMCacheStaticCasters] == 1 && face.cache[kVSMCacheDynamicCasters] == 1 &&
+                                face.cache[kVSMCachePromotedCasters] == 1 && face.cache[kVSMCacheRestoredPages] > 0,
+                                "Moving blocker did not exercise dynamic composition over restored static depth");
+                        }
+                        report["frames"].push_back({{"path","moved"}, {"layered",layered}, {"face",identity},
+                            {"tickets",face.hybrid}, {"restoredStaticPages",face.cache[kVSMCacheRestoredPages]}});
+                    }
+                    for (bool hybrid : {false, true}) {
+                        settings.clusterHybridRaster = hybrid;
+                        const auto switched = record(faces, 512, false);
+                        for (const auto& [identity, face] : switched.faces) {
+                            compareHybridDepth(switched, movedHardware, identity);
+                            requirePool((face.cache[kVSMCacheReasons] & kVSMCacheReasonSettings) != 0 &&
+                                face.stats[16] > 0 && face.stats[17] == 0 && (face.hybrid[2] > 0) == hybrid,
+                                "Changing the raster backend failed to redraw resident depth through the selected backend");
+                            report["frames"].push_back({{"path",hybrid ? "enable" : "disable"}, {"layered",layered},
+                                {"face",identity}, {"dirtyFinePages",face.stats[16]}, {"reusedFinePages",face.stats[17]}});
+                        }
+                    }
+                    requirePool(scene.setNodeLocalMatrix(1, original), "Restore software blocker");
+                    if (!layered) {
+                        VirtualShadowMapLight spot;
+                        spot.type = VirtualShadowMapLightType::Spot;
+                        spot.position = {0, 0, 3};
+                        spot.direction = {.2f, .1f, -1};
+                        spot.range = 12; spot.nearPlane = .05f; spot.outerConeAngle = 1.0f;
+                        const std::array local{PoolFace{3, spot}};
+                        const auto spotHardware = record(local, 256, true);
+                        const auto spotMixed = record(local, 256, false);
+                        // The oblique spot produces a depth gradient even on the horizontal blocker.
+                        // Check coverage and hard visibility exactly, allowing 2e-6 in normalized D32 only.
+                        constexpr float depthTolerance = 2e-6f;
+                        const float maxError = compareHybridDepth(spotMixed, spotHardware, 3, depthTolerance);
+                        const auto& face = spotMixed.faces.at(3);
+                        requirePool(face.hybrid[0] > 0 && face.hybrid[1] > 0 && face.hybrid[2] > 0 &&
+                            face.hardwarePrimitives < spotHardware.faces.at(3).hardwarePrimitives,
+                            "Oblique spotlight did not route nonempty single-sided work through software");
+                        report["frames"].push_back({{"path","obliqueSpot"}, {"tickets",face.hybrid},
+                            {"maxDepthError",maxError}, {"depthTolerance",depthTolerance}});
+                    }
+                    std::vector<uint32_t> pixels(shadow.size());
+                    std::ranges::transform(shadow, pixels.begin(), [](uint8_t value) { return uint32_t(value) * 0x010101u | 0xff000000u; });
+                    std::string log;
+                    requirePool(saveRgba8Png(directory / (layered ? "LayeredShadow.png" : "CombinedShadow.png"),
+                        reinterpret_cast<const uint8_t*>(pixels.data()), kWidth, kHeight, log), "Save hybrid output: " + log);
+                    save();
+                    continue;
+                }
                 auto compare = [&](const char* label, std::span<const PoolFace> faces, uint32_t budget,
                                    bool pointGroup = false, bool demandDriven = true) {
                     validation.phase(std::string(layered ? "Layered-" : "Combined-") + label);
@@ -614,14 +857,23 @@ public:
             report["validation"] = validation.snapshot();
             requirePool(!validation.failed(), "Shared pool Vulkan validation error");
             report["passed"] = true; save();
-            return RHITestResult::pass("Batched and serialized shared rendering preserve depth, visibility, ownership and caches while reducing actual RHI submissions");
+            return RHITestResult::pass(hybrid_ ? "Mixed cluster raster preserved resident D32 texels, visibility and cached pages" :
+                "Batched and serialized shared rendering preserve depth, visibility, ownership and caches while reducing actual RHI submissions");
         } catch (const std::exception& error) {
             report["error"] = error.what(); report["validation"] = validation.snapshot(); save();
             return RHITestResult::fail(error.what());
         }
     }
+private:
+    bool hybrid_;
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapPhysicalPoolTest);
+class VirtualShadowMapClusterHybridRasterTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapClusterHybridRasterTest() : VirtualShadowMapPhysicalPoolTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapClusterHybridRasterTest);
 } // namespace
 } // namespace metallic::tests

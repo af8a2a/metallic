@@ -55,6 +55,16 @@ static const uint32_t kVSMCacheMergeClusterCount = 45;
 static const uint32_t kVSMCacheInstanceTable = 48;
 static const uint32_t kVSMCacheInstanceCount = 49;
 
+// Word 50 holds the GPU LOD context. These private words accompany the fine
+// cluster/page raster path. Its three GPU counters require collectGPUWork.
+static const uint32_t kVSMHybridDepth = 51;
+static const uint32_t kVSMHybridPageCount = 52;
+static const uint32_t kVSMHybridSubpixelBits = 53;
+static const uint32_t kVSMHybridSoftwareTickets = 54;
+static const uint32_t kVSMHybridHardwareTickets = 55;
+static const uint32_t kVSMHybridCoveredSamples = 56;
+static const uint32_t kVSMHybridDrawOffset = 57; // First composite HW indirect triple; static follows one fine batch range later.
+
 static const uint32_t kVSMCacheReasonCacheDisabled = 1u << 0;
 static const uint32_t kVSMCacheReasonCold = 1u << 1;
 static const uint32_t kVSMCacheReasonDevice = 1u << 2;

@@ -17,6 +17,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_BATCHED_BUILD_RASTER
 #define VSM_BATCHED_BUILD_RASTER 0
 #endif
+#ifndef VSM_CLUSTER_HYBRID_RASTER
+#define VSM_CLUSTER_HYBRID_RASTER 0
+#endif
 
 #if VSM_SHARED_PHYSICAL_POOL
 struct ShadowAtlasPrimitive
@@ -37,15 +40,55 @@ float vsmClearFragmentMain(ShadowClearVertex input,
 #endif
     uniform ShadowPush push) : SV_Depth
 {
+    float depth = 0.0;
     if ((push.cacheMode & 16u) != 0u && (push.rasterCoarse & 2u) == 0u) {
         VSMAtlas staticAtlas = resolveUniform(ResourceHandle<VSMAtlas>(vsmCacheMetadata(push, 32u)));
         uint2 logicalTexel = uint2(input.position.xy);
 #if VSM_SHARED_PHYSICAL_POOL
         logicalTexel.y += layer * push.physicalPagesY * push.pageSize;
 #endif
-        return vsmAtlasLoad(staticAtlas, logicalTexel, push);
+        depth = vsmAtlasLoad(staticAtlas, logicalTexel, push);
     }
-    return 0.0;
+#if VSM_CLUSTER_HYBRID_RASTER
+    uint2 pixel = uint2(input.position.xy);
+    uint2 page = pixel / push.pageSize;
+#if VSM_SHARED_PHYSICAL_POOL
+    page.y += layer * push.physicalPagesY;
+#endif
+    uint slot = page.y * push.physicalPagesX + page.x;
+    if (slot < vsmCacheMetadata(push, kVSMHybridPageCount)) {
+        StructuredBuffer<uint> software = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, kVSMHybridDepth)));
+        depth = max(depth, asfloat(software[vsmHybridDepthAddress(slot, pixel % push.pageSize, push)]));
+    }
+#endif
+    return depth;
+}
+
+bool vsmRasterClearsEntry(uint4 entry, uint rasterCoarse)
+{
+    bool staticPass = (rasterCoarse & 2u) != 0u;
+    return (entry.y & 2u) != 0u && (staticPass ? (entry.w & (8u | kVSMPageMergeStatic)) == 8u : (entry.w & 2u) != 0u);
+}
+
+bool vsmRasterClearsPage(uint physicalPage, ShadowPush clearPush, out ShadowPush push)
+{
+    push = clearPush;
+#if VSM_BATCHED_BUILD_RASTER
+    // Global ownership lets the entire atlas be scanned once, even when its
+    // resident pages belong to different light faces or shader permutations.
+    StructuredBuffer<uint4> metadata = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(clearPush.physicalPool));
+    uint4 header = metadata[0];
+    uint ownerFace = metadata[1u + header.x + physicalPage].x;
+    if (ownerFace == 0u) { return false; }
+    StructuredBuffer<ShadowPush> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowPush>>(header.z));
+    push = jobs[ownerFace - 1u];
+    push.rasterCoarse = clearPush.rasterCoarse;
+#endif
+    StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
+    uint owner = owners[physicalPage];
+    if (owner == 0u || push.enabled == 0u) { return false; }
+    return vsmRasterClearsEntry(pages[owner - 1u], push.rasterCoarse);
 }
 
 [shader("mesh")]
@@ -56,39 +99,11 @@ void vsmClearMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 #if VSM_SHARED_PHYSICAL_POOL
     out primitives ShadowAtlasPrimitive primitives[2],
 #endif
-#if VSM_BATCHED_BUILD_RASTER
-    uniform ShadowPush batchPush)
-#else
-    uniform ShadowPush push)
-#endif
+    uniform ShadowPush clearPush)
 {
-#if VSM_BATCHED_BUILD_RASTER
-    // Global ownership lets the entire atlas be scanned once, even when its
-    // resident pages belong to different light faces or shader permutations.
-    uint physicalPage = batchPush.workBase + group.x;
-    StructuredBuffer<uint4> metadata = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(batchPush.physicalPool));
-    uint4 header = metadata[0];
-    uint ownerFace = metadata[1u + header.x + physicalPage].x;
-    if (ownerFace == 0u) {
-        SetMeshOutputCounts(0u, 0u);
-        return;
-    }
-    StructuredBuffer<ShadowPush> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowPush>>(header.z));
-    ShadowPush push = jobs[ownerFace - 1u];
-    push.rasterCoarse = batchPush.rasterCoarse;
-    push.workBase = batchPush.workBase;
-#else
-    uint physicalPage = push.workBase + group.x;
-#endif
-    StructuredBuffer<uint> owners = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
-    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
-    uint owner = owners[physicalPage];
-    bool clear = false;
-    if (owner != 0u && push.enabled != 0u) {
-        uint4 entry = pages[owner - 1u];
-        bool staticPass = (push.rasterCoarse & 2u) != 0u;
-        clear = (entry.y & 2u) != 0u && (staticPass ? (entry.w & (8u | kVSMPageMergeStatic)) == 8u : (entry.w & 2u) != 0u);
-    }
+    uint physicalPage = clearPush.workBase + group.x;
+    ShadowPush push;
+    bool clear = vsmRasterClearsPage(physicalPage, clearPush, push);
     SetMeshOutputCounts(clear ? 4u : 0u, clear ? 2u : 0u);
     if (!clear) { return; }
     if (lane == 0u) {
@@ -157,7 +172,8 @@ float4 vsmDirectionalPageBounds(uint virtualPage, inout ShadowProjection project
 // Fine packed and single-triangle raster must produce the same fan, UVs and
 // canonical page coordinates, including for alpha-masked materials.
 uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, bool skipInteriorClip,
-    out ShadowClipVertex polygon[9], out uint material, out uint physicalPage, out float4 bounds)
+    out ShadowClipVertex polygon[9], out uint material, out uint physicalPage, out float4 bounds,
+    bool countHardwareWork = true)
 {
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
@@ -172,7 +188,7 @@ uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, boo
         StructuredBuffer<uint> visibility = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 40u)));
         layerPageActive = (visibility[triangleIndex >> 6u] & (1u << pages[virtualPage].z)) != 0u;
 #if VSM_WORKLOAD_DIAGNOSTICS
-        if (!layerPageActive) {
+        if (!layerPageActive && countHardwareWork) {
             uint dynamicBits = loadVirtualShadowMapDynamicMaskWord(push.geometry, triangleIndex >> 5u);
             vsmWorkAdd(push, kVSMWorkRasterHZBSkippedTriangles, (dynamicBits >> (triangleIndex & 31u)) & 1u);
         }
@@ -193,13 +209,15 @@ uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, boo
     }
     if (layerPageActive && vsmLODSelected(push, triangleIndex, pages[virtualPage].z) &&
         loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
-        vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
+        if (countHardwareWork) {
+            vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
 #if VSM_WORKLOAD_DIAGNOSTICS
-        if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }
-        if ((push.cacheMode & 16u) != 0u) {
-            vsmCacheAdd(push, staticPass ? kVSMCacheStaticDecodedTriangles : kVSMCacheDynamicDecodedTriangles, 1u);
-        }
+            if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }
+            if ((push.cacheMode & 16u) != 0u) {
+                vsmCacheAdd(push, staticPass ? kVSMCacheStaticDecodedTriangles : kVSMCacheDynamicDecodedTriangles, 1u);
+            }
 #endif
+        }
         uint4 page = pages[virtualPage];
         ShadowProjection projection = projections[page.z];
         bounds = vsmPageBounds(virtualPage, projection);
@@ -343,7 +361,14 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
     ShadowPush push = vsmBatchJob(batchPush, drawIndex).push;
 #endif
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
-    uint4 ticket = work[1u + push.workBase + group.x];
+    uint packedIndex = push.workBase + group.x;
+#if VSM_CLUSTER_HYBRID_RASTER
+    ByteAddressBuffer queue = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
+    uint ticketIndex = queue.Load(vsmHardwareTicketByteOffset(packedIndex, push));
+#else
+    uint ticketIndex = 1u + packedIndex;
+#endif
+    uint4 ticket = work[ticketIndex];
     uint bits = ticket.z != 0u ? ticket.z : ticket.w;
     uint quarter = (ticket.z != 0u ? 0u : 32u) + ((bits & 0xffffu) != 0u ? 0u : 16u);
     uint slotMask = bits >> (quarter & 31u);

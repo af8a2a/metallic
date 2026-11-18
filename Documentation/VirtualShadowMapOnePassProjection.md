@@ -1,5 +1,17 @@
 # VSM GPU one-pass projection
 
+## 当前实现：跨灯复用接收点
+
+`VirtualShadowMapLightsPass` 的多面 one-pass 在遍历灯之前，每个视口内像素读取一次中心深度，计算世界位置、线性深度和相机相关的射线搜索长度。局部光网格查询使用同一份线性深度。第一个通过面归属、启用状态和投影范围检查的灯面计算四邻深度法线与接收面屏幕微分，后续灯面直接复用。背景和没有通过检查的像素无需读取四邻深度。无网格的全灯遍历也使用这条路径。
+
+每盏灯独立计算点光面归属、光空间 footprint、采样相位和阴影过滤。每面投影记录为 80 字节，所有面共享同一相机与深度输入。开启 `benchmarkGPUWork` 后，`projectionGridDiagnostics` 的 `receiverCenterLoads` 统计中心深度读取次数，`receiverNormalBuilds` 和 `receiverNormalUses` 分别统计实际法线重建次数和消费它的灯面次数。
+
+在 641×361 的 OpenPBR 场景中，太阳、月亮、点光和聚光灯共形成 9 个阴影面。第 11 帧读取中心深度 231401 次，30289 次法线重建供灯面使用 116878 次。仅有太阳和月亮时，不查询局部灯网格，法线重建次数相同，使用 60578 次。四灯场景改动前后第 0、8、11 帧的阴影、深度、可见性、HDR 和显示输出逐字节一致。
+
+PCF、SMRT 的 Room 专项、compact 和 SMRT temporal 回归均通过。普通与 refined receiver 的完整矩阵各通过前 12 个状态，随后均在 Hard / Legacy Room 冷帧的太阳层像素 (93,126) 遇到既有差异，one-pass 为 0，逐面统计回退为 255。用改动前的程序和着色器重跑后，两套矩阵各 39 组快照的阴影、debug、深度和 HDR 哈希分别与改动后完全一致。该失败之后的矩阵状态未执行。
+
+## 早期实现与验证记录
+
 2026-11-04 当前状态：one-pass 已收敛为多面 Projection 的标准调度，删除 `onePassProjection`、`benchmarkOnePassProjection` 和 `benchmarkLegacyProjection`。面数与统计模式决定内核选择，不提供旧实现 A/B。以下开关与实验协议是历史记录。
 
 **最终结论（2026-10-31）：正确性通过，性能证据有效但结论不确定。** 按用户后续要求默认开启，保留显式关闭；没有将 discovery 的正收益当作确认结果，也没有追加性能采样。默认值变更不代表已确认性能收益。
@@ -65,7 +77,7 @@ Mixed 与 Sponza diagnostic 均通过：16/32/63 的 PNG/HDR/depth/shadow 精确
 
 原生资源占用增加，但这不是动态 occupancy、spill 或回退因果证明。Local Memory Size 的异常原始值保留，不作 spill 推断。六个普通 SPIR-V 模块验证通过；one-pass 的 SPIR-V 无 ControlBarrier/MemoryBarrier/Workgroup 变量，80 字节 stride、view offset60、208 字节 push 均经实际二进制核对。原生共享存储增加不是新增源代码 groupshared 数组。
 
-当前实现只合并 GPU 调度及同步、替换过滤计数归约；不复用接收点重建，也不减少过滤采样数。后续若继续优化，应独立评估参数表读取、寄存器生命周期及局部光筛选，保留目前的逐面数值契约；不能把额外优化或复测结果混入本轮确认。
+该轮实验只合并 GPU 调度及同步并替换过滤计数归约。其性能数据来自逐面重建接收点的版本。本文开头的跨灯复用使用单独的图像和工作量对照。
 
 ## 本机证据
 

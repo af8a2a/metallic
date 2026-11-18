@@ -87,6 +87,7 @@ struct VirtualShadowMapSettings
     bool compactBuild = false; // Experimental cluster candidate compaction and indirect fine build.
     bool pageWindowRaster = false; // Share directional fine geometry across bounded page windows.
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.
+    bool clusterHybridRaster = false; // Route eligible fine cluster/page work to software depth rasterization.
     bool instanceBuild = false; // Directional instance culling and indirect fine Build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.
     bool shadowLOD = false; // GPU hierarchy cuts for each face's clipmap/mip and coarse view.
@@ -198,8 +199,8 @@ struct VirtualShadowMapProjectionGroup
 };
 
 // The raster producer owns the matching grid through command completion.
-// A missing grid retains the original projection; diagnostics are optional and
-// use eight low/high uint pairs defined in VirtualShadowMapProjectionGrid.h.
+// Without a grid, projection visits every admitted job. Optional diagnostics
+// use the low/high uint pairs defined in VirtualShadowMapProjectionGrid.h.
 struct VirtualShadowMapProjectionGridResources
 {
     const ClusterLightGridSnapshot* grid = nullptr;

@@ -23,30 +23,48 @@ implementing VirtualShadowMaps;
 
 #if VSM_ONE_PASS_PROJECTION
 // Common filter settings stay in push constants. Only face-specific values
-// come from this table; its 84-byte layout matches ShadowProjectionJob in C++.
+// come from this table; its 80-byte layout matches ShadowProjectionJob in C++.
 struct ShadowProjectionJob
 {
     uint pages, statistics, projections, atlas;
     uint filterMode, shadow, debug, physicalPagesX;
     uint clipmapCount, enabled, lightType, projectionFace;
-    uint pointFaces, projectionFlags, samplePhase, view;
+    uint pointFaces, projectionFlags, samplePhase;
     float lightRange, sourceRadius, angularRadius, lodScreenRayLength;
     uint receiverGeometry;
 };
 
 #endif
 
-#if VSM_LIGHT_GRID_PROJECTION
 struct VSMProjectionReceiver
 {
-    ViewConstants view;
+    VSMReceiverBasis basis;
     float3 position;
     float linearDepth;
     bool valid;
-};
+    float searchLength;
+    float3 normal;
+    VSMReceiverFootprint footprint;
+    bool hasNormal;
+#if VSM_ONE_PASS_PROJECTION && VSM_WORKLOAD_DIAGNOSTICS
+    uint normalUses;
 #endif
+};
 
-bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out float4 debugValue, out uint3 filterCounts
+bool vsmLoadProjectionReceiver(uint2 pixel, ShadowPush push, out VSMProjectionReceiver receiver)
+{
+    receiver = {};
+    ViewConstants view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view))[0];
+    receiver.basis = vsmMakeReceiverBasis(view);
+    if (any(pixel >= uint2(receiver.basis.viewportSize))) { return false; }
+    Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
+    receiver.valid = vsmReceiver(int2(pixel), receiver.basis, depth, receiver.position, receiver.linearDepth);
+    receiver.searchLength = vsmSearchLength(receiver.position, receiver.linearDepth, receiver.basis, push);
+    return true;
+}
+
+bool vsmProjectReceiver(uint3 id, ShadowPush push, inout VSMProjectionReceiver receiver,
+    out float visibility, out float4 debugValue, out uint3 filterCounts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     , out uint projectionCounts
 #endif
@@ -59,20 +77,16 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     projectionCounts = 0u;
 #endif
-    StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
-    ViewConstants view = views[0];
-    VSMReceiverBasis basis = vsmMakeReceiverBasis(view);
-    if (any(id.xy >= uint2(basis.viewportSize))) { return false; }
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
-    float3 position;
-    float linearDepth;
+    float3 position = receiver.position;
+    float linearDepth = receiver.linearDepth;
 #if VSM_DIRECTIONAL_PROJECTION
     const bool sharedPointLayer = false;
 #else
     bool sharedPointLayer = (push.projectionFlags & 1u) != 0u && push.lightType == 2u;
 #endif
-    if (!vsmReceiver(int2(id.xy), basis, depth, position, linearDepth)) {
+    if (!receiver.valid) {
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         if (push.filterMode != 0u) { projectionCounts |= 1u << 0u; }
         else
@@ -103,7 +117,15 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         return true;
     }
     vsmWorkAdd(push, kVSMWorkProjectionReceivers, 1u);
-    float3 normal = vsmReceiverNormal(int2(id.xy), basis, depth, position, linearDepth);
+    if (!receiver.hasNormal) {
+        receiver.normal = vsmReceiverNormal(int2(id.xy), receiver.basis, depth, position, linearDepth);
+        receiver.footprint = vsmReceiverFootprint(position, receiver.normal, linearDepth, receiver.basis, push);
+        receiver.hasNormal = true;
+    }
+#if VSM_ONE_PASS_PROJECTION && VSM_WORKLOAD_DIAGNOSTICS
+    ++receiver.normalUses;
+#endif
+    float3 normal = receiver.normal;
     if (push.lightType == 0u) {
         float3 toLight = normalize(proj0.rowZ.xyz);
         float sinAlpha = max(sin(push.angularRadius), 0.1);
@@ -114,7 +136,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     }
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
-        vsmProjectedReceiverFootprint(position, normal, linearDepth, basis, proj0, push), useGroupCache);
+        vsmProjectedReceiverFootprint(position, receiver.footprint, proj0, push), useGroupCache);
     uint selectedLevel = push.clipmapCount;
     uint firstLevel = 0xffffffffu;
     uint physicalPage = 0xffffffffu;
@@ -184,7 +206,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     ShadowProjection projection = vsmGetCachedProjection(projections, selectedLevel, useGroupCache);
     if (push.filterMode != 0u) {
         ShadowPush trace = push;
-        trace.rayLength = vsmSearchLength(position, linearDepth, basis, push);
+        trace.rayLength = receiver.searchLength;
         visibility = vsmFilterVisibility(position, normal, receiverLevel, id.xy, projections, trace, filterCounts, useGroupCache);
         return true;
     }
@@ -216,7 +238,7 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
         float depthScale = length(projection.rowZ.xyz);
         float bias = projection.metric.z / depthScale;
         float blockerDistance = (storedDepth - compareDepth) / depthScale + bias;
-        ViewConstants view = views[0];
+        ViewConstants view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view))[0];
         float offset = vsmLODScreenRayOffset(position, normal, linearDepth, normalize(projection.rowZ.xyz),
             view, depth, push.lodScreenRayLength, blockerDistance, bias);
 #if VSM_REFINED_RECEIVER
@@ -232,9 +254,8 @@ bool vsmProjectReceiver(uint3 id, ShadowPush push, out float visibility, out flo
     return true;
 }
 
-// Ownership and filtering finish before either output is stored. Receiver
-// reconstruction retains the original per-job arithmetic in both paths.
-void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts
+// Ownership and filtering finish before either output is stored.
+void vsmProjectAndStore(uint3 id, ShadowPush push, inout VSMProjectionReceiver receiver, out uint3 filterCounts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     , out uint projectionCounts
 #endif
@@ -243,7 +264,7 @@ void vsmProjectAndStore(uint3 id, ShadowPush push, out uint3 filterCounts
 {
     float visibility;
     float4 debugValue;
-    if (!vsmProjectReceiver(id, push, visibility, debugValue, filterCounts
+    if (!vsmProjectReceiver(id, push, receiver, visibility, debugValue, filterCounts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         , projectionCounts
 #endif
@@ -304,12 +325,13 @@ void vsmRecordProjectionStatistics(uint3 counts
 void vsmProjectMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
 {
     id.xy = vsmMortonPixel(id.xy);
-
+    VSMProjectionReceiver receiver;
+    if (!vsmLoadProjectionReceiver(id.xy, push, receiver)) { return; }
     uint3 counts = uint3(0u);
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
     uint projectionCounts = 0u;
 #endif
-    vsmProjectAndStore(id, push, counts
+    vsmProjectAndStore(id, push, receiver, counts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         , projectionCounts
 #endif
@@ -336,7 +358,7 @@ void vsmProjectionGridAdd(uint diagnostics, uint counter, uint laneValue)
 #endif
 }
 
-void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job
+void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job, inout VSMProjectionReceiver receiver
 #if VSM_LIGHT_GRID_PROJECTION
     , bool member
 #endif
@@ -352,7 +374,7 @@ void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job
     push.pointFaces = job.pointFaces; push.projectionFlags = job.projectionFlags;
     push.lodScreenRayLength = job.lodScreenRayLength;
     push.receiverGeometry = job.receiverGeometry;
-    push.samplePhase = job.samplePhase; push.view = job.view; push.lightRange = job.lightRange;
+    push.samplePhase = job.samplePhase; push.lightRange = job.lightRange;
     push.sourceRadius = job.sourceRadius; push.angularRadius = job.angularRadius;
     uint3 counts = uint3(0u);
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
@@ -361,7 +383,7 @@ void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job
 #if VSM_LIGHT_GRID_PROJECTION
     if (member) {
 #endif
-    vsmProjectAndStore(id, push, counts
+    vsmProjectAndStore(id, push, receiver, counts
 #if VSM_OPTIMIZE_PROJECTION_STATISTICS
         , projectionCounts
 #endif
@@ -412,15 +434,12 @@ uint2 vsmProjectionLocalMask(uint2 pixel, VSMProjectionReceiver receiver, Virtua
 void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush common)
 {
     id.xy = vsmMortonPixel(id.xy);
+    VSMProjectionReceiver receiver;
+    if (!vsmLoadProjectionReceiver(id.xy, common, receiver)) { return; }
     StructuredBuffer<ShadowProjectionJob> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjectionJob>>(common.geometry));
 #if VSM_LIGHT_GRID_PROJECTION
     StructuredBuffer<VirtualShadowMapProjectionGrid> contexts = resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments));
     VirtualShadowMapProjectionGrid context = contexts[0];
-    VSMProjectionReceiver receiver;
-    receiver.view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(common.view))[0];
-    if (any(id.xy >= uint2(receiver.view.current.viewport.yz))) { return; }
-    Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(common.depth));
-    receiver.valid = vsmReceiver(int2(id.xy), receiver.view, depth, receiver.position, receiver.linearDepth);
     uint2 localMask = vsmProjectionLocalMask(id.xy, receiver, context);
     // Publication slots include Sun/Moon. A single traversal keeps the large
     // filtering body at one call site, rather than cloning it for each domain.
@@ -444,7 +463,7 @@ void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush co
                 laneJobs += member ? range.count : 0u;
             }
             for (uint face = 0u; face < range.count; ++face) {
-                vsmProjectOnePassJob(id, common, jobs[range.first + face], member);
+                vsmProjectOnePassJob(id, common, jobs[range.first + face], receiver, member);
             }
         }
     }
@@ -453,22 +472,24 @@ void vsmProjectOnePassMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush co
     vsmProjectionGridAdd(context.diagnostics, kVSMGridProjectedLaneJobs, laneJobs);
     vsmProjectionGridAdd(context.diagnostics, kVSMGridPossibleLaneJobs, context.localJobCount);
 #else
-    // Baseline keeps full-screen, job-uniform traversal for the controlled A/B.
+    // Without a grid, every in-bounds lane visits the complete job table.
     for (uint jobIndex = 0u; jobIndex < common.triangleCount; ++jobIndex) {
         ShadowProjectionJob job = jobs[jobIndex];
-        vsmProjectOnePassJob(id, common, job);
-    }
-#if VSM_WORKLOAD_DIAGNOSTICS
-    if (common.arguments != 0xffffffffu) {
-        VirtualShadowMapProjectionGrid context = resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments))[0];
-        ViewConstants view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(common.view))[0];
-        bool inViewport = all(id.xy < uint2(view.current.viewport.yz));
-        bool activeWave = WaveActiveAnyTrue(inViewport);
-        vsmProjectionGridAdd(context.diagnostics, kVSMGridWaveLocalJobs, WaveIsFirstLane() && activeWave ? context.localJobCount : 0u);
-        vsmProjectionGridAdd(context.diagnostics, kVSMGridProjectedLaneJobs, inViewport ? context.localJobCount : 0u);
-        vsmProjectionGridAdd(context.diagnostics, kVSMGridPossibleLaneJobs, inViewport ? context.localJobCount : 0u);
+        vsmProjectOnePassJob(id, common, job, receiver);
     }
 #endif
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (common.arguments != 0xffffffffu) {
+#if !VSM_LIGHT_GRID_PROJECTION
+        VirtualShadowMapProjectionGrid context = resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments))[0];
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridWaveLocalJobs, WaveIsFirstLane() ? context.localJobCount : 0u);
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridProjectedLaneJobs, context.localJobCount);
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridPossibleLaneJobs, context.localJobCount);
+#endif
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridReceiverCenterLoads, 1u);
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridReceiverNormalBuilds, uint(receiver.hasNormal));
+        vsmProjectionGridAdd(context.diagnostics, kVSMGridReceiverNormalUses, receiver.normalUses);
+    }
 #endif
 }
 #endif
