@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <cstddef>
@@ -48,7 +49,8 @@ public:
         size_t parent = 0;
         size_t scopeId = SIZE_MAX;
         std::vector<size_t> children;
-        Clock::time_point beginTime;
+        // Duration-only imports have no position on the CPU timeline.
+        std::optional<Clock::time_point> beginTime;
         std::shared_ptr<const render::CPUThreadProfile> cpuThreadProfile;
         std::vector<render::CPUProfileWorkCounter> cpuWork;
     };
@@ -146,6 +148,7 @@ public:
     bool drawWindow(bool* open, const GraphicsCaptureControls& graphicsCapture);
 
 private:
+    void drawTimelineChart();
     size_t beginSection(std::string_view name, uint32_t color);
     void endSection(size_t nodeIndex);
     size_t addFinishedSection(size_t parent, std::string name, uint32_t color, double cpuMilliseconds);
@@ -190,6 +193,9 @@ private:
     uint64_t graphGeneration_ = UINT64_MAX;
     bool currentOverflow_ = false;
     bool detailed_ = false;
+    std::optional<Frame> timelinePinnedFrame_;
+    double timelineStartMs_ = 0.0;
+    double timelineRangeMs_ = 0.0;
     char scopeFilter_[256]{};
     bool streamingShowBudget_ = false;
     int chartMetric_ = 1;

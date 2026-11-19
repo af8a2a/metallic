@@ -82,6 +82,193 @@ struct ScopeFilter {
     }
 };
 
+const EditorProfiler::Frame* drawTimelineHistory(const std::vector<EditorProfiler::Frame>& history, uint64_t selected)
+{
+    if (history.empty()) { return nullptr; }
+
+    const ImVec2 size(std::max(1.0f, ImGui::GetContentRegionAvail().x), 2.5f * ImGui::GetTextLineHeight());
+    ImGui::InvisibleButton("Frame history", size);
+    const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+    const float stride = size.x / static_cast<float>(history.size());
+    const auto& tallest = *std::max_element(history.begin(), history.end(), [](const auto& a, const auto& b) {
+        return a.cpuWallMilliseconds < b.cpuWallMilliseconds;
+    });
+    const double maximum = std::max(tallest.cpuWallMilliseconds, 0.01);
+
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(lo, hi, IM_COL32(23, 26, 33, 255));
+    for (size_t i = 0; i < history.size(); ++i) {
+        const auto& frame = history[i];
+        const float x = lo.x + static_cast<float>(i) * stride;
+        const float height = std::max(1.0f, static_cast<float>(frame.cpuWallMilliseconds / maximum) * (size.y - 4.0f));
+        const bool active = frame.index == selected;
+        if (active) {
+            draw->AddRectFilled(ImVec2(x, lo.y), ImVec2(x + stride, hi.y), IM_COL32(45, 83, 94, 255));
+        }
+        draw->AddRectFilled(ImVec2(x, hi.y - height), ImVec2(x + stride - std::min(1.0f, stride * 0.25f), hi.y),
+            active ? IM_COL32(114, 221, 208, 255) : IM_COL32(76, 109, 140, 255));
+    }
+
+    if (!ImGui::IsItemHovered()) { return nullptr; }
+    const float offset = ImGui::GetIO().MousePos.x - lo.x;
+    const size_t index = std::min(static_cast<size_t>(std::max(0.0f, offset) / stride), history.size() - 1);
+    const auto& frame = history[index];
+    const bool clicked = ImGui::IsItemClicked();
+    ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+    ImGui::SetTooltip("Frame %llu\nWall %.2f ms   CPU %.2f ms",
+        static_cast<unsigned long long>(frame.index), frame.cpuWallMilliseconds, frame.nodes.front().cpuMilliseconds);
+    return clicked ? &frame : nullptr;
+}
+
+enum class TimelineScopeKind { Work, Idle, Editor };
+
+struct TimelineSpan {
+    size_t node;
+    int depth;
+    double begin;
+    double duration;
+    TimelineScopeKind kind;
+};
+
+double timelineTickStep(double target)
+{
+    const double magnitude = std::pow(10.0, std::floor(std::log10(target)));
+    for (const double scale : {1.0, 2.0, 5.0}) {
+        const double step = scale * magnitude;
+        if (step >= target) { return step; }
+    }
+    return 10.0 * magnitude;
+}
+
+void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, double& rangeMs)
+{
+    const auto origin = *frame.nodes.front().beginTime;
+    std::vector<TimelineSpan> spans;
+    int depthCount = 0;
+    const auto visit = [&](auto&& self, size_t index, int depth, TimelineScopeKind kind) -> void {
+        const auto& node = frame.nodes[index];
+        if (!node.beginTime) { return; }
+        if (kind == TimelineScopeKind::Work) {
+            if (node.cpuIdle) { kind = TimelineScopeKind::Idle; }
+            if (node.cpuEditor) { kind = TimelineScopeKind::Editor; }
+        }
+        const double begin = std::chrono::duration<double, std::milli>(*node.beginTime - origin).count();
+        spans.push_back({index, depth, begin, index == 0 ? frame.cpuWallMilliseconds : node.cpuMilliseconds, kind});
+        depthCount = std::max(depthCount, depth + 1);
+        for (const size_t child : node.children) { self(self, child, depth + 1, kind); }
+    };
+    visit(visit, 0, 0, TimelineScopeKind::Work);
+
+    if (!ImGui::BeginChild("CPU scopes", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollWithMouse)) {
+        ImGui::EndChild();
+        return;
+    }
+    const float rowHeight = ImGui::GetTextLineHeightWithSpacing() + 2.0f;
+    const float rulerHeight = rowHeight + 3.0f;
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float height = std::max(ImGui::GetContentRegionAvail().y, rulerHeight + rowHeight * depthCount);
+    ImGui::InvisibleButton("Timeline canvas", ImVec2(width, height));
+    const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+    const auto& io = ImGui::GetIO();
+    const bool hovered = ImGui::IsItemHovered();
+    const bool panning = ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+    constexpr double kMinimumRangeMs = 0.01;
+    const double fullRange = std::max(frame.cpuWallMilliseconds, kMinimumRangeMs);
+    double visibleRange = rangeMs > 0.0 ? std::min(rangeMs, fullRange) : fullRange;
+    double visibleStart = std::clamp(startMs, 0.0, fullRange - visibleRange);
+    if (hovered && ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY) && io.MouseWheel != 0.0f) {
+        const double cursor = static_cast<double>((io.MousePos.x - lo.x) / width);
+        const double zoomedRange = std::clamp(visibleRange * std::pow(1.25, -io.MouseWheel), kMinimumRangeMs, fullRange);
+        startMs = visibleStart + cursor * (visibleRange - zoomedRange);
+        rangeMs = zoomedRange < fullRange ? zoomedRange : 0.0;
+        visibleRange = zoomedRange;
+        startMs = visibleStart = std::clamp(startMs, 0.0, fullRange - visibleRange);
+    }
+    if (panning) {
+        startMs = visibleStart = std::clamp(visibleStart - io.MouseDelta.x * visibleRange / width,
+            0.0, fullRange - visibleRange);
+        if (visibleRange < fullRange) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
+    }
+
+    const auto xAt = [&](double time) { return lo.x + static_cast<float>((time - visibleStart) * width / visibleRange); };
+    const float bodyY = lo.y + rulerHeight;
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(lo, hi, true);
+    draw->AddRectFilled(lo, hi, IM_COL32(23, 26, 33, 255));
+    draw->AddRectFilled(lo, ImVec2(hi.x, bodyY), IM_COL32(35, 42, 53, 255));
+    for (int depth = 1; depth < depthCount; depth += 2) {
+        const float y = bodyY + depth * rowHeight;
+        draw->AddRectFilled(ImVec2(lo.x, y), ImVec2(hi.x, y + rowHeight), IM_COL32(29, 32, 40, 255));
+    }
+
+    const double tickStep = timelineTickStep(visibleRange * ImGui::CalcTextSize("00.000 ms  ").x / width);
+    const int precision = std::max(0, static_cast<int>(-std::floor(std::log10(tickStep))));
+    const double visibleEnd = visibleStart + visibleRange;
+    for (double tick = std::ceil(visibleStart / tickStep) * tickStep; tick <= visibleEnd; tick += tickStep) {
+        const float x = xAt(tick);
+        draw->AddLine(ImVec2(x, bodyY - 4.0f), ImVec2(x, hi.y), IM_COL32(86, 99, 119, 100));
+        char label[48];
+        std::snprintf(label, sizeof(label), "%.*f ms", precision, tick);
+        if (x + 4.0f + ImGui::CalcTextSize(label).x <= hi.x) {
+            draw->AddText(ImVec2(x + 4.0f, lo.y + 2.0f), IM_COL32(191, 205, 219, 255), label);
+        }
+    }
+    draw->AddLine(ImVec2(lo.x, bodyY), ImVec2(hi.x, bodyY), IM_COL32(86, 99, 119, 160));
+
+    const TimelineSpan* hoveredSpan = nullptr;
+    const float textInset = (rowHeight - ImGui::GetFontSize()) * 0.5f;
+    for (const auto& span : spans) {
+        const double end = span.begin + span.duration;
+        if (end <= visibleStart || span.begin >= visibleEnd) { continue; }
+        const auto& node = frame.nodes[span.node];
+        const float left = xAt(std::max(span.begin, visibleStart));
+        const float right = xAt(std::min(end, visibleEnd));
+        const float y = bodyY + span.depth * rowHeight + 1.0f;
+        const float bottom = y + rowHeight - 2.0f;
+        if (right <= left || y >= draw->GetClipRectMax().y || bottom <= draw->GetClipRectMin().y) { continue; }
+
+        ImVec4 tint = ImGui::ColorConvertU32ToFloat4(imguiColor(node.color));
+        tint.x *= 0.57f;
+        tint.y *= 0.57f;
+        tint.z *= 0.57f;
+        ImU32 fill = ImGui::ColorConvertFloat4ToU32(tint);
+        if (span.node == 0) { fill = IM_COL32(51, 77, 101, 255); }
+        if (span.kind == TimelineScopeKind::Idle) { fill = IM_COL32(91, 69, 48, 255); }
+        if (span.kind == TimelineScopeKind::Editor) { fill = IM_COL32(78, 67, 113, 255); }
+        const bool hit = hovered && !panning && io.MousePos.x >= left && io.MousePos.x < right &&
+            io.MousePos.y >= y && io.MousePos.y < bottom;
+        draw->AddRectFilled(ImVec2(left, y), ImVec2(right, bottom), fill);
+        if (hit) {
+            hoveredSpan = &span;
+            draw->AddRect(ImVec2(left, y), ImVec2(right, bottom), IM_COL32(237, 247, 255, 235));
+        }
+        if (right - left > 20.0f) {
+            const ImVec4 clip(left + 3.0f, y, right - 3.0f, bottom);
+            draw->AddText(nullptr, 0.0f, ImVec2(left + 4.0f, y + textInset - 1.0f),
+                IM_COL32(250, 251, 253, 255), node.name.c_str(), nullptr, 0.0f, &clip);
+        }
+    }
+    draw->PopClipRect();
+
+    if (hoveredSpan) {
+        size_t index = hoveredSpan->node;
+        std::string path = frame.nodes[index].name;
+        while (index != 0) {
+            index = frame.nodes[index].parent;
+            path = frame.nodes[index].name + " / " + path;
+        }
+        ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
+        if (ImGui::BeginTooltip()) {
+            ImGui::TextUnformatted(path.c_str());
+            ImGui::Text("Start %.3f ms   Duration %.3f ms", hoveredSpan->begin, hoveredSpan->duration);
+            if (hoveredSpan->kind == TimelineScopeKind::Idle) { ImGui::TextDisabled("Wait"); }
+            if (hoveredSpan->kind == TimelineScopeKind::Editor) { ImGui::TextDisabled("Editor UI"); }
+            ImGui::EndTooltip();
+        }
+    }
+    ImGui::EndChild();
+}
+
 double sampleValue(const EditorProfiler::Node* node, bool gpu)
 {
     return node && (!gpu || node->gpuTimingAvailable)
@@ -1288,11 +1475,56 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("timeline chart")) {
+            auto profileScope = scope("Profiler Timeline Chart");
+            drawTimelineChart();
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
 
     ImGui::End();
     return captureRequested;
+}
+
+void EditorProfiler::drawTimelineChart()
+{
+    const auto fit = [&] {
+        timelineStartMs_ = 0.0;
+        timelineRangeMs_ = 0.0;
+    };
+    const Frame* frame = timelinePinnedFrame_ ? &*timelinePinnedFrame_ : &latestFrame_;
+
+    ImGui::BeginDisabled(frame->nodes.empty());
+    if (ImGui::Button(timelinePinnedFrame_ ? "Resume" : "Pause")) {
+        if (timelinePinnedFrame_) {
+            timelinePinnedFrame_.reset();
+            frame = &latestFrame_;
+            fit();
+        } else {
+            timelinePinnedFrame_ = *frame;
+            frame = &*timelinePinnedFrame_;
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Fit")) { fit(); }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Wheel to zoom  |  Drag to pan");
+
+    if (const Frame* selected = drawTimelineHistory(history_, frame->index)) {
+        timelinePinnedFrame_ = *selected;
+        frame = &*timelinePinnedFrame_;
+        fit();
+    }
+    if (frame->nodes.empty()) {
+        ImGui::TextDisabled("Waiting for a completed CPU frame.");
+    } else {
+        ImGui::Text("Main Thread  /  Frame %llu", static_cast<unsigned long long>(frame->index));
+        ImGui::SameLine();
+        ImGui::TextDisabled("Wall %.2f ms   CPU %.2f ms", frame->cpuWallMilliseconds, frame->nodes.front().cpuMilliseconds);
+        drawTimelineScopes(*frame, timelineStartMs_, timelineRangeMs_);
+    }
 }
 
 size_t EditorProfiler::beginSection(std::string_view name, uint32_t color)
@@ -1320,7 +1552,7 @@ void EditorProfiler::endSection(size_t nodeIndex)
 
     const auto now = Clock::now();
     currentNodes_[nodeIndex].cpuMilliseconds =
-        std::chrono::duration<double, std::milli>(now - currentNodes_[nodeIndex].beginTime).count();
+        std::chrono::duration<double, std::milli>(now - *currentNodes_[nodeIndex].beginTime).count();
     if (!stack_.empty() && stack_.back() == nodeIndex) {
         stack_.pop_back();
     }
@@ -1338,7 +1570,6 @@ size_t EditorProfiler::addFinishedSection(
         .color = color,
         .cpuMilliseconds = cpuMilliseconds,
         .parent = parent,
-        .beginTime = Clock::now(),
     });
     if (parent < currentNodes_.size()) {
         currentNodes_[parent].children.push_back(nodeIndex);

@@ -44,7 +44,14 @@ public:
             stats.nodes[0].sections.push_back({.name = "Software", .queue = QueueType::Compute, .cpuMilliseconds = .1});
             stats.streaming.push_back({.passName = "Visibility", .assetPath = "scene-a", .generation = 1, .frameIndex = 10,
                 .geometryUsedBytes = 1024, .geometryBudgetBytes = 4096, .totalPages = 100, .residentPages = 4});
-            { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
+            {
+                auto frame = profiler.beginFrame();
+                {
+                    auto recording = profiler.scope("Record graph");
+                    auto child = profiler.scope("Record commands");
+                }
+                profiler.addRenderGraphStats(stats);
+            }
             stats.executionId = 11; stats.streaming[0].frameIndex = 11;
             { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
             auto completed = stats; completed.executionId = 10; completed.gpuTimingAvailable = true; completed.gpuMilliseconds = 3;
@@ -62,6 +69,15 @@ public:
             const size_t poll = findPreparation("Poll completions");
             const size_t revisions = findPreparation("Scene revisions");
             const size_t slot = findPreparation("Graph preparation / Submission slot wait");
+            const size_t recording = findPreparation("Record graph");
+            const size_t commands = findPreparation("Record commands");
+            checkProfile(displayed.nodes[0].beginTime && displayed.nodes[recording].beginTime &&
+                displayed.nodes[commands].beginTime && displayed.nodes[commands].parent == recording &&
+                displayed.nodes[0].beginTime <= displayed.nodes[recording].beginTime &&
+                displayed.nodes[recording].beginTime <= displayed.nodes[commands].beginTime,
+                "Native CPU scopes lost their frame-relative chronology");
+            checkProfile(!displayed.nodes[preflight].beginTime && !displayed.nodes[poll].beginTime &&
+                !displayed.nodes.back().beginTime, "A duration-only graph scope acquired a synthetic start time");
             checkProfile(displayed.nodes[poll].parent == preflight && displayed.nodes[revisions].parent == preflight &&
                 displayed.nodes[slot].parent == displayed.nodes[preflight].parent &&
                 displayed.nodes[poll].cpuOnly && !displayed.nodes[poll].gpuTimingAvailable &&
@@ -1074,6 +1090,110 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerTooltipViewportTest);
+
+class EditorProfilerTimelineTest final : public RHITest {
+public:
+    EditorProfilerTimelineTest() { type = RHITestType::Command; name = "editor_profiler_timeline"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        auto* previous = ImGui::GetCurrentContext();
+        auto* context = ImGui::CreateContext();
+        struct Cleanup {
+            ImGuiContext* context;
+            ImGuiContext* previous;
+            ~Cleanup() { ImGui::DestroyContext(context); ImGui::SetCurrentContext(previous); }
+        } cleanup{context, previous};
+
+        try {
+            auto& io = ImGui::GetIO();
+            io.IniFilename = nullptr;
+            constexpr int width = 776, height = 420;
+            io.DisplaySize = ImVec2(width, height);
+            unsigned char* atlas = nullptr;
+            int atlasWidth = 0, atlasHeight = 0;
+            io.Fonts->GetTexDataAsRGBA32(&atlas, &atlasWidth, &atlasHeight);
+            io.Fonts->SetTexID(ImTextureID(1));
+
+            EditorProfiler profiler;
+            bool open = true;
+            const auto draw = [&] {
+                ImGui::NewFrame();
+                ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f));
+                ImGui::LogToBuffer();
+                profiler.drawWindow(&open, {});
+                std::string labels = context->LogBuffer.c_str();
+                ImGui::LogFinish();
+                ImGui::Render();
+                return labels;
+            };
+            draw();
+            auto* window = ImGui::FindWindowByName("Profiler");
+            checkProfile(window != nullptr, "Missing Profiler window");
+            ImGui::SetWindowSize("Profiler", ImVec2(width - 16.0f, height - 16.0f));
+            auto* tabs = context->TabBars.GetByKey(window->GetID("ProfilerTabs"));
+            checkProfile(tabs != nullptr, "Missing Profiler tab bar");
+            for (auto& tab : tabs->Tabs) {
+                if (std::string_view(ImGui::TabBarGetTabName(tabs, &tab)) == "timeline chart") {
+                    tabs->NextSelectedTabId = tab.ID;
+                    break;
+                }
+            }
+            checkProfile(tabs->NextSelectedTabId != 0, "Missing timeline chart tab");
+            checkProfile(draw().find("Waiting for a completed CPU frame") != std::string::npos,
+                "Timeline did not handle startup without samples");
+            checkProfile(ImGui::FindWindowByName("timeline") == nullptr, "Timeline opened a standalone window");
+            const auto recordFrame = [&](int waitMs) {
+                using namespace std::chrono_literals;
+                auto frame = profiler.beginFrame();
+                auto render = profiler.scope("Render Frame");
+                {
+                    auto idle = profiler.idleScope("Wait Slot Completion");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+                }
+                {
+                    auto editor = profiler.editorScope("Editor panels");
+                    std::this_thread::sleep_for(2ms);
+                }
+                {
+                    auto graph = profiler.scope("Record RenderGraph");
+                    std::this_thread::sleep_for(1ms);
+                    auto commands = profiler.scope("Record draw commands");
+                    std::this_thread::sleep_for(3ms);
+                }
+            };
+            for (int i = 0; i < 20; ++i) { recordFrame(1 + (i % 5)); }
+            checkProfile(draw().find("Frame 19") != std::string::npos, "Live timeline did not show the latest CPU frame");
+            if (const char* screenshot = std::getenv("METALLIC_TEST_TIMELINE_PNG")) {
+                std::string message;
+                const bool saved = saveImGuiTestDrawDataPng(*ImGui::GetDrawData(), atlas, atlasWidth, atlasHeight,
+                    width, height, screenshot, message);
+                checkProfile(saved, message);
+            }
+
+            const ImVec2 start(tabs->BarRect.Min.x, tabs->BarRect.Max.y + tabs->ItemSpacingY);
+            const float firstBarX = start.x + window->WorkRect.GetWidth() / (2.0f * profiler.history().size());
+            io.AddMousePosEvent(firstBarX, start.y + ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeight());
+            draw();
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+            const auto pinned = draw();
+            checkProfile(pinned.find("Main Thread  /  Frame 0") != std::string::npos, "Click did not select the first frame");
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+            draw();
+
+            for (int i = 0; i < 105; ++i) { auto frame = profiler.beginFrame(); }
+            checkProfile(profiler.history().front().index > 0 && draw().find("Main Thread  /  Frame 0") != std::string::npos,
+                "Timeline lost the pinned frame when history advanced");
+            io.AddMousePosEvent(start.x + 8.0f, start.y + 8.0f);
+            draw();
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+            draw();
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+            checkProfile(draw().find("Frame 124") != std::string::npos, "Resume did not return to the latest CPU frame");
+            return RHITestResult::pass("Profiler timeline chart tab, startup, history selection, pinned eviction and resume");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerTimelineTest);
 
 // Render real ImGui draw data offscreen for UI QA, without creating an OS window
 // or taking over the user's desktop. Only the font atlas is used by this panel.
