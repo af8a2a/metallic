@@ -3364,12 +3364,21 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
                 if (clusterHybridRaster) {
                     rasterGpu.next("VSM software cluster raster");
                     if (auto r = commands.synchronize({.buffers = {&scratch, 1}}); !r) { return r; }
-                    const uint32_t scratchPages = hybridScratchPageCount(push.physicalPageCount, push.pageSize);
-                    for (uint32_t base = 0; base < scratchPages; base += kDrawBatchSize) {
-                        push.workBase = base;
+                    if (clusterPageRaster && !sharedPhysicalPool && push.physicalPageCount <= kDrawBatchSize) {
+                        push.workBase = 0;
                         if (auto r = commands.bindExecution(state->programs->hybridClear->execution(), &push, sizeof(push)); !r) { return r; }
-                        if (auto r = commands.dispatch(std::min(scratchPages - base, kDrawBatchSize)); !r) { return r; }
+                        auto args = state->resources->buffers[7]->slice({uint64_t(clearDrawOffset) * 12, 12});
+                        if (!args) { return std::unexpected(args.error()); }
+                        if (auto r = commands.dispatchIndirect(*args); !r) { return r; }
                         ++computeDispatches;
+                    } else {
+                        const uint32_t scratchPages = hybridScratchPageCount(push.physicalPageCount, push.pageSize);
+                        for (uint32_t base = 0; base < scratchPages; base += kDrawBatchSize) {
+                            push.workBase = base;
+                            if (auto r = commands.bindExecution(state->programs->hybridClear->execution(), &push, sizeof(push)); !r) { return r; }
+                            if (auto r = commands.dispatch(std::min(scratchPages - base, kDrawBatchSize)); !r) { return r; }
+                            ++computeDispatches;
+                        }
                     }
                     scratch.before = scratch.after;
                     scratch.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite};

@@ -28,36 +28,176 @@ implementing VirtualShadowMaps;
 #endif
 
 #if VSM_CLUSTER_PAGE_RASTER
-void vsmAppendClusterPage(uint page, uint triangleIndex, RWStructuredBuffer<uint4> work,
-    RWStructuredBuffer<uint> statistics, uint capacity)
+static const uint kVSMClusterPageTableSize = 512u;
+static const uint kVSMClusterPageTableMask = kVSMClusterPageTableSize - 1u;
+static const uint kVSMClusterPageTablePasses = kVSMClusterPageTableSize / 64u;
+groupshared uint g_vsmClusterPageKey[kVSMClusterPageTableSize];
+groupshared uint g_vsmClusterPageMaskLo[kVSMClusterPageTableSize];
+groupshared uint g_vsmClusterPageMaskHi[kVSMClusterPageTableSize];
+groupshared uint g_vsmClusterUsedSlots[kVSMClusterPageTableSize];
+groupshared uint g_vsmClusterUsedCount[2];
+groupshared uint g_vsmClusterTotalTris[2];
+groupshared uint g_vsmClusterTotalTickets[2];
+groupshared uint g_vsmClusterBaseTri;
+groupshared uint g_vsmClusterBaseTicket;
+
+bool vsmTryInsertClusterPage(uint page, uint lane, uint parity)
 {
-    // Every invocation here belongs to the same original aligned cluster,
-    // including indirect Build and sparse demotion. Each 16-slot quarter
-    // bounds worst-case clipped mesh output to 144 vertices and 112 primitives.
-    uint key = (page << 2u) | ((triangleIndex >> 4u) & 3u);
-    for (;;) {
-        uint firstKey = WaveReadLaneFirst(key);
-        if (key == firstKey) {
-            uint mask = WaveActiveBitOr(1u << (triangleIndex & 31u));
-            if (WaveIsFirstLane()) {
-                uint count = countbits(mask);
-                uint first;
-                InterlockedAdd(statistics[3], count, first);
-                uint admitted = min(capacity - min(capacity, first), count);
-                if (admitted < count) {
-                    InterlockedAdd(statistics[5], count - admitted);
-                    for (uint i = admitted; i < count; ++i) { mask &= mask - 1u; }
-                }
-                if (mask != 0u) {
-                    uint ticket;
-                    InterlockedAdd(work[0].x, 1u, ticket);
-                    bool high = (triangleIndex & 32u) != 0u;
-                    work[1u + ticket] = uint4(triangleIndex & ~63u, page, high ? 0u : mask, high ? mask : 0u);
+    uint slot = (page * 2654435761u) & kVSMClusterPageTableMask;
+    uint bit = 1u << (lane & 31u);
+    bool high = lane >= 32u;
+    for (uint probe = 0u; probe < 16u; ++probe) {
+        uint idx = (slot + probe) & kVSMClusterPageTableMask;
+        uint cur = g_vsmClusterPageKey[idx];
+        if (cur != page) {
+            if (cur == 0xffffffffu) {
+                uint prev;
+                InterlockedCompareExchange(g_vsmClusterPageKey[idx], 0xffffffffu, page, prev);
+                if (prev == 0xffffffffu) {
+                    uint pos;
+                    InterlockedAdd(g_vsmClusterUsedCount[parity], 1u, pos);
+                    g_vsmClusterUsedSlots[pos] = idx;
+                    cur = page;
+                } else {
+                    cur = prev;
                 }
             }
-            break;
+            if (cur != page) { continue; }
+        }
+        if (high) { InterlockedOr(g_vsmClusterPageMaskHi[idx], bit); }
+        else { InterlockedOr(g_vsmClusterPageMaskLo[idx], bit); }
+        return true;
+    }
+    return false;
+}
+
+void vsmEmitSingleClusterPage(uint page, uint lane, uint firstTriangle, ShadowPush push)
+{
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    uint first;
+    InterlockedAdd(statistics[3], 1u, first);
+    if (first < push.workCapacity) {
+        RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+        uint bit = 1u << (lane & 31u);
+        bool high = lane >= 32u;
+        uint ticket;
+        InterlockedAdd(work[0].x, 1u, ticket);
+        work[1u + ticket] = uint4(firstTriangle, page, high ? 0u : bit, high ? bit : 0u);
+    } else {
+        InterlockedAdd(statistics[5], 1u);
+    }
+}
+
+bool vsmFlushClusterPages(uint firstTriangle, uint lane, uint parity, bool moreLevels, ShadowPush push)
+{
+    uint usedCount = g_vsmClusterUsedCount[parity];
+    if (usedCount == 0u) { return false; }
+    uint myTris = 0u;
+    uint myTickets = 0u;
+    for (uint pos = lane; pos < usedCount; pos += 64u) {
+        uint s = g_vsmClusterUsedSlots[pos];
+        uint lo = g_vsmClusterPageMaskLo[s];
+        uint hi = g_vsmClusterPageMaskHi[s];
+        myTris += countbits(lo) + countbits(hi);
+        myTickets += uint((lo & 0xffffu) != 0u) + uint((lo >> 16u) != 0u) +
+            uint((hi & 0xffffu) != 0u) + uint((hi >> 16u) != 0u);
+    }
+    uint myTriOffset = 0u;
+    uint myTicketOffset = 0u;
+    if (myTris != 0u) {
+        InterlockedAdd(g_vsmClusterTotalTris[parity], myTris, myTriOffset);
+        InterlockedAdd(g_vsmClusterTotalTickets[parity], myTickets, myTicketOffset);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint totalTris = g_vsmClusterTotalTris[parity];
+    RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
+    RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+    uint capacity = push.workCapacity;
+    if (lane == 0u) {
+        uint nextParity = 1u - parity;
+        g_vsmClusterUsedCount[nextParity] = 0u;
+        g_vsmClusterTotalTris[nextParity] = 0u;
+        g_vsmClusterTotalTickets[nextParity] = 0u;
+        if (totalTris != 0u) {
+            uint baseTri;
+            InterlockedAdd(statistics[3], totalTris, baseTri);
+            g_vsmClusterBaseTri = baseTri;
+            if (baseTri < capacity && totalTris <= capacity - baseTri) {
+                uint baseTicket;
+                InterlockedAdd(work[0].x, g_vsmClusterTotalTickets[parity], baseTicket);
+                g_vsmClusterBaseTicket = baseTicket;
+            }
         }
     }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane < usedCount) {
+        uint baseTri = g_vsmClusterBaseTri;
+        if (baseTri < capacity && totalTris <= capacity - baseTri) {
+            uint cursor = 1u + g_vsmClusterBaseTicket + myTicketOffset;
+            for (uint pos = lane; pos < usedCount; pos += 64u) {
+                uint s = g_vsmClusterUsedSlots[pos];
+                uint p = g_vsmClusterPageKey[s];
+                uint lo = g_vsmClusterPageMaskLo[s];
+                uint hi = g_vsmClusterPageMaskHi[s];
+                g_vsmClusterPageKey[s] = 0xffffffffu;
+                g_vsmClusterPageMaskLo[s] = 0u;
+                g_vsmClusterPageMaskHi[s] = 0u;
+                uint q0 = lo & 0xffffu;
+                uint q1 = lo & 0xffff0000u;
+                uint q2 = hi & 0xffffu;
+                uint q3 = hi & 0xffff0000u;
+                if (q0 != 0u) { work[cursor++] = uint4(firstTriangle, p, q0, 0u); }
+                if (q1 != 0u) { work[cursor++] = uint4(firstTriangle, p, q1, 0u); }
+                if (q2 != 0u) { work[cursor++] = uint4(firstTriangle, p, 0u, q2); }
+                if (q3 != 0u) { work[cursor++] = uint4(firstTriangle, p, 0u, q3); }
+            }
+        } else {
+            uint triCursor = baseTri + myTriOffset;
+            for (uint pos = lane; pos < usedCount; pos += 64u) {
+                uint s = g_vsmClusterUsedSlots[pos];
+                uint p = g_vsmClusterPageKey[s];
+                uint lo = g_vsmClusterPageMaskLo[s];
+                uint hi = g_vsmClusterPageMaskHi[s];
+                g_vsmClusterPageKey[s] = 0xffffffffu;
+                g_vsmClusterPageMaskLo[s] = 0u;
+                g_vsmClusterPageMaskHi[s] = 0u;
+                for (uint q = 0u; q < 4u; ++q) {
+                    uint mask = q == 0u ? (lo & 0xffffu) : q == 1u ? (lo & 0xffff0000u) :
+                        q == 2u ? (hi & 0xffffu) : (hi & 0xffff0000u);
+                    if (mask == 0u) { continue; }
+                    uint c = countbits(mask);
+                    uint admitted = min(capacity - min(capacity, triCursor), c);
+                    triCursor += c;
+                    if (admitted < c) {
+                        InterlockedAdd(statistics[5], c - admitted);
+                        for (uint k = admitted; k < c; ++k) { mask &= mask - 1u; }
+                    }
+                    if (mask != 0u) {
+                        uint ticket;
+                        InterlockedAdd(work[0].x, 1u, ticket);
+                        work[1u + ticket] = uint4(firstTriangle, p, q < 2u ? mask : 0u, q >= 2u ? mask : 0u);
+                    }
+                }
+            }
+        }
+    }
+    if (moreLevels) {
+        GroupMemoryBarrierWithGroupSync();
+    }
+    return true;
+}
+
+bool vsmLoadClusterTrianglePositions(uint geometry, uint triangleIndex, out float3 v0, out float3 v1, out float3 v2)
+{
+    VirtualShadowMapTriangle tri;
+    if (!loadVirtualShadowMapTriangle(geometry, triangleIndex, tri)) {
+        v0 = v1 = v2 = float3(0.0);
+        return false;
+    }
+    v0 = tri.vertices[0].position.xyz;
+    v1 = tri.vertices[1].position.xyz;
+    v2 = tri.vertices[2].position.xyz;
+    return true;
 }
 #endif
 
@@ -84,9 +224,12 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     uint firstTriangle = firstSlot & ~63u;
     uint triangleIndex = firstTriangle + lane;
 #else
-    uint triangleIndex = candidates[candidate] + lane;
+    uint firstTriangle = candidates[candidate];
+    uint triangleIndex = firstTriangle + lane;
     uint levelMask = candidates[candidate + 1u];
+#if !VSM_CLUSTER_PAGE_RASTER
     if (triangleIndex >= push.triangleCount) { return; }
+#endif
 #endif
 #else
     uint triangleIndex = push.workBase + id.x;
@@ -116,7 +259,10 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
 #if VSM_INSTANCE_BUILD
     uint levelMask = vsmCullCluster(firstTriangle, lane, push, projections, pages);
-    if (levelMask == 0u || triangleIndex < firstSlot || triangleIndex >= candidates[candidate + 1u]) { return; }
+    if (levelMask == 0u) { return; }
+#if !VSM_CLUSTER_PAGE_RASTER
+    if (triangleIndex < firstSlot || triangleIndex >= candidates[candidate + 1u]) { return; }
+#endif
 #endif
 #if !VSM_COMPACT_BUILD
     if (lane == 0u) {
@@ -153,8 +299,188 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #if VSM_WORKLOAD_DIAGNOSTICS
     if (lane == 0u && levelMask != 0u) { vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticClusterSurvivingGroups, 1u); }
 #endif
-    if (!selected || triangleIndex >= push.triangleCount || levelMask == 0u) { return; }
+    if (levelMask == 0u) { return; }
+#if !VSM_CLUSTER_PAGE_RASTER
+    if (!selected || triangleIndex >= push.triangleCount) { return; }
 #endif
+#endif
+#if VSM_CLUSTER_PAGE_RASTER
+    // All 64 lanes of this surviving cluster participate in per-level LDS init and flush.
+#if VSM_INSTANCE_BUILD
+    bool laneActive = triangleIndex >= firstSlot && triangleIndex < candidates[candidate + 1u];
+#elif VSM_COMPACT_BUILD
+    bool laneActive = triangleIndex < push.triangleCount;
+#else
+    bool laneActive = selected && triangleIndex < push.triangleCount;
+#endif
+    bool mergeTriangle = true;
+    if (laneActive && mergeFrame && (VSM_COMPACT_BUILD != 0 || !mergeOnly)) {
+        uint word = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, kVSMCacheMergeGeometry), triangleIndex >> 5u);
+        mergeTriangle = ((word >> (triangleIndex & 31u)) & 1u) != 0u;
+        if (mergeOnly && !mergeTriangle) { laneActive = false; }
+    }
+    float3 triPos0 = float3(0.0), triPos1 = float3(0.0), triPos2 = float3(0.0);
+    if (laneActive) {
+        vsmWorkAdd(push, kVSMWorkBuildActiveTriangleSlots, 1u);
+        if (!vsmLoadClusterTrianglePositions(push.geometry, triangleIndex, triPos0, triPos1, triPos2)) {
+            laneActive = false;
+        }
+    }
+    if (laneActive) {
+        vsmWorkAdd(push, kVSMWorkBuildDecodedTriangles, 1u);
+        vsmWorkAdd(push, kVSMWorkBuildLevelTests, countbits(levelMask));
+    }
+    StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
+    uint bitsetOffset = vsmClusterPageBitsetOffset(push);
+#if VSM_WORKLOAD_DIAGNOSTICS
+    uint wordTests = 0u, pageHits = 0u;
+    bool layeredBuild = (push.cacheMode & 16u) != 0u;
+    bool dynamicTriangle = false;
+    bool staticFineRequired = false, compositeFineHit = false;
+    if (laneActive && layeredBuild) {
+        // The dynamic layer descriptor has the same slot indices as full Build.
+        uint mask = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, 34u), triangleIndex >> 5u);
+        dynamicTriangle = ((mask >> (triangleIndex & 31u)) & 1u) != 0u;
+        vsmBuildDiagnosticAdd(push, dynamicTriangle ? kVSMBuildDiagnosticLayeredDynamicDecodedTriangles :
+            kVSMBuildDiagnosticLayeredStaticDecodedTriangles, 1u);
+    }
+#endif
+    if (lane == 0u) {
+        g_vsmClusterUsedCount[0] = 0u;
+        g_vsmClusterUsedCount[1] = 0u;
+        g_vsmClusterTotalTris[0] = 0u;
+        g_vsmClusterTotalTris[1] = 0u;
+        g_vsmClusterTotalTickets[0] = 0u;
+        g_vsmClusterTotalTickets[1] = 0u;
+    }
+    for (uint pass = 0u; pass < kVSMClusterPageTablePasses; ++pass) {
+        uint s = lane + pass * 64u;
+        g_vsmClusterPageKey[s] = 0xffffffffu;
+        g_vsmClusterPageMaskLo[s] = 0u;
+        g_vsmClusterPageMaskHi[s] = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint parity = 0u;
+    for (uint level = 0u; level < push.clipmapCount; ++level) {
+        if ((levelMask & (1u << level)) == 0u) { continue; }
+        ShadowProjection projection = projections[level];
+        if (laneActive && vsmLODSelected(push, triangleIndex, level)) {
+            bool levelValid = true;
+            float3 lo, hi;
+#if !VSM_DIRECTIONAL_BUILD
+            if (projection.metric.w > 0.5) {
+                ShadowClipVertex polygon[9];
+                polygon[0].position = vsmProjectClip(triPos0, projection); polygon[0].uv = float2(0.0);
+                polygon[1].position = vsmProjectClip(triPos1, projection); polygon[1].uv = float2(0.0);
+                polygon[2].position = vsmProjectClip(triPos2, projection); polygon[2].uv = float2(0.0);
+                uint count = vsmClipProjection(polygon, float4(-1.0, -1.0, 1.0, 1.0), true);
+                if (count < 3u) { levelValid = false; }
+                else {
+                    lo = hi = polygon[0].position.xyz / polygon[0].position.w;
+                    for (uint vertex = 1u; vertex < count; ++vertex) {
+                        float3 projected = polygon[vertex].position.xyz / polygon[vertex].position.w;
+                        lo = min(lo, projected); hi = max(hi, projected);
+                    }
+                }
+            } else
+#endif
+            {
+                float3 a = vsmProjectPosition(triPos0, projection);
+                float3 b = vsmProjectPosition(triPos1, projection);
+                float3 c = vsmProjectPosition(triPos2, projection);
+                lo = min(a, min(b, c)); hi = max(a, max(b, c));
+            }
+            if (levelValid && !(hi.z < 0.0 || lo.z > 1.0 || any(hi.xy < -1.0) || any(lo.xy > 1.0))) {
+                int axis = int(projection.page.y);
+                int2 first = min(int2(floor(saturate(lo.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
+                int2 last = min(int2(floor(saturate(hi.xy * 0.5 + 0.5) * float(axis))), int2(axis - 1));
+#if VSM_RECEIVER_MASK
+                float resolution = float(uint(axis) * push.pageSize);
+                float3 positionMagnitude = max(abs(triPos0), max(abs(triPos1), abs(triPos2)));
+                float2 clipMagnitude = float2(dot(abs(projection.rowX.xyz), positionMagnitude),
+                    dot(abs(projection.rowY.xyz), positionMagnitude)) + abs(float2(projection.rowX.w, projection.rowY.w)) + 1.0;
+                float2 pageTranslationMagnitude = (abs(projection.originNear.xy) + float(axis) + 1.0) * (2.0 / float(axis));
+                float2 texelPadding = 1.0 + (clipMagnitude + pageTranslationMagnitude) *
+                    (256.0 * 5.960464477539063e-8) * (0.5 * resolution);
+                uint2 firstTexel = uint2(clamp(saturate(lo.xy * 0.5 + 0.5) * resolution - texelPadding, 0.0, resolution - 1.0));
+                uint2 lastTexel = uint2(clamp(saturate(hi.xy * 0.5 + 0.5) * resolution + texelPadding, 0.0, resolution - 1.0));
+#endif
+                uint cachedWord = 0xffffffffu, rawWord = 0u;
+                for (int y = first.y; y <= last.y; ++y) {
+                    uint firstPage = projection.page.x + uint(y * axis + first.x);
+                    uint lastPage = projection.page.x + uint(y * axis + last.x);
+                    uint firstWord = firstPage >> 5u, lastWord = lastPage >> 5u;
+                    for (uint word = firstWord; word <= lastWord; ++word) {
+                        if (word != cachedWord) {
+                            rawWord = bitset[bitsetOffset + word];
+                            cachedWord = word;
+#if VSM_WORKLOAD_DIAGNOSTICS
+                            ++wordTests;
+#endif
+                        }
+                        uint bits = rawWord;
+                        if (word == firstWord) { bits &= 0xffffffffu << (firstPage & 31u); }
+                        if (word == lastWord) { bits &= 0xffffffffu >> (31u - (lastPage & 31u)); }
+                        while (bits != 0u) {
+                            uint page = (word << 5u) + uint(firstbitlow(bits));
+                            bits &= bits - 1u;
+                            if (!mergeTriangle && (pages[page].w & (2u | kVSMPageMergeStatic)) == kVSMPageMergeStatic) {
+                                continue;
+                            }
+#if VSM_WORKLOAD_DIAGNOSTICS
+                            ++pageHits;
+#endif
+#if VSM_RECEIVER_MASK
+                            if ((pages[page].w & 8u) == 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+                                vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticReceiverMaskPageTests, 1u);
+#endif
+                                uint localPage = page - projection.page.x;
+                                uint2 mask = vsmReceiverTexelMask(firstTexel, lastTexel,
+                                    uint2(localPage % uint(axis), localPage / uint(axis)), push.pageSize);
+                                uint offset = vsmReceiverMaskOffset(push) + page * 2u;
+                                if (((mask.x & bitset[offset]) | (mask.y & bitset[offset + 1u])) == 0u) {
+#if VSM_WORKLOAD_DIAGNOSTICS
+                                    vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticReceiverMaskPageRejects, 1u);
+#endif
+                                    continue;
+                                }
+                            }
+#endif
+#if VSM_WORKLOAD_DIAGNOSTICS
+                            if (layeredBuild && !dynamicTriangle) {
+                                uint flags = pages[page].w;
+                                staticFineRequired = staticFineRequired || ((flags & 8u) != 0u &&
+                                    ((flags & kVSMPageMergeStatic) == 0u || mergeTriangle));
+                                compositeFineHit = compositeFineHit || (flags & 2u) != 0u;
+                            }
+#endif
+                            if (!vsmTryInsertClusterPage(page, lane, parity)) {
+                                vsmEmitSingleClusterPage(page, lane, firstTriangle, push);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        bool moreLevels = (level + 1u) < push.clipmapCount && (levelMask >> (level + 1u)) != 0u;
+        if (vsmFlushClusterPages(firstTriangle, lane, parity, moreLevels, push)) {
+            parity ^= 1u;
+        }
+    }
+#if VSM_WORKLOAD_DIAGNOSTICS
+    if (laneActive) {
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetWordTests, wordTests);
+        vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticTriangleBitsetPageHits, pageHits);
+        if (layeredBuild && !dynamicTriangle) {
+            vsmBuildDiagnosticAdd(push, staticFineRequired ? kVSMBuildDiagnosticStaticRequiredFineTriangles :
+                (compositeFineHit ? kVSMBuildDiagnosticStaticCompositeOnlyTriangles :
+                    kVSMBuildDiagnosticStaticNoFinePageTriangles), 1u);
+        }
+    }
+#endif
+#else
     bool mergeTriangle = true;
     if (mergeFrame && (VSM_COMPACT_BUILD != 0 || !mergeOnly)) {
         uint word = loadVirtualShadowMapDynamicMaskWord(vsmCacheMetadata(push, kVSMCacheMergeGeometry), triangleIndex >> 5u);
@@ -164,6 +490,14 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     vsmWorkAdd(push, kVSMWorkBuildActiveTriangleSlots, 1u);
     VirtualShadowMapTriangle triangle;
     if (!loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) { return; }
+    float3 triPos0 = triangle.vertices[0].position.xyz;
+    float3 triPos1 = triangle.vertices[1].position.xyz;
+    float3 triPos2 = triangle.vertices[2].position.xyz;
+#if VSM_PAGE_WINDOW_RASTER
+    RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
+#else
+    RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
+#endif
     vsmWorkAdd(push, kVSMWorkBuildDecodedTriangles, 1u);
     vsmWorkAdd(push, kVSMWorkBuildLevelTests, countbits(levelMask));
     StructuredBuffer<uint> bitset = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.owners));
@@ -184,11 +518,6 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #if VSM_PAGE_WINDOW_RASTER
     uint geometrySlot = 0xffffffffu;
 #endif
-#if VSM_CLUSTER_PAGE_RASTER || VSM_PAGE_WINDOW_RASTER
-    RWStructuredBuffer<uint4> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.workItems));
-#else
-    RWStructuredBuffer<uint2> work = resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.workItems));
-#endif
     for (uint level = 0u; level < push.clipmapCount; ++level) {
         if ((levelMask & (1u << level)) == 0u || !vsmLODSelected(push, triangleIndex, level)) { continue; }
         ShadowProjection projection = projections[level];
@@ -196,10 +525,9 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #if !VSM_DIRECTIONAL_BUILD
         if (projection.metric.w > 0.5) {
             ShadowClipVertex polygon[9];
-            for (uint vertex = 0u; vertex < 3u; ++vertex) {
-                polygon[vertex].position = vsmProjectClip(triangle.vertices[vertex].position.xyz, projection);
-                polygon[vertex].uv = float2(0.0);
-            }
+            polygon[0].position = vsmProjectClip(triPos0, projection); polygon[0].uv = float2(0.0);
+            polygon[1].position = vsmProjectClip(triPos1, projection); polygon[1].uv = float2(0.0);
+            polygon[2].position = vsmProjectClip(triPos2, projection); polygon[2].uv = float2(0.0);
             // Projecting only the original vertices misses triangles crossing
             // near/w=0. Clip the complete face before any perspective division.
             uint count = vsmClipProjection(polygon, float4(-1.0, -1.0, 1.0, 1.0), true);
@@ -212,9 +540,9 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
         } else
 #endif
         {
-            float3 a = vsmProjectPosition(triangle.vertices[0].position.xyz, projection);
-            float3 b = vsmProjectPosition(triangle.vertices[1].position.xyz, projection);
-            float3 c = vsmProjectPosition(triangle.vertices[2].position.xyz, projection);
+            float3 a = vsmProjectPosition(triPos0, projection);
+            float3 b = vsmProjectPosition(triPos1, projection);
+            float3 c = vsmProjectPosition(triPos2, projection);
             lo = min(a, min(b, c)); hi = max(a, max(b, c));
         }
         if (hi.z < 0.0 || lo.z > 1.0 || any(hi.xy < -1.0) || any(lo.xy > 1.0)) { continue; }
@@ -229,8 +557,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
         // rounding allowance to texels. The 256-epsilon allowance follows Mark's
         // conservative footprint policy; one extra texel covers integer boundaries.
         float resolution = float(uint(axis) * push.pageSize);
-        float3 positionMagnitude = max(abs(triangle.vertices[0].position.xyz),
-            max(abs(triangle.vertices[1].position.xyz), abs(triangle.vertices[2].position.xyz)));
+        float3 positionMagnitude = max(abs(triPos0), max(abs(triPos1), abs(triPos2)));
         float2 clipMagnitude = float2(dot(abs(projection.rowX.xyz), positionMagnitude),
             dot(abs(projection.rowY.xyz), positionMagnitude)) + abs(float2(projection.rowX.w, projection.rowY.w)) + 1.0;
         float2 pageTranslationMagnitude = (abs(projection.originNear.xy) + float(axis) + 1.0) * (2.0 / float(axis));
@@ -309,8 +636,6 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
 #endif
 #if VSM_PAGE_WINDOW_RASTER
                     accepted |= 1u << (page - basePage);
-#elif VSM_CLUSTER_PAGE_RASTER
-                    vsmAppendClusterPage(page, triangleIndex, work, statistics, push.workCapacity);
 #else
                     uint index;
                     InterlockedAdd(statistics[3], 1u, index);
@@ -359,6 +684,7 @@ void vsmBuildMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
             (compositeFineHit ? kVSMBuildDiagnosticStaticCompositeOnlyTriangles :
                 kVSMBuildDiagnosticStaticNoFinePageTriangles), 1u);
     }
+#endif
 #endif
 }
 
