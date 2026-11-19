@@ -20,7 +20,7 @@ uint vsmRasterHZBPageArgument(uint layer, uint batch, ShadowPush push)
 
 uint vsmRasterHZBPageByteOffset(uint layer, uint index, ShadowPush push)
 {
-    return vsmHardwareTicketByteOffset(2u * push.workCapacity + layer * vsmRasterHZBPageCapacity(push) + index, push);
+    return vsmDeferredRasterTicketByteOffset(push.workCapacity + layer * vsmRasterHZBPageCapacity(push) + index, push);
 }
 
 void vsmQueueRasterHZBPage(uint virtualPage, uint layer, ShadowPush push)

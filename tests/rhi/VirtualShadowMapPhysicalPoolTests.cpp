@@ -132,7 +132,10 @@ struct PoolFace
     uint32_t sourceSlot = UINT32_MAX;
 };
 
-std::filesystem::path writeClusterFixture(const std::filesystem::path& directory, bool withRoof, bool withHierarchy = false)
+enum class HybridTriangleMix { None, LongEdge, Masked };
+
+std::filesystem::path writeClusterFixture(const std::filesystem::path& directory, bool withRoof,
+    bool withHierarchy = false, HybridTriangleMix mix = HybridTriangleMix::None)
 {
     std::filesystem::create_directories(directory);
     std::vector<std::array<float, 3>> positions;
@@ -155,7 +158,26 @@ std::filesystem::path writeClusterFixture(const std::filesystem::path& directory
         }
     };
     grid(4, 0);
+    const size_t floorVertices = positions.size();
     grid(.1875f, 1);
+    constexpr std::array<std::array<float, 3>, 3> maskFootprint{{{-.14f, -.14f, 1}, {-.04f, -.14f, 1}, {-.14f, -.04f, 1}}};
+    if (mix == HybridTriangleMix::LongEdge) {
+        // The unclipped edge spans 76 finest texels. Its central-page fragment
+        // shares a ticket with the original microtriangles.
+        positions[floorVertices] = {-2.25f, -.1875f, 1};
+        positions[floorVertices + 1] = {.125f, -.1875f, 1};
+        positions[floorVertices + 2] = {.125f, -.09375f, 1};
+    } else if (mix == HybridTriangleMix::Masked) {
+        // Leave one slot for MASK. Identical XY bounds put it and the opaque
+        // triangle on the same Build wave iteration and page.
+        positions.resize(positions.size() - 3);
+        std::ranges::copy(maskFootprint, positions.begin() + floorVertices);
+        std::ranges::copy(maskFootprint, positions.end() - 3);
+    }
+    const size_t blockerVertices = positions.size() - floorVertices;
+    if (mix == HybridTriangleMix::Masked) {
+        for (const auto& position : maskFootprint) { positions.push_back({position[0], position[1], 2}); }
+    }
     const auto bytes = positions.size() * sizeof(positions.front());
     std::ofstream binary(directory / "Clusters.bin", std::ios::binary);
     binary.write(reinterpret_cast<const char*>(positions.data()), bytes);
@@ -181,9 +203,19 @@ std::filesystem::path writeClusterFixture(const std::filesystem::path& directory
             model["nodes"].push_back({{"mesh", 1}, {"scale", {0.375f, 0.375f, 1.0f}}, {"translation", {x, 0, 0}}});
         }
     }
-    model["accessors"][0]["count"] = positions.size() / 2;
-    model["accessors"][1]["count"] = positions.size() / 2;
-    model["accessors"][1]["byteOffset"] = bytes / 2;
+    model["accessors"][0]["count"] = floorVertices;
+    model["accessors"][1]["count"] = blockerVertices;
+    model["accessors"][1]["byteOffset"] = floorVertices * sizeof(positions.front());
+    if (mix == HybridTriangleMix::LongEdge) {
+        model["accessors"][1]["min"][0] = -2.25f;
+    } else if (mix == HybridTriangleMix::Masked) {
+        model["accessors"].push_back({{"bufferView", 0}, {"componentType", 5126}, {"type", "VEC3"}, {"count", 3},
+            {"byteOffset", (floorVertices + blockerVertices) * sizeof(positions.front())},
+            {"min", {-.14f, -.14f, 2}}, {"max", {-.04f, -.04f, 2}}});
+        model["materials"].push_back({{"doubleSided", true}, {"alphaMode", "MASK"}, {"alphaCutoff", .5f},
+            {"pbrMetallicRoughness", {{"baseColorFactor", {1, 1, 1, 0}}}}});
+        model["meshes"][1]["primitives"].push_back({{"attributes", {{"POSITION", 2}}}, {"material", 2}});
+    }
     model["buffers"][0]["byteLength"] = bytes;
     model["bufferViews"][0]["byteLength"] = bytes;
     const auto path = directory / "Clusters.gltf";
@@ -198,6 +230,13 @@ struct TwoPassTickets
     uint32_t deferred = 0;
     uint32_t rejected = 0;
     uint32_t recovered = 0;
+};
+
+struct HybridLaneRouting
+{
+    uint32_t mixedTickets = 0;
+    uint32_t softwareTriangles = 0;
+    uint32_t hardwareTriangles = 0;
 };
 
 struct HierarchyHZBCounts
@@ -215,6 +254,7 @@ struct PoolFaceSnapshot
     std::vector<uint64_t> requestedMasks;
     std::vector<uint8_t> visibility;
     std::array<uint32_t, 3> hybrid{};
+    HybridLaneRouting hybridRouting;
     std::array<uint32_t, 2> activeViews{}; // Fine level mask and compact initial Build row count.
     TwoPassTickets hzb;
     HierarchyHZBCounts hierarchyHZB;
@@ -569,7 +609,10 @@ public:
                         offsets.push_back(bytes);
                         bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
                         if (activeViews) { bytes += sizeof(face.activeViews); }
-                        if (hybrid) { bytes += sizeof(face.hybrid) + sizeof(face.hardwarePrimitives) + sizeof(face.hardwareFineGroups); }
+                        if (hybrid) {
+                            bytes += sizeof(face.hybrid) + sizeof(face.hybridRouting) +
+                                sizeof(face.hardwarePrimitives) + sizeof(face.hardwareFineGroups);
+                        }
                         if (frameSettings.twoPassHZB) { bytes += sizeof(face.hzb); }
                         if (hierarchyHZB) { bytes += sizeof(face.hierarchyHZB) + sizeof(face.instanceClusterTickets); }
                         if (unifiedMark && (*results)[index].requestedReceiverMasks) {
@@ -628,7 +671,12 @@ public:
                         if (hybrid) {
                             if (frameSettings.clusterHybridRaster) {
                                 copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMHybridSoftwareTickets, sizeof(face.hybrid));
-                            } else { offset += sizeof(face.hybrid); }
+                                static_assert(kVSMHybridSoftwareTriangles == kVSMHybridMixedTickets + 1u &&
+                                    kVSMHybridHardwareTriangles == kVSMHybridMixedTickets + 2u &&
+                                    sizeof(HybridLaneRouting) == 3 * sizeof(uint32_t));
+                                copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMHybridMixedTickets,
+                                    sizeof(face.hybridRouting));
+                            } else { offset += sizeof(face.hybrid) + sizeof(face.hybridRouting); }
                             copyCounterRange((*results)[index].statistics, sizeof(face.stats) + sizeof(uint64_t) * kVSMWorkRasterOutputPrimitives,
                                 sizeof(face.hardwarePrimitives));
                             copyCounterRange((*results)[index].statistics, sizeof(face.stats) + sizeof(uint64_t) * kVSMWorkRasterFineGroups,
@@ -674,10 +722,13 @@ public:
                         }
                         if (hybrid) {
                             const auto* counters = data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
-                            if (frameSettings.clusterHybridRaster) { std::memcpy(face.hybrid.data(), counters, sizeof(face.hybrid)); }
-                            std::memcpy(&face.hardwarePrimitives, counters + sizeof(face.hybrid), sizeof(face.hardwarePrimitives));
-                            std::memcpy(&face.hardwareFineGroups, counters + sizeof(face.hybrid) + sizeof(face.hardwarePrimitives),
-                                sizeof(face.hardwareFineGroups));
+                            if (frameSettings.clusterHybridRaster) {
+                                std::memcpy(face.hybrid.data(), counters, sizeof(face.hybrid));
+                                std::memcpy(&face.hybridRouting, counters + sizeof(face.hybrid), sizeof(face.hybridRouting));
+                            }
+                            counters += sizeof(face.hybrid) + sizeof(face.hybridRouting);
+                            std::memcpy(&face.hardwarePrimitives, counters, sizeof(face.hardwarePrimitives));
+                            std::memcpy(&face.hardwareFineGroups, counters + sizeof(face.hardwarePrimitives), sizeof(face.hardwareFineGroups));
                         }
                         if (frameSettings.twoPassHZB) {
                             std::memcpy(&face.hzb, data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) +
@@ -1551,6 +1602,31 @@ public:
                             "Oblique spotlight did not route nonempty single-sided work through software");
                         report["frames"].push_back({{"path","obliqueSpot"}, {"tickets",face.hybrid},
                             {"maxDepthError",maxError}, {"depthTolerance",depthTolerance}});
+
+                        for (const auto& [label, mix] : {std::pair{"MixedLongEdge", HybridTriangleMix::LongEdge},
+                                 std::pair{"MixedMasked", HybridTriangleMix::Masked}}) {
+                            validation.phase(label);
+                            const auto split = directory / label;
+                            std::filesystem::create_directories(split);
+                            requirePool(scene.load(writeClusterFixture(split, false, false, mix)), "Load hybrid lane fixture");
+                            const auto splitHardware = record(single, 256, true);
+                            const auto splitMixed = record(single, 256, false);
+                            const auto& mixedFace = splitMixed.faces.at(single.front().identity);
+                            const auto& routed = mixedFace.hybridRouting;
+                            const auto& hardwareFace = splitHardware.faces.at(single.front().identity);
+                            report["frames"].push_back({{"path", label}, {"tickets", mixedFace.hybrid},
+                                {"mixedTickets", routed.mixedTickets}, {"softwareTriangles", routed.softwareTriangles},
+                                {"hardwareTriangles", routed.hardwareTriangles}, {"hardwarePrimitives", mixedFace.hardwarePrimitives},
+                                {"referencePrimitives", hardwareFace.hardwarePrimitives}});
+                            compareRasterDepth(splitMixed, splitHardware, single.front().identity, 0.0f, false);
+                            requirePool(routed.mixedTickets > 0 && routed.mixedTickets <= std::min(mixedFace.hybrid[0], mixedFace.hybrid[1]) &&
+                                routed.softwareTriangles >= mixedFace.hybrid[0] && routed.hardwareTriangles >= mixedFace.hybrid[1],
+                                "A ticket did not split its lanes between software and hardware on " + std::string(label));
+                            requirePool(mixedFace.hybrid[2] > 0 && mixedFace.hardwareFineGroups == mixedFace.hybrid[1] &&
+                                mixedFace.hardwarePrimitives < hardwareFace.hardwarePrimitives,
+                                "Software lanes did not replace hardware primitives on " + std::string(label));
+                        }
+                        requirePool(scene.load(directory / "Clusters.gltf"), "Restore original hybrid fixture");
                     }
                     std::vector<uint32_t> pixels(shadow.size());
                     std::ranges::transform(shadow, pixels.begin(), [](uint8_t value) { return uint32_t(value) * 0x010101u | 0xff000000u; });

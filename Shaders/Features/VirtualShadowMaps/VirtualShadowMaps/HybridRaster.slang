@@ -7,17 +7,25 @@ implementing VirtualShadowMaps;
 #ifndef VSM_WORKLOAD_DIAGNOSTICS
 #define VSM_WORKLOAD_DIAGNOSTICS 0
 #endif
+#ifndef VSM_CLUSTER_HYBRID_RASTER
+#define VSM_CLUSTER_HYBRID_RASTER 0
+#endif
 
-// Packed tickets stay immutable. The mesh queue follows the uint4 tickets,
-// followed by a disjoint queue of history-occluded tickets for HZB retest.
+// Packed tickets stay immutable. Hybrid HW entries carry a second word for
+// the quarter's hardware lanes. Deferred entries still refer to whole tickets.
 uint vsmHardwareTicketByteOffset(uint index, ShadowPush push)
 {
-    return (1u + push.workCapacity) * 16u + index * 4u;
+    return (1u + push.workCapacity) * 16u + index * (VSM_CLUSTER_HYBRID_RASTER ? 8u : 4u);
+}
+
+uint vsmDeferredRasterTicketByteOffset(uint index, ShadowPush push)
+{
+    return vsmHardwareTicketByteOffset(push.workCapacity, push) + index * 4u;
 }
 
 static const uint kVSMMainDraw = 0u, kVSMDeferredRetest = 1u, kVSMRecoveredDraw = 2u;
 
-void vsmQueueRasterTicket(ShadowPush push, uint ticketIndex, uint stage)
+void vsmQueueRasterTicket(ShadowPush push, uint ticketIndex, uint stage, uint hardwareMask = 0xffffu)
 {
     uint layer = (push.rasterCoarse >> 1u) & 1u;
     uint index;
@@ -34,8 +42,18 @@ void vsmQueueRasterTicket(ShadowPush push, uint ticketIndex, uint stage)
         else { InterlockedAdd(work[0].y, 1u, index); }
     }
     RWByteAddressBuffer queue = resolveUniform(ResourceHandle<RWByteAddressBuffer>(push.workItems));
-    uint queueIndex = index + (stage == kVSMDeferredRetest ? push.workCapacity : 0u);
-    queue.Store(vsmHardwareTicketByteOffset(queueIndex, push), ticketIndex);
+#if VSM_TWO_PASS_HZB
+    if (stage == kVSMDeferredRetest) {
+        queue.Store(vsmDeferredRasterTicketByteOffset(index, push), ticketIndex);
+    } else
+#endif
+    {
+#if VSM_CLUSTER_HYBRID_RASTER
+        queue.Store2(vsmHardwareTicketByteOffset(index, push), uint2(ticketIndex, hardwareMask));
+#else
+        queue.Store(vsmHardwareTicketByteOffset(index, push), ticketIndex);
+#endif
+    }
     uint batch = vsmCacheMetadata(push, kVSMHybridDrawOffset) + (2u * stage + layer) * push.batchCount + index / 65535u;
     RWStructuredBuffer<uint> arguments = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
     InterlockedAdd(arguments[batch * 3u], 1u);
@@ -68,26 +86,6 @@ void vsmHybridClearMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uni
     RWStructuredBuffer<uint> depth = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(clearPush, kVSMHybridDepth)));
     uint pageArea = clearPush.pageSize * clearPush.pageSize;
     for (uint i = lane; i < pageArea; i += 64u) { depth[slot * pageArea + i] = 0u; }
-}
-
-// A Build ticket covers part of a 64-slot caster cluster. Use the original
-// cluster's extent in this shadow view so splitting a ticket at a page seam
-// cannot turn a large cluster into a software microtriangle candidate.
-bool vsmHybridClusterFits(uint firstTriangle, ShadowProjection projection, ShadowPush push)
-{
-    float3 minimum, maximum;
-    if (!loadVirtualShadowMapClusterBounds(push.geometry, firstTriangle, minimum, maximum)) { return false; }
-    float2 lo = float2(3.402823466e38), hi = -lo;
-    for (uint i = 0u; i < 8u; ++i) {
-        float3 corner = float3((i & 1u) != 0u ? maximum.x : minimum.x, (i & 2u) != 0u ? maximum.y : minimum.y,
-            (i & 4u) != 0u ? maximum.z : minimum.z);
-        float4 clip = vsmProjectClip(corner, projection);
-        if (clip.w <= 0.0 || clip.z < 0.0 || clip.z > clip.w) { return false; }
-        float2 ndc = clip.xy / clip.w;
-        lo = min(lo, ndc); hi = max(hi, ndc);
-    }
-    float2 texelExtent = (hi - lo) * (0.5 * float(projection.page.y * push.pageSize));
-    return dot(texelExtent, texelExtent) <= 32.0 * 32.0;
 }
 
 struct VSMSoftwareVertex
@@ -153,7 +151,23 @@ uint vsmSoftwareTriangle(VSMSoftwareVertex a, VSMSoftwareVertex b, VSMSoftwareVe
 }
 
 groupshared uint gVsmHybridCandidate;
-groupshared uint gVsmHybridMasked;
+groupshared uint gVsmHybridHardwareMask;
+#if VSM_WORKLOAD_DIAGNOSTICS
+groupshared uint gVsmHybridSoftwareMask;
+
+void vsmRecordHybridRoutes(ShadowPush push, uint softwareMask, uint hardwareMask)
+{
+    if (softwareMask != 0u) {
+        vsmCacheAdd(push, kVSMHybridSoftwareTickets, 1u);
+        vsmCacheAdd(push, kVSMHybridSoftwareTriangles, countbits(softwareMask));
+    }
+    if (hardwareMask != 0u) {
+        vsmCacheAdd(push, kVSMHybridHardwareTickets, 1u);
+        vsmCacheAdd(push, kVSMHybridHardwareTriangles, countbits(hardwareMask));
+        if (softwareMask != 0u) { vsmCacheAdd(push, kVSMHybridMixedTickets, 1u); }
+    }
+}
+#endif
 #endif
 
 [shader("compute")]
@@ -172,7 +186,6 @@ void vsmHybridRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     uint ticketIndex = 1u + push.workBase + group.x;
     uint4 ticket = work[ticketIndex];
-    uint firstTriangle = ticket.x;
     if (lane == 0u) {
         StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
         uint4 page = pages[ticket.y];
@@ -189,13 +202,12 @@ void vsmHybridRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 #endif
         {
 #if VSM_CLUSTER_HYBRID_RASTER
-            bool eligible = false;
-            if (vsmRasterClearsEntry(page, push.rasterCoarse) && page.x < vsmCacheMetadata(push, kVSMHybridPageCount)) {
-                StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-                eligible = vsmHybridClusterFits(firstTriangle, projections[page.z], push);
-            }
-            gVsmHybridCandidate = uint(eligible);
-            gVsmHybridMasked = 0u;
+            gVsmHybridCandidate = uint(vsmRasterClearsEntry(page, push.rasterCoarse) &&
+                page.x < vsmCacheMetadata(push, kVSMHybridPageCount));
+            gVsmHybridHardwareMask = 0u;
+#if VSM_WORKLOAD_DIAGNOSTICS
+            gVsmHybridSoftwareMask = 0u;
+#endif
 #else
             vsmQueueRasterTicket(push, ticketIndex, kVSMMainDraw);
 #endif
@@ -206,31 +218,47 @@ void vsmHybridRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     if (gVsmHybridCandidate == 2u) { return; }
     uint bits = ticket.z != 0u ? ticket.z : ticket.w;
     uint quarter = (ticket.z != 0u ? 0u : 32u) + ((bits & 0xffffu) != 0u ? 0u : 16u);
-    bool active = lane < 16u && (((bits >> (quarter & 31u)) >> lane) & 1u) != 0u;
-    uint triangleIndex = firstTriangle + quarter + lane;
-    StructuredBuffer<ShadowMaterial> materials = resolveUniform(ResourceHandle<StructuredBuffer<ShadowMaterial>>(push.materials));
+    uint slotMask = (bits >> (quarter & 31u)) & 0xffffu;
+    if (gVsmHybridCandidate == 0u) {
+        if (lane == 0u) {
+            vsmQueueRasterTicket(push, ticketIndex, kVSMMainDraw, slotMask);
+#if VSM_WORKLOAD_DIAGNOSTICS
+            vsmRecordHybridRoutes(push, 0u, slotMask);
+#endif
+        }
+        return;
+    }
+    uint laneBit = 1u << lane;
     ShadowClipVertex polygon[9];
     uint count = 0u, material = 0u, slot = 0u;
     float4 bounds;
-    if (gVsmHybridCandidate != 0u && active) {
-        count = vsmRasterPolygon(triangleIndex, ticket.y, push, true, polygon, material, slot, bounds, false);
-        if (count >= 3u && materials[material].alpha.z >= 0.5) {
-            InterlockedOr(gVsmHybridMasked, 1u);
-        }
+    if ((slotMask & laneBit) != 0u) {
+        count = vsmRasterPolygon(ticket.x + quarter + lane, ticket.y, push, true, polygon, material, slot, bounds, true);
     }
-    GroupMemoryBarrierWithGroupSync();
-    bool softwareRoute = gVsmHybridCandidate != 0u && gVsmHybridMasked == 0u;
-    if (lane == 0u) {
-        if (!softwareRoute) {
-            vsmQueueRasterTicket(push, ticketIndex, kVSMMainDraw);
-        }
+    bool softwareRoute = count >= 3u && count != kVSMHardwareOnlyPolygon;
+    uint hardware = WaveActiveBitOr(count == kVSMHardwareOnlyPolygon ? laneBit : 0u);
 #if VSM_WORKLOAD_DIAGNOSTICS
-        vsmCacheAdd(push, softwareRoute ? kVSMHybridSoftwareTickets : kVSMHybridHardwareTickets, 1u);
+    uint softwareLanes = WaveActiveBitOr(softwareRoute ? laneBit : 0u);
+#endif
+    if (WaveIsFirstLane()) {
+        InterlockedOr(gVsmHybridHardwareMask, hardware);
+#if VSM_WORKLOAD_DIAGNOSTICS
+        InterlockedOr(gVsmHybridSoftwareMask, softwareLanes);
 #endif
     }
-    if (!softwareRoute || count < 3u) { return; }
+    GroupMemoryBarrierWithGroupSync();
+    if (lane == 0u) {
+        if (gVsmHybridHardwareMask != 0u) {
+            vsmQueueRasterTicket(push, ticketIndex, kVSMMainDraw, gVsmHybridHardwareMask);
+        }
+#if VSM_WORKLOAD_DIAGNOSTICS
+        vsmRecordHybridRoutes(push, gVsmHybridSoftwareMask, gVsmHybridHardwareMask);
+#endif
+    }
+    if (!softwareRoute) { return; }
     int scale = 1 << vsmCacheMetadata(push, kVSMHybridSubpixelBits);
     RWStructuredBuffer<uint> software = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, kVSMHybridDepth)));
+    StructuredBuffer<ShadowMaterial> materials = resolveUniform(ResourceHandle<StructuredBuffer<ShadowMaterial>>(push.materials));
     bool doubleSided = materials[material].resources.y != 0u;
     VSMSoftwareVertex a = vsmSoftwareVertex(polygon[0], bounds, slot, push, scale);
     VSMSoftwareVertex b = vsmSoftwareVertex(polygon[1], bounds, slot, push, scale);
@@ -261,7 +289,7 @@ void vsmRetestRasterHZBMain(uint3 group : SV_GroupID,
     if (!vsmBatchComputePush(group, batchPush, push)) { return; }
 #endif
     ByteAddressBuffer queue = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
-    uint ticketIndex = queue.Load(vsmHardwareTicketByteOffset(push.workCapacity + push.workBase + group.x, push));
+    uint ticketIndex = queue.Load(vsmDeferredRasterTicketByteOffset(push.workBase + group.x, push));
     StructuredBuffer<uint4> work = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.workItems));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     uint4 ticket = work[ticketIndex];
@@ -270,7 +298,7 @@ void vsmRetestRasterHZBMain(uint3 group : SV_GroupID,
 #if VSM_WORKLOAD_DIAGNOSTICS
     vsmCacheAdd(push, occluded ? kVSMHZBRejectedTickets : kVSMHZBRecoveredTickets, 1u);
 #if VSM_CLUSTER_HYBRID_RASTER
-    if (!occluded) { vsmCacheAdd(push, kVSMHybridHardwareTickets, 1u); }
+    if (!occluded) { vsmRecordHybridRoutes(push, 0u, ticket.z | ticket.w); }
 #endif
 #endif
 }

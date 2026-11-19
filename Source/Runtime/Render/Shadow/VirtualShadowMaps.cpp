@@ -2130,7 +2130,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    std::array<uint32_t, kVSMCachePoolSerialHigh + 1> cacheDiagnostics{};
+    std::array<uint32_t, kVSMHybridHardwareTriangles + 1> cacheDiagnostics{};
     cacheDiagnostics[50] = UINT32_MAX;
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
@@ -2415,9 +2415,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     // uint2(physicalSlot, lastRequestedFrame) in oldest-first order. Place this at
     // the end of the actual pooled page buffer; cached and current sizes can differ.
     const uint64_t physicalHistoryBytes = settings.cacheEnabled && !sharedPhysicalPool ? ((push.physicalPageCount + 1u) / 2u) * 16u : 0u;
-    // Both layers reuse the compact HW list. History-occluded tickets occupy
-    // a second list until the current-depth retest overwrites the consumed HW list.
-    const uint32_t indexLists = uint32_t(classifyFine) + uint32_t(twoPassHZB);
+    // Both layers reuse the compact HW list. Hybrid entries also store their
+    // lane mask. History-occluded tickets use a separate single-word list.
+    const uint32_t indexLists = uint32_t(classifyFine) + uint32_t(clusterHybridRaster) + uint32_t(twoPassHZB);
     const uint32_t maxHZBPages = twoPassHZB ? std::min(push.totalPages - 1u, push.physicalPageCount) : 0u;
     const uint32_t hzbPageBatches = (maxHZBPages + kDrawBatchSize - 1u) / kDrawBatchSize;
     const uint32_t instanceCount = cacheDiagnostics[kVSMCacheInstanceCount];
@@ -2900,7 +2900,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             if (groupedFineRaster && (index == 0 || index == 3 || index == 4 || index == 20 || index == 23)) {
                 entryMacros.push_back({pageWindowRaster ? "VSM_PAGE_WINDOW_RASTER" : "VSM_CLUSTER_PAGE_RASTER", "1"});
             }
-            if (clusterHybridRaster && (index == 4 || index == 9 || index == 20 || index == 22 || index == 23 || index == 25)) {
+            if (clusterHybridRaster && (index == 4 || index == 9 || index == 20 || (index >= 22 && index <= 26))) {
                 entryMacros.push_back({"VSM_CLUSTER_HYBRID_RASTER", "1"});
             }
             if (twoPassHZB && (index == 0 || index == 4 || index == 20 || index >= 23)) {

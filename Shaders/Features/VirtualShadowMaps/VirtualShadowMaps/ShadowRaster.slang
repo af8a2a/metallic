@@ -179,11 +179,13 @@ float4 vsmDirectionalPageBounds(uint virtualPage, inout ShadowProjection project
     return float4(-halfPage, -halfPage, halfPage, halfPage);
 }
 
+static const uint kVSMHardwareOnlyPolygon = 0xffffffffu;
+
 // Fine packed and single-triangle raster must produce the same fan, UVs and
 // canonical page coordinates, including for alpha-masked materials.
 uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, bool skipInteriorClip,
     out ShadowClipVertex polygon[9], out uint material, out uint physicalPage, out float4 bounds,
-    bool countHardwareWork = true)
+    bool softwareOnly = false)
 {
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
@@ -198,7 +200,7 @@ uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, boo
         StructuredBuffer<uint> visibility = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(vsmCacheMetadata(push, 40u)));
         layerPageActive = (visibility[triangleIndex >> 6u] & (1u << pages[virtualPage].z)) != 0u;
 #if VSM_WORKLOAD_DIAGNOSTICS
-        if (!layerPageActive && countHardwareWork) {
+        if (!layerPageActive && !softwareOnly) {
             uint dynamicBits = loadVirtualShadowMapDynamicMaskWord(push.geometry, triangleIndex >> 5u);
             vsmWorkAdd(push, kVSMWorkRasterHZBSkippedTriangles, (dynamicBits >> (triangleIndex & 31u)) & 1u);
         }
@@ -219,7 +221,7 @@ uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, boo
     }
     if (layerPageActive && vsmLODSelected(push, triangleIndex, pages[virtualPage].z) &&
         loadVirtualShadowMapTriangle(push.geometry, triangleIndex, triangle)) {
-        if (countHardwareWork) {
+        if (!softwareOnly) {
             vsmWorkAdd(push, kVSMWorkRasterDecodedTriangles, 1u);
 #if VSM_WORKLOAD_DIAGNOSTICS
             if (mergeStatic) { vsmWorkAdd(push, kVSMWorkRasterStaticMergedTriangles, 1u); }
@@ -246,6 +248,25 @@ uint vsmRasterPolygon(uint triangleIndex, uint virtualPage, ShadowPush push, boo
         }
         material = triangle.materialIndex;
         physicalPage = page.x;
+        if (softwareOnly) {
+            StructuredBuffer<ShadowMaterial> materials = resolveUniform(ResourceHandle<StructuredBuffer<ShadowMaterial>>(push.materials));
+            if (materials[material].alpha.z >= 0.5) { return kVSMHardwareOnlyPolygon; }
+            // Classify the original triangle in shadow texels. Page clipping
+            // must not turn a long edge into a software candidate.
+            float2 ndc[3];
+            [unroll]
+            for (uint i = 0u; i < 3u; ++i) {
+                float4 clip = polygon[i].position;
+                if (!(clip.w > 0.0 && clip.z >= 0.0 && clip.z <= clip.w)) { return kVSMHardwareOnlyPolygon; }
+                ndc[i] = clip.xy / clip.w;
+            }
+            float ndcToTexels = 0.5 * float(projection.page.y * push.pageSize);
+            float2 ab = (ndc[1] - ndc[0]) * ndcToTexels;
+            float2 bc = (ndc[2] - ndc[1]) * ndcToTexels;
+            float2 ca = (ndc[0] - ndc[2]) * ndcToTexels;
+            float longestEdgeSquared = max(dot(ab, ab), max(dot(bc, bc), dot(ca, ca)));
+            if (!(longestEdgeSquared <= 32.0 * 32.0)) { return kVSMHardwareOnlyPolygon; }
+        }
         uint count = inside ? 3u : vsmClipProjection(polygon, bounds, projection.metric.w > 0.5);
         return count >= 3u ? count : 0u;
     }
@@ -365,12 +386,23 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
 #if VSM_CLUSTER_HYBRID_RASTER || VSM_TWO_PASS_HZB
     ByteAddressBuffer queue = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
     uint ticketIndex;
+#if VSM_CLUSTER_HYBRID_RASTER
+    uint hardwareMask = 0xffffu;
+#endif
 #if VSM_HIERARCHY_HZB
     if ((push.rasterCoarse & kVSMHierarchyHZBPostRaster) != 0u) {
         ticketIndex = 1u + vsmCacheMetadata(push, kVSMHierarchyHZBMainTickets) + packedIndex;
     } else
 #endif
-    { ticketIndex = queue.Load(vsmHardwareTicketByteOffset(packedIndex, push)); }
+    {
+#if VSM_CLUSTER_HYBRID_RASTER
+        uint2 entry = queue.Load2(vsmHardwareTicketByteOffset(packedIndex, push));
+        ticketIndex = entry.x;
+        hardwareMask = entry.y;
+#else
+        ticketIndex = queue.Load(vsmHardwareTicketByteOffset(packedIndex, push));
+#endif
+    }
 #else
     uint ticketIndex = 1u + packedIndex;
 #endif
@@ -378,6 +410,9 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
     uint bits = ticket.z != 0u ? ticket.z : ticket.w;
     uint quarter = (ticket.z != 0u ? 0u : 32u) + ((bits & 0xffffu) != 0u ? 0u : 16u);
     uint slotMask = bits >> (quarter & 31u);
+#if VSM_CLUSTER_HYBRID_RASTER
+    slotMask &= hardwareMask;
+#endif
     ShadowClipVertex polygon[9];
     uint vertexCount = 0u, material = 0u, physicalPage = 0u;
     float4 bounds = float4(0.0);

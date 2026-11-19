@@ -46,13 +46,13 @@ CPU profile 中，`Record VSM build and raster batches` 发布实际录制计数
 
 在 `VirtualShadowMapLightsPass` 或独立 `VirtualShadowMapPass` 上将 `clusterHybridRaster` 设为 `true`，可为细页启用计算光栅。该运行时选项默认关闭，启用后使用按 cluster/page 打包的 Build。跨灯批处理、共享池逐面录制、独立池均走各自原有的 Build、缓存与投影入口。
 
-GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view 的当前 clipmap 或 mip 中计算投影范围。屏幕对角线不超过 **32 个阴影 texel** 的 cluster 才进入软件候选，页边裁剪不会把大 cluster 误分成微三角。Unreal 的对应判定使用离线记录的最大三角边长，Metallic 的包围盒判定更保守。软件与硬件复用同一页裁剪和 GPU LOD 选择。需要近面裁剪、需要 MASK 材质覆盖计算的工作和粗页交给硬件。位移 caster 批次及缺少所需 subgroup 能力或子像素精度不兼容的设备沿用硬件路径。
+GPU 按 ticket 内的三角槽细分工作。在当前 shadow view 的 clipmap 或 mip 中，裁页前三条投影边均不超过 **32 个阴影 texel**、完全处于深度范围内的不透明三角进入软件光栅。长边、需要近远面裁剪或 MASK 覆盖计算的三角各自走硬件。同一 ticket 可同时使用两条路径，硬件队列只提交相应的槽掩码。软件与硬件复用页裁剪和 GPU LOD 选择。
 
-软件光栅用整数子像素边函数执行 top-left 覆盖测试，在共享临时缓冲内以 `InterlockedMax` 写入反向深度。分类阶段将剩余的硬件 ticket 索引紧凑写入列表，同时生成每批间接 mesh draw 的组数。交给软件的 ticket 不启动硬件 mesh group。现有清页／静态深度恢复 draw 将软件结果合入 D32，再执行硬件光栅、静态 HZB 和投影。只需在会重绘的页上清临时深度。每份临时深度缓冲最多使用 64 MiB，同一代共享池的所有灯面复用一份。超出缓冲容量的物理槽以及保留旧静态深度的增量合并页继续使用硬件。切换光栅模式会重新绘制受影响的页缓存。
+软件光栅用整数子像素边函数执行 top-left 覆盖测试，在共享临时缓冲内以 `InterlockedMax` 写入反向深度。分类阶段紧凑写入硬件 ticket 索引及槽掩码，同时生成间接 mesh draw 的组数。纯软件 ticket 对应零硬件组。清页和静态深度恢复阶段将软件结果合入 D32，再执行硬件光栅、静态 HZB 和投影。共享池复用最多 64 MiB 的临时深度缓冲。粗页、超出缓冲范围的页、保留旧静态深度的增量合并，以及 HZB 复测补画使用硬件。位移 caster 批次及缺少所需 subgroup 能力或子像素精度不兼容的设备采用硬件光栅。切换光栅模式会重新绘制受影响的页缓存。
 
-打开 `benchmarkGPUWork` 可在每面的私有 cache diagnostics 中读取软件 tickets、硬件 tickets 和软件覆盖样本数（字 54–56）。一个 ticket 是原始 cluster 内最多 16 个槽在某一页上的工作。覆盖样本数包含遮挡竞争时对同一 texel 的多次写入。图中既有 `cacheDiagnostics` 输出仍为每面前 32 个字。
+打开 `benchmarkGPUWork` 可在每面的私有 cache diagnostics 中读取软件 tickets、硬件 tickets 和软件覆盖样本数（字 54–56），以及混合 tickets、软件三角槽和提交给硬件的三角槽（字 84–86）。混合 ticket 同时计入前两项后端计数。一个 ticket 对应原始 cluster 内最多 16 个槽在某一页上的工作。覆盖样本数包含遮挡竞争时对同一 texel 的多次写入。图中的 `cacheDiagnostics` 发布每面前 32 个字。
 
-`virtual_shadow_map_cluster_hybrid_raster` 将混合路径与纯硬件逐页对照，检查 D32、投影可见性和实际提交的细页 mesh 工作组。Sponza 的 960×540 双层硬阴影对照使用 32 像素页、每轴 16 个虚页、2048 个物理页。第 0 帧冷启动、第 50 帧移动相机和第 63 帧缓存复用的阴影、HDR 与最终画面逐字节一致。冷帧细页硬件工作组由 229800 减到 54575，移动帧由 21516 减到 11563。这些数字是工作组计数。
+`virtual_shadow_map_cluster_hybrid_raster` 将混合路径与纯硬件逐页对照，覆盖同一 ticket 中的长边与微三角、MASK 与不透明微三角，并检查 D32、投影和硬件 mesh 工作量。初版按 cluster 包围盒分流时，Sponza 的 960×540 双层硬阴影对照在冷帧、相机移动帧和暖帧取得相同画面。冷帧细页硬件工作组由 229800 减到 54575，移动帧由 21516 减到 11563。
 
 ## 按主视图统一 Mark
 
