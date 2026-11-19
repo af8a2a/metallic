@@ -232,6 +232,28 @@ struct VirtualShadowMapResourcePoolStats
     uint64_t retainedTextures = 0, retainedTextureBytes = 0;
 };
 
+struct VirtualShadowMapRasterSample
+{
+    float milliseconds = 0;
+    float appliedBias = 0;
+};
+
+// Times the raster intervals of one command recording. Queries are read only
+// after the matching submission finishes. The profiler is independent of this.
+class VirtualShadowMapRasterFeedback
+{
+public:
+    Result<> prepare(Device& device, CommandBuffer& commands, uint32_t rangeCount, float appliedBias);
+    Result<> timestamp(CommandBuffer& commands);
+    Result<std::optional<VirtualShadowMapRasterSample>> poll();
+
+private:
+    struct Slot;
+    std::vector<std::shared_ptr<Slot>> slots_;
+    std::shared_ptr<Slot> recording_;
+    uint64_t nextSequence_ = 1, consumedSequence_ = 0;
+};
+
 // One physical address space for all admitted lights. Per-face virtual tables
 // retain their identities; the GPU transfers free/evictable slots between them.
 class VirtualShadowMapPhysicalPool
@@ -270,7 +292,8 @@ public:
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, uint32_t physicalPageBudget, bool demandDriven,
         std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
-        const VirtualShadowMapReceiverResources* receiver = nullptr, const ClusterLightGridSnapshot* markGrid = nullptr);
+        const VirtualShadowMapReceiverResources* receiver = nullptr, const ClusterLightGridSnapshot* markGrid = nullptr,
+        VirtualShadowMapRasterFeedback* rasterFeedback = nullptr);
     static Result<std::vector<VirtualShadowMapLODProjection>> makeShadowLODProjections(
         const scene::Bounds& bounds, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapSettings& settings, std::string& log);
@@ -283,7 +306,7 @@ public:
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
         const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr,
         RenderGraphExecutionContext* gpuProfiler = nullptr,
-        const VirtualShadowMapReceiverResources* receiver = nullptr);
+        const VirtualShadowMapReceiverResources* receiver = nullptr, VirtualShadowMapRasterFeedback* rasterFeedback = nullptr);
     Result<VirtualShadowMapResult> record(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapCasterResources& casters,
@@ -291,7 +314,7 @@ public:
         const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection = false,
         const VirtualShadowMapProjectionTarget* output = nullptr, CPUProfileRecorder* profiler = nullptr,
         RenderGraphExecutionContext* gpuProfiler = nullptr,
-        const VirtualShadowMapReceiverResources* receiver = nullptr);
+        const VirtualShadowMapReceiverResources* receiver = nullptr, VirtualShadowMapRasterFeedback* rasterFeedback = nullptr);
 
     // A filtered point light records all six faces before projecting any face.
     // The ordered face results keep each tap's page table, projection and atlas
@@ -328,7 +351,7 @@ private:
         std::string& log, bool deferProjection, const VirtualShadowMapProjectionTarget* output,
         CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
         const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace,
-        CasterChangeContext* casterChangeContext = nullptr);
+        CasterChangeContext* casterChangeContext, VirtualShadowMapRasterFeedback* rasterFeedback);
     Result<> preparePointFaces(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
     Result<> projectPrepared(CommandBuffer& commands, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
     static Result<> projectOnePassPrepared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,
@@ -338,7 +361,8 @@ private:
     struct State;
     static Result<> recordBatched(VirtualShadowMapPhysicalPool& physicalPool, CommandBuffer& commands,
         std::span<const std::shared_ptr<State>> states, const VirtualShadowMapSettings& settings,
-        std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
+        std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+        VirtualShadowMapRasterFeedback* rasterFeedback);
     struct Cache;
     struct ResourcePool;
     std::shared_ptr<ResourcePool> pool_;

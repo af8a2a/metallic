@@ -1,8 +1,10 @@
 #include "RHITest.h"
 #include "harness/Evidence.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapBudget.h"
+#include "Runtime/Render/Shadow/VirtualShadowMapResolution.h"
 
 #include <array>
+#include <cmath>
 #include <numeric>
 #include <stdexcept>
 
@@ -216,5 +218,71 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapBudgetPolicyTest);
+
+class VirtualShadowMapRasterBudgetPolicyTest final : public RHITest {
+public:
+    VirtualShadowMapRasterBudgetPolicyTest() { type = RHITestType::Resource; name = "virtual_shadow_map_raster_budget_policy"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::Core,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {"vsm.resolution.raster-budget", "vsm.resolution.raster-budget-recovery"}};
+    }
+    RHITestResult run(RHITestContext&) override { return execute(); }
+    RHITestResult runCpu(bench::Evidence&) override { return execute(); }
+
+private:
+    static RHITestResult execute()
+    {
+        try {
+            VirtualShadowMapRasterBudget budget;
+            constexpr float targetMs = 4.f, maxBias = 2.f;
+            constexpr VirtualShadowMapRasterSample expensive{7.6f, .5f}, cheap{.95f, .75f};
+            const auto expectBias = [&](float expected, const char* message) {
+                check(std::abs(budget.bias() - expected) < 1e-6f, message);
+            };
+            budget.update(targetMs, maxBias);
+            expectBias(0.f, "Cold raster budget applied a bias without a sample");
+            budget.update(targetMs, maxBias, expensive);
+            expectBias(.75f, "Over-budget sample did not move toward the target from its recorded bias");
+            for (uint32_t i = 1; i <= 10; ++i) {
+                budget.update(targetMs, maxBias, cheap);
+                expectBias(.75f, "Raster bias recovered before eleven completed low-cost samples");
+                check(budget.belowTargetSamples() == i, "Raster recovery did not count the completed sample");
+            }
+            budget.update(targetMs, maxBias);
+            expectBias(.75f, "An update without a new sample changed the raster bias");
+            check(budget.belowTargetSamples() == 10, "A frame without a completed sample advanced recovery");
+
+            budget.update(targetMs, maxBias, VirtualShadowMapRasterSample{3.9f, .75f});
+            expectBias(.75f, "A cost inside the dead band changed bias");
+            check(budget.belowTargetSamples() == 0, "A cost inside the dead band did not reset the recovery streak");
+            for (uint32_t i = 0; i < 11; ++i) { budget.update(targetMs, maxBias, cheap); }
+            expectBias(.675f, "Sustained low raster cost did not restore resolution gradually");
+            check(budget.belowTargetSamples() == 11, "Raster recovery streak did not saturate");
+
+            budget.update(targetMs, maxBias, VirtualShadowMapRasterSample{4.1f, 0.f});
+            expectBias(.675f, "An older over-budget recording relaxed the current raster bias");
+            check(budget.belowTargetSamples() == 0, "A new over-budget sample did not reset recovery");
+            for (uint32_t i = 0; i < 11; ++i) {
+                budget.update(targetMs, maxBias, VirtualShadowMapRasterSample{1.9f, maxBias});
+            }
+            expectBias(.675f, "A low-cost recording at a higher applied pool bias increased raster bias");
+
+            budget.update(0.f, maxBias);
+            expectBias(0.f, "Disabling the raster budget retained its previous bias");
+            check(budget.belowTargetSamples() == 0, "Disabling the raster budget retained recovery history");
+            budget.update(targetMs, .2f, expensive);
+            expectBias(.1f, "Over-budget response ignored the maximum bias");
+            budget.update(targetMs, 0.f, expensive);
+            expectBias(0.f, "Zero maximum bias did not disable raster pressure");
+            return RHITestResult::pass("Raster budget respects sample attribution, overload response, recovery hysteresis, and controls");
+        } catch (const std::exception& error) {
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapRasterBudgetPolicyTest);
 } // namespace
 } // namespace metallic::tests

@@ -98,6 +98,8 @@ public:
             .buffer(32 * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         reflection.addBufferOutput("resolutionDiagnostics", "Completed pool demand and current receiver resolution LOD bias")
             .buffer(sizeof(VirtualShadowMapResolutionController::Diagnostics), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+        reflection.addBufferOutput("rasterResolutionDiagnostics", "Completed GPU shadow raster time and resolution feedback")
+            .buffer(sizeof(VirtualShadowMapResolutionController::Diagnostics), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         if (properties().value("benchmarkGPUWork", false)) {
             reflection.addBufferOutput("workload", "VSM GPU workload counters; sixteen low/high uint pairs")
                 .buffer(kVirtualShadowMapWorkloadSize, sizeof(uint32_t)).bufferLayout("u32").transferWrite();
@@ -130,6 +132,7 @@ public:
             runtimeIntSetting("physicalPageCount", "Physical Page Budget", 256, 1, 4096),
             runtimeFloatSetting("maxPagePoolLoadFactor", "Target Page Pool Load (0 Off)", VirtualShadowMapResolutionController::kDefaultLoadFactor, 0, 1),
             runtimeFloatSetting("maxResolutionLodBias", "Maximum Resolution LOD Bias", VirtualShadowMapResolutionController::kDefaultMaxBias, 0, 12),
+            runtimeFloatSetting("rasterTimeBudgetMs", "GPU Shadow Raster Budget in ms (0 Off)", 0, 0, 100),
             runtimeIntSetting("maxWorkItems", "Raster Work Budget", 65535, 1, 4 * 1024 * 1024),
             runtimeFloatSetting("firstClipmapExtent", "First Clipmap Half-width (m)", 4.0f, 0.01f, 10000.0f),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0.0f, 1.0f),
@@ -199,6 +202,7 @@ public:
         const auto cacheDiagnosticsOutput = context.outputBuffer("cacheDiagnostics");
         const auto lodStatisticsOutput = context.outputBuffer("lodStatistics");
         const auto resolutionOutput = context.outputBuffer("resolutionDiagnostics");
+        const auto rasterResolutionOutput = context.outputBuffer("rasterResolutionDiagnostics");
         const auto workloadOutput = context.outputBuffer("workload");
         const auto buildDiagnosticsOutput = context.outputBuffer("buildDiagnostics");
         auto* gpuProfiler = context.properties().value("benchmarkGPUProfile", false) ? &context : nullptr;
@@ -207,7 +211,7 @@ public:
         if (!device_ || !context.streamer() || !scene || !gpuScene ||
             !depth.valid() || !depth.view() || !metadata.valid() || !output.valid() ||
             !debugOutput.valid() || !parametersOutput.valid() || !statisticsOutput.valid() || !cacheDiagnosticsOutput.valid() ||
-            !lodStatisticsOutput.valid() || !resolutionOutput.valid() ||
+            !lodStatisticsOutput.valid() || !resolutionOutput.valid() || !rasterResolutionOutput.valid() ||
             (collectGPUWork_ && (!workloadOutput.valid() || !buildDiagnosticsOutput.valid())) ||
             metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
@@ -307,7 +311,8 @@ public:
         auto resolutionWords = resolution_.update(
             context.properties().value("maxPagePoolLoadFactor", VirtualShadowMapResolutionController::kDefaultLoadFactor),
             context.properties().value("maxResolutionLodBias", VirtualShadowMapResolutionController::kDefaultMaxBias),
-            active && frame && frame->recording());
+            active && frame && frame->recording(), context.properties().value("rasterTimeBudgetMs", 0.f),
+            device_->capabilities().timestampQueries);
         if (!resolutionWords) { return makeError(resolutionWords.error()); }
         settings.resolutionLodBias = resolution_.bias();
         VirtualShadowMapReceiverResources receiver{};
@@ -335,9 +340,11 @@ public:
         }
         profile.next("VSM demand, raster and resolve");
         cpuPhase.next("Record shadow face");
+        auto rasterFeedback = resolution_.prepareRaster(*device_, commands, 1);
+        if (!rasterFeedback) { return std::unexpected(rasterFeedback.error()); }
         auto shadow = shadows_.record(*device_, commands, *depth.view(), view, light, *casters,
             scene->materials(), alphaTextures, settings, log, false, nullptr, cpu, gpuProfiler,
-            receiver.stream ? &receiver : nullptr);
+            receiver.stream ? &receiver : nullptr, *rasterFeedback);
         if (!shadow) {
             spdlog::error("VirtualShadowMapPass: {}", log);
             return makeError(shadow.error());
@@ -373,7 +380,11 @@ public:
         const StreamDataChunk resolutionChunk{resolutionWords->data(), sizeof(*resolutionWords)};
         const auto uploadedResolution = context.streamer()->streamBufferData({.dataChunks = {&resolutionChunk, 1},
             .placementAlignment = 16, .dstBuffer = resolutionOutput.buffer(), .copyBatch = *copyBatch});
-        if (!uploaded.valid() || !uploadedResolution.valid()) {
+        const auto& rasterResolutionWords = resolution_.rasterDiagnostics();
+        const StreamDataChunk rasterResolutionChunk{rasterResolutionWords.data(), sizeof(rasterResolutionWords)};
+        const auto uploadedRasterResolution = context.streamer()->streamBufferData({.dataChunks = {&rasterResolutionChunk, 1},
+            .placementAlignment = 16, .dstBuffer = rasterResolutionOutput.buffer(), .copyBatch = *copyBatch});
+        if (!uploaded.valid() || !uploadedResolution.valid() || !uploadedRasterResolution.valid()) {
             (void)context.streamer()->cancelCopyBatch(*copyBatch);
             return makeError(Error::OutOfMemory);
         }
@@ -444,6 +455,7 @@ public:
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"resolutionDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
+            RenderGraphStageUse{"rasterResolutionDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"lodStatistics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (gpuLODStatistics) {
             bufferImports.push_back({"privateLODStatistics", sourceLODStatistics, RenderGraphResourceAccess::BufferTransferRead});

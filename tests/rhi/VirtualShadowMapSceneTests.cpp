@@ -3039,6 +3039,207 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapResolutionPressureTest);
 
+class VSMRasterBudgetEvidencePass final : public UnsafePass
+{
+public:
+    explicit VSMRasterBudgetEvidencePass(std::shared_ptr<EvidenceState> state) : state_(std::move(state)) {}
+
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        for (const char* field : {"resolutionDiagnostics", "rasterResolutionDiagnostics"}) {
+            reflection.addBufferInput(field).buffer(kResolutionDiagnosticSize).transferRead();
+        }
+        reflection.addBufferOutput("data").buffer(2 * kResolutionDiagnosticSize).transferWrite().hostReadback();
+        return reflection;
+    }
+
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        auto* buffer = context.outputBuffer("data").buffer();
+        state_->namedReadbacks[context.properties().at("evidenceName").get<std::string>()] = buffer;
+        uint64_t offset = 0;
+        for (const char* field : {"resolutionDiagnostics", "rasterResolutionDiagnostics"}) {
+            auto source = context.inputBuffer(field).buffer()->slice({0, kResolutionDiagnosticSize});
+            auto destination = buffer->slice({offset, kResolutionDiagnosticSize});
+            if (!source) { return std::unexpected(source.error()); }
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = context.commandBuffer().copyBuffer(*source, *destination); !result) { return result; }
+            offset += kResolutionDiagnosticSize;
+        }
+        return {};
+    }
+
+private:
+    std::shared_ptr<EvidenceState> state_;
+};
+
+class VirtualShadowMapRasterBudgetFeedbackTest final : public RHITest
+{
+public:
+    VirtualShadowMapRasterBudgetFeedbackTest() { type = RHITestType::Rendering; name = "virtual_shadow_map_raster_budget_feedback"; }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto directory = std::filesystem::absolute(context.outputDirectory) / "VirtualShadowMapRasterBudgetFeedback";
+        Json report{{"passed", false}, {"frames", Json::array()}};
+        bench::ValidationRecorder validation;
+        const auto save = [&] { std::ofstream(directory / "RasterBudgetFeedback.json") << report.dump(2) << '\n'; };
+        try {
+            static const bool registered = registerRenderGraphPassType("VSMRasterBudgetEvidencePass",
+                "Test-only VSM raster and page budget readback",
+                [] { return std::make_unique<VSMRasterBudgetEvidencePass>(activeEvidence); });
+            require(registered, "Register raster budget evidence pass");
+            const auto fixture = writeLocalFixture(directory / "Floor", false);
+            scene::SceneDocument scene;
+            require(scene.load(fixture.source), "Load raster budget fixture");
+            environment::WorldEnvironment world;
+            world.sun.enabled = true; world.sun.direction = float3(1, -1, 0); world.sun.illuminance = 3;
+            world.moon.enabled = false;
+            RenderView view;
+            RenderGraphPreviewRenderer preview;
+            configureCachePreview(preview, scene, view, context, validation, world);
+            auto lighting = scene.lighting();
+            lighting.lights.push_back(localLight("Spot", true, {1, 4, 0}));
+            require(scene.setLighting(lighting) && preview.setLighting(scene.lighting()), "Publish raster budget spot light");
+
+            activeEvidence = std::make_shared<EvidenceState>();
+            const auto floorGraph = makeLocalGraph(fixture);
+            RenderGraph graph;
+            graph.setName("VirtualShadowMapRasterBudgetFeedback");
+            graph.setViewProperties({{"temporalJitter", false},
+                {"renderResolution", {{"width", kWidth}, {"height", kHeight}, {"adaptive", false}}}});
+            graph.addNode("VisibilityBufferPass", "Raster", floorGraph.findNode("Raster")->properties);
+            auto sharedSettings = floorGraph.findNode("Cached")->properties;
+            constexpr float maxBias = 2.f, rasterBudget = 1e-6f, loadFactor = .85f;
+            sharedSettings["physicalPageBudget"] = 32;
+            sharedSettings["forceRedraw"] = true;
+            sharedSettings["receiverFootprint"] = true;
+            sharedSettings["rasterTimeBudgetMs"] = rasterBudget;
+            graph.addNode("VirtualShadowMapLightsPass", "Shared", sharedSettings);
+            graph.addNode("VirtualShadowMapPass", "Sun", {{"physicalPageCount", 16}, {"pageSize", 32},
+                {"virtualPagesPerAxis", kPagesPerAxis}, {"clipmapCount", kClipmapCount}, {"firstClipmapExtent", kFirstExtent},
+                {"cacheEnabled", true}, {"forceRedraw", true}, {"receiverFootprint", true}, {"maxPagePoolLoadFactor", 0},
+                {"rasterTimeBudgetMs", rasterBudget}});
+            constexpr std::array names{"Shared", "Sun"};
+            for (const char* name : names) {
+                const std::string pass{name}, evidence = pass + "Budget";
+                graph.addNode("VSMRasterBudgetEvidencePass", evidence, {{"evidenceName", name}});
+                graph.addEdge("Raster.depth", pass + ".depth");
+                graph.addEdge("Raster.rasterInfo", pass + ".rasterInfo");
+                graph.addEdge(pass + ".resolutionDiagnostics", evidence + ".resolutionDiagnostics");
+                graph.addEdge(pass + ".rasterResolutionDiagnostics", evidence + ".rasterResolutionDiagnostics");
+                graph.markOutput(evidence + ".data");
+            }
+            graph.markOutput("Sun.shadow");
+            preview.setRawReadbackEnabled(true);
+
+            struct Diagnostics {
+                std::array<uint32_t, 8> page;
+                std::array<uint32_t, 8> raster;
+            };
+            const auto property = [&](const char* key, const Json& value) {
+                for (const char* name : names) {
+                    require(graph.setNodeRuntimeProperty(graph.findNode(name)->id, key, value), "Set raster budget property");
+                }
+            };
+            const auto capture = [&](const char* phase) {
+                validation.phase(phase);
+                renderAndRequire(preview, graph, "Sun.shadow");
+                std::array<Diagnostics, names.size()> frame{};
+                auto& row = report["frames"].emplace_back(Json{{"phase", phase}});
+                for (size_t i = 0; i < names.size(); ++i) {
+                    auto* buffer = activeEvidence->namedReadbacks.at(names[i]);
+                    buffer->invalidate();
+                    const auto* mapped = static_cast<const std::byte*>(buffer->map());
+                    require(mapped != nullptr, "Map raster budget diagnostics");
+                    std::memcpy(frame[i].page.data(), mapped, kResolutionDiagnosticSize);
+                    std::memcpy(frame[i].raster.data(), mapped + kResolutionDiagnosticSize, kResolutionDiagnosticSize);
+                    buffer->unmap();
+                    row[names[i]] = {{"page", frame[i].page}, {"raster", frame[i].raster},
+                        {"sampledMs", std::bit_cast<float>(frame[i].raster[3])}};
+                }
+                save();
+                return frame;
+            };
+            const auto expectCold = [&](const auto& frame) {
+                for (const auto& [page, raster] : frame) {
+                    require(page[5] == 0 && raster[0] == 1 && raster[1] == 1 && raster[2] == 0 &&
+                        raster[5] == 0 && std::bit_cast<float>(raster[7]) == rasterBudget,
+                        "Cold raster budget used an unavailable timing sample");
+                }
+            };
+            const auto expectFirstSample = [&](const Diagnostics& sample) {
+                const auto& raster = sample.raster;
+                const float milliseconds = std::bit_cast<float>(raster[3]);
+                require(raster[1] == 1 && raster[2] == 1 && std::isfinite(milliseconds) && milliseconds > 0.f &&
+                    raster[4] == 0, "Production raster feedback did not receive timing and bias from the first submitted frame");
+                const float expected = milliseconds > rasterBudget ? .5f *
+                    std::clamp(std::log2(milliseconds / (.95f * rasterBudget)), 0.f, maxBias) : 0.f;
+                const float rasterBias = std::bit_cast<float>(raster[5]);
+                require(std::abs(rasterBias - expected) < 1e-5f, "Raster response differs from the measured sample");
+                return rasterBias;
+            };
+
+            const auto cold = capture("RasterCold");
+            auto& device = *preview.subsystemHost()->device();
+            if (!device.capabilities().timestampQueries || device.getQueue(QueueType::Graphics)->timestampValidBits() == 0) {
+                activeEvidence.reset();
+                return RHITestResult::skip("Raster budget feedback requires graphics timestamps");
+            }
+            expectCold(cold);
+            for (const auto& sample : capture("RasterOnly")) {
+                const float rasterBias = expectFirstSample(sample);
+                require(sample.page[1] == 0 && std::bit_cast<float>(sample.page[5]) == rasterBias,
+                    "Raster-only bias was not applied when pool feedback was disabled");
+            }
+
+            property("maxResolutionLodBias", 0);
+            (void)capture("Reset");
+            require(graph.setNodeRuntimeProperty(graph.findNode("Shared")->id, "batchBuildRaster", false),
+                "Measure separate raster intervals for the shared pool's serial faces");
+            property("maxResolutionLodBias", maxBias);
+            property("maxPagePoolLoadFactor", loadFactor);
+            expectCold(capture("CombinedCold"));
+            for (const auto& sample : capture("Combined")) {
+                const float rasterBias = expectFirstSample(sample);
+                const auto& page = sample.page;
+                require(page[1] == 1 && page[3] != 0 && page[4] == 0,
+                    "Pool and raster feedback did not both observe the cold submitted frame");
+                const float load = float(page[2]) / float(page[3]);
+                require(load > loadFactor, "Mixed budget fixture did not exercise page pressure");
+                const float pageBias = std::clamp(.5f * std::log2(load / loadFactor), 0.f, maxBias);
+                require(std::abs(std::bit_cast<float>(page[5]) - std::max(pageBias, rasterBias)) < 1e-5f,
+                    "Effective bias must be the higher of page pressure and raster cost");
+            }
+            property("rasterTimeBudgetMs", 0);
+            for (const auto& [page, raster] : capture("RasterDisabled")) {
+                require(raster[1] == 0 && raster[2] == 0 && raster[5] == 0 &&
+                    page[1] == 1 && std::bit_cast<float>(page[5]) > 0.f,
+                    "Disabling raster feedback also changed available page feedback");
+            }
+            const auto& shadow = preview.readbackBytes();
+            require(preview.readbackFormat() == Format::R8Unorm && shadow.size() == kPixels &&
+                std::ranges::find(shadow, std::byte{0}) != shadow.end() &&
+                std::ranges::find(shadow, std::byte{255}) != shadow.end(), "Raster budget fixture lost visible shadows");
+            const auto* pixels = reinterpret_cast<const uint8_t*>(shadow.data());
+            saveVisibility(directory / "SunShadow.png", std::vector<uint8_t>(pixels, pixels + kPixels));
+            report["validation"] = validation.snapshot();
+            requireValidPreview(report["validation"]);
+            report["passed"] = true;
+            save();
+            activeEvidence.reset();
+            return RHITestResult::pass("Shared and standalone raster timings drive receiver bias alongside page pressure");
+        } catch (const std::exception& error) {
+            report["error"] = error.what(); report["validation"] = validation.snapshot();
+            save(); activeEvidence.reset();
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapRasterBudgetFeedbackTest);
+
 class VirtualShadowMapDemandFeedbackLifecycleTest final : public RHITest
 {
 public:
@@ -3088,6 +3289,28 @@ public:
             for (uint32_t cancellation : {1u, 2u}) {
                 const std::string label = cancellation == 1 ? "UnsubmittedWholeFrame" : "AcceptedPrefixCancelledTail";
                 validation.phase(label);
+                if (device->getQueue(QueueType::Graphics)->timestampValidBits() != 0) {
+                    CacheCommands timingCommands(*device);
+                    VirtualShadowMapRasterFeedback timing;
+                    const auto recordTiming = [&](uint32_t cancelMode, float appliedBias) {
+                        timingCommands.begin();
+                        require(timing.prepare(*device, *timingCommands.commands, 1, appliedBias), "Prepare raster feedback queries");
+                        require(timing.timestamp(*timingCommands.commands), "Write raster begin query");
+                        require(timing.timestamp(*timingCommands.commands), "Write raster end query");
+                        const auto pending = timing.poll();
+                        require(pending && !pending->has_value(), "Unsubmitted raster timing was consumed");
+                        timingCommands.finish(cancelMode);
+                    };
+                    recordTiming(cancellation, 2.f);
+                    const auto cancelled = timing.poll();
+                    require(cancelled && !cancelled->has_value(), label + ": consumed a cancelled raster measurement");
+                    recordTiming(0, 0.5f);
+                    const auto accepted = timing.poll();
+                    require(accepted && accepted->has_value() && (**accepted).appliedBias == 0.5f && (**accepted).milliseconds >= 0,
+                        label + ": did not consume the next submitted raster measurement");
+                    const auto repeated = timing.poll();
+                    require(repeated && !repeated->has_value(), label + ": consumed the same raster measurement twice");
+                }
                 activeEvidence = std::make_shared<EvidenceState>();
                 RenderGraph graph;
                 graph.setName("VirtualShadowMapDemandFeedbackLifecycle");

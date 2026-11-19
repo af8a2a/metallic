@@ -109,6 +109,8 @@ public:
             .stageAccess(RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Compute);
         reflection.addBufferOutput("resolutionDiagnostics", "Completed pool demand and current receiver resolution LOD bias")
             .buffer(sizeof(VirtualShadowMapResolutionController::Diagnostics), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
+        reflection.addBufferOutput("rasterResolutionDiagnostics", "Completed GPU shadow raster time and resolution feedback")
+            .buffer(sizeof(VirtualShadowMapResolutionController::Diagnostics), sizeof(uint32_t)).bufferLayout("u32").transferWrite();
         if (properties().value("benchmarkGPUWork", false)) {
             reflection.addBufferOutput("projectionGridDiagnostics", "One-pass light grid and shared receiver counters in low/high uint pairs")
                 .buffer(kVirtualShadowMapProjectionGridDiagnosticSize, sizeof(uint32_t))
@@ -182,6 +184,7 @@ public:
             runtimeFloatSetting("firstClipmapExtent", "First Directional Half-width (m)", 4, 0.01f, 10000),
             runtimeFloatSetting("maxPagePoolLoadFactor", "Target Page Pool Load (0 Off)", VirtualShadowMapResolutionController::kDefaultLoadFactor, 0, 1),
             runtimeFloatSetting("maxResolutionLodBias", "Maximum Resolution LOD Bias", VirtualShadowMapResolutionController::kDefaultMaxBias, 0, 12),
+            runtimeFloatSetting("rasterTimeBudgetMs", "GPU Shadow Raster Budget in ms (0 Off)", 0, 0, 100),
             runtimeFloatSetting("shadowBias", "Shadow Bias (m)", 0.002f, 0, 1),
             runtimeEnumSetting("filter", "Shadow Filter", "hard", {{"Hard", "hard"}, {"PCF", "pcf"}, {"SMRT", "smrt"}}),
             runtimeFloatSetting("pcfRadius", "PCF Radius (texels)", 1, 0, 8),
@@ -263,6 +266,7 @@ public:
         const auto lodStatisticsOutput = context.outputBuffer("lodStatistics");
         const auto budgetDiagnostics = context.outputBuffer("budgetDiagnostics");
         const auto resolutionOutput = context.outputBuffer("resolutionDiagnostics");
+        const auto rasterResolutionOutput = context.outputBuffer("rasterResolutionDiagnostics");
         const auto workload = context.outputBuffer("workload");
         const auto buildDiagnostics = context.outputBuffer("buildDiagnostics");
         const auto projectionGridDiagnostics = context.outputBuffer("projectionGridDiagnostics");
@@ -282,7 +286,8 @@ public:
             !metadata.valid() || metadata.desc().size != sizeof(VisibilityBufferFrameInfo) ||
             metadata.desc().memoryLocation != MemoryLocation::HostUpload ||
             !output.valid() || (debugOutput_ && !debug.valid()) || !table.valid() || !statistics.valid() || !cacheDiagnostics.valid() ||
-            !lodStatisticsOutput.valid() || !budgetDiagnostics.valid() || !resolutionOutput.valid() || !memory.valid() ||
+            !lodStatisticsOutput.valid() || !budgetDiagnostics.valid() || !resolutionOutput.valid() ||
+            !rasterResolutionOutput.valid() || !memory.valid() ||
             (collectGPUWork_ && (!workload.valid() || !buildDiagnostics.valid() || !projectionGridDiagnostics.valid())) ||
             (receiverCoverage_ && (!coverageSettings.valid() || !coverageProjections.valid() || !coveragePages.valid())) ||
             (receiverCoverageRecords_ && !coverageRecords.valid())) {
@@ -475,9 +480,11 @@ public:
         if (caches_.empty()) { physicalPool_ = {}; }
         auto resolutionWords = resolution_.update(
             properties.value("maxPagePoolLoadFactor", VirtualShadowMapResolutionController::kDefaultLoadFactor),
-            properties.value("maxResolutionLodBias", VirtualShadowMapResolutionController::kDefaultMaxBias), admittedFaces != 0);
+            properties.value("maxResolutionLodBias", VirtualShadowMapResolutionController::kDefaultMaxBias), admittedFaces != 0,
+            properties.value("rasterTimeBudgetMs", 0.f), device_->capabilities().timestampQueries);
         if (!resolutionWords) { return makeError(resolutionWords.error()); }
         settings.resolutionLodBias = resolution_.bias();
+        const auto& rasterResolutionWords = resolution_.rasterDiagnostics();
         std::vector<uint32_t> budgetData(8 + capacity_ * 6 * 8, 0);
         // Version 2 describes current-frame GPU demand and grants. The shared
         // allocator publishes totals and face records after this zeroed header
@@ -566,9 +573,10 @@ public:
         std::vector<StreamDataChunk> chunks{{tableData.data(), tableData.size()},
             {zeroStatistics.data(), zeroStatistics.size() * sizeof(uint32_t)},
             {zeroCacheDiagnostics.data(), zeroCacheDiagnostics.size() * sizeof(uint32_t)},
-            {budgetData.data(), budgetData.size() * sizeof(uint32_t)}, {resolutionWords->data(), sizeof(*resolutionWords)}};
+            {budgetData.data(), budgetData.size() * sizeof(uint32_t)}, {resolutionWords->data(), sizeof(*resolutionWords)},
+            {rasterResolutionWords.data(), sizeof(rasterResolutionWords)}};
         std::vector<Buffer*> destinations{table.buffer(), statistics.buffer(), cacheDiagnostics.buffer(),
-            budgetDiagnostics.buffer(), resolutionOutput.buffer()};
+            budgetDiagnostics.buffer(), resolutionOutput.buffer(), rasterResolutionOutput.buffer()};
         if (collectGPUWork_) {
             chunks.push_back({zeroWorkload.data(), zeroWorkload.size() * sizeof(uint32_t)});
             destinations.push_back(workload.buffer());
@@ -591,6 +599,7 @@ public:
             RenderGraphStageUse{"statistics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"cacheDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"resolutionDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
+            RenderGraphStageUse{"rasterResolutionDiagnostics", RenderGraphResourceAccess::BufferTransferWrite},
             RenderGraphStageUse{"budgetDiagnostics", RenderGraphResourceAccess::BufferTransferWrite}};
         if (collectGPUWork_) {
             initializeUses.push_back({"workload", RenderGraphResourceAccess::BufferTransferWrite});
@@ -700,9 +709,12 @@ public:
                         publicationFaces.push_back(index * 6 + face);
                     }
                 }
+                auto rasterFeedback = resolution_.prepareRaster(*device_, commands, settings.batchBuildRaster ? 1u : admittedFaces);
+                if (!rasterFeedback) { return std::unexpected(rasterFeedback.error()); }
                 auto sharedResults = VirtualShadowMaps::recordShared(physicalPool_, *device_, commands,
                     *depth.view(), view, faceRequests, *casters, scene->materials(), alphaTextures, settings,
-                    budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr, projectionGrid.grid);
+                    budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr, projectionGrid.grid,
+                    *rasterFeedback);
                 if (!sharedResults) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(sharedResults.error()); }
                 if (auto recorded = resolution_.record(*device_, commands, *sharedResults, budget, &physicalPool_); !recorded) { return recorded; }
                 auto aggregatedLOD = VirtualShadowMaps::aggregateLODStatistics(*device_, commands, *sharedResults, log);

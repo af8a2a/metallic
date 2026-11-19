@@ -697,6 +697,81 @@ struct VirtualShadowMapPressureFeedback::Slot
     VirtualShadowMapPressureSample sample;
 };
 
+struct VirtualShadowMapRasterFeedback::Slot
+{
+    std::unique_ptr<TimestampQueryPool> queries;
+    std::shared_ptr<SubmissionTransaction> submission;
+    GPUCompletionPoint completion;
+    uint64_t sequence = 0;
+    uint32_t queryCount = 0, written = 0;
+    float appliedBias = 0;
+};
+
+Result<> VirtualShadowMapRasterFeedback::prepare(Device& device, CommandBuffer& commands, uint32_t rangeCount, float appliedBias)
+{
+    auto* frame = RenderFrameContext::from(commands);
+    assert(frame && frame->recording() && rangeCount != 0);
+    const uint32_t queryCount = rangeCount * 2u;
+    const auto available = std::ranges::find_if(slots_, [&](const auto& slot) {
+        return !slot->submission || (slot->completion.isComplete() &&
+            (slot->submission->cancelled() || slot->sequence <= consumedSequence_));
+    });
+    const auto slot = available == slots_.end() ? slots_.emplace_back(std::make_shared<Slot>()) : *available;
+    if (!slot->queries || slot->queries->desc().queryCount < queryCount) {
+        auto queries = device.createTimestampQueryPool(*device.getQueue(QueueType::Graphics), {.queryCount = queryCount});
+        if (!queries) { return std::unexpected(queries.error()); }
+        slot->queries = std::move(*queries);
+    }
+    auto transaction = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+    if (auto r = commands.retainResource(slot); !r) { return r; }
+    if (auto r = commands.addSubmissionTransaction(transaction); !r) { return r; }
+    slot->submission = std::move(transaction);
+    slot->completion = frame->completion();
+    slot->sequence = 0;
+    slot->written = 0;
+    slot->queryCount = queryCount;
+    slot->appliedBias = appliedBias;
+    recording_ = slot;
+    return commands.resetTimestampQueries(*slot->queries, 0, queryCount);
+}
+
+Result<> VirtualShadowMapRasterFeedback::timestamp(CommandBuffer& commands)
+{
+    assert(recording_ && recording_->written < recording_->queryCount);
+    auto& slot = *recording_;
+    // Both timestamps wait for prior commands to finish, excluding the Build
+    // that precedes each raster interval on the sequential path.
+    if (auto r = commands.writeTimestamp(*slot.queries, slot.written, PipelineStageBits::BottomOfPipe); !r) { return r; }
+    if (++slot.written == slot.queryCount) { slot.sequence = nextSequence_++; }
+    return {};
+}
+
+Result<std::optional<VirtualShadowMapRasterSample>> VirtualShadowMapRasterFeedback::poll()
+{
+    Slot* newest = nullptr;
+    uint64_t sequence = consumedSequence_;
+    for (const auto& slot : slots_) {
+        if (slot->sequence > sequence && slot->submission->resolved() && !slot->submission->cancelled() &&
+            slot->completion.isSubmitted() && slot->completion.isComplete()) {
+            newest = slot.get();
+            sequence = slot->sequence;
+        }
+    }
+    if (!newest) { return std::nullopt; }
+
+    std::vector<TimestampQueryResult> results(newest->queryCount);
+    if (auto r = newest->queries->readResults(0, results); !r) { return std::unexpected(r.error()); }
+    consumedSequence_ = sequence;
+    double milliseconds = 0;
+    for (size_t i = 0; i < results.size(); i += 2) {
+        const auto& begin = results[i];
+        const auto& end = results[i + 1];
+        if (!begin.available || !end.available) { return std::nullopt; }
+        milliseconds += newest->queries->durationMilliseconds(begin.value, end.value);
+    }
+    return VirtualShadowMapRasterSample{float(milliseconds), newest->appliedBias};
+}
+
 Result<> VirtualShadowMapPressureFeedback::record(Device& device, CommandBuffer& commands,
     std::span<const VirtualShadowMapResult> faces, uint32_t capacity, float appliedBias,
     const VirtualShadowMapPhysicalPool* pool)
@@ -866,7 +941,8 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
     const VirtualShadowMapSettings& inputSettings, uint32_t capacity, bool demandDriven,
     std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
-    const VirtualShadowMapReceiverResources* receiver, const ClusterLightGridSnapshot* markGrid)
+    const VirtualShadowMapReceiverResources* receiver, const ClusterLightGridSnapshot* markGrid,
+    VirtualShadowMapRasterFeedback* rasterFeedback)
 {
     auto* context = RenderFrameContext::from(commands);
     if (!context || !context->recording() || faces.empty() || faces.size() > 384 ||
@@ -1045,7 +1121,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         const auto& face = faces[index];
         auto result = face.shadow->recordInternal(device, commands, depth, view, face.light, casters,
             materials, alphaTextures, settings, log, true, &face.output, profiler, gpuProfiler, receiver, &physicalPool, index,
-            &casterChanges);
+            &casterChanges, rasterFeedback);
         if (!result) { return std::unexpected(result.error()); }
         results.push_back(*result); states.push_back(face.shadow->state_);
     }
@@ -1135,7 +1211,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         }
     }
     if (settings.batchBuildRaster) {
-        if (auto r = recordBatched(physicalPool, commands, states, settings, log, profiler, gpuProfiler); !r) {
+        if (auto r = recordBatched(physicalPool, commands, states, settings, log, profiler, gpuProfiler, rasterFeedback); !r) {
             return std::unexpected(r.error());
         }
     } else {
@@ -1154,7 +1230,8 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
 
 Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physicalPool, CommandBuffer& commands,
     std::span<const std::shared_ptr<State>> states, const VirtualShadowMapSettings& settings,
-    std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler)
+    std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
+    VirtualShadowMapRasterFeedback* rasterFeedback)
 {
     auto& pool = *physicalPool.impl_;
     auto& frame = *pool.recording;
@@ -1483,6 +1560,9 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
     // The clear list spans all faces; the software depth buffer belongs to the pool.
     const auto& clearState = hybrid ? *hybrid : first;
     gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster") : RenderGraphExecutionContext::ProfileScope{};
+    if (rasterFeedback) {
+        if (auto r = rasterFeedback->timestamp(commands); !r) { return r; }
+    }
     for (uint32_t layer = 0; layer < (layered ? 2u : 1u); ++layer) {
         const bool staticPass = layered && layer == 0;
         auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
@@ -1656,6 +1736,9 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
                 AccessBits::ShaderRead | AccessBits::ShaderWrite); !r) { return r; }
         }
     }
+    if (rasterFeedback) {
+        if (auto r = rasterFeedback->timestamp(commands); !r) { return r; }
+    }
     {
         auto scope = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster diagnostics publish") : RenderGraphExecutionContext::ProfileScope{};
         if (auto r = buffersReady({4}, true, false, PipelineStageBits::ComputeShader | PipelineStageBits::Transfer,
@@ -1818,7 +1901,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
     const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
-    const VirtualShadowMapReceiverResources* receiver)
+    const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapRasterFeedback* rasterFeedback)
 {
     CPUProfileScope total(profiler, "VSM sun record");
     VirtualShadowMapLight light;
@@ -1826,7 +1909,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
         (kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow);
     if (light.enabled) { light.direction = {sun.direction[0], sun.direction[1], sun.direction[2]}; }
     light.angularRadius = sun.angularRadius;
-    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection, output, profiler, gpuProfiler, receiver);
+    return record(device, commands, depth, view, light, casters, materials, alphaTextures, settings, log, deferProjection,
+        output, profiler, gpuProfiler, receiver, rasterFeedback);
 }
 
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
@@ -1834,10 +1918,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, Command
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings, std::string& log, bool deferProjection,
     const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
-    const VirtualShadowMapReceiverResources* receiver)
+    const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapRasterFeedback* rasterFeedback)
 {
     return recordInternal(device, commands, depth, view, inputLight, casters, materials, alphaTextures,
-        settings, log, deferProjection, output, profiler, gpuProfiler, receiver, nullptr, 0);
+        settings, log, deferProjection, output, profiler, gpuProfiler, receiver, nullptr, 0, nullptr, rasterFeedback);
 }
 
 Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device, CommandBuffer& commands,
@@ -1846,7 +1930,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& requestedSettings, std::string& log, bool deferProjection,
     const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
     const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace,
-    CasterChangeContext* casterChangeContext)
+    CasterChangeContext* casterChangeContext, VirtualShadowMapRasterFeedback* rasterFeedback)
 {
     const bool sharedPhysicalPool = physicalPool != nullptr;
     const bool compactShadowViews = sharedPhysicalPool && requestedSettings.compactShadowViews;
@@ -3173,6 +3257,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         if (!gpuProfiler) { commands.endDebugLabel(); }
         gpu.next("VSM raster");
         phase.next("Record VSM raster commands");
+        if (rasterFeedback) {
+            if (auto r = rasterFeedback->timestamp(commands); !r) { return r; }
+        }
         phase.work("coarseBatches", push.coarseBatchCount);
         phase.work("fineBatches", push.batchCount);
         const uint32_t fullGeometry = push.geometry;
@@ -3418,6 +3505,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
                 }
                 if (auto r = commands.synchronize({.buffers = layerReady}); !r) { return std::unexpected(r.error()); }
             }
+        }
+        if (rasterFeedback) {
+            if (auto r = rasterFeedback->timestamp(commands); !r) { return r; }
         }
         push.geometry = fullGeometry;
         push.rasterCoarse = 0;

@@ -14,13 +14,21 @@ Equal 策略为每面计算均分上限及确定性余数，实际 grant 是该�
 
 ## 页池压力与分辨率调节
 
-`VirtualShadowMapLightsPass` 为共享池维护一个全局 receiver 分辨率偏置，方向光 clipmap、spot 和 point 各面共用。`VirtualShadowMapPass` 对独立池使用同一策略。`maxPagePoolLoadFactor` 默认 0.85，`maxResolutionLodBias` 默认 2。任一设为 0 即关闭反馈、清空控制器并恢复零偏置。偏置作用于页请求和采样的起始层级，物理池容量、灯的准入以及 caster 的几何 LOD 仍各由原设置控制。
+`VirtualShadowMapLightsPass` 为共享池维护一个全局 receiver 分辨率偏置，方向光 clipmap、spot 和 point 各面共用。`VirtualShadowMapPass` 对独立池使用同一策略。`maxPagePoolLoadFactor` 默认 0.85，设为 0 时关闭页池反馈。`maxResolutionLodBias` 默认 2，设为 0 时关闭全部分辨率反馈。偏置作用于页请求和采样的起始层级，物理池容量、灯的准入以及 caster 的几何 LOD 仍各由原设置控制。
 
 负载为 **（所有准入面的原始细页请求之和 + 每面的一个粗页）/ 该帧池容量**，超额请求可使负载大于 1。GPU 每帧只需回传一个 32 位细页总数。CPU 在后续录制时读取最新且已完成的提交，同时使用该样本录制时的偏置。目标为 `max(0, 样本偏置 + log2(负载 / 目标负载))`，零需求的目标为零。超目标时向目标移动 50%；负载回落时先保持 10 个连续完成的低压样本，从第 11 个起每次移动 10%。最终偏置限制在 `[0, maxResolutionLodBias]`。取消提交或没有新反馈时不会推进恢复计数。
 
 图输出 `resolutionDiagnostics` 含八个 32 位字。依次为版本（1）、本次是否消费了新样本、最近样本的请求总数、其池容量、其偏置、本帧应用的偏置、连续低压样本数（饱和在 11）、保留字。两个偏置字按 IEEE 754 float 解读。冷启动时两者均为零。页缓存允许复用兼容的驻留页；SMRT 历史在偏置改变时重新累积。
 
 `virtual_shadow_map_resolution_pressure` 在同一场景验证八个共享灯面和一个独立池。32 页共享池达到偏置上限时，总请求由 805 降至 76；403 页池在偏置 1.19 时请求 233 页，可全部分配。16 页独立池的请求由 114 降至 14。回归另覆盖低压恢复、关闭和重新开启控制器，以及向有光源半径的场景应用 PCF 和 SMRT。`virtual_shadow_map_demand_feedback_lifecycle` 验证整帧取消、仅提交前缀两种情况下，下一帧只使用成功提交的样本。
+
+## 按影图光栅时间调节分辨率
+
+在 `VirtualShadowMapLightsPass` 或 `VirtualShadowMapPass` 设置 `rasterTimeBudgetMs` 可为 GPU 影图光栅设定毫秒预算。默认 0。需要图形队列支持时间戳。计时覆盖硬件和软件光栅、清页与恢复，以及光栅阶段的 HZB。共享批处理采样一次，逐面路径累加各自的光栅区间。Mark、Build、屏幕投影和诊断发布在计时区间之外。
+
+控制器读取最新且已完成的提交，使用对应样本实际应用的偏置估算目标 `clamp(样本偏置 + log2(光栅毫秒数 / (预算 × 0.95)), 0, maxResolutionLodBias)`。超过预算时向更粗的目标移动 50%。只有连续 11 个新样本都不超过预算的 95% 才开始恢复，每次向更细的目标移动 10%。介于两条阈值之间时保持偏置并结束恢复计数。最终取页池和光栅偏置的较大值，同一池内的各面共用。粗页及其他固定光栅成本仍会占用预算。
+
+`rasterResolutionDiagnostics` 有八个 `uint32`，依次是版本（1）、反馈是否启用、是否消费新样本、最近光栅毫秒数、最近样本的应用偏置、当前光栅偏置、连续低压样本数，以及配置的毫秒预算。其中两项时间和两项偏置以 IEEE 754 float 位模式发布。既有 `resolutionDiagnostics` 保留原布局，字 5 发布实际应用的合成偏置。采样独立于 `benchmarkGPUProfile`，取消的录制不更新偏置。
 
 ## 跨灯、跨面的 Build/Raster 批处理
 
