@@ -138,7 +138,7 @@ void vsmResetMain(uint3 id : SV_DispatchThreadID, uniform ShadowPush push)
                     (push.lightType == 0u ? push.dirtyBoundsCount : changes[0].w) != 0u);
                 // Only resident pages need rectangle tests. Count consumes these
                 // flags before replacing the same scratch words with scan ranks.
-                if (old.x != 0xffffffffu) {
+                if (old.x != 0xffffffffu && vsmRetainsSharedPage(old.x, push)) {
                     bool lodDirty = vsmLODPageChanged(push, entry.z, page, coarse);
                     mappingDirty = mappingDirty || lodDirty;
                     uint staticFlags = 0u;

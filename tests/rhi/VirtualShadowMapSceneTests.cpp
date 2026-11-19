@@ -2254,6 +2254,28 @@ public:
                                     require(image.statistics[entry.baseLayer+face][21]==1,label+": changed projection retained old coarse depth");
                                 }
                             };
+                            for (auto& light : lighting.lights) { light.enabled = false; }
+                            publishLighting();
+                            require(compare("AllLightsAbsent").header.admittedCount == 0,
+                                "Dormant local lights were still published as admitted");
+                            lighting = originalLighting; publishLighting();
+                            const auto resumed = compare("AllLightsReturned");
+                            requireLocalReused(resumed, pointId, "Returning point after an empty frame");
+                            requireLocalReused(resumed, spotId, "Returning spot after an empty frame");
+
+                            for (const char* node : {"Cached", "Redraw"}) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "maxLightCacheAge", 1),
+                                    "Shorten the inactive light cache lifetime");
+                            }
+                            lighting.lights[1].enabled = false; publishLighting();
+                            (void)compare("SpotAbsent");
+                            (void)compare("SpotExpired");
+                            lighting = originalLighting; publishLighting();
+                            requireRedrawn(compare("ExpiredSpotReturned"), spotId, "Expired spot");
+                            for (const char* node : {"Cached", "Redraw"}) {
+                                require(graph.setNodeRuntimeProperty(graph.findNode(node)->id, "maxLightCacheAge",
+                                    VirtualShadowMapSettings{}.maxLightCacheAge), "Restore the default inactive light cache lifetime");
+                            }
                             lighting.lights[0].position.x+=.6f; publishLighting();
                             auto movedPoint=compare("PointMoved");
                             requireRedrawn(movedPoint,pointId,"Moved point"); requireLocalReused(movedPoint,spotId,"Point move preserves spot");

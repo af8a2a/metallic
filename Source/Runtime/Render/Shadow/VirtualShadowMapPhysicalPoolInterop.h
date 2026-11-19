@@ -21,6 +21,10 @@ struct VirtualShadowMapPhysicalPoolPush
     uint32_t capacity;
     uint32_t demandDriven;
     uint32_t frameIndex;
+    uint32_t allocationSerialLow;
+    uint32_t allocationSerialHigh;
+    uint32_t preserveDormant;
+    uint32_t reserved;
 };
 
 struct VirtualShadowMapPhysicalPoolPublishPush
@@ -45,8 +49,10 @@ struct VirtualShadowMapPhysicalPoolPublishPush
 //   [clearArg(layer, b)]  = {groupCountX, 1, 1, 0}
 //   [clearList ...]       = tightly packed compositeSlots[capacity], staticSlots[capacity] (uint32_t)
 // History contains capacity uint2(physicalPage, lastRequestedFrame) records in
-// oldest-first order. All current owners are rebuilt after Prepare and before
-// Physical, including unrequested cached pages; every admitted page is pinned.
+// oldest-first order, followed by capacity uint2(allocationSerialLow,
+// allocationSerialHigh) records indexed by physical page. The serial changes
+// when a slot is assigned, and is zero before its first assignment.
+// All current owners are rebuilt before Physical; every admitted page is pinned.
 
 VSM_POOL_INLINE uint32_t vsmSharedPoolClearBatches(uint32_t capacity)
 {
@@ -75,7 +81,7 @@ VSM_POOL_INLINE uint32_t vsmSharedPoolTotalMetadataQuads(uint32_t faceCount, uin
 
 #undef VSM_POOL_INLINE
 #ifdef __cplusplus
-static_assert(sizeof(VirtualShadowMapPhysicalPoolPush) == 32);
+static_assert(sizeof(VirtualShadowMapPhysicalPoolPush) == 48);
 static_assert(sizeof(VirtualShadowMapPhysicalPoolPublishPush) == 32);
 } // namespace metallic::render
 #else

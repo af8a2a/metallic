@@ -73,6 +73,15 @@ uint2 vsmSharedPreviousPhysical(VirtualShadowMapPhysicalPoolPush push, uint inde
     return uint2(index, 0u);
 }
 
+uint2 vsmSharedPreviousAssignment(VirtualShadowMapPhysicalPoolPush push, uint physicalPage)
+{
+    if (push.previousHistory != 0xffffffffu) {
+        StructuredBuffer<uint2> previous = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.previousHistory));
+        return previous[push.capacity + physicalPage];
+    }
+    return uint2(0u);
+}
+
 // Admit for every face has published its local owner table and the disjoint
 // global owner records. Requested owners cannot be taken by any other face.
 [shader("compute")]
@@ -121,8 +130,11 @@ void vsmSharedPoolPhysicalMain(uint lane : SV_GroupIndex, uniform VirtualShadowM
     uint candidateBase = ownerBase + push.capacity;
     uint3 counts = uint3(0u);
     for (uint index = first; index < end; ++index) {
-        uint4 owner = metadata[ownerBase + vsmSharedPreviousPhysical(push, index).x];
-        if (owner.x == 0u) { ++counts.x; }
+        uint physicalPage = vsmSharedPreviousPhysical(push, index).x;
+        uint4 owner = metadata[ownerBase + physicalPage];
+        bool free = owner.x == 0u &&
+            (push.preserveDormant == 0u || all(vsmSharedPreviousAssignment(push, physicalPage) == 0u));
+        if (free) { ++counts.x; }
         else if (owner.z == 0u) { ++counts.y; }
         else { ++counts.z; }
     }
@@ -133,15 +145,18 @@ void vsmSharedPoolPhysicalMain(uint lane : SV_GroupIndex, uniform VirtualShadowM
     for (uint index = first; index < end; ++index) {
         uint2 prior = vsmSharedPreviousPhysical(push, index);
         uint4 owner = metadata[ownerBase + prior.x];
-        uint rank = owner.x == 0u ? prefix.x++ :
+        uint2 priorAssignment = vsmSharedPreviousAssignment(push, prior.x);
+        bool free = owner.x == 0u && (push.preserveDormant == 0u || all(priorAssignment == 0u));
+        uint rank = free ? prefix.x++ :
             owner.z == 0u ? totals.x + prefix.y++ : candidateCount + prefix.z++;
         if (rank < candidateCount) {
             metadata[candidateBase + rank] = uint4(prior.x, prior.y, 0u, 0u);
         }
         bool assigned = rank < missing;
         uint nextRank = assigned ? rank + push.capacity - missing : rank - missing;
-        uint lastRequested = assigned || owner.z != 0u ? push.frameIndex : (owner.x != 0u ? prior.y : 0u);
+        uint lastRequested = assigned || owner.z != 0u ? push.frameIndex : (free ? 0u : prior.y);
         history[nextRank] = uint2(prior.x, lastRequested);
+        history[push.capacity + prior.x] = assigned ? uint2(push.allocationSerialLow, push.allocationSerialHigh) : priorAssignment;
         metadata[ownerBase + prior.x].w = prior.y;
     }
 }

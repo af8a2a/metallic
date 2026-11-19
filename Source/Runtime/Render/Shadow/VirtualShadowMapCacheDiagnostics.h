@@ -87,6 +87,10 @@ static const uint32_t kVSMHierarchyHZBRecoveredInstances = 77;
 static const uint32_t kVSMHierarchyHZBRecoveredNodes = 78;
 static const uint32_t kVSMActiveFineViewMask = 79;
 static const uint32_t kVSMActiveInitialBuildRows = 80;
+static const uint32_t kVSMCachePreviousSlotAssignments = 81;
+static const uint32_t kVSMCachePoolSerialLow = 82;
+static const uint32_t kVSMCachePoolSerialHigh = 83;
+static const uint32_t kVSMCacheRestoreInactive = 64u; // ShadowPush.cacheMode
 static const uint32_t kVSMHierarchyHZBPostRaster = 16u;
 static const uint32_t kVSMHierarchyHZBTreeStride = 15u;
 

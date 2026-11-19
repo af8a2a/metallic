@@ -64,6 +64,16 @@ GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view �
 
 `virtual_shadow_map_distant_lights` 检查单页与完整 mip 混排、逐页 D32、跨面 PCF、近远切换和缓存复用。每面公开 statistics 的字 11 为细 mip 数，单页模式下为 0。
 
+## 灯缺席后的缓存恢复
+
+`VirtualShadowMapLightsPass` 默认保留稳定 ID 对应的灯缓存 10 个缺席帧。用 `maxLightCacheAge` 调整窗口，设为 0 可关闭缺席恢复。禁用、暂时移除或未获预算准入的灯在当帧没有页配额和光栅工作。所有灯同时缺席时，也可以在同一物理池世代恢复；显式将预算设为 0 会释放物理池。
+
+GPU 优先使用全新物理槽，随后按 LRU 回收未请求页。每个槽保留最近一次分配序号，灯回归时仅恢复自上次提交以来未重新分配的槽。被回收的页走正常准入和重绘。历史 HZB 采用相同的归属检查，欠缺有效历史的页参与当前帧光栅。
+
+每个回归灯用自己的最后提交快照检测缺席期间的 caster 变化，来自同一快照的面共享一次差异计算。缺席时释放录制用临时缓冲。屏幕空间 SMRT 历史在回归后重新累积。灯缓存过期、场景变化或物理池世代不兼容时，灯按冷缓存重新建立页表。
+
+`virtual_shadow_map_light_cache_recovery` 比较物理页、D32 和投影，覆盖空槽优先、真实槽位回收、缺席期间 caster 移动和取消提交。`virtual_shadow_map_local_lights` 从生产图验证全部灯缺席后回归和缓存过期。
+
 ## 压缩活跃 shadow view
 
 `VirtualShadowMapLightsPass` 的 `compactShadowViews` 默认关闭，启用时需要共享池、`batchBuildRaster` 和计算 subgroup ballot/arithmetic 支持。跨灯 Build 根据物理页准入和分配结果，在 GPU 上把拥有待重绘驻留细页的 clipmap 或 mip 写入每面的位掩码。静态层增量合并也计入。全缓存命中、只有粗页或全部细页请求被拒绝的灯面不会进入细页 Build。

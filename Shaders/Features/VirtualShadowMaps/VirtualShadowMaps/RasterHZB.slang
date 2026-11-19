@@ -44,7 +44,7 @@ bool vsmHasRasterHZBHistory(uint virtualPage, uint4 page, ShadowProjection proje
     StructuredBuffer<uint4> previous = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.previousPages));
     uint4 old = previous[projection.page.x + uint(previousXY.y) * axis + uint(previousXY.x)];
     uint valid = (push.rasterCoarse & 2u) != 0u ? 4u : 1u;
-    return old.x == page.x && (old.w & valid) != 0u;
+    return old.x == page.x && (old.w & valid) != 0u && vsmRetainsSharedPage(old.x, push);
 }
 
 groupshared float gVsmRasterHZBMin[64];

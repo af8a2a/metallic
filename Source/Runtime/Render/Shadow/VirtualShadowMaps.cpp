@@ -354,6 +354,7 @@ struct SharedShadowPoolFrame
     std::shared_ptr<SubmissionTransaction> submission;
     GPUCompletionPoint completion;
     uint32_t faceCount = 0, frameIndex = 0;
+    uint64_t allocationSerial = 0;
 };
 
 void setGridJobs(VirtualShadowMapProjectionGrid& grid, uint32_t slot, uint32_t first, uint32_t count)
@@ -438,7 +439,7 @@ struct VirtualShadowMaps::CasterChangeContext
             }
         }
     };
-    std::optional<Diff> diff;
+    std::unordered_map<const std::vector<VirtualShadowMapCasterState>*, Diff> diffs;
 };
 
 struct VirtualShadowMapPhysicalPool::Impl
@@ -514,7 +515,7 @@ struct VirtualShadowMaps::Cache
     std::shared_ptr<Buffer> staticHZB;
     struct DynamicCaster { size_t index; uint64_t lastChanged; };
     std::vector<DynamicCaster> dynamic; // Sorted indices into this submitted snapshot.
-    uint64_t cacheFrame = 0;
+    uint64_t cacheFrame = 0, recordedFrame = 0;
     std::shared_ptr<Buffer> pages;
     std::shared_ptr<Buffer> lodSelection;
     uint64_t lodLayoutKey = 0;
@@ -532,7 +533,8 @@ struct VirtualShadowMaps::Cache
     bool receiverMask = false;
     GPUCompletionPoint completion;
     std::shared_ptr<SubmissionTransaction> submission;
-    std::shared_ptr<SharedShadowPoolFrame> physicalPoolFrame;
+    std::weak_ptr<SharedShadowPoolStorage> physicalPoolStorage;
+    uint64_t poolSerial = 0;
 };
 
 struct VirtualShadowMaps::ResourcePool
@@ -978,6 +980,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     recording->completion = context->completion();
     recording->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
     recording->faceCount = uint32_t(faces.size()); recording->frameIndex = uint32_t(context->frameIndex());
+    recording->allocationSerial = reuseStorage ? pool.committed->allocationSerial + 1u : 1u;
     auto acquire = [&](std::shared_ptr<Buffer>& buffer, uint64_t size, uint32_t stride, MemoryLocation location,
         BufferUsageBits extraUsage = BufferUsageBits::None) -> Result<> {
         if (!buffer || buffer->desc().size < size || buffer->desc().structureStride != stride ||
@@ -992,7 +995,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     if (auto r = acquire(recording->metadata,
         uint64_t(vsmSharedPoolTotalMetadataQuads(uint32_t(faces.size()), capacity)) * 16u,
         16, MemoryLocation::Device, BufferUsageBits::Indirect); !r) { return std::unexpected(r.error()); }
-    if (auto r = acquire(recording->history, uint64_t(capacity) * 8u, 8, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
+    if (auto r = acquire(recording->history, uint64_t(capacity) * 16u, 8, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
     if (auto r = acquire(recording->jobs, faces.size() * sizeof(ShadowPush), sizeof(ShadowPush), MemoryLocation::HostUpload); !r) { return std::unexpected(r.error()); }
     const char* entries[]{"vsmSharedPoolPrepareMain", "vsmSharedPoolPhysicalMain", "vsmSharedPoolPublishMain", "vsmBatchPrepareMain"};
     for (size_t index = 0; index < (inputSettings.batchBuildRaster ? 4u : 3u); ++index) {
@@ -1004,7 +1007,8 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
             auto module = ShaderRegistry::instance().getShaderModule(device, {.spirv = shader->spirv, .debugName = entries[index]});
             if (!module) { return std::unexpected(module.error()); }
             auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {module->get()},
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(VirtualShadowMapPhysicalPoolPush)});
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = index < 2 ? sizeof(VirtualShadowMapPhysicalPoolPush) :
+                index == 2 ? sizeof(VirtualShadowMapPhysicalPoolPublishPush) : sizeof(VirtualShadowMapBatchPreparePush)});
             if (!pipeline) { return std::unexpected(pipeline.error()); }
             pool.shaders[index] = std::move(*module); pool.pipelines[index] = std::move(*pipeline);
         }
@@ -1023,13 +1027,18 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     settings.compactShadowViews = settings.compactShadowViews && settings.batchBuildRaster &&
         device.capabilities().computeSubgroupBallotArithmetic;
     settings.physicalPageCount = capacity;
-    std::vector<BufferBarrierDesc> hzbReady;
+    std::vector<BufferBarrierDesc> previousReady;
     for (const auto& bank : storage->hzbBanks) {
-        hzbReady.push_back({.buffer = bank.get(), .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+        previousReady.push_back({.buffer = bank.get(), .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}});
     }
-    if (!hzbReady.empty()) {
-        if (auto r = commands.synchronize({.buffers = hzbReady}); !r) { return std::unexpected(r.error()); }
+    if (reuseStorage) {
+        previousReady.push_back({.buffer = pool.committed->history.get(),
+            .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}});
+    }
+    if (!previousReady.empty()) {
+        if (auto r = commands.synchronize({.buffers = previousReady}); !r) { return std::unexpected(r.error()); }
     }
     CasterChangeContext casterChanges;
     for (uint32_t index = 0; index < faces.size(); ++index) {
@@ -1047,6 +1056,9 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     VirtualShadowMapPhysicalPoolPush push{};
     push.faceCount = uint32_t(faces.size()); push.capacity = capacity;
     push.demandDriven = demandDriven; push.frameIndex = recording->frameIndex; push.previousHistory = UINT32_MAX;
+    push.allocationSerialLow = uint32_t(recording->allocationSerial);
+    push.allocationSerialHigh = uint32_t(recording->allocationSerial >> 32u);
+    push.preserveDormant = settings.cacheEnabled && settings.maxLightCacheAge != 0;
     auto bindBuffer = [&](Buffer& buffer, uint32_t& handle) -> Result<> {
         auto lease = registry->storageBuffer(buffer);
         if (!lease) { return std::unexpected(lease.error()); }
@@ -1056,7 +1068,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     if (auto r = bindBuffer(*recording->jobs, push.jobs); !r) { return std::unexpected(r.error()); }
     if (auto r = bindBuffer(*recording->metadata, push.metadata); !r) { return std::unexpected(r.error()); }
     if (auto r = bindBuffer(*recording->history, push.history); !r) { return std::unexpected(r.error()); }
-    if (reuseStorage && pool.committed) {
+    if (reuseStorage) {
         if (auto r = bindBuffer(*pool.committed->history, push.previousHistory); !r) { return std::unexpected(r.error()); }
     }
     if (auto r = registry->bind(commands, recording->leases); !r) { return std::unexpected(r.error()); }
@@ -1066,7 +1078,6 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}}); };
         append(recording->metadata.get()); append(recording->history.get());
-        if (reuseStorage && pool.committed) { append(pool.committed->history.get()); }
         for (const auto& state : states) {
             for (size_t index : {1u, 4u, 9u}) { append(state->resources->buffers[index].get()); }
             if (activeViews) { append(state->resources->cacheDiagnostics.get()); }
@@ -1778,6 +1789,30 @@ Result<std::vector<VirtualShadowMapLODProjection>> VirtualShadowMaps::makeShadow
 }
 VirtualShadowMaps::~VirtualShadowMaps() = default;
 
+bool VirtualShadowMaps::resolvePendingCache()
+{
+    if (!pending_) { return false; }
+    if (pending_->submission->cancelled() || pending_->completion.isCancelled()) {
+        pending_.reset();
+        return true;
+    }
+    if (pending_->submission->resolved() && pending_->completion.isSubmitted()) {
+        cache_ = std::move(pending_);
+    }
+    return false;
+}
+
+bool VirtualShadowMaps::retainInactiveCache(uint64_t frameIndex, uint32_t maxAge)
+{
+    resolvePendingCache();
+    if (!pending_ && (!cache_ || cache_->physicalPoolStorage.expired() || frameIndex - cache_->recordedFrame > maxAge)) {
+        return false;
+    }
+    state_.reset();
+    pool_.reset();
+    return true;
+}
+
 Result<VirtualShadowMapResult> VirtualShadowMaps::record(Device& device, CommandBuffer& commands,
     TextureView& depth, const ViewConstants& view, const GPUCelestialLight& sun,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
@@ -1908,17 +1943,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         log += "Persistent VSM requires a recording RenderFrameContext.\n";
         return makeError(Error::InvalidArgument);
     }
-    uint32_t cancelledCount = 0;
+    const uint32_t cancelledCount = uint32_t(resolvePendingCache());
     if (pending_) {
-        if (pending_->submission->cancelled() || pending_->completion.isCancelled()) {
-            pending_.reset();
-            cancelledCount = 1;
-        } else if (pending_->submission->resolved() && pending_->completion.isSubmitted()) {
-            cache_ = std::move(pending_);
-        } else {
-            log += "Previous VSM recording must be submitted or cancelled before recording again.\n";
-            return makeError(Error::InvalidArgument);
-        }
+        log += "Previous VSM recording must be submitted or cancelled before recording again.\n";
+        return makeError(Error::InvalidArgument);
     }
     if (!settings.cacheEnabled) { cache_.reset(); }
     phase.next("Replace VSM recording state");
@@ -2018,7 +2046,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    std::array<uint32_t, kVSMActiveInitialBuildRows + 1> cacheDiagnostics{};
+    std::array<uint32_t, kVSMCachePoolSerialHigh + 1> cacheDiagnostics{};
     cacheDiagnostics[50] = UINT32_MAX;
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
@@ -2041,13 +2069,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         compatibleSettings(cache_->settings, settings) && cache_->sceneIdentity == casters.sceneIdentity &&
         cache_->dependencyKey == casters.dependencyKey &&
         bool(cache_->lodSelection) == gpuLOD;
-    if (sharedPhysicalPool) {
-        // Only the immediately preceding pool frame certifies these addresses.
-        // Omitted or removed faces may have had their slots reassigned meanwhile.
-        reuse = reuse && cache_->physicalPoolFrame == physicalPool->impl_->committed &&
-            cache_->physicalPoolFrame && cache_->physicalPoolFrame->storage == poolFrame->storage;
-    } else {
-        reuse = reuse && !cache_->physicalPoolFrame;
+    bool inactiveSnapshot = false;
+    if (reuse && sharedPhysicalPool) {
+        const auto& previous = physicalPool->impl_->committed;
+        const bool latest = previous && cache_->poolSerial == previous->allocationSerial;
+        const bool recent = frame->frameIndex() - cache_->recordedFrame <= uint64_t(settings.maxLightCacheAge) + 1u;
+        reuse = cache_->physicalPoolStorage.lock() == poolFrame->storage && (settings.maxLightCacheAge ? recent : latest);
+        inactiveSnapshot = !latest;
+    } else if (reuse) {
+        reuse = cache_->poolSerial == 0;
     }
     const bool compatibleCache = reuse;
     if (reuse && directional && casters.bounds.valid) {
@@ -2060,6 +2090,15 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         reuse = farExtent + farMargin <= cache_->farPlane;
     }
     if (compatibleCache && !reuse) { reasons |= kVSMCacheReasonProjectionRange; }
+    const bool restoreInactive = reuse && inactiveSnapshot;
+    if (restoreInactive) {
+        auto assignmentLease = state->registry->storageBuffer(*physicalPool->impl_->committed->history);
+        if (!assignmentLease) { return std::unexpected(assignmentLease.error()); }
+        cacheDiagnostics[kVSMCachePreviousSlotAssignments] = assignmentLease->shaderIndex();
+        cacheDiagnostics[kVSMCachePoolSerialLow] = uint32_t(cache_->poolSerial);
+        cacheDiagnostics[kVSMCachePoolSerialHigh] = uint32_t(cache_->poolSerial >> 32u);
+        state->leases.push_back(*assignmentLease);
+    }
     const uint64_t cacheFrame = reuse ? cache_->cacheFrame + 1u : 1u;
     std::span<const scene::Bounds> dirtyBounds;
     std::vector<scene::Bounds> staticDirtyBounds, mergeBounds;
@@ -2096,26 +2135,23 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         if (unchangedCasters) {
             for (const auto& caster : cache_->dynamic) { trackDynamic(caster.index, caster.lastChanged); }
         } else {
-            // Reusable shared faces all refer to the same submitted pool snapshot.
-            assert(!casterChangeContext || cache_->casters == physicalPool->impl_->committed->casters);
-            auto& diff = casterChangeContext ? casterChangeContext->diff : localChanges.diff;
-            reusedCasterChanges = diff.has_value();
+            auto& diffs = casterChangeContext ? casterChangeContext->diffs : localChanges.diffs;
+            const auto [found, inserted] = diffs.try_emplace(cache_->casters.get(), *cache_->casters, casters.states, layered);
+            const auto& diff = found->second;
+            reusedCasterChanges = !inserted;
+            comparedCasterStates = inserted ? casters.states.size() : 0;
+            dirtyBounds = diff.dirtyBounds;
             const auto& previous = *cache_->casters;
-            if (!diff) {
-                diff.emplace(previous, casters.states, layered);
-                comparedCasterStates = casters.states.size();
-            }
-            dirtyBounds = diff->dirtyBounds;
             size_t dynamicIndex = 0;
             // Unchanged dynamic casters still age and may have shifted indices.
             // Interleave them with sparse edits to keep layer IDs sorted.
             const auto retainDynamicBefore = [&](size_t limit) {
                 while (dynamicIndex < cache_->dynamic.size() && cache_->dynamic[dynamicIndex].index < limit) {
                     const auto& caster = cache_->dynamic[dynamicIndex++];
-                    trackDynamic(diff->currentForPrevious[caster.index], caster.lastChanged);
+                    trackDynamic(diff.currentForPrevious[caster.index], caster.lastChanged);
                 }
             };
-            for (const auto& change : diff->changes) {
+            for (const auto& change : diff.changes) {
                 if (change.previous == CasterChangeContext::kMissingCaster) {
                     ++cacheDiagnostics[kVSMCacheAddedCasters];
                     if (layered) { staticDirtyBounds.push_back(casters.states[change.current].bounds); }
@@ -2162,7 +2198,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     }
     const bool mergeStatic = !demotedCasters.empty() && !settings.forceRedraw;
     push.cacheMode = (reuse ? 1u : 8u) | (settings.cacheEnabled ? 2u : 0u) | (settings.forceRedraw ? 4u : 0u) |
-        (layered ? 16u : 0u) | (mergeStatic ? 32u : 0u);
+        (layered ? 16u : 0u) | (mergeStatic ? 32u : 0u) | (restoreInactive ? kVSMCacheRestoreInactive : 0u);
     push.cacheEpoch = reuse ? cache_->epoch : (cache_ ? cache_->epoch + 1 : 1);
     push.dirtyBoundsCount = static_cast<uint32_t>(dirtyBounds.size());
     total.work("reuse", reuse);
@@ -3418,7 +3454,14 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     if (settings.cacheEnabled) {
         auto next = std::make_shared<Cache>();
         next->device = &device;
-        next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->resources->textures[0], state->resources->views[0]});
+        if (sharedPhysicalPool) {
+            next->physicalPoolStorage = poolFrame->storage;
+            next->poolSerial = poolFrame->allocationSerial;
+        } else {
+            next->atlas = std::make_shared<ShadowAtlas>(ShadowAtlas{state->resources->textures[0], state->resources->views[0]});
+            next->staticAtlas = state->resources->staticAtlas;
+            next->staticHZB = state->resources->staticHZB;
+        }
         next->pages = state->resources->buffers[1]; next->projections = std::move(projections); next->origins = origins;
         next->lodSelection = state->resources->lodSelection;
         next->lodLayoutKey = gpuLOD ? casters.gpuLOD->layoutKey : 0;
@@ -3428,14 +3471,12 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         next->settings = settings; next->light = light; next->farPlane = farPlane;
         next->receiverMask = receiverMask;
         next->sceneIdentity = casters.sceneIdentity;
-        next->staticAtlas = state->resources->staticAtlas;
         next->dynamic = std::move(dynamic); next->cacheFrame = cacheFrame;
-        next->staticHZB = state->resources->staticHZB;
+        next->recordedFrame = frame->frameIndex();
         next->geometryRevision = casters.geometryRevision; next->texturePublicationRevision = casters.texturePublicationRevision;
         next->tessellationKey = casters.tessellationKey;
         next->dependencyKey = casters.dependencyKey; next->epoch = push.cacheEpoch; next->enabled = enabled;
         next->completion = frame->completion();
-        next->physicalPoolFrame = poolFrame;
         next->submission = sharedPhysicalPool ? poolFrame->submission : std::make_shared<SubmissionTransaction>(nullptr, nullptr);
         if (auto r = sharedPhysicalPool ? Result<>{} : commands.addSubmissionTransaction(next->submission); !r) { return std::unexpected(r.error()); }
         state->next = next;
@@ -3856,7 +3897,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
     };
     const auto addCache = [&](const std::shared_ptr<Cache>& cache) {
         if (cache) {
-            if (!cache->physicalPoolFrame) {
+            if (cache->poolSerial == 0) {
                 addAtlas(cache->atlas->texture.get(), cache->settings.pageSize);
                 if (cache->staticAtlas) { addAtlas(cache->staticAtlas->texture.get(), cache->settings.pageSize, true); }
                 addBuffer(cache->staticHZB.get());

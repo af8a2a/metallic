@@ -119,6 +119,7 @@ struct VirtualShadowMapSettings
     bool enabled = true;
     bool cacheEnabled = false;
     bool cacheLayering = false; // Separate static base depth from dynamic composition; requires caching.
+    uint32_t maxLightCacheAge = 10; // Number of absent primary-view frames retained by the shared cache. Zero disables recovery.
     uint32_t framesStaticThreshold = 100; // Submitted unchanged frames before a dynamic caster rejoins static depth. Zero disables.
     bool forceRedraw = false;
 };
@@ -305,6 +306,10 @@ public:
         std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
         const VirtualShadowMapProjectionGridResources* grid = nullptr);
 
+    // Keep a recent shared snapshot while releasing the face's recording scratch.
+    // The caller can destroy the face once this returns false.
+    bool retainInactiveCache(uint64_t frameIndex, uint32_t maxAge);
+
     // Logical resource bytes currently owned by this cache, recording and pool.
     // Native padding and retired recordings outside this cache/pool are excluded;
     // use Device::memoryBudget() for whole-device live/peak allocation evidence.
@@ -314,6 +319,7 @@ public:
     VirtualShadowMapResourcePoolStats resourcePoolStats() const;
 
 private:
+    bool resolvePendingCache(); // Returns true if the pending recording was cancelled.
     struct CasterChangeContext;
     Result<VirtualShadowMapResult> recordInternal(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,

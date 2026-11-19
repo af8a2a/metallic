@@ -171,6 +171,7 @@ public:
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
             runtimeBoolSetting("compactShadowViews", "Compact Active Shadow Views", false),
             runtimeBoolSetting("distantLightSinglePage", "Single Page for Distant Local Lights", false),
+            runtimeIntSetting("maxLightCacheAge", "Absent Light Cache Frames", VirtualShadowMapSettings{}.maxLightCacheAge, 0, 65535),
             runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
             runtimeBoolSetting("twoPassHZB", "Two-Pass Shadow HZB", false),
             runtimeBoolSetting("hierarchyHZB", "Two-Pass Shadow Caster Hierarchy HZB", false),
@@ -332,6 +333,7 @@ public:
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
         settings.compactShadowViews = boolProperty(&properties, "compactShadowViews", settings.compactShadowViews);
         settings.distantLightSinglePage = boolProperty(&properties, "distantLightSinglePage", settings.distantLightSinglePage);
+        settings.maxLightCacheAge = properties.value("maxLightCacheAge", settings.maxLightCacheAge);
         settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
         settings.twoPassHZB = boolProperty(&properties, "twoPassHZB", settings.twoPassHZB);
         settings.hierarchyHZB = boolProperty(&properties, "hierarchyHZB", settings.hierarchyHZB);
@@ -372,7 +374,9 @@ public:
         const uint32_t budget = properties.value("physicalPageBudget", 256u);
         const bool demandDriven = boolProperty(&properties, "demandDrivenBudget", true);
         const float nearPlane = properties.value("nearPlane", 0.001f);
-        if (budget > 262144 || !std::isfinite(nearPlane) || nearPlane <= 0) { return makeError(Error::InvalidArgument); }
+        if (budget > 262144 || settings.maxLightCacheAge > 65535 || !std::isfinite(nearPlane) || nearPlane <= 0) {
+            return makeError(Error::InvalidArgument);
+        }
         const auto celestials = buildCelestialLightRecords(resolveWorldEnvironment(scene, context.world()));
         cpuPhase.next("Light admission and cache pruning");
         const auto lighting = resolveSceneLighting(scene, context.world());
@@ -459,10 +463,16 @@ public:
         for (const auto& item : lights) {
             if (item.entry.status == kVirtualShadowMapLightAdmitted) { identities.insert(item.stableId); }
         }
-        // Cache identity remains per light. The shared pool reconciles physical
-        // ownership across all admitted faces before allocating this frame.
-        std::erase_if(caches_, [&](const auto& cache) { return !identities.contains(cache.first); });
-        if (admittedFaces == 0) { physicalPool_ = {}; }
+        std::erase_if(caches_, [&](const auto& cache) {
+            if (identities.contains(cache.first)) { return false; }
+            if (!settings.cacheEnabled || settings.maxLightCacheAge == 0 || budget == 0) { return true; }
+            bool retained = false;
+            for (const auto& face : cache.second) {
+                if (face && face->retainInactiveCache(info.frameIndex, settings.maxLightCacheAge)) { retained = true; }
+            }
+            return !retained;
+        });
+        if (caches_.empty()) { physicalPool_ = {}; }
         auto resolutionWords = resolution_.update(
             properties.value("maxPagePoolLoadFactor", VirtualShadowMapResolutionController::kDefaultLoadFactor),
             properties.value("maxResolutionLodBias", VirtualShadowMapResolutionController::kDefaultMaxBias), admittedFaces != 0);

@@ -344,7 +344,7 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     return maxError;
 }
 
-enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges, ActiveViews, DistantLights };
+enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges, ActiveViews, DistantLights, LightCacheRecovery };
 
 class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
@@ -357,6 +357,7 @@ public:
             scenario == PoolScenario::HierarchyHZB ? "virtual_shadow_map_hierarchy_hzb" :
             scenario == PoolScenario::ActiveViews ? "virtual_shadow_map_active_views" :
             scenario == PoolScenario::DistantLights ? "virtual_shadow_map_distant_lights" :
+            scenario == PoolScenario::LightCacheRecovery ? "virtual_shadow_map_light_cache_recovery" :
             scenario == PoolScenario::CasterChanges ? "virtual_shadow_map_shared_caster_changes" : "virtual_shadow_map_physical_pool";
         type = RHITestType::Rendering;
     }
@@ -370,11 +371,13 @@ public:
         const bool casterChanges = scenario_ == PoolScenario::CasterChanges;
         const bool activeViews = scenario_ == PoolScenario::ActiveViews;
         const bool distantLights = scenario_ == PoolScenario::DistantLights;
+        const bool lightCacheRecovery = scenario_ == PoolScenario::LightCacheRecovery;
         const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" :
             hierarchyHZB ? "VirtualShadowMapHierarchyHZB" : twoPass ? "VirtualShadowMapTwoPassHZB" :
             hybrid ? "VirtualShadowMapClusterHybridRaster" : casterChanges ? "VirtualShadowMapSharedCasterChanges" :
             activeViews ? "VirtualShadowMapActiveViews" :
             distantLights ? "VirtualShadowMapDistantLights" :
+            lightCacheRecovery ? "VirtualShadowMapLightCacheRecovery" :
             "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
@@ -446,6 +449,7 @@ public:
                 settings.cacheEnabled = true; settings.cacheLayering = layered;
                 settings.framesStaticThreshold = 2;
                 settings.firstClipmapExtent = 4; settings.maxWorkItems = 65535;
+                if (casterChanges) { settings.maxLightCacheAge = 0; }
                 const ClusterLightGridSnapshot* markGrid = nullptr;
                 auto record = [&](std::span<const PoolFace> specs, uint32_t budget, bool force, bool cancel = false,
                                   bool pointGroup = false, bool demandDriven = true, bool serialized = false,
@@ -697,6 +701,115 @@ public:
                     requirePool((snapshot.memory.staticAtlasBytes != 0) == layered, "Layered shared atlas memory missing or double counted");
                     return snapshot;
                 };
+                if (lightCacheRecovery) {
+                    VirtualShadowMapLight sun;
+                    sun.direction = {1, 0, -1};
+                    VirtualShadowMapLight spot;
+                    spot.type = VirtualShadowMapLightType::Spot; spot.position = {0, 0, 3};
+                    spot.direction = {0, 0, -1}; spot.range = 10; spot.outerConeAngle = .8f;
+                    auto claimant = spot;
+                    claimant.position = {3.5f, 0, 2}; claimant.outerConeAngle = .18f;
+                    const std::array initial{PoolFace{1, spot}, PoolFace{0, sun}};
+                    const std::array reordered{initial[1], initial[0]};
+                    const std::array onlySun{initial[1]};
+                    const std::array onlySpot{initial[0]};
+                    const std::array onlyClaimant{PoolFace{2, claimant}};
+                    const std::array sunAndClaimant{initial[1], onlyClaimant[0]};
+                    constexpr uint32_t ampleBudget = 512;
+                    constexpr uint32_t pressuredBudget = 8;
+                    constexpr float depthTolerance = 1e-8f;
+                    constexpr uint32_t spotId = 1;
+                    constexpr uint32_t claimantId = 2;
+                    const auto render = [&](const char* phase, std::span<const PoolFace> active, uint32_t budget) {
+                        validation.phase(std::string(layered ? "Layered-" : "Combined-") + phase);
+                        auto snapshot = record(active, budget, false);
+                        Json entry{{"phase", phase}, {"layered", layered}, {"faces", Json::array()}};
+                        for (const auto& [identity, face] : snapshot.faces) {
+                            entry["faces"].push_back({{"identity", identity}, {"cacheReused", face.cache[kVSMCacheReused]},
+                                {"transformChanges", face.cache[kVSMCacheTransformChanges]}, {"residentPages", face.stats[12]},
+                                {"dirtyFinePages", face.cache[kVSMCacheCompositeDirtyFinePages]},
+                                {"dirtyCoarsePages", face.cache[kVSMCacheCompositeDirtyCoarsePages]}, {"coarseSlot", face.pages.back()[0]}});
+                        }
+                        report["frames"].push_back(std::move(entry)); save();
+                        return snapshot;
+                    };
+
+                    const auto original = render("Cold", initial, ampleBudget);
+                    const auto missing = render("MissingWithSpareSlots", sunAndClaimant, ampleBudget);
+                    const uint32_t spareSlot = missing.faces.at(claimantId).pages.back()[0];
+                    requirePool(std::ranges::none_of(original.faces.at(spotId).pages, [spareSlot](const Page& page) {
+                        return (page[1] & 2u) != 0u && page[0] == spareSlot;
+                    }), "An unused slot did not take priority over a dormant spot page");
+                    (void)render("StillMissing", onlySun, ampleBudget);
+                    const uint64_t emptyFrame = gpu.index++;
+                    for (const auto& face : sunAndClaimant) {
+                        requirePool(cached[face.identity].retainInactiveCache(emptyFrame, settings.maxLightCacheAge),
+                            "A primary-view frame without any lights released a recent shared snapshot");
+                    }
+                    requirePool(cached[spotId].retainInactiveCache(emptyFrame, settings.maxLightCacheAge),
+                        "A primary-view frame without any lights released the absent spot snapshot");
+                    const auto restored = render("ReturnClean", reordered, ampleBudget);
+                    const auto& clean = restored.faces.at(spotId);
+                    requirePool(clean.cache[kVSMCacheReused] == 1 && clean.cache[kVSMCacheCompositeDirtyFinePages] == 0 &&
+                        clean.cache[kVSMCacheCompositeDirtyCoarsePages] == 0 && clean.stats[20] == 0,
+                        "Returning spot did not reuse clean depth after consecutive missing frames");
+                    requirePool(requireRetainedDepth(original, restored, spotId) == original.faces.at(spotId).stats[12] &&
+                        clean.visibility == original.faces.at(spotId).visibility,
+                        "Reordering active faces on return changed retained physical pages or visibility");
+
+                    (void)render("MissingBeforeMove", onlySun, ampleBudget);
+                    const auto originalTransform = scene.nodes()[1].localMatrix;
+                    auto translation = originalTransform;
+                    translation.SetupByTranslation({.6f, 0, 0});
+                    requirePool(scene.setNodeLocalMatrix(1, translation * originalTransform), "Move blocker while spot is absent");
+                    (void)render("MissingAfterMove", onlySun, ampleBudget);
+                    validation.phase(layered ? "Layered-CancelReturn" : "Combined-CancelReturn");
+                    (void)record(reordered, ampleBudget, false, true);
+                    const auto moved = render("ReturnAfterMove", reordered, ampleBudget);
+                    const auto& movedSpot = moved.faces.at(spotId);
+                    requirePool(movedSpot.cache[kVSMCacheReused] == 1 && movedSpot.cache[kVSMCacheTransformChanges] == 1 &&
+                        movedSpot.cache[kVSMCacheCompositeDirtyFinePages] > 0 && movedSpot.cache[kVSMCacheCompositeDirtyCoarsePages] == 1 &&
+                        movedSpot.visibility != clean.visibility, "Returned spot lost a caster change during its absence or canceled return");
+                    const auto redraw = record(reordered, ampleBudget, true);
+                    compareRasterDepth(moved, redraw, spotId, depthTolerance, false, false);
+                    requirePool(scene.setNodeLocalMatrix(1, originalTransform), "Restore blocker for pressure case");
+
+                    const auto full = render("PressureCold", onlySpot, pressuredBudget);
+                    requirePool(full.faces.at(spotId).stats[12] == pressuredBudget, "Pressure fixture did not occupy the whole pool");
+                    const auto claimed = render("PressureMissing", onlyClaimant, pressuredBudget);
+                    const auto& claimantFace = claimed.faces.at(claimantId);
+                    requirePool(claimantFace.stats[0] == 0 && claimantFace.stats[12] == 1,
+                        "Offscreen claimant did not allocate exactly one coarse page");
+                    const uint32_t claimedSlot = claimantFace.pages.back()[0];
+                    requirePool(std::ranges::any_of(full.faces.at(spotId).pages, [claimedSlot](const Page& page) {
+                        return (page[1] & 2u) != 0u && page[0] == claimedSlot;
+                    }), "Claimant did not take a previously resident slot from the absent spot");
+                    bool replacedDepth = false;
+                    for (uint32_t y = 0; y < claimed.pageSize; ++y) {
+                        for (uint32_t x = 0; x < claimed.pageSize; ++x) {
+                            const uint32_t current = poolPageTexel(claimed, claimedSlot, x, y);
+                            replacedDepth |= current != 0u && current != poolPageTexel(full, claimedSlot, x, y);
+                        }
+                    }
+                    requirePool(replacedDepth, "Claimant did not write different D32 depth into the stolen physical page");
+
+                    const auto recovered = render("PressureReturn", onlySpot, pressuredBudget);
+                    const auto& recoveredSpot = recovered.faces.at(spotId);
+                    requirePool(recoveredSpot.cache[kVSMCacheReused] == 1 && recoveredSpot.stats[12] == pressuredBudget &&
+                        recoveredSpot.cache[kVSMCacheCompositeDirtyFinePages] + recoveredSpot.cache[kVSMCacheCompositeDirtyCoarsePages] == 1,
+                        "Pressure return did not reject just the overwritten page");
+                    requirePool(requireRetainedDepth(full, recovered, spotId) >= pressuredBudget - 1u,
+                        "Pressure return discarded untouched resident pages");
+                    compareRasterDepth(recovered, record(onlySpot, pressuredBudget, true), spotId, depthTolerance, false, false);
+
+                    std::vector<uint32_t> pixels(kPixels);
+                    std::transform(movedSpot.visibility.begin(), movedSpot.visibility.end(), pixels.begin(),
+                        [](uint8_t value) { return uint32_t(value) * 0x010101u | 0xff000000u; });
+                    std::string imageLog;
+                    requirePool(saveRgba8Png(directory / (layered ? "LayeredRestoredSpot.png" : "RestoredSpot.png"),
+                        reinterpret_cast<const uint8_t*>(pixels.data()), kWidth, kHeight, imageLog), "Save restored spot shadow: " + imageLog);
+                    continue;
+                }
                 if (distantLights) {
                     settings.pageSize = 64;
                     settings.virtualPagesPerAxis = 4;
@@ -1683,6 +1796,7 @@ public:
             return RHITestResult::pass(unifiedMark ? "View Mark matched per-face requests, receiver masks, cached pages and shadow images" :
                 activeViews ? "Fine view compaction preserved cached pages, resident D32 and point visibility" :
                 distantLights ? "Distant local lights used one cached page per face and matched coarse-only depth and point filtering" :
+                lightCacheRecovery ? "Returning lights reused clean depth and rebuilt casters or reclaimed physical pages" :
                 casterChanges ? "Caster change lists were built once per snapshot pair and preserved per-face invalidation" :
                 hierarchyHZB ? "Instance and hierarchy HZB preserved resident depth and shadow visibility through disocclusion" :
                 twoPass ? "Two-pass HZB preserved resident depth and shadow visibility through disocclusion" :
@@ -1741,5 +1855,11 @@ public:
     VirtualShadowMapDistantLightsTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::DistantLights) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDistantLightsTest);
+class VirtualShadowMapLightCacheRecoveryTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapLightCacheRecoveryTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::LightCacheRecovery) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapLightCacheRecoveryTest);
 } // namespace
 } // namespace metallic::tests

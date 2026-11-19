@@ -23,6 +23,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_COMPACT_SHADOW_VIEWS
 #define VSM_COMPACT_SHADOW_VIEWS 0
 #endif
+#ifndef VSM_SHARED_PHYSICAL_POOL
+#define VSM_SHARED_PHYSICAL_POOL 0
+#endif
 
 public struct ShadowPush
 {
@@ -51,6 +54,21 @@ uint vsmCacheMetadata(ShadowPush push, uint word)
 {
     StructuredBuffer<uint> data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.sampleReserved));
     return data[word];
+}
+
+bool vsmRetainsSharedPage(uint slot, ShadowPush push)
+{
+#if VSM_SHARED_PHYSICAL_POOL
+    if ((push.cacheMode & kVSMCacheRestoreInactive) != 0u) {
+        StructuredBuffer<uint2> history = resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(
+            vsmCacheMetadata(push, kVSMCachePreviousSlotAssignments)));
+        uint2 assigned = history[push.physicalPageCount + slot];
+        uint serialHigh = vsmCacheMetadata(push, kVSMCachePoolSerialHigh);
+        return assigned.y < serialHigh ||
+            (assigned.y == serialHigh && assigned.x <= vsmCacheMetadata(push, kVSMCachePoolSerialLow));
+    }
+#endif
+    return true;
 }
 
 uint vsmFineViewForLane(ShadowPush push, uint lane)
