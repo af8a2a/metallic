@@ -46,6 +46,16 @@ GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view �
 
 `virtual_shadow_map_cluster_hybrid_raster` 将混合路径与纯硬件逐页对照，检查 D32、投影可见性和实际提交的细页 mesh 工作组。Sponza 的 960×540 双层硬阴影对照使用 32 像素页、每轴 16 个虚页、2048 个物理页。第 0 帧冷启动、第 50 帧移动相机和第 63 帧缓存复用的阴影、HDR 与最终画面逐字节一致。冷帧细页硬件工作组由 229800 减到 54575，移动帧由 21516 减到 11563。这些数字是工作组计数。
 
+## 按主视图统一 Mark
+
+在 `VirtualShadowMapLightsPass` 上设置 `unifiedMark=true`，共享池会先重置所有灯面的页表，再用一次主视图计算 dispatch 标记需求，最后统计各面请求并分配物理页。该选项默认关闭。单面和逐像素 receiver coverage 诊断沿用原 Mark 入口。
+
+每个线程从主视图深度重建一次接收点，首次需要时计算邻域法线和足迹。存在匹配的主视图 light grid 时，每个 8×8 线程组遍历其像素所涉及的灯，每个像素只向自己的候选灯标页。网格溢出或深度越界时使用全部有界候选，并始终包括无界局部灯。缺少网格时，同一个 dispatch 遍历所有已准入的面。每个灯面独立维护标记去重和 receiver mask；点光 PCF/SMRT 仍按采样位置选择立方体面。
+
+`virtual_shadow_map_unified_mark` 将统一与逐面路径的原始请求位、receiver mask、页表、D32 图集和投影逐面比较。CPU profile 的 `Record VSM view mark` 记录实际 Mark dispatch 数、面数和网格使用状态，GPU scope 为 `VSM view mark`。
+
+641×361 的 OpenPBR 场景含 4 灯、9 面。缓存分层和合并缓存两种配置各自对照时，5 个采样帧的 shadow、HDR、主视图深度、可见性和最终画面均逐字节一致。合并缓存配置的普通计时按 A–B–A–B 启动四个独立进程，每个进程预热 32 帧、测量 32 帧。Shadows pass 从 1.225 ms 降至 1.064 ms（−13.1%）；整图差异落在进程间波动范围内。[逐面回归](../build/vsm-unified-mark/regression/VirtualShadowMapUnifiedMark/Report.json) · [实景对照](../build/vsm-unified-mark/RuntimeComparison.json) · [计时报告](../build/vsm-unified-mark/perf/report-4/Report.md)
+
 ## 通用两阶段 HZB 遮挡剔除
 
 在 `VirtualShadowMapLightsPass` 或独立 `VirtualShadowMapPass` 上设置 `twoPassHZB=true`，可对各灯面的细页启用两阶段 cluster 遮挡剔除。该选项默认关闭。启用时使用按 cluster/page 打包的 Build，可与 `clusterHybridRaster` 同时使用。设备需要支持计算着色器 subgroup ballot 和算术操作。含位移几何的 caster 批次沿用原有光栅路径。

@@ -336,6 +336,31 @@ void vsmRecordProjectionStatistics(uint3 counts
 #endif
 }
 
+#if VSM_LIGHT_GRID_PROJECTION
+uint2 vsmGridLocalLightMask(uint2 pixel, float linearDepth, bool valid,
+    VirtualShadowMapProjectionGrid context, out uint candidatesCount, out uint fallback)
+{
+    uint2 mask = uint2(0u);
+    candidatesCount = 0u;
+    fallback = 0u;
+    if (!valid) { return mask; }
+    ClusterLightGridParams grid = resolveUniform(ResourceHandle<StructuredBuffer<ClusterLightGridParams>>(context.parameters))[0];
+    StructuredBuffer<ClusterLightGridCell> cells = resolveUniform(ResourceHandle<StructuredBuffer<ClusterLightGridCell>>(context.cells));
+    StructuredBuffer<uint> indices = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.lightIndices));
+    StructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.candidates));
+    ClusterLightGridLookup lookup = clusterLightGridLookup(grid, cells, pixel, linearDepth);
+    fallback = lookup.fallback;
+    candidatesCount = lookup.count + clusterLightGridGlobalLightCount(grid);
+    for (uint i = 0u; i < candidatesCount; ++i) {
+        uint source = i < lookup.count ? clusterLightGridLocalLightIndex(lookup, indices, candidates, i) :
+            clusterLightGridGlobalLightIndex(grid, candidates, i - lookup.count);
+        // The producer bounds this source domain to 62 local lights plus Sun/Moon.
+        mask[source >> 5u] |= 1u << (source & 31u);
+    }
+    return mask & uint2(context.admittedLow, context.admittedHigh);
+}
+#endif
+
 #if !VSM_ONE_PASS_PROJECTION
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -419,25 +444,8 @@ void vsmProjectOnePassJob(uint3 id, ShadowPush common, ShadowProjectionJob job, 
 #if VSM_LIGHT_GRID_PROJECTION
 uint2 vsmProjectionLocalMask(uint2 pixel, VSMProjectionReceiver receiver, VirtualShadowMapProjectionGrid context)
 {
-    uint2 mask = uint2(0u);
-    uint candidatesCount = 0u, fallback = 0u;
-    if (receiver.valid) {
-        ClusterLightGridParams grid = resolveUniform(ResourceHandle<StructuredBuffer<ClusterLightGridParams>>(context.parameters))[0];
-        StructuredBuffer<ClusterLightGridCell> cells = resolveUniform(ResourceHandle<StructuredBuffer<ClusterLightGridCell>>(context.cells));
-        StructuredBuffer<uint> indices = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.lightIndices));
-        StructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(context.candidates));
-        ClusterLightGridLookup lookup = clusterLightGridLookup(grid, cells, pixel, receiver.linearDepth);
-        fallback = lookup.fallback;
-        uint globalCount = clusterLightGridGlobalLightCount(grid);
-        candidatesCount = lookup.count + globalCount;
-        for (uint i = 0u; i < candidatesCount; ++i) {
-            uint source = i < lookup.count ? clusterLightGridLocalLightIndex(lookup, indices, candidates, i) :
-                clusterLightGridGlobalLightIndex(grid, candidates, i - lookup.count);
-            // LightsPass validates sourceSlotCount + two celestial slots <= 64.
-            mask[source >> 5u] |= 1u << (source & 31u);
-        }
-        mask &= uint2(context.admittedLow, context.admittedHigh);
-    }
+    uint candidatesCount, fallback;
+    uint2 mask = vsmGridLocalLightMask(pixel, receiver.linearDepth, receiver.valid, context, candidatesCount, fallback);
     vsmProjectionGridAdd(context.diagnostics, kVSMGridReceiverLookups, receiver.valid ? 1u : 0u);
     vsmProjectionGridAdd(context.diagnostics, kVSMGridFallbacks, fallback);
     vsmProjectionGridAdd(context.diagnostics, kVSMGridLocalCandidates, candidatesCount);

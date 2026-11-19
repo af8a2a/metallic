@@ -3598,6 +3598,8 @@ public:
             both("smrtTemporalEnabled", false); both("smrtRayCount", 2); both("smrtSamplesPerRay", 8);
             both("smrtMaxRayLength", 4); both("smrtRayLengthScale", 0);
             both("physicalPageBudget", 256); both("benchmarkGPUWork", true);
+            // Eviction and remapping compare the same virtual resolution across budget changes.
+            both("maxPagePoolLoadFactor", 0.0f);
             property("Cached", "forceRedraw", true);
             property("Compact", "benchmarkInstanceBuild", true);
             property("Compact", "benchmarkClusterPageRaster", true);

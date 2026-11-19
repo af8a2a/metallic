@@ -79,6 +79,7 @@ struct VirtualShadowMapLight
 // One projection view: directional clipmaps, a spot frustum or one point face.
 struct VirtualShadowMapSettings
 {
+    bool unifiedMark = false; // Reuse the main-view receiver across shared shadow faces.
     bool batchBuildRaster = true; // Shared pools batch compatible faces; false retains the serial reference path.
     bool collectReceiverCoverage = false; // Diagnostic per-pixel records; requires GPU work diagnostics.
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
@@ -186,6 +187,7 @@ struct VirtualShadowMapFaceRequest
     VirtualShadowMaps* shadow = nullptr;
     VirtualShadowMapLight light;
     VirtualShadowMapProjectionTarget output;
+    uint32_t sourceSlot = UINT32_MAX; // 0/1 for Sun/Moon, 2 + local GPUScene index for grid Mark.
 };
 
 // Ordered per-light projections. Point lights contain all six canonical faces;
@@ -264,7 +266,7 @@ public:
         std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
         const VirtualShadowMapSettings& settings, uint32_t physicalPageBudget, bool demandDriven,
         std::string& log, CPUProfileRecorder* profiler = nullptr, RenderGraphExecutionContext* gpuProfiler = nullptr,
-        const VirtualShadowMapReceiverResources* receiver = nullptr);
+        const VirtualShadowMapReceiverResources* receiver = nullptr, const ClusterLightGridSnapshot* markGrid = nullptr);
     static Result<std::vector<VirtualShadowMapLODProjection>> makeShadowLODProjections(
         const scene::Bounds& bounds, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapSettings& settings, std::string& log);

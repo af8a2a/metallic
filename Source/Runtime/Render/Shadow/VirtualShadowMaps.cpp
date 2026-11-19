@@ -318,6 +318,7 @@ struct SharedShadowPoolFrame
     std::shared_ptr<Buffer> metadata, history, jobs;
     std::shared_ptr<Buffer> batchJobs, batchArguments;
     std::shared_ptr<Buffer> publicationFaces;
+    std::shared_ptr<Buffer> markGrid;
     std::vector<std::shared_ptr<void>> pipelineOwners;
     std::vector<ResourceLease> leases;
     std::shared_ptr<SubmissionTransaction> submission;
@@ -325,15 +326,60 @@ struct SharedShadowPoolFrame
     uint32_t faceCount = 0, frameIndex = 0;
 };
 
+void setGridJobs(VirtualShadowMapProjectionGrid& grid, uint32_t slot, uint32_t first, uint32_t count)
+{
+    grid.jobs[slot] = {first, count};
+    if (slot >= 2u) {
+        const uint32_t local = slot - 2u;
+        auto& mask = local < 32u ? grid.admittedLow : grid.admittedHigh;
+        mask |= 1u << (local & 31u);
+        grid.localJobCount += count;
+    }
+}
+
+Result<> bindGridBuffer(ResourceRegistry& registry, std::vector<ResourceLease>& leases, Buffer& buffer, uint32_t& index)
+{
+    auto lease = registry.storageBuffer(buffer);
+    if (!lease) { return std::unexpected(lease.error()); }
+    index = lease->shaderIndex();
+    leases.push_back(*lease);
+    return {};
+}
+
+Result<> bindLightGrid(ResourceRegistry& registry, std::vector<ResourceLease>& leases,
+    const ClusterLightGridSnapshot& snapshot, VirtualShadowMapProjectionGrid& grid)
+{
+    if (auto r = bindGridBuffer(registry, leases, *snapshot.parameters, grid.parameters); !r) { return r; }
+    if (auto r = bindGridBuffer(registry, leases, *snapshot.cells, grid.cells); !r) { return r; }
+    if (auto r = bindGridBuffer(registry, leases, *snapshot.lightIndices, grid.lightIndices); !r) { return r; }
+    return bindGridBuffer(registry, leases, *snapshot.candidates, grid.candidates);
+}
+
 } // namespace
 
 struct VirtualShadowMapPhysicalPool::Impl
 {
+    struct MarkPermutation
+    {
+        int pageShift;
+        bool lightGrid, receiverMask, gpuWork;
+        bool operator==(const MarkPermutation&) const = default;
+    };
+    struct MarkPipeline
+    {
+        MarkPermutation permutation;
+        std::unique_ptr<ShaderModule> shader;
+        std::unique_ptr<ComputePipeline> pipeline;
+    };
     Device* device = nullptr;
     std::shared_ptr<SharedShadowPoolFrame> committed, pending, recording;
     std::array<std::shared_ptr<ShaderModule>, 4> shaders;
     std::array<std::shared_ptr<ComputePipeline>, 4> pipelines;
     std::vector<std::shared_ptr<SharedShadowPoolFrame>> frames;
+    std::shared_ptr<MarkPipeline> viewMark;
+    Result<> recordViewMark(CommandBuffer& commands, ResourceRegistry& registry, ShadowPush common, uint32_t jobTable,
+        std::span<const VirtualShadowMapFaceRequest> faces, const VirtualShadowMapSettings& settings,
+        const ClusterLightGridSnapshot* grid, const ViewConstants& view, std::string& log, CPUProfileRecorder* profiler);
 };
 
 struct VirtualShadowMaps::Programs
@@ -652,13 +698,85 @@ Result<std::optional<VirtualShadowMapPressureSample>> VirtualShadowMapPressureFe
     return std::optional{sample};
 }
 
+Result<> VirtualShadowMapPhysicalPool::Impl::recordViewMark(CommandBuffer& commands, ResourceRegistry& registry,
+    ShadowPush common, uint32_t jobTable, std::span<const VirtualShadowMapFaceRequest> faces,
+    const VirtualShadowMapSettings& settings, const ClusterLightGridSnapshot* grid, const ViewConstants& view,
+    std::string& log, CPUProfileRecorder* profiler)
+{
+    CPUProfileScope scope(profiler, "Record VSM view mark");
+    VirtualShadowMapProjectionGrid gridData{};
+    gridData.diagnostics = UINT32_MAX;
+    if (!device->capabilities().computeSubgroupBallotArithmetic) { grid = nullptr; }
+    // The public shared-pool path also accepts arbitrary face order and faces
+    // without a GPUScene identity. Those callers traverse the same jobs directly.
+    for (uint32_t first = 0; grid && first < faces.size();) {
+        const uint32_t slot = faces[first].sourceSlot;
+        if (slot >= std::size(gridData.jobs) || gridData.jobs[slot].count != 0u) {
+            grid = nullptr;
+            break;
+        }
+        uint32_t end = first + 1;
+        while (end < faces.size() && faces[end].sourceSlot == slot) { ++end; }
+        setGridJobs(gridData, slot, first, end - first);
+        first = end;
+    }
+    const MarkPermutation permutation{std::countr_zero(settings.pageSize), grid != nullptr,
+        settings.cacheEnabled && settings.cacheLayering && settings.filter == VirtualShadowMapFilter::SMRT, settings.collectGPUWork};
+    if (!viewMark || viewMark->permutation != permutation) {
+        const auto shift = std::to_string(permutation.pageShift);
+        const std::array macros{SlangMacroDefine{"VSM_VIEW_MARK", "1"}, SlangMacroDefine{"VSM_LOCAL_MARK", "1"},
+            SlangMacroDefine{"VSM_MARK_PAGE_SHIFT", shift.c_str()}, SlangMacroDefine{"VSM_MARK_CACHE_LEVELS", "12"},
+            SlangMacroDefine{"VSM_RECEIVER_MASK", permutation.receiverMask ? "1" : "0"},
+            SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", permutation.gpuWork ? "1" : "0"},
+            SlangMacroDefine{"VSM_LIGHT_GRID_PROJECTION", permutation.lightGrid ? "1" : "0"},
+            SlangMacroDefine{"VSM_SHARED_PHYSICAL_POOL", "1"}};
+        auto& shaders = ShaderRegistry::instance();
+        auto shader = shaders.getShader({.moduleName = "Features/VirtualShadowMaps/VirtualShadowMaps",
+            .entryPointName = "vsmMarkViewMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = macros}, log);
+        if (!shader) { return std::unexpected(shader.error()); }
+        auto module = shaders.getShaderModule(*device, {.spirv = shader->spirv, .debugName = "vsmMarkViewMain"});
+        if (!module) { return std::unexpected(module.error()); }
+        auto pipeline = shaders.getComputePipeline(*device, {.computeShader = {module->get()},
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
+        if (!pipeline) { return std::unexpected(pipeline.error()); }
+        viewMark = std::make_shared<MarkPipeline>(MarkPipeline{permutation, std::move(*module), std::move(*pipeline)});
+    }
+    recording->pipelineOwners.push_back(viewMark);
+    common.geometry = jobTable;
+    common.triangleCount = uint32_t(faces.size());
+    common.arguments = UINT32_MAX;
+    if (grid) {
+        if (auto r = bindLightGrid(registry, recording->leases, *grid, gridData); !r) { return r; }
+        if (!recording->markGrid) {
+            auto buffer = device->createBuffer({.size = sizeof(gridData), .structureStride = sizeof(gridData),
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload});
+            if (!buffer) { return std::unexpected(buffer.error()); }
+            recording->markGrid = std::move(*buffer);
+        }
+        auto* mapped = recording->markGrid->map();
+        if (!mapped) { return makeError(Error::Failure); }
+        std::memcpy(mapped, &gridData, sizeof(gridData));
+        recording->markGrid->flush(); recording->markGrid->unmap();
+        if (auto r = bindGridBuffer(registry, recording->leases, *recording->markGrid, common.arguments); !r) { return r; }
+        if (auto r = registry.bind(commands, recording->leases); !r) { return r; }
+        commands.hostWriteBarrier();
+    }
+    if (auto r = commands.bindExecution(viewMark->pipeline->execution(), &common, sizeof(common)); !r) { return r; }
+    if (auto r = commands.dispatch((uint32_t(view.current.viewport[1]) + 7u) / 8u,
+        (uint32_t(view.current.viewport[2]) + 7u) / 8u); !r) { return r; }
+    scope.work("markDispatches", 1);
+    scope.work("faces", faces.size());
+    scope.work("lightGrid", grid != nullptr);
+    return {};
+}
+
 Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(VirtualShadowMapPhysicalPool& physicalPool,
     Device& device, CommandBuffer& commands, TextureView& depth, const ViewConstants& view,
     std::span<const VirtualShadowMapFaceRequest> faces, const VirtualShadowMapCasterResources& casters,
     std::span<const scene::RenderMaterial> materials, std::span<TextureView* const> alphaTextures,
     const VirtualShadowMapSettings& inputSettings, uint32_t capacity, bool demandDriven,
     std::string& log, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
-    const VirtualShadowMapReceiverResources* receiver)
+    const VirtualShadowMapReceiverResources* receiver, const ClusterLightGridSnapshot* markGrid)
 {
     auto* context = RenderFrameContext::from(commands);
     if (!context || !context->recording() || faces.empty() || faces.size() > 384 ||
@@ -805,6 +923,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     std::vector<VirtualShadowMapResult> results;
     std::vector<std::shared_ptr<State>> states;
     auto settings = inputSettings;
+    settings.unifiedMark = settings.unifiedMark && faces.size() > 1 && !settings.collectReceiverCoverage;
     settings.physicalPageCount = capacity;
     std::vector<BufferBarrierDesc> hzbReady;
     for (const auto& bank : storage->hzbBanks) {
@@ -858,15 +977,25 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         if (auto r = commands.dispatch(1); !r) { return r; }
         return publish();
     };
-    auto perFace = [&](size_t pipeline) -> Result<> {
+    auto perFace = [&](size_t pipeline, bool singleGroup = false) -> Result<> {
         for (const auto& state : states) {
             if (auto r = commands.bindExecution(state->programs->compute[pipeline]->execution(), &state->push, sizeof(ShadowPush)); !r) { return r; }
-            if (auto r = commands.dispatch((state->push.totalPages + 255u) / 256u); !r) { return r; }
+            if (auto r = commands.dispatch(singleGroup ? 1u : (state->push.totalPages + 255u) / 256u); !r) { return r; }
         }
         return publish();
     };
     commands.hostWriteBarrier();
     if (auto r = publish(); !r) { return std::unexpected(r.error()); }
+    if (settings.unifiedMark) {
+        auto markGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM view mark") : RenderGraphExecutionContext::ProfileScope{};
+        if (auto r = pool.recordViewMark(commands, *registry, states.front()->push, push.jobs, faces, settings,
+            markGrid, view, log, profiler); !r) { return std::unexpected(r.error()); }
+        if (auto r = publish(); !r) { return std::unexpected(r.error()); }
+        markGpu.next("VSM allocator count");
+        if (auto r = perFace(6); !r) { return std::unexpected(r.error()); }
+        markGpu.next("VSM allocator allocate");
+        if (auto r = perFace(2, true); !r) { return std::unexpected(r.error()); }
+    }
     auto allocationGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM shared physical pool") : RenderGraphExecutionContext::ProfileScope{};
     if (auto r = global(0); !r) { return std::unexpected(r.error()); }
     if (auto r = perFace(7); !r) { return std::unexpected(r.error()); }
@@ -1416,7 +1545,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMapPhysicalPool::memoryUsage() const
             addBuffer(storage.rasterHZB);
         }
         addBuffer(frame->metadata); addBuffer(frame->history); addBuffer(frame->jobs); addBuffer(frame->publicationFaces);
-        addBuffer(frame->batchJobs); addBuffer(frame->batchArguments);
+        addBuffer(frame->batchJobs); addBuffer(frame->batchArguments); addBuffer(frame->markGrid);
     }
     return usage;
 }
@@ -2591,37 +2720,39 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     if (auto r = barrier(groupedFineRaster ? std::initializer_list<size_t>{1, 3, 4, 7, 9} :
         std::initializer_list<size_t>{1, 4, 7, 9}); !r) { return std::unexpected(r.error()); }
     resetGpu.end();
-    gpu.next("VSM mark");
-    auto markGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM mark dispatch") : RenderGraphExecutionContext::ProfileScope{};
-    if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
-    markGpu.next("VSM mark publish");
-    if (receiverMask) {
-        if (auto r = barrier({9}); !r) { return std::unexpected(r.error()); }
+    if (!sharedPhysicalPool || !settings.unifiedMark) {
+        gpu.next("VSM mark");
+        auto markGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM mark dispatch") : RenderGraphExecutionContext::ProfileScope{};
+        if (auto r = dispatch(1, (width + 7) / 8, (height + 7) / 8); !r) { return std::unexpected(r.error()); }
+        markGpu.next("VSM mark publish");
+        if (receiverMask) {
+            if (auto r = barrier({9}); !r) { return std::unexpected(r.error()); }
+        }
+        if (auto r = barrier(settings.collectGPUWork ? std::initializer_list<size_t>{1, 4} : std::initializer_list<size_t>{1});
+            !r) { return std::unexpected(r.error()); }
+        markGpu.end();
+        gpu.next("VSM allocator");
+        // Each allocator child includes its publication dependency. Keep the
+        // aggregate names stable for existing stage reports; never sum parent + child.
+        auto allocatorGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM allocator count") : RenderGraphExecutionContext::ProfileScope{};
+        if (auto r = dispatch(6, allocationBlocks); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
+        allocatorGpu.next("VSM allocator allocate");
+        if (auto r = dispatch(2, 1); !r) { return std::unexpected(r.error()); }
+        if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
+        if (!sharedPhysicalPool) {
+            allocatorGpu.next("VSM allocator admit");
+            if (auto r = dispatch(7, allocationBlocks); !r) { return std::unexpected(r.error()); }
+            if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
+            allocatorGpu.next("VSM allocator physical");
+            if (auto r = dispatch(8, 1); !r) { return std::unexpected(r.error()); }
+            if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
+            allocatorGpu.next("VSM allocator assign");
+            if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
+            if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
+        }
+        allocatorGpu.end();
     }
-    if (auto r = barrier(settings.collectGPUWork ? std::initializer_list<size_t>{1, 4} : std::initializer_list<size_t>{1});
-        !r) { return std::unexpected(r.error()); }
-    markGpu.end();
-    gpu.next("VSM allocator");
-    // Each allocator child includes its publication dependency. Keep the
-    // aggregate names stable for existing stage reports; never sum parent + child.
-    auto allocatorGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM allocator count") : RenderGraphExecutionContext::ProfileScope{};
-    if (auto r = dispatch(6, allocationBlocks); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
-    allocatorGpu.next("VSM allocator allocate");
-    if (auto r = dispatch(2, 1); !r) { return std::unexpected(r.error()); }
-    if (auto r = barrier({4, 9}); !r) { return std::unexpected(r.error()); }
-    if (!sharedPhysicalPool) {
-        allocatorGpu.next("VSM allocator admit");
-        if (auto r = dispatch(7, allocationBlocks); !r) { return std::unexpected(r.error()); }
-        if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
-        allocatorGpu.next("VSM allocator physical");
-        if (auto r = dispatch(8, 1); !r) { return std::unexpected(r.error()); }
-        if (auto r = barrier({1, 4, 9}); !r) { return std::unexpected(r.error()); }
-        allocatorGpu.next("VSM allocator assign");
-        if (auto r = dispatch(9, allocationBlocks); !r) { return std::unexpected(r.error()); }
-        if (auto r = barrier({1, 9}); !r) { return std::unexpected(r.error()); }
-    }
-    allocatorGpu.end();
     gpu.end();
     if (!gpuProfiler) { commands.endDebugLabel(); }
     // Store values, never references to this record() stack. State owns the
@@ -3327,13 +3458,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             // LightsPass validates the complete publication domain before
             // admission: two celestial slots plus at most 62 local sources.
             assert(group.lightIndex < std::size(gridData.jobs));
-            gridData.jobs[group.lightIndex] = {uint32_t(jobs.size()), group.faceCount};
-            if (group.lightIndex >= 2u) {
-                const uint32_t source = group.lightIndex - 2u;
-                auto& mask = source < 32u ? gridData.admittedLow : gridData.admittedHigh;
-                mask |= 1u << (source & 31u);
-                gridData.localJobCount += group.faceCount;
-            }
+            setGridJobs(gridData, group.lightIndex, uint32_t(jobs.size()), group.faceCount);
         }
         for (uint32_t face = 0; face < group.faceCount; ++face) {
             const auto& state = *group.faces[face]->state_;
@@ -3378,22 +3503,11 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     push.triangleCount = faceCount;
     push.arguments = UINT32_MAX;
     if (gridContext) {
-        const auto bindBuffer = [&](Buffer& buffer, uint32_t& index) -> Result<> {
-            auto descriptor = first.registry->storageBuffer(buffer);
-            if (!descriptor) { return std::unexpected(descriptor.error()); }
-            index = descriptor->shaderIndex();
-            first.leases.push_back(*descriptor);
-            return {};
-        };
         if (lightGrid) {
-            const auto& snapshot = *grid->grid;
-            if (auto r = bindBuffer(*snapshot.parameters, gridData.parameters); !r) { return r; }
-            if (auto r = bindBuffer(*snapshot.cells, gridData.cells); !r) { return r; }
-            if (auto r = bindBuffer(*snapshot.lightIndices, gridData.lightIndices); !r) { return r; }
-            if (auto r = bindBuffer(*snapshot.candidates, gridData.candidates); !r) { return r; }
+            if (auto r = bindLightGrid(*first.registry, first.leases, *grid->grid, gridData); !r) { return r; }
         }
         if (grid->diagnostics) {
-            if (auto r = bindBuffer(*grid->diagnostics, gridData.diagnostics); !r) { return r; }
+            if (auto r = bindGridBuffer(*first.registry, first.leases, *grid->diagnostics, gridData.diagnostics); !r) { return r; }
         }
         auto context = first.pool->buffer(14, {.size = sizeof(gridData), .structureStride = sizeof(gridData),
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload},
@@ -3405,7 +3519,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
         std::memcpy(destination, &gridData, sizeof(gridData));
         first.resources->projectionGrid->flush();
         first.resources->projectionGrid->unmap();
-        if (auto r = bindBuffer(*first.resources->projectionGrid, push.arguments); !r) { return r; }
+        if (auto r = bindGridBuffer(*first.registry, first.leases, *first.resources->projectionGrid, push.arguments); !r) { return r; }
     }
     commands.hostWriteBarrier();
     phase.work("lightGrid", lightGrid);

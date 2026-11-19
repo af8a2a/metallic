@@ -11,12 +11,15 @@ implementing VirtualShadowMaps;
 #ifndef VSM_DIRECTIONAL_MARK
 #define VSM_DIRECTIONAL_MARK 0
 #endif
+#ifndef VSM_VIEW_MARK
+#define VSM_VIEW_MARK 0
+#endif
 #ifndef VSM_MARK_CACHE_LEVELS
 #define VSM_MARK_CACHE_LEVELS 12
 #endif
 
 // Read-before-write filters must remain atomic with other lanes' updates.
-#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+#if (VSM_DIRECTIONAL_MARK || VSM_VIEW_MARK) && VSM_RECEIVER_MASK
 static const uint kVSMMarkHashBits = 7u;
 #else
 static const uint kVSMMarkHashBits = 8u;
@@ -24,7 +27,7 @@ static const uint kVSMMarkHashBits = 8u;
 static const uint kVSMMarkHashCapacity = 1u << kVSMMarkHashBits;
 groupshared Atomic<uint> gVsmMarkedPages[kVSMMarkHashCapacity];
 
-#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+#if (VSM_DIRECTIONAL_MARK || VSM_VIEW_MARK) && VSM_RECEIVER_MASK
 [inline]
 bool vsmClaimMarkSlot(uint page, out uint slot)
 {
@@ -46,7 +49,7 @@ void vsmPublishMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 
 
 void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCounts)
 {
-#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+#if (VSM_DIRECTIONAL_MARK || VSM_VIEW_MARK) && VSM_RECEIVER_MASK
     uint slot;
     if (vsmClaimMarkSlot(page, slot)) { return; }
 #else

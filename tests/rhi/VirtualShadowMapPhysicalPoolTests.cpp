@@ -1,5 +1,6 @@
 #include "RHITest.h"
 #include "harness/ValidationRecorder.h"
+#include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
@@ -110,6 +111,7 @@ struct PoolFace
 {
     uint32_t identity;
     VirtualShadowMapLight light;
+    uint32_t sourceSlot = UINT32_MAX;
 };
 
 std::filesystem::path writeClusterFixture(const std::filesystem::path& directory, bool withRoof)
@@ -175,6 +177,7 @@ struct PoolFaceSnapshot
     std::array<uint32_t, 32> stats{};
     std::array<uint32_t, kVirtualShadowMapCacheDiagnosticCount> cache{};
     std::vector<Page> pages;
+    std::vector<uint64_t> requestedMasks;
     std::vector<uint8_t> visibility;
     std::array<uint32_t, 3> hybrid{};
     TwoPassTickets hzb;
@@ -295,14 +298,15 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     return maxError;
 }
 
-enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB };
+enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, UnifiedMark };
 
 class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
 public:
     explicit VirtualShadowMapPhysicalPoolTest(PoolScenario scenario = PoolScenario::Allocation) : scenario_(scenario)
     {
-        name = scenario == PoolScenario::HybridRaster ? "virtual_shadow_map_cluster_hybrid_raster" :
+        name = scenario == PoolScenario::UnifiedMark ? "virtual_shadow_map_unified_mark" :
+            scenario == PoolScenario::HybridRaster ? "virtual_shadow_map_cluster_hybrid_raster" :
             scenario == PoolScenario::TwoPassHZB ? "virtual_shadow_map_two_pass_hzb" : "virtual_shadow_map_physical_pool";
         type = RHITestType::Rendering;
     }
@@ -311,7 +315,8 @@ public:
     {
         const bool hybrid = scenario_ == PoolScenario::HybridRaster;
         const bool twoPass = scenario_ == PoolScenario::TwoPassHZB;
-        const auto directory = std::filesystem::absolute(context.outputDirectory / (twoPass ? "VirtualShadowMapTwoPassHZB" :
+        const bool unifiedMark = scenario_ == PoolScenario::UnifiedMark;
+        const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" : twoPass ? "VirtualShadowMapTwoPassHZB" :
             hybrid ? "VirtualShadowMapClusterHybridRaster" : "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
@@ -364,11 +369,11 @@ public:
             requirePool(gpu.commands->synchronize({.textures = {&depthEnd, 1}}), "Pool depth ready");
             gpu.finish();
 
-            for (uint32_t variant = 0; variant < (twoPass ? 4u : 2u); ++variant) {
+            for (uint32_t variant = 0; variant < (unifiedMark ? 1u : twoPass ? 4u : 2u); ++variant) {
                 const bool hybridHZB = twoPass && variant == 1u;
                 const bool standaloneHZB = twoPass && variant == 2u;
                 const bool serialHZB = twoPass && variant == 3u;
-                const bool layered = twoPass ? serialHZB : variant == 1u;
+                const bool layered = unifiedMark || (twoPass ? serialHZB : variant == 1u);
                 if (hybridHZB && device.capabilities().subPixelPrecisionBits > 8) { continue; }
                 VirtualShadowMapPhysicalPool cachedPool, referencePool, serialPool;
                 std::array<VirtualShadowMaps, 9> cached, reference, serial;
@@ -378,6 +383,7 @@ public:
                 settings.cacheEnabled = true; settings.cacheLayering = layered;
                 settings.framesStaticThreshold = 2;
                 settings.firstClipmapExtent = 4; settings.maxWorkItems = 65535;
+                const ClusterLightGridSnapshot* markGrid = nullptr;
                 auto record = [&](std::span<const PoolFace> specs, uint32_t budget, bool force, bool cancel = false,
                                   bool pointGroup = false, bool demandDriven = true, bool serialized = false,
                                   bool standalone = false) {
@@ -388,7 +394,9 @@ public:
                     requirePool(casters, "Prepare shared pool casters: " + log);
                     requirePool(!settings.instanceBuild || casters->instanceTable != UINT32_MAX,
                         "Instance Build test did not publish an instance table");
-                    const uint32_t layers = pointGroup ? 1u : uint32_t(specs.size());
+                    // A compact point light occupies the last six input faces and one output layer.
+                    const uint32_t pointStart = uint32_t(specs.size()) - (pointGroup ? 6u : 0u);
+                    const uint32_t layers = pointStart + uint32_t(pointGroup);
                     auto output = device.createTexture({.usage = TextureUsageBits::Storage | TextureUsageBits::TransferSource,
                         .format = Format::R8Unorm, .width = kWidth, .height = kHeight, .layerCount = layers});
                     requirePool(output, "Pool projection output");
@@ -399,14 +407,16 @@ public:
                     std::vector<VirtualShadowMapFaceRequest> requests;
                     for (uint32_t index = 0; index < specs.size(); ++index) {
                         requests.push_back({.shadow = &(serialized ? serial : force ? reference : cached)[specs[index].identity], .light = specs[index].light,
-                            .output = {.shadow = output->get(), .layer = pointGroup ? 0u : index, .sharedPointLayer = pointGroup}});
+                            .output = {.shadow = output->get(), .layer = std::min(index, pointStart), .sharedPointLayer = index >= pointStart},
+                            .sourceSlot = specs[index].sourceSlot});
                     }
                     auto frameSettings = settings;
-                    frameSettings.forceRedraw = force;
+                    frameSettings.forceRedraw = force && !unifiedMark;
+                    if (unifiedMark) { frameSettings.unifiedMark = !force; }
                     if (hybrid && force) { frameSettings.clusterHybridRaster = false; }
                     if (twoPass && force) { frameSettings.twoPassHZB = false; }
                     if (serialized) { frameSettings.batchBuildRaster = false; }
-                    frameSettings.filter = pointGroup ? VirtualShadowMapFilter::PCF : VirtualShadowMapFilter::Hard;
+                    if (!unifiedMark) { frameSettings.filter = pointGroup ? VirtualShadowMapFilter::PCF : VirtualShadowMapFilter::Hard; }
                     const auto view = camera.constants(gpu.index, kWidth, kHeight, kWidth, kHeight);
                     auto& pool = serialized ? serialPool : force ? referencePool : cachedPool;
                     CPUProfileRecorder cpu;
@@ -422,22 +432,36 @@ public:
                             return std::vector<VirtualShadowMapResult>{std::move(*single)};
                         }
                         return VirtualShadowMaps::recordShared(pool, device, *gpu.commands, **depthView, view, requests,
-                            *casters, scene.materials(), {}, frameSettings, budget, demandDriven, log, &cpu);
+                            *casters, scene.materials(), {}, frameSettings, budget, demandDriven, log, &cpu, nullptr, nullptr, markGrid);
                     }();
                     requirePool(results, "Record shared pool: " + log);
-                    std::vector<VirtualShadowMapProjectionGroup> groups(pointGroup ? 1 : specs.size());
+                    std::vector<VirtualShadowMapProjectionGroup> groups(layers);
                     for (uint32_t index = 0; index < specs.size(); ++index) {
                         requirePool((*results)[index].atlas == results->front().atlas, "Faces allocated independent physical atlases");
-                        auto& group = groups[pointGroup ? 0u : index];
-                        const uint32_t face = pointGroup ? index : 0u;
+                        auto& group = groups[std::min(index, pointStart)];
+                        const bool point = index >= pointStart;
+                        const uint32_t face = point ? index - pointStart : 0u;
                         group.faces[face] = requests[index].shadow;
                         group.results[face] = (*results)[index];
-                        group.faceCount = pointGroup ? 6u : 1u;
-                        group.filteredPoint = pointGroup;
+                        group.faceCount = point ? 6u : 1u;
+                        group.filteredPoint = point;
                     }
                     requirePool(VirtualShadowMaps::projectShared(*gpu.commands, groups, log), "Project shared pool: " + log);
                     PoolSnapshot snapshot;
                     snapshot.nativeCommands = nativeCommands;
+                    if (unifiedMark) {
+                        for (const auto& section : cpu.sections) {
+                            if (section.name == "Record VSM view mark") {
+                                for (const auto& work : section.cpuWork) { snapshot.commands[work.name] += work.value; }
+                            }
+                        }
+                        requirePool(snapshot.commands["markDispatches"] == uint32_t(!force),
+                            "Unexpected count of full-screen view Mark dispatches");
+                        if (!force) {
+                            requirePool(snapshot.commands.at("faces") == specs.size() && snapshot.commands.at("lightGrid") == uint32_t(markGrid != nullptr),
+                                "Unified Mark used an unexpected face count or grid permutation");
+                        }
+                    }
                     if (twoPass && !force) {
                         const bool perFace = serialized || standalone;
                         const auto sectionName = perFace ? "Record VSM build and raster" : "Record VSM build and raster batches";
@@ -469,6 +493,10 @@ public:
                         bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
                         if (hybrid) { bytes += sizeof(face.hybrid) + sizeof(face.hardwarePrimitives) + sizeof(face.hardwareFineGroups); }
                         if (frameSettings.twoPassHZB) { bytes += sizeof(face.hzb); }
+                        if (unifiedMark && (*results)[index].requestedReceiverMasks) {
+                            face.requestedMasks.resize(face.pages.size());
+                            bytes += face.requestedMasks.size() * sizeof(uint64_t);
+                        }
                     }
                     auto readback = device.createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
                         .memoryLocation = MemoryLocation::HostReadback});
@@ -482,7 +510,9 @@ public:
                             .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}, .range = {0, 1, 0, atlasDesc.layerCount}}};
                     std::vector<BufferBarrierDesc> bufferReady;
                     for (const auto& result : *results) {
-                        for (auto* buffer : {result.statistics, result.pageTable, result.cacheDiagnostics}) {
+                        for (auto* buffer : {result.statistics, result.pageTable, result.cacheDiagnostics,
+                                unifiedMark ? result.requestedReceiverMasks : nullptr}) {
+                            if (!buffer) { continue; }
                             bufferReady.push_back({.buffer = buffer,
                                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}});
@@ -525,6 +555,10 @@ public:
                                 kVSMHZBRecoveredTickets == kVSMHZBDeferredTickets + 2 && sizeof(TwoPassTickets) == 3 * sizeof(uint32_t));
                             copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMHZBDeferredTickets, sizeof(face.hzb));
                         }
+                        if (!face.requestedMasks.empty()) {
+                            copyCounterRange((*results)[index].requestedReceiverMasks, (*results)[index].requestedReceiverMaskOffset,
+                                face.requestedMasks.size() * sizeof(uint64_t));
+                        }
                     }
                     const TextureBarrierDesc atlasReady{.texture = results->front().atlas, .oldLayout = TextureLayout::TransferSource,
                         .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
@@ -553,7 +587,11 @@ public:
                             std::memcpy(&face.hzb, data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) +
                                 sizeof(face.cache), sizeof(face.hzb));
                         }
-                        const uint64_t offset = uint64_t(pointGroup ? 0u : index) * kPixels;
+                        if (!face.requestedMasks.empty()) {
+                            std::memcpy(face.requestedMasks.data(), data + offsets[index] + sizeof(face.stats) +
+                                face.pages.size() * sizeof(Page) + sizeof(face.cache), face.requestedMasks.size() * sizeof(uint64_t));
+                        }
+                        const uint64_t offset = uint64_t(std::min(index, pointStart)) * kPixels;
                         face.visibility.assign(data + offset, data + offset + kPixels);
                     }
                     (*readback)->unmap();
@@ -561,6 +599,122 @@ public:
                     requirePool((snapshot.memory.staticAtlasBytes != 0) == layered, "Layered shared atlas memory missing or double counted");
                     return snapshot;
                 };
+                if (unifiedMark) {
+                    VirtualShadowMapLight sun;
+                    sun.direction = {.25f, 0, -1};
+                    sun.angularRadius = .06f;
+                    VirtualShadowMapLight spot;
+                    spot.type = VirtualShadowMapLightType::Spot;
+                    spot.position = {0, 0, 3};
+                    spot.direction = {0, 0, -1};
+                    spot.range = 8;
+                    spot.outerConeAngle = .8f;
+                    spot.sourceRadius = .20f;
+                    auto offscreen = spot;
+                    offscreen.position[0] = 50;
+                    std::vector<PoolFace> faces{{0, sun, 0}, {1, spot, 2}, {2, offscreen, 3}};
+                    auto point = spot;
+                    point.type = VirtualShadowMapLightType::PointFace;
+                    point.position = {.25f, .125f, 1.5f};
+                    for (uint32_t face = 0; face < 6; ++face) {
+                        point.face = face;
+                        faces.push_back({3u + face, point, 4});
+                    }
+                    settings.smrtRayCount = 2;
+                    settings.smrtSamplesPerRay = 3;
+                    settings.smrtMaxRayAngle = .25f;
+                    const auto compare = [&](const char* label, VirtualShadowMapFilter filter, uint32_t budget) {
+                        settings.filter = filter;
+                        validation.phase(label);
+                        const bool compact = filter != VirtualShadowMapFilter::Hard;
+                        const auto actual = record(faces, budget, false, false, compact);
+                        const auto expected = record(faces, budget, true, false, compact);
+                        uint32_t requestedPointFaces = 0, rejected = 0, partialMasks = 0;
+                        Json requests = Json::array();
+                        for (const auto& [id, face] : actual.faces) {
+                            const auto& ref = expected.faces.at(id);
+                            const auto requested = std::ranges::count_if(face.pages, [](const Page& p) { return (p[1] & 1u) != 0u; });
+                            requirePool(requested == face.stats[0] + 1u && face.pages == ref.pages,
+                                std::string(label) + ": requested pages or allocation differ on face " + std::to_string(id));
+                            requirePool(face.requestedMasks == ref.requestedMasks, std::string(label) + ": receiver masks differ");
+                            requirePool(face.visibility == ref.visibility, std::string(label) + ": shadow output differs");
+                            requirePool(face.cache == ref.cache, std::string(label) + ": cache invalidation differs");
+                            if (id >= 3 && face.stats[0] > 0) { ++requestedPointFaces; }
+                            rejected += face.stats[2];
+                            partialMasks += uint32_t(std::ranges::count_if(face.requestedMasks,
+                                [](uint64_t mask) { return mask != 0 && mask != UINT64_MAX; }));
+                            requests.push_back(face.stats[0]);
+                        }
+                        requirePool(actual.atlas == expected.atlas, std::string(label) + ": physical D32 differs");
+                        requirePool(requestedPointFaces >= 3 && actual.faces.at(0).stats[0] && actual.faces.at(1).stats[0] &&
+                            actual.faces.at(2).stats[0] == 0, std::string(label) + ": light and point seam coverage");
+                        if (filter == VirtualShadowMapFilter::SMRT) {
+                            requirePool(partialMasks > 0, "No partially covered directional receiver mask");
+                        }
+                        if (budget == 37) { requirePool(rejected > 0, "Missing rejected requests in pressured Mark comparison"); }
+                        report["frames"].push_back({{"phase",label}, {"faces",faces.size()}, {"markDispatches",actual.commands.at("markDispatches")},
+                            {"lightGrid",actual.commands.at("lightGrid")},
+                            {"requestedFinePages",requests}, {"pointFacesWithRequests",requestedPointFaces},
+                            {"rejectedPages",rejected}, {"partialReceiverMasks",partialMasks}});
+                        save();
+                    };
+                    compare("MixedHard", VirtualShadowMapFilter::Hard, 256);
+                    GPUScene gridScene;
+                    gridScene.setDefaultFrameSlotCount(1);
+                    const auto gridView = gridScene.createView();
+                    std::vector<scene::PunctualLight> sources;
+                    for (const auto& light : {spot, offscreen, point}) {
+                        scene::PunctualLight source;
+                        source.properties.type = light.type == VirtualShadowMapLightType::Spot ? "spot" : "point";
+                        source.properties.intensity = 100;
+                        source.properties.range = light.range;
+                        source.properties.outerConeAngle = light.outerConeAngle;
+                        source.position = {light.position[0], light.position[1], light.position[2]};
+                        source.direction = {light.direction[0], light.direction[1], light.direction[2]};
+                        sources.push_back(source);
+                    }
+                    requirePool(gridScene.syncLights({}, sources), "Publish Mark light sources");
+                    RenderSubsystemHost host;
+                    std::string gridLog;
+                    requirePool(host.initialize(device, 1, gridLog), "Initialize Mark light grid host");
+                    ClusterLightGrid grid;
+                    const auto prepareGrid = [&](uint32_t capacity) {
+                        ClusterLightGridDesc desc{.width = kWidth, .height = kHeight, .tileSize = 32, .depthSliceCount = 4,
+                            .maxLightsPerCell = capacity, .eye = {0,0,4}, .center = {0,0,0}, .aspect = float(kWidth)/kHeight,
+                            .zNear = .01f, .zFar = 10, .orthoHeight = 4};
+                        requirePool(gridScene.prepareView(gridView, 0, {.width = kWidth, .height = kHeight}), "Prepare Mark grid view");
+                        gpu.begin();
+                        requirePool(host.beginFrame(gpu.index - 1, 0, nullptr, gridLog, &gpu.frame), "Begin Mark grid frame");
+                        requirePool(grid.record(device, *gpu.commands, host, gridScene, gridView, 0, desc, gridLog), "Record Mark grid");
+                        markGrid = grid.snapshot(gridScene);
+                        requirePool(markGrid && markGrid->valid(), "Mark grid snapshot missing");
+                        uint32_t center = 0;
+                        requirePool(clusterLightGridCellIndex(markGrid->params, kWidth / 2, kHeight / 2, 4.f, center), "Mark grid center");
+                        auto readback = device.createBuffer({.size = sizeof(ClusterLightGridCell), .usage = BufferUsageBits::TransferDestination,
+                            .memoryLocation = MemoryLocation::HostReadback});
+                        requirePool(readback, "Mark grid cell readback");
+                        const BufferBarrierDesc ready{.buffer = markGrid->cells, .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                        requirePool(gpu.commands->synchronize({.buffers = {&ready, 1}}), "Mark grid cell ready");
+                        auto from = markGrid->cells->slice({uint64_t(center) * sizeof(ClusterLightGridCell), sizeof(ClusterLightGridCell)});
+                        auto to = (*readback)->slice();
+                        requirePool(from, "Mark grid source cell"); requirePool(to, "Mark grid destination cell");
+                        requirePool(gpu.commands->copyBuffer(*from, *to), "Read Mark grid center");
+                        host.endFrame();
+                        gpu.finish();
+                        (*readback)->invalidate();
+                        const auto* cell = static_cast<const ClusterLightGridCell*>((*readback)->map());
+                        requirePool(cell && cell->totalCount >= 2 && (cell->overflow != 0) == (capacity == 1),
+                            "Mark grid did not exercise the expected bounded-light or overflow path");
+                        (*readback)->unmap();
+                    };
+                    prepareGrid(8);
+                    compare("CompactPCF", VirtualShadowMapFilter::PCF, 256);
+                    prepareGrid(1);
+                    compare("CompactSMRT", VirtualShadowMapFilter::SMRT, 37);
+                    compare("CachedSMRT", VirtualShadowMapFilter::SMRT, 37);
+                    continue;
+                }
                 if (twoPass) {
                     settings.twoPassHZB = true;
                     settings.clusterPageRaster = true;
@@ -995,7 +1149,8 @@ public:
             report["validation"] = validation.snapshot();
             requirePool(!validation.failed(), "Shared pool Vulkan validation error");
             report["passed"] = true; save();
-            return RHITestResult::pass(twoPass ? "Two-pass HZB preserved resident depth and shadow visibility through disocclusion" :
+            return RHITestResult::pass(unifiedMark ? "View Mark matched per-face requests, receiver masks, cached pages and shadow images" :
+                twoPass ? "Two-pass HZB preserved resident depth and shadow visibility through disocclusion" :
                 hybrid ? "Mixed cluster raster preserved resident D32 texels, visibility and cached pages" :
                 "Batched and serialized shared rendering preserve depth, visibility, ownership and caches while reducing actual RHI submissions");
         } catch (const std::exception& error) {
@@ -1020,5 +1175,11 @@ public:
     VirtualShadowMapTwoPassHZBTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::TwoPassHZB) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapTwoPassHZBTest);
+class VirtualShadowMapUnifiedMarkTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapUnifiedMarkTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::UnifiedMark) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapUnifiedMarkTest);
 } // namespace
 } // namespace metallic::tests

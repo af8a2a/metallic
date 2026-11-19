@@ -167,6 +167,7 @@ public:
             runtimeBoolSetting("forceRedraw", "Force Shadow Redraw", false),
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
             runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", true),
+            runtimeBoolSetting("unifiedMark", "Mark Shadow Pages Per View", false),
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
             runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
             runtimeBoolSetting("twoPassHZB", "Two-Pass Shadow HZB", false),
@@ -324,6 +325,7 @@ public:
         settings.receiverFootprint = boolProperty(&properties, "receiverFootprint", true);
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
+        settings.unifiedMark = boolProperty(&properties, "unifiedMark", settings.unifiedMark);
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
         settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
         settings.twoPassHZB = boolProperty(&properties, "twoPassHZB", settings.twoPassHZB);
@@ -352,9 +354,7 @@ public:
         settings.dirtyPageHierarchy = boolProperty(&properties, "benchmarkDirtyPageHierarchy", settings.dirtyPageHierarchy);
         VirtualShadowMapProjectionGridResources projectionGrid;
         if (!sources.empty()) {
-            // The matching raster producer builds and retains this snapshot.
-            // Non-grid producers and celestial-only scenes keep the original
-            // projection without paying for a local-light grid lookup.
+            // Mark and projection consume the same primary view and GPUScene light slots.
             projectionGrid.grid = gpuScene->lightGrid({info.lightGridViewIndex, info.lightGridViewGeneration}, info.lightGridFrameSlot);
         }
         projectionGrid.diagnostics = collectGPUWork_ ? projectionGridDiagnostics.buffer() : nullptr;
@@ -673,13 +673,13 @@ public:
                         light.face = face;
                         faceRequests.push_back({faces[face].get(), light,
                             {output.texture(), debugOutput_ ? debug.texture() : nullptr,
-                                item.entry.baseLayer + (compact_ ? 0u : face), compact_ && item.entry.faceCount == 6}});
+                                item.entry.baseLayer + (compact_ ? 0u : face), compact_ && item.entry.faceCount == 6}, index});
                         publicationFaces.push_back(index * 6 + face);
                     }
                 }
                 auto sharedResults = VirtualShadowMaps::recordShared(physicalPool_, *device_, commands,
                     *depth.view(), view, faceRequests, *casters, scene->materials(), alphaTextures, settings,
-                    budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr);
+                    budget, demandDriven, log, cpu, gpuProfiler, receiver.stream ? &receiver : nullptr, projectionGrid.grid);
                 if (!sharedResults) { spdlog::error("VirtualShadowMapLightsPass: {}", log); return makeError(sharedResults.error()); }
                 if (auto recorded = resolution_.record(*device_, commands, *sharedResults, budget, &physicalPool_); !recorded) { return recorded; }
                 auto aggregatedLOD = VirtualShadowMaps::aggregateLODStatistics(*device_, commands, *sharedResults, log);

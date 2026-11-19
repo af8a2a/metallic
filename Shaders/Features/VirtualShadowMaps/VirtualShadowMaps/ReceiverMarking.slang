@@ -14,6 +14,12 @@ implementing VirtualShadowMaps;
 #ifndef VSM_DIRECTIONAL_MARK
 #define VSM_DIRECTIONAL_MARK 0
 #endif
+#ifndef VSM_VIEW_MARK
+#define VSM_VIEW_MARK 0
+#endif
+#ifndef VSM_LIGHT_GRID_PROJECTION
+#define VSM_LIGHT_GRID_PROJECTION 0
+#endif
 #ifndef VSM_MARK_PAGE_SHIFT
 #define VSM_MARK_PAGE_SHIFT -1
 #endif
@@ -46,7 +52,7 @@ uint vsmReceiverCoveragePage(float3 position, StructuredBuffer<ShadowProjection>
 }
 #endif
 
-#if VSM_DIRECTIONAL_MARK
+#if VSM_DIRECTIONAL_MARK || VSM_VIEW_MARK
 #if VSM_RECEIVER_MASK
 void vsmWriteReceiverMask(ShadowPush push, uint page, uint2 mask)
 {
@@ -272,16 +278,33 @@ void vsmMarkDirectionalFootprint(float3 position, StructuredBuffer<ShadowProject
 }
 #endif
 
-// Groupshared receiver basis and directional uniform structures have been replaced
-// with direct register/scalar loads to eliminate intra-workgroup barriers and serialization.
+struct VSMMarkReceiver
+{
+    VSMReceiverBasis basis;
+    float3 position;
+    float linearDepth;
+    bool valid;
+    bool hasNormal;
+    float3 normal;
+    VSMReceiverFootprint footprint;
+};
 
-void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint receiverDispatch)
+VSMMarkReceiver vsmLoadMarkReceiver(uint2 pixel, ShadowPush push)
+{
+    VSMMarkReceiver receiver = {};
+    ViewConstants view = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view))[0];
+    receiver.basis = vsmMakeReceiverBasis(view);
+    Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
+    receiver.valid = vsmReceiver(int2(pixel), receiver.basis, depth, receiver.position, receiver.linearDepth);
+    return receiver;
+}
+
+void vsmMarkReceiver(uint3 id, ShadowPush push, inout VSMMarkReceiver receiver,
+    out uint3 workCounts, out uint receiverDispatch)
 {
     workCounts = uint3(0u);
     receiverDispatch = 0u;
-    if (push.enabled == 0u) { return; }
-    StructuredBuffer<ViewConstants> views = resolveUniform(ResourceHandle<StructuredBuffer<ViewConstants>>(push.view));
-    VSMReceiverBasis basis = vsmMakeReceiverBasis(views[0]);
+    VSMReceiverBasis basis = receiver.basis;
 #if VSM_RECEIVER_COVERAGE_DIAGNOSTICS
     // CPU enables this permutation only for one directional SMRT recording.
     // Every in-viewport pixel owns one record, including rejected receivers.
@@ -291,10 +314,9 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint r
         (id.y * uint(basis.viewportSize.y) + id.x) * kVSMReceiverCoverageRecordWords;
     coverageData[coverageRecord] = 0u;
 #endif
-    Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
-    float3 position;
-    float linearDepth;
-    if (!vsmReceiver(int2(id.xy), basis, depth, position, linearDepth)) { return; }
+    if (!receiver.valid) { return; }
+    float3 position = receiver.position;
+    float linearDepth = receiver.linearDepth;
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     bool nearPlane;
     if (push.lightType == 2u && push.filterMode != 0u) {
@@ -305,10 +327,13 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint r
     receiverDispatch = 1u;
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     // Resolution belongs to the receiver, independently of the filter kernel.
-    float3 normal = float3(0.0);
-    if (vsmUsesReceiverFootprint(push) || push.filterMode == 1u || push.lightType == 0u) {
-        normal = vsmReceiverNormal(int2(id.xy), basis, depth, position, linearDepth);
+    if (!receiver.hasNormal && (vsmUsesReceiverFootprint(push) || push.filterMode == 1u || push.lightType == 0u)) {
+        Texture2D<float> depth = resolveUniform(ResourceHandle<Texture2D<float>>(push.depth));
+        receiver.normal = vsmReceiverNormal(int2(id.xy), basis, depth, position, linearDepth);
+        receiver.footprint = vsmReceiverFootprint(position, receiver.normal, linearDepth, basis, push);
+        receiver.hasNormal = true;
     }
+    float3 normal = receiver.normal;
     float3 toLight = float3(0.0);
     float sinAngularRadius = 0.0;
     if (push.lightType == 0u) {
@@ -318,7 +343,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint r
         if (dot(normal, toLight) < -sinAlpha) { return; }
     }
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
-        vsmProjectedReceiverFootprint(position, normal, linearDepth, basis, projections[0], push));
+        vsmProjectedReceiverFootprint(position, receiver.footprint, projections[0], push));
     if (push.filterMode == 0u) {
         vsmMarkPosition(position, projections, pages, push, receiverLevel, workCounts);
         return;
@@ -349,12 +374,16 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint r
         coverageData[coverageRecord + kVSMReceiverCoverageLinearDepthOffset] = asuint(linearDepth);
         coverageData[coverageRecord] = 1u;
 #endif
-#if VSM_DIRECTIONAL_MARK
-        float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
-        float3 up = cross(toLight, right);
-        vsmMarkDirectionalFootprint(position, projections, pages, trace, receiverLevel,
-            toLight, right, up, sinAngularRadius, workCounts);
-#else
+#if VSM_DIRECTIONAL_MARK || VSM_VIEW_MARK
+        if (VSM_DIRECTIONAL_MARK || push.lightType == 0u) {
+            float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
+            float3 up = cross(toLight, right);
+            vsmMarkDirectionalFootprint(position, projections, pages, trace, receiverLevel,
+                toLight, right, up, sinAngularRadius, workCounts);
+            return;
+        }
+#endif
+#if !VSM_DIRECTIONAL_MARK
         uint lastPages[VSM_MARK_CACHE_LEVELS];
         [unroll]
         for (uint level = 0u; level < VSM_MARK_CACHE_LEVELS; ++level) { lastPages[level] = 0xffffffffu; }
@@ -415,23 +444,22 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, out uint3 workCounts, out uint r
     }
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+void vsmClearMarkCache(uint lane)
 {
     // All 8x8 lanes initialize and synchronize before receiver/tail rejection.
     for (uint entry = lane; entry < kVSMMarkHashCapacity; entry += 64u) {
         gVsmMarkedPages[entry].store(0xffffffffu, MemoryOrder.Relaxed);
-#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+#if (VSM_DIRECTIONAL_MARK || VSM_VIEW_MARK) && VSM_RECEIVER_MASK
         gVsmReceiverMasks[entry].x.store(0u, MemoryOrder.Relaxed);
         gVsmReceiverMasks[entry].y.store(0u, MemoryOrder.Relaxed);
 #endif
     }
     GroupMemoryBarrierWithGroupSync();
-    uint3 counts;
-    uint receiverDispatch;
-    vsmMarkReceiver(id, push, counts, receiverDispatch);
-#if VSM_DIRECTIONAL_MARK && VSM_RECEIVER_MASK
+}
+
+void vsmPublishMarkJob(uint lane, ShadowPush push, uint3 counts, uint receiverDispatch)
+{
+#if (VSM_DIRECTIONAL_MARK || VSM_VIEW_MARK) && VSM_RECEIVER_MASK
     // All mask contributions are complete before publishing requests and masks.
     GroupMemoryBarrierWithGroupSync();
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
@@ -440,7 +468,7 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
         if (page != 0xffffffffu) {
             uint2 mask = uint2(gVsmReceiverMasks[entry].x.load(MemoryOrder.Relaxed),
                 gVsmReceiverMasks[entry].y.load(MemoryOrder.Relaxed));
-            vsmWriteReceiverMask(push, page, mask);
+            if (any(mask != 0u)) { vsmWriteReceiverMask(push, page, mask); }
             vsmPublishMarkPage(pages, page, counts);
         }
     }
@@ -453,4 +481,78 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
         if (totals.z != 0u) { vsmWorkAdd(push, kVSMWorkMarkPageRequests, totals.z); }
     }
 }
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush push)
+{
+    if (push.enabled == 0u) { return; }
+    vsmClearMarkCache(lane);
+    VSMMarkReceiver receiver = vsmLoadMarkReceiver(id.xy, push);
+    uint3 counts;
+    uint receiverDispatch;
+    vsmMarkReceiver(id, push, receiver, counts, receiverDispatch);
+    vsmPublishMarkJob(lane, push, counts, receiverDispatch);
+}
+
+#if VSM_VIEW_MARK
+void vsmMarkViewFace(uint3 id, uint lane, ShadowPush push, bool member, inout VSMMarkReceiver receiver)
+{
+    if (push.enabled == 0u) { return; }
+    vsmClearMarkCache(lane);
+    uint3 counts = uint3(0u);
+    uint receiverDispatch = 0u;
+    if (member) { vsmMarkReceiver(id, push, receiver, counts, receiverDispatch); }
+    vsmPublishMarkJob(lane, push, counts, receiverDispatch);
+    // All lanes finish publishing this face before the next face reuses the hash.
+    GroupMemoryBarrierWithGroupSync();
+}
+
+#if VSM_LIGHT_GRID_PROJECTION
+groupshared uint gVsmMarkTileMask[2];
+#endif
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vsmMarkViewMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, uniform ShadowPush common)
+{
+    VSMMarkReceiver receiver = vsmLoadMarkReceiver(id.xy, common);
+    StructuredBuffer<ShadowPush> jobs = resolveUniform(ResourceHandle<StructuredBuffer<ShadowPush>>(common.geometry));
+#if VSM_LIGHT_GRID_PROJECTION
+    StructuredBuffer<VirtualShadowMapProjectionGrid> contexts =
+        resolveUniform(ResourceHandle<StructuredBuffer<VirtualShadowMapProjectionGrid>>(common.arguments));
+    uint candidateCount, fallback;
+    uint2 localMask = vsmGridLocalLightMask(id.xy, receiver.linearDepth, receiver.valid, contexts[0], candidateCount, fallback);
+    uint2 laneMask = uint2(localMask.x << 2u, (localMask.y << 2u) | (localMask.x >> 30u));
+    if (receiver.valid) {
+        laneMask.x |= uint(contexts[0].jobs[0].count != 0u) | (uint(contexts[0].jobs[1].count != 0u) << 1u);
+    }
+    if (lane < 2u) { gVsmMarkTileMask[lane] = 0u; }
+    GroupMemoryBarrierWithGroupSync();
+    uint2 waveMask = uint2(WaveActiveBitOr(laneMask.x), WaveActiveBitOr(laneMask.y));
+    if (WaveIsFirstLane()) {
+        InterlockedOr(gVsmMarkTileMask[0], waveMask.x);
+        InterlockedOr(gVsmMarkTileMask[1], waveMask.y);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    for (uint word = 0u; word < 2u; ++word) {
+        uint pending = gVsmMarkTileMask[word];
+        while (pending != 0u) {
+            uint bit = uint(firstbitlow(pending));
+            pending &= pending - 1u;
+            bool member = (laneMask[word] & (1u << bit)) != 0u;
+            VirtualShadowMapProjectionJobRange range = contexts[0].jobs[word * 32u + bit];
+            // Filtered point-light receivers can request samples on several cube faces.
+            for (uint face = 0u; face < range.count; ++face) {
+                vsmMarkViewFace(id, lane, jobs[range.first + face], member, receiver);
+            }
+        }
+    }
+#else
+    for (uint face = 0u; face < common.triangleCount; ++face) {
+        vsmMarkViewFace(id, lane, jobs[face], receiver.valid, receiver);
+    }
+#endif
+}
+#endif
 
