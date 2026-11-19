@@ -170,6 +170,8 @@ public:
             runtimeIntSetting("physicalPageBudget", "Total Physical Page Budget", 256, 0, 262144),
             runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", true),
             runtimeBoolSetting("unifiedMark", "Mark Shadow Pages Per View", false),
+            runtimeBoolSetting("pointLightFaceSelection", "Select Point Shadow Face Per Light", true),
+            runtimeBoolSetting("localSMRTStateReuse", "Reuse Local SMRT Ray State", true),
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
             runtimeBoolSetting("compactShadowViews", "Compact Active Shadow Views", false),
             runtimeBoolSetting("distantLightSinglePage", "Single Page for Distant Local Lights", false),
@@ -335,6 +337,8 @@ public:
         settings.cacheEnabled = boolProperty(&properties, "cacheEnabled", true);
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
         settings.unifiedMark = boolProperty(&properties, "unifiedMark", settings.unifiedMark);
+        settings.pointLightFaceSelection = boolProperty(&properties, "pointLightFaceSelection", settings.pointLightFaceSelection);
+        settings.localSMRTStateReuse = boolProperty(&properties, "localSMRTStateReuse", settings.localSMRTStateReuse);
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
         settings.compactShadowViews = boolProperty(&properties, "compactShadowViews", settings.compactShadowViews);
         settings.distantLightSinglePage = boolProperty(&properties, "distantLightSinglePage", settings.distantLightSinglePage);

@@ -300,7 +300,7 @@ VSMMarkReceiver vsmLoadMarkReceiver(uint2 pixel, ShadowPush push)
 }
 
 void vsmMarkReceiver(uint3 id, ShadowPush push, inout VSMMarkReceiver receiver,
-    out uint3 workCounts, out uint receiverDispatch)
+    out uint3 workCounts, out uint receiverDispatch, bool pointFaceSelected = false)
 {
     workCounts = uint3(0u);
     receiverDispatch = 0u;
@@ -323,7 +323,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, inout VSMMarkReceiver receiver,
         float3 delta = abs(position - projections[0].originNear.xyz);
         if ((push.lightRange > 0.0 && length(delta) >= push.lightRange) ||
             max(delta.x, max(delta.y, delta.z)) <= projections[0].originNear.w) { return; }
-    } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane)) { return; }
+    } else if (!vsmReceiverDomain(position, projections[0], push, nearPlane, pointFaceSelected)) { return; }
     receiverDispatch = 1u;
     RWStructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.pages));
     // Resolution belongs to the receiver, independently of the filter kernel.
@@ -345,7 +345,7 @@ void vsmMarkReceiver(uint3 id, ShadowPush push, inout VSMMarkReceiver receiver,
     uint receiverLevel = vsmReceiverLevel(position, projections, push,
         vsmProjectedReceiverFootprint(position, receiver.footprint, projections[0], push));
     if (push.filterMode == 0u) {
-        vsmMarkPosition(position, projections, pages, push, receiverLevel, workCounts);
+        vsmMarkPosition(position, projections, pages, push, receiverLevel, workCounts, pointFaceSelected);
         return;
     }
     if (push.filterMode == 1u) {
@@ -496,16 +496,33 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
 }
 
 #if VSM_VIEW_MARK
-void vsmMarkViewFace(uint3 id, uint lane, ShadowPush push, bool member, inout VSMMarkReceiver receiver)
+void vsmMarkViewFace(uint3 id, uint lane, ShadowPush push, bool member, inout VSMMarkReceiver receiver,
+    bool pointFaceSelected)
 {
     if (push.enabled == 0u || push.clipmapCount == 0u) { return; }
     vsmClearMarkCache(lane);
     uint3 counts = uint3(0u);
     uint receiverDispatch = 0u;
-    if (member) { vsmMarkReceiver(id, push, receiver, counts, receiverDispatch); }
+    if (member) { vsmMarkReceiver(id, push, receiver, counts, receiverDispatch, pointFaceSelected); }
     vsmPublishMarkJob(lane, push, counts, receiverDispatch);
     // All lanes finish publishing this face before the next face reuses the hash.
     GroupMemoryBarrierWithGroupSync();
+}
+
+void vsmMarkViewRange(uint3 id, uint lane, StructuredBuffer<ShadowPush> jobs, uint first, uint count,
+    bool member, inout VSMMarkReceiver receiver)
+{
+    uint pointFace = 0xffffffffu, pointGroupEnd = 0u;
+    for (uint index = 0u; index < count; ++index) {
+        ShadowPush job = jobs[first + index];
+        if ((job.projectionFlags & kVSMPointGroupFirst) != 0u) {
+            pointGroupEnd = index + 6u;
+            if (member) { pointFace = vsmPointReceiverFace(receiver.position, job.projections); }
+        }
+        bool pointGroup = index < pointGroupEnd;
+        // Every lane enters the same face job and its shared-cache barriers.
+        vsmMarkViewFace(id, lane, job, member && (!pointGroup || pointFace == job.projectionFace), receiver, pointGroup);
+    }
 }
 
 #if VSM_LIGHT_GRID_PROJECTION
@@ -542,16 +559,11 @@ void vsmMarkViewMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, 
             pending &= pending - 1u;
             bool member = (laneMask[word] & (1u << bit)) != 0u;
             VirtualShadowMapProjectionJobRange range = contexts[0].jobs[word * 32u + bit];
-            // Filtered point-light receivers can request samples on several cube faces.
-            for (uint face = 0u; face < range.count; ++face) {
-                vsmMarkViewFace(id, lane, jobs[range.first + face], member, receiver);
-            }
+            vsmMarkViewRange(id, lane, jobs, range.first, range.count, member, receiver);
         }
     }
 #else
-    for (uint face = 0u; face < common.triangleCount; ++face) {
-        vsmMarkViewFace(id, lane, jobs[face], receiver.valid, receiver);
-    }
+    vsmMarkViewRange(id, lane, jobs, 0u, common.triangleCount, receiver.valid, receiver);
 #endif
 }
 #endif

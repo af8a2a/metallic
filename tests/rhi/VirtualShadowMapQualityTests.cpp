@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <span>
 #include <stdexcept>
 #include <tuple>
 #include <vector>
@@ -1151,7 +1152,11 @@ public:
             registerQualityEvidence();
             const auto floor = writeFixture(directory / "Floor", false);
             const auto room = writeFixture(directory / "Room", true);
-            constexpr std::array names{"Standard", "NoDebug", "StatisticsFallback"};
+            constexpr std::array armNames{"Standard", "NoDebug", "StatisticsFallback", "LocalProjectionReference"};
+            constexpr size_t referenceArm = armNames.size() - 1;
+            const bool compareLocalProjection = focusedPCFRoom_ || focusedSMRTRoom_;
+            const auto names = std::span{armNames}.first(compareLocalProjection ? armNames.size() : referenceArm);
+            uint64_t savedLocalProjectionLoads = 0;
             report["cacheLayering"] = layered_;
             if (refinedReceiver_) {
                 report["shadowLODSettings"] = {{"enabled",true},{"smartBias",true},
@@ -1228,6 +1233,10 @@ public:
                                 {"benchmarkProjectionStatistics",arm==2},
                                 {"benchmarkCPUProfile",false},{"benchmarkGPUProfile",false},
                                 {"benchmarkProjectionProfile",arm==0},{"benchmarkGPUWork",true}};
+                            if (arm == referenceArm) {
+                                settings["pointLightFaceSelection"] = false;
+                                settings["localSMRTStateReuse"] = false;
+                            }
                             if (layered_) { settings["cacheLayering"] = true; }
                             if (refinedReceiver_) {
                                 settings["shadowLOD"] = true;
@@ -1582,6 +1591,34 @@ public:
                                         phase + ": projection did not select the requested GPU dispatch path");
                                 }
                             }
+                            if (compareLocalProjection) {
+                                const auto reference = snapshot(names[referenceArm], true, true, true, layered_);
+                                const bool matched = reference.shadows == baseline.shadows && reference.debug == baseline.debug &&
+                                    reference.hdrFormat == baseline.hdrFormat && reference.hdr == baseline.hdr;
+                                const auto sumLoads = [](const Snapshot& image, uint32_t counter) {
+                                    uint64_t total = 0;
+                                    for (const auto& counts : image.workload) { total += counts[counter]; }
+                                    return total;
+                                };
+                                const auto optimizedPages = sumLoads(baseline, kVSMWorkProjectionPageTableLoads);
+                                const auto referencePages = sumLoads(reference, kVSMWorkProjectionPageTableLoads);
+                                const auto optimizedMappings = sumLoads(baseline, kVSMWorkProjectionMappingLoads);
+                                const auto referenceMappings = sumLoads(reference, kVSMWorkProjectionMappingLoads);
+                                frameReport["localProjectionReference"] = {{"imagesEqual", matched},
+                                    {"statisticsEqual", reference.statistics == baseline.statistics},
+                                    {"optimizedPageTableLoads", optimizedPages}, {"referencePageTableLoads", referencePages},
+                                    {"optimizedMappingLoads", optimizedMappings}, {"referenceMappingLoads", referenceMappings}};
+                                save();
+                                require(matched, phase + ": point face selection or local SMRT ray reuse changed the shadow, debug, or Deferred HDR image");
+                                require(reference.statistics == baseline.statistics,
+                                    phase + ": point face selection or local SMRT ray reuse changed public statistics");
+                                const auto memberships = baseline.projectionGrid[kVSMGridLocalMemberships];
+                                require(memberships > 0 && memberships == reference.projectionGrid[kVSMGridLocalMemberships],
+                                    phase + ": point projection comparison did not use the same light grid membership");
+                                require(optimizedPages <= referencePages && optimizedMappings <= referenceMappings,
+                                    phase + ": local projection increased page-table or mapping loads");
+                                savedLocalProjectionLoads += (referencePages - optimizedPages) + (referenceMappings - optimizedMappings);
+                            }
                             require(baseline.header.count == 4 && baseline.header.totalFaces == (frame >= 10 ? 14u : 9u),
                                 phase + ": mixed-light fixture lost a source/face");
                             if (frame == 10) {
@@ -1642,6 +1679,9 @@ public:
                 "Focused SMRT Room matrix did not complete legacy/compact Cold/Warm states" : refinedReceiver_ ?
                 "Refined receiver projection matrix did not complete 26 floor and four room states" :
                 "Projection matrix did not complete 84 production compatibility states and two zero/single-face controls");
+            if (focusedSMRTRoom_) {
+                require(savedLocalProjectionLoads > 0, "Focused SMRT Room did not exercise reuse of local page mappings");
+            }
             evidence.reset(); report["validation"] = validation.snapshot(); report["passed"] = true; save();
             if (focusedPCFRoom_) {
                 return RHITestResult::pass("Focused mixed-light PCF Room preserves strict image/statistics/work equivalence across four legacy/compact Cold/Warm states");

@@ -1326,6 +1326,7 @@ public:
                         (*readback)->unmap();
                     };
                     prepareGrid(8);
+                    compare("GriddedHard", VirtualShadowMapFilter::Hard, 256);
                     compare("CompactPCF", VirtualShadowMapFilter::PCF, 256);
                     prepareGrid(1);
                     compare("CompactSMRT", VirtualShadowMapFilter::SMRT, 37);

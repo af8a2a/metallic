@@ -64,12 +64,14 @@ void vsmMarkPage(RWStructuredBuffer<uint4> pages, uint page, inout uint3 workCou
 }
 
 void vsmMarkPosition(float3 position, StructuredBuffer<ShadowProjection> projections,
-    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint3 workCounts)
+    RWStructuredBuffer<uint4> pages, ShadowPush push, uint firstLevel, inout uint3 workCounts,
+    bool pointFaceSelected = false)
 {
     ++workCounts.x;
     // Hard and the nine-tap PCF kernel keep the short direct path. Cache setup
     // pays off for the longer SMRT traces handled by the overload below.
-    if (push.lightType == 2u && virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
+    if (!pointFaceSelected && push.lightType == 2u &&
+        virtualShadowMapPointFace(position - projections[0].originNear.xyz) != push.projectionFace) { return; }
 #if VSM_DIRECTIONAL_MARK
     // makeProjections and cache reuse preserve one rowZ across all clipmaps.
     float4 samplePosition = float4(position, 1.0);

@@ -11,6 +11,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_PROJECTION_PAGE_SHIFT
 #define VSM_PROJECTION_PAGE_SHIFT -1
 #endif
+#ifndef VSM_LOCAL_SMRT_STATE_REUSE
+#define VSM_LOCAL_SMRT_STATE_REUSE 0
+#endif
 
 float vsmRayDepth(float depth, ShadowProjection projection, uint2 virtualTexel, float3 receiver, uint pageSize)
 {
@@ -352,6 +355,24 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
     float3 right = normalize(cross(abs(toLight.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0), toLight));
     float3 up = cross(toLight, right);
     float tanAngularRadius = tan(push.angularRadius);
+#if VSM_LOCAL_SMRT_STATE_REUSE
+    bool localLight = push.lightType != 0u;
+    float3 lightOrigin = proj0.originNear.xyz;
+    float3 rayForward = float3(0.0);
+    float rayStartW = 0.0;
+    if (localLight) {
+        if (push.lightType == 2u) {
+            // Receiver projection has already selected or verified this face.
+            float3 faceRight, faceUp;
+            virtualShadowMapPointBasis(push.projectionFace, faceRight, faceUp, rayForward);
+        } else {
+            rayForward = normalize(proj0.rowW.xyz);
+        }
+        rayStartW = dot(position - lightOrigin, rayForward);
+    }
+    VSMLocalSMRTLookupState lookupState = {};
+    lookupState.faceIndex = 0xffffffffu;
+#endif
     for (uint ray = 0u; ray < push.rayCount; ++ray) {
         vsmWorkAdd(push, kVSMWorkProjectionRays, 1u);
         float2 disk = vsmDiskSample(ray, invRayCount, pixel, push.samplePhase);
@@ -359,6 +380,9 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         float3 endpoint = (push.lightType == 0u) ?
             vsmRayEndpointDirectional(position, toLight, rayOffset, tanAngularRadius, push.rayLength) :
             vsmRayEndpoint(position, proj0, push, toLight, rayOffset);
+#if VSM_LOCAL_SMRT_STATE_REUSE
+        float rayEndW = dot(endpoint - lightOrigin, rayForward);
+#endif
         float2 ditherOffset = float2(vsmSampleRandom(pixel, 3u + 2u * ray, push.samplePhase),
             vsmSampleRandom(pixel, 4u + 2u * ray, push.samplePhase)) - 0.5;
         float3 dither = (right * ditherOffset.x + up * ditherOffset.y) * receiverTexelSize;
@@ -373,10 +397,26 @@ float vsmFilterVisibility(float3 position, float3 normal, uint receiverLevel, ui
         // bounded slope through that gap instead of inventing an intersection.
         for (uint step = 0u; step <= push.samplesPerRay; ++step) {
             float time = vsmRaySampleTime(step, push, stepRandom, invSamplesPerRay);
+#if VSM_LOCAL_SMRT_STATE_REUSE
+            // Keep the original perspective interpolation and reselect the
+            // face from the dithered point on each step.
+            float worldTime = localLight ? time * rayStartW / lerp(rayEndW, rayStartW, time) : time;
+            float3 point = lerp(position, endpoint, worldTime);
+            ShadowLookup sample = vsmFilterLookupSMRT(point + dither, lightOrigin, push, receiverLevel,
+                filterCounts, localLight, lookupState);
+            if (!sample.valid) { continue; }
+            ShadowProjection projection;
+            if (localLight && sample.level == receiverLevel) {
+                projection = lookupState.preferred;
+            } else {
+                projection = vsmLookupProjection(sample);
+            }
+#else
             float3 point = vsmRayPosition(position, endpoint, time, proj0, push);
             ShadowLookup sample = vsmFilterLookup(point + dither, push, receiverLevel, filterCounts);
             if (!sample.valid) { continue; }
             ShadowProjection projection = vsmLookupProjection(sample);
+#endif
             float compare = vsmComparisonDepth(point, normal, vsmProjectPosition(point, projection),
                 sample.virtualTexel, projection, push.pageSize);
             float reference = vsmRayDepth(compare, projection, sample.virtualTexel, position, push.pageSize);

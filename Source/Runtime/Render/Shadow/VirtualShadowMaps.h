@@ -80,6 +80,8 @@ struct VirtualShadowMapLight
 struct VirtualShadowMapSettings
 {
     bool unifiedMark = false; // Reuse the main-view receiver across shared shadow faces.
+    bool pointLightFaceSelection = true; // Select the receiver face once per complete point light.
+    bool localSMRTStateReuse = true; // Reuse local ray and page lookup state between SMRT samples.
     bool batchBuildRaster = true; // Shared pools batch compatible faces; false retains the serial reference path.
     bool compactShadowViews = false; // Compact shared Build dispatches to faces and levels with dirty resident fine pages.
     bool distantLightSinglePage = false; // Use one complete page per face of small projected local lights.

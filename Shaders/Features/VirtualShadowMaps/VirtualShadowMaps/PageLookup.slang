@@ -12,6 +12,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_PROJECTION_PAGE_SHIFT
 #define VSM_PROJECTION_PAGE_SHIFT -1
 #endif
+#ifndef VSM_LOCAL_SMRT_STATE_REUSE
+#define VSM_LOCAL_SMRT_STATE_REUSE 0
+#endif
 
 struct ShadowLookup
 {
@@ -149,51 +152,100 @@ bool vsmLookupPropagated(float3 position, float2 sourceTranslation, uint sourceP
         projections, pages, push, level, physicalPage, targetLevel, isOwnMapping, useGroupCache);
 }
 
-ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, inout uint3 filterCounts)
+ShadowFace vsmFilterFace(ShadowPush push, uint pointFace)
+{
+#if !VSM_DIRECTIONAL_PROJECTION
+    if (push.lightType == 2u) {
+        StructuredBuffer<ShadowFace> faces = resolveUniform(ResourceHandle<StructuredBuffer<ShadowFace>>(push.pointFaces));
+        return faces[pointFace];
+    }
+#endif
+    return {push.atlas, push.pages, push.projections, push.statistics,
+        push.physicalPagesX, push.clipmapCount, push.pageSize, 0u};
+}
+
+bool vsmFilterAllowsClipmaps(uint statisticsHandle)
+{
+#if VSM_DIRECTIONAL_PROJECTION
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
+#else
+    StructuredBuffer<uint> statistics = resolveNonUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
+#endif
+    return statistics[5] == 0u;
+}
+
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+struct VSMLocalSMRTLookupState
+{
+    uint faceIndex;
+    ShadowFace face;
+    ShadowProjection preferred;
+    bool allowClipmaps;
+    uint lastPage, lastPhysicalPage;
+};
+#endif
+
+[ForceInline]
+ShadowLookup vsmFilterLookupFace(float3 position, ShadowPush push, uint firstLevel, ShadowFace face,
+    bool allowClipmaps, inout uint3 filterCounts
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+    , bool reuseState, inout VSMLocalSMRTLookupState state
+#endif
+)
 {
     ShadowLookup result;
     result.valid = false;
     result.storedDepth = 0.0;
-    uint atlasHandle = push.atlas, pagesHandle = push.pages, projectionsHandle = push.projections;
-    uint statisticsHandle = push.statistics, physicalPagesX = push.physicalPagesX;
-#if !VSM_DIRECTIONAL_PROJECTION
-    if (push.lightType == 2u) {
-        StructuredBuffer<ShadowProjection> own = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-        StructuredBuffer<ShadowFace> faces = resolveUniform(ResourceHandle<StructuredBuffer<ShadowFace>>(push.pointFaces));
-        ShadowFace face = faces[virtualShadowMapPointFace(position - own[0].originNear.xyz)];
-        atlasHandle = face.atlas; pagesHandle = face.pages; projectionsHandle = face.projections;
-        statisticsHandle = face.statistics; physicalPagesX = face.physicalPagesX;
-    }
-#endif
 #if VSM_DIRECTIONAL_PROJECTION
     // Per-face directional push descriptors stay uniform through fine/ancestor/coarse selection.
-    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(projectionsHandle));
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(face.projections));
+    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(face.pages));
 #else
-    StructuredBuffer<ShadowProjection> projections = resolveNonUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(projectionsHandle));
+    StructuredBuffer<ShadowProjection> projections = resolveNonUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(face.projections));
+    StructuredBuffer<uint4> pages = resolveNonUniform(ResourceHandle<StructuredBuffer<uint4>>(face.pages));
 #endif
-    result.projectionsHandle = projectionsHandle;
-#if VSM_DIRECTIONAL_PROJECTION
-    StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(pagesHandle));
-    StructuredBuffer<uint> faceStatistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
-#else
-    StructuredBuffer<uint4> pages = resolveNonUniform(ResourceHandle<StructuredBuffer<uint4>>(pagesHandle));
-    StructuredBuffer<uint> faceStatistics = resolveNonUniform(ResourceHandle<StructuredBuffer<uint>>(statisticsHandle));
-#endif
+    result.projectionsHandle = face.projections;
     uint physicalPage = 0xffffffffu;
     result.level = push.clipmapCount;
     ++filterCounts.x;
-    if (faceStatistics[5] == 0u) {
+    if (allowClipmaps) {
         for (uint level = firstLevel; level < push.clipmapCount; ++level) {
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+            bool preferred = reuseState && level == firstLevel;
+            ShadowProjection projection;
+            if (preferred) {
+                projection = state.preferred;
+            } else {
+                projection = projections[level];
+            }
+#else
             ShadowProjection projection = projections[level];
+#endif
             float3 p = vsmProjectPosition(position, projection);
             if (!vsmContains(p, projection, push.pageSize, true)) { continue; }
             uint2 texel = vsmVirtualTexel(p, projection, push.pageSize);
             uint page = vsmVirtualPage(texel, projection, push.pageSize);
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+            if (preferred && page == state.lastPage) {
+                physicalPage = state.lastPhysicalPage; result.level = level;
+                result.projected = p; result.virtualTexel = texel;
+                break;
+            }
+#endif
             uint mappedPhysical, mappedLevel;
+            bool isOwnMapping;
             if (vsmLookupPropagated(position, float2(projection.rowX.w, projection.rowY.w),
                     page, p, texel, projections, pages, push, level,
-                    mappedPhysical, mappedLevel)) {
+                    mappedPhysical, mappedLevel, isOwnMapping, false)) {
                 if (mappedLevel == push.clipmapCount) { break; }
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+                // An own mapping resolves every texel inside this source page.
+                // Ancestor containment and the rest of the search are sample-dependent.
+                if (preferred && isOwnMapping) {
+                    state.lastPage = page;
+                    state.lastPhysicalPage = mappedPhysical;
+                }
+#endif
                 physicalPage = mappedPhysical; result.level = mappedLevel;
                 result.projected = p; result.virtualTexel = texel;
                 break;
@@ -207,31 +259,92 @@ ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, 
         }
     }
     if (physicalPage == 0xffffffffu) {
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+        ShadowProjection coarse;
+        if (reuseState && firstLevel == push.clipmapCount) {
+            coarse = state.preferred;
+        } else {
+            coarse = projections[push.clipmapCount];
+        }
+#else
         ShadowProjection coarse = projections[push.clipmapCount];
+#endif
         result.projected = vsmProjectPosition(position, coarse);
         // The complete coarse projection encloses all represented casters.
         // A trace segment outside that volume has no represented depth layer.
         if (!vsmContains(result.projected, coarse, push.pageSize, false)) { return result; }
-        vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
-        uint4 entry = pages[coarse.page.x];
-        if ((entry.y & 2u) == 0u || (entry.w & 1u) == 0u) {
-            ++filterCounts.z;
-            return result;
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+        if (reuseState && coarse.page.x == state.lastPage) {
+            physicalPage = state.lastPhysicalPage;
+        } else
+#endif
+        {
+            vsmWorkAdd(push, kVSMWorkProjectionPageTableLoads, 1u);
+            uint4 entry = pages[coarse.page.x];
+            if ((entry.y & 2u) == 0u || (entry.w & 1u) == 0u) {
+                ++filterCounts.z;
+                return result;
+            }
+            physicalPage = entry.x;
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+            if (reuseState) {
+                state.lastPage = coarse.page.x;
+                state.lastPhysicalPage = physicalPage;
+            }
+#endif
         }
-        physicalPage = entry.x;
         result.virtualTexel = vsmVirtualTexel(result.projected, coarse, push.pageSize);
         ++filterCounts.y;
     }
-    uint2 physical = vsmPhysicalPageCoord(physicalPage, physicalPagesX);
+    uint2 physical = vsmPhysicalPageCoord(physicalPage, face.physicalPagesX);
     uint2 texel = vsmAtlasTexelFromVirtual(physical, result.virtualTexel, push.pageSize);
 #if VSM_DIRECTIONAL_PROJECTION
-    VSMAtlas atlas = resolveUniform(ResourceHandle<VSMAtlas>(atlasHandle));
+    VSMAtlas atlas = resolveUniform(ResourceHandle<VSMAtlas>(face.atlas));
 #else
-    VSMAtlas atlas = resolveNonUniform(ResourceHandle<VSMAtlas>(atlasHandle));
+    VSMAtlas atlas = resolveNonUniform(ResourceHandle<VSMAtlas>(face.atlas));
 #endif
     result.storedDepth = vsmAtlasLoad(atlas, texel, push);
     vsmWorkAdd(push, kVSMWorkProjectionAtlasLoads, 1u);
     result.valid = true;
     return result;
 }
+
+ShadowLookup vsmFilterLookup(float3 position, ShadowPush push, uint firstLevel, inout uint3 filterCounts)
+{
+    uint pointFace = 0u;
+#if !VSM_DIRECTIONAL_PROJECTION
+    if (push.lightType == 2u) {
+        StructuredBuffer<ShadowProjection> own = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+        pointFace = virtualShadowMapPointFace(position - own[0].originNear.xyz);
+    }
+#endif
+    ShadowFace face = vsmFilterFace(push, pointFace);
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+    VSMLocalSMRTLookupState unused = {};
+    return vsmFilterLookupFace(position, push, firstLevel, face, vsmFilterAllowsClipmaps(face.statistics),
+        filterCounts, false, unused);
+#else
+    return vsmFilterLookupFace(position, push, firstLevel, face, vsmFilterAllowsClipmaps(face.statistics), filterCounts);
+#endif
+}
+
+#if VSM_LOCAL_SMRT_STATE_REUSE && !VSM_DIRECTIONAL_PROJECTION
+ShadowLookup vsmFilterLookupSMRT(float3 position, float3 lightOrigin, ShadowPush push, uint firstLevel,
+    inout uint3 filterCounts, bool reuseState, inout VSMLocalSMRTLookupState state)
+{
+    uint faceIndex = push.lightType == 2u ? virtualShadowMapPointFace(position - lightOrigin) : 0u;
+    if (!reuseState || faceIndex != state.faceIndex) {
+        state.faceIndex = faceIndex;
+        state.face = vsmFilterFace(push, faceIndex);
+        state.allowClipmaps = vsmFilterAllowsClipmaps(state.face.statistics);
+        if (reuseState) {
+            StructuredBuffer<ShadowProjection> projections =
+                resolveNonUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(state.face.projections));
+            state.preferred = projections[firstLevel];
+            state.lastPage = 0xffffffffu;
+        }
+    }
+    return vsmFilterLookupFace(position, push, firstLevel, state.face, state.allowClipmaps, filterCounts, reuseState, state);
+}
+#endif
 

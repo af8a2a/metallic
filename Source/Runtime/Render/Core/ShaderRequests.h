@@ -610,6 +610,7 @@ inline std::vector<ShaderRequest> makeVirtualShadowMapRequests(const VirtualShad
             entryMacros.emplace_back("VSM_DIRECTIONAL_PROJECTION", options.directional ? "1" : "0");
             entryMacros.emplace_back("VSM_PROJECTION_PAGE_SHIFT", markPageShiftDefine);
             entryMacros.emplace_back("VSM_ADAPTIVE_RAY_COUNT", options.adaptiveRayCount ? "1" : "0");
+            if (!options.directional) { entryMacros.emplace_back("VSM_LOCAL_SMRT_STATE_REUSE", "1"); }
         }
         if (buildEntry) { entryMacros.emplace_back("VSM_DIRECTIONAL_BUILD", options.directional ? "1" : "0"); }
         if (options.instanceBuild && compactEntry) { entryMacros.emplace_back("VSM_INSTANCE_BUILD", "1"); }

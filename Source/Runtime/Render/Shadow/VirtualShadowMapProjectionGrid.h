@@ -25,6 +25,10 @@ VSM_GRID_PUBLIC struct VirtualShadowMapProjectionGrid
     VirtualShadowMapProjectionJobRange jobs[64];
 };
 
+static const uint32_t kVSMSharedPointLayer = 1u << 0u;
+// Only the first job of a validated, canonical six-face group carries this bit.
+static const uint32_t kVSMPointGroupFirst = 1u << 1u;
+
 static const uint32_t kVSMGridReceiverLookups = 0;
 static const uint32_t kVSMGridFallbacks = 1;
 static const uint32_t kVSMGridLocalCandidates = 2;

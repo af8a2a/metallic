@@ -477,6 +477,7 @@ struct VirtualShadowMaps::Programs
     bool groupProjectionStatistics = false;
     bool directional = false;
     bool adaptiveRayCount = false;
+    bool localSMRTStateReuse = false;
     uint32_t markCacheLevels = 12;
     int markPageShift = -1;
     bool compactBuild = false;
@@ -663,6 +664,8 @@ struct VirtualShadowMaps::State
     std::shared_ptr<ResourcePool> pool;
     ShadowPush push{};
     ViewConstants receiverView{};
+    std::array<float, 3> projectionOrigin{};
+    bool pointLightFaceSelection = false;
     std::shared_ptr<ResourceRegistry> registry;
     std::shared_ptr<Programs> programs;
     std::vector<ResourceLease> leases;
@@ -1128,6 +1131,22 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     auto* jobs = static_cast<ShadowPush*>(recording->jobs->map());
     if (!jobs) { return makeError(Error::Failure); }
     for (size_t index = 0; index < states.size(); ++index) { jobs[index] = states[index]->push; }
+    if (settings.unifiedMark && settings.pointLightFaceSelection) {
+        for (size_t first = 0; first + 6 <= faces.size(); ++first) {
+            if (jobs[first].projectionFace != 0u || jobs[first].lightType != uint32_t(VirtualShadowMapLightType::PointFace)) { continue; }
+            const auto& light = faces[first];
+            uint32_t face = 0;
+            for (; face < 6; ++face) {
+                const auto& candidate = faces[first + face];
+                const auto& job = jobs[first + face];
+                if (job.lightType != uint32_t(VirtualShadowMapLightType::PointFace) || job.projectionFace != face ||
+                    job.filterMode != uint32_t(VirtualShadowMapFilter::Hard) ||
+                    candidate.sourceSlot != light.sourceSlot || candidate.light.position != light.light.position) { break; }
+            }
+            // PCF/SMRT Mark must still request pages for samples on neighboring faces.
+            if (face == 6) { jobs[first].projectionFlags |= kVSMPointGroupFirst; }
+        }
+    }
     recording->jobs->flush(); recording->jobs->unmap();
     VirtualShadowMapPhysicalPoolPush push{};
     push.faceCount = uint32_t(faces.size()); push.capacity = capacity;
@@ -2046,6 +2065,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     phase.next("Prepare VSM recording resources");
     auto state = std::make_shared<State>();
     state->receiverView = view;
+    state->projectionOrigin = light.position;
+    state->pointLightFaceSelection = settings.pointLightFaceSelection;
     state->pool = pool_;
     auto registry = ResourceRegistry::forDevice(device);
     if (!registry) { return std::unexpected(registry.error()); }
@@ -2063,8 +2084,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         state->leases.insert(state->leases.end(), poolFrame->storage->leases.begin(), poolFrame->storage->leases.end());
     }
     state->externalOutput = output != nullptr;
-    // bit 0: canonical shared point-light layer.
-    push.projectionFlags = output && output->sharedPointLayer ? 1u : 0u;
+    push.projectionFlags = output && output->sharedPointLayer ? kVSMSharedPointLayer : 0u;
     push.triangleCount = casters.triangleCapacity;
     push.clipmapCount = settings.clipmapCount;
     push.virtualPagesPerAxis = settings.virtualPagesPerAxis;
@@ -2806,6 +2826,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs_->groupProjectionStatistics != groupProjectionStatistics ||
         programs_->directional != directional ||
         programs_->adaptiveRayCount != adaptiveRayCount ||
+        programs_->localSMRTStateReuse != settings.localSMRTStateReuse ||
         programs_->markCacheLevels != markCacheLevels || programs_->markPageShift != markPageShift ||
         programs_->compactBuild != compactBuild || programs_->instanceBuild != instanceBuild || programs_->clusterPageRaster != clusterPageRaster ||
         programs_->pageWindowRaster != pageWindowRaster || programs_->clusterHybridRaster != clusterHybridRaster ||
@@ -2832,6 +2853,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs->groupProjectionStatistics = groupProjectionStatistics;
         programs->directional = directional;
         programs->adaptiveRayCount = adaptiveRayCount;
+        programs->localSMRTStateReuse = settings.localSMRTStateReuse;
         programs->markCacheLevels = markCacheLevels;
         programs->markPageShift = markPageShift;
         programs->compactBuild = compactBuild;
@@ -2927,6 +2949,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
                 // Programs already keys directional page sizes through markPageShift.
                 entryMacros.push_back({"VSM_PROJECTION_PAGE_SHIFT", markPageShiftDefine.c_str()});
                 entryMacros.push_back({"VSM_ADAPTIVE_RAY_COUNT", adaptiveRayCount ? "1" : "0"});
+                if (!directional && programs->localSMRTStateReuse) {
+                    entryMacros.push_back({"VSM_LOCAL_SMRT_STATE_REUSE", "1"});
+                }
             }
             if (buildEntry) { entryMacros.push_back({"VSM_DIRECTIONAL_BUILD", directional ? "1" : "0"}); }
             if (instanceBuild && compactEntry) { entryMacros.push_back({"VSM_INSTANCE_BUILD", "1"}); }
@@ -3804,6 +3829,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             SlangMacroDefine{"VSM_SHARED_PHYSICAL_POOL", programs.sharedPhysicalPool ? "1" : "0"},
             SlangMacroDefine{"VSM_LIGHT_GRID_PROJECTION", lightGrid ? "1" : "0"},
             SlangMacroDefine{"VSM_ADAPTIVE_RAY_COUNT", programs.adaptiveRayCount ? "1" : "0"},
+            SlangMacroDefine{"VSM_LOCAL_SMRT_STATE_REUSE", programs.localSMRTStateReuse ? "1" : "0"},
             SlangMacroDefine{"VSM_WORKLOAD_DIAGNOSTICS", programs.collectGPUWork ? "1" : "0"},
             SlangMacroDefine{"VSM_OPTIMIZE_PROJECTION_STATISTICS", programs.groupProjectionStatistics ? "1" : "0"},
             SlangMacroDefine{"VSM_REFINED_RECEIVER", programs.refinedReceiver ? "1" : "0"}};
@@ -3840,6 +3866,13 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
     // Effective filtering, ownership, phase and light-specific inputs remain in
     // each job; all other projection inputs keep their push-constant storage.
     for (const auto& group : groups) {
+        const auto& base = *group.faces[0]->state_;
+        bool selectPointFace = group.faceCount == 6 && base.pointLightFaceSelection;
+        for (uint32_t face = 0; selectPointFace && face < group.faceCount; ++face) {
+            const auto& state = *group.faces[face]->state_;
+            selectPointFace = state.push.lightType == uint32_t(VirtualShadowMapLightType::PointFace) &&
+                state.push.projectionFace == face && state.projectionOrigin == base.projectionOrigin;
+        }
         if (gridContext) {
             // LightsPass validates the complete publication domain before
             // admission: two celestial slots plus at most 62 local sources.
@@ -3857,6 +3890,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             assert(state.programs->collectGPUWork == programs.collectGPUWork &&
                 state.programs->optimizeProjectionStatistics == programs.optimizeProjectionStatistics &&
                 state.programs->adaptiveRayCount == programs.adaptiveRayCount &&
+                state.programs->localSMRTStateReuse == programs.localSMRTStateReuse &&
                 state.programs->refinedReceiver == programs.refinedReceiver);
             assert(p.depth == push.depth && p.pageSize == push.pageSize && p.virtualPagesPerAxis == push.virtualPagesPerAxis && p.pcfRadius == push.pcfRadius &&
                 p.rayLength == push.rayLength && p.rayLengthScale == push.rayLengthScale && p.maxRayAngle == push.maxRayAngle &&
@@ -3866,7 +3900,7 @@ Result<> VirtualShadowMaps::projectOnePassPrepared(CommandBuffer& commands,
             jobs.push_back({p.pages, p.statistics, p.projections, p.atlas,
                 p.filterMode, p.shadow, p.debug, p.physicalPagesX,
                 p.clipmapCount, p.enabled, p.lightType, p.projectionFace,
-                p.pointFaces, p.projectionFlags, p.samplePhase,
+                p.pointFaces, p.projectionFlags | (face == 0 && selectPointFace ? kVSMPointGroupFirst : 0u), p.samplePhase,
                 p.lightRange, p.sourceRadius, p.angularRadius, p.lodScreenRayLength, p.receiverGeometry});
         }
     }

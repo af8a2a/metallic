@@ -165,10 +165,18 @@ float3 vsmProjectPosition(float3 position, ShadowProjection projection)
 #endif
 }
 
+uint vsmPointReceiverFace(float3 position, uint projectionsHandle)
+{
+    StructuredBuffer<ShadowProjection> projections =
+        resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(projectionsHandle));
+    return virtualShadowMapPointFace(position - projections[0].originNear.xyz);
+}
+
 // The selected face owns both demand and query. Receivers outside a punctual
 // light's range/cone contribute no direct light; near-plane truncation is counted
 // separately by the query pass and deliberately returns neutral visibility.
-bool vsmReceiverDomain(float3 position, ShadowProjection projection, ShadowPush push, out bool nearPlane)
+bool vsmReceiverDomain(float3 position, ShadowProjection projection, ShadowPush push, out bool nearPlane,
+    bool pointFaceSelected = false)
 {
     nearPlane = false;
 #if VSM_DIRECTIONAL_MARK
@@ -180,7 +188,7 @@ bool vsmReceiverDomain(float3 position, ShadowProjection projection, ShadowPush 
     if (push.lightRange > 0.0 && distance >= push.lightRange) { return false; }
     float axial = dot(projection.rowW, float4(position, 1.0));
     if (projection.metric.w > 1.5) {
-        if (virtualShadowMapPointFace(delta) != push.projectionFace) { return false; }
+        if (!pointFaceSelected && virtualShadowMapPointFace(delta) != push.projectionFace) { return false; }
     } else {
         float outerCosine = rsqrt(1.0 + projection.metric.x * projection.metric.x);
         if (axial < distance * outerCosine) { return false; }
