@@ -610,6 +610,15 @@ Result<> RenderGraphExecutionContext::parallelCompute(const CommandRecorder& com
     return result ? graphics(commandBuffer()) : result;
 }
 
+void detail::appendWorkerIntervals(std::vector<RenderGraphWorkerInterval>& intervals, task::TaskGraphSnapshot& joined)
+{
+    for (auto& node : joined.nodes) {
+        if (node.startTime != task::TaskClock::time_point{} && node.finishTime > node.startTime) {
+            intervals.push_back({std::move(node.desc.name), node.workerThreadId, node.startTime, node.finishTime});
+        }
+    }
+}
+
 Result<> RenderGraphExecutionContext::prepareJoined(std::span<const RenderPreparationTask> tasks)
 {
     for (const auto& item : tasks) {
@@ -663,7 +672,9 @@ Result<> RenderGraphExecutionContext::prepareJoined(std::span<const RenderPrepar
             preparationTaskCount_ += uint32_t(batches.size());
             CPUProfileScope joinScope(threadDiagnostics ? &joinRecorder : nullptr, "Preparation join wait");
             joinScope.work("submittedBatches", batches.size());
-            const auto joined = submitted->wait();
+            auto joined = submitted->wait();
+            joinScope.end();
+            if (workerIntervals_ && joined) { detail::appendWorkerIntervals(*workerIntervals_, *joined); }
             if (!joined || joined->status != task::TaskGraphStatus::Succeeded) { complete = false; break; }
         }
     }
@@ -701,8 +712,8 @@ RenderGraphExecutionContext::ProfileScope& RenderGraphExecutionContext::ProfileS
 void RenderGraphExecutionContext::ProfileScope::end()
 {
     if (!context_ || index_ == UINT32_MAX) { return; }
-    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin_).count();
-    context_->endProfile_(commands_ ? *commands_ : context_->commandBuffer(), index_, ms);
+    const RenderGraphCPUInterval interval{begin_, std::chrono::steady_clock::now()};
+    context_->endProfile_(commands_ ? *commands_ : context_->commandBuffer(), index_, interval);
     context_->profileParent_ = parent_;
     index_ = UINT32_MAX;
 }

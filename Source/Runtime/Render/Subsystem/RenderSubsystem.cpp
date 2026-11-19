@@ -2,6 +2,7 @@
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 
 #include "Runtime/Render/Core/HistoryResources.h"
 
@@ -160,7 +161,8 @@ Result<> RenderSubsystemHost::beginFrame(
     uint32_t frameSlot,
     HistoryResourceManager* historyResources,
     std::string& log,
-    RenderFrameContext* frameResources)
+    RenderFrameContext* frameResources,
+    CPUProfileRecorder* profiler)
 {
     if (device_ == nullptr || frameActive_ || frameSlot >= frameSlotCount_) {
         log = "RenderSubsystemHost beginFrame received invalid frame state";
@@ -176,6 +178,7 @@ Result<> RenderSubsystemHost::beginFrame(
         log = "Previous subsystem recording must be submitted or cancelled before beginFrame";
         return makeError(Error::InvalidArgument);
     }
+    CPUProfileScope phaseProfile(profiler, "Subsystems / Begin frame");
     deferredReleases_.collect();
     std::erase_if(pendingCompletions_, [](const auto& point) { return point.isComplete(); });
     retiredByFrameSlot_[frameSlot].clear();
@@ -204,12 +207,15 @@ Result<> RenderSubsystemHost::beginFrame(
     const RenderSubsystemFrameContext context = frameContext(nullptr, nullptr);
     for (const std::string& id : activeOrder_) {
         RenderChangeBits subsystemChanges = RenderChangeBits::None;
+        CPUProfileScope hookProfile(profiler, id);
         Result<> result = records_.at(id)->instance->beginFrame(context, subsystemChanges, log);
+        hookProfile.end();
         ++begunSubsystemCount_;
         lastChanges_ |= subsystemChanges;
         if (!result) {
             log = "Render subsystem '" + id + "' beginFrame failed: " + log;
-            endFrame();
+            phaseProfile.end();
+            endFrame(profiler);
             return result;
         }
     }
@@ -263,12 +269,14 @@ Result<> RenderSubsystemHost::recordPreGraph(
     CommandBuffer& commandBuffer,
     Streamer* streamer,
     std::span<const RenderSubsystemId> requiredSubsystems,
-    std::string& log)
+    std::string& log,
+    CPUProfileRecorder* profiler)
 {
     if (!frameActive_) {
         log = "RenderSubsystemHost recordPreGraph requires an active frame";
         return makeError(Error::InvalidArgument);
     }
+    CPUProfileScope phaseProfile(profiler, "Subsystems / Pre-graph");
     std::vector<std::string> closure;
     if (!dependencyClosure(requiredSubsystems, closure, log)) {
         return makeError(Error::InvalidArgument);
@@ -276,7 +284,9 @@ Result<> RenderSubsystemHost::recordPreGraph(
     preGraphOrder_.clear();
     const RenderSubsystemFrameContext context = frameContext(&commandBuffer, streamer);
     for (const std::string& id : closure) {
+        CPUProfileScope hookProfile(profiler, id);
         Result<> result = records_.at(id)->instance->recordPreGraph(context, log);
+        hookProfile.end();
         preGraphOrder_.push_back(id);
         if (!result) {
             log = "Render subsystem '" + id + "' recordPreGraph failed: " + log;
@@ -290,19 +300,23 @@ Result<> RenderSubsystemHost::recordPostGraph(
     CommandBuffer& commandBuffer,
     Streamer* streamer,
     std::span<const RenderSubsystemId> requiredSubsystems,
-    std::string& log)
+    std::string& log,
+    CPUProfileRecorder* profiler)
 {
     if (!frameActive_) {
         log = "RenderSubsystemHost recordPostGraph requires an active frame";
         return makeError(Error::InvalidArgument);
     }
+    CPUProfileScope phaseProfile(profiler, "Subsystems / Post-graph");
     (void)requiredSubsystems;
     const RenderSubsystemFrameContext context = frameContext(&commandBuffer, streamer);
     Result<> firstFailure;
     std::string failures;
     for (auto iter = preGraphOrder_.rbegin(); iter != preGraphOrder_.rend(); ++iter) {
         std::string hookLog;
+        CPUProfileScope hookProfile(profiler, *iter);
         Result<> result = records_.at(*iter)->instance->recordPostGraph(context, hookLog);
+        hookProfile.end();
         if (!result) {
             if (firstFailure) {
                 firstFailure = result;
@@ -382,15 +396,18 @@ Result<> RenderSubsystemHost::reloadShaders(std::string& log)
     return {};
 }
 
-void RenderSubsystemHost::endFrame()
+void RenderSubsystemHost::endFrame(CPUProfileRecorder* profiler)
 {
     profiling::CPUPhase phase("subsystems.endFrame");
     if (!frameActive_) {
         return;
     }
+    CPUProfileScope phaseProfile(profiler, "Subsystems / End frame");
     const RenderSubsystemFrameContext context = frameContext(nullptr, nullptr);
     for (size_t index = begunSubsystemCount_; index > 0; --index) {
-        records_.at(activeOrder_[index - 1])->instance->endFrame(context);
+        const auto& id = activeOrder_[index - 1];
+        CPUProfileScope hookProfile(profiler, id);
+        records_.at(id)->instance->endFrame(context);
     }
     preGraphOrder_.clear();
     begunSubsystemCount_ = 0;

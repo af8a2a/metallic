@@ -5,13 +5,27 @@
 #include "Runtime/Render/Streamer/MeshletStreamThroughput.h"
 #include "Runtime/Render/Profiling/CPUThreadProfile.h"
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace metallic::render {
+
+struct RenderGraphCPUInterval {
+    std::chrono::steady_clock::time_point begin, end;
+
+    double milliseconds() const { return std::chrono::duration<double, std::milli>(end - begin).count(); }
+};
+
+struct RenderGraphWorkerInterval {
+    std::string name;
+    uint64_t workerThreadId = 0;
+    std::chrono::steady_clock::time_point begin, end;
+};
 
 struct CPUProfileWorkCounter {
     std::string name;
@@ -48,6 +62,7 @@ struct RenderGraphProfileSection {
     bool cpuOnly = false;
     std::shared_ptr<const CPUThreadProfile> cpuThreadProfile;
     std::vector<CPUProfileWorkCounter> cpuWork;
+    std::optional<RenderGraphCPUInterval> cpuInterval;
 };
 
 // Per-frame work counts for aggregate CPU timings; no per-page clock reads.

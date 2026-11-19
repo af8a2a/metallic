@@ -507,8 +507,9 @@ private:
     uint32_t preparationWorkerLimit_ = 1;
     uint32_t preparationBatchWorkload_ = 1;
     uint32_t preparationTaskCount_ = 0;
+    std::vector<RenderGraphWorkerInterval>* workerIntervals_ = nullptr;
     std::function<uint32_t(CommandBuffer&, std::string_view, uint32_t)> beginProfile_;
-    std::function<void(CommandBuffer&, uint32_t, double)> endProfile_;
+    std::function<void(CommandBuffer&, uint32_t, RenderGraphCPUInterval)> endProfile_;
     std::function<void(std::span<const RenderGraphProfileSection>, uint32_t)> cpuProfile_;
     std::function<void(SceneStreamingProfile)> streamingProfile_;
     uint32_t profileParent_ = UINT32_MAX;

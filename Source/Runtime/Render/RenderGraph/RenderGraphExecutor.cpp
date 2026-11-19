@@ -85,20 +85,26 @@ private:
 
 class RenderSubsystemFrameEndScope {
 public:
-    explicit RenderSubsystemFrameEndScope(RenderSubsystemHost& host)
-        : host_(&host)
+    explicit RenderSubsystemFrameEndScope(std::vector<RenderGraphProfileSection>* samples)
+        : samples_(samples)
     {
     }
 
     ~RenderSubsystemFrameEndScope()
     {
         if (host_ != nullptr) {
-            host_->endFrame();
+            host_->endFrame(profiler());
         }
+        if (samples_ != nullptr) { *samples_ = std::move(profile_.sections); }
     }
+
+    CPUProfileRecorder* profiler() { return samples_ != nullptr ? &profile_ : nullptr; }
+    void endFrameOnExit(RenderSubsystemHost& host) { host_ = &host; }
 
 private:
     RenderSubsystemHost* host_ = nullptr;
+    std::vector<RenderGraphProfileSection>* samples_;
+    CPUProfileRecorder profile_;
 };
 
 uint32_t previewReadbackTexelByteSize(Format format)
@@ -2291,6 +2297,7 @@ struct RenderGraphExecutor::Impl {
 
     Result<> prepareNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
         RenderGraphProperties& executionProperties, std::unique_ptr<RenderGraphExecutionContext>& prepared,
+        std::vector<RenderGraphWorkerInterval>* workerIntervals,
         std::vector<RenderGraphResource>* snapshots = nullptr)
     {
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
@@ -2360,6 +2367,7 @@ struct RenderGraphExecutor::Impl {
         context.preparedScene_ = node.preparedScene;
         context.preparationWorkerLimit_ = preparationWorkerLimit;
         context.preparationBatchWorkload_ = preparationBatchWorkload;
+        context.workerIntervals_ = workerIntervals;
         context.viewConstants_ = usesView ? &frameView : nullptr;
         context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
@@ -2386,11 +2394,13 @@ struct RenderGraphExecutor::Impl {
         NodeRecording& recording,
         CommandBuffer& commands,
         CompiledNode& node,
-        uint64_t frameIndex)
+        uint64_t frameIndex,
+        std::vector<RenderGraphWorkerInterval>* workerIntervals)
     {
         recording.node = &node;
         recording.stats = {.id = node.id, .name = node.name, .type = node.type, .queue = recordingQueue->type()};
-        auto result = prepareNode(commands, node, frameIndex, recording.properties, recording.context, &recording.resources);
+        auto result = prepareNode(commands, node, frameIndex, recording.properties, recording.context,
+            workerIntervals, &recording.resources);
         if (!result) { return result; }
         if (activeGpuTimingSlot && activeGpuTimingValid) {
             auto& slot = *activeGpuTimingSlot;
@@ -2412,13 +2422,15 @@ struct RenderGraphExecutor::Impl {
             profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
             result = node.pass->prepareExecution(*recording.context);
         }
-        recording.stats.cpuMilliseconds = renderGraphElapsedMilliseconds(begin);
+        const RenderGraphCPUInterval interval{begin, RenderGraphLogClock::now()};
+        recording.stats.cpuMilliseconds = interval.milliseconds();
+        if (workerIntervals) { recording.stats.cpuPrepareInterval = interval; }
         return result;
     }
 
     // Only the batch worker touches this result. Merge statistics, query metadata
     // and CPU publication order on the coordinator after every task has joined.
-    Result<> recordNode(NodeRecording& recording)
+    Result<> recordNode(NodeRecording& recording, bool captureCPUIntervals)
     {
         auto& context = *recording.context;
         auto& commands = context.commandBuffer();
@@ -2438,8 +2450,10 @@ struct RenderGraphExecutor::Impl {
             recording.sectionTimers.push_back(recording.beginInterval(buffer));
             return index;
         };
-        context.endProfile_ = [&](CommandBuffer& buffer, uint32_t index, double cpuMs) {
-            stats.sections[index].cpuMilliseconds = cpuMs;
+        context.endProfile_ = [&](CommandBuffer& buffer, uint32_t index, RenderGraphCPUInterval interval) {
+            auto& section = stats.sections[index];
+            section.cpuMilliseconds = interval.milliseconds();
+            section.cpuInterval = interval;
             recording.endInterval(buffer, recording.sectionTimers[index]);
             labels.end();
         };
@@ -2462,7 +2476,9 @@ struct RenderGraphExecutor::Impl {
             profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::workerExecuteNs);
             recording.result = recording.node->pass->execute(context);
         }
-        stats.cpuMilliseconds += renderGraphElapsedMilliseconds(begin);
+        const RenderGraphCPUInterval interval{begin, RenderGraphLogClock::now()};
+        stats.cpuMilliseconds += interval.milliseconds();
+        if (captureCPUIntervals) { stats.cpuExecuteInterval = interval; }
         tracyGpuProfiler.endZone(recording.profile);
         if (recording.result) { recording.endInterval(commands, recording.passTimer); }
         labels.suspend();
@@ -2489,11 +2505,12 @@ struct RenderGraphExecutor::Impl {
     }
 
     Result<> executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
-        const RenderGraphExecutionContext::ParallelRecorder& parallel = {})
+        const RenderGraphExecutionContext::ParallelRecorder& parallel = {},
+        std::vector<RenderGraphWorkerInterval>* workerIntervals = nullptr)
     {
         RenderGraphProperties executionProperties;
         std::unique_ptr<RenderGraphExecutionContext> prepared;
-        auto preparation = prepareNode(commandBuffer, node, frameIndex, executionProperties, prepared);
+        auto preparation = prepareNode(commandBuffer, node, frameIndex, executionProperties, prepared, workerIntervals);
         if (!preparation) { return preparation; }
         auto& context = *prepared;
         StreamerSubsystem* upload = streamerSubsystem();
@@ -2555,8 +2572,10 @@ struct RenderGraphExecutor::Impl {
             if (activeGpuTimingSlot) { activeGpuTimingSlot->sectionTimers[nodeIndex].push_back(timer); }
             return index;
         };
-        context.endProfile_ = [&, nodeIndex](CommandBuffer& commands, uint32_t index, double cpuMs) {
-            lastExecutionStats.nodes[nodeIndex].sections[index].cpuMilliseconds = cpuMs;
+        context.endProfile_ = [&, nodeIndex](CommandBuffer& commands, uint32_t index, RenderGraphCPUInterval interval) {
+            auto& section = lastExecutionStats.nodes[nodeIndex].sections[index];
+            section.cpuMilliseconds = interval.milliseconds();
+            section.cpuInterval = interval;
             if (activeGpuTimingSlot) { endInterval(commands, activeGpuTimingSlot->sectionTimers[nodeIndex][index]); }
             // On fork failure the producer has ended and its labels are already
             // closed; only unwind logical scopes while the pass returns its error.
@@ -2598,7 +2617,11 @@ struct RenderGraphExecutor::Impl {
         const bool sceneReady = !node.preparedScene || node.preparedScene->ready;
         if (result && sceneReady) {
             profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
+            const auto begin = workerIntervals ? RenderGraphLogClock::now() : RenderGraphLogClock::time_point{};
             result = node.pass->prepareExecution(context);
+            if (workerIntervals) {
+                lastExecutionStats.nodes[nodeIndex].cpuPrepareInterval = RenderGraphCPUInterval{begin, RenderGraphLogClock::now()};
+            }
         }
         if (result && sceneReady && upload && node.preparedScene && node.preparedScene->geometry) {
             profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::scenePrepareNs);
@@ -2609,7 +2632,11 @@ struct RenderGraphExecutor::Impl {
         }
         if (result && sceneReady) {
             profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::serialExecuteNs);
+            const auto begin = workerIntervals ? RenderGraphLogClock::now() : RenderGraphLogClock::time_point{};
             result = node.pass->execute(context);
+            if (workerIntervals) {
+                lastExecutionStats.nodes[nodeIndex].cpuExecuteInterval = RenderGraphCPUInterval{begin, RenderGraphLogClock::now()};
+            }
         }
         if (result && sceneReady && upload && node.preparedScene) {
             result = upload->recordSceneEnd(*node.preparedScene, context);
@@ -2629,8 +2656,9 @@ struct RenderGraphExecutor::Impl {
             result = upload->flush(context.commandBuffer());
         }
         lastExecutionStats.preparationTaskCount += context.preparationTaskCount_;
-        lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - cpuBegin).count();
+        const RenderGraphCPUInterval interval{cpuBegin, RenderGraphLogClock::now()};
+        lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = interval.milliseconds();
+        lastExecutionStats.nodes[nodeIndex].cpuInterval = interval;
         if (activeGpuTimingSlot) { tracyGpuProfiler.endZone(activeGpuTimingSlot->profile); }
         if (result) { endInterval(context.commandBuffer(), passTimer); }
         labels.suspend();
@@ -3772,10 +3800,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     std::string log;
     if (desc.historyResources != nullptr) { desc.historyResources->beginFrame(frameIndex); }
     phase.next("graph.subsystemBegin");
+    RenderSubsystemFrameEndScope subsystemFrameScope(
+        desc.captureWorkerIntervals ? &impl_->lastExecutionStats.subsystems : nullptr);
+    auto* subsystemProfile = subsystemFrameScope.profiler();
     result = impl_->subsystemHost->beginFrame(frameIndex, slot.frame.slotIndex(),
-        desc.historyResources, log, &slot.frame);
+        desc.historyResources, log, &slot.frame, subsystemProfile);
     if (!result) { return abort(result); }
-    RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
+    subsystemFrameScope.endFrameOnExit(*impl_->subsystemHost);
     phase.next("graph.record");
     impl_->beginDebugExecution(frameIndex, slot.frame.slotIndex());
     debugScope.observer = impl_->debugObserver;
@@ -4048,11 +4079,11 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!result) { return abort(result); }
         auto& commands = *segments.back().commandBuffer;
         result = impl_->subsystemHost->recordPreGraph(commands,
-            upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log);
+            upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log, subsystemProfile);
         if (!result) {
             std::string cleanupLog;
             (void)impl_->subsystemHost->recordPostGraph(commands,
-                upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, cleanupLog);
+                upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, cleanupLog, subsystemProfile);
             return abort(result);
         }
         if (upload != nullptr) {
@@ -4082,6 +4113,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         ? std::max(1u, std::min(taskSystem->workerCount(), desc.recordingWorkerLimit ? desc.recordingWorkerLimit : 8u)) : 1u;
     impl_->preparationWorkerLimit = workerLimit;
     impl_->preparationBatchWorkload = desc.preparationBatchWorkload;
+    auto* workerIntervals = desc.captureWorkerIntervals ? &impl_->lastExecutionStats.workerIntervals : nullptr;
     struct RecordingBatch {
         CommandRecordingContext* context = nullptr;
         size_t first = 0;
@@ -4106,7 +4138,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             try {
                 batch.result = batch.context->record([&]() -> Result<> {
                     for (auto& node : batch.nodes) {
-                        auto recorded = impl_->recordNode(*node);
+                        auto recorded = impl_->recordNode(*node, workerIntervals != nullptr);
                         if (!recorded) { return recorded; }
                     }
                     return {};
@@ -4180,9 +4212,19 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 }
             } catch (...) { submitted = makeError(Error::Failure); }
             // Always join, including a queue error or exception after acceptance.
-            profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::waitNs);
-            auto joined = run->wait();
+            auto joined = [&] {
+                profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::waitNs);
+                return run->wait();
+            }();
             completed = joined && joined->status == task::TaskGraphStatus::Succeeded;
+            if (workerIntervals && joined) {
+                for (const auto& taskNode : joined->nodes) {
+                    for (auto& node : batches[taskNode.handle.nodeIndex]->nodes) {
+                        if (node->stats.cpuExecuteInterval) { node->stats.cpuWorkerThreadId = taskNode.workerThreadId; }
+                    }
+                }
+                appendWorkerIntervals(*workerIntervals, *joined);
+            }
         } else { record(*batches.front()); }
         if (completed && submitted) { collectBatches(); }
         // Task completion order never changes submission/cancellation order.
@@ -4272,7 +4314,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         passCompletions[passIndex] = index;
         if (batch) {
             auto recording = std::make_unique<Impl::NodeRecording>();
-            result = invokePass([&] { return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex); });
+            result = invokePass([&] {
+                return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex, workerIntervals);
+            });
             if (!result) { return abort(result); }
             batch->nodes.push_back(std::move(recording));
             for (const auto& field : node.reflection.fields()) {
@@ -4286,12 +4330,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             continue;
         }
         result = invokePass([&] { return impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,
-            segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{}); });
+            segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{},
+            workerIntervals); });
         if (!result) {
             if (subsystemCommands && beginSegment(QueueType::Graphics)) {
                 std::string cleanupLog;
                 (void)impl_->subsystemHost->recordPostGraph(*segments.back().commandBuffer,
-                    upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, cleanupLog);
+                    upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, cleanupLog, subsystemProfile);
             }
             return abort(result);
         }
@@ -4314,7 +4359,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         const size_t index = segments.size() - 1;
         for (size_t previous = 0; previous < index; ++previous) { addDependency(index, previous); }
         result = impl_->subsystemHost->recordPostGraph(*segments[index].commandBuffer,
-            upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log);
+            upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log, subsystemProfile);
         if (!result) { return abort(result); }
         if (impl_->debugObserver) {
             impl_->subsystemHost->publishDebugResources(*segments[index].commandBuffer,

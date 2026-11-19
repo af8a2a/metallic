@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -332,7 +333,9 @@ public:
             RECORD_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
             render::RenderGraphSubmitDesc desc{.graphicsQueue = &context.graphicsQueue,
                 .copyQueue = mode == 3 ? context.device.getQueue(render::QueueType::Copy) : nullptr,
-                .recordingWorkerLimit = mode == 0 ? 1u : 4u, .recordingBatchWorkload = 4};
+                .recordingWorkerLimit = mode == 0 ? 1u : 4u, .recordingBatchWorkload = 4,
+                .captureWorkerIntervals = mode != 2};
+            const auto executeBegin = task::TaskClock::now();
             render::Result<> result;
             if (mode == 5) {
                 task::TaskGraph parent("Nested renderer recording");
@@ -343,8 +346,10 @@ public:
                 auto run = tasks->submit(std::move(parent));
                 RECORD_CHECK(run && run->wait());
             } else { result = executor.execute(desc); }
+            const auto executeEnd = task::TaskClock::now();
             if (mode == 2) {
                 RECORD_CHECK(!result && !executor.compiled() && !executor.lastSubmittedCompletion().valid());
+                RECORD_CHECK(executor.executionStats().workerIntervals.empty());
                 std::vector<int> cancelled;
                 for (int i = 4; i >= 0; --i) { if (probe.recorded[i]) { cancelled.push_back(-(i + 1)); } }
                 RECORD_CHECK(probe.events == cancelled && !cancelled.empty());
@@ -359,11 +364,45 @@ public:
             RECORD_CHECK(!probe.wrongThread && !probe.prematureSubmit);
             RECORD_CHECK((probe.events == std::vector<int>{1, 2, 3, 4, 5}));
             const auto& stats = executor.executionStats();
+            RECORD_CHECK(stats.nodes.size() == 5);
+            bool sawInlineBatch = false;
+            for (const auto& pass : stats.nodes) {
+                RECORD_CHECK(pass.cpuPrepareInterval && pass.cpuExecuteInterval);
+                const auto& prepare = *pass.cpuPrepareInterval;
+                const auto& execute = *pass.cpuExecuteInterval;
+                RECORD_CHECK(executeBegin <= prepare.begin && prepare.begin <= prepare.end &&
+                    prepare.end <= execute.begin && execute.begin <= execute.end && execute.end <= executeEnd);
+                const auto section = std::find_if(pass.sections.begin(), pass.sections.end(),
+                    [](const auto& section) { return section.name == "Record transfer"; });
+                RECORD_CHECK(section != pass.sections.end() && section->cpuInterval);
+                RECORD_CHECK(execute.begin <= section->cpuInterval->begin && section->cpuInterval->end <= execute.end);
+                if (mode == 1) { RECORD_CHECK(pass.cpuWorkerThreadId); }
+                if (pass.cpuWorkerThreadId) {
+                    RECORD_CHECK(!pass.cpuInterval && std::any_of(stats.workerIntervals.begin(), stats.workerIntervals.end(),
+                        [&](const auto& batch) {
+                            return batch.workerThreadId == *pass.cpuWorkerThreadId &&
+                                batch.begin <= execute.begin && execute.end <= batch.end;
+                        }));
+                } else if (pass.cpuInterval) {
+                    RECORD_CHECK(pass.cpuInterval->begin <= prepare.begin && execute.end <= pass.cpuInterval->end);
+                } else {
+                    sawInlineBatch = true;
+                }
+            }
             if (mode == 1) {
                 RECORD_CHECK(probe.arrived == 3 && stats.recordingTaskCount == 3 && stats.recordingBatchCount == 3);
                 RECORD_CHECK(stats.parallelRecordedPassCount == 5);
+                RECORD_CHECK(stats.workerIntervals.size() == stats.recordingTaskCount);
+                const auto coordinator = static_cast<uint64_t>(std::hash<std::thread::id>{}(probe.coordinator));
+                for (const auto& interval : stats.workerIntervals) {
+                    RECORD_CHECK(interval.name.starts_with("Record Probe") && interval.workerThreadId != coordinator);
+                    RECORD_CHECK(executeBegin <= interval.begin && interval.begin < interval.end && interval.end <= executeEnd);
+                }
             }
-            if (mode == 0 || mode == 5) { RECORD_CHECK(stats.recordingTaskCount == 0); }
+            if (mode == 0 || mode == 5) {
+                RECORD_CHECK(stats.recordingTaskCount == 0 && stats.workerIntervals.empty());
+            }
+            if (mode == 4) { RECORD_CHECK(sawInlineBatch); }
             const auto recorded = executor.executionSnapshot();
             RECORD_CHECK(recorded && recorded->success && recorded->passes.size() == 5);
             RECORD_CHECK(std::all_of(recorded->passes.begin(), recorded->passes.end(),
@@ -571,7 +610,8 @@ public:
             std::string log;
             RECORD_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
             render::RenderGraphSubmitDesc desc{.graphicsQueue = &context.graphicsQueue,
-                .recordingWorkerLimit = mode == 0 ? 1u : 3u, .preparationBatchWorkload = mode == 5 ? 32u : 4u};
+                .recordingWorkerLimit = mode == 0 ? 1u : 3u, .preparationBatchWorkload = mode == 5 ? 32u : 4u,
+                .captureWorkerIntervals = true};
             render::Result<> result;
             if (mode == 4) {
                 task::TaskGraph outer("Nested prepare");
@@ -588,7 +628,14 @@ public:
                 RECORD_CHECK(probe.preparePublished);
                 RECORD_REQUIRE(executor.waitForSubmittedWork(kTimeout));
             }
-            RECORD_CHECK(executor.executionStats().preparationTaskCount == (mode >= 1 && mode <= 3 ? 3u : 0u));
+            const auto& stats = executor.executionStats();
+            RECORD_CHECK(stats.preparationTaskCount == (mode >= 1 && mode <= 3 ? 3u : 0u));
+            RECORD_CHECK(stats.workerIntervals.size() == stats.preparationTaskCount);
+            const auto coordinator = static_cast<uint64_t>(std::hash<std::thread::id>{}(probe.coordinator));
+            for (const auto& interval : stats.workerIntervals) {
+                RECORD_CHECK(interval.name.starts_with("Prepare ") && interval.workerThreadId != coordinator);
+                RECORD_CHECK(interval.begin < interval.end);
+            }
         }
         return RHITestResult::pass();
     }

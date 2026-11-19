@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Profiling/RHIProfiling.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 
 #include <chrono>
@@ -51,6 +52,7 @@ public:
         std::vector<size_t> children;
         // Duration-only imports have no position on the CPU timeline.
         std::optional<Clock::time_point> beginTime;
+        std::optional<uint64_t> cpuWorkerThreadId;
         std::shared_ptr<const render::CPUThreadProfile> cpuThreadProfile;
         std::vector<render::CPUProfileWorkCounter> cpuWork;
     };
@@ -64,6 +66,8 @@ public:
         double cpuWallMilliseconds = 0.0;
         double cpuIdleMilliseconds = 0.0;
         double cpuEditorMilliseconds = 0.0;
+        std::vector<render::RenderGraphWorkerInterval> workerIntervals;
+        std::vector<render::profiling::RHICPUInterval> rhiIntervals;
     };
 
     struct StreamingHistory {
@@ -135,7 +139,7 @@ public:
     const std::vector<Frame>& capturedFrames() const { return capturedFrames_; }
     bool captureOverflow() const { return captureOverflow_; }
     uint64_t nextFrameIndex() const { return frameIndex_; }
-    FrameScope beginFrame();
+    FrameScope beginFrame(bool captureRHICPU = false);
     Scope scope(std::string_view name, uint32_t color = 0);
     // CPU wall time spent waiting; retained in inclusive parent timings.
     Scope idleScope(std::string_view name);
@@ -149,6 +153,7 @@ public:
 
 private:
     void drawTimelineChart();
+    void addCpuProfileSections(std::span<const render::RenderGraphProfileSection> sections, std::string_view prefix);
     size_t beginSection(std::string_view name, uint32_t color);
     void endSection(size_t nodeIndex);
     size_t addFinishedSection(size_t parent, std::string name, uint32_t color, double cpuMilliseconds);
@@ -182,6 +187,9 @@ private:
     std::map<std::pair<uint64_t, uint64_t>, size_t> capturedExecutions_;
     bool frameActive_ = false;
     std::vector<Node> currentNodes_;
+    std::vector<render::RenderGraphWorkerInterval> currentWorkerIntervals_;
+    std::vector<render::profiling::RHICPUInterval> currentRhiIntervals_;
+    std::optional<render::profiling::RHICPUProfileCapture> rhiCapture_;
     std::vector<size_t> stack_;
     Frame latestFrame_;
     Frame scopeTree_;

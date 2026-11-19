@@ -17,6 +17,7 @@
 
 namespace metallic::render {
 
+struct CPUProfileRecorder;
 class HistoryResourceManager;
 class RenderSubsystemHost;
 class IRenderDebugObserver;
@@ -149,22 +150,25 @@ public:
         uint32_t frameSlot,
         HistoryResourceManager* historyResources,
         std::string& log,
-        RenderFrameContext* frameResources = nullptr);
+        RenderFrameContext* frameResources = nullptr,
+        CPUProfileRecorder* profiler = nullptr);
     Result<> recordPreGraph(
         CommandBuffer& commandBuffer,
         Streamer* streamer,
         std::span<const RenderSubsystemId> requiredSubsystems,
-        std::string& log);
+        std::string& log,
+        CPUProfileRecorder* profiler = nullptr);
     Result<> recordPostGraph(
         CommandBuffer& commandBuffer,
         Streamer* streamer,
         std::span<const RenderSubsystemId> requiredSubsystems,
-        std::string& log);
+        std::string& log,
+        CPUProfileRecorder* profiler = nullptr);
     Result<> reloadShaders(std::string& log);
     std::vector<std::string> debugSubsystemIds(std::span<const RenderSubsystemId> requiredSubsystems) const;
     void publishDebugResources(CommandBuffer& commands, Streamer* streamer,
         std::span<const RenderSubsystemId> requiredSubsystems, IRenderDebugObserver& observer);
-    void endFrame();
+    void endFrame(CPUProfileRecorder* profiler = nullptr);
     void shutdown();
 
     IRenderSubsystem* get(RenderSubsystemId id);

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <utility>
@@ -17,6 +18,7 @@ namespace metallic {
 namespace {
 
 constexpr size_t kProfilerHistorySize = 100;
+constexpr size_t kProfilerRHIIntervalLimit = 512;
 constexpr size_t kProfilerScopeTreeLimit = 8192;
 constexpr uint32_t kIdleColor = 0x9299a3ffu;
 constexpr float kPi = 3.14159265358979323846f;
@@ -120,14 +122,21 @@ const EditorProfiler::Frame* drawTimelineHistory(const std::vector<EditorProfile
     return clicked ? &frame : nullptr;
 }
 
-enum class TimelineScopeKind { Work, Idle, Editor };
+enum class TimelineScopeKind { Work, Idle, Editor, RHI, Worker };
 
 struct TimelineSpan {
+    const char* name;
     size_t node;
-    int depth;
+    size_t lane;
+    int row;
     double begin;
     double duration;
     TimelineScopeKind kind;
+};
+
+struct TimelineLane {
+    std::string name;
+    int row;
 };
 
 double timelineTickStep(double target)
@@ -140,24 +149,81 @@ double timelineTickStep(double target)
     return 10.0 * magnitude;
 }
 
+void appendTimelineLane(std::vector<TimelineLane>& lanes, std::vector<TimelineSpan>& spans, int& rowCount,
+    std::string name, std::vector<TimelineSpan>& samples)
+{
+    std::stable_sort(samples.begin(), samples.end(), [](const auto& a, const auto& b) {
+        if (a.begin == b.begin) { return a.duration > b.duration; }
+        return a.begin < b.begin;
+    });
+    const size_t lane = lanes.size();
+    lanes.push_back({std::move(name), rowCount++});
+    std::vector<double> rowEnds;
+    // Distinct recorders can time overlapping intervals on the same thread.
+    // Keep contained scopes below their active parents and overlapping intervals legible.
+    constexpr double kTimestampToleranceMs = 1e-9;
+    for (auto& sample : samples) {
+        if (sample.duration <= 0.0) { continue; }
+        const double end = sample.begin + sample.duration;
+        size_t row = 0;
+        for (size_t i = 0; i < rowEnds.size(); ++i) {
+            if (rowEnds[i] + kTimestampToleranceMs >= end) { row = i + 1; }
+        }
+        while (row < rowEnds.size() && rowEnds[row] > sample.begin + kTimestampToleranceMs) { ++row; }
+        if (row == rowEnds.size()) { rowEnds.push_back(end); }
+        else { rowEnds[row] = end; }
+        sample.lane = lane;
+        sample.row = rowCount + static_cast<int>(row);
+        spans.push_back(sample);
+    }
+    rowCount += static_cast<int>(rowEnds.size());
+}
+
 void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, double& rangeMs)
 {
     const auto origin = *frame.nodes.front().beginTime;
+    const auto milliseconds = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+    std::vector<TimelineLane> lanes;
     std::vector<TimelineSpan> spans;
-    int depthCount = 0;
-    const auto visit = [&](auto&& self, size_t index, int depth, TimelineScopeKind kind) -> void {
+    std::vector<TimelineSpan> mainSamples;
+    std::map<uint64_t, std::vector<TimelineSpan>> workerSamples;
+    int rowCount = 0;
+    const auto makeSpan = [&](const auto& interval, const char* name, TimelineScopeKind kind) {
+        return TimelineSpan{name, SIZE_MAX, 0, 0, milliseconds(interval.begin - origin),
+            milliseconds(interval.end - interval.begin), kind};
+    };
+    for (const auto& interval : frame.workerIntervals) {
+        workerSamples[interval.workerThreadId].push_back(makeSpan(interval, interval.name.c_str(), TimelineScopeKind::Worker));
+    }
+    const auto visit = [&](auto&& self, size_t index, TimelineScopeKind kind) -> void {
         const auto& node = frame.nodes[index];
-        if (!node.beginTime) { return; }
         if (kind == TimelineScopeKind::Work) {
             if (node.cpuIdle) { kind = TimelineScopeKind::Idle; }
             if (node.cpuEditor) { kind = TimelineScopeKind::Editor; }
         }
-        const double begin = std::chrono::duration<double, std::milli>(*node.beginTime - origin).count();
-        spans.push_back({index, depth, begin, index == 0 ? frame.cpuWallMilliseconds : node.cpuMilliseconds, kind});
-        depthCount = std::max(depthCount, depth + 1);
-        for (const size_t child : node.children) { self(self, child, depth + 1, kind); }
+        if (node.beginTime) {
+            auto& destination = node.cpuWorkerThreadId ? workerSamples[*node.cpuWorkerThreadId] : mainSamples;
+            destination.push_back({node.name.c_str(), index, 0, 0, milliseconds(*node.beginTime - origin),
+                index == 0 ? frame.cpuWallMilliseconds : node.cpuMilliseconds, kind});
+        }
+        for (const size_t child : node.children) { self(self, child, kind); }
     };
-    visit(visit, 0, 0, TimelineScopeKind::Work);
+    visit(visit, 0, TimelineScopeKind::Work);
+    appendTimelineLane(lanes, spans, rowCount, "Main Thread", mainSamples);
+
+    if (!frame.rhiIntervals.empty()) {
+        std::vector<TimelineSpan> operations;
+        operations.reserve(frame.rhiIntervals.size());
+        for (const auto& interval : frame.rhiIntervals) {
+            operations.push_back(makeSpan(interval, interval.name, TimelineScopeKind::RHI));
+        }
+        appendTimelineLane(lanes, spans, rowCount, "RHI CPU (Main Thread)", operations);
+    }
+    for (auto& [threadId, samples] : workerSamples) {
+        char name[48];
+        std::snprintf(name, sizeof(name), "Render worker %016llx", static_cast<unsigned long long>(threadId));
+        appendTimelineLane(lanes, spans, rowCount, name, samples);
+    }
 
     if (!ImGui::BeginChild("CPU scopes", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollWithMouse)) {
         ImGui::EndChild();
@@ -166,28 +232,40 @@ void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, dou
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing() + 2.0f;
     const float rulerHeight = rowHeight + 3.0f;
     const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const float height = std::max(ImGui::GetContentRegionAvail().y, rulerHeight + rowHeight * depthCount);
-    ImGui::InvisibleButton("Timeline canvas", ImVec2(width, height));
+    const float height = std::max(ImGui::GetContentRegionAvail().y, rulerHeight + rowHeight * rowCount);
+    ImGui::InvisibleButton("Timeline canvas", ImVec2(width, height),
+        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
     const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
     const auto& io = ImGui::GetIO();
     const bool hovered = ImGui::IsItemHovered();
-    const bool panning = ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+    const bool active = ImGui::IsItemActive();
+    const bool middlePanning = active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
+    const bool panning = middlePanning || (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left));
     constexpr double kMinimumRangeMs = 0.01;
     const double fullRange = std::max(frame.cpuWallMilliseconds, kMinimumRangeMs);
     double visibleRange = rangeMs > 0.0 ? std::min(rangeMs, fullRange) : fullRange;
     double visibleStart = std::clamp(startMs, 0.0, fullRange - visibleRange);
     if (hovered && ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY) && io.MouseWheel != 0.0f) {
-        const double cursor = static_cast<double>((io.MousePos.x - lo.x) / width);
-        const double zoomedRange = std::clamp(visibleRange * std::pow(1.25, -io.MouseWheel), kMinimumRangeMs, fullRange);
-        startMs = visibleStart + cursor * (visibleRange - zoomedRange);
-        rangeMs = zoomedRange < fullRange ? zoomedRange : 0.0;
-        visibleRange = zoomedRange;
-        startMs = visibleStart = std::clamp(startMs, 0.0, fullRange - visibleRange);
+        if (io.KeyShift) {
+            ImGui::SetScrollY(ImGui::GetScrollY() - io.MouseWheel * rowHeight * 3.0f);
+        } else {
+            const double cursor = static_cast<double>((io.MousePos.x - lo.x) / width);
+            const double zoomedRange = std::clamp(visibleRange * std::pow(1.25, -io.MouseWheel), kMinimumRangeMs, fullRange);
+            startMs = visibleStart + cursor * (visibleRange - zoomedRange);
+            rangeMs = zoomedRange < fullRange ? zoomedRange : 0.0;
+            visibleRange = zoomedRange;
+            startMs = visibleStart = std::clamp(startMs, 0.0, fullRange - visibleRange);
+        }
     }
     if (panning) {
         startMs = visibleStart = std::clamp(visibleStart - io.MouseDelta.x * visibleRange / width,
             0.0, fullRange - visibleRange);
-        if (visibleRange < fullRange) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
+        if (middlePanning) {
+            ImGui::SetScrollY(ImGui::GetScrollY() - io.MouseDelta.y);
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        } else if (visibleRange < fullRange) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        }
     }
 
     const auto xAt = [&](double time) { return lo.x + static_cast<float>((time - visibleStart) * width / visibleRange); };
@@ -195,48 +273,66 @@ void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, dou
     auto* draw = ImGui::GetWindowDrawList();
     draw->PushClipRect(lo, hi, true);
     draw->AddRectFilled(lo, hi, IM_COL32(23, 26, 33, 255));
-    draw->AddRectFilled(lo, ImVec2(hi.x, bodyY), IM_COL32(35, 42, 53, 255));
-    for (int depth = 1; depth < depthCount; depth += 2) {
-        const float y = bodyY + depth * rowHeight;
+    const float rulerY = std::max(lo.y, draw->GetClipRectMin().y);
+    const float rulerBottom = rulerY + rulerHeight;
+    draw->AddRectFilled(ImVec2(lo.x, rulerY), ImVec2(hi.x, rulerBottom), IM_COL32(35, 42, 53, 255));
+    draw->PushClipRect(ImVec2(lo.x, rulerBottom), hi, true);
+    for (int row = 1; row < rowCount; row += 2) {
+        const float y = bodyY + row * rowHeight;
         draw->AddRectFilled(ImVec2(lo.x, y), ImVec2(hi.x, y + rowHeight), IM_COL32(29, 32, 40, 255));
     }
+    draw->PopClipRect();
 
     const double tickStep = timelineTickStep(visibleRange * ImGui::CalcTextSize("00.000 ms  ").x / width);
     const int precision = std::max(0, static_cast<int>(-std::floor(std::log10(tickStep))));
     const double visibleEnd = visibleStart + visibleRange;
     for (double tick = std::ceil(visibleStart / tickStep) * tickStep; tick <= visibleEnd; tick += tickStep) {
         const float x = xAt(tick);
-        draw->AddLine(ImVec2(x, bodyY - 4.0f), ImVec2(x, hi.y), IM_COL32(86, 99, 119, 100));
+        draw->AddLine(ImVec2(x, rulerBottom - 4.0f), ImVec2(x, hi.y), IM_COL32(86, 99, 119, 100));
         char label[48];
         std::snprintf(label, sizeof(label), "%.*f ms", precision, tick);
         if (x + 4.0f + ImGui::CalcTextSize(label).x <= hi.x) {
-            draw->AddText(ImVec2(x + 4.0f, lo.y + 2.0f), IM_COL32(191, 205, 219, 255), label);
+            draw->AddText(ImVec2(x + 4.0f, rulerY + 2.0f), IM_COL32(191, 205, 219, 255), label);
         }
     }
-    draw->AddLine(ImVec2(lo.x, bodyY), ImVec2(hi.x, bodyY), IM_COL32(86, 99, 119, 160));
+    draw->AddLine(ImVec2(lo.x, rulerBottom), ImVec2(hi.x, rulerBottom), IM_COL32(86, 99, 119, 160));
 
     const TimelineSpan* hoveredSpan = nullptr;
     const float textInset = (rowHeight - ImGui::GetFontSize()) * 0.5f;
+    draw->PushClipRect(ImVec2(lo.x, rulerBottom), hi, true);
+    for (const auto& lane : lanes) {
+        const float y = bodyY + lane.row * rowHeight;
+        draw->AddRectFilled(ImVec2(lo.x, y), ImVec2(hi.x, y + rowHeight - 1.0f), IM_COL32(39, 49, 61, 255));
+        draw->AddText(ImVec2(lo.x + 4.0f, y + textInset), IM_COL32(208, 224, 239, 255), lane.name.c_str());
+    }
     for (const auto& span : spans) {
         const double end = span.begin + span.duration;
         if (end <= visibleStart || span.begin >= visibleEnd) { continue; }
-        const auto& node = frame.nodes[span.node];
         const float left = xAt(std::max(span.begin, visibleStart));
         const float right = xAt(std::min(end, visibleEnd));
-        const float y = bodyY + span.depth * rowHeight + 1.0f;
+        const float y = bodyY + span.row * rowHeight + 1.0f;
         const float bottom = y + rowHeight - 2.0f;
         if (right <= left || y >= draw->GetClipRectMax().y || bottom <= draw->GetClipRectMin().y) { continue; }
 
-        ImVec4 tint = ImGui::ColorConvertU32ToFloat4(imguiColor(node.color));
-        tint.x *= 0.57f;
-        tint.y *= 0.57f;
-        tint.z *= 0.57f;
-        ImU32 fill = ImGui::ColorConvertFloat4ToU32(tint);
-        if (span.node == 0) { fill = IM_COL32(51, 77, 101, 255); }
-        if (span.kind == TimelineScopeKind::Idle) { fill = IM_COL32(91, 69, 48, 255); }
-        if (span.kind == TimelineScopeKind::Editor) { fill = IM_COL32(78, 67, 113, 255); }
+        ImU32 fill;
+        switch (span.kind) {
+        case TimelineScopeKind::Work:
+            if (span.node == 0) { fill = IM_COL32(51, 77, 101, 255); }
+            else {
+                ImVec4 tint = ImGui::ColorConvertU32ToFloat4(imguiColor(frame.nodes[span.node].color));
+                tint.x *= 0.57f;
+                tint.y *= 0.57f;
+                tint.z *= 0.57f;
+                fill = ImGui::ColorConvertFloat4ToU32(tint);
+            }
+            break;
+        case TimelineScopeKind::Idle: fill = IM_COL32(91, 69, 48, 255); break;
+        case TimelineScopeKind::Editor: fill = IM_COL32(78, 67, 113, 255); break;
+        case TimelineScopeKind::RHI: fill = IM_COL32(43, 90, 114, 255); break;
+        case TimelineScopeKind::Worker: fill = IM_COL32(41, 101, 87, 255); break;
+        }
         const bool hit = hovered && !panning && io.MousePos.x >= left && io.MousePos.x < right &&
-            io.MousePos.y >= y && io.MousePos.y < bottom;
+            io.MousePos.y >= std::max(y, rulerBottom) && io.MousePos.y < bottom;
         draw->AddRectFilled(ImVec2(left, y), ImVec2(right, bottom), fill);
         if (hit) {
             hoveredSpan = &span;
@@ -245,20 +341,21 @@ void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, dou
         if (right - left > 20.0f) {
             const ImVec4 clip(left + 3.0f, y, right - 3.0f, bottom);
             draw->AddText(nullptr, 0.0f, ImVec2(left + 4.0f, y + textInset - 1.0f),
-                IM_COL32(250, 251, 253, 255), node.name.c_str(), nullptr, 0.0f, &clip);
+                IM_COL32(250, 251, 253, 255), span.name, nullptr, 0.0f, &clip);
         }
     }
     draw->PopClipRect();
+    draw->PopClipRect();
 
     if (hoveredSpan) {
-        size_t index = hoveredSpan->node;
-        std::string path = frame.nodes[index].name;
-        while (index != 0) {
+        std::string path = hoveredSpan->name;
+        for (size_t index = hoveredSpan->node; index != 0 && index != SIZE_MAX;) {
             index = frame.nodes[index].parent;
             path = frame.nodes[index].name + " / " + path;
         }
         ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
         if (ImGui::BeginTooltip()) {
+            ImGui::TextDisabled("%s", lanes[hoveredSpan->lane].name.c_str());
             ImGui::TextUnformatted(path.c_str());
             ImGui::Text("Start %.3f ms   Duration %.3f ms", hoveredSpan->begin, hoveredSpan->duration);
             if (hoveredSpan->kind == TimelineScopeKind::Idle) { ImGui::TextDisabled("Wait"); }
@@ -1121,18 +1218,24 @@ void EditorProfiler::beginCapture()
     captureOverflow_ = false;
 }
 
-EditorProfiler::FrameScope EditorProfiler::beginFrame()
+EditorProfiler::FrameScope EditorProfiler::beginFrame(bool captureRHICPU)
 {
     if (frameActive_) {
         endFrame();
     }
 
     currentNodes_.clear();
+    currentWorkerIntervals_.clear();
+    currentRhiIntervals_.clear();
     currentStreaming_.clear();
     currentOverflow_ = false;
     stack_.clear();
     frameActive_ = true;
     beginSection("Frame", 0xffffffffu);
+    if (captureRHICPU) {
+        currentRhiIntervals_.reserve(kProfilerRHIIntervalLimit);
+        rhiCapture_.emplace(currentRhiIntervals_);
+    }
     return FrameScope(this);
 }
 
@@ -1174,45 +1277,54 @@ void EditorProfiler::addIdleSample(std::string_view name, double milliseconds)
 void EditorProfiler::addCpuProfile(const std::vector<render::RenderGraphProfileSection>& sections)
 {
     if (!frameActive_) { return; }
+    addCpuProfileSections(sections, {});
+}
+
+void EditorProfiler::addCpuProfileSections(std::span<const render::RenderGraphProfileSection> sections, std::string_view prefix)
+{
+    if (sections.empty()) { return; }
     const size_t parent = stack_.empty() ? 0 : stack_.back();
+    const auto frameStart = *currentNodes_.front().beginTime;
     std::vector<size_t> nodes;
+    nodes.reserve(sections.size());
     for (const auto& section : sections) {
-        const auto index = addFinishedSection(section.parent < nodes.size() ? nodes[section.parent] : parent,
-            section.name, colorFromName(section.name), section.cpuMilliseconds);
-        currentNodes_[index].cpuOnly = true;
-        currentNodes_[index].cpuThreadProfile = section.cpuThreadProfile;
-        currentNodes_[index].cpuWork = section.cpuWork;
+        const bool nested = section.parent < nodes.size();
+        const auto index = addFinishedSection(nested ? nodes[section.parent] : parent,
+            nested || prefix.empty() ? section.name : std::string(prefix) + section.name,
+            colorFromName(section.name), section.cpuMilliseconds);
+        auto& node = currentNodes_[index];
+        node.cpuOnly = true;
+        node.cpuThreadProfile = section.cpuThreadProfile;
+        node.cpuWork = section.cpuWork;
+        if (section.cpuInterval && section.cpuInterval->begin >= frameStart) {
+            node.beginTime = section.cpuInterval->begin;
+        }
         nodes.push_back(index);
     }
 }
 
 void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats& stats)
 {
-    if (!frameActive_ || stats.nodes.empty()) {
-        return;
-    }
+    if (!frameActive_) { return; }
 
+    // Execute can return before replacing its previous statistics.
+    const auto frameStart = *currentNodes_.front().beginTime;
+    const auto inFrame = [frameStart](const auto& interval) { return interval && interval->begin >= frameStart; };
+    if (!stats.subsystems.empty() && inFrame(stats.subsystems.front().cpuInterval)) {
+        addCpuProfileSections(stats.subsystems, {});
+    }
+    if (stats.nodes.empty()) { return; }
     if (graphGeneration_ != stats.graphGeneration) {
         clearHistory();
         latestFrame_ = {};
         graphGeneration_ = stats.graphGeneration;
     }
     currentStreaming_.insert(currentStreaming_.end(), stats.streaming.begin(), stats.streaming.end());
+    std::ranges::copy_if(stats.workerIntervals, std::back_inserter(currentWorkerIntervals_),
+        [frameStart](const auto& interval) { return interval.begin >= frameStart; });
     currentOverflow_ |= stats.profilingOverflow;
     const size_t parent = stack_.empty() ? 0 : stack_.back();
-    std::vector<size_t> preparationNodes;
-    preparationNodes.reserve(stats.preparation.size());
-    for (const auto& section : stats.preparation) {
-        const bool nested = section.parent < preparationNodes.size();
-        const size_t sectionParent = nested ? preparationNodes[section.parent] : parent;
-        const auto index = addFinishedSection(sectionParent,
-            nested ? section.name : "Graph preparation / " + section.name,
-            colorFromName(section.name), section.cpuMilliseconds);
-        currentNodes_[index].cpuOnly = true;
-        currentNodes_[index].cpuThreadProfile = section.cpuThreadProfile;
-        currentNodes_[index].cpuWork = section.cpuWork;
-        preparationNodes.push_back(index);
-    }
+    addCpuProfileSections(stats.preparation, "Graph preparation / ");
     const size_t group = addFinishedSection(
         parent,
         "RenderGraph GPU envelope",
@@ -1232,7 +1344,21 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
         currentNodes_[nodeIndex].renderGraphExecutionId = stats.executionId;
         currentNodes_[nodeIndex].renderGraphNodeId = stat.id;
         currentNodes_[nodeIndex].queue = stat.queue;
+        if (inFrame(stat.cpuInterval)) { currentNodes_[nodeIndex].beginTime = stat.cpuInterval->begin; }
+        const auto addStage = [&](std::string_view name, const auto& interval, std::optional<uint64_t> worker) {
+            if (!inFrame(interval)) { return; }
+            const auto stage = addFinishedSection(nodeIndex,
+                stat.cpuInterval ? std::string(name) : stat.name + " / " + std::string(name),
+                colorFromName(name), interval->milliseconds());
+            currentNodes_[stage].beginTime = interval->begin;
+            currentNodes_[stage].cpuOnly = true;
+            currentNodes_[stage].cpuWorkerThreadId = worker;
+        };
+        addStage("Prepare", stat.cpuPrepareInterval, std::nullopt);
+        addStage(stat.cpuInterval ? "Execute" : "Record", stat.cpuExecuteInterval, stat.cpuWorkerThreadId);
+        const auto& scopeInterval = stat.cpuInterval ? stat.cpuInterval : stat.cpuExecuteInterval;
         std::vector<size_t> sectionNodes;
+        sectionNodes.reserve(stat.sections.size());
         for (uint32_t i = 0; i < stat.sections.size(); ++i) {
             const auto& section = stat.sections[i];
             const size_t sectionParent = section.parent < sectionNodes.size() ? sectionNodes[section.parent] : nodeIndex;
@@ -1247,6 +1373,11 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
             node.cpuOnly = section.cpuOnly;
             node.cpuThreadProfile = section.cpuThreadProfile;
             node.cpuWork = section.cpuWork;
+            if (inFrame(section.cpuInterval) && scopeInterval && section.cpuInterval->begin >= scopeInterval->begin &&
+                    section.cpuInterval->end <= scopeInterval->end) {
+                node.beginTime = section.cpuInterval->begin;
+                node.cpuWorkerThreadId = stat.cpuWorkerThreadId;
+            }
             sectionNodes.push_back(child);
         }
     }
@@ -1510,7 +1641,7 @@ void EditorProfiler::drawTimelineChart()
     ImGui::SameLine();
     if (ImGui::Button("Fit")) { fit(); }
     ImGui::SameLine();
-    ImGui::TextDisabled("Wheel to zoom  |  Drag to pan");
+    ImGui::TextDisabled("Wheel to zoom  |  Middle drag to pan and scroll  |  Shift+wheel to scroll");
 
     if (const Frame* selected = drawTimelineHistory(history_, frame->index)) {
         timelinePinnedFrame_ = *selected;
@@ -1520,9 +1651,13 @@ void EditorProfiler::drawTimelineChart()
     if (frame->nodes.empty()) {
         ImGui::TextDisabled("Waiting for a completed CPU frame.");
     } else {
-        ImGui::Text("Main Thread  /  Frame %llu", static_cast<unsigned long long>(frame->index));
+        ImGui::Text("Editor frame %llu", static_cast<unsigned long long>(frame->index));
         ImGui::SameLine();
         ImGui::TextDisabled("Wall %.2f ms   CPU %.2f ms", frame->cpuWallMilliseconds, frame->nodes.front().cpuMilliseconds);
+        if (frame->workerIntervals.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("No render worker samples");
+        }
         drawTimelineScopes(*frame, timelineStartMs_, timelineRangeMs_);
     }
 }
@@ -1583,6 +1718,8 @@ void EditorProfiler::endFrame()
         return;
     }
 
+    rhiCapture_.reset();
+    currentOverflow_ |= currentRhiIntervals_.size() == kProfilerRHIIntervalLimit;
     while (!stack_.empty()) {
         endSection(stack_.back());
     }
@@ -1644,6 +1781,8 @@ void EditorProfiler::endFrame()
     latestFrame_.cpuWallMilliseconds = wallMilliseconds;
     latestFrame_.cpuIdleMilliseconds = idleMilliseconds;
     latestFrame_.cpuEditorMilliseconds = editorMilliseconds;
+    latestFrame_.workerIntervals = currentWorkerIntervals_;
+    latestFrame_.rhiIntervals = currentRhiIntervals_;
     latestFrame_.nodes = currentNodes_;
     registerFrameScopes(latestFrame_.nodes);
     addHistoryFrame(latestFrame_);

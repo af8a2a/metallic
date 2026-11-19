@@ -29,10 +29,12 @@ public:
     void end()
     {
         if (!recorder_ || index_ == UINT32_MAX) { return; }
-        recorder_->sections[index_].cpuMilliseconds = std::chrono::duration<double, std::milli>(Clock::now() - begin_).count();
+        auto& section = recorder_->sections[index_];
+        section.cpuInterval = RenderGraphCPUInterval{begin_, Clock::now()};
+        section.cpuMilliseconds = section.cpuInterval->milliseconds();
         if (recorder_->threadDiagnostics) {
             const auto end = sampleCPUThread();
-            recorder_->sections[index_].cpuThreadProfile = std::make_shared<CPUThreadProfile>(cpuThreadProfile(threadBegin_, end));
+            section.cpuThreadProfile = std::make_shared<CPUThreadProfile>(cpuThreadProfile(threadBegin_, end));
         }
         recorder_->parent = parent_;
         index_ = UINT32_MAX;

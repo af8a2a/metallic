@@ -10,8 +10,13 @@
 #include <unordered_set>
 #include <vector>
 
+namespace metallic::task {
+struct TaskGraphSnapshot;
+}
+
 namespace metallic::render::detail {
 
+void appendWorkerIntervals(std::vector<RenderGraphWorkerInterval>& intervals, task::TaskGraphSnapshot& joined);
 TextureUsageBits addTextureUsage(TextureUsageBits usage, TextureUsageBits flag);
 BufferUsageBits addBufferUsage(BufferUsageBits usage, BufferUsageBits flag);
 bool isTextureField(const RenderGraphField& field);

@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "ImGuiTestSnapshot.h"
 #include "Editor/EditorProfiler.h"
+#include "Runtime/Render/GAPI/RHIEvents.h"
 #include "Runtime/Render/RenderSample.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -1107,7 +1109,7 @@ public:
         try {
             auto& io = ImGui::GetIO();
             io.IniFilename = nullptr;
-            constexpr int width = 776, height = 420;
+            constexpr int width = 930, height = 730;
             io.DisplaySize = ImVec2(width, height);
             unsigned char* atlas = nullptr;
             int atlasWidth = 0, atlasHeight = 0;
@@ -1144,7 +1146,7 @@ public:
             checkProfile(ImGui::FindWindowByName("timeline") == nullptr, "Timeline opened a standalone window");
             const auto recordFrame = [&](int waitMs) {
                 using namespace std::chrono_literals;
-                auto frame = profiler.beginFrame();
+                auto frame = profiler.beginFrame(true);
                 auto render = profiler.scope("Render Frame");
                 {
                     auto idle = profiler.idleScope("Wait Slot Completion");
@@ -1155,14 +1157,84 @@ public:
                     std::this_thread::sleep_for(2ms);
                 }
                 {
-                    auto graph = profiler.scope("Record RenderGraph");
+                    auto graph = profiler.scope("RenderGraph Preview");
+                    RenderGraphExecutionStats stats{.graphGeneration = 1};
+                    const auto subsystemBegin = EditorProfiler::Clock::now();
                     std::this_thread::sleep_for(1ms);
-                    auto commands = profiler.scope("Record draw commands");
-                    std::this_thread::sleep_for(3ms);
+                    const auto subsystemEnd = EditorProfiler::Clock::now();
+                    const RenderGraphCPUInterval subsystemTime{subsystemBegin, subsystemEnd};
+                    stats.subsystems = {
+                        {.name = "Subsystems / Begin frame", .cpuMilliseconds = subsystemTime.milliseconds(),
+                            .cpuOnly = true, .cpuInterval = subsystemTime},
+                        {.name = "render.gpu-scene", .parent = 0, .cpuMilliseconds = subsystemTime.milliseconds(),
+                            .cpuOnly = true, .cpuInterval = subsystemTime},
+                    };
+                    const auto prepareBegin = EditorProfiler::Clock::now();
+                    std::this_thread::sleep_for(2ms);
+                    const auto prepareEnd = EditorProfiler::Clock::now();
+                    const auto visibilityBegin = EditorProfiler::Clock::now();
+                    std::this_thread::sleep_for(1ms);
+                    const auto visibilityPrepareEnd = EditorProfiler::Clock::now();
+                    stats.workerIntervals.resize(2);
+                    const auto recordWorker = [](RenderGraphWorkerInterval& interval, const char* name, int duration) {
+                        interval.name = name;
+                        interval.workerThreadId = std::hash<std::thread::id>{}(std::this_thread::get_id());
+                        interval.begin = EditorProfiler::Clock::now();
+                        const RHIOperationScope wait(RHIOperation::FenceWait);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(duration));
+                        interval.end = EditorProfiler::Clock::now();
+                    };
+                    {
+                        std::jthread first(recordWorker, std::ref(stats.workerIntervals[0]), "Prepare visibility resources", 4);
+                        std::jthread second(recordWorker, std::ref(stats.workerIntervals[1]), "Record lighting batch", 5);
+                        std::this_thread::sleep_for(1ms);
+                        const RHIOperationScope submit(RHIOperation::Submit);
+                        const RHIOperationScope native(RHIOperation::NativeSubmit);
+                        std::this_thread::sleep_for(2ms);
+                    }
+                    const auto visibilityEnd = EditorProfiler::Clock::now();
+                    const RenderGraphCPUInterval visibility{visibilityBegin, visibilityEnd};
+                    const RenderGraphCPUInterval visibilityExecute{visibilityPrepareEnd, visibilityEnd};
+                    stats.nodes.push_back({.id = 0, .name = "Visibility", .type = "VisibilityBufferPass",
+                        .cpuMilliseconds = visibility.milliseconds(), .cpuInterval = visibility,
+                        .cpuPrepareInterval = RenderGraphCPUInterval{visibilityBegin, visibilityPrepareEnd},
+                        .cpuExecuteInterval = visibilityExecute});
+                    stats.nodes[0].sections.push_back({.name = "Cull instances",
+                        .cpuMilliseconds = visibilityExecute.milliseconds(), .cpuInterval = visibilityExecute});
+                    const auto& worker = stats.workerIntervals[1];
+                    const RenderGraphCPUInterval record{worker.begin, worker.end};
+                    stats.nodes.push_back({.id = 1, .name = "Lighting", .type = "TestPass",
+                        .cpuMilliseconds = record.milliseconds(), .cpuPrepareInterval = RenderGraphCPUInterval{prepareBegin, prepareEnd},
+                        .cpuExecuteInterval = record, .cpuWorkerThreadId = worker.workerThreadId});
+                    profiler.addRenderGraphStats(stats);
                 }
             };
             for (int i = 0; i < 20; ++i) { recordFrame(1 + (i % 5)); }
-            checkProfile(draw().find("Frame 19") != std::string::npos, "Live timeline did not show the latest CPU frame");
+            const auto& latest = profiler.history().back();
+            const auto findNode = [&](std::string_view name) -> const EditorProfiler::Node& {
+                const auto found = std::ranges::find(latest.nodes, name, &EditorProfiler::Node::name);
+                checkProfile(found != latest.nodes.end(), "Missing imported timeline scope " + std::string(name));
+                return *found;
+            };
+            const auto& hook = findNode("render.gpu-scene");
+            checkProfile(hook.beginTime && latest.nodes[hook.parent].name == "Subsystems / Begin frame",
+                "Subsystem hook lost its actual start time or phase");
+            const auto& visibility = findNode("Visibility (VisibilityBufferPass)");
+            checkProfile(visibility.beginTime && findNode("Prepare").beginTime && findNode("Execute").beginTime &&
+                findNode("Cull instances").beginTime == findNode("Execute").beginTime,
+                "Serial pass or its measured child scopes were not positioned");
+            const auto& record = findNode("Lighting / Record");
+            checkProfile(!findNode("Lighting (TestPass)").beginTime && !findNode("Lighting / Prepare").cpuWorkerThreadId &&
+                record.beginTime && record.cpuWorkerThreadId == latest.workerIntervals[1].workerThreadId,
+                "Parallel pass preparation and recording did not retain separate thread ownership");
+            checkProfile(latest.workerIntervals.size() == 2 &&
+                latest.workerIntervals[0].workerThreadId != latest.workerIntervals[1].workerThreadId,
+                "Editor history lost the separate render workers");
+            checkProfile(latest.rhiIntervals.size() == 2 && std::string_view(latest.rhiIntervals[0].name) == "Native Queue Submit" &&
+                std::string_view(latest.rhiIntervals[1].name) == "Queue Submit" &&
+                latest.rhiIntervals[1].begin <= latest.rhiIntervals[0].begin && latest.rhiIntervals[0].end <= latest.rhiIntervals[1].end,
+                "Editor history lost nested RHI intervals or mixed in RHI calls from worker threads");
+            checkProfile(draw().find("Editor frame 19") != std::string::npos, "Live timeline did not show the latest CPU frame");
             if (const char* screenshot = std::getenv("METALLIC_TEST_TIMELINE_PNG")) {
                 std::string message;
                 const bool saved = saveImGuiTestDrawDataPng(*ImGui::GetDrawData(), atlas, atlasWidth, atlasHeight,
@@ -1176,20 +1248,63 @@ public:
             draw();
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
             const auto pinned = draw();
-            checkProfile(pinned.find("Main Thread  /  Frame 0") != std::string::npos, "Click did not select the first frame");
+            checkProfile(pinned.find("Editor frame 0") != std::string::npos, "Click did not select the first frame");
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
             draw();
 
-            for (int i = 0; i < 105; ++i) { auto frame = profiler.beginFrame(); }
-            checkProfile(profiler.history().front().index > 0 && draw().find("Main Thread  /  Frame 0") != std::string::npos,
+            ImGui::SetWindowSize("Profiler", ImVec2(width - 16.0f, 380.0f));
+            draw();
+            draw();
+            const auto timelineChild = std::ranges::find_if(window->DC.ChildWindows, [](const ImGuiWindow* child) {
+                return std::string_view(child->Name).find("CPU scopes") != std::string_view::npos;
+            });
+            checkProfile(timelineChild != window->DC.ChildWindows.end(), "Missing timeline canvas child");
+            auto* canvas = *timelineChild;
+            checkProfile(canvas->ScrollMax.y > 0.0f, "Middle drag fixture needs vertical scroll space");
+            const ImVec2 dragStart = canvas->InnerClipRect.GetCenter();
+            io.AddMousePosEvent(dragStart.x, dragStart.y);
+            draw();
+            io.AddMouseWheelEvent(0.0f, 2.0f);
+            draw();
+            const auto rulerVertices = [&] {
+                std::vector<float> positions;
+                const float top = canvas->DC.CursorStartPos.y;
+                const float bottom = top + ImGui::GetTextLineHeight();
+                for (const auto& vertex : canvas->DrawList->VtxBuffer) {
+                    if (vertex.pos.y >= top && vertex.pos.y < bottom) { positions.push_back(vertex.pos.x); }
+                }
+                return positions;
+            };
+            const auto rulerBefore = rulerVertices();
+            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true);
+            draw();
+            checkProfile(context->ActiveId == canvas->GetID("Timeline canvas"), "Middle press did not capture the canvas");
+            io.AddMousePosEvent(dragStart.x + 64.0f, dragStart.y);
+            draw();
+            checkProfile(!rulerBefore.empty() && rulerBefore != rulerVertices(), "Middle drag did not pan the time ruler");
+            io.AddMousePosEvent(dragStart.x + 64.0f, canvas->InnerClipRect.Min.y - 20.0f);
+            draw();
+            draw();
+            checkProfile(canvas->Scroll.y > 0.0f, "Middle drag did not scroll the tracks outside the canvas");
+            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false);
+            draw();
+            checkProfile(context->ActiveId == 0, "Middle release left the timeline captured");
+
+            RenderGraphExecutionStats stale{.graphGeneration = 1};
+            stale.nodes.push_back({.id = 0, .name = "Color", .type = "TestPass"});
+            stale.workerIntervals = latest.workerIntervals;
+            { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stale); }
+            checkProfile(profiler.history().back().workerIntervals.empty(), "Stale render tasks leaked into a later frame");
+            for (int i = 0; i < 104; ++i) { auto frame = profiler.beginFrame(); }
+            checkProfile(profiler.history().front().index > 0 && draw().find("Editor frame 0") != std::string::npos,
                 "Timeline lost the pinned frame when history advanced");
             io.AddMousePosEvent(start.x + 8.0f, start.y + 8.0f);
             draw();
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
             draw();
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
-            checkProfile(draw().find("Frame 124") != std::string::npos, "Resume did not return to the latest CPU frame");
-            return RHITestResult::pass("Profiler timeline chart tab, startup, history selection, pinned eviction and resume");
+            checkProfile(draw().find("Editor frame 124") != std::string::npos, "Resume did not return to the latest CPU frame");
+            return RHITestResult::pass("Profiler timeline history, middle-button navigation, pinned eviction and resume");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

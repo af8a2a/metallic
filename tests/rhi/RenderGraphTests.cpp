@@ -8,6 +8,7 @@
 #include "Runtime/Render/Core/HistoryResources.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/ImportanceSampling.h"
@@ -33,6 +34,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -10658,7 +10660,15 @@ public:
         render::EnvironmentSettings environment;
         environment.intensity = 2.0f;
         world.setEnvironment(environment);
-        result = host.beginFrame(7, 1, nullptr, log);
+
+        std::unique_ptr<render::CommandPool> pool;
+        std::unique_ptr<render::CommandBuffer> commands;
+        if (!context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }) ||
+            !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) || !commands->begin()) {
+            return RHITestResult::fail("subsystem profiling command setup failed");
+        }
+        render::CPUProfileRecorder profile;
+        result = host.beginFrame(7, 1, nullptr, log, nullptr, &profile);
         if (!result ||
             !render::hasRenderChange(host.lastChanges(), render::RenderChangeBits::Lighting) ||
             !render::hasRenderChange(
@@ -10666,7 +10676,40 @@ public:
                 render::RenderChangeBits::InvalidateTemporalHistory)) {
             return RHITestResult::fail("world change bits were not aggregated");
         }
-        host.endFrame();
+        const render::RenderSubsystemId required[] = {"test.consumer"};
+        if (!host.recordPreGraph(*commands, nullptr, required, log, &profile) ||
+            !host.recordPostGraph(*commands, nullptr, required, log, &profile) || !commands->end()) {
+            return RHITestResult::fail("subsystem graph hooks failed: " + log);
+        }
+        host.endFrame(&profile);
+
+        size_t next = 0;
+        const auto checkPhase = [&](std::string_view name, std::initializer_list<std::string_view> hooks) {
+            if (next + hooks.size() >= profile.sections.size()) { return false; }
+            const size_t parent = next++;
+            const auto& phase = profile.sections[parent];
+            if (phase.name != name || phase.parent != UINT32_MAX || !phase.cpuOnly || !phase.cpuInterval ||
+                phase.cpuInterval->end < phase.cpuInterval->begin) {
+                return false;
+            }
+            for (const auto hook : hooks) {
+                const auto& sample = profile.sections[next++];
+                if (sample.name != hook || sample.parent != parent || !sample.cpuOnly || !sample.cpuInterval ||
+                    sample.cpuInterval->begin < phase.cpuInterval->begin || sample.cpuInterval->end > phase.cpuInterval->end ||
+                    sample.cpuInterval->end < sample.cpuInterval->begin) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (!checkPhase("Subsystems / Begin frame", {"test.base", "test.consumer", ConfigurableRenderSubsystemProbe::kSubsystemId}) ||
+            !checkPhase("Subsystems / Pre-graph", {"test.base", "test.consumer"}) ||
+            !checkPhase("Subsystems / Post-graph", {"test.consumer", "test.base"}) ||
+            !checkPhase("Subsystems / End frame", {ConfigurableRenderSubsystemProbe::kSubsystemId, "test.consumer", "test.base"}) ||
+            next != profile.sections.size()) {
+            return RHITestResult::fail("subsystem phase intervals did not preserve hook order and nesting");
+        }
+
         result = host.beginFrame(8, 2, nullptr, log);
         if (!result || host.lastChanges() != render::RenderChangeBits::None) {
             return RHITestResult::fail("world change bits were not consumed exactly once");
@@ -10715,9 +10758,16 @@ public:
         if (!result || !failingHost.activate("test.failing", log)) {
             return RHITestResult::fail(log);
         }
-        result = failingHost.beginFrame(0, 0, nullptr, log);
+        profile.reset();
+        next = 0;
+        result = failingHost.beginFrame(0, 0, nullptr, log, nullptr, &profile);
         if (result || log.find("test.failing") == std::string::npos) {
             return RHITestResult::fail("hook error did not propagate with subsystem id");
+        }
+        if (!checkPhase("Subsystems / Begin frame", {"test.failing"}) ||
+            !checkPhase("Subsystems / End frame", {"test.failing"}) || next != profile.sections.size() ||
+            profile.sections[0].cpuInterval->end > profile.sections[2].cpuInterval->begin) {
+            return RHITestResult::fail("failed beginFrame did not close and time its cleanup as a separate phase");
         }
         return RHITestResult::pass();
     }

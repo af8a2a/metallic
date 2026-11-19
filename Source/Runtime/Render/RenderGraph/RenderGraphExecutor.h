@@ -29,6 +29,8 @@ struct RenderGraphSubmitDesc {
     // CPU attribution only; can also be enabled process-wide by
     // METALLIC_RENDER_SCHEDULING_DIAGNOSTICS=1. No diagnostic clocks run while disabled.
     bool schedulingDiagnostics = false;
+    // Publish the TaskSystem intervals for joined preparation and recording batches.
+    bool captureWorkerIntervals = false;
 };
 
 struct RenderGraphCompileOptions {
@@ -53,6 +55,10 @@ struct RenderGraphNodeExecutionStat {
     bool gpuTimingAvailable = false;
     QueueType queue = QueueType::Graphics;
     std::vector<RenderGraphProfileSection> sections;
+    // The aggregate CPU interval is contiguous only for serial passes.
+    std::optional<RenderGraphCPUInterval> cpuInterval;
+    std::optional<RenderGraphCPUInterval> cpuPrepareInterval, cpuExecuteInterval;
+    std::optional<uint64_t> cpuWorkerThreadId;
 };
 
 struct RenderGraphExecutionStats {
@@ -66,12 +72,14 @@ struct RenderGraphExecutionStats {
     std::vector<SceneStreamingProfile> streaming;
     bool profilingOverflow = false;
     std::vector<RenderGraphProfileSection> preparation;
+    std::vector<RenderGraphProfileSection> subsystems;
     std::vector<std::string> overlapBlockingPasses;
     uint32_t drainReasonMask = 0; // 1: pass contract, 2: scene revision; legacy bit 4 no longer drains
     uint32_t externalCompletionCount = 0; // Unfinished external consumers carried as GPU dependencies
     uint32_t recordingBatchCount = 0;
     uint32_t parallelRecordedPassCount = 0;
     uint32_t recordingTaskCount = 0;
+    std::vector<RenderGraphWorkerInterval> workerIntervals;
     uint32_t preparationTaskCount = 0;
     bool pipelinedSubmission = false;
     uint32_t submittedBatchCount = 0;
