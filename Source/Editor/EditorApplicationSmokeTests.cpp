@@ -849,6 +849,17 @@ bool EditorApplication::runMultiViewportSmokeTest()
                     "Fixed/adaptive scene extent and actual FinalBlit extent match the selected view mode")) {
                 return false;
             }
+            if (!viewportView_.adaptiveResolution()) {
+                const uint64_t renderWidth = viewportView_.renderWidth();
+                const uint64_t renderHeight = viewportView_.renderHeight();
+                const uint64_t scaledWidth = final->desc.width * renderHeight;
+                const uint64_t scaledHeight = final->desc.height * renderWidth;
+                if (!expect(std::max(scaledWidth, scaledHeight) - std::min(scaledWidth, scaledHeight) <=
+                        std::max(renderWidth, renderHeight),
+                        "Fixed FinalBlit fits the viewport at the render aspect ratio")) {
+                    return false;
+                }
+            }
         }
 
         if (index == 10 || index == 11) {

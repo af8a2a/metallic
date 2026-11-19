@@ -34,7 +34,9 @@ Shadows ── shadows / lights ── Deferred
 Deferred → AutoExposure → FinalBlit ← ColorGrading
 ```
 
-使用固定 LOD 0、硬件光栅和实例/HZB/meshlet 裁剪，关闭 Hybrid Software Rasterization、CLAS 和 cluster ray tracing。阴影走 VSM；图中没有 RT shadow、NRD 或 DLSS pass。输出为原生 1920×1080，关闭 temporal jitter。
+使用固定 LOD 0、硬件光栅和实例/HZB/meshlet 裁剪，关闭 Hybrid Software Rasterization、CLAS 和 cluster ray tracing。场景使用 VSM 阴影、固定 1920×1080 的内部渲染和无抖动相机。编辑器视口等比显示 16:9 画面，剩余空间留边。
+
+在支持 NVIDIA Streamline DLSS-SR 的设备上，可选择 **Virtual Shadow Maps / Sponza (DLSS-SR)**（`virtual-shadow-map-sponza-dlss`）。该样例沿用相同场景、相机和 VSM 设置，开启相机抖动，并在曝光前用 Deferred 的深度与运动矢量重建线性 HDR。默认 **Quality** 由 SDK 为 1920×1080 重建目标选择内部尺寸。`DLSSSR` 节点可切换到 **DLAA**，用同一目标尺寸比较原生分辨率的时域抗锯齿。[DLSS-SR 管线](../Pipelines/Samples/virtual_shadow_map_sponza_dlss.metallic_graph.json)
 
 VSM 使用 128×128 texel 页、每轴 128 个虚拟页、2048 个物理页预算、6 层 clipmap，开启页缓存和 receiver footprint。默认 SMRT 为 2 条射线 × 16 个搜索样本，并启用最多 32 帧的独立阴影历史；PCF 备选半径为 1 texel。第一层在灯光平面的半宽为 1 m，后续为 2/4/8/16/32 m；这些是灯光投影范围，并非相机深度分割距离。每层虚拟分辨率为 16384×16384，实际物理页按接收点需求分配。
 

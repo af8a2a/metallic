@@ -1170,7 +1170,8 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(const SlangShaderDesc& des
 Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
     const SlangShaderDesc& desc,
     const SlangShaderCacheOptions& cacheOptions,
-    std::string& log)
+    std::string& log,
+    OrdinarySnapshotRetry& retry)
 {
     using Clock = std::chrono::steady_clock;
     const auto requestStart = Clock::now();
@@ -1215,6 +1216,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
                 if (ordinaryLease.epoch) {
                     ordinaryContext = std::make_unique<SnapshotCompileContext>(*ordinaryLease.epoch->snapshot, seal, false);
                     ordinaryContext->invocationMetrics = &metrics;
+                    ordinaryContext->ordinaryRetry = &retry;
                     snapshotContext = ordinaryContext.get();
                 }
             }
@@ -1468,16 +1470,22 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(const SlangShaderDesc& des
     const SlangShaderCacheOptions& options, std::string& log)
 {
     const auto start = std::chrono::steady_clock::now();
-    gOrdinarySnapshotUnqualified = false;
-    auto result = compileSlangShaderToSpirvSnapshotAttempt(desc, options, log);
-    if (!result && !gWarmupSnapshotCompileContext && gOrdinarySnapshotUnqualified) {
+    OrdinarySnapshotRetry retry;
+    auto result = compileSlangShaderToSpirvSnapshotAttempt(desc, options, log, retry);
+    if (!result && !retry.notificationFailure.empty()) {
+        // The pool discards the invalidated epoch before the next acquisition.
+        spdlog::warn("[Slang] Retrying {}.{} after {}", desc.moduleName, desc.entryPointName, retry.notificationFailure);
+        retry = {};
+        result = compileSlangShaderToSpirvSnapshotAttempt(desc, options, log, retry);
+    }
+    if (!result && retry.unqualified) {
         struct FreshScope {
             FreshScope() { gBypassOrdinarySnapshot = true; }
             ~FreshScope() { gBypassOrdinarySnapshot = false; }
         } scope;
         // Unsupported lookup graphs preserve ordinary compiler behavior using
         // a new fresh ISession, with no namespace-unqualified cache reads/writes.
-        result = compileSlangShaderToSpirvSnapshotAttempt(desc, options, log);
+        result = compileSlangShaderToSpirvSnapshotAttempt(desc, options, log, retry);
     }
     if (result) {
         result->metrics.totalTimeNanoseconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(

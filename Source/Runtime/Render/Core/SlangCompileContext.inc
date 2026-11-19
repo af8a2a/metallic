@@ -254,7 +254,10 @@ bool writeEncodedShaderCache(const fs::path& path, std::span<const uint8_t> byte
 #include "SlangSourceEpochPool.inc"
 
 thread_local bool gBypassOrdinarySnapshot = false;
-thread_local bool gOrdinarySnapshotUnqualified = false;
+struct OrdinarySnapshotRetry {
+    std::string notificationFailure;
+    bool unqualified = false;
+};
 enum class SnapshotValidation { Notifications, CacheHit, Complete };
 struct SnapshotCompileContext {
     SnapshotCompileContext(SlangSnapshotFileSystem& source, std::shared_ptr<CompilerProducerSeal> seal, bool share, bool defer = false)
@@ -262,9 +265,10 @@ struct SnapshotCompileContext {
           shareSession(share), deferPublication(defer) {}
     ~SnapshotCompileContext()
     {
+        if (!ordinaryRetry) { return; }
         try {
-            if (!deferPublication && provenance->hasUnqualifiedLookups()) { gOrdinarySnapshotUnqualified = true; }
-        } catch (...) { if (!deferPublication) { gOrdinarySnapshotUnqualified = true; } }
+            ordinaryRetry->unqualified = provenance->hasUnqualifiedLookups();
+        } catch (...) { ordinaryRetry->unqualified = true; }
     }
     SlangSnapshotFileSystem& snapshot;
     std::unique_ptr<SlangSnapshotFileSystem> provenance;
@@ -276,6 +280,7 @@ struct SnapshotCompileContext {
     std::map<std::string, Slang::ComPtr<slang::IModule>> modules;
     std::function<bool(uint64_t, const fs::path&, const ShaderCompileResult&)> stage;
     ShaderCompileMetrics* invocationMetrics = nullptr;
+    OrdinarySnapshotRetry* ordinaryRetry = nullptr;
     ISlangFileSystem* fileSystem() const noexcept { return provenance.get(); }
     ShaderNamespaceProof sourceProof() const { return provenance->sourceProof(producer->identity()); }
     bool guard(std::string& log, SnapshotValidation validation) const
@@ -295,6 +300,10 @@ struct SnapshotCompileContext {
             auto& time = validation == SnapshotValidation::Notifications ? invocationMetrics->sourceNotificationValidationTimeNanoseconds :
                 invocationMetrics->sourceValidationTimeNanoseconds;
             time += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - sourceStarted).count());
+        }
+        if (!sourceValid && ordinaryRetry) {
+            if (validation == SnapshotValidation::Notifications) { ordinaryRetry->notificationFailure = log; }
+            else { snapshot.validateNotifications(ordinaryRetry->notificationFailure); }
         }
         return sourceValid;
     }

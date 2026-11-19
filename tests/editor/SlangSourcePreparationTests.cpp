@@ -1,6 +1,8 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/sinks/callback_sink.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
@@ -309,6 +311,48 @@ TEST_F(SlangSourcePreparationTest, NewShadowingHeaderInvalidatesPreparedNamespac
     EXPECT_FALSE(changed->metrics.sourceEpochReused);
     EXPECT_GT(changed->metrics.sourceEpochCaptureTimeNanoseconds, 0u);
     EXPECT_NE(changed->spirv, primed->shaders[0].spirv);
+}
+
+TEST_F(SlangSourcePreparationTest, OrdinaryCompileRetriesAfterWorkingDirectoryNotification)
+{
+    const auto workingDirectory = directory_ / "run";
+    fs::create_directory(workingDirectory);
+    struct RestoreWorkingDirectory {
+        fs::path previous = fs::current_path();
+        ~RestoreWorkingDirectory() { fs::current_path(previous); }
+    } restoreWorkingDirectory;
+    fs::current_path(workingDirectory);
+    writeText(source_ / "PreparationProbe.slang", "module PreparationProbe; RWStructuredBuffer<uint> output;\n"
+        "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = 17u; }\n");
+    const auto desc = request();
+    std::string log;
+    const auto primed = primeCache(desc, log);
+    ASSERT_TRUE(primed) << log;
+    const std::array roots{source_};
+    const auto prepared = prepareSlangSourceEpoch(roots, log);
+    ASSERT_TRUE(prepared) << log;
+
+    size_t compileAttempts = 0;
+    auto sink = std::make_shared<spdlog::sinks::callback_sink_st>([&](const spdlog::details::log_msg& message) {
+        const std::string_view payload(message.payload.data(), message.payload.size());
+        // This log is emitted after the request has acquired its source epoch.
+        if (payload.starts_with("[Slang] Begin compile PreparationProbe.probe ") && ++compileAttempts == 1) {
+            writeText(workingDirectory / "profile-output.elf", "runtime output");
+        }
+    });
+    struct RestoreLogger {
+        std::shared_ptr<spdlog::logger> previous = spdlog::default_logger();
+        ~RestoreLogger() { spdlog::set_default_logger(std::move(previous)); }
+    } restoreLogger;
+    spdlog::set_default_logger(std::make_shared<spdlog::logger>("source-epoch-test", sink));
+
+    auto options = cacheOptions();
+    options.enableDiskCache = false;
+    const auto compiled = compileSlangShaderToSpirv(desc, options, log);
+    ASSERT_TRUE(compiled) << log;
+    EXPECT_EQ(compileAttempts, 2u);
+    EXPECT_GT(compiled->metrics.sourceEpochCaptureTimeNanoseconds, 0u);
+    EXPECT_EQ(compiled->spirv, primed->shaders[0].spirv);
 }
 
 TEST_F(SlangSourcePreparationTest, ConcurrentPreparationAndOrdinaryAcquisitionCaptureOnce)

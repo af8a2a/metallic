@@ -1024,7 +1024,8 @@ bool matrixHasNonUniformScale(const float4x4& matrix)
 std::pair<uint32_t, uint32_t> constrainedPreviewExtent(
     float width,
     float height,
-    uint32_t maximumDimension)
+    uint32_t maximumDimension,
+    const render::RenderView& view)
 {
     width = std::max(width, 1.0f);
     height = std::max(height, 1.0f);
@@ -1033,10 +1034,19 @@ std::pair<uint32_t, uint32_t> constrainedPreviewExtent(
         static_cast<float>(maximumDimension) / width,
         static_cast<float>(maximumDimension) / height,
     });
-    return {
-        std::max(static_cast<uint32_t>(std::floor(width * scale)), 1u),
-        std::max(static_cast<uint32_t>(std::floor(height * scale)), 1u),
-    };
+    uint32_t previewWidth = std::max(static_cast<uint32_t>(std::floor(width * scale)), 1u);
+    uint32_t previewHeight = std::max(static_cast<uint32_t>(std::floor(height * scale)), 1u);
+    if (!view.adaptiveResolution()) {
+        // FinalBlit renders into the part of the panel occupied by the fixed view.
+        const uint64_t renderWidth = view.renderWidth();
+        const uint64_t renderHeight = view.renderHeight();
+        if (previewWidth * renderHeight > previewHeight * renderWidth) {
+            previewWidth = std::max(static_cast<uint32_t>((previewHeight * renderWidth + renderHeight / 2) / renderHeight), 1u);
+        } else {
+            previewHeight = std::max(static_cast<uint32_t>((previewWidth * renderHeight + renderWidth / 2) / renderWidth), 1u);
+        }
+    }
+    return {previewWidth, previewHeight};
 }
 
 bool projectWorldToViewport(
@@ -6666,7 +6676,7 @@ void EditorApplication::drawViewportPanel()
         customRenderResolution_[1] = static_cast<int>(viewportView_.renderHeight());
         ImGui::OpenPopup("Render Resolution");
     }
-    ImGui::SetItemTooltip("Auto follows the viewport pixel size. Fixed resolutions are scaled by FinalBlit.");
+    ImGui::SetItemTooltip("Auto follows the viewport pixel size. Fixed resolutions fit the viewport at their aspect ratio.");
     if (ImGui::BeginPopup("Render Resolution")) {
         const auto saveResolution = [this]() {
             auto properties = renderGraph_.viewProperties();
@@ -6730,7 +6740,8 @@ void EditorApplication::drawViewportPanel()
         panelHeight * framebufferScale.y,
         smokeTest_ && !environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") &&
             !environmentFlagEnabled("METALLIC_SMOKE_TEST_NSIGHT_CAPTURE")
-            ? kSmokeTestPreviewSize : std::numeric_limits<uint32_t>::max());
+            ? kSmokeTestPreviewSize : std::numeric_limits<uint32_t>::max(),
+        viewportView_);
     if (smokeTest_ && environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
         previewWidth = 1564;
         previewHeight = 708;
@@ -6749,8 +6760,8 @@ void EditorApplication::drawViewportPanel()
     const uint32_t displayHeight = hasRhiPreview && viewportTextureHeight_ > 0
         ? viewportTextureHeight_
         : previewHeight;
-    const float previewAspect = static_cast<float>(displayWidth) /
-        static_cast<float>(std::max(displayHeight, 1u));
+    const float previewAspect = (static_cast<float>(displayWidth) / framebufferScale.x) /
+        (static_cast<float>(displayHeight) / framebufferScale.y);
     float imageWidth = panelWidth;
     float imageHeight = imageWidth / previewAspect;
     if (imageHeight > panelHeight) {

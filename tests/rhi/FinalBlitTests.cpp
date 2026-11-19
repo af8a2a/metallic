@@ -269,8 +269,22 @@ public:
         }
         graph.addNode("TriangleRasterPass", "Triangle");
         graph.addEdge("Triangle.color", "FinalBlit.source");
-        view.setRenderResolution(1920, 1080);
+        constexpr uint32_t kSourceWidth = 17;
+        constexpr uint32_t kSourceHeight = 9;
+        view.setRenderResolution(kSourceWidth, kSourceHeight);
         preview.bindRenderView(&view);
+        if (!preview.render(graph, kSourceWidth, kSourceHeight)) {
+            return RHITestResult::fail("Area resize reference render failed: " + preview.lastLog());
+        }
+        const auto sourcePixels = preview.pixels();
+        for (const auto& [width, height] : std::array<std::array<uint32_t, 2>, 3>{{{5, 4}, {5, 13}, {1, 1}}}) {
+            if (!preview.render(graph, width, height) ||
+                !matchesAreaResize(preview, sourcePixels, kSourceWidth, kSourceHeight)) {
+                return RHITestResult::fail("FinalBlit area resize differs from the linear-light reference at " +
+                    std::to_string(width) + "x" + std::to_string(height) + ": " + preview.lastLog());
+            }
+        }
+        view.setRenderResolution(1920, 1080);
         result = preview.render(graph, 640, 360);
         if (!result || std::all_of(preview.pixels().begin(), preview.pixels().end(),
                 [&](uint32_t pixel) { return pixel == preview.pixels().front(); })) {
@@ -306,6 +320,48 @@ private:
     {
         return std::abs(static_cast<int>((pixel >> shift) & 255u) -
             static_cast<int>(std::lround(expected * 255.0f))) <= 1;
+    }
+
+    static bool matchesAreaResize(const render::RenderGraphPreviewRenderer& preview,
+        const std::vector<uint32_t>& source, uint32_t sourceWidth, uint32_t sourceHeight)
+    {
+        const auto coverage = [](uint32_t pixel, uint32_t sourceSize, uint32_t outputSize) {
+            const double scale = double(sourceSize) / outputSize;
+            if (sourceSize >= outputSize) {
+                return std::array{pixel * scale, (pixel + 1u) * scale};
+            }
+            const double left = std::clamp((pixel + 0.5) * scale - 0.5, 0.0, double(sourceSize - 1u));
+            return std::array{left, left + 1.0};
+        };
+        const auto overlap = [](uint32_t texel, const std::array<double, 2>& interval) {
+            return std::max(0.0, std::min(double(texel + 1u), interval[1]) - std::max(double(texel), interval[0]));
+        };
+        for (uint32_t y = 0; y < preview.height(); ++y) {
+            const auto rows = coverage(y, sourceHeight, preview.height());
+            for (uint32_t x = 0; x < preview.width(); ++x) {
+                const auto columns = coverage(x, sourceWidth, preview.width());
+                std::array<double, 3> linear{};
+                for (uint32_t row = 0; row < sourceHeight; ++row) {
+                    for (uint32_t column = 0; column < sourceWidth; ++column) {
+                        const double weight = overlap(row, rows) * overlap(column, columns);
+                        const uint32_t pixel = source[size_t(row) * sourceWidth + column];
+                        for (uint32_t channel = 0; channel < linear.size(); ++channel) {
+                            const double v = ((pixel >> (8u * channel)) & 255u) / 255.0;
+                            linear[channel] += weight * (v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4));
+                        }
+                    }
+                }
+                const uint32_t actual = preview.pixels()[size_t(y) * preview.width() + x];
+                const double area = (rows[1] - rows[0]) * (columns[1] - columns[0]);
+                for (uint32_t channel = 0; channel < linear.size(); ++channel) {
+                    const double v = linear[channel] / area;
+                    const double encoded = v <= 0.0031308 ? 12.92 * v : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
+                    if (!channelNear(actual, 8u * channel, static_cast<float>(encoded))) { return false; }
+                }
+                if ((actual >> 24) != 255u) { return false; }
+            }
+        }
+        return true;
     }
 
     static bool isUv(const render::RenderGraphPreviewRenderer& preview)
@@ -389,6 +445,7 @@ public:
             {"virtual_shadow_map_p3.metallic_graph.json", "Deferred.color"},
             {"virtual_shadow_map_p4.metallic_graph.json", "Deferred.color"},
             {"virtual_shadow_map_sponza.metallic_graph.json", "Deferred.color"},
+            {"virtual_shadow_map_sponza_dlss.metallic_graph.json", "DLSSSR.color"},
             {"rtxdi_meet_mat.metallic_graph.json", "Composite.color"},
         };
         std::string log;
