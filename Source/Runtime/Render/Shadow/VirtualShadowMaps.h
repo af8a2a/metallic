@@ -312,13 +312,15 @@ public:
     VirtualShadowMapResourcePoolStats resourcePoolStats() const;
 
 private:
+    struct CasterChangeContext;
     Result<VirtualShadowMapResult> recordInternal(Device& device, CommandBuffer& commands,
         TextureView& depth, const ViewConstants& view, const VirtualShadowMapLight& light,
         const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
         std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& settings,
         std::string& log, bool deferProjection, const VirtualShadowMapProjectionTarget* output,
         CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
-        const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace);
+        const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace,
+        CasterChangeContext* casterChangeContext = nullptr);
     Result<> preparePointFaces(CommandBuffer& commands, std::span<const VirtualShadowMapResult> pointFaces, std::string& log);
     Result<> projectPrepared(CommandBuffer& commands, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler);
     static Result<> projectOnePassPrepared(CommandBuffer& commands, std::span<const VirtualShadowMapProjectionGroup> groups,

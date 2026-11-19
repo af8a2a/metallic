@@ -316,6 +316,8 @@ struct SharedShadowPoolStorage
 struct SharedShadowPoolFrame
 {
     std::shared_ptr<SharedShadowPoolStorage> storage;
+    std::shared_ptr<const std::vector<VirtualShadowMapCasterState>> casters;
+    std::weak_ptr<void> casterOwner;
     std::shared_ptr<Buffer> metadata, history, jobs;
     std::shared_ptr<Buffer> batchJobs, batchArguments;
     std::shared_ptr<Buffer> publicationFaces;
@@ -357,6 +359,60 @@ Result<> bindLightGrid(ResourceRegistry& registry, std::vector<ResourceLease>& l
 }
 
 } // namespace
+
+struct VirtualShadowMaps::CasterChangeContext
+{
+    static constexpr size_t kMissingCaster = std::numeric_limits<size_t>::max();
+    struct Change
+    {
+        size_t previous, current;
+        bool content = false, transform = false, material = false;
+        bool lod = false, texture = false, tessellation = false;
+    };
+    struct Diff
+    {
+        std::vector<Change> changes;
+        std::vector<scene::Bounds> dirtyBounds;
+        std::vector<size_t> currentForPrevious;
+
+        Diff(std::span<const VirtualShadowMapCasterState> previous, std::span<const VirtualShadowMapCasterState> current,
+            bool layered)
+        {
+            if (layered) { currentForPrevious.resize(previous.size(), kMissingCaster); }
+            size_t oldIndex = 0, newIndex = 0;
+            while (oldIndex < previous.size() || newIndex < current.size()) {
+                if (newIndex == current.size() || (oldIndex < previous.size() && previous[oldIndex].id < current[newIndex].id)) {
+                    dirtyBounds.push_back(previous[oldIndex].bounds);
+                    changes.push_back({oldIndex++, kMissingCaster});
+                    continue;
+                }
+                if (oldIndex == previous.size() || current[newIndex].id < previous[oldIndex].id) {
+                    dirtyBounds.push_back(current[newIndex].bounds);
+                    changes.push_back({kMissingCaster, newIndex++});
+                    continue;
+                }
+                const auto& old = previous[oldIndex];
+                const auto& next = current[newIndex];
+                if (layered) { currentForPrevious[oldIndex] = newIndex; }
+                const bool displacement = (old.tessellationKey != 0 || next.tessellationKey != 0) &&
+                    old.displacementMaterialKey != next.displacementMaterialKey;
+                const bool content = old.contentKey != next.contentKey || displacement;
+                const bool lod = old.lodKey != next.lodKey;
+                const bool texture = old.textureKey != next.textureKey;
+                const bool tessellation = old.tessellationKey != next.tessellationKey;
+                if (content || lod || texture || tessellation) {
+                    changes.push_back({oldIndex, newIndex, content, old.transformKey != next.transformKey,
+                        old.materialKey != next.materialKey || displacement, lod, texture, tessellation});
+                    dirtyBounds.push_back(old.bounds);
+                    dirtyBounds.push_back(next.bounds);
+                }
+                ++oldIndex;
+                ++newIndex;
+            }
+        }
+    };
+    std::optional<Diff> diff;
+};
 
 struct VirtualShadowMapPhysicalPool::Impl
 {
@@ -883,6 +939,14 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     }
     auto recording = pool.recording;
     recording->storage = storage; recording->leases.clear(); recording->pipelineOwners.clear();
+    if (inputSettings.cacheEnabled) {
+        recording->casters = pool.committed && casters.owner && pool.committed->casterOwner.lock() == casters.owner
+            ? pool.committed->casters : std::make_shared<const std::vector<VirtualShadowMapCasterState>>(casters.states);
+        recording->casterOwner = casters.owner;
+    } else {
+        recording->casters.reset();
+        recording->casterOwner.reset();
+    }
     recording->completion = context->completion();
     recording->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
     recording->faceCount = uint32_t(faces.size()); recording->frameIndex = uint32_t(context->frameIndex());
@@ -937,10 +1001,12 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     if (!hzbReady.empty()) {
         if (auto r = commands.synchronize({.buffers = hzbReady}); !r) { return std::unexpected(r.error()); }
     }
+    CasterChangeContext casterChanges;
     for (uint32_t index = 0; index < faces.size(); ++index) {
         const auto& face = faces[index];
         auto result = face.shadow->recordInternal(device, commands, depth, view, face.light, casters,
-            materials, alphaTextures, settings, log, true, &face.output, profiler, gpuProfiler, receiver, &physicalPool, index);
+            materials, alphaTextures, settings, log, true, &face.output, profiler, gpuProfiler, receiver, &physicalPool, index,
+            &casterChanges);
         if (!result) { return std::unexpected(result.error()); }
         results.push_back(*result); states.push_back(face.shadow->state_);
     }
@@ -1687,7 +1753,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const VirtualShadowMapCasterResources& casters, std::span<const scene::RenderMaterial> materials,
     std::span<TextureView* const> alphaTextures, const VirtualShadowMapSettings& requestedSettings, std::string& log, bool deferProjection,
     const VirtualShadowMapProjectionTarget* output, CPUProfileRecorder* profiler, RenderGraphExecutionContext* gpuProfiler,
-    const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace)
+    const VirtualShadowMapReceiverResources* receiver, VirtualShadowMapPhysicalPool* physicalPool, uint32_t poolFace,
+    CasterChangeContext* casterChangeContext)
 {
     const bool sharedPhysicalPool = physicalPool != nullptr;
     const auto poolFrame = sharedPhysicalPool ? physicalPool->impl_->recording : nullptr;
@@ -1931,7 +1998,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     }
     if (compatibleCache && !reuse) { reasons |= kVSMCacheReasonProjectionRange; }
     const uint64_t cacheFrame = reuse ? cache_->cacheFrame + 1u : 1u;
-    std::vector<scene::Bounds> dirtyBounds, staticDirtyBounds, mergeBounds;
+    std::span<const scene::Bounds> dirtyBounds;
+    std::vector<scene::Bounds> staticDirtyBounds, mergeBounds;
+    CasterChangeContext localChanges;
+    size_t comparedCasterStates = 0;
+    bool reusedCasterChanges = false;
     std::vector<Cache::DynamicCaster> dynamic;
     std::vector<uint64_t> dynamicCasters, demotedCasters;
     std::vector<std::array<uint32_t, 2>> mergeTriangleRanges;
@@ -1959,55 +2030,66 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             projections[index].metric[2] = cache_->projections[index].metric[2];
         }
         projections.back() = cache_->projections.back();
-        size_t oldIndex = 0, newIndex = 0, dynamicIndex = 0;
         if (unchangedCasters) {
             for (const auto& caster : cache_->dynamic) { trackDynamic(caster.index, caster.lastChanged); }
-        }
-        while (!unchangedCasters && (oldIndex < cache_->casters->size() || newIndex < casters.states.size())) {
-            const auto* old = oldIndex < cache_->casters->size() ? &(*cache_->casters)[oldIndex] : nullptr;
-            const auto* next = newIndex < casters.states.size() ? &casters.states[newIndex] : nullptr;
-            const bool wasDynamic = dynamicIndex < cache_->dynamic.size() && cache_->dynamic[dynamicIndex].index == oldIndex;
-            if (old && (!next || old->id < next->id)) {
-                dirtyBounds.push_back(old->bounds);
-                ++cacheDiagnostics[kVSMCacheRemovedCasters];
-                if (layered && !wasDynamic) { staticDirtyBounds.push_back(old->bounds); }
-                dynamicIndex += wasDynamic;
-                ++oldIndex;
-            } else if (next && (!old || next->id < old->id)) {
-                dirtyBounds.push_back(next->bounds);
-                ++cacheDiagnostics[kVSMCacheAddedCasters];
-                if (layered) { staticDirtyBounds.push_back(next->bounds); }
-                ++newIndex;
-            } else {
-                const bool lodChanged = old->lodKey != next->lodKey;
-                const bool textureChanged = old->textureKey != next->textureKey;
-                const bool tessellationChanged = old->tessellationKey != next->tessellationKey;
-                const bool displacementEdit = (old->tessellationKey != 0 || next->tessellationKey != 0) &&
-                    old->displacementMaterialKey != next->displacementMaterialKey;
-                if (textureChanged) { reasons |= kVSMCacheReasonTexturePublication; }
-                if (tessellationChanged) { reasons |= kVSMCacheReasonTessellation; }
+        } else {
+            // Reusable shared faces all refer to the same submitted pool snapshot.
+            assert(!casterChangeContext || cache_->casters == physicalPool->impl_->committed->casters);
+            auto& diff = casterChangeContext ? casterChangeContext->diff : localChanges.diff;
+            reusedCasterChanges = diff.has_value();
+            const auto& previous = *cache_->casters;
+            if (!diff) {
+                diff.emplace(previous, casters.states, layered);
+                comparedCasterStates = casters.states.size();
+            }
+            dirtyBounds = diff->dirtyBounds;
+            size_t dynamicIndex = 0;
+            // Unchanged dynamic casters still age and may have shifted indices.
+            // Interleave them with sparse edits to keep layer IDs sorted.
+            const auto retainDynamicBefore = [&](size_t limit) {
+                while (dynamicIndex < cache_->dynamic.size() && cache_->dynamic[dynamicIndex].index < limit) {
+                    const auto& caster = cache_->dynamic[dynamicIndex++];
+                    trackDynamic(diff->currentForPrevious[caster.index], caster.lastChanged);
+                }
+            };
+            for (const auto& change : diff->changes) {
+                if (change.previous == CasterChangeContext::kMissingCaster) {
+                    ++cacheDiagnostics[kVSMCacheAddedCasters];
+                    if (layered) { staticDirtyBounds.push_back(casters.states[change.current].bounds); }
+                    continue;
+                }
+                retainDynamicBefore(change.previous);
+                const bool wasDynamic = dynamicIndex < cache_->dynamic.size() &&
+                    cache_->dynamic[dynamicIndex].index == change.previous;
                 uint64_t lastChanged = wasDynamic ? cache_->dynamic[dynamicIndex++].lastChanged : 0u;
-                cacheDiagnostics[kVSMCacheLODChangedCasters] += lodChanged;
-                if (old->contentKey != next->contentKey || displacementEdit) {
-                    dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
+                const auto& old = previous[change.previous];
+                if (change.current == CasterChangeContext::kMissingCaster) {
+                    ++cacheDiagnostics[kVSMCacheRemovedCasters];
+                    if (layered && !wasDynamic) { staticDirtyBounds.push_back(old.bounds); }
+                    continue;
+                }
+                if (change.texture) { reasons |= kVSMCacheReasonTexturePublication; }
+                if (change.tessellation) { reasons |= kVSMCacheReasonTessellation; }
+                cacheDiagnostics[kVSMCacheLODChangedCasters] += change.lod;
+                if (change.content) {
                     ++cacheDiagnostics[kVSMCacheChangedCasters];
-                    cacheDiagnostics[kVSMCacheTransformChanges] += old->transformKey != next->transformKey;
-                    cacheDiagnostics[kVSMCacheMaterialChanges] += old->materialKey != next->materialKey || displacementEdit;
+                    cacheDiagnostics[kVSMCacheTransformChanges] += change.transform;
+                    cacheDiagnostics[kVSMCacheMaterialChanges] += change.material;
                     if (layered && lastChanged == 0) {
-                        staticDirtyBounds.push_back(old->bounds);
+                        staticDirtyBounds.push_back(old.bounds);
                         ++cacheDiagnostics[kVSMCachePromotedCasters];
                     }
                     if (layered) { lastChanged = cacheFrame; }
-                } else if (lodChanged || textureChanged || tessellationChanged) {
-                    dirtyBounds.push_back(old->bounds); dirtyBounds.push_back(next->bounds);
+                } else {
                     if (layered && lastChanged == 0) {
-                        staticDirtyBounds.push_back(old->bounds); staticDirtyBounds.push_back(next->bounds);
+                        staticDirtyBounds.push_back(old.bounds);
+                        staticDirtyBounds.push_back(casters.states[change.current].bounds);
                     }
                     if (lastChanged != 0) { lastChanged = cacheFrame; }
                 }
-                if (lastChanged != 0) { trackDynamic(newIndex, lastChanged); }
-                ++oldIndex; ++newIndex;
+                if (lastChanged != 0) { trackDynamic(change.current, lastChanged); }
             }
+            retainDynamicBefore(previous.size());
         }
         state->previous = cache_;
         if (auto r = addCommandDependency(commands, cache_->completion); !r) { return std::unexpected(r.error()); }
@@ -2021,7 +2103,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     push.cacheEpoch = reuse ? cache_->epoch : (cache_ ? cache_->epoch + 1 : 1);
     push.dirtyBoundsCount = static_cast<uint32_t>(dirtyBounds.size());
     total.work("reuse", reuse);
-    phase.work("comparedCasterStates", reuse && !unchangedCasters ? casters.states.size() : 0u);
+    phase.work("comparedCasterStates", comparedCasterStates);
+    phase.work("reusedCasterChanges", reusedCasterChanges);
     phase.work("dirtyBounds", dirtyBounds.size());
     phase.work("demotedCasters", demotedCasters.size());
     phase.next("Build VSM page remapping");
@@ -3269,7 +3352,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         next->lodSelection = state->resources->lodSelection;
         next->lodLayoutKey = gpuLOD ? casters.gpuLOD->layoutKey : 0;
         next->casterOwner = casters.owner;
-        next->casters = unchangedCasters ? cache_->casters : std::make_shared<const std::vector<VirtualShadowMapCasterState>>(casters.states);
+        next->casters = sharedPhysicalPool ? poolFrame->casters : unchangedCasters ? cache_->casters :
+            std::make_shared<const std::vector<VirtualShadowMapCasterState>>(casters.states);
         next->settings = settings; next->light = light; next->farPlane = farPlane;
         next->receiverMask = receiverMask;
         next->sceneIdentity = casters.sceneIdentity;

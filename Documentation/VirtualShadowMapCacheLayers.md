@@ -36,6 +36,10 @@ spot 和 point 的 coarse 页与本面 fine mip 具有相同视锥。合成层�
 
 实际 Single/Lights RenderGraph、逐 view GPU LOD 的 22 个状态、共享物理池的 60 个状态及 remap 独立参考也通过，以上 VSM 报告的 Vulkan validation 消息均为 0。共享池首次运行因 Slang 源码目录变更通知而中断，单独复跑完整通过。[共享池复跑结果](../build/vsm-invalidation/PoolRetry/VirtualShadowMapPhysicalPool/Report.json)。
 
+共享物理页池在提交时为当帧所有灯面保留同一份不可变 caster 快照。新录制只在首个可复用灯面确实遇到新 caster 发布时比较一次新旧快照。其余可复用灯面读取同一变化列表和公共脏边界。各面按自己的动态 caster 历史应用静态失效与降级，并继续独立投影边界和处理 GPU Shadow LOD 的变化。
+
+CPU profile 的 `Prepare VSM projections and dirty bounds` 中，`comparedCasterStates` 只由实际比较快照的灯面报告，`reusedCasterChanges` 标记复用差分的灯面。同一 caster 发布复用原有快照。取消的录制不更新已提交快照，暂时缺席的灯面回归时重新验证其物理页历史。
+
 ## 深度与工作量
 
 两层共用虚拟页到物理页映射、页需求、分配和原 build 工作表。静态层只更新静态脏页；合成层脏页先从静态 atlas 恢复深度，再绘制动态 caster。coarse 页同样分层。最终 projection、PCF、SMRT 读取合成后的深度，过滤算法和点光跨面采样保持不变。

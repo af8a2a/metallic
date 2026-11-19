@@ -76,7 +76,7 @@ struct PoolCommands
     }
 };
 
-std::filesystem::path writePoolFixture(const std::filesystem::path& directory)
+std::filesystem::path writePoolFixture(const std::filesystem::path& directory, bool splitSources = false)
 {
     std::filesystem::create_directories(directory);
     const float positions[]{-4,-4,0, 4,-4,0, 4,4,0, -4,4,0,
@@ -90,7 +90,7 @@ std::filesystem::path writePoolFixture(const std::filesystem::path& directory)
         binary.write(reinterpret_cast<const char*>(indices), sizeof(indices));
         requirePool(binary.good(), "Write pool geometry");
     }
-    const auto doc = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
+    auto doc = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
       "nodes":[{"mesh":0},{"mesh":1}],"buffers":[{"uri":"Geometry.bin","byteLength":168}],
       "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},
         {"buffer":0,"byteOffset":96,"byteLength":48},{"buffer":0,"byteOffset":144,"byteLength":24}],
@@ -101,6 +101,24 @@ std::filesystem::path writePoolFixture(const std::filesystem::path& directory)
       "materials":[{"doubleSided":true}],
       "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":2},"indices":3,"material":0}]},
         {"primitives":[{"attributes":{"POSITION":1,"NORMAL":2},"indices":3,"material":0}]}]})");
+    if (splitSources) {
+        // Toggling the blocker mount changes the visible caster list while
+        // preserving scene identity and the floor's geometry.
+        doc["scenes"][0]["nodes"] = Json::array({0});
+        std::ofstream floor(directory / "Floor.gltf"); floor << doc.dump(2);
+        requirePool(floor.good(), "Write caster-change floor");
+        doc["nodes"][0]["mesh"] = 1;
+        std::ofstream blocker(directory / "Blocker.gltf"); blocker << doc.dump(2);
+        requirePool(blocker.good(), "Write caster-change blocker");
+        const auto path = directory / "Sources.metallic_scene.json";
+        const Json manifest{{"version", 4}, {"sources", {
+            {{"id", "floor"}, {"path", "Floor.gltf"}},
+            {{"id", "blocker"}, {"path", "Blocker.gltf"}},
+        }}};
+        std::ofstream file(path); file << manifest.dump(2);
+        requirePool(file.good(), "Write caster-change composition");
+        return path;
+    }
     const auto path = directory / "Pool.gltf";
     std::ofstream file(path); file << doc.dump(2);
     requirePool(file.good(), "Write pool fixture");
@@ -273,7 +291,7 @@ uint32_t requireRetainedDepth(const PoolSnapshot& previous, const PoolSnapshot& 
 }
 
 float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardware, uint32_t identity,
-    float depthTolerance = 0.0f, bool expectMixedFinePage = true)
+    float depthTolerance = 0.0f, bool expectMixedFinePage = true, bool expectMixedVisibility = true)
 {
     const auto& face = actual.faces.at(identity);
     const auto& reference = hardware.faces.at(identity);
@@ -312,12 +330,14 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     if (expectMixedFinePage && depthTolerance == 0) {
         requirePool(mixedFinePages > 0, "No fine page contains both the large floor and the microtriangle blocker");
     }
-    requirePool(std::ranges::find(face.visibility, uint8_t(0)) != face.visibility.end() &&
-        std::ranges::find(face.visibility, uint8_t(255)) != face.visibility.end(), "Missing blocked or lit receivers");
+    if (expectMixedVisibility) {
+        requirePool(std::ranges::find(face.visibility, uint8_t(0)) != face.visibility.end() &&
+            std::ranges::find(face.visibility, uint8_t(255)) != face.visibility.end(), "Missing blocked or lit receivers");
+    }
     return maxError;
 }
 
-enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark };
+enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges };
 
 class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
@@ -327,7 +347,8 @@ public:
         name = scenario == PoolScenario::UnifiedMark ? "virtual_shadow_map_unified_mark" :
             scenario == PoolScenario::HybridRaster ? "virtual_shadow_map_cluster_hybrid_raster" :
             scenario == PoolScenario::TwoPassHZB ? "virtual_shadow_map_two_pass_hzb" :
-            scenario == PoolScenario::HierarchyHZB ? "virtual_shadow_map_hierarchy_hzb" : "virtual_shadow_map_physical_pool";
+            scenario == PoolScenario::HierarchyHZB ? "virtual_shadow_map_hierarchy_hzb" :
+            scenario == PoolScenario::CasterChanges ? "virtual_shadow_map_shared_caster_changes" : "virtual_shadow_map_physical_pool";
         type = RHITestType::Rendering;
     }
 
@@ -337,9 +358,11 @@ public:
         const bool twoPass = scenario_ == PoolScenario::TwoPassHZB;
         const bool hierarchyHZB = scenario_ == PoolScenario::HierarchyHZB;
         const bool unifiedMark = scenario_ == PoolScenario::UnifiedMark;
+        const bool casterChanges = scenario_ == PoolScenario::CasterChanges;
         const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" :
             hierarchyHZB ? "VirtualShadowMapHierarchyHZB" : twoPass ? "VirtualShadowMapTwoPassHZB" :
-            hybrid ? "VirtualShadowMapClusterHybridRaster" : "VirtualShadowMapPhysicalPool"));
+            hybrid ? "VirtualShadowMapClusterHybridRaster" : casterChanges ? "VirtualShadowMapSharedCasterChanges" :
+            "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
         const auto save = [&] { std::filesystem::create_directories(directory); std::ofstream(directory / "Report.json") << report.dump(2); };
@@ -347,7 +370,7 @@ public:
             requirePool(VirtualShadowMapSettings{}.batchBuildRaster, "Shared Build/Raster batching must default on");
             scene::SceneDocument scene;
             requirePool(scene.load((hybrid || twoPass || hierarchyHZB) ?
-                writeClusterFixture(directory, twoPass || hierarchyHZB, hierarchyHZB) : writePoolFixture(directory)), "Load pool scene");
+                writeClusterFixture(directory, twoPass || hierarchyHZB, hierarchyHZB) : writePoolFixture(directory, casterChanges)), "Load pool scene");
             auto created = createDevice({.applicationName = "VSM shared physical pool",
                 .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
@@ -474,6 +497,13 @@ public:
                     requirePool(VirtualShadowMaps::projectShared(*gpu.commands, groups, log), "Project shared pool: " + log);
                     PoolSnapshot snapshot;
                     snapshot.nativeCommands = nativeCommands;
+                    if (casterChanges) {
+                        for (const auto& section : cpu.sections) {
+                            if (section.name == "Prepare VSM projections and dirty bounds") {
+                                for (const auto& work : section.cpuWork) { snapshot.commands[work.name] += work.value; }
+                            }
+                        }
+                    }
                     if (unifiedMark) {
                         for (const auto& section : cpu.sections) {
                             if (section.name == "Record VSM view mark") {
@@ -639,6 +669,89 @@ public:
                     requirePool((snapshot.memory.staticAtlasBytes != 0) == layered, "Layered shared atlas memory missing or double counted");
                     return snapshot;
                 };
+                if (casterChanges) {
+                    VirtualShadowMapLight sun;
+                    sun.direction = {0, 0, -1};
+                    VirtualShadowMapLight spot;
+                    spot.type = VirtualShadowMapLightType::Spot; spot.position = {0, 0, 3};
+                    spot.direction = sun.direction; spot.range = 10; spot.outerConeAngle = .8f;
+                    const std::array faces{PoolFace{0, sun}, PoolFace{1, spot}};
+                    constexpr uint32_t budget = 512u;
+                    const auto compare = [&](const char* phase, std::span<const PoolFace> active,
+                                             uint32_t compared, uint32_t reused) {
+                        validation.phase(std::string(layered ? "Layered-" : "Combined-") + phase);
+                        const auto actual = record(active, budget, false);
+                        const auto redraw = record(active, budget, true);
+                        const auto serialized = record(active, budget, false, false, false, true, true);
+                        Json entry{{"phase", phase}, {"layered", layered}, {"faces", Json::array()},
+                            {"batchCounters", actual.commands}, {"serialCounters", serialized.commands}};
+                        for (const auto& [identity, face] : actual.faces) {
+                            entry["faces"].push_back({{"identity", identity}, {"cache", face.cache}});
+                        }
+                        report["frames"].push_back(std::move(entry));
+                        save();
+                        for (const auto* snapshot : {&actual, &serialized}) {
+                            const auto& counters = snapshot->commands;
+                            requirePool(counters.contains("comparedCasterStates") && counters.contains("reusedCasterChanges") &&
+                                counters.at("comparedCasterStates") == compared && counters.at("reusedCasterChanges") == reused,
+                                std::string(phase) + ": unexpected shared caster comparison count");
+                        }
+                        for (const auto& [identity, face] : actual.faces) {
+                            const auto& referenceFace = serialized.faces.at(identity);
+                            requirePool(face.cache == referenceFace.cache && face.pages == referenceFace.pages,
+                                std::string(phase) + ": batched cache or page ownership differs from serialized rendering");
+                            compareRasterDepth(actual, serialized, identity, 0.0f, false, false);
+                            compareRasterDepth(actual, redraw, identity, 0.0f, false, false);
+                        }
+                        return actual;
+                    };
+                    const auto moveBlocker = [&](float x) {
+                        float4x4 matrix;
+                        matrix.SetupByTranslation({x, 0, 0});
+                        requirePool(scene.setSourceMountMatrix("blocker", matrix), "Move caster-change blocker");
+                    };
+                    const auto requireCounter = [&](const PoolSnapshot& snapshot, uint32_t counter, uint32_t expected,
+                                                    const char* message) {
+                        for (const auto& [identity, face] : snapshot.faces) {
+                            requirePool(face.cache[counter] == expected, message);
+                        }
+                    };
+                    const auto cold = compare("Cold", faces, 0, 0);
+                    const auto warm = compare("Warm", faces, 0, 0);
+                    requireRetainedDepth(cold, warm, 0);
+                    moveBlocker(.25f);
+                    (void)record(faces, budget, false, true);
+                    (void)record(faces, budget, false, true, false, true, true);
+                    const auto moved = compare("MoveAfterCancel", faces, 2, 1);
+                    requireCounter(moved, kVSMCacheTransformChanges, 1, "Lost caster transform change after cancellation");
+                    requirePool(moved.faces.at(0).visibility != warm.faces.at(0).visibility,
+                        "Moved blocker did not change directional shadows");
+                    if (layered) {
+                        requireCounter(moved, kVSMCachePromotedCasters, 1, "Moved caster was not promoted on both faces");
+                        requireCounter(moved, kVSMCacheDynamicCasters, 1, "Moved caster was not dynamic on both faces");
+                    }
+                    (void)compare("Settle", faces, 0, 0);
+                    const auto demoted = compare("Demote", faces, 0, 0);
+                    if (layered) {
+                        requireCounter(demoted, kVSMCacheDynamicCasters, 0, "Settled caster did not return to static depth");
+                        requireCounter(demoted, kVSMCacheStaticDirtyCoarsePages, 1, "Demotion did not update static coarse depth");
+                    }
+                    requirePool(scene.setSourceEnabled("blocker", false), "Hide caster-change blocker");
+                    const auto removed = compare("Remove", faces, 1, 1);
+                    requireCounter(removed, kVSMCacheRemovedCasters, 1, "Removed caster was not recorded on both faces");
+                    requirePool(removed.faces.at(0).visibility != moved.faces.at(0).visibility,
+                        "Removing the blocker did not clear directional shadows");
+                    requirePool(scene.setSourceEnabled("blocker", true), "Show caster-change blocker");
+                    const auto added = compare("Add", faces, 2, 1);
+                    requireCounter(added, kVSMCacheAddedCasters, 1, "Restored caster was not recorded on both faces");
+                    (void)compare("OmitSpot", std::span(faces).first(1), 0, 0);
+                    moveBlocker(0);
+                    const auto returned = compare("ReturnSpot", faces, 2, 0);
+                    requirePool(returned.faces.at(0).cache[kVSMCacheTransformChanges] == 1 &&
+                        returned.faces.at(1).cache[kVSMCacheReused] == 0,
+                        "Returning face consumed another face's cache history");
+                    continue;
+                }
                 if (unifiedMark) {
                     VirtualShadowMapLight sun;
                     sun.direction = {.25f, 0, -1};
@@ -1268,6 +1381,7 @@ public:
             requirePool(!validation.failed(), "Shared pool Vulkan validation error");
             report["passed"] = true; save();
             return RHITestResult::pass(unifiedMark ? "View Mark matched per-face requests, receiver masks, cached pages and shadow images" :
+                casterChanges ? "Caster change lists were built once per snapshot pair and preserved per-face invalidation" :
                 hierarchyHZB ? "Instance and hierarchy HZB preserved resident depth and shadow visibility through disocclusion" :
                 twoPass ? "Two-pass HZB preserved resident depth and shadow visibility through disocclusion" :
                 hybrid ? "Mixed cluster raster preserved resident D32 texels, visibility and cached pages" :
@@ -1306,5 +1420,11 @@ public:
     VirtualShadowMapUnifiedMarkTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::UnifiedMark) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapUnifiedMarkTest);
+class VirtualShadowMapSharedCasterChangesTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapSharedCasterChangesTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::CasterChanges) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSharedCasterChangesTest);
 } // namespace
 } // namespace metallic::tests
