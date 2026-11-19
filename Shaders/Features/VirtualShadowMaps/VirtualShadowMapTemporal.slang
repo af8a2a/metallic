@@ -108,13 +108,58 @@ bool temporalReceiver(int2 pixel, TemporalViewBasis basis, float depth, out floa
     return true;
 }
 
-// Pack position.xyz and linearDepth (w < 0 indicates invalid) to keep live VGPRs compact.
 [ForceInline]
-float4 reconstructHistoryPosDepth(int2 pixel, uint2 stored, bool inBounds, TemporalViewBasis basis)
+uint packTemporalOctNormal(float3 n)
 {
-    if (!inBounds || (stored.x >> 16u) == 0u) { return float4(0.0, 0.0, 0.0, -1.0); }
-    float linearDepth = vsmTemporalLinearDepth(asfloat(stored.y), basis);
-    return float4(vsmTemporalPosition(pixel, basis, linearDepth), linearDepth);
+    float l1 = abs(n.x) + abs(n.y) + abs(n.z);
+    if (!(l1 > 1e-6)) { return 0x3fffu; }
+    float2 oct = n.xy * (1.0 / l1);
+    if (n.z < 0.0) {
+        oct = (1.0 - abs(oct.yx)) * float2(oct.x >= 0.0 ? 1.0 : -1.0, oct.y >= 0.0 ? 1.0 : -1.0);
+    }
+    uint2 q = uint2(round(saturate(oct * 0.5 + 0.5) * 126.0));
+    return (q.x << 7u) | q.y;
+}
+
+[ForceInline]
+float3 unpackTemporalOctNormal(uint packed)
+{
+    if (packed == 0x3fffu) { return float3(0.0); }
+    float2 oct = float2(float((packed >> 7u) & 0x7fu), float(packed & 0x7fu)) * (2.0 / 126.0) - 1.0;
+    float3 n = float3(oct.x, oct.y, 1.0 - abs(oct.x) - abs(oct.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
+}
+
+[ForceInline]
+uint packTemporalHistoryWord(uint count, float visibility, uint octNormal)
+{
+    uint visQ = uint(round(saturate(visibility) * 2047.0));
+    return (count << 25u) | (visQ << 14u) | octNormal;
+}
+
+[ForceInline]
+void accumulateTemporalHistoryTap(int2 p, float weight, int2 vpExtent,
+    RWTexture2D<uint2> prevHistory, TemporalViewBasis previous,
+    float3 position, float3 normal, float tolerance,
+    inout float sum, inout float sampleCount, inout float weightSum)
+{
+    if (weight <= 0.0 || any(p < 0) || any(p >= vpExtent)) { return; }
+    uint2 stored = prevHistory[p];
+    uint priorSamples = stored.x >> 25u;
+    if (priorSamples == 0u) { return; }
+    float linearDepth = vsmTemporalLinearDepth(asfloat(stored.y), previous);
+    float3 oldPos = vsmTemporalPosition(p, previous, linearDepth);
+    float3 delta = oldPos - position;
+    if (abs(dot(delta, normal)) > tolerance) { return; }
+    float3 oldNormal = unpackTemporalOctNormal(stored.x & 0x3fffu);
+    if (dot(normal, oldNormal) < 0.9 || abs(dot(delta, oldNormal)) > tolerance) { return; }
+    float oldVis = float((stored.x >> 14u) & 0x7ffu) * (1.0 / 2047.0);
+    sum += weight * oldVis;
+    sampleCount += weight * float(priorSamples);
+    weightSum += weight;
 }
 
 [ForceInline]
@@ -218,127 +263,63 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
     float result = raw;
     uint count = 1u;
 
+    float3 normal = temporalNormalFromNeighbors(
+        gTemporalPositions[centerIndex - 1u], gTemporalPositions[centerIndex + 1u],
+        gTemporalPositions[centerIndex - 10u], gTemporalPositions[centerIndex + 10u], mySurface);
+
     if (kTemporalHasHistory && params.hasHistory != 0u && gTemporalLODChanged == 0u) {
         TemporalViewBasis previous = gTemporalViews[1];
-        float2 previousPixel;
-        if (temporalProject(position, previous, previousPixel)) {
-            float4 sLeft = gTemporalPositions[centerIndex - 1u];
-            float4 sRight = gTemporalPositions[centerIndex + 1u];
-            float4 sTop = gTemporalPositions[centerIndex - 10u];
-            float4 sBottom = gTemporalPositions[centerIndex + 10u];
-
-            bool hasLeft = sLeft.w >= 0.0;
-            bool hasRight = sRight.w >= 0.0;
-            bool hasTop = sTop.w >= 0.0;
-            bool hasBottom = sBottom.w >= 0.0;
-
-            bool useLeft = hasLeft && (!hasRight || abs(sLeft.w - linearDepth) < abs(sRight.w - linearDepth));
-            bool useTop = hasTop && (!hasBottom || abs(sTop.w - linearDepth) < abs(sBottom.w - linearDepth));
-            float3 dx = useLeft ? position - sLeft.xyz : (hasRight ? sRight.xyz - position : float3(0.0));
-            float3 dy = useTop ? position - sTop.xyz : (hasBottom ? sBottom.xyz - position : float3(0.0));
-            float3 normal = cross(dy, dx);
-            float lengthSquared = dot(normal, normal);
-            normal = lengthSquared > 1e-20 ? normal * rsqrt(lengthSquared) : float3(0.0);
-
-            float tolerance = max(1e-4, linearDepth * current.toleranceScale + current.orthoTolerance);
-            int2 base = int2(floor(previousPixel));
-            float2 fraction = frac(previousPixel);
-
-            RWTexture2D<uint2> prevHistory = resolveUniform(params.previousHistory);
-            int2 p0 = base + int2(0, 0);
-            int2 p1 = base + int2(1, 0);
-            int2 p2 = base + int2(0, 1);
-            int2 p3 = base + int2(1, 1);
-            int2 vpExtent = int2(previous.viewportExtent);
-
-            bool inBounds0 = all(p0 >= 0) && all(p0 < vpExtent);
-            bool inBounds1 = all(p1 >= 0) && all(p1 < vpExtent);
-            bool inBounds2 = all(p2 >= 0) && all(p2 < vpExtent);
-            bool inBounds3 = all(p3 >= 0) && all(p3 < vpExtent);
-
-            uint2 s0 = inBounds0 ? prevHistory[p0] : uint2(0u);
-            uint2 s1 = inBounds1 ? prevHistory[p1] : uint2(0u);
-            uint2 s2 = inBounds2 ? prevHistory[p2] : uint2(0u);
-            bool needCore3 = fraction.x != 0.0 || fraction.y != 0.0;
-            uint2 s3 = (needCore3 && inBounds3) ? prevHistory[p3] : uint2(0u);
-
-            float4 core0 = reconstructHistoryPosDepth(p0, s0, inBounds0, previous);
-            float4 core1 = reconstructHistoryPosDepth(p1, s1, inBounds1, previous);
-            float4 core2 = reconstructHistoryPosDepth(p2, s2, inBounds2, previous);
-            float4 core3 = needCore3 ? reconstructHistoryPosDepth(p3, s3, inBounds3, previous) : float4(0.0, 0.0, 0.0, -1.0);
-
-            float2 f0 = 1.0 - fraction, f1 = fraction;
-            float4 tapWeights = float4(f0.x * f0.y, f1.x * f0.y, f0.x * f1.y, f1.x * f1.y);
-
-            bool tapNeeded0 = tapWeights.x > 0.0 && core0.w >= 0.0 && (abs(dot(core0.xyz - position, normal)) <= tolerance);
-            bool tapNeeded1 = tapWeights.y > 0.0 && core1.w >= 0.0 && (abs(dot(core1.xyz - position, normal)) <= tolerance);
-            bool tapNeeded2 = tapWeights.z > 0.0 && core2.w >= 0.0 && (abs(dot(core2.xyz - position, normal)) <= tolerance);
-            bool tapNeeded3 = tapWeights.w > 0.0 && core3.w >= 0.0 && (abs(dot(core3.xyz - position, normal)) <= tolerance);
-
-            if (tapNeeded0 || tapNeeded1 || tapNeeded2 || tapNeeded3) {
-                int2 pL0 = base + int2(-1, 0), pT0 = base + int2(0, -1);
-                int2 pR0 = base + int2(2, 0),  pT1 = base + int2(1, -1);
-                int2 pL1 = base + int2(-1, 1), pB0 = base + int2(0, 2);
-                int2 pR1 = base + int2(2, 1),  pB1 = base + int2(1, 2);
-                bool inL0 = all(pL0 >= 0) && all(pL0 < vpExtent);
-                bool inT0 = all(pT0 >= 0) && all(pT0 < vpExtent);
-                bool inR0 = all(pR0 >= 0) && all(pR0 < vpExtent);
-                bool inT1 = all(pT1 >= 0) && all(pT1 < vpExtent);
-                bool inL1 = all(pL1 >= 0) && all(pL1 < vpExtent);
-                bool inB0 = all(pB0 >= 0) && all(pB0 < vpExtent);
-                bool inR1 = all(pR1 >= 0) && all(pR1 < vpExtent);
-                bool inB1 = all(pB1 >= 0) && all(pB1 < vpExtent);
-
-                uint2 vL0 = (tapNeeded0 && inL0) ? prevHistory[pL0] : uint2(0u);
-                uint2 vT0 = (tapNeeded0 && inT0) ? prevHistory[pT0] : uint2(0u);
-                uint2 vR0 = (tapNeeded1 && inR0) ? prevHistory[pR0] : uint2(0u);
-                uint2 vT1 = (tapNeeded1 && inT1) ? prevHistory[pT1] : uint2(0u);
-                uint2 vL1 = (tapNeeded2 && inL1) ? prevHistory[pL1] : uint2(0u);
-                uint2 vB0 = (tapNeeded2 && inB0) ? prevHistory[pB0] : uint2(0u);
-                uint2 vR1 = (tapNeeded3 && inR1) ? prevHistory[pR1] : uint2(0u);
-                uint2 vB1 = (tapNeeded3 && inB1) ? prevHistory[pB1] : uint2(0u);
+        bool sameView = all(previous.eye == current.eye) &&
+            all(previous.forward == current.forward) &&
+            all(previous.originOrRayBase == current.originOrRayBase) &&
+            all(previous.dirX == current.dirX) &&
+            all(previous.dirY == current.dirY) &&
+            previous.depthParamA == current.depthParamA &&
+            previous.depthParamB == current.depthParamB;
+        float tolerance = max(1e-4, linearDepth * current.toleranceScale + current.orthoTolerance);
+        RWTexture2D<uint2> prevHistory = resolveUniform(params.previousHistory);
+        if (sameView) {
+            if (linearDepth > previous.nearPlane && linearDepth < previous.farPlane) {
+                uint2 stored = prevHistory[int2(id.xy)];
+                uint priorSamples = stored.x >> 25u;
+                if (priorSamples != 0u) {
+                    bool accepted = false;
+                    float3 oldNormal = unpackTemporalOctNormal(stored.x & 0x3fffu);
+                    if (dot(normal, oldNormal) >= 0.9) {
+                        if (stored.y == asuint(rawDepth)) {
+                            accepted = true;
+                        } else {
+                            float oldLinear = vsmTemporalLinearDepth(asfloat(stored.y), previous);
+                            float3 delta = vsmTemporalPosition(int2(id.xy), previous, oldLinear) - position;
+                            accepted = abs(dot(delta, normal)) <= tolerance && abs(dot(delta, oldNormal)) <= tolerance;
+                        }
+                    }
+                    if (accepted) {
+                        uint priorCount = min(priorSamples, params.maxFrames - 1u);
+                        count = priorCount + 1u;
+                        float oldVis = float((stored.x >> 14u) & 0x7ffu) * (1.0 / 2047.0);
+                        result = (oldVis * float(priorCount) + raw) / float(count);
+                    }
+                }
+            }
+        } else {
+            float2 previousPixel;
+            if (temporalProject(position, previous, previousPixel)) {
+                int2 base = int2(floor(previousPixel));
+                float2 fraction = frac(previousPixel);
+                float2 f0 = 1.0 - fraction, f1 = fraction;
+                float4 tapWeights = float4(f0.x * f0.y, f1.x * f0.y, f0.x * f1.y, f1.x * f1.y);
+                int2 vpExtent = int2(previous.viewportExtent);
 
                 float sum = 0.0, weightSum = 0.0, sampleCount = 0.0;
-                if (tapNeeded0) {
-                    float3 oldNormal = temporalNormalFromNeighbors(
-                        reconstructHistoryPosDepth(pL0, vL0, inL0, previous), core1,
-                        reconstructHistoryPosDepth(pT0, vT0, inT0, previous), core2, core0);
-                    if (dot(normal, oldNormal) >= 0.9 && abs(dot(core0.xyz - position, oldNormal)) <= tolerance) {
-                        sum += tapWeights.x * f16tof32(s0.x & 0xffffu);
-                        sampleCount += tapWeights.x * float(s0.x >> 16u);
-                        weightSum += tapWeights.x;
-                    }
-                }
-                if (tapNeeded1) {
-                    float3 oldNormal = temporalNormalFromNeighbors(
-                        core0, reconstructHistoryPosDepth(pR0, vR0, inR0, previous),
-                        reconstructHistoryPosDepth(pT1, vT1, inT1, previous), core3, core1);
-                    if (dot(normal, oldNormal) >= 0.9 && abs(dot(core1.xyz - position, oldNormal)) <= tolerance) {
-                        sum += tapWeights.y * f16tof32(s1.x & 0xffffu);
-                        sampleCount += tapWeights.y * float(s1.x >> 16u);
-                        weightSum += tapWeights.y;
-                    }
-                }
-                if (tapNeeded2) {
-                    float3 oldNormal = temporalNormalFromNeighbors(
-                        reconstructHistoryPosDepth(pL1, vL1, inL1, previous), core3,
-                        core0, reconstructHistoryPosDepth(pB0, vB0, inB0, previous), core2);
-                    if (dot(normal, oldNormal) >= 0.9 && abs(dot(core2.xyz - position, oldNormal)) <= tolerance) {
-                        sum += tapWeights.z * f16tof32(s2.x & 0xffffu);
-                        sampleCount += tapWeights.z * float(s2.x >> 16u);
-                        weightSum += tapWeights.z;
-                    }
-                }
-                if (tapNeeded3) {
-                    float3 oldNormal = temporalNormalFromNeighbors(
-                        core2, reconstructHistoryPosDepth(pR1, vR1, inR1, previous),
-                        core1, reconstructHistoryPosDepth(pB1, vB1, inB1, previous), core3);
-                    if (dot(normal, oldNormal) >= 0.9 && abs(dot(core3.xyz - position, oldNormal)) <= tolerance) {
-                        sum += tapWeights.w * f16tof32(s3.x & 0xffffu);
-                        sampleCount += tapWeights.w * float(s3.x >> 16u);
-                        weightSum += tapWeights.w;
-                    }
-                }
+                accumulateTemporalHistoryTap(base + int2(0, 0), tapWeights.x, vpExtent,
+                    prevHistory, previous, position, normal, tolerance, sum, sampleCount, weightSum);
+                accumulateTemporalHistoryTap(base + int2(1, 0), tapWeights.y, vpExtent,
+                    prevHistory, previous, position, normal, tolerance, sum, sampleCount, weightSum);
+                accumulateTemporalHistoryTap(base + int2(0, 1), tapWeights.z, vpExtent,
+                    prevHistory, previous, position, normal, tolerance, sum, sampleCount, weightSum);
+                accumulateTemporalHistoryTap(base + int2(1, 1), tapWeights.w, vpExtent,
+                    prevHistory, previous, position, normal, tolerance, sum, sampleCount, weightSum);
                 if (weightSum >= 0.5) {
                     uint priorCount = min(uint(sampleCount / weightSum + 0.5), params.maxFrames - 1u);
                     count = priorCount + 1u;
@@ -347,6 +328,6 @@ void vsmTemporalMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, u
             }
         }
     }
-    currHistory[id.xy] = uint2((count << 16u) | (f32tof16(result) & 0xffffu), asuint(rawDepth));
+    currHistory[id.xy] = uint2(packTemporalHistoryWord(count, result, packTemporalOctNormal(normal)), asuint(rawDepth));
     shadowTex[uint3(id.xy, layer)] = result;
 }
