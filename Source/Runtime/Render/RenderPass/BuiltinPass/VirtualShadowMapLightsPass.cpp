@@ -170,6 +170,7 @@ public:
             runtimeBoolSetting("unifiedMark", "Mark Shadow Pages Per View", false),
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
             runtimeBoolSetting("compactShadowViews", "Compact Active Shadow Views", false),
+            runtimeBoolSetting("distantLightSinglePage", "Single Page for Distant Local Lights", false),
             runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
             runtimeBoolSetting("twoPassHZB", "Two-Pass Shadow HZB", false),
             runtimeBoolSetting("hierarchyHZB", "Two-Pass Shadow Caster Hierarchy HZB", false),
@@ -330,6 +331,7 @@ public:
         settings.unifiedMark = boolProperty(&properties, "unifiedMark", settings.unifiedMark);
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
         settings.compactShadowViews = boolProperty(&properties, "compactShadowViews", settings.compactShadowViews);
+        settings.distantLightSinglePage = boolProperty(&properties, "distantLightSinglePage", settings.distantLightSinglePage);
         settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
         settings.twoPassHZB = boolProperty(&properties, "twoPassHZB", settings.twoPassHZB);
         settings.hierarchyHZB = boolProperty(&properties, "hierarchyHZB", settings.hierarchyHZB);
@@ -974,13 +976,14 @@ public:
                     if (!history) { history = std::make_unique<VirtualShadowMapTemporal>(); }
                     auto temporalSettings = settings;
                     temporalSettings.physicalPageCount = budget;
+                    const auto group = std::find_if(projections.begin(), projections.end(),
+                        [index](const auto& projection) { return projection.lightIndex == index; });
+                    assert(group != projections.end());
+                    temporalSettings.clipmapCount = group->results[0].clipmapCount;
                     const uint64_t lightContentKey = (contentKey ^ uint32_t(demandDriven)) * 1099511628211ull;
                     std::array<Buffer*, 6> lodCaches{};
                     uint32_t lodCacheCount = 0;
                     if (gpuLODStatistics) {
-                        const auto group = std::find_if(projections.begin(), projections.end(),
-                            [index](const auto& projection) { return projection.lightIndex == index; });
-                        assert(group != projections.end());
                         lodCacheCount = group->faceCount;
                         for (uint32_t face = 0; face < lodCacheCount; ++face) {
                             lodCaches[face] = group->results[face].cacheDiagnostics;

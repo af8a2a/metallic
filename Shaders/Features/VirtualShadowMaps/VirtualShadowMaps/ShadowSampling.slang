@@ -276,6 +276,7 @@ ShadowProjection vsmGetCachedProjection(StructuredBuffer<ShadowProjection> proje
 uint vsmReceiverLevel(float3 position, StructuredBuffer<ShadowProjection> projections,
     ShadowPush push, float footprint, bool useGroupCache = false)
 {
+    if (push.clipmapCount == 0u) { return 0u; }
     uint lastLevel = push.clipmapCount - 1u;
     float bias = min(asfloat(push.receiverLOD >> 1u), float(lastLevel));
     uint wholeLevels = uint(bias);

@@ -498,7 +498,7 @@ void vsmMarkMain(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex, unif
 #if VSM_VIEW_MARK
 void vsmMarkViewFace(uint3 id, uint lane, ShadowPush push, bool member, inout VSMMarkReceiver receiver)
 {
-    if (push.enabled == 0u) { return; }
+    if (push.enabled == 0u || push.clipmapCount == 0u) { return; }
     vsmClearMarkCache(lane);
     uint3 counts = uint3(0u);
     uint receiverDispatch = 0u;

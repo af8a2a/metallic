@@ -127,7 +127,7 @@ void vsmProjectChangedBoundsMain(uint3 group : SV_GroupID, uint lane : SV_GroupI
     uint headerIndex = table + group.x;
     uint4 header = changes[headerIndex];
     if (header.z == 0u) { return; } // Cold, force-redraw or fully scrolled level.
-    uint4 source = changes[table + push.clipmapCount];
+    uint4 source = changes[table + max(1u, push.clipmapCount)];
     StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
     ShadowProjection projection = projections[group.x];
     if (lane == 0u) { g_vsmChangedRectCount = 0u; }

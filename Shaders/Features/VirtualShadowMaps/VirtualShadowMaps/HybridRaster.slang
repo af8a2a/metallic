@@ -64,8 +64,9 @@ void vsmHybridClearMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uni
     if (slot >= vsmCacheMetadata(clearPush, kVSMHybridPageCount)) { return; }
     ShadowPush push;
     if (!vsmRasterClearsPage(slot, clearPush, push)) { return; }
-    RWStructuredBuffer<uint> depth = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(push, kVSMHybridDepth)));
-    uint pageArea = push.pageSize * push.pageSize;
+    // The owning face may use only hardware raster. Clear the shared scratch.
+    RWStructuredBuffer<uint> depth = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(vsmCacheMetadata(clearPush, kVSMHybridDepth)));
+    uint pageArea = clearPush.pageSize * clearPush.pageSize;
     for (uint i = lane; i < pageArea; i += 64u) { depth[slot * pageArea + i] = 0u; }
 }
 

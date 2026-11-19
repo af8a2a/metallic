@@ -291,6 +291,13 @@ uint32_t requireRetainedDepth(const PoolSnapshot& previous, const PoolSnapshot& 
     return retained;
 }
 
+uint32_t poolPageTexel(const PoolSnapshot& snapshot, uint32_t slot, uint32_t x, uint32_t y)
+{
+    const uint32_t tile = slot % 4096u;
+    return snapshot.atlas[(uint64_t(slot / 4096u) * snapshot.atlasHeight + (tile / snapshot.pagesX) * snapshot.pageSize + y)
+        * snapshot.atlasWidth + (tile % snapshot.pagesX) * snapshot.pageSize + x];
+}
+
 float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardware, uint32_t identity,
     float depthTolerance = 0.0f, bool expectMixedFinePage = true, bool expectMixedVisibility = true,
     bool expectCoarseDepth = false)
@@ -298,11 +305,6 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     const auto& face = actual.faces.at(identity);
     const auto& reference = hardware.faces.at(identity);
     requirePool(face.visibility == reference.visibility, "Projected visibility differs from the reference");
-    const auto texel = [](const PoolSnapshot& snapshot, uint32_t slot, uint32_t x, uint32_t y) {
-        const uint32_t tile = slot % 4096u;
-        return snapshot.atlas[(uint64_t(slot / 4096u) * snapshot.atlasHeight + (tile / snapshot.pagesX) * snapshot.pageSize + y)
-            * snapshot.atlasWidth + (tile % snapshot.pagesX) * snapshot.pageSize + x];
-    };
     uint32_t mixedFinePages = 0;
     float maxError = 0.0f;
     for (size_t page = 0; page < face.pages.size(); ++page) {
@@ -311,8 +313,8 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
         bool floor = false, blocker = false;
         for (uint32_t y = 0; y < actual.pageSize; ++y) {
             for (uint32_t x = 0; x < actual.pageSize; ++x) {
-                const uint32_t depth = texel(actual, face.pages[page][0], x, y);
-                const uint32_t expected = texel(hardware, reference.pages[page][0], x, y);
+                const uint32_t depth = poolPageTexel(actual, face.pages[page][0], x, y);
+                const uint32_t expected = poolPageTexel(hardware, reference.pages[page][0], x, y);
                 const float z = std::bit_cast<float>(depth);
                 const float difference = std::abs(z - std::bit_cast<float>(expected));
                 const bool sameDepth = depthTolerance == 0 ? depth == expected :
@@ -342,7 +344,7 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     return maxError;
 }
 
-enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges, ActiveViews };
+enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges, ActiveViews, DistantLights };
 
 class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
@@ -354,6 +356,7 @@ public:
             scenario == PoolScenario::TwoPassHZB ? "virtual_shadow_map_two_pass_hzb" :
             scenario == PoolScenario::HierarchyHZB ? "virtual_shadow_map_hierarchy_hzb" :
             scenario == PoolScenario::ActiveViews ? "virtual_shadow_map_active_views" :
+            scenario == PoolScenario::DistantLights ? "virtual_shadow_map_distant_lights" :
             scenario == PoolScenario::CasterChanges ? "virtual_shadow_map_shared_caster_changes" : "virtual_shadow_map_physical_pool";
         type = RHITestType::Rendering;
     }
@@ -366,10 +369,12 @@ public:
         const bool unifiedMark = scenario_ == PoolScenario::UnifiedMark;
         const bool casterChanges = scenario_ == PoolScenario::CasterChanges;
         const bool activeViews = scenario_ == PoolScenario::ActiveViews;
+        const bool distantLights = scenario_ == PoolScenario::DistantLights;
         const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" :
             hierarchyHZB ? "VirtualShadowMapHierarchyHZB" : twoPass ? "VirtualShadowMapTwoPassHZB" :
             hybrid ? "VirtualShadowMapClusterHybridRaster" : casterChanges ? "VirtualShadowMapSharedCasterChanges" :
             activeViews ? "VirtualShadowMapActiveViews" :
+            distantLights ? "VirtualShadowMapDistantLights" :
             "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
@@ -473,6 +478,7 @@ public:
                     if (hierarchyHZB) { frameSettings.hierarchyHZB = !force; }
                     if (unifiedMark) { frameSettings.unifiedMark = !force; }
                     if (activeViews) { frameSettings.compactShadowViews = !force; }
+                    if (distantLights) { frameSettings.distantLightSinglePage = !force; }
                     if (hybrid && force) { frameSettings.clusterHybridRaster = false; }
                     if (twoPass && force) { frameSettings.twoPassHZB = false; }
                     if (serialized) { frameSettings.batchBuildRaster = false; }
@@ -691,6 +697,174 @@ public:
                     requirePool((snapshot.memory.staticAtlasBytes != 0) == layered, "Layered shared atlas memory missing or double counted");
                     return snapshot;
                 };
+                if (distantLights) {
+                    settings.pageSize = 64;
+                    settings.virtualPagesPerAxis = 4;
+                    settings.collectGPUWork = true;
+                    settings.unifiedMark = true;
+                    settings.compactShadowViews = true;
+                    const auto& caps = device.capabilities();
+                    settings.clusterHybridRaster = layered && caps.computeSubgroupBallotArithmetic &&
+                        caps.subPixelPrecisionBits >= 1 && caps.subPixelPrecisionBits <= 8;
+                    VirtualShadowMapLight sun;
+                    sun.direction = {1, 0, -1};
+                    VirtualShadowMapLight spot;
+                    spot.type = VirtualShadowMapLightType::Spot;
+                    spot.position = {0, 0, 3}; spot.direction = {0, 0, -1};
+                    spot.range = 3.8f; spot.outerConeAngle = .8f;
+                    auto unbounded = spot;
+                    unbounded.range = 0;
+                    // A single-page first face cannot supply the hybrid fine-raster scratch.
+                    std::vector<PoolFace> faces{{1, spot}, {0, sun}, {2, unbounded}};
+                    auto point = spot;
+                    point.type = VirtualShadowMapLightType::PointFace;
+                    point.position[2] = 2.2f;
+                    for (uint32_t face = 0; face < 6; ++face) {
+                        point.face = face;
+                        faces.push_back({3u + face, point});
+                    }
+                    const auto blockerTransform = scene.nodes()[1].localMatrix;
+                    auto seamTranslation = blockerTransform;
+                    seamTranslation.SetupByTranslation({.8f, 0, 0});
+                    requirePool(scene.setNodeLocalMatrix(1, seamTranslation * blockerTransform), "Position blocker across point face boundary");
+                    const auto nearCamera = camera.camera();
+                    auto farCamera = nearCamera;
+                    // The constant receiver depth represents the fixture floor.
+                    // Keep the wider camera footprint inside that floor.
+                    farCamera.orthoHeight = 6;
+                    constexpr uint32_t budget = 512;
+                    // Moving a page to a different atlas tile changes hardware depth interpolation rounding.
+                    constexpr float depthTolerance = 1e-8f;
+                    const uint32_t fullPages = settings.clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1u;
+                    const auto local = [](uint32_t identity) { return identity == 1u || identity >= 3u; };
+                    const auto coarseDepth = [](const PoolSnapshot& snapshot, uint32_t identity) {
+                        const uint32_t slot = snapshot.faces.at(identity).pages.back()[0];
+                        std::vector<uint32_t> depth(snapshot.pageSize * snapshot.pageSize);
+                        for (uint32_t y = 0; y < snapshot.pageSize; ++y) {
+                            for (uint32_t x = 0; x < snapshot.pageSize; ++x) {
+                                depth[y * snapshot.pageSize + x] = poolPageTexel(snapshot, slot, x, y);
+                            }
+                        }
+                        return depth;
+                    };
+                    const auto audit = [&](std::string_view phase, const PoolSnapshot& snapshot, bool distant) {
+                        Json entry{{"phase", phase}, {"layered", layered}, {"clusterHybridRaster", settings.clusterHybridRaster},
+                            {"faces", Json::array()}};
+                        for (const auto& [identity, face] : snapshot.faces) {
+                            const bool singlePage = distant && local(identity);
+                            requirePool(face.pages.size() == (singlePage ? 1u : fullPages),
+                                std::string(phase) + ": wrong virtual page count for face " + std::to_string(identity));
+                            if (singlePage) {
+                                requirePool(face.stats[0] == 0 && face.stats[1] == 0 && face.stats[2] == 0 &&
+                                    face.stats[4] == 0 && face.stats[12] == 1 && face.stats[16] == 0,
+                                    std::string(phase) + ": a single-page face requested, admitted or built fine pages");
+                            }
+                            entry["faces"].push_back({{"identity", identity}, {"virtualPages", face.pages.size()},
+                                {"requestedFinePages", face.stats[0]}, {"residentPages", face.stats[12]},
+                                {"reusedCache", face.cache[kVSMCacheReused]},
+                                {"dirtyCoarsePages", face.cache[kVSMCacheCompositeDirtyCoarsePages]}});
+                        }
+                        report["frames"].push_back(std::move(entry));
+                        save();
+                    };
+                    const auto compareFull = [&](std::string_view phase) {
+                        validation.phase(std::string(phase));
+                        const auto actual = record(faces, budget, false, false, true);
+                        const auto reference = record(faces, budget, true, false, true);
+                        audit(phase, actual, false);
+                        for (const auto& face : faces) {
+                            compareRasterDepth(actual, reference, face.identity, depthTolerance, false, false);
+                        }
+                        requirePool(actual.faces.at(1).stats[0] > 0 && actual.faces.at(8).stats[0] > 0,
+                            std::string(phase) + ": near spot or point face requested no fine pages");
+                    };
+                    compareFull("Near");
+
+                    requirePool(camera.setCamera(farCamera), "Zoom out for distant local lights");
+                    validation.phase("Far");
+                    const auto far = record(faces, budget, false, false, true);
+                    audit("Far", far, true);
+                    const auto full = record(faces, budget, true, false, true);
+                    requirePool(full.faces.at(1).stats[0] > 0 && full.faces.at(8).stats[0] > 0 &&
+                        far.faces.at(0).stats[0] > 0 && far.faces.at(2).stats[0] > 0,
+                        "The mixed case did not suppress normal fine requests selectively");
+                    for (uint32_t identity : {1u, 3u, 8u}) {
+                        const auto& face = far.faces.at(identity);
+                        requirePool(std::ranges::any_of(coarseDepth(far, identity), [](uint32_t depth) { return depth != 0; }) &&
+                            face.cache[kVSMCacheReused] == 0,
+                            "Switching to single-page mode did not rasterize the newly laid out page");
+                    }
+                    const auto& pointShadow = far.faces.at(8).visibility;
+                    const uint32_t rowCenter = (kHeight / 2) * kWidth + kWidth / 2;
+                    // At the receiver, these samples straddle the -Z/+X seam of the point light.
+                    const uint32_t seam = uint32_t(point.position[2] * kHeight / farCamera.orthoHeight);
+                    requirePool(pointShadow[rowCenter + seam] < 255 && pointShadow[rowCenter + seam + 1u] < 255,
+                        "Distant point shadows must cross the cube face boundary");
+
+                    validation.phase("FarWarm");
+                    const auto warm = record(faces, budget, false, false, true);
+                    audit("FarWarm", warm, true);
+                    for (const auto& [identity, face] : warm.faces) {
+                        compareRasterDepth(warm, far, identity, 0.0f, false, false);
+                        if (local(identity)) {
+                            requirePool(face.cache[kVSMCacheReused] == 1 && face.cache[kVSMCacheCompositeDirtyCoarsePages] == 0 &&
+                                face.pages.front()[0] == far.faces.at(identity).pages.front()[0],
+                                "A stable single-page face did not reuse its clean physical page");
+                        }
+                    }
+
+                    auto movedTranslation = blockerTransform;
+                    movedTranslation.SetupByTranslation({-.8f, 0, 0});
+                    requirePool(scene.setNodeLocalMatrix(1, movedTranslation * blockerTransform), "Move the distant blocker");
+                    validation.phase("FarMoved");
+                    const auto moved = record(faces, budget, false, false, true);
+                    audit("FarMoved", moved, true);
+                    const auto& movedSpot = moved.faces.at(1);
+                    requirePool(movedSpot.cache[kVSMCacheReused] == 1 &&
+                        movedSpot.cache[kVSMCacheCompositeDirtyCoarsePages] == 1 && movedSpot.visibility != warm.faces.at(1).visibility,
+                        "A changed caster did not invalidate and rerasterize the single cached page");
+
+                    requirePool(camera.setCamera(nearCamera), "Zoom back in for local mips");
+                    validation.phase("CancelNear");
+                    (void)record(faces, budget, false, true, true);
+                    compareFull("NearAfterCancel");
+
+                    requirePool(camera.setCamera(farCamera), "Restore the distant comparison camera");
+                    validation.phase("CoarseReference");
+                    // The legacy control has no budget for fine pages. Select its one-page mip
+                    // so its PCF tap footprint equals the actual fallback page's texel size.
+                    settings.resolutionLodBias = float(settings.clipmapCount - 1u);
+                    const uint32_t coarseBudget = uint32_t(faces.size());
+                    const auto compact = record(faces, coarseBudget, false, false, true);
+                    const auto coarse = record(faces, coarseBudget, true, false, true);
+                    audit("CoarseReference", compact, true);
+                    for (const auto& [identity, face] : compact.faces) {
+                        const auto& reference = coarse.faces.at(identity);
+                        requirePool(face.stats[12] == 1 && reference.stats[12] == 1 &&
+                            face.visibility == reference.visibility, "Coarse-only reference disagrees on resident pages or PCF visibility");
+                        const auto referenceDepth = coarseDepth(coarse, identity);
+                        requirePool(coarseDepth(compact, identity) == referenceDepth,
+                            "Single-page physical depth differs from the full table's coarse page");
+                        if (local(identity)) {
+                            const bool sameDepth = std::ranges::equal(coarseDepth(moved, identity), referenceDepth,
+                                [depthTolerance](uint32_t a, uint32_t b) {
+                                    return (a == 0) == (b == 0) &&
+                                        std::abs(std::bit_cast<float>(a) - std::bit_cast<float>(b)) <= depthTolerance;
+                                });
+                            requirePool(sameDepth && moved.faces.at(identity).visibility == reference.visibility,
+                                "Rerasterizing the resident single page differs from a coarse-only forced redraw");
+                        }
+                    }
+                    std::vector<uint32_t> pixels(kPixels);
+                    std::transform(pointShadow.begin(), pointShadow.end(), pixels.begin(),
+                        [](uint8_t value) { return uint32_t(value) * 0x010101u | 0xff000000u; });
+                    std::string imageLog;
+                    requirePool(saveRgba8Png(directory / (layered ? "LayeredFarPoint.png" : "FarPoint.png"),
+                        reinterpret_cast<const uint8_t*>(pixels.data()), kWidth, kHeight, imageLog), "Save distant point shadow: " + imageLog);
+                    requirePool(camera.setCamera(nearCamera), "Restore the pool camera");
+                    requirePool(scene.setNodeLocalMatrix(1, blockerTransform), "Restore the pool blocker");
+                    continue;
+                }
                 if (activeViews) {
                     settings.collectGPUWork = true;
                     settings.compactBuild = layered;
@@ -1508,6 +1682,7 @@ public:
             report["passed"] = true; save();
             return RHITestResult::pass(unifiedMark ? "View Mark matched per-face requests, receiver masks, cached pages and shadow images" :
                 activeViews ? "Fine view compaction preserved cached pages, resident D32 and point visibility" :
+                distantLights ? "Distant local lights used one cached page per face and matched coarse-only depth and point filtering" :
                 casterChanges ? "Caster change lists were built once per snapshot pair and preserved per-face invalidation" :
                 hierarchyHZB ? "Instance and hierarchy HZB preserved resident depth and shadow visibility through disocclusion" :
                 twoPass ? "Two-pass HZB preserved resident depth and shadow visibility through disocclusion" :
@@ -1559,5 +1734,12 @@ public:
     VirtualShadowMapActiveViewsTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::ActiveViews) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapActiveViewsTest);
+
+class VirtualShadowMapDistantLightsTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapDistantLightsTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::DistantLights) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapDistantLightsTest);
 } // namespace
 } // namespace metallic::tests

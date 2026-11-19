@@ -56,6 +56,14 @@ GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view �
 
 641×361 的 OpenPBR 场景含 4 灯、9 面。缓存分层和合并缓存两种配置各自对照时，5 个采样帧的 shadow、HDR、主视图深度、可见性和最终画面均逐字节一致。合并缓存配置的普通计时按 A–B–A–B 启动四个独立进程，每个进程预热 32 帧、测量 32 帧。Shadows pass 从 1.225 ms 降至 1.064 ms（−13.1%）；整图差异落在进程间波动范围内。[逐面回归](../build/vsm-unified-mark/regression/VirtualShadowMapUnifiedMark/Report.json) · [实景对照](../build/vsm-unified-mark/RuntimeComparison.json) · [计时报告](../build/vsm-unified-mark/perf/report-4/Report.md)
 
+## 远距局部灯单页模式
+
+`VirtualShadowMapLightsPass` 的 `distantLightSinglePage` 默认关闭。启用后，根据主视图中的光照范围估算有限范围 spot 和 point 的屏幕半径。透视按光照球最近视深计算并考虑离轴放大，触及主相机近平面的灯使用完整 mip。正交按当前视图缩放计算。阈值为物理页边长的像素数，窄 spot 按锥角进一步收紧。方向光和无界局部灯使用完整页表。
+
+单页 spot 使用一张完整投影，单页 point 每个立方体面使用一张完整投影，共六页。单页面直接分配其粗页，不申请细页，也不运行细页 Mark、Build 或 Raster 工作。它与其他灯共享物理池和投影批次。PCF 和 SMRT 按采样位置跨立方体面读取；移动 caster 仍按各面视锥失效。近远切换会重建受影响面的页表，并使该灯的 SMRT 历史失效。
+
+`virtual_shadow_map_distant_lights` 检查单页与完整 mip 混排、逐页 D32、跨面 PCF、近远切换和缓存复用。每面公开 statistics 的字 11 为细 mip 数，单页模式下为 0。
+
 ## 压缩活跃 shadow view
 
 `VirtualShadowMapLightsPass` 的 `compactShadowViews` 默认关闭，启用时需要共享池、`batchBuildRaster` 和计算 subgroup ballot/arithmetic 支持。跨灯 Build 根据物理页准入和分配结果，在 GPU 上把拥有待重绘驻留细页的 clipmap 或 mip 写入每面的位掩码。静态层增量合并也计入。全缓存命中、只有粗页或全部细页请求被拒绝的灯面不会进入细页 Build。
