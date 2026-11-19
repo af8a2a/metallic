@@ -169,6 +169,7 @@ public:
             runtimeBoolSetting("demandDrivenBudget", "Distribute Pages by Receiver Demand", true),
             runtimeBoolSetting("unifiedMark", "Mark Shadow Pages Per View", false),
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
+            runtimeBoolSetting("compactShadowViews", "Compact Active Shadow Views", false),
             runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
             runtimeBoolSetting("twoPassHZB", "Two-Pass Shadow HZB", false),
             runtimeBoolSetting("hierarchyHZB", "Two-Pass Shadow Caster Hierarchy HZB", false),
@@ -328,6 +329,7 @@ public:
         settings.cacheLayering = boolProperty(&properties, "cacheLayering", settings.cacheLayering);
         settings.unifiedMark = boolProperty(&properties, "unifiedMark", settings.unifiedMark);
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
+        settings.compactShadowViews = boolProperty(&properties, "compactShadowViews", settings.compactShadowViews);
         settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
         settings.twoPassHZB = boolProperty(&properties, "twoPassHZB", settings.twoPassHZB);
         settings.hierarchyHZB = boolProperty(&properties, "hierarchyHZB", settings.hierarchyHZB);

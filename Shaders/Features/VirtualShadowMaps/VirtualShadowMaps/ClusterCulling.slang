@@ -329,17 +329,18 @@ uint vsmCullCluster(uint firstTriangle, uint lane, ShadowPush push,
 #endif
     }
     GroupMemoryBarrierWithGroupSync();
+    uint clusterLevel = vsmFineViewForLane(push, lane);
 #if VSM_WORKLOAD_DIAGNOSTICS
     // Keep the predicate's diagnostic side effects inside the lane/valid guard.
-    if (lane < push.clipmapCount && g_vsmClusterValid != 0u && vsmLODSelectedRange(push, firstTriangle, lane)) {
-        if (vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
-            InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+    if (clusterLevel < push.clipmapCount && g_vsmClusterValid != 0u && vsmLODSelectedRange(push, firstTriangle, clusterLevel)) {
+        if (vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[clusterLevel], pages, push)) {
+            InterlockedOr(g_vsmClusterLevelMask, 1u << clusterLevel);
         }
     }
 #else
-    if (lane < push.clipmapCount && g_vsmClusterValid != 0u && vsmLODSelectedRange(push, firstTriangle, lane) &&
-        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[lane], pages, push)) {
-        InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+    if (clusterLevel < push.clipmapCount && g_vsmClusterValid != 0u && vsmLODSelectedRange(push, firstTriangle, clusterLevel) &&
+        vsmClusterNeedsLevel(g_vsmClusterMinimum, g_vsmClusterMaximum, projections[clusterLevel], pages, push)) {
+        InterlockedOr(g_vsmClusterLevelMask, 1u << clusterLevel);
     }
 #endif
     GroupMemoryBarrierWithGroupSync();
@@ -457,8 +458,9 @@ void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         if (lane == 0u) { g_vsmClusterLevelMask = 0u; }
         GroupMemoryBarrierWithGroupSync();
         StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-        if (instance.count != 0u && lane < push.clipmapCount && vsmInstanceNeedsLevel(instance, projections[lane], push)) {
-            InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+        uint level = vsmFineViewForLane(push, lane);
+        if (instance.count != 0u && level < push.clipmapCount && vsmInstanceNeedsLevel(instance, projections[level], push)) {
+            InterlockedOr(g_vsmClusterLevelMask, 1u << level);
         }
         GroupMemoryBarrierWithGroupSync();
 #if VSM_WORKLOAD_DIAGNOSTICS

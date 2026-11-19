@@ -81,6 +81,7 @@ struct VirtualShadowMapSettings
 {
     bool unifiedMark = false; // Reuse the main-view receiver across shared shadow faces.
     bool batchBuildRaster = true; // Shared pools batch compatible faces; false retains the serial reference path.
+    bool compactShadowViews = false; // Compact shared Build dispatches to faces and levels with dirty resident fine pages.
     bool collectReceiverCoverage = false; // Diagnostic per-pixel records; requires GPU work diagnostics.
     bool collectGPUWork = false; // Diagnostic shader permutation; never use its timings as ordinary performance.
     bool profileBuildSubstages = false; // Optional nested timestamps for cost attribution, not ordinary A/B timing.

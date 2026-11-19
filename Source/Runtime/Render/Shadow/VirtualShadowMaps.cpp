@@ -464,6 +464,7 @@ struct VirtualShadowMaps::Programs
     bool refinedReceiver = false;
     bool sharedPhysicalPool = false;
     bool batchBuildRaster = false;
+    bool compactShadowViews = false;
     bool gpuLOD = false;
     std::array<std::unique_ptr<ShaderModule>, 30> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 16> compute;
@@ -992,6 +993,8 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     std::vector<std::shared_ptr<State>> states;
     auto settings = inputSettings;
     settings.unifiedMark = settings.unifiedMark && faces.size() > 1 && !settings.collectReceiverCoverage;
+    settings.compactShadowViews = settings.compactShadowViews && settings.batchBuildRaster &&
+        device.capabilities().computeSubgroupBallotArithmetic;
     settings.physicalPageCount = capacity;
     std::vector<BufferBarrierDesc> hzbReady;
     for (const auto& bank : storage->hzbBanks) {
@@ -1030,7 +1033,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         if (auto r = bindBuffer(*pool.committed->history, push.previousHistory); !r) { return std::unexpected(r.error()); }
     }
     if (auto r = registry->bind(commands, recording->leases); !r) { return std::unexpected(r.error()); }
-    auto publish = [&]() -> Result<> {
+    auto publish = [&](bool activeViews = false) -> Result<> {
         std::vector<BufferBarrierDesc> barriers;
         auto append = [&](Buffer* buffer) { barriers.push_back({.buffer = buffer,
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
@@ -1039,6 +1042,7 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         if (reuseStorage && pool.committed) { append(pool.committed->history.get()); }
         for (const auto& state : states) {
             for (size_t index : {1u, 4u, 9u}) { append(state->resources->buffers[index].get()); }
+            if (activeViews) { append(state->resources->cacheDiagnostics.get()); }
         }
         return commands.synchronize({.buffers = barriers});
     };
@@ -1047,12 +1051,12 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         if (auto r = commands.dispatch(1); !r) { return r; }
         return publish();
     };
-    auto perFace = [&](size_t pipeline, bool singleGroup = false) -> Result<> {
+    auto perFace = [&](size_t pipeline, bool singleGroup = false, bool activeViews = false) -> Result<> {
         for (const auto& state : states) {
             if (auto r = commands.bindExecution(state->programs->compute[pipeline]->execution(), &state->push, sizeof(ShadowPush)); !r) { return r; }
             if (auto r = commands.dispatch(singleGroup ? 1u : (state->push.totalPages + 255u) / 256u); !r) { return r; }
         }
-        return publish();
+        return publish(activeViews);
     };
     commands.hostWriteBarrier();
     if (auto r = publish(); !r) { return std::unexpected(r.error()); }
@@ -1068,9 +1072,9 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     }
     auto allocationGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM shared physical pool") : RenderGraphExecutionContext::ProfileScope{};
     if (auto r = global(0); !r) { return std::unexpected(r.error()); }
-    if (auto r = perFace(7); !r) { return std::unexpected(r.error()); }
+    if (auto r = perFace(7, false, settings.compactShadowViews); !r) { return std::unexpected(r.error()); }
     if (auto r = global(1); !r) { return std::unexpected(r.error()); }
-    if (auto r = perFace(9); !r) { return std::unexpected(r.error()); }
+    if (auto r = perFace(9, false, settings.compactShadowViews); !r) { return std::unexpected(r.error()); }
     allocationGpu.end();
     if (!reuseStorage) {
         for (const auto& atlas : {storage->atlas, storage->staticAtlas}) {
@@ -1090,8 +1094,8 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
             if (auto r = commands.synchronize({.textures = {&ready, 1}}); !r) { return std::unexpected(r.error()); }
         }
     }
-    if (inputSettings.batchBuildRaster) {
-        if (auto r = recordBatched(physicalPool, commands, states, inputSettings, log, profiler, gpuProfiler); !r) {
+    if (settings.batchBuildRaster) {
+        if (auto r = recordBatched(physicalPool, commands, states, settings, log, profiler, gpuProfiler); !r) {
             return std::unexpected(r.error());
         }
     } else {
@@ -1126,6 +1130,7 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         std::vector<ShadowBatchJob> jobs;
         uint32_t firstJob = 0, argumentWord = 0, upperBound = 0;
         bool indirect = false;
+        bool compactRows = false;
     };
     using Stage = std::map<uint64_t, Bin>;
     Stage hierarchy, initialBuild, indirectBuild, finalize, propagate, hzb, dynamicCull;
@@ -1247,21 +1252,27 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
     }
     std::vector<ShadowBatchJob> jobs;
     uint32_t argumentWords = 0;
-    auto appendStage = [&](Stage& stage, bool mesh) {
+    auto appendStage = [&](Stage& stage, bool mesh, bool compactRows = false) {
         for (auto& [key, bin] : stage) {
             bin.firstJob = uint32_t(jobs.size());
             bin.argumentWord = argumentWords;
+            bin.compactRows = compactRows;
             jobs.insert(jobs.end(), bin.jobs.begin(), bin.jobs.end());
-            if (mesh) { argumentWords += uint32_t(bin.jobs.size()) * 3u; }
-            else if (bin.indirect) {
-                argumentWords += ((bin.upperBound + kDrawBatchSize - 1u) / kDrawBatchSize) *
-                    ((uint32_t(bin.jobs.size()) + kDrawBatchSize - 1u) / kDrawBatchSize) * 3u;
+            const uint32_t rows = uint32_t(bin.jobs.size());
+            if (mesh) { argumentWords += rows * 3u; }
+            else if (bin.indirect || compactRows) {
+                const uint32_t xBlocks = (bin.upperBound + kDrawBatchSize - 1u) / kDrawBatchSize;
+                const uint32_t yBlocks = (rows + kDrawBatchSize - 1u) / kDrawBatchSize;
+                argumentWords += xBlocks * (yBlocks * 3u + (compactRows ? rows : 0u));
             }
         }
     };
-    for (auto* stage : {&hierarchy, &initialBuild, &indirectBuild, &finalize, &propagate, &hzb, &dynamicCull,
-             &prepareHierarchyHZB, &hierarchyHistory, &resetHierarchyPost, &retestHierarchy, &buildHierarchyPost,
+    for (auto* stage : {&hierarchy, &finalize, &propagate, &hzb, &dynamicCull,
+             &prepareHierarchyHZB, &hierarchyHistory, &resetHierarchyPost,
              &finalizeHierarchyPost, &propagateHierarchyPost}) { appendStage(*stage, false); }
+    for (auto* stage : {&initialBuild, &indirectBuild, &retestHierarchy, &buildHierarchyPost}) {
+        appendStage(*stage, false, settings.compactShadowViews);
+    }
     for (auto& stage : raster) { appendStage(stage, true); }
     for (auto& stage : postRaster) { appendStage(stage, true); }
     appendStage(drawHierarchyPost, true);
@@ -1324,21 +1335,25 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         return barriers.empty() ? Result<>{} : commands.synchronize({.buffers = barriers});
     };
     auto prepare = [&](const Bin& bin, uint32_t groupBase, uint32_t outputWord, bool mesh,
-        uint32_t firstRow, uint32_t rowCount) -> Result<> {
+        uint32_t firstRow, uint32_t rowCount, bool collectBuildRows = false) -> Result<> {
         const VirtualShadowMapBatchPreparePush push{jobLease->shaderIndex(), bin.firstJob + firstRow, rowCount,
-            argumentHandle, outputWord, groupBase, mesh ? 1u : 0u, 0u};
+            argumentHandle, outputWord, groupBase, mesh ? 1u : bin.compactRows ? kVSMBatchCompactBuild : 0u,
+            collectBuildRows};
         if (auto r = commands.bindExecution(pool.pipelines[3]->execution(), &push, sizeof(push)); !r) { return r; }
         if (auto r = commands.dispatch(1); !r) { return r; }
         ++prepareDispatches;
         // Each bin writes a disjoint argument slice. Publish only that range;
         // later preparations never overwrite a draw already in the command stream.
+        const uint32_t outputWords = mesh ? rowCount * 3u : 3u + (bin.compactRows ? rowCount : 0u);
         const BufferBarrierDesc ready{.buffer = frame.batchArguments.get(),
             .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-            .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
-            .range = {uint64_t(outputWord) * 4u, uint64_t(mesh ? rowCount : 1u) * 12u}};
+            .after = bin.compactRows ? SyncScope{PipelineStageBits::DrawIndirect | PipelineStageBits::ComputeShader,
+                AccessBits::IndirectRead | AccessBits::ShaderRead} : SyncScope{PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
+            .range = {uint64_t(outputWord) * 4u, uint64_t(outputWords) * 4u}};
         return commands.synchronize({.buffers = {&ready, 1}});
     };
     auto compute = [&](Stage& stage) -> Result<> {
+        const bool collectBuildRows = &stage == &initialBuild && settings.collectGPUWork;
         for (const auto& [key, bin] : stage) {
             ++computeBins;
             uint32_t argument = bin.argumentWord;
@@ -1347,13 +1362,18 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
                 for (uint32_t base = 0; base < bin.upperBound; base += kDrawBatchSize) {
                     auto push = first.push;
                     push.physicalPool = jobLease->shaderIndex(); push.poolFace = bin.firstJob + row; push.workBase = base;
-                    if (bin.indirect) {
-                        if (auto r = prepare(bin, base, argument, false, row, rows); !r) { return r; }
+                    if (bin.indirect || bin.compactRows) {
+                        if (auto r = prepare(bin, base, argument, false, row, rows, collectBuildRows); !r) { return r; }
+                        if (bin.compactRows) {
+                            push.rasterCoarse |= kVSMBatchCompactRows;
+                            push.arguments = argumentHandle;
+                            push.geometry = argument + 3u;
+                        }
                         if (auto r = commands.bindExecution(bin.execution, &push, sizeof(push)); !r) { return r; }
                         auto args = frame.batchArguments->slice({uint64_t(argument) * 4u, 12});
                         if (!args) { return std::unexpected(args.error()); }
                         if (auto r = commands.dispatchIndirect(*args); !r) { return r; }
-                        argument += 3u;
+                        argument += 3u + (bin.compactRows ? rows : 0u);
                     } else {
                         if (auto r = commands.bindExecution(bin.execution, &push, sizeof(push)); !r) { return r; }
                         if (auto r = commands.dispatch(std::min(kDrawBatchSize, bin.upperBound - base), rows); !r) { return r; }
@@ -1757,6 +1777,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     CasterChangeContext* casterChangeContext)
 {
     const bool sharedPhysicalPool = physicalPool != nullptr;
+    const bool compactShadowViews = sharedPhysicalPool && requestedSettings.compactShadowViews;
     const auto poolFrame = sharedPhysicalPool ? physicalPool->impl_->recording : nullptr;
     auto settings = requestedSettings;
     const auto& caps = device.capabilities();
@@ -1955,7 +1976,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    std::array<uint32_t, kVSMHierarchyHZBRecoveredNodes + 1> cacheDiagnostics{};
+    std::array<uint32_t, kVSMActiveInitialBuildRows + 1> cacheDiagnostics{};
     cacheDiagnostics[50] = UINT32_MAX;
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
@@ -2631,7 +2652,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs_->receiverMask != receiverMask ||
         programs_->staticPageHZB != staticPageHZB ||
         programs_->refinedReceiver != refinedReceiver || programs_->sharedPhysicalPool != sharedPhysicalPool ||
-        programs_->batchBuildRaster != (sharedPhysicalPool && settings.batchBuildRaster) || programs_->gpuLOD != gpuLOD;
+        programs_->batchBuildRaster != (sharedPhysicalPool && settings.batchBuildRaster) ||
+        programs_->compactShadowViews != compactShadowViews || programs_->gpuLOD != gpuLOD;
     phase.work("cacheMiss", programMiss);
     if (programMiss) {
         std::filesystem::path generatedDirectory;
@@ -2662,6 +2684,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs->refinedReceiver = refinedReceiver;
         programs->sharedPhysicalPool = sharedPhysicalPool;
         programs->batchBuildRaster = sharedPhysicalPool && settings.batchBuildRaster;
+        programs->compactShadowViews = compactShadowViews;
         programs->gpuLOD = gpuLOD;
         const char* entries[]{"vsmResetMain", "vsmMarkMain", "vsmAllocateMain", "vsmBuildMain", "vsmFinalizeMain", "vsmProjectMain",
             "vsmRasterMeshMain", "vsmDepthFragmentMain", "vsmClearMeshMain", "vsmClearFragmentMain",
@@ -2698,6 +2721,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             const bool buildEntry = index == 3 || index == 14;
             const bool compactEntry = index == 0 || buildEntry || index >= 26;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
+            if (compactShadowViews && (buildEntry || index == 11 || index == 13 || index == 28)) {
+                entryMacros.push_back({"VSM_COMPACT_SHADOW_VIEWS", "1"});
+            }
             if (programs->batchBuildRaster && (buildEntry || index == 4 || index == 6 || index == 8 ||
                 index == 15 || index == 16 || index == 17 || index == 18 || index == 20 || index >= 22)) {
                 entryMacros.push_back({"VSM_BATCHED_BUILD_RASTER", "1"});

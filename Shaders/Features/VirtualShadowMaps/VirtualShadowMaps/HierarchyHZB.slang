@@ -104,13 +104,14 @@ void vsmVisitHZBSubtree(uint root, uint lane, bool current, ShadowPush push)
         vsmCacheMetadata(push, kVSMHierarchyHZBNodes)));
     StructuredBuffer<VSMInstanceRange> instances = resolveUniform(ResourceHandle<StructuredBuffer<VSMInstanceRange>>(
         vsmCacheMetadata(push, kVSMCacheInstanceTable)));
+    uint level = vsmFineViewForLane(push, lane);
     uint end = nodes[root].escape;
     for (uint index = root; index < end;) {
         VSMCasterHierarchyNode node = nodes[index];
         if (lane == 0u) { gVsmHierarchyVisibility = kVSMHierarchyNoDirtyPage; }
         GroupMemoryBarrierWithGroupSync();
-        if (lane < push.clipmapCount) {
-            InterlockedMax(gVsmHierarchyVisibility, vsmHierarchyLevelVisibility(node, lane, current, push));
+        if (level < push.clipmapCount) {
+            InterlockedMax(gVsmHierarchyVisibility, vsmHierarchyLevelVisibility(node, level, current, push));
         }
         GroupMemoryBarrierWithGroupSync();
         uint outcome = gVsmHierarchyVisibility;

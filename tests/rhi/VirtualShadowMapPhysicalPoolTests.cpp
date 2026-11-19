@@ -215,6 +215,7 @@ struct PoolFaceSnapshot
     std::vector<uint64_t> requestedMasks;
     std::vector<uint8_t> visibility;
     std::array<uint32_t, 3> hybrid{};
+    std::array<uint32_t, 2> activeViews{}; // Fine level mask and compact initial Build row count.
     TwoPassTickets hzb;
     HierarchyHZBCounts hierarchyHZB;
     uint64_t instanceClusterTickets = 0;
@@ -291,7 +292,8 @@ uint32_t requireRetainedDepth(const PoolSnapshot& previous, const PoolSnapshot& 
 }
 
 float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardware, uint32_t identity,
-    float depthTolerance = 0.0f, bool expectMixedFinePage = true, bool expectMixedVisibility = true)
+    float depthTolerance = 0.0f, bool expectMixedFinePage = true, bool expectMixedVisibility = true,
+    bool expectCoarseDepth = false)
 {
     const auto& face = actual.faces.at(identity);
     const auto& reference = hardware.faces.at(identity);
@@ -326,6 +328,9 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
             }
         }
         mixedFinePages += floor && blocker && page + 1 < face.pages.size();
+        if (expectCoarseDepth && page + 1 == face.pages.size()) {
+            requirePool(floor || blocker, "Coarse-only raster did not produce visible depth");
+        }
     }
     if (expectMixedFinePage && depthTolerance == 0) {
         requirePool(mixedFinePages > 0, "No fine page contains both the large floor and the microtriangle blocker");
@@ -337,7 +342,7 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     return maxError;
 }
 
-enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges };
+enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark, CasterChanges, ActiveViews };
 
 class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
@@ -348,6 +353,7 @@ public:
             scenario == PoolScenario::HybridRaster ? "virtual_shadow_map_cluster_hybrid_raster" :
             scenario == PoolScenario::TwoPassHZB ? "virtual_shadow_map_two_pass_hzb" :
             scenario == PoolScenario::HierarchyHZB ? "virtual_shadow_map_hierarchy_hzb" :
+            scenario == PoolScenario::ActiveViews ? "virtual_shadow_map_active_views" :
             scenario == PoolScenario::CasterChanges ? "virtual_shadow_map_shared_caster_changes" : "virtual_shadow_map_physical_pool";
         type = RHITestType::Rendering;
     }
@@ -359,9 +365,11 @@ public:
         const bool hierarchyHZB = scenario_ == PoolScenario::HierarchyHZB;
         const bool unifiedMark = scenario_ == PoolScenario::UnifiedMark;
         const bool casterChanges = scenario_ == PoolScenario::CasterChanges;
+        const bool activeViews = scenario_ == PoolScenario::ActiveViews;
         const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" :
             hierarchyHZB ? "VirtualShadowMapHierarchyHZB" : twoPass ? "VirtualShadowMapTwoPassHZB" :
             hybrid ? "VirtualShadowMapClusterHybridRaster" : casterChanges ? "VirtualShadowMapSharedCasterChanges" :
+            activeViews ? "VirtualShadowMapActiveViews" :
             "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
@@ -385,6 +393,9 @@ public:
             }
             if ((twoPass || hierarchyHZB) && !device.capabilities().computeSubgroupBallotArithmetic) {
                 return RHITestResult::skip("Two-pass HZB requires subgroup ballot/arithmetic for packed cluster Build");
+            }
+            if (activeViews && !device.capabilities().computeSubgroupBallotArithmetic) {
+                return RHITestResult::skip("Fine view compaction requires subgroup ballot/arithmetic");
             }
             PoolCommands gpu(device);
             RenderView camera;
@@ -458,9 +469,10 @@ public:
                             .sourceSlot = specs[index].sourceSlot});
                     }
                     auto frameSettings = settings;
-                    frameSettings.forceRedraw = force && !unifiedMark && !hierarchyHZB;
+                    frameSettings.forceRedraw = force && !unifiedMark && !hierarchyHZB && !activeViews;
                     if (hierarchyHZB) { frameSettings.hierarchyHZB = !force; }
                     if (unifiedMark) { frameSettings.unifiedMark = !force; }
+                    if (activeViews) { frameSettings.compactShadowViews = !force; }
                     if (hybrid && force) { frameSettings.clusterHybridRaster = false; }
                     if (twoPass && force) { frameSettings.twoPassHZB = false; }
                     if (serialized) { frameSettings.batchBuildRaster = false; }
@@ -546,6 +558,7 @@ public:
                         face.pages.resize((*results)[index].clipmapCount * settings.virtualPagesPerAxis * settings.virtualPagesPerAxis + 1u);
                         offsets.push_back(bytes);
                         bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
+                        if (activeViews) { bytes += sizeof(face.activeViews); }
                         if (hybrid) { bytes += sizeof(face.hybrid) + sizeof(face.hardwarePrimitives) + sizeof(face.hardwareFineGroups); }
                         if (frameSettings.twoPassHZB) { bytes += sizeof(face.hzb); }
                         if (hierarchyHZB) { bytes += sizeof(face.hierarchyHZB) + sizeof(face.instanceClusterTickets); }
@@ -597,6 +610,11 @@ public:
                             std::pair{(*results)[index].cacheDiagnostics, uint64_t(sizeof(face.cache))}}) {
                             copyCounterRange(buffer, 0, size);
                         }
+                        if (activeViews) {
+                            static_assert(kVSMActiveInitialBuildRows == kVSMActiveFineViewMask + 1u);
+                            copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMActiveFineViewMask,
+                                sizeof(face.activeViews));
+                        }
                         if (hybrid) {
                             if (frameSettings.clusterHybridRaster) {
                                 copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMHybridSoftwareTickets, sizeof(face.hybrid));
@@ -640,6 +658,10 @@ public:
                         std::memcpy(face.stats.data(), data + offsets[index], sizeof(face.stats));
                         std::memcpy(face.pages.data(), data + offsets[index] + sizeof(face.stats), face.pages.size() * sizeof(Page));
                         std::memcpy(face.cache.data(), data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page), sizeof(face.cache));
+                        if (activeViews) {
+                            std::memcpy(face.activeViews.data(), data + offsets[index] + sizeof(face.stats) +
+                                face.pages.size() * sizeof(Page) + sizeof(face.cache), sizeof(face.activeViews));
+                        }
                         if (hybrid) {
                             const auto* counters = data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
                             if (frameSettings.clusterHybridRaster) { std::memcpy(face.hybrid.data(), counters, sizeof(face.hybrid)); }
@@ -669,6 +691,110 @@ public:
                     requirePool((snapshot.memory.staticAtlasBytes != 0) == layered, "Layered shared atlas memory missing or double counted");
                     return snapshot;
                 };
+                if (activeViews) {
+                    settings.collectGPUWork = true;
+                    settings.compactBuild = layered;
+                    settings.dirtyPageHierarchy = layered;
+                    // Start receiver marking at level 1 so active faces have
+                    // real coarse-mip work and an unused finest view.
+                    settings.receiverFootprint = false;
+                    settings.resolutionLodBias = 1.0f;
+                    VirtualShadowMapLight sun;
+                    sun.direction = {1, 0, -1};
+                    VirtualShadowMapLight spot;
+                    spot.type = VirtualShadowMapLightType::Spot; spot.position = {3.5f, 0, 3};
+                    spot.direction = {0, 0, -1}; spot.range = 10; spot.outerConeAngle = .15f;
+                    std::vector<PoolFace> faces{{0, sun}, {1, spot}};
+                    auto point = spot;
+                    point.type = VirtualShadowMapLightType::PointFace; point.position = {0, 0, 4};
+                    for (uint32_t face = 0; face < 6; ++face) {
+                        point.face = face;
+                        faces.push_back({3u + face, point});
+                    }
+                    constexpr uint32_t budget = 512u;
+                    const uint32_t pagesPerLevel = settings.virtualPagesPerAxis * settings.virtualPagesPerAxis;
+                    const uint32_t expectedColdMask = ((1u << settings.clipmapCount) - 1u) & ~1u;
+                    const auto compare = [&](const char* phase) {
+                        const std::string label = std::string(layered ? "Layered-" : "Combined-") + phase;
+                        validation.phase(label);
+                        const auto actual = record(faces, budget, false, false, true);
+                        const auto reference = record(faces, budget, true, false, true);
+                        Json entry{{"phase", phase}, {"layered", layered}, {"faces", Json::array()}};
+                        for (const auto& [identity, face] : actual.faces) {
+                            const auto& referenceFace = reference.faces.at(identity);
+                            uint32_t expectedMask = 0;
+                            for (uint32_t index = 0; index + 1u < referenceFace.pages.size(); ++index) {
+                                const auto& page = referenceFace.pages[index];
+                                if (page[0] != UINT32_MAX && (page[1] & 2u) != 0u && (page[3] & 10u) != 0u) {
+                                    expectedMask |= 1u << (index / pagesPerLevel);
+                                }
+                            }
+                            entry["faces"].push_back({{"identity", identity}, {"activeFineViewMask", face.activeViews[0]},
+                                {"expectedFineViewMask", expectedMask}, {"initialBuildRows", face.activeViews[1]}, {"cache", face.cache}});
+                            const std::string location = label + " face " + std::to_string(identity);
+                            requirePool(referenceFace.activeViews == decltype(face.activeViews){},
+                                location + ": the reference published compact view work");
+                            requirePool(face.activeViews[0] == expectedMask && face.activeViews[1] == uint32_t(expectedMask != 0u),
+                                location + ": expected mask " + std::to_string(expectedMask) + ", compact GPU mask " +
+                                std::to_string(face.activeViews[0]) + ", initial Build rows " + std::to_string(face.activeViews[1]));
+                            requirePool(face.pages == referenceFace.pages && face.cache == referenceFace.cache,
+                                location + ": compacting fine views changed page ownership or invalidation");
+                            compareRasterDepth(actual, reference, identity, 0.0f, false, identity == 0u, identity == 1u);
+                        }
+                        report["frames"].push_back(std::move(entry));
+                        save();
+                        return actual;
+                    };
+                    const auto cold = compare("Cold");
+                    requirePool(cold.faces.at(0).activeViews[0] == expectedColdMask &&
+                        cold.faces.at(8).activeViews[0] == expectedColdMask,
+                        "Cold directional clipmaps and the visible point face did not exercise partial fine-view masks");
+                    requirePool(cold.faces.at(1).activeViews[1] == 0u && cold.faces.at(7).activeViews[1] == 0u &&
+                        cold.faces.at(1).cache[kVSMCacheCompositeDirtyCoarsePages] == 1u &&
+                        cold.faces.at(7).cache[kVSMCacheCompositeDirtyCoarsePages] == 1u,
+                        "Cold spot and unused point face did not exercise coarse-only raster with no fine Build row");
+                    std::vector<uint32_t> pixels(kPixels);
+                    std::transform(cold.faces.at(0).visibility.begin(), cold.faces.at(0).visibility.end(), pixels.begin(),
+                        [](uint8_t value) { return uint32_t(value) * 0x010101u | 0xff000000u; });
+                    std::string imageLog;
+                    requirePool(saveRgba8Png(directory / (layered ? "LayeredShadow.png" : "CombinedShadow.png"),
+                        reinterpret_cast<const uint8_t*>(pixels.data()), kWidth, kHeight, imageLog), "Save compact-view shadow: " + imageLog);
+
+                    const auto warm = compare("Warm");
+                    for (const auto& [identity, face] : warm.faces) {
+                        requirePool(face.activeViews[1] == 0u && face.visibility == cold.faces.at(identity).visibility,
+                            "A clean cached view produced Build work or changed visibility");
+                    }
+                    requireRetainedDepth(cold, warm, 0u);
+                    requireRetainedDepth(cold, warm, 8u);
+
+                    const auto originalMatrix = scene.nodes()[1].localMatrix;
+                    auto translation = originalMatrix;
+                    translation.SetupByTranslation({.6f, 0, .1f});
+                    requirePool(scene.setNodeLocalMatrix(1, translation * originalMatrix), "Move compact-view blocker");
+                    std::swap(faces[0], faces[1]);
+                    for (auto& face : std::span(faces).subspan(2)) { face.light.position[2] = -4; }
+                    validation.phase(layered ? "Layered-Cancel" : "Combined-Cancel");
+                    (void)record(faces, budget, false, true, true);
+                    (void)record(faces, budget, true, true, true);
+                    const auto moved = compare("MovedAfterCancel");
+                    requirePool(moved.faces.at(0).activeViews[1] == 1u &&
+                        moved.faces.at(0).visibility != warm.faces.at(0).visibility,
+                        "Moved caster failed to republish and rasterize fine work after cancellation");
+                    requirePool(moved.faces.at(7).activeViews[1] == 1u && moved.faces.at(8).activeViews[1] == 0u,
+                        "Moving the point light failed to transfer work to a different face after cancellation");
+                    if (layered) {
+                        (void)compare("Settle");
+                        const auto demoted = compare("Demote");
+                        const auto& sunFace = demoted.faces.at(0);
+                        requirePool(sunFace.cache[kVSMCacheDynamicCasters] == 0u &&
+                            sunFace.cache[kVSMCacheCompositeDirtyFinePages] == 0u &&
+                            sunFace.cache[kVSMCacheStaticDirtyFinePages] > 0u && sunFace.activeViews[1] == 1u,
+                            "Static-only merge did not keep its fine views in the compact Build");
+                    }
+                    requirePool(scene.setNodeLocalMatrix(1, originalMatrix), "Restore compact-view blocker");
+                    continue;
+                }
                 if (casterChanges) {
                     VirtualShadowMapLight sun;
                     sun.direction = {0, 0, -1};
@@ -1381,6 +1507,7 @@ public:
             requirePool(!validation.failed(), "Shared pool Vulkan validation error");
             report["passed"] = true; save();
             return RHITestResult::pass(unifiedMark ? "View Mark matched per-face requests, receiver masks, cached pages and shadow images" :
+                activeViews ? "Fine view compaction preserved cached pages, resident D32 and point visibility" :
                 casterChanges ? "Caster change lists were built once per snapshot pair and preserved per-face invalidation" :
                 hierarchyHZB ? "Instance and hierarchy HZB preserved resident depth and shadow visibility through disocclusion" :
                 twoPass ? "Two-pass HZB preserved resident depth and shadow visibility through disocclusion" :
@@ -1426,5 +1553,11 @@ public:
     VirtualShadowMapSharedCasterChangesTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::CasterChanges) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapSharedCasterChangesTest);
+class VirtualShadowMapActiveViewsTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapActiveViewsTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::ActiveViews) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapActiveViewsTest);
 } // namespace
 } // namespace metallic::tests

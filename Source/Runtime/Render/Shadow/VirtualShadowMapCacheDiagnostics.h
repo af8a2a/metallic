@@ -85,6 +85,8 @@ static const uint32_t kVSMHierarchyHZBRejectedInstances = 75;
 static const uint32_t kVSMHierarchyHZBRejectedNodes = 76;
 static const uint32_t kVSMHierarchyHZBRecoveredInstances = 77;
 static const uint32_t kVSMHierarchyHZBRecoveredNodes = 78;
+static const uint32_t kVSMActiveFineViewMask = 79;
+static const uint32_t kVSMActiveInitialBuildRows = 80;
 static const uint32_t kVSMHierarchyHZBPostRaster = 16u;
 static const uint32_t kVSMHierarchyHZBTreeStride = 15u;
 

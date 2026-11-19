@@ -20,6 +20,9 @@ implementing VirtualShadowMaps;
 #ifndef VSM_DIRTY_PAGE_HIERARCHY
 #define VSM_DIRTY_PAGE_HIERARCHY 0
 #endif
+#ifndef VSM_COMPACT_SHADOW_VIEWS
+#define VSM_COMPACT_SHADOW_VIEWS 0
+#endif
 
 public struct ShadowPush
 {
@@ -43,11 +46,27 @@ public struct ShadowPush
     uint physicalPool, poolFace;
 };
 
-// sampleReserved names a 32-word diagnostic prefix followed by immutable layer metadata.
+// sampleReserved names a 32-word diagnostic prefix followed by per-face metadata and counters.
 uint vsmCacheMetadata(ShadowPush push, uint word)
 {
     StructuredBuffer<uint> data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.sampleReserved));
     return data[word];
+}
+
+uint vsmFineViewForLane(ShadowPush push, uint lane)
+{
+#if VSM_COMPACT_SHADOW_VIEWS
+    if (lane >= push.clipmapCount) { return push.clipmapCount; }
+    uint mask = vsmCacheMetadata(push, kVSMActiveFineViewMask);
+    uint prefix = (1u << (lane + 1u)) - 1u;
+    if ((mask & prefix) == prefix) { return lane; }
+    if (lane >= countbits(mask)) { return push.clipmapCount; }
+    // Keep the original projection and page-table ordinal in downstream masks.
+    for (uint view = 0u; view < lane; ++view) { mask &= mask - 1u; }
+    return uint(firstbitlow(mask));
+#else
+    return lane;
+#endif
 }
 
 // An incremental static update keeps the old D32 page and draws only casters

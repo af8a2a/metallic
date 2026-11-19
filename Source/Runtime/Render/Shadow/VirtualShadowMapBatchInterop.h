@@ -7,6 +7,10 @@ namespace metallic::render {
 #define uint32_t uint
 #endif
 
+static const uint32_t kVSMBatchCompactBuild = 2u;
+// Set only in the common dispatch push (rasterCoarse), never in a face job.
+static const uint32_t kVSMBatchCompactRows = 32u;
+
 // One existing per-face dispatch/draw, retaining its local workBase and all
 // resource bindings. An indirect source supplies its X group count at execution.
 struct ShadowBatchJob
@@ -26,8 +30,8 @@ struct VirtualShadowMapBatchPreparePush
     uint32_t outputs;
     uint32_t outputWord;
     uint32_t groupBase;
-    uint32_t mode; // 0: rectangular compute dispatch; 1: mesh multi-draw arguments.
-    uint32_t reserved;
+    uint32_t mode; // 0: rectangular compute; 1: mesh multi-draw; 2: compact Build and row indices.
+    uint32_t collectBuildRows;
 };
 
 #ifdef __cplusplus

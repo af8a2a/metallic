@@ -14,6 +14,20 @@ implementing VirtualShadowMaps;
 #ifndef VSM_SHARED_PHYSICAL_POOL
 #define VSM_SHARED_PHYSICAL_POOL 0
 #endif
+#ifndef VSM_COMPACT_SHADOW_VIEWS
+#define VSM_COMPACT_SHADOW_VIEWS 0
+#endif
+
+#if VSM_COMPACT_SHADOW_VIEWS
+void vsmPublishFineViewBits(ShadowPush push, uint viewBits)
+{
+    uint mask = WaveActiveBitOr(viewBits);
+    if (mask != 0u && WaveIsFirstLane()) {
+        RWStructuredBuffer<uint> data = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.sampleReserved));
+        InterlockedOr(data[kVSMActiveFineViewMask], mask);
+    }
+}
+#endif
 
 // Allocation scratch follows the physical owner table in the same buffer:
 // local page ranks, block counts/prefixes, then free/evictable physical slots.
@@ -115,6 +129,9 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
     RWStructuredBuffer<uint> owners = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
     RWStructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.statistics));
     uint3 counts = uint3(0u);
+#if VSM_COMPACT_SHADOW_VIEWS
+    uint fineViewBit = 0u;
+#endif
     uint rankOffset = push.physicalPageCount;
     uint blockOffset = rankOffset + push.totalPages;
 #if VSM_SHARED_PHYSICAL_POOL
@@ -177,10 +194,16 @@ void vsmAdmitMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
             // Both raster layers consume the same Build list, including static-only merges.
             if (entry.x != 0xffffffffu && (entry.w & 10u) != 0u) {
                 InterlockedOr(owners[vsmClusterPageBitsetOffset(push) + (id.x >> 5u)], 1u << (id.x & 31u));
+#if VSM_COMPACT_SHADOW_VIEWS
+                fineViewBit = 1u << entry.z;
+#endif
             }
 #endif
         }
     }
+#if VSM_COMPACT_SHADOW_VIEWS
+    vsmPublishFineViewBits(push, fineViewBit);
+#endif
     uint3 prefix = vsmAllocationPrefix(counts, lane);
     if (id.x < push.totalPages) { owners[rankOffset + id.x] = counts.x != 0u ? prefix.x : 0xffffffffu; }
     if (lane == 255u) {
@@ -365,6 +388,10 @@ void vsmAssignMain(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uni
     // each one resident and dirty; no invocation reads another evicted page.
     if (id.x + 1u < push.totalPages) {
         InterlockedOr(owners[vsmClusterPageBitsetOffset(push) + (id.x >> 5u)], 1u << (id.x & 31u));
+#if VSM_COMPACT_SHADOW_VIEWS
+        // A wave may contain only the allocating lanes. Each subset merges its views.
+        vsmPublishFineViewBits(push, 1u << entry.z);
+#endif
     }
 #endif
 }

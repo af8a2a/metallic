@@ -56,6 +56,14 @@ GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view �
 
 641×361 的 OpenPBR 场景含 4 灯、9 面。缓存分层和合并缓存两种配置各自对照时，5 个采样帧的 shadow、HDR、主视图深度、可见性和最终画面均逐字节一致。合并缓存配置的普通计时按 A–B–A–B 启动四个独立进程，每个进程预热 32 帧、测量 32 帧。Shadows pass 从 1.225 ms 降至 1.064 ms（−13.1%）；整图差异落在进程间波动范围内。[逐面回归](../build/vsm-unified-mark/regression/VirtualShadowMapUnifiedMark/Report.json) · [实景对照](../build/vsm-unified-mark/RuntimeComparison.json) · [计时报告](../build/vsm-unified-mark/perf/report-4/Report.md)
 
+## 压缩活跃 shadow view
+
+`VirtualShadowMapLightsPass` 的 `compactShadowViews` 默认关闭，启用时需要共享池、`batchBuildRaster` 和计算 subgroup ballot/arithmetic 支持。跨灯 Build 根据物理页准入和分配结果，在 GPU 上把拥有待重绘驻留细页的 clipmap 或 mip 写入每面的位掩码。静态层增量合并也计入。全缓存命中、只有粗页或全部细页请求被拒绝的灯面不会进入细页 Build。
+
+GPU 在生成间接参数时压缩每批实际有工作的灯面行，Build 组按位掩码访问活跃层，并继续使用原始层索引读取投影、LOD 与页表。同一组复用 caster 几何以处理多个活跃层。该路径也用于实例及层级节点 HZB 的 Build 补画。GPU LOD 仍在分配前运行，为缓存失效提供数据。粗页绘制和页表发布走原有流程。
+
+启用 `benchmarkGPUWork` 后，每面的私有 cache diagnostics 在字 79 记录活跃细页层掩码，在字 80 记录初始 Build 实际派发的行数。`virtual_shadow_map_active_views` 使用 Vulkan 回归验证驻留深度、页归属、投影和压缩计数。
+
 ## 通用两阶段 HZB 遮挡剔除
 
 在 `VirtualShadowMapLightsPass` 或独立 `VirtualShadowMapPass` 上设置 `twoPassHZB=true`，可对各灯面的细页启用两阶段 cluster 遮挡剔除。该选项默认关闭。启用时使用按 cluster/page 打包的 Build，可与 `clusterHybridRaster` 同时使用。设备需要支持计算着色器 subgroup ballot 和算术操作。含位移几何的 caster 批次沿用原有光栅路径。
