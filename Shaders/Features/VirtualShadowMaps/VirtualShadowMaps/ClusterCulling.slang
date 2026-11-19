@@ -385,50 +385,9 @@ bool vsmInstanceNeedsLevel(VSMInstanceRange instance, ShadowProjection projectio
 }
 
 groupshared uint g_vsmInstanceTicketBase;
-#endif
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-#if VSM_BATCHED_BUILD_RASTER
-    uniform ShadowPush batchPush)
-#else
-    uniform ShadowPush push)
-#endif
+
+void vsmEmitInstanceRange(uint first, uint end, uint lane, ShadowPush push)
 {
-#if VSM_BATCHED_BUILD_RASTER
-    ShadowPush push;
-    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
-#endif
-#if VSM_INSTANCE_BUILD
-    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
-    uint input = push.workBase + group.x;
-    uint first, end;
-    if (statistics[16] == 0u) {
-        if ((push.cacheMode & 32u) == 0u || input >= vsmCacheMetadata(push, kVSMCacheMergeClusterCount)) { return; }
-        first = vsmMergeCluster(push, input).x;
-        end = first + min(push.triangleCount - first, 64u);
-    } else {
-        if (input >= vsmCacheMetadata(push, kVSMCacheInstanceCount)) { return; }
-        StructuredBuffer<VSMInstanceRange> instances = resolveUniform(ResourceHandle<StructuredBuffer<VSMInstanceRange>>(
-            vsmCacheMetadata(push, kVSMCacheInstanceTable)));
-        VSMInstanceRange instance = instances[input];
-        if (lane == 0u) { g_vsmClusterLevelMask = 0u; }
-        GroupMemoryBarrierWithGroupSync();
-        StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-        if (instance.count != 0u && lane < push.clipmapCount && vsmInstanceNeedsLevel(instance, projections[lane], push)) {
-            InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
-        }
-        GroupMemoryBarrierWithGroupSync();
-#if VSM_WORKLOAD_DIAGNOSTICS
-        if (lane == 0u) {
-            vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticInstanceTests, 1u);
-            vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticInstanceRejects, uint(g_vsmClusterLevelMask == 0u));
-        }
-#endif
-        if (g_vsmClusterLevelMask == 0u) { return; }
-        first = instance.first;
-        end = first + instance.count;
-    }
     uint clusterFirst = first >> 6u;
     uint count = ((end - 1u) >> 6u) - clusterFirst + 1u;
     RWStructuredBuffer<uint> candidates = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.owners));
@@ -457,6 +416,62 @@ void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         candidates[ticket] = max(aligned, first);
         candidates[ticket + 1u] = aligned + min(end - aligned, 64u);
     }
+    // A hierarchy group may emit several consecutive instances using this reservation.
+#if VSM_HIERARCHY_HZB
+    GroupMemoryBarrierWithGroupSync();
+#endif
+}
+#endif
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsmCompactMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
+#if VSM_BATCHED_BUILD_RASTER
+    uniform ShadowPush batchPush)
+#else
+    uniform ShadowPush push)
+#endif
+{
+#if VSM_BATCHED_BUILD_RASTER
+    ShadowPush push;
+    if (!vsmBatchComputePush(group, batchPush, push)) { return; }
+#endif
+#if VSM_INSTANCE_BUILD
+    StructuredBuffer<uint> statistics = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.statistics));
+    uint input = push.workBase + group.x;
+#if VSM_HIERARCHY_HZB
+    if ((push.cacheMode & 1u) != 0u) {
+        if (statistics[16] != 0u) { vsmVisitHZBSubtree(input * kVSMHierarchyHZBTreeStride, lane, false, push); }
+        return;
+    }
+#endif
+    uint first, end;
+    if (statistics[16] == 0u) {
+        if ((push.cacheMode & 32u) == 0u || input >= vsmCacheMetadata(push, kVSMCacheMergeClusterCount)) { return; }
+        first = vsmMergeCluster(push, input).x;
+        end = first + min(push.triangleCount - first, 64u);
+    } else {
+        if (input >= vsmCacheMetadata(push, kVSMCacheInstanceCount)) { return; }
+        StructuredBuffer<VSMInstanceRange> instances = resolveUniform(ResourceHandle<StructuredBuffer<VSMInstanceRange>>(
+            vsmCacheMetadata(push, kVSMCacheInstanceTable)));
+        VSMInstanceRange instance = instances[input];
+        if (lane == 0u) { g_vsmClusterLevelMask = 0u; }
+        GroupMemoryBarrierWithGroupSync();
+        StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+        if (instance.count != 0u && lane < push.clipmapCount && vsmInstanceNeedsLevel(instance, projections[lane], push)) {
+            InterlockedOr(g_vsmClusterLevelMask, 1u << lane);
+        }
+        GroupMemoryBarrierWithGroupSync();
+#if VSM_WORKLOAD_DIAGNOSTICS
+        if (lane == 0u) {
+            vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticInstanceTests, 1u);
+            vsmBuildDiagnosticAdd(push, kVSMBuildDiagnosticInstanceRejects, uint(g_vsmClusterLevelMask == 0u));
+        }
+#endif
+        if (g_vsmClusterLevelMask == 0u) { return; }
+        first = instance.first;
+        end = first + instance.count;
+    }
+    vsmEmitInstanceRange(first, end, lane, push);
 #else
     // The source ranges are aligned to 64 triangles. Rounded tail lanes still
     // participate in the identical group-cooperative cluster predicate.

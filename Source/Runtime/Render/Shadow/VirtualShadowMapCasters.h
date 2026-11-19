@@ -49,6 +49,7 @@ struct VirtualShadowMapCasterSettings
     // Zero is appropriate only when no shadow material samples a texture.
     uint64_t texturePublicationRevision = 0;
     bool instanceBuild = false;
+    bool hierarchyHZB = false;
     // One entry per material when individual image publications are available.
     // Direct producers with only a global revision leave this empty.
     std::span<const VirtualShadowMapMaterialTextureRevisions> materialTextureRevisions;
@@ -104,6 +105,9 @@ struct VirtualShadowMapCasterResources
     Buffer* parameters = nullptr;
     uint32_t triangleCapacity = 0;
     uint32_t instanceTable = UINT32_MAX;
+    // The root of work item i is at i * kVSMHierarchyHZBTreeStride.
+    uint32_t hierarchyNodes = UINT32_MAX;
+    uint32_t hierarchyRootCount = 0;
     scene::Bounds bounds;
     std::vector<ResourceLease> leases;
     std::shared_ptr<void> owner;

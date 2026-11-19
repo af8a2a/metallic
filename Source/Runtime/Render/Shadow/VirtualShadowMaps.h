@@ -90,6 +90,7 @@ struct VirtualShadowMapSettings
     bool clusterPageRaster = false; // Pack fine work into masked cluster/page mesh groups.
     bool clusterHybridRaster = false; // Route eligible fine cluster/page work to software depth rasterization.
     bool twoPassHZB = false; // Defer history-occluded fine tickets and retest after the main raster.
+    bool hierarchyHZB = false; // Defer directional instance subtrees before fine-page Build.
     bool instanceBuild = false; // Directional instance culling and indirect fine Build.
     bool dirtyPageHierarchy = false; // Experimental bounds/HMip cluster rejection; triangle tests remain exact.
     bool shadowLOD = false; // GPU hierarchy cuts for each face's clipmap/mip and coarse view.

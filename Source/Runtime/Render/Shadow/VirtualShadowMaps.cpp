@@ -277,7 +277,8 @@ bool compatibleSettings(const VirtualShadowMapSettings& a, const VirtualShadowMa
     return a.pageSize == b.pageSize && a.virtualPagesPerAxis == b.virtualPagesPerAxis &&
         a.clipmapCount == b.clipmapCount && a.physicalPageCount == b.physicalPageCount &&
         a.firstClipmapExtent == b.firstClipmapExtent && a.shadowBias == b.shadowBias && a.enabled == b.enabled &&
-        a.clusterHybridRaster == b.clusterHybridRaster && a.twoPassHZB == b.twoPassHZB;
+        a.clusterHybridRaster == b.clusterHybridRaster && a.twoPassHZB == b.twoPassHZB &&
+        a.hierarchyHZB == b.hierarchyHZB;
 }
 
 std::vector<std::array<int64_t, 2>> pageOrigins(const ViewConstants& view, Vector direction,
@@ -399,6 +400,7 @@ struct VirtualShadowMaps::Programs
     bool clusterPageRaster = false;
     bool clusterHybridRaster = false;
     bool twoPassHZB = false;
+    bool hierarchyHZB = false;
     bool instanceBuild = false;
     bool dirtyPageHierarchy = false;
     bool receiverMask = false;
@@ -407,11 +409,12 @@ struct VirtualShadowMaps::Programs
     bool sharedPhysicalPool = false;
     bool batchBuildRaster = false;
     bool gpuLOD = false;
-    std::array<std::unique_ptr<ShaderModule>, 26> shaders;
+    std::array<std::unique_ptr<ShaderModule>, 30> shaders;
     std::array<std::unique_ptr<ComputePipeline>, 16> compute;
     std::unique_ptr<ComputePipeline> selectLOD;
     std::unique_ptr<ComputePipeline> hybridClear, hybridRaster;
     std::unique_ptr<ComputePipeline> buildRasterHZB, retestRasterHZB;
+    std::unique_ptr<ComputePipeline> prepareHierarchyHZB, resetHierarchyPost, retestHierarchyHZB, finalizeHierarchyPost;
     std::array<std::unique_ptr<ShaderModule>, 2> onePassShaders;
     std::array<std::unique_ptr<ComputePipeline>, 2> onePassComputes;
     std::unique_ptr<GraphicsPipeline> raster;
@@ -462,7 +465,7 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 24> buffers;
+    std::array<std::vector<BufferEntry>, 25> buffers;
     std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
     VirtualShadowMapResourcePoolStats stats;
@@ -559,7 +562,7 @@ struct VirtualShadowMaps::State
         std::shared_ptr<Buffer> projectionGrid;
         std::shared_ptr<Buffer> receiverGeometry;
         std::shared_ptr<Buffer> cacheDiagnostics;
-        std::shared_ptr<Buffer> hybridDepth, rasterHZB;
+        std::shared_ptr<Buffer> hybridDepth, rasterHZB, hierarchyHZBQueue;
         std::shared_ptr<ShadowAtlas> staticAtlas;
         std::shared_ptr<Buffer> staticHZB, staticHZBJobs, clusterVisibility;
         std::shared_ptr<Buffer> lodContext, lodGroupStates, lodSelection, lodChanges, lodStatistics;
@@ -585,6 +588,7 @@ struct VirtualShadowMaps::State
     struct BatchWork
     {
         uint32_t hierarchyGroups = 0, buildGroups = 0, compactBatches = 0;
+        uint32_t hierarchyHZBBatches = 0;
         uint32_t visibilityBatches = 0, mergeDrawOffset = 0, hybridDrawOffset = 0;
         uint32_t staticGeometry = 0, dynamicGeometry = 0, hzbJobs = UINT32_MAX;
         bool mergeStatic = false;
@@ -1059,6 +1063,8 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
     };
     using Stage = std::map<uint64_t, Bin>;
     Stage hierarchy, initialBuild, indirectBuild, finalize, propagate, hzb, dynamicCull;
+    Stage prepareHierarchyHZB, hierarchyHistory, resetHierarchyPost, retestHierarchy, buildHierarchyPost,
+        finalizeHierarchyPost, drawHierarchyPost, propagateHierarchyPost;
     std::array<Stage, 2> raster, classify, historyHZB, currentHZB, retest, postRaster;
     const auto add = [](Stage& stage, auto& pipeline, ShadowPush push, uint32_t upperBound,
         uint32_t countBuffer = UINT32_MAX, uint32_t countWord = 0) {
@@ -1075,6 +1081,7 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         const auto& work = state->batch;
         auto push = state->push;
         push.workBase = 0;
+        const bool hierarchyRetest = programs.hierarchyHZB && (push.cacheMode & 1u) && push.enabled;
         hasCompact |= programs.compactBuild;
         hasInstance |= programs.instanceBuild;
         if (programs.dirtyPageHierarchy) { add(hierarchy, *programs.compute[12], push, work.hierarchyGroups); }
@@ -1085,12 +1092,30 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
                     push.workBase = batch * kDrawBatchSize;
                     add(indirectBuild, *programs.compute[3], push, kDrawBatchSize, push.arguments,
                         (push.batchCount + push.coarseBatchCount + batch) * 3u);
+                    if (hierarchyRetest) {
+                        add(buildHierarchyPost, *programs.compute[3], push, kDrawBatchSize, push.arguments,
+                            (push.batchCount + push.coarseBatchCount + batch) * 3u);
+                    }
                 }
             }
         }
         push.workBase = 0;
+        const uint32_t pageGroups = (push.totalPages + 63u) / 64u;
         add(finalize, *programs.compute[4], push, (std::max(push.totalPages, push.batchCount + push.coarseBatchCount) + 63u) / 64u);
-        add(propagate, *programs.compute[11], push, (push.totalPages + 63u) / 64u);
+        add(hierarchyRetest ? propagateHierarchyPost : propagate, *programs.compute[11], push, pageGroups);
+        if (hierarchyRetest) {
+            add(prepareHierarchyHZB, *programs.prepareHierarchyHZB, push, pageGroups);
+            add(resetHierarchyPost, *programs.resetHierarchyPost, push, (work.compactBatches + 63u) / 64u);
+            add(finalizeHierarchyPost, *programs.finalizeHierarchyPost, push, (std::max(push.totalPages, push.batchCount) + 63u) / 64u);
+            const uint32_t maxPages = std::min(push.totalPages - 1u, push.physicalPageCount);
+            const uint32_t pageBatches = (maxPages + kDrawBatchSize - 1u) / kDrawBatchSize;
+            const uint32_t retestOffset = work.hybridDrawOffset + 6u * push.batchCount + 2u * pageBatches;
+            for (uint32_t batch = 0; batch < work.hierarchyHZBBatches; ++batch) {
+                push.workBase = batch * kDrawBatchSize;
+                add(retestHierarchy, *programs.retestHierarchyHZB, push, kDrawBatchSize, push.arguments,
+                    (retestOffset + batch) * 3u);
+            }
+        }
         if (programs.staticPageHZB) {
             add(hzb, *programs.compute[13], push, push.physicalPageCount, work.hzbJobs, 0);
         }
@@ -1126,7 +1151,8 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
                 for (uint32_t batch = 0; batch < pageBatches; ++batch) {
                     push.workBase = batch * kDrawBatchSize;
                     const uint32_t groups = std::min(kDrawBatchSize, maxPages - push.workBase);
-                    add(historyHZB[layer], *programs.buildRasterHZB, push, groups, push.arguments, (hzbOffset + batch) * 3u);
+                    add(hierarchyRetest ? hierarchyHistory : historyHZB[layer], *programs.buildRasterHZB, push, groups,
+                        push.arguments, (hzbOffset + batch) * 3u);
                     auto current = push;
                     current.rasterCoarse |= 8u;
                     add(currentHZB[layer], *programs.buildRasterHZB, current, groups, push.arguments, (hzbOffset + batch) * 3u);
@@ -1145,6 +1171,11 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
                     add(postRaster[layer], finePipeline, push, kDrawBatchSize, push.arguments,
                         (fineDrawOffset + 4u * push.batchCount + batch) * 3u);
                 }
+                if (hierarchyRetest) {
+                    auto recovered = push;
+                    recovered.rasterCoarse |= kVSMHierarchyHZBPostRaster;
+                    add(drawHierarchyPost, finePipeline, recovered, kDrawBatchSize, push.arguments, batch * 3u);
+                }
             }
         }
     }
@@ -1162,9 +1193,12 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
             }
         }
     };
-    for (auto* stage : {&hierarchy, &initialBuild, &indirectBuild, &finalize, &propagate, &hzb, &dynamicCull}) { appendStage(*stage, false); }
+    for (auto* stage : {&hierarchy, &initialBuild, &indirectBuild, &finalize, &propagate, &hzb, &dynamicCull,
+             &prepareHierarchyHZB, &hierarchyHistory, &resetHierarchyPost, &retestHierarchy, &buildHierarchyPost,
+             &finalizeHierarchyPost, &propagateHierarchyPost}) { appendStage(*stage, false); }
     for (auto& stage : raster) { appendStage(stage, true); }
     for (auto& stage : postRaster) { appendStage(stage, true); }
+    appendStage(drawHierarchyPost, true);
     for (auto* stages : {&classify, &historyHZB, &currentHZB, &retest}) {
         for (auto& stage : *stages) { appendStage(stage, false); }
     }
@@ -1264,11 +1298,28 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         }
         return {};
     };
+    auto buildRasterHZB = [&](Stage& stage) -> Result<> {
+        BufferBarrierDesc pyramid{.buffer = storage.rasterHZB.get(),
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+        if (auto r = commands.synchronize({.buffers = {&pyramid, 1}}); !r) { return r; }
+        if (auto r = buffersReady({4}, true, false); !r) { return r; }
+        if (auto r = compute(stage); !r) { return r; }
+        pyramid.before = pyramid.after;
+        pyramid.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
+        return commands.synchronize({.buffers = {&pyramid, 1}});
+    };
     auto gpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM build") : RenderGraphExecutionContext::ProfileScope{};
     if (!hierarchy.empty()) {
         auto scope = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM build page hierarchy") : RenderGraphExecutionContext::ProfileScope{};
         if (auto r = compute(hierarchy); !r) { return r; }
         if (auto r = buffersReady({9}, false, false); !r) { return r; }
+    }
+    if (!hierarchyHistory.empty()) {
+        auto scope = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM hierarchy history HZB") : RenderGraphExecutionContext::ProfileScope{};
+        if (auto r = compute(prepareHierarchyHZB); !r) { return r; }
+        if (auto r = buffersReady({3, 7}, true, false); !r) { return r; }
+        if (auto r = buildRasterHZB(hierarchyHistory); !r) { return r; }
     }
     auto buildGpu = gpuProfiler && settings.profileBuildSubstages ? gpuProfiler->profileScope(commands,
         hasInstance ? "VSM build instance cull" : hasCompact ? "VSM build compact" : "VSM build direct") : RenderGraphExecutionContext::ProfileScope{};
@@ -1305,17 +1356,6 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
         auto layerGpu = gpuProfiler && layered ? gpuProfiler->profileScope(commands,
             staticPass ? "VSM static raster" : "VSM dynamic raster and restore") : RenderGraphExecutionContext::ProfileScope{};
         auto rasterGpu = gpuProfiler ? gpuProfiler->profileScope(commands, "VSM raster prepare") : RenderGraphExecutionContext::ProfileScope{};
-        const auto buildRasterHZB = [&](Stage& stage) -> Result<> {
-            BufferBarrierDesc hzbBuffer{.buffer = storage.rasterHZB.get(),
-                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
-            if (auto r = commands.synchronize({.buffers = {&hzbBuffer, 1}}); !r) { return r; }
-            if (auto r = buffersReady({4}, true, false); !r) { return r; }
-            if (auto r = compute(stage); !r) { return r; }
-            hzbBuffer.before = hzbBuffer.after;
-            hzbBuffer.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
-            return commands.synchronize({.buffers = {&hzbBuffer, 1}});
-        };
         if (!historyHZB[layer].empty()) {
             rasterGpu.next("VSM history page HZB");
             if (auto r = buildRasterHZB(historyHZB[layer]); !r) { return r; }
@@ -1421,6 +1461,35 @@ Result<> VirtualShadowMaps::recordBatched(VirtualShadowMapPhysicalPool& physical
                 PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader,
                 AccessBits::ShaderRead | AccessBits::ShaderWrite); !r) { return r; }
             if (auto r = draw(postRaster[layer], false); !r) { return r; }
+        }
+        if (!retestHierarchy.empty()) {
+            rasterGpu.next("VSM hierarchy post retest");
+            std::vector<BufferBarrierDesc> queues;
+            for (const auto& state : states) {
+                if (const auto& queue = state->resources->hierarchyHZBQueue) {
+                    queues.push_back({.buffer = queue.get(),
+                        .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                        .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}});
+                }
+            }
+            if (auto r = commands.synchronize({.buffers = queues}); !r) { return r; }
+            if (auto r = buffersReady({3, 4, 7, 9}, true, false); !r) { return r; }
+            if (auto r = compute(resetHierarchyPost); !r) { return r; }
+            if (auto r = buffersReady({7, 9}, true, false); !r) { return r; }
+            if (auto r = compute(retestHierarchy); !r) { return r; }
+            if (auto r = buffersReady({4, 7, 9}, true, false); !r) { return r; }
+            rasterGpu.next("VSM hierarchy post build");
+            if (auto r = compute(buildHierarchyPost); !r) { return r; }
+            if (auto r = buffersReady({3, 4, 7}, false, false); !r) { return r; }
+            if (auto r = compute(finalizeHierarchyPost); !r) { return r; }
+            if (auto r = buffersReady({1, 3, 7}, true, false,
+                PipelineStageBits::ComputeShader | PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader,
+                AccessBits::ShaderRead | AccessBits::ShaderWrite); !r) { return r; }
+            if (auto r = draw(drawHierarchyPost, false); !r) { return r; }
+            rasterGpu.next("VSM hierarchy post propagate mappings");
+            if (auto r = compute(propagateHierarchyPost); !r) { return r; }
+            if (auto r = buffersReady({1}, false, false, PipelineStageBits::ComputeShader | PipelineStageBits::Transfer,
+                AccessBits::ShaderRead | AccessBits::TransferRead); !r) { return r; }
         }
         rasterGpu.end(); layerGpu.end();
         if (staticPass) {
@@ -1627,7 +1696,11 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool clusterHybridRaster = settings.clusterHybridRaster && caps.computeSubgroupBallotArithmetic &&
         caps.subPixelPrecisionBits >= 1 && caps.subPixelPrecisionBits <= 8 && !casters.displacedGeometry;
     settings.clusterHybridRaster = clusterHybridRaster;
-    const bool twoPassHZB = settings.twoPassHZB && caps.computeSubgroupBallotArithmetic && !casters.displacedGeometry;
+    const bool hierarchyHZB = settings.hierarchyHZB && sharedPhysicalPool && settings.batchBuildRaster &&
+        settings.cacheEnabled && !settings.cacheLayering && inputLight.type == VirtualShadowMapLightType::Directional &&
+        casters.hierarchyRootCount != 0u && caps.computeSubgroupBallotArithmetic && !casters.displacedGeometry;
+    settings.hierarchyHZB = hierarchyHZB;
+    const bool twoPassHZB = (settings.twoPassHZB || hierarchyHZB) && caps.computeSubgroupBallotArithmetic && !casters.displacedGeometry;
     settings.twoPassHZB = twoPassHZB;
     const bool classifyFine = clusterHybridRaster || twoPassHZB;
     const bool gpuLOD = bool(casters.gpuLOD);
@@ -1670,7 +1743,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const uint32_t markCacheLevels = directional ? settings.clipmapCount : 12u;
     // validProjectionSettings guarantees a nonzero power-of-two page size, at most 128.
     const int markPageShift = directional ? std::countr_zero(settings.pageSize) : -1;
-    const bool instanceBuild = directional && settings.instanceBuild && casters.instanceTable != UINT32_MAX;
+    const bool instanceBuild = directional && (settings.instanceBuild || hierarchyHZB) && casters.instanceTable != UINT32_MAX;
     const bool compactBuild = settings.compactBuild || instanceBuild;
     // Keep scalar rasterization for nonbinary grids: window rasterization at
     // 127 pages per axis changed D32 values after clipmap scrolling.
@@ -1815,7 +1888,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const bool staticPageHZB = layered && directional;
     const bool receiverMask = layered && directional &&
         push.filterMode == uint32_t(VirtualShadowMapFilter::SMRT);
-    std::array<uint32_t, kVSMHZBPageCount + 2> cacheDiagnostics{};
+    std::array<uint32_t, kVSMHierarchyHZBRecoveredNodes + 1> cacheDiagnostics{};
     cacheDiagnostics[50] = UINT32_MAX;
     cacheDiagnostics[kVSMCacheInstanceTable] = casters.instanceTable;
     cacheDiagnostics[kVSMCacheInstanceCount] = static_cast<uint32_t>(casters.states.size());
@@ -2081,6 +2154,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     const uint32_t indexLists = uint32_t(classifyFine) + uint32_t(twoPassHZB);
     const uint32_t maxHZBPages = twoPassHZB ? std::min(push.totalPages - 1u, push.physicalPageCount) : 0u;
     const uint32_t hzbPageBatches = (maxHZBPages + kDrawBatchSize - 1u) / kDrawBatchSize;
+    const uint32_t instanceCount = cacheDiagnostics[kVSMCacheInstanceCount];
+    const uint32_t hierarchyHZBBatches = hierarchyHZB ? (instanceCount + kDrawBatchSize - 1u) / kDrawBatchSize : 0u;
     const uint64_t indexWords = uint64_t(push.workCapacity) * indexLists + 2u * maxHZBPages;
     const uint64_t indexBytes = ((indexWords + 3u) / 4u) * 16u;
     const uint64_t workBytes = pageWindowRaster ? windowBytes :
@@ -2091,7 +2166,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             (settings.collectReceiverCoverage ? uint64_t(view.current.viewport[1]) * uint64_t(view.current.viewport[2]) *
                 kVSMReceiverCoverageRecordWords * sizeof(uint32_t) : 0u),
         projections.size() * sizeof(ShadowProjection), sizeof(ViewConstants),
-        uint64_t(hybridDrawOffset + (twoPassHZB ? 6u : clusterHybridRaster ? 2u : 0u) * push.batchCount + 2u * hzbPageBatches) * 12u,
+        uint64_t(hybridDrawOffset + (twoPassHZB ? 6u : clusterHybridRaster ? 2u : 0u) * push.batchCount +
+            2u * hzbPageBatches + hierarchyHZBBatches) * 12u,
         remapUploadBytes + rectangleCapacity * sizeof(pageChanges[0]), (allocationWords + clusterPageBitsetWords + receiverMaskWords + hierarchyWords + compactWords) * sizeof(uint32_t)};
     const uint32_t strides[]{64, 16, 4, groupedFineRaster ? 16u : 8u, 4, 112, 208, 4, 16, 4};
     const void* data[]{gpuMaterials.data(), nullptr, coverage->inputBytes().data(), nullptr, nullptr, projections.data(), &view, nullptr,
@@ -2378,6 +2454,18 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         cacheDiagnostics[kVSMRasterHZB] = lease->shaderIndex();
         state->leases.push_back(*lease);
     }
+    if (hierarchyHZB) {
+        auto queue = pool_->buffer(24, {.size = uint64_t(instanceCount) * sizeof(uint32_t),
+            .structureStride = sizeof(uint32_t), .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device}, completion);
+        if (!queue) { return std::unexpected(queue.error()); }
+        state->resources->hierarchyHZBQueue = std::move(*queue);
+        auto lease = state->registry->storageBuffer(*state->resources->hierarchyHZBQueue);
+        if (!lease) { return std::unexpected(lease.error()); }
+        state->leases.push_back(*lease);
+        cacheDiagnostics[kVSMHierarchyHZBQueue] = lease->shaderIndex();
+        cacheDiagnostics[kVSMHierarchyHZBNodes] = casters.hierarchyNodes;
+        cacheDiagnostics[kVSMHierarchyHZBRootCount] = casters.hierarchyRootCount;
+    }
     auto diagnostics = pool_->buffer(12, {.size = sizeof(cacheDiagnostics), .structureStride = 4,
         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
         .memoryLocation = MemoryLocation::HostUpload}, completion);
@@ -2455,6 +2543,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs_->compactBuild != compactBuild || programs_->instanceBuild != instanceBuild || programs_->clusterPageRaster != clusterPageRaster ||
         programs_->pageWindowRaster != pageWindowRaster || programs_->clusterHybridRaster != clusterHybridRaster ||
         programs_->twoPassHZB != twoPassHZB ||
+        programs_->hierarchyHZB != hierarchyHZB ||
         programs_->dirtyPageHierarchy != dirtyPageHierarchy ||
         programs_->receiverMask != receiverMask ||
         programs_->staticPageHZB != staticPageHZB ||
@@ -2481,6 +2570,7 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         programs->clusterPageRaster = clusterPageRaster;
         programs->clusterHybridRaster = clusterHybridRaster;
         programs->twoPassHZB = twoPassHZB;
+        programs->hierarchyHZB = hierarchyHZB;
         programs->pageWindowRaster = pageWindowRaster;
         programs->instanceBuild = instanceBuild;
         programs->dirtyPageHierarchy = dirtyPageHierarchy;
@@ -2495,7 +2585,8 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             "vsmCountMain", "vsmAdmitMain", "vsmPhysicalMain", "vsmAssignMain", "vsmCompactMain", "vsmPropagateMappingMain",
             "vsmBuildPageHierarchyMain", "vsmBuildStaticPageHZBMain", "vsmCullDynamicClustersHZBMain", "vsmProjectChangedBoundsMain",
             pageWindowRaster ? "vsmRasterWindowMeshMain" : "vsmRasterPackedMeshMain", "vsmLODSelectMain",
-            "vsmHybridClearMain", "vsmHybridRasterMain", "vsmBuildRasterHZBMain", "vsmRetestRasterHZBMain"};
+            "vsmHybridClearMain", "vsmHybridRasterMain", "vsmBuildRasterHZBMain", "vsmRetestRasterHZBMain",
+            "vsmPrepareHierarchyHZBMain", "vsmResetHierarchyPostMain", "vsmRetestHierarchyHZBMain", "vsmFinalizeHierarchyPostMain"};
         const auto generated = generatedDirectory.string();
         const std::array paths{generated.c_str()};
         const std::array capabilities{"spvMeshShadingEXT"};
@@ -2520,8 +2611,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             if (index == 22 && !clusterHybridRaster) { continue; }
             if (index == 23 && !classifyFine) { continue; }
             if (index >= 24 && !twoPassHZB) { continue; }
+            if (index >= 26 && !hierarchyHZB) { continue; }
             const bool buildEntry = index == 3 || index == 14;
-            const bool compactEntry = index == 0 || buildEntry;
+            const bool compactEntry = index == 0 || buildEntry || index >= 26;
             std::vector<SlangMacroDefine> entryMacros(macros.begin(), macros.end());
             if (programs->batchBuildRaster && (buildEntry || index == 4 || index == 6 || index == 8 ||
                 index == 15 || index == 16 || index == 17 || index == 18 || index == 20 || index >= 22)) {
@@ -2541,6 +2633,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
             }
             if (twoPassHZB && (index == 0 || index == 4 || index == 20 || index >= 23)) {
                 entryMacros.push_back({"VSM_TWO_PASS_HZB", "1"});
+            }
+            if (hierarchyHZB && (index == 4 || index == 14 || index == 20 || index == 24 || index >= 26)) {
+                entryMacros.push_back({"VSM_HIERARCHY_HZB", "1"});
+                if (index == 14) { entryMacros.push_back({"VSM_TWO_PASS_HZB", "1"}); }
             }
             if (dirtyPageHierarchy && (compactEntry || index == 16)) {
                 entryMacros.push_back({"VSM_DIRTY_PAGE_HIERARCHY", "1"});
@@ -2606,7 +2702,9 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
                     .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(ShadowPush)});
                 if (!pipeline) { return std::unexpected(pipeline.error()); }
                 const std::array destinations{&programs->selectLOD, &programs->hybridClear, &programs->hybridRaster,
-                    &programs->buildRasterHZB, &programs->retestRasterHZB};
+                    &programs->buildRasterHZB, &programs->retestRasterHZB,
+                    &programs->prepareHierarchyHZB, &programs->resetHierarchyPost, &programs->retestHierarchyHZB,
+                    &programs->finalizeHierarchyPost};
                 *destinations[index - 21] = std::move(*pipeline);
             }
         }
@@ -2759,8 +2857,10 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
     // callback and commands retain State until completion; the raw self pointer
     // avoids a shared_ptr cycle. Shared allocation resolves before it is called.
     state->batch = {.hierarchyGroups = (clusterPageBitsetWords + 63u) / 64u,
-        .buildGroups = instanceBuild ? std::max(cacheDiagnostics[kVSMCacheInstanceCount], cacheDiagnostics[kVSMCacheMergeClusterCount]) : clusterCapacity,
-        .compactBatches = compactBatches, .visibilityBatches = visibilityBatches, .mergeDrawOffset = mergeDrawOffset,
+        .buildGroups = hierarchyHZB && reuse ? casters.hierarchyRootCount :
+            instanceBuild ? std::max(instanceCount, cacheDiagnostics[kVSMCacheMergeClusterCount]) : clusterCapacity,
+        .compactBatches = compactBatches, .hierarchyHZBBatches = hierarchyHZBBatches,
+        .visibilityBatches = visibilityBatches, .mergeDrawOffset = mergeDrawOffset,
         .hybridDrawOffset = hybridDrawOffset,
         .staticGeometry = cacheDiagnostics[33], .dynamicGeometry = cacheDiagnostics[34], .hzbJobs = cacheDiagnostics[38],
         .mergeStatic = mergeStatic};
@@ -3621,6 +3721,7 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
             addBuffer(state_->resources->rasterHZB.get());
         }
         addBuffer(state_->resources->cacheDiagnostics.get());
+        addBuffer(state_->resources->hierarchyHZBQueue.get());
         addBuffer(state_->resources->lodContext.get());
         addBuffer(state_->resources->lodGroupStates.get());
         addBuffer(state_->resources->lodSelection.get());

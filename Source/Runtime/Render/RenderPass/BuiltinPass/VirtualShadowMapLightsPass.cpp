@@ -171,6 +171,7 @@ public:
             runtimeBoolSetting("batchBuildRaster", "Batch Shadow Build and Raster", true),
             runtimeBoolSetting("clusterHybridRaster", "Hybrid Shadow Cluster Raster", false),
             runtimeBoolSetting("twoPassHZB", "Two-Pass Shadow HZB", false),
+            runtimeBoolSetting("hierarchyHZB", "Two-Pass Shadow Caster Hierarchy HZB", false),
             runtimeIntSetting("pageSize", "Page Size", 128, 16, 128),
             runtimeIntSetting("virtualPagesPerAxis", "Virtual Pages per Axis", 16, 1, 128),
             runtimeIntSetting("clipmapCount", "Clipmap / Local Mip Levels", 4, 1, 12),
@@ -329,6 +330,7 @@ public:
         settings.batchBuildRaster = boolProperty(&properties, "batchBuildRaster", settings.batchBuildRaster);
         settings.clusterHybridRaster = boolProperty(&properties, "clusterHybridRaster", settings.clusterHybridRaster);
         settings.twoPassHZB = boolProperty(&properties, "twoPassHZB", settings.twoPassHZB);
+        settings.hierarchyHZB = boolProperty(&properties, "hierarchyHZB", settings.hierarchyHZB);
         settings.framesStaticThreshold = properties.value("framesStaticThreshold", settings.framesStaticThreshold);
         settings.shadowLOD = boolProperty(&properties, "shadowLOD", settings.shadowLOD);
         settings.shadowLODErrorTexels = properties.value("shadowLODErrorTexels", settings.shadowLODErrorTexels);
@@ -641,12 +643,19 @@ public:
                 const auto hasTexture = [](const auto* texture) { return texture != nullptr; };
                 const bool textureDependent = std::any_of(alphaTextures.begin(), alphaTextures.end(), hasTexture) ||
                     std::any_of(displacementTextures.begin(), displacementTextures.end(), hasTexture);
+                const bool casterHierarchy = settings.hierarchyHZB && settings.cacheEnabled && !settings.cacheLayering &&
+                    settings.batchBuildRaster && device_->capabilities().computeSubgroupBallotArithmetic &&
+                    std::ranges::any_of(lights, [](const auto& item) {
+                        return item.entry.status == kVirtualShadowMapLightAdmitted &&
+                            item.light.type == VirtualShadowMapLightType::Directional;
+                    });
                 const VirtualShadowMapCasterSettings casterSettings{
                     .tessellationEnabled = (info.reserved & 1u) != 0,
                     .tessellationFactor = properties.value("tessellationFactor", 4u),
                     .subdivisionDepth = properties.value("tessellationSubdivisionDepth", 0u), .displacementTextures = displacementTextures,
                     .texturePublicationRevision = textureDependent ? materialResources.materialTexturePublicationRevision() : 0,
-                    .instanceBuild = settings.instanceBuild, .materialTextureRevisions = textureRevisions};
+                    .instanceBuild = settings.instanceBuild || casterHierarchy, .hierarchyHZB = casterHierarchy,
+                    .materialTextureRevisions = textureRevisions};
                 auto casters = casterCache_.prepare(*device_, commands, *scene,
                     scene->hasStreamGeometry() ? stream : nullptr, log, casterSettings);
                 if (!casters) { spdlog::error("VirtualShadowMapLightsPass casters: {}", log); return makeError(casters.error()); }

@@ -364,7 +364,13 @@ void vsmRasterPackedMeshMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
     uint packedIndex = push.workBase + group.x;
 #if VSM_CLUSTER_HYBRID_RASTER || VSM_TWO_PASS_HZB
     ByteAddressBuffer queue = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
-    uint ticketIndex = queue.Load(vsmHardwareTicketByteOffset(packedIndex, push));
+    uint ticketIndex;
+#if VSM_HIERARCHY_HZB
+    if ((push.rasterCoarse & kVSMHierarchyHZBPostRaster) != 0u) {
+        ticketIndex = 1u + vsmCacheMetadata(push, kVSMHierarchyHZBMainTickets) + packedIndex;
+    } else
+#endif
+    { ticketIndex = queue.Load(vsmHardwareTicketByteOffset(packedIndex, push)); }
 #else
     uint ticketIndex = 1u + packedIndex;
 #endif

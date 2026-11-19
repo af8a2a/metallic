@@ -64,7 +64,11 @@ void vsmBuildRasterHZBMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 #endif
     uint layer = (push.rasterCoarse >> 1u) & 1u;
     bool current = (push.rasterCoarse & 8u) != 0u;
-    if (current && vsmCacheMetadata(push, kVSMHZBDeferredCount + layer) == 0u) { return; }
+    if (current && vsmCacheMetadata(push, kVSMHZBDeferredCount + layer) == 0u
+#if VSM_HIERARCHY_HZB
+        && vsmCacheMetadata(push, kVSMHierarchyHZBDeferredCount) == 0u
+#endif
+    ) { return; }
     ByteAddressBuffer work = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.workItems));
     uint virtualPage = work.Load(vsmRasterHZBPageByteOffset(layer, push.workBase + group.x, push));
     StructuredBuffer<uint4> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(push.pages));
@@ -115,16 +119,11 @@ float2 vsmRasterHZBDivideRange(float2 numerator, float2 w)
     return float2(min(a.x, b.x), max(a.y, b.y));
 }
 
-bool vsmRasterTicketOccluded(uint4 ticket, uint4 page, ShadowPush push)
+bool vsmRasterBoundsOccluded(float3 minimum, float3 maximum, uint virtualPage, uint slot,
+    ShadowProjection projection, ShadowPush push)
 {
-    uint valid = (push.rasterCoarse & 2u) != 0u ? 4u : 1u;
-    if ((push.cacheMode & 1u) == 0u || (page.w & valid) == 0u || !vsmRasterClearsEntry(page, push.rasterCoarse)) { return false; }
-    float3 minimum, maximum;
-    if (!loadVirtualShadowMapClusterBounds(push.geometry, ticket.x, minimum, maximum)) { return false; }
-    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
-    ShadowProjection projection = projections[page.z];
-    float4 bounds = vsmPageBounds(ticket.y, projection);
-    if (projection.metric.w < 0.5) { bounds = vsmDirectionalPageBounds(ticket.y, projection); }
+    float4 bounds = vsmPageBounds(virtualPage, projection);
+    if (projection.metric.w < 0.5) { bounds = vsmDirectionalPageBounds(virtualPage, projection); }
     float2 x = vsmHZBProjectedRange(minimum, maximum, projection.rowX);
     float2 y = vsmHZBProjectedRange(minimum, maximum, projection.rowY);
     float2 z = vsmHZBProjectedRange(minimum, maximum, projection.rowZ);
@@ -151,9 +150,19 @@ bool vsmRasterTicketOccluded(uint4 ticket, uint4 page, ShadowPush push)
     uint axis = 8u >> shift;
     a >>= shift;
     b >>= shift;
-    uint start = page.x * kVSMRasterHZBWordsPerSlot + (axis * axis - 1u) / 3u;
+    uint start = slot * kVSMRasterHZBWordsPerSlot + (axis * axis - 1u) / 3u;
     StructuredBuffer<float> hzb = resolveUniform(ResourceHandle<StructuredBuffer<float>>(vsmCacheMetadata(push, kVSMRasterHZB)));
     float furthest = min(min(hzb[start + a.y * axis + a.x], hzb[start + a.y * axis + b.x]),
         min(hzb[start + b.y * axis + a.x], hzb[start + b.y * axis + b.x]));
     return furthest > z.y;
+}
+
+bool vsmRasterTicketOccluded(uint4 ticket, uint4 page, ShadowPush push)
+{
+    uint valid = (push.rasterCoarse & 2u) != 0u ? 4u : 1u;
+    if ((push.cacheMode & 1u) == 0u || (page.w & valid) == 0u || !vsmRasterClearsEntry(page, push.rasterCoarse)) { return false; }
+    float3 minimum, maximum;
+    if (!loadVirtualShadowMapClusterBounds(push.geometry, ticket.x, minimum, maximum)) { return false; }
+    StructuredBuffer<ShadowProjection> projections = resolveUniform(ResourceHandle<StructuredBuffer<ShadowProjection>>(push.projections));
+    return vsmRasterBoundsOccluded(minimum, maximum, ticket.y, page.x, projections[page.z], push);
 }

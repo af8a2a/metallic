@@ -1,5 +1,6 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapCasters.h"
 
+#include "Runtime/Render/Shadow/VirtualShadowMapCacheDiagnostics.h"
 #include "Runtime/Render/Shadow/VirtualShadowMapPrototype.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/Material/MaterialCoverageProgram.h"
@@ -50,6 +51,100 @@ struct CasterClusterBounds
     std::array<float, 4> minimum, maximum;
 };
 static_assert(sizeof(CasterClusterBounds) == 32);
+
+struct CasterHierarchyNode
+{
+    std::array<float, 3> minimum;
+    uint32_t escapeIndex;
+    std::array<float, 3> maximum;
+    uint32_t instanceIndex;
+};
+static_assert(sizeof(CasterHierarchyNode) == 32);
+static_assert(offsetof(CasterHierarchyNode, maximum) == 16);
+
+struct CasterHierarchyLeaf
+{
+    scene::Bounds bounds;
+    std::array<float, 3> center;
+    uint32_t instanceIndex;
+};
+
+void splitCasterHierarchy(std::span<CasterHierarchyLeaf> leaves)
+{
+    scene::Bounds centers;
+    for (const auto& leaf : leaves) {
+        centers.include(float3{leaf.center[0], leaf.center[1], leaf.center[2]});
+    }
+    const auto extent = centers.max - centers.min;
+    size_t axis = extent.x < extent.y ? 1u : 0u;
+    if (extent.z > std::max(extent.x, extent.y)) { axis = 2u; }
+    std::nth_element(leaves.begin(), leaves.begin() + leaves.size() / 2u, leaves.end(),
+        [axis](const CasterHierarchyLeaf& a, const CasterHierarchyLeaf& b) {
+            if (a.center[axis] != b.center[axis]) { return a.center[axis] < b.center[axis]; }
+            return a.instanceIndex < b.instanceIndex;
+        });
+}
+
+void appendCasterHierarchyTree(std::span<CasterHierarchyLeaf> leaves,
+    std::span<CasterHierarchyNode> nodes, uint32_t& next)
+{
+    auto& node = nodes[next++];
+    scene::Bounds bounds;
+    for (const auto& leaf : leaves) {
+        if (!leaf.bounds.valid) {
+            // An unknown child must also prevent its ancestors from hiding the range.
+            bounds.reset();
+            break;
+        }
+        bounds.include(leaf.bounds);
+    }
+    node.minimum = {bounds.valid ? bounds.min.x : 1.0f, bounds.min.y, bounds.min.z};
+    node.maximum = {bounds.valid ? bounds.max.x : 0.0f, bounds.max.y, bounds.max.z};
+    node.instanceIndex = UINT32_MAX;
+    if (leaves.size() == 1u) {
+        node.instanceIndex = leaves.front().instanceIndex;
+    } else {
+        splitCasterHierarchy(leaves);
+        const size_t firstCount = leaves.size() / 2u;
+        appendCasterHierarchyTree(leaves.first(firstCount), nodes, next);
+        appendCasterHierarchyTree(leaves.subspan(firstCount), nodes, next);
+    }
+    node.escapeIndex = next;
+}
+
+std::vector<CasterHierarchyNode> buildCasterHierarchy(std::span<const VirtualShadowMapCasterState> states,
+    std::span<const scene::Bounds> streamedBounds)
+{
+    assert(streamedBounds.empty() || streamedBounds.size() == states.size());
+    std::vector<CasterHierarchyLeaf> leaves;
+    leaves.reserve(states.size());
+    for (uint32_t index = 0; index < states.size(); ++index) {
+        const auto& state = states[index];
+        if (state.triangleCount == 0) { continue; }
+        auto bounds = streamedBounds.empty() ? state.bounds : streamedBounds[index];
+        bounds.valid = bounds.valid && std::isfinite(bounds.min.x) && std::isfinite(bounds.min.y) &&
+            std::isfinite(bounds.min.z) && std::isfinite(bounds.max.x) && std::isfinite(bounds.max.y) &&
+            std::isfinite(bounds.max.z);
+        const auto center = bounds.valid ? bounds.min * 0.5f + bounds.max * 0.5f : float3(0.0f);
+        leaves.push_back({bounds, {center.x, center.y, center.z}, index});
+    }
+    std::vector<CasterHierarchyNode> nodes;
+    const auto append = [&](auto&& self, std::span<CasterHierarchyLeaf> remaining) -> void {
+        constexpr uint32_t leavesPerTree = (kVSMHierarchyHZBTreeStride + 1u) / 2u;
+        if (remaining.size() > leavesPerTree) {
+            splitCasterHierarchy(remaining);
+            const size_t firstCount = remaining.size() / 2u;
+            self(self, remaining.first(firstCount));
+            self(self, remaining.subspan(firstCount));
+            return;
+        }
+        uint32_t next = uint32_t(nodes.size());
+        nodes.resize(nodes.size() + kVSMHierarchyHZBTreeStride);
+        appendCasterHierarchyTree(remaining, nodes, next);
+    };
+    if (!leaves.empty()) { append(append, leaves); }
+    return nodes;
+}
 
 struct CasterUploads
 {
@@ -193,6 +288,27 @@ scene::Bounds transformedBounds(const scene::MeshletStreamBounds& local, const f
             (corner & 2u) ? local.max[1] : local.min[1], (corner & 4u) ? local.max[2] : local.min[2]));
     }
     return result;
+}
+
+scene::Bounds streamedCasterHierarchyBounds(scene::Bounds bounds, const scene::MeshletStreamBounds& local,
+    const float4x4& world)
+{
+    if (!bounds.valid) { return bounds; }
+    // The shader adds translation after the vertex products. MathLib includes
+    // it in the first FMA. Bound both evaluations by the untransformed operand
+    // magnitudes so that cancellation cannot underestimate an occlusion bound.
+    const float x = std::max(std::abs(local.min[0]), std::abs(local.max[0]));
+    const float y = std::max(std::abs(local.min[1]), std::abs(local.max[1]));
+    const float z = std::max(std::abs(local.min[2]), std::abs(local.max[2]));
+    float3 padding;
+    for (uint32_t row = 0; row < 3; ++row) {
+        const float magnitude = std::abs(world.a[row]) * x + std::abs(world.a[4u + row]) * y +
+            std::abs(world.a[8u + row]) * z + std::abs(world.a[12u + row]);
+        padding.a[row] = std::max(magnitude, 1.0f) * 1e-6f;
+    }
+    bounds.min -= padding;
+    bounds.max += padding;
+    return bounds;
 }
 
 Result<uint32_t> upload(Device& device, ResourceRegistry& registry, CasterUploads& owner,
@@ -388,6 +504,7 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
     if (!registry) { return std::unexpected(registry.error()); }
     auto owner = std::make_shared<CasterUploads>();
     VirtualShadowMapCasterResources resources;
+    std::vector<scene::Bounds> hierarchyStreamBounds;
     resources.owner = owner;
     resources.sceneIdentity = scene.resourceIdentity();
     resources.structuralRevision = scene.sceneGraph().structuralRevision();
@@ -469,8 +586,9 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
                 hash.append(node.worldMatrix.a, sizeof(node.worldMatrix.a));
                 const auto& keys = (*materialKeys)[static_cast<size_t>(std::max(node.materialIndex, 0))];
                 hash.append(keys.material);
+                const auto& localBounds = asset.primitives()[instance.primitiveIndex].bounds;
                 resources.states.push_back({.id = nodeIndex,
-                    .bounds = transformedBounds(asset.primitives()[instance.primitiveIndex].bounds, node.worldMatrix),
+                    .bounds = transformedBounds(localBounds, node.worldMatrix),
                     .contentKey = hash.value,
                     .transformKey = transform.value,
                     .materialKey = keys.material,
@@ -479,6 +597,10 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
                     .triangleFirst = firstTriangle});
                 expandDisplacedBounds(resources.states.back().bounds, displacement);
                 resources.bounds.include(resources.states.back().bounds);
+                if (settings.hierarchyHZB && !resources.displacedGeometry) {
+                    hierarchyStreamBounds.push_back(streamedCasterHierarchyBounds(resources.states.back().bounds,
+                        localBounds, node.worldMatrix));
+                }
             }
             // Each replacement cut is complete, including branches that
             // terminate early. The base path retains every terminal cluster.
@@ -595,7 +717,7 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
         }
         resources.dependencyKey = dependency.value;
     }
-    if (settings.instanceBuild && !resources.states.empty()) {
+    if ((settings.instanceBuild || settings.hierarchyHZB) && !resources.states.empty()) {
         struct InstanceRange {
             std::array<float, 3> minimum;
             uint32_t first;
@@ -614,6 +736,16 @@ static Result<VirtualShadowMapCasterResources> prepareCasterGeometry(
             instances.size() * sizeof(InstanceRange), sizeof(InstanceRange));
         if (!index) { return std::unexpected(index.error()); }
         resources.instanceTable = *index;
+    }
+    if (settings.hierarchyHZB && !resources.displacedGeometry) {
+        const auto nodes = buildCasterHierarchy(resources.states, hierarchyStreamBounds);
+        if (!nodes.empty()) {
+            auto index = upload(device, **registry, *owner, resources.leases,
+                nodes.data(), nodes.size() * sizeof(nodes[0]), sizeof(nodes[0]));
+            if (!index) { return std::unexpected(index.error()); }
+            resources.hierarchyNodes = *index;
+            resources.hierarchyRootCount = uint32_t(nodes.size()) / kVSMHierarchyHZBTreeStride;
+        }
     }
     owner->parameters = parameters;
     auto parameterIndex = upload(device, **registry, *owner, resources.leases,
@@ -1179,6 +1311,7 @@ struct VirtualShadowMapCasterCache::Resident
         uint64_t texturePublicationRevision = 0;
         bool tessellationEnabled = false;
         bool instanceBuild = false;
+        bool hierarchyHZB = false;
         uint32_t tessellationFactor = 0;
         uint32_t subdivisionDepth = 0;
 
@@ -1304,6 +1437,7 @@ Result<VirtualShadowMapCasterResources> VirtualShadowMapCasterCache::prepare(
             uint64_t(settings.texturePublicationRevision != 0),
         .tessellationEnabled = settings.tessellationEnabled,
         .instanceBuild = settings.instanceBuild,
+        .hierarchyHZB = settings.hierarchyHZB,
         .tessellationFactor = settings.tessellationFactor,
         .subdivisionDepth = settings.subdivisionDepth};
     if (resident_ && resident_->key == key &&

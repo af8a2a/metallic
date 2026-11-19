@@ -66,6 +66,16 @@ GPU 用原始 64 槽 caster cluster 的完整包围盒，在每个 shadow view �
 
 OpenPBR 的 641×361 实景对照包含 4 盏灯、9 个灯面，运行 16 帧。关闭和开启 `twoPassHZB` 时，第 0、8、9、12、15 帧的阴影、HDR、主视图深度、可见性和最终画面逐字节一致。移动 caster 的第 9、12 帧，细页硬件 mesh 工作组分别从 111828 降至 86410、从 110139 降至 94779。这里统计的是光栅工作量。见[实景对照](../build/vsm-two-pass-hzb/Comparison.json)和[遮挡恢复回归](../build/vsm-two-pass-hzb/regression/VirtualShadowMapTwoPassHZB/Report.json)。
 
+## 实例与层级节点两阶段 HZB
+
+在 `VirtualShadowMapLightsPass` 上设置 `hierarchyHZB=true`，可为使用合并缓存和共享池批处理的方向光在细页 Build 之前启用两阶段 HZB。该选项默认关闭，启用时自动使用 instance Build 和 ticket 两阶段 HZB。分层缓存、局部灯、逐面录制和位移几何沿各自原有路径处理。
+
+Caster 发布时从实例世界包围盒构建一组空间树，每棵树最多 8 个实例。GPU 在页分配之后为脏细页构建历史 HZB。只有包围盒覆盖的所有相关脏页都能确认遮挡时，才会推迟实例或整棵子树。逐 shadow view 的 LOD 选择仍先完成，以保留缓存失效和几何流送信息。
+
+主光栅后，GPU 用当前深度复测推迟的节点，遍历重新可见的分支并继续使用原有 Build 和间接 mesh 光栅补画。主阶段和补画共用细页工作容量，发生溢出时剔除未完整绘制的细页映射，并查找已绘制的粗页。启用 `benchmarkGPUWork` 后，私有 cache diagnostics 的字 73–78 分别记录按实例或子树拆分的推迟、最终剔除和恢复计数。
+
+`virtual_shadow_map_hierarchy_hzb` 中，方向光在遮挡保持时剔除 3 个实例和 1 个子树，Build 候选由 8 个降至 2 个。移开遮挡物当帧恢复这 4 项，逐页 D32 深度和投影阴影与原两阶段路径一致。OpenPBR 的 9 灯面实景对照同时启用 GPU shadow LOD，5 个采样帧的阴影、HDR、主视图深度、可见性和最终画面逐字节一致。[定向回归](../build/vsm-hierarchy-hzb/verified-regression/VirtualShadowMapHierarchyHZB/Report.json) · [实景对照](../build/vsm-hierarchy-hzb/Comparison.json)
+
 ## 图集与统计范围
 
 共享深度图集为 `Texture2DArray`，最多 262144 个逻辑槽。容量不超过 4096 时，单层网格为 `X=ceil(sqrt(capacity))`、`Y=ceil(capacity/X)`；更大时每层固定 64×64 页，层数向上取整。`pageSize=128` 时单层最大为 8192×8192。所有灯使用同一 viewport 与层网格；mapping 保存全局 physical slot。静态分层使用同样布局的第二张图集；static HZB 按最多 4096 页一个 buffer bank 寻址。

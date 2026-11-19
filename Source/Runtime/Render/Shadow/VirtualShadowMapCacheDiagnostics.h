@@ -74,6 +74,20 @@ static const uint32_t kVSMHZBPostCount = 64;
 static const uint32_t kVSMHZBPageCount = 66;
 static const uint32_t kVSMRasterHZBWordsPerSlot = 85; // 8x8, 4x4, 2x2, 1x1.
 
+static const uint32_t kVSMHierarchyHZBNodes = 68;
+static const uint32_t kVSMHierarchyHZBRootCount = 69;
+static const uint32_t kVSMHierarchyHZBQueue = 70;
+static const uint32_t kVSMHierarchyHZBDeferredCount = 71;
+static const uint32_t kVSMHierarchyHZBMainTickets = 72;
+static const uint32_t kVSMHierarchyHZBDeferredInstances = 73;
+static const uint32_t kVSMHierarchyHZBDeferredNodes = 74;
+static const uint32_t kVSMHierarchyHZBRejectedInstances = 75;
+static const uint32_t kVSMHierarchyHZBRejectedNodes = 76;
+static const uint32_t kVSMHierarchyHZBRecoveredInstances = 77;
+static const uint32_t kVSMHierarchyHZBRecoveredNodes = 78;
+static const uint32_t kVSMHierarchyHZBPostRaster = 16u;
+static const uint32_t kVSMHierarchyHZBTreeStride = 15u;
+
 static const uint32_t kVSMCacheReasonCacheDisabled = 1u << 0;
 static const uint32_t kVSMCacheReasonCold = 1u << 1;
 static const uint32_t kVSMCacheReasonDevice = 1u << 2;

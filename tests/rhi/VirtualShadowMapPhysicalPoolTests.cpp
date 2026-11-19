@@ -114,7 +114,7 @@ struct PoolFace
     uint32_t sourceSlot = UINT32_MAX;
 };
 
-std::filesystem::path writeClusterFixture(const std::filesystem::path& directory, bool withRoof)
+std::filesystem::path writeClusterFixture(const std::filesystem::path& directory, bool withRoof, bool withHierarchy = false)
 {
     std::filesystem::create_directories(directory);
     std::vector<std::array<float, 3>> positions;
@@ -150,8 +150,18 @@ std::filesystem::path writeClusterFixture(const std::filesystem::path& directory
         {"primitives":[{"attributes":{"POSITION":1},"material":1}]}]})");
     if (withRoof) {
         // A separate 64-triangle cluster at z=2 completely covers the smaller blocker at z=1.
-        model["nodes"].push_back({{"mesh", 0}, {"scale", {0.2f, 0.2f, 1.0f}}, {"translation", {0, 0, 2}}});
+        const float scale = withHierarchy ? 0.375f : 0.2f;
+        model["nodes"].push_back({{"mesh", 0}, {"scale", {scale, scale, 1.0f}}, {"translation", {0, 0, 2}}});
         model["scenes"][0]["nodes"].push_back(2);
+    }
+    if (withHierarchy) {
+        // The roof covers groups of adjacent instances and a leaf whose
+        // sibling is visible at x = -2.25. Neither case can rely on page tickets.
+        model["nodes"][1] = {{"mesh", 1}, {"scale", {0.375f, 0.375f, 1.0f}}, {"translation", {-0.75f, 0, 0}}};
+        for (float x : {-0.375f, -0.25f, 0.25f, 0.375f, -2.25f}) {
+            model["scenes"][0]["nodes"].push_back(model["nodes"].size());
+            model["nodes"].push_back({{"mesh", 1}, {"scale", {0.375f, 0.375f, 1.0f}}, {"translation", {x, 0, 0}}});
+        }
     }
     model["accessors"][0]["count"] = positions.size() / 2;
     model["accessors"][1]["count"] = positions.size() / 2;
@@ -172,6 +182,13 @@ struct TwoPassTickets
     uint32_t recovered = 0;
 };
 
+struct HierarchyHZBCounts
+{
+    uint32_t deferredInstances = 0, deferredNodes = 0;
+    uint32_t rejectedInstances = 0, rejectedNodes = 0;
+    uint32_t recoveredInstances = 0, recoveredNodes = 0;
+};
+
 struct PoolFaceSnapshot
 {
     std::array<uint32_t, 32> stats{};
@@ -181,6 +198,8 @@ struct PoolFaceSnapshot
     std::vector<uint8_t> visibility;
     std::array<uint32_t, 3> hybrid{};
     TwoPassTickets hzb;
+    HierarchyHZBCounts hierarchyHZB;
+    uint64_t instanceClusterTickets = 0;
     uint64_t hardwarePrimitives = 0;
     uint64_t hardwareFineGroups = 0;
 };
@@ -298,7 +317,7 @@ float compareRasterDepth(const PoolSnapshot& actual, const PoolSnapshot& hardwar
     return maxError;
 }
 
-enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, UnifiedMark };
+enum class PoolScenario { Allocation, HybridRaster, TwoPassHZB, HierarchyHZB, UnifiedMark };
 
 class VirtualShadowMapPhysicalPoolTest : public RHITest
 {
@@ -307,7 +326,8 @@ public:
     {
         name = scenario == PoolScenario::UnifiedMark ? "virtual_shadow_map_unified_mark" :
             scenario == PoolScenario::HybridRaster ? "virtual_shadow_map_cluster_hybrid_raster" :
-            scenario == PoolScenario::TwoPassHZB ? "virtual_shadow_map_two_pass_hzb" : "virtual_shadow_map_physical_pool";
+            scenario == PoolScenario::TwoPassHZB ? "virtual_shadow_map_two_pass_hzb" :
+            scenario == PoolScenario::HierarchyHZB ? "virtual_shadow_map_hierarchy_hzb" : "virtual_shadow_map_physical_pool";
         type = RHITestType::Rendering;
     }
 
@@ -315,8 +335,10 @@ public:
     {
         const bool hybrid = scenario_ == PoolScenario::HybridRaster;
         const bool twoPass = scenario_ == PoolScenario::TwoPassHZB;
+        const bool hierarchyHZB = scenario_ == PoolScenario::HierarchyHZB;
         const bool unifiedMark = scenario_ == PoolScenario::UnifiedMark;
-        const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" : twoPass ? "VirtualShadowMapTwoPassHZB" :
+        const auto directory = std::filesystem::absolute(context.outputDirectory / (unifiedMark ? "VirtualShadowMapUnifiedMark" :
+            hierarchyHZB ? "VirtualShadowMapHierarchyHZB" : twoPass ? "VirtualShadowMapTwoPassHZB" :
             hybrid ? "VirtualShadowMapClusterHybridRaster" : "VirtualShadowMapPhysicalPool"));
         Json report{{"passed", false}, {"frames", Json::array()}};
         bench::ValidationRecorder validation;
@@ -324,7 +346,8 @@ public:
         try {
             requirePool(VirtualShadowMapSettings{}.batchBuildRaster, "Shared Build/Raster batching must default on");
             scene::SceneDocument scene;
-            requirePool(scene.load((hybrid || twoPass) ? writeClusterFixture(directory, twoPass) : writePoolFixture(directory)), "Load pool scene");
+            requirePool(scene.load((hybrid || twoPass || hierarchyHZB) ?
+                writeClusterFixture(directory, twoPass || hierarchyHZB, hierarchyHZB) : writePoolFixture(directory)), "Load pool scene");
             auto created = createDevice({.applicationName = "VSM shared physical pool",
                 .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true, .enableMeshShader = true,
@@ -337,7 +360,7 @@ public:
             if (hybrid && (!device.capabilities().computeSubgroupBallotArithmetic || device.capabilities().subPixelPrecisionBits > 8)) {
                 return RHITestResult::skip("Hybrid raster requires subgroup ballot/arithmetic and at most 8 subpixel bits");
             }
-            if (twoPass && !device.capabilities().computeSubgroupBallotArithmetic) {
+            if ((twoPass || hierarchyHZB) && !device.capabilities().computeSubgroupBallotArithmetic) {
                 return RHITestResult::skip("Two-pass HZB requires subgroup ballot/arithmetic for packed cluster Build");
             }
             PoolCommands gpu(device);
@@ -369,7 +392,8 @@ public:
             requirePool(gpu.commands->synchronize({.textures = {&depthEnd, 1}}), "Pool depth ready");
             gpu.finish();
 
-            for (uint32_t variant = 0; variant < (unifiedMark ? 1u : twoPass ? 4u : 2u); ++variant) {
+            const uint32_t variants = unifiedMark || hierarchyHZB ? 1u : twoPass ? 4u : 2u;
+            for (uint32_t variant = 0; variant < variants; ++variant) {
                 const bool hybridHZB = twoPass && variant == 1u;
                 const bool standaloneHZB = twoPass && variant == 2u;
                 const bool serialHZB = twoPass && variant == 3u;
@@ -390,7 +414,7 @@ public:
                     gpu.begin();
                     std::string log;
                     auto casters = casterCache.prepare(device, *gpu.commands, scene, nullptr, log,
-                        {.instanceBuild = settings.instanceBuild});
+                        {.instanceBuild = settings.instanceBuild, .hierarchyHZB = hierarchyHZB});
                     requirePool(casters, "Prepare shared pool casters: " + log);
                     requirePool(!settings.instanceBuild || casters->instanceTable != UINT32_MAX,
                         "Instance Build test did not publish an instance table");
@@ -411,7 +435,8 @@ public:
                             .sourceSlot = specs[index].sourceSlot});
                     }
                     auto frameSettings = settings;
-                    frameSettings.forceRedraw = force && !unifiedMark;
+                    frameSettings.forceRedraw = force && !unifiedMark && !hierarchyHZB;
+                    if (hierarchyHZB) { frameSettings.hierarchyHZB = !force; }
                     if (unifiedMark) { frameSettings.unifiedMark = !force; }
                     if (hybrid && force) { frameSettings.clusterHybridRaster = false; }
                     if (twoPass && force) { frameSettings.twoPassHZB = false; }
@@ -493,6 +518,7 @@ public:
                         bytes += sizeof(face.stats) + face.pages.size() * sizeof(Page) + sizeof(face.cache);
                         if (hybrid) { bytes += sizeof(face.hybrid) + sizeof(face.hardwarePrimitives) + sizeof(face.hardwareFineGroups); }
                         if (frameSettings.twoPassHZB) { bytes += sizeof(face.hzb); }
+                        if (hierarchyHZB) { bytes += sizeof(face.hierarchyHZB) + sizeof(face.instanceClusterTickets); }
                         if (unifiedMark && (*results)[index].requestedReceiverMasks) {
                             face.requestedMasks.resize(face.pages.size());
                             bytes += face.requestedMasks.size() * sizeof(uint64_t);
@@ -555,6 +581,14 @@ public:
                                 kVSMHZBRecoveredTickets == kVSMHZBDeferredTickets + 2 && sizeof(TwoPassTickets) == 3 * sizeof(uint32_t));
                             copyCounterRange((*results)[index].cacheDiagnostics, sizeof(uint32_t) * kVSMHZBDeferredTickets, sizeof(face.hzb));
                         }
+                        if (hierarchyHZB) {
+                            static_assert(sizeof(HierarchyHZBCounts) == 6 * sizeof(uint32_t));
+                            static_assert(kVSMHierarchyHZBRecoveredNodes == kVSMHierarchyHZBDeferredInstances + 5u);
+                            copyCounterRange((*results)[index].cacheDiagnostics,
+                                sizeof(uint32_t) * kVSMHierarchyHZBDeferredInstances, sizeof(face.hierarchyHZB));
+                            copyCounterRange((*results)[index].statistics, sizeof(uint32_t) * kVirtualShadowMapBuildDiagnosticWordOffset +
+                                sizeof(uint64_t) * kVSMBuildDiagnosticInstanceClusterTickets, sizeof(face.instanceClusterTickets));
+                        }
                         if (!face.requestedMasks.empty()) {
                             copyCounterRange((*results)[index].requestedReceiverMasks, (*results)[index].requestedReceiverMaskOffset,
                                 face.requestedMasks.size() * sizeof(uint64_t));
@@ -586,6 +620,12 @@ public:
                         if (frameSettings.twoPassHZB) {
                             std::memcpy(&face.hzb, data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) +
                                 sizeof(face.cache), sizeof(face.hzb));
+                        }
+                        if (hierarchyHZB) {
+                            const auto* counters = data + offsets[index] + sizeof(face.stats) + face.pages.size() * sizeof(Page) +
+                                sizeof(face.cache) + sizeof(face.hzb);
+                            std::memcpy(&face.hierarchyHZB, counters, sizeof(face.hierarchyHZB));
+                            std::memcpy(&face.instanceClusterTickets, counters + sizeof(face.hierarchyHZB), sizeof(face.instanceClusterTickets));
                         }
                         if (!face.requestedMasks.empty()) {
                             std::memcpy(face.requestedMasks.data(), data + offsets[index] + sizeof(face.stats) +
@@ -713,6 +753,84 @@ public:
                     prepareGrid(1);
                     compare("CompactSMRT", VirtualShadowMapFilter::SMRT, 37);
                     compare("CachedSMRT", VirtualShadowMapFilter::SMRT, 37);
+                    continue;
+                }
+                if (hierarchyHZB) {
+                    settings.clipmapCount = 2;
+                    settings.instanceBuild = true;
+                    settings.twoPassHZB = true;
+                    settings.clusterPageRaster = true;
+                    settings.collectGPUWork = true;
+                    settings.receiverFootprint = false;
+                    VirtualShadowMapLight sun;
+                    sun.direction = {0, 0, -1};
+                    VirtualShadowMapLight spot;
+                    spot.type = VirtualShadowMapLightType::Spot;
+                    // Keep the larger roof's perspective shadow inside the
+                    // receiver's horizontal extent, with lit pixels on both sides.
+                    spot.position = {0, 0, 8}; spot.direction = sun.direction;
+                    spot.range = 12; spot.nearPlane = .05f; spot.outerConeAngle = 1.0f;
+                    const std::array faces{PoolFace{0, sun}, PoolFace{1, spot}};
+                    const auto compare = [&](const char* phase, uint32_t budget = 768) {
+                        auto actual = record(faces, budget, false);
+                        const auto baseline = record(faces, budget, true);
+                        for (const auto& [identity, face] : actual.faces) {
+                            const auto& hzb = face.hierarchyHZB;
+                            const auto& ref = baseline.faces.at(identity);
+                            report["frames"].push_back({{"phase", phase}, {"face", identity},
+                                {"deferredInstances", hzb.deferredInstances}, {"deferredNodes", hzb.deferredNodes},
+                                {"rejectedInstances", hzb.rejectedInstances}, {"rejectedNodes", hzb.rejectedNodes},
+                                {"recoveredInstances", hzb.recoveredInstances}, {"recoveredNodes", hzb.recoveredNodes},
+                                {"instanceClusterTickets", face.instanceClusterTickets},
+                                {"referenceInstanceClusterTickets", ref.instanceClusterTickets}});
+                            compareRasterDepth(actual, baseline, identity, 0.0f, false);
+                            requirePool(hzb.deferredInstances == hzb.rejectedInstances + hzb.recoveredInstances &&
+                                hzb.deferredNodes == hzb.rejectedNodes + hzb.recoveredNodes,
+                                "Deferred instances or nodes were lost or tested twice");
+                            requirePool(ref.hierarchyHZB.deferredInstances == 0 && ref.hierarchyHZB.deferredNodes == 0 &&
+                                (identity == 0 || (hzb.deferredInstances == 0 && hzb.deferredNodes == 0)),
+                                "Hierarchy culling ran on the reference or unsupported local-light view");
+                            if (identity == 0 && std::string_view(phase) == "MoveUnderRoof") {
+                                requirePool(ref.instanceClusterTickets > face.instanceClusterTickets,
+                                    "Rejected hierarchy work still emitted the reference instance Build tickets");
+                            }
+                        }
+                        return actual;
+                    };
+                    const auto roof = scene.nodes()[2].localMatrix;
+                    const auto move = [&](uint32_t node, const float4x4& original, float x) {
+                        float4x4 translation;
+                        translation.SetupByTranslation({x, 0, 0});
+                        requirePool(scene.setNodeLocalMatrix(node, translation * original), "Move hierarchy HZB caster");
+                    };
+                    const auto cold = compare("Cold");
+                    for (uint32_t node : {1u, 3u, 4u, 5u, 6u}) { move(node, scene.nodes()[node].localMatrix, .015625f); }
+                    move(2, roof, .015625f);
+                    const auto hidden = compare("MoveUnderRoof");
+                    move(2, roof, 2.5f);
+                    const auto revealed = compare("RemoveOccluder");
+                    const auto warm = compare("Warm");
+                    const auto replaced = compare("ReplacePhysicalPool", 1024);
+                    const auto& underRoof = hidden.faces.at(0).hierarchyHZB;
+                    const auto& exposed = revealed.faces.at(0).hierarchyHZB;
+                    requirePool(underRoof.rejectedInstances > 0 && underRoof.rejectedNodes > 0,
+                        "Expected both an occluded instance and a fully occluded subtree to survive retest as occluded");
+                    requirePool(exposed.recoveredInstances > 0 && exposed.recoveredNodes > 0,
+                        "Disocclusion did not recover both an instance and a subtree in the current frame");
+                    for (const auto* snapshot : {&cold, &warm, &replaced}) {
+                        const auto& counts = snapshot->faces.at(0).hierarchyHZB;
+                        requirePool(counts.deferredInstances == 0 && counts.deferredNodes == 0,
+                            "A cold, clean or newly allocated pool used unavailable HZB history");
+                    }
+                    requireRetainedDepth(revealed, warm, 0);
+                    const auto& exposedShadow = revealed.faces.at(0).visibility;
+                    requirePool(exposedShadow != hidden.faces.at(0).visibility, "Removing roof did not uncover any receivers");
+                    std::vector<uint32_t> pixels(exposedShadow.size());
+                    std::ranges::transform(exposedShadow, pixels.begin(), [](uint8_t v) { return uint32_t(v) * 0x010101u | 0xff000000u; });
+                    std::string log;
+                    requirePool(saveRgba8Png(directory / "Revealed.png", reinterpret_cast<const uint8_t*>(pixels.data()),
+                        kWidth, kHeight, log), "Save hierarchy HZB shadow: " + log);
+                    save();
                     continue;
                 }
                 if (twoPass) {
@@ -1150,6 +1268,7 @@ public:
             requirePool(!validation.failed(), "Shared pool Vulkan validation error");
             report["passed"] = true; save();
             return RHITestResult::pass(unifiedMark ? "View Mark matched per-face requests, receiver masks, cached pages and shadow images" :
+                hierarchyHZB ? "Instance and hierarchy HZB preserved resident depth and shadow visibility through disocclusion" :
                 twoPass ? "Two-pass HZB preserved resident depth and shadow visibility through disocclusion" :
                 hybrid ? "Mixed cluster raster preserved resident D32 texels, visibility and cached pages" :
                 "Batched and serialized shared rendering preserve depth, visibility, ownership and caches while reducing actual RHI submissions");
@@ -1175,6 +1294,12 @@ public:
     VirtualShadowMapTwoPassHZBTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::TwoPassHZB) {}
 };
 METALLIC_REGISTER_RHI_TEST(VirtualShadowMapTwoPassHZBTest);
+class VirtualShadowMapHierarchyHZBTest final : public VirtualShadowMapPhysicalPoolTest
+{
+public:
+    VirtualShadowMapHierarchyHZBTest() : VirtualShadowMapPhysicalPoolTest(PoolScenario::HierarchyHZB) {}
+};
+METALLIC_REGISTER_RHI_TEST(VirtualShadowMapHierarchyHZBTest);
 class VirtualShadowMapUnifiedMarkTest final : public VirtualShadowMapPhysicalPoolTest
 {
 public:

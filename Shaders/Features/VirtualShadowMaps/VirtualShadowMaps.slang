@@ -62,6 +62,9 @@ __include "VirtualShadowMaps/ShadowRaster.slang";
 #if VSM_TWO_PASS_HZB
 __include "VirtualShadowMaps/RasterHZB.slang";
 #endif
+#if VSM_HIERARCHY_HZB && VSM_INSTANCE_BUILD && VSM_COMPACT_BUILD
+__include "VirtualShadowMaps/HierarchyHZB.slang";
+#endif
 #if VSM_CLUSTER_HYBRID_RASTER || VSM_TWO_PASS_HZB
 __include "VirtualShadowMaps/HybridRaster.slang";
 #endif

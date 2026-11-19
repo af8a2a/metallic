@@ -133,7 +133,7 @@ void vsmFinalizeMain(uint3 id : SV_DispatchThreadID,
                 }
             }
 #endif
-#if VSM_TWO_PASS_HZB
+#if VSM_TWO_PASS_HZB && !VSM_HIERARCHY_HZB
             // Both HZB builds consume this list. A warm face emits no page
             // groups. New/reassigned slots on reuse frames get a zero history.
             if (fineDrawCount != 0u && id.x != coarsePage && (push.cacheMode & 1u) != 0u) {
