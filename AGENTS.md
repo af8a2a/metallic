@@ -82,6 +82,31 @@ Before adding complexity for a speculative or vanishingly unlikely race or secur
 - When the GPU, an SDK, or another runtime prerequisite is unavailable, finish the checks that are possible, state which runtime checks were unavailable, and stop. Do not change build configuration or environment to work around it.
 - For performance work, follow "Performance and A/B Experiment Budget" below.
 
+## Reference Code Porting Rules (Ground Truth Contract)
+
+When porting, migrating, or adapting code from a mature reference implementation (e.g., Unreal Engine 5, official TechSamples, papers' reference code):
+
+1. **Verbatim-First Mandate (原样搬运优先)**
+   - Treat the reference implementation as the **numerical and algorithmic Ground Truth**.
+   - **DO NOT** rewrite, simplify, "clean up", or "modernize" core algorithms, math expressions, magic numbers, bit-hacks, or branching logic from scratch.
+   - Preserve exact mathematical ordering (e.g., multiply-add order, clamping bounds, epsilon values) to guarantee bit-level or visual parity.
+
+2. **Thin Adapter Layer Only (仅编写胶水适配层)**
+   - Restrict modifications strictly to **API/type translation and resource binding** (e.g., mapping `FVector` -> `float3`, `Texture2D` sampling macros, buffer layouts, or engine-specific headers).
+   - Keep the reference function structure, variable naming, and control flow intact whenever possible so line-by-line diffing against the source remains trivial.
+
+3. **Zero Silent Approximations (禁止静默近似)**
+   - Never replace a complex reference step with a "simpler equivalent" or heuristic approximation without explicit user approval.
+   - If a hardware feature, intrinsic, or API is missing in the target environment, **STOP and report the gap** instead of silently inventing a fallback.
+
+4. **Mandatory Deviation Log (变更审计)**
+   - Before finishing a port, list every non-syntactic deviation from the reference (e.g., coordinate system handedness, Y-flip, reversed-Z, precision downgrade `fp32` -> `fp16`). If there are no algorithmic deviations, explicitly state: `Deviation: None (verbatim logic port)`.
+
+### Anti-Patterns (Strictly Forbidden)
+- ❌ Re-deriving math formulas from memory instead of copying the provided reference code.
+- ❌ Dropping "seemingly redundant" guards, bias terms, or performance optimizations (e.g., loop unrolling, wave intrinsics, precomputed LUTs).
+- ❌ Refactoring a reference file into new abstractions/classes before parity is verified.
+
 ## Performance and A/B Experiment Budget
 
 - Compare the same workload and settings; record cache/warmup conditions and the measured scope. Report pass timings as pass timings, not end-to-end speedups. Keep generated captures and images out of source control unless intentionally included as evidence.
