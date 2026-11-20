@@ -107,7 +107,7 @@ public float distanceToNearestMeshSurface(MeshDistanceFieldResources resources, 
 }
 
 // UE 5.7.4 Common.ush:1889. Returned times parameterize the finite segment.
-float2 lineBoxIntersect(float3 rayOrigin, float3 rayEnd, float3 boxMin, float3 boxMax)
+public float2 lineBoxIntersect(float3 rayOrigin, float3 rayEnd, float3 boxMin, float3 boxMax)
 {
     float3 invRayDir = 1.0f / (rayEnd - rayOrigin);
     float3 firstPlaneIntersections = (boxMin - rayOrigin) * invRayDir;

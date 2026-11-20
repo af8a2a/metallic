@@ -186,7 +186,7 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_tessellation_vsm.metallic_graph.json"; }
 };
 
-class MeshDistanceFieldSample final : public RenderSample {
+class MeshDistanceFieldSample : public RenderSample {
 public:
     std::string_view id() const override { return "mesh-distance-field"; }
     std::string_view name() const override { return "Mesh Distance Fields"; }
@@ -199,6 +199,17 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/mesh_distance_field_debug.metallic_graph.json"; }
     std::vector<std::string> scenePathTargets() const override { return {}; }
     std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
+class GlobalDistanceFieldSample final : public MeshDistanceFieldSample {
+public:
+    std::string_view id() const override { return "global-distance-field"; }
+    std::string_view name() const override { return "Global Distance Field"; }
+    std::string_view description() const override
+    {
+        return "Compose and trace a fixed world-space distance field built from mesh instances.";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/global_distance_field.metallic_graph.json"; }
 };
 
 class VirtualShadowMapSponzaSample : public RenderSample {
@@ -1018,6 +1029,7 @@ std::vector<LocalLookDevSample> loadLocalLookDevSamples(const char* path, const 
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const MeshDistanceFieldSample meshDistanceField;
+    static const GlobalDistanceFieldSample globalDistanceField;
     static const RealtimeLightingSample realtimeLighting;
     static const RealtimeLightingVSMSample realtimeLightingVSM;
     static const GPUDrivenVSMSample gpuDrivenVSM;
@@ -1088,6 +1100,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     };
     if (std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"))) {
         samples.push_back(&meshDistanceField);
+        samples.push_back(&globalDistanceField);
     }
     // Optional local assets are read once, not on every ImGui frame.
     static const auto painter = loadLocalLookDevSamples("build/MaterialValidation/PainterLookDev/Catalog.json", "Painter Validation", "painter-");

@@ -776,6 +776,12 @@ New-Item -ItemType Directory -Force .cache/mesh-distance-field | Out-Null
 
 Open **Lighting / Mesh Distance Fields** in the editor. The sample traces two instances of the same mesh, including a rotated and mirrored instance. The pass can display normals, trace steps, or instance IDs. Its `trace` texture stores hit distance in meters, step count, debug instance ID, and a hit flag. The `MeshDistanceField` checkpoint exposes the R8 atlas for slice capture. The supported instance transforms are rigid or uniformly scaled, including reflections.
 
+### Global Distance Field
+
+**Lighting / Global Distance Field** uses the same baked asset. The compose pass accepts `distanceFieldPaths`, a list of baked assets for source meshes in the bound world scene. Its `center` and `extent` define a fixed world-space cube in meters. `extent` is the half-width. A logical `resolution` of `N` produces an R32F volume with `N + 1` samples per axis to include both endpoints of the Unreal page lattice. Inspect slices of `GlobalDistanceField.distanceField` in the resource inspector.
+
+The volume is rebuilt from the current scene instances each frame. It stores the minimum mesh distance clipped to plus or minus four voxel widths. The debug pass shows normals, step count, or coverage. Its RGBA32F `trace` contains hit distance in meters, the number of samples, coverage state, and surface expansion in meters. Coverage states are 0 for a ray segment outside the sampled domain, 1 for a covered segment without a hit, and 2 for a hit.
+
 ## Optional RHI diagnostics
 
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing

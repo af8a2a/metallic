@@ -538,6 +538,7 @@ add_executable(MetallicRHITests
     rhi/EnvironmentPrefilterTests.cpp
     rhi/HybridRasterTests.cpp
     rhi/MeshDistanceFieldDebugTests.cpp
+    rhi/GlobalDistanceFieldTests.cpp
     rhi/VirtualShadowMapTests.cpp
     rhi/VirtualShadowMapSceneTests.cpp
     rhi/VirtualShadowMapCompactBuildTests.cpp

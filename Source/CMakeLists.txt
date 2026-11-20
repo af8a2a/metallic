@@ -49,6 +49,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/ShaderTraceRuntime.cpp
     Runtime/Render/Debug/WorkControlShaderTrace.cpp
     Runtime/Render/Debug/RenderDebugProviders.cpp
+    Runtime/Render/DistanceField/MeshDistanceFieldGPU.cpp
     Runtime/Render/Debug/GPUDebugProbe.cpp
     Runtime/Render/Core/ComputeResourceEncoder.cpp
     Runtime/Render/Core/ColorGrading.cpp
@@ -123,6 +124,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/FinalBlitPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ColorGradingLUTPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/MeshDistanceFieldDebugPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/GlobalDistanceFieldPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferMaterialPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp

@@ -1,7 +1,7 @@
 #include "RHITest.h"
+#include "MeshDistanceFieldFixture.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
-#include "Runtime/Scene/MeshDistanceField.h"
 #include "Runtime/Scene/SceneDocument.h"
 
 #include <algorithm>
@@ -17,61 +17,6 @@ namespace {
 
 constexpr uint32_t kWidth = 257;
 constexpr uint32_t kHeight = 145;
-
-bool writeAnalyticBoxField(const std::filesystem::path& path, const scene::Scene& document, std::string& log)
-{
-    using namespace scene;
-    MeshDistanceFieldGeometry geometry;
-    if (!getMeshDistanceFieldGeometry(document, 0, geometry, log)) {
-        return false;
-    }
-    MeshDistanceField field;
-    field.sourceMeshIndex = 0;
-    field.sourceFingerprint = geometry.fingerprint;
-    field.localBoundsMin.fill(-0.5f);
-    field.localBoundsMax.fill(0.5f);
-
-    // Generate an independent, exact signed box field at the brick sample positions.
-    // The runtime fixture covers serialization, upload, indirection and interpolation
-    // on configurations without the optional Embree cook target.
-    constexpr uint32_t kUnique = kMeshDistanceFieldUniqueBrickSize;
-    constexpr uint32_t kBrick = kMeshDistanceFieldBrickSize;
-    constexpr std::array<uint32_t, kMeshDistanceFieldMipCount> kDimensions{3, 2, 1};
-    for (size_t level = 0; level < field.mips.size(); ++level) {
-        auto& mip = field.mips[level];
-        const uint32_t dimension = kDimensions[level];
-        const float voxel = 2.0f / float(dimension * kUnique - 2);
-        const float band = 4.0f * std::sqrt(3.0f) * voxel;
-        mip.indirectionDimensions.fill(dimension);
-        mip.volumeToVirtualUVScale.fill(1.0f / (voxel * float(dimension * kUnique)));
-        mip.volumeToVirtualUVAdd.fill(0.5f);
-        mip.distanceFieldToVolumeScaleBias = {2.0f * band, -band};
-
-        const auto toBox = [voxel](uint32_t sample) {
-            return std::abs(-1.0f + (float(sample) - 1.0f) * voxel) - 1.0f;
-        };
-        for (uint32_t bz = 0; bz < dimension; ++bz) {
-            for (uint32_t by = 0; by < dimension; ++by) {
-                for (uint32_t bx = 0; bx < dimension; ++bx) {
-                    mip.indirection.push_back(static_cast<uint32_t>(mip.indirection.size()));
-                    for (uint32_t z = 0; z < kBrick; ++z) {
-                        for (uint32_t y = 0; y < kBrick; ++y) {
-                            for (uint32_t x = 0; x < kBrick; ++x) {
-                                const float3 q(toBox(bx * kUnique + x), toBox(by * kUnique + y), toBox(bz * kUnique + z));
-                                const float3 outside(std::max(0.0f, q.x), std::max(0.0f, q.y), std::max(0.0f, q.z));
-                                const float distance = std::sqrt(dot(outside, outside)) +
-                                    std::min(0.0f, std::max({q.x, q.y, q.z}));
-                                const float encoded = std::clamp((distance + band) / (2.0f * band), 0.0f, 1.0f);
-                                mip.bricks.push_back(static_cast<uint8_t>(std::lround(encoded * 255.0f)));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return saveMeshDistanceField(path, field, log);
-}
 
 struct Box {
     float3 center;

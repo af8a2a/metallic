@@ -44,6 +44,10 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createColorGradingLUTPass(); });
     registerRenderGraphPassType("MeshDistanceFieldDebugPass", "Trace shared object-space mesh distance fields",
         []() { return builtin_pass::createMeshDistanceFieldDebugPass(); });
+    registerRenderGraphPassType("GlobalDistanceFieldPass", "Compose mesh distance fields into a bounded world-space volume",
+        []() { return builtin_pass::createGlobalDistanceFieldPass(); });
+    registerRenderGraphPassType("GlobalDistanceFieldDebugPass", "Trace and visualize a bounded global distance field",
+        []() { return builtin_pass::createGlobalDistanceFieldDebugPass(); });
     registerRenderGraphPassType("VisibilityBufferMaterialPass", "Resolve unified visibility using scalar materials without RTAS",
         []() { return builtin_pass::createVisibilityBufferMaterialPass(); });
     registerRenderGraphPassType(

@@ -594,6 +594,16 @@ struct RenderGraphExecutor::Impl {
         for (const auto& node : executionList) {
             if (node.sceneDependency.source != RenderGraphSceneSource::None &&
                 !node.sceneBinding.localView) {
+                const auto hasTextureOutput = [&](TextureType type) {
+                    return std::ranges::any_of(node.reflection.fields(), [&](const RenderGraphField& field) {
+                        return field.visibility == RenderGraphFieldVisibility::Output &&
+                            field.resourceType == RenderGraphResourceType::Texture2D && field.textureType == type;
+                    });
+                };
+                // A world-space volume has its own grid pitch and cannot size the camera view.
+                if (hasTextureOutput(TextureType::Texture3D) && !hasTextureOutput(TextureType::Texture2D)) {
+                    continue;
+                }
                 sceneWidth = node.executionWidth;
                 sceneHeight = node.executionHeight;
                 break;
