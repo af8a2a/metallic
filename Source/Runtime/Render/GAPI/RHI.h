@@ -510,6 +510,7 @@ struct DeviceDesc {
 struct DeviceCapabilities {
     // Append-only sparse buffers on the graphics queue; ordinary buffers remain available.
     bool sparseBuffers = false;
+    bool shaderStorageImageExtendedFormats = false;
     bool memoryDecompression = false;
     bool deviceGeneratedCommands = false;
     bool dynamicGeneratedPipelineLayout = false;

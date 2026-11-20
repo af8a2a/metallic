@@ -16,7 +16,11 @@ struct GlobalDistanceFieldPageBuildParams
     ResourceHandle<Texture3D<float>> meshAtlas;
     SamplerHandle meshSampler;
     ResourceHandle<RWTexture3D<uint>> pageTable;
+#if defined(METALLIC_GDF_PAGE_ATLAS_R8)
+    ResourceHandle<RWTexture3D<unorm float>> pageAtlas;
+#else
     ResourceHandle<RWTexture3D<float>> pageAtlas;
+#endif
     ResourceHandle<RWStructuredBuffer<GlobalDistanceFieldDomain>> domainOutput;
     ResourceHandle<RWStructuredBuffer<uint>> statistics;
     uint instanceCount;
@@ -125,14 +129,22 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint t
     GroupMemoryBarrierWithGroupSync();
 
     if (sharedPhysicalPage < kGlobalDistanceFieldOverflowPage) {
+#if defined(METALLIC_GDF_PAGE_ATLAS_R8)
+        RWTexture3D<unorm float> pageAtlas = resolveUniform(params.pageAtlas);
+#else
         RWTexture3D<float> pageAtlas = resolveUniform(params.pageAtlas);
+#endif
         uint3 atlasDimensions;
         pageAtlas.GetDimensions(atlasDimensions.x, atlasDimensions.y, atlasDimensions.z);
         uint3 firstAtlasSample = globalDistanceFieldPageAtlasOffset(sharedPhysicalPage,
             atlasDimensions / kGlobalDistanceFieldPageSamples) * kGlobalDistanceFieldPageSamples;
         for (uint index = threadIndex; index < kSamplesPerPage; index += kPageGroupSize) {
             uint3 local = globalDistanceFieldPageAtlasOffset(index, uint3(kGlobalDistanceFieldPageSamples));
-            pageAtlas[firstAtlasSample + local] = sharedPageDistances[index];
+            float value = sharedPageDistances[index];
+#if defined(METALLIC_GDF_PAGE_ATLAS_R8)
+            value = encodeGlobalDistanceFieldPageDistance(value, influenceRadius);
+#endif
+            pageAtlas[firstAtlasSample + local] = value;
         }
     }
 }

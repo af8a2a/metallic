@@ -223,6 +223,17 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/global_distance_field_pages.metallic_graph.json"; }
 };
 
+class QuantizedGlobalDistanceFieldSample final : public GlobalDistanceFieldSample {
+public:
+    std::string_view id() const override { return "global-distance-field-r8"; }
+    std::string_view name() const override { return "Global Distance Field / R8 and Coarse Mip"; }
+    std::string_view description() const override
+    {
+        return "Trace an R8 page atlas with the propagated coarse distance field.";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/global_distance_field_r8.metallic_graph.json"; }
+};
+
 class VirtualShadowMapSponzaSample : public RenderSample {
 public:
     std::string_view id() const override { return kVSMSponzaSampleId; }
@@ -1042,6 +1053,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const MeshDistanceFieldSample meshDistanceField;
     static const GlobalDistanceFieldSample globalDistanceField;
     static const GlobalDistanceFieldPagesSample globalDistanceFieldPages;
+    static const QuantizedGlobalDistanceFieldSample quantizedGlobalDistanceField;
     static const RealtimeLightingSample realtimeLighting;
     static const RealtimeLightingVSMSample realtimeLightingVSM;
     static const GPUDrivenVSMSample gpuDrivenVSM;
@@ -1114,6 +1126,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         samples.push_back(&meshDistanceField);
         samples.push_back(&globalDistanceField);
         samples.push_back(&globalDistanceFieldPages);
+        samples.push_back(&quantizedGlobalDistanceField);
     }
     // Optional local assets are read once, not on every ImGui frame.
     static const auto painter = loadLocalLookDevSamples("build/MaterialValidation/PainterLookDev/Catalog.json", "Painter Validation", "painter-");

@@ -33,6 +33,19 @@ struct GlobalDistanceFieldPagesDebugParams
     ViewCameraConstants current;
 };
 
+struct QuantizedGlobalDistanceFieldDebugParams
+{
+    ResourceHandle<Texture3D<uint>> pageTable;
+    ResourceHandle<Texture3D<float>> pageAtlas;
+    ResourceHandle<Texture3D<float>> coarseMip;
+    SamplerHandle sampler;
+    ResourceHandle<StructuredBuffer<GlobalDistanceFieldDomain>> domain;
+    ResourceHandle<RWTexture2D<float4>> color;
+    ResourceHandle<RWTexture2D<float4>> trace;
+    uint debugMode;
+    ViewCameraConstants current;
+};
+
 void drawGlobalDistanceField<T : IGlobalDistanceFieldSampler>(uint2 pixel, T distanceField,
     GlobalDistanceFieldDomain domain, ViewCameraConstants camera, uint debugMode,
     RWTexture2D<float4> color, RWTexture2D<float4> trace)
@@ -108,6 +121,19 @@ void globalDistanceFieldPagesDebugMain(uint3 id : SV_DispatchThreadID)
     GlobalDistanceFieldDomain domain = domains[0];
     SparseGlobalDistanceFieldSampler distanceField = {resolveUniform(params.pageTable), resolveUniform(params.pageAtlas),
         resolveUniform(params.sampler), domain};
+    drawGlobalDistanceField(id.xy, distanceField, domain, params.current, params.debugMode,
+        resolveUniform(params.color), resolveUniform(params.trace));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void globalDistanceFieldQuantizedDebugMain(uint3 id : SV_DispatchThreadID)
+{
+    QuantizedGlobalDistanceFieldDebugParams params = getParameters<QuantizedGlobalDistanceFieldDebugParams>();
+    StructuredBuffer<GlobalDistanceFieldDomain> domains = resolveUniform(params.domain);
+    GlobalDistanceFieldDomain domain = domains[0];
+    QuantizedGlobalDistanceFieldSampler distanceField = {resolveUniform(params.pageTable), resolveUniform(params.pageAtlas),
+        resolveUniform(params.coarseMip), resolveUniform(params.sampler), domain};
     drawGlobalDistanceField(id.xy, distanceField, domain, params.current, params.debugMode,
         resolveUniform(params.color), resolveUniform(params.trace));
 }

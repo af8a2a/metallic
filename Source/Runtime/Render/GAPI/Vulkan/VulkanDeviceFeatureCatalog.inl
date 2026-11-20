@@ -32,6 +32,11 @@ MT_VK_FEATURE(sparseBuffers, true, false,
     features.features.sparseBinding = selection.sparseBuffers;
     features.features.sparseResidencyBuffer = selection.sparseBuffers;, caps.sparseBuffers = sparseBuffers;)
 
+MT_VK_FEATURE(shaderStorageImageExtendedFormats, true, false,
+    probe.features.features.shaderStorageImageExtendedFormats == VK_TRUE, 0,
+    features.features.shaderStorageImageExtendedFormats = selection.shaderStorageImageExtendedFormats;,
+    caps.shaderStorageImageExtendedFormats = shaderStorageImageExtendedFormats;)
+
 MT_VK_SIMPLE(memoryDecompression, VK_EXT_MEMORY_DECOMPRESSION_EXTENSION_NAME,
     VkPhysicalDeviceMemoryDecompressionFeaturesEXT, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT,
     memoryDecompression, true, false,

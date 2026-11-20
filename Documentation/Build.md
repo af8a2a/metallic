@@ -784,7 +784,13 @@ The volume is rebuilt from the current scene instances each frame. It stores the
 
 **Lighting / Global Distance Field / Sparse Pages** uses the same world-space lattice. Each virtual page covers seven cells per axis and stores eight samples along each axis so neighboring pages share their boundary. The R32Uint page table points to an R32F atlas page or contains one of three states. `0xffffffff` means the whole page equals the positive distance limit, `0xfffffffe` means it equals the negative limit, and `0xfffffffd` means its physical allocation exceeded `maxPhysicalPages`. The sparse trace reports coverage state 3 and displays orange if it reaches an unavailable page. Its `statistics` buffer lists required physical pages, resident pages, positive constant pages, negative constant pages and unavailable pages.
 
-The sparse pass composes each page's samples on every frame and allocates atlas storage for pages with varying distances. It uses the same samples as the dense pass, including the clipped tail of a partial page. This provides a dense comparison for the first sparse version. The Unreal production path additionally uses page-center admission estimates, R8 encoding and a coarse mip.
+The sparse pass composes each page's samples on every frame and allocates atlas storage for pages with varying distances. It uses the same samples as the dense pass, including the clipped tail of a partial page. This provides a dense comparison for page sampling.
+
+**Lighting / Global Distance Field / R8 and Coarse Mip** enables `quantized` on the sparse producer and debug pass. The page atlas stores UE's normalized distance encoding in R8 UNORM. The `coarseMip` volume has `ceil(N/4)` samples per axis and encodes a distance range four times wider than the fine pages. The first propagation pass reads the fine pages and applies the Eikonal update. Four more passes read the previous R8 result and propagate into the alternate volume.
+
+Each coarse write applies the Direct3D reference FLOAT-to-UNORM rounding before storing the normalized value in Vulkan. This keeps the five propagation steps on the same rounding rule.
+
+Tracing starts with the coarse sample and switches to an available fine page when the coarse encoded value is below 0.625. A negative constant page seeds the mip as a fine page filled with zero. Overflow pages use the coarse estimate when propagation reaches them and keep coverage state 3 when the coarse value remains saturated positive. Both R8 textures can be inspected as normalized values. The path depends on Vulkan's extended storage image formats.
 
 ## Optional RHI diagnostics
 

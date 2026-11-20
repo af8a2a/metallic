@@ -76,6 +76,23 @@ protected:
     }
 };
 
+TEST_F(DeviceFeatures, ExtendedStorageImageFormatsAreOptionalAndEnabledWhenSupported)
+{
+    const auto requested = request();
+    EXPECT_TRUE(requested.shaderStorageImageExtendedFormats);
+    EXPECT_FALSE(select().shaderStorageImageExtendedFormats);
+    EXPECT_TRUE(select().matches(requested));
+
+    probe.features.features.shaderStorageImageExtendedFormats = VK_TRUE;
+    const auto selected = select();
+    VulkanEnabledFeatureChain enabled(selected);
+    EXPECT_EQ(enabled.features.features.shaderStorageImageExtendedFormats, VK_TRUE);
+    DeviceCapabilities caps;
+    VulkanDeviceCapabilities backend;
+    selected.publish(caps, backend);
+    EXPECT_TRUE(caps.shaderStorageImageExtendedFormats);
+}
+
 TEST_F(DeviceFeatures, MaximalReconvergenceIsOptionalAndRequiresExtensionAndFeature)
 {
     const auto requested = request();

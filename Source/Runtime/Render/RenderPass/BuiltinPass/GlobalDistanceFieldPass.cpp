@@ -17,12 +17,16 @@ constexpr uint64_t kGlobalDistanceFieldABI = 0x4744460000000001ull;
 constexpr uint64_t kGlobalDistanceFieldDebugABI = 0x4744464400000001ull;
 constexpr uint64_t kGlobalDistanceFieldPagesABI = 0x4744465000000001ull;
 constexpr uint64_t kGlobalDistanceFieldPagesDebugABI = 0x4744504400000001ull;
+constexpr uint64_t kGlobalDistanceFieldMipABI = 0x4744464d00000001ull;
+constexpr uint64_t kQuantizedGlobalDistanceFieldDebugABI = 0x4744514400000001ull;
 constexpr uint32_t kDefaultResolution = 64;
 constexpr float kInfluenceRangeInVoxels = 4.0f;
 constexpr uint32_t kCellsPerPage = 7;
 constexpr uint32_t kSamplesPerPage = kCellsPerPage + 1;
 constexpr uint32_t kDefaultPhysicalPages = 216;
 constexpr uint32_t kPageStatisticsCount = 5;
+constexpr uint32_t kMipFactor = 4;
+constexpr SlangMacroDefine kQuantizedPageAtlasDefines[]{{"METALLIC_GDF_PAGE_ATLAS_R8", "1"}};
 
 struct alignas(16) GlobalDistanceFieldDomain {
     std::array<float, 4> minAndVoxelSize;
@@ -49,6 +53,13 @@ struct alignas(16) GlobalDistanceFieldPagesParams {
     GlobalDistanceFieldDomain domain;
 };
 
+struct alignas(16) GlobalDistanceFieldMipParams {
+    ShaderSampledImage pageTable, pageAtlas;
+    ShaderSampler sampler;
+    ShaderStorageImage previousMip, outputMip;
+    uint32_t logicalResolution, coarseResolution, padding;
+};
+
 struct alignas(16) GlobalDistanceFieldDebugParams {
     ShaderSampledImage distanceField;
     ShaderSampler sampler;
@@ -68,12 +79,29 @@ struct alignas(16) GlobalDistanceFieldPagesDebugParams {
     ViewCameraConstants current;
 };
 
+struct alignas(16) QuantizedGlobalDistanceFieldDebugParams {
+    ShaderSampledImage pageTable, pageAtlas, coarseMip;
+    ShaderSampler sampler;
+    ShaderBuffer domain;
+    ShaderStorageImage color, trace;
+    uint32_t debugMode;
+    ViewCameraConstants current;
+};
+
 static_assert(sizeof(GlobalDistanceFieldDomain) == 32);
 static_assert(sizeof(GlobalDistanceFieldParams) == 64 && offsetof(GlobalDistanceFieldParams, domain) == 32);
 static_assert(sizeof(GlobalDistanceFieldDebugParams) == 112 && offsetof(GlobalDistanceFieldDebugParams, current) == 32);
 static_assert(sizeof(GlobalDistanceFieldPagesParams) == 80 && offsetof(GlobalDistanceFieldPagesParams, domain) == 48);
 static_assert(sizeof(GlobalDistanceFieldPagesDebugParams) == 112 &&
     offsetof(GlobalDistanceFieldPagesDebugParams, current) == 32);
+static_assert(sizeof(GlobalDistanceFieldMipParams) == 32);
+static_assert(sizeof(QuantizedGlobalDistanceFieldDebugParams) == 112 &&
+    offsetof(QuantizedGlobalDistanceFieldDebugParams, current) == 32);
+
+uint32_t coarseMipResolution(uint32_t resolution)
+{
+    return (resolution + kMipFactor - 1u) / kMipFactor;
+}
 
 uint32_t logicalResolution(const RenderGraphProperties& properties)
 {
@@ -120,10 +148,22 @@ public:
         if (usePages_) {
             const uint32_t tableSize = std::max(1u, pagesPerAxis(resolution));
             const uint32_t atlasSize = pageAtlasSize(physicalPageBudget(properties()).value_or(0));
-            reflection.addTextureOutput("pageTable", "Virtual page to atlas mapping or constant page state")
-                .texture3D(tableSize, tableSize, tableSize).storageWrite().format = Format::R32Uint;
-            reflection.addTextureOutput("pageAtlas", "Physical pages of signed world distances in meters")
-                .texture3D(atlasSize, atlasSize, atlasSize).storageWrite().format = Format::R32Sfloat;
+            const bool quantized = quantizedPages();
+            auto& pageTable = reflection.addTextureOutput("pageTable", "Virtual page to atlas mapping or constant page state")
+                .texture3D(tableSize, tableSize, tableSize).storageWrite();
+            pageTable.format = Format::R32Uint;
+            if (quantized) { pageTable.stageAccess(RenderGraphResourceAccess::TextureSampleRead); }
+            auto& pageAtlas = reflection.addTextureOutput("pageAtlas", "Physical pages of clipped signed distances")
+                .texture3D(atlasSize, atlasSize, atlasSize).storageWrite();
+            pageAtlas.format = quantized ? Format::R8Unorm : Format::R32Sfloat;
+            if (quantized) {
+                pageAtlas.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+                const uint32_t mipSize = std::max(1u, coarseMipResolution(resolution));
+                reflection.addTextureOutput("coarseMip", "Propagated coarse distances encoded into R8")
+                    .texture3D(mipSize, mipSize, mipSize).storageReadWrite().format = Format::R8Unorm;
+                reflection.addTextureOutput("mipScratch", "Ping-pong storage for coarse distance propagation")
+                    .texture3D(mipSize, mipSize, mipSize).storageReadWrite().format = Format::R8Unorm;
+            }
             reflection.addBufferOutput("statistics", "Required, resident, positive, negative and unavailable pages")
                 .buffer(kPageStatisticsCount * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").storageReadWrite();
         } else {
@@ -142,6 +182,11 @@ public:
         if (!context.device || !context.graphicsQueue || !context.runtimeScene) {
             log = "Global Distance Field requires a world scene and a graphics queue";
             return makeError(Error::InvalidArgument);
+        }
+        const bool quantized = quantizedPages();
+        if (quantized && !context.device->capabilities().shaderStorageImageExtendedFormats) {
+            log = "Quantized Global Distance Field requires R8 storage image support";
+            return makeError(Error::Unsupported);
         }
         const uint32_t resolution = logicalResolution(properties());
         if (resolution == 0) {
@@ -199,10 +244,25 @@ public:
                     .entryPointName = "globalDistanceFieldClearPageStatsMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
                 {.parameters = abi, .debugName = "GlobalDistanceFieldClearPageStats"}, clearPageStats_, log);
             if (!result) { return result; }
-            return shaders.getComputeKernel(*device_,
+            const std::span<const SlangMacroDefine> defines = quantized ?
+                std::span<const SlangMacroDefine>(kQuantizedPageAtlasDefines) : std::span<const SlangMacroDefine>{};
+            result = shaders.getComputeKernel(*device_,
                 {.moduleName = "Features/DistanceField/GlobalDistanceFieldPageBuild",
-                    .entryPointName = "globalDistanceFieldBuildPagesMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-                {.parameters = abi, .debugName = "GlobalDistanceFieldBuildPages"}, program_, log);
+                    .entryPointName = "globalDistanceFieldBuildPagesMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+                    .macroDefines = defines},
+                {.parameters = abi, .debugName = quantized ? "GlobalDistanceFieldBuildR8Pages" : "GlobalDistanceFieldBuildPages"},
+                program_, log);
+            if (!result || !quantized) { return result; }
+            constexpr auto mipAbi = parameterAbi<GlobalDistanceFieldMipParams>(kGlobalDistanceFieldMipABI);
+            result = shaders.getComputeKernel(*device_,
+                {.moduleName = "Features/DistanceField/GlobalDistanceFieldMip",
+                    .entryPointName = "globalDistanceFieldSeedMipMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = mipAbi, .debugName = "GlobalDistanceFieldSeedMip"}, seedMip_, log);
+            if (!result) { return result; }
+            return shaders.getComputeKernel(*device_,
+                {.moduleName = "Features/DistanceField/GlobalDistanceFieldMip",
+                    .entryPointName = "globalDistanceFieldPropagateMipMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = mipAbi, .debugName = "GlobalDistanceFieldPropagateMip"}, propagateMip_, log);
         }
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = "Features/DistanceField/GlobalDistanceFieldCompose",
@@ -243,7 +303,7 @@ public:
             params.maxPhysicalPages = maxPhysicalPages_;
             auto encoded = writer.encode(params, kGlobalDistanceFieldPagesABI);
             if (!encoded) { return makeError(encoded.error()); }
-            result = executePages(context, *encoded);
+            result = executePages(context, *encoded, writer);
         } else {
             GlobalDistanceFieldParams params{};
             bindMeshes(params);
@@ -268,7 +328,9 @@ public:
     std::vector<std::string> debugCheckpoints() const override { return {"AfterPass", "GlobalDistanceField"}; }
 
 private:
-    Result<> executePages(RenderGraphExecutionContext& context, const EncodedParameters& encoded)
+    bool quantizedPages() const { return usePages_ && properties().value("quantized", false); }
+
+    Result<> executePages(RenderGraphExecutionContext& context, const EncodedParameters& encoded, ParameterWriter& writer)
     {
         using Access = RenderGraphResourceAccess;
         const RenderGraphStageUse clearUses[] = {{"statistics", Access::BufferStorageWrite}};
@@ -277,7 +339,7 @@ private:
             {"domain", Access::BufferStorageWrite}, {"statistics", Access::BufferStorageReadWrite},
         };
         const uint32_t groups = pagesPerAxis(resolution_);
-        const RenderGraphComputeStage stages[] = {
+        const RenderGraphStage pageStages[] = {
             {"Clear page statistics", clearUses, [&](CommandBuffer& commands) {
                 return clearPageStats_.dispatch(commands, encoded, 1, 1, 1);
             }},
@@ -285,7 +347,63 @@ private:
                 return program_.dispatch(commands, encoded, groups, groups, groups);
             }},
         };
-        return context.executeComputeStages(stages);
+        if (!quantizedPages()) {
+            return context.executeComputeStages(pageStages);
+        }
+        return executeMipStages(context, writer, pageStages);
+    }
+
+    Result<> executeMipStages(RenderGraphExecutionContext& context, ParameterWriter& writer,
+        std::span<const RenderGraphStage, 2> pageStages)
+    {
+        const auto coarse = writer.storageImageHandle(context.outputTexture("coarseMip").view());
+        const auto scratch = writer.storageImageHandle(context.outputTexture("mipScratch").view());
+        GlobalDistanceFieldMipParams params{};
+        params.pageTable = writer.sampledImageHandle(context.outputTexture("pageTable").view());
+        params.pageAtlas = writer.sampledImageHandle(context.outputTexture("pageAtlas").view());
+        params.sampler = writer.samplerHandle({});
+        params.logicalResolution = resolution_;
+        params.coarseResolution = coarseMipResolution(resolution_);
+        params.previousMip = scratch;
+        params.outputMip = coarse;
+        const auto toCoarse = writer.encode(params, kGlobalDistanceFieldMipABI);
+        if (!toCoarse) { return makeError(toCoarse.error()); }
+        params.previousMip = coarse;
+        params.outputMip = scratch;
+        const auto toScratch = writer.encode(params, kGlobalDistanceFieldMipABI);
+        if (!toScratch) { return makeError(toScratch.error()); }
+
+        using Access = RenderGraphResourceAccess;
+        const RenderGraphStageUse seedUses[] = {
+            {"pageTable", Access::TextureSampleRead}, {"pageAtlas", Access::TextureSampleRead},
+            {"coarseMip", Access::TextureStorageWrite},
+        };
+        const RenderGraphStageUse scratchUses[] = {
+            {"coarseMip", Access::TextureStorageRead}, {"mipScratch", Access::TextureStorageWrite},
+        };
+        const RenderGraphStageUse coarseUses[] = {
+            {"mipScratch", Access::TextureStorageRead}, {"coarseMip", Access::TextureStorageWrite},
+        };
+        const uint32_t groups = (params.coarseResolution + 3u) / 4u;
+        const auto toScratchStage = [&](CommandBuffer& commands) {
+            return propagateMip_.dispatch(commands, *toScratch, groups, groups, groups);
+        };
+        const auto toCoarseStage = [&](CommandBuffer& commands) {
+            return propagateMip_.dispatch(commands, *toCoarse, groups, groups, groups);
+        };
+        // UE 5.7.4 GlobalDistanceField.cpp uses five R8 writes, including the
+        // first Eikonal solve from fine pages. The fifth write lands in coarseMip.
+        const RenderGraphStage stages[] = {
+            pageStages[0], pageStages[1],
+            {"Seed coarse mip from fine pages", seedUses, [&](CommandBuffer& commands) {
+                return seedMip_.dispatch(commands, *toCoarse, groups, groups, groups);
+            }},
+            {"Propagate coarse mip 1", scratchUses, toScratchStage},
+            {"Propagate coarse mip 2", coarseUses, toCoarseStage},
+            {"Propagate coarse mip 3", scratchUses, toScratchStage},
+            {"Propagate coarse mip 4", coarseUses, toCoarseStage},
+        };
+        return context.executeStages(stages);
     }
 
     bool usePages_;
@@ -295,6 +413,7 @@ private:
     GlobalDistanceFieldDomain domain_{};
     ComputeKernel program_;
     ComputeKernel clearPageStats_;
+    ComputeKernel seedMip_, propagateMip_;
     MeshDistanceFieldGPU meshFields_;
 };
 
@@ -309,7 +428,11 @@ public:
             reflection.addTextureInput("pageTable", "Virtual page to atlas mapping or constant page state")
                 .texture3D(0, 0, 0).sampledRead().format = Format::R32Uint;
             reflection.addTextureInput("pageAtlas", "Physical pages of signed world distances in meters")
-                .texture3D(0, 0, 0).sampledRead().format = Format::R32Sfloat;
+                .texture3D(0, 0, 0).sampledRead().format = quantizedPages() ? Format::R8Unorm : Format::R32Sfloat;
+            if (quantizedPages()) {
+                reflection.addTextureInput("coarseMip", "Propagated coarse distances encoded into R8")
+                    .texture3D(0, 0, 0).sampledRead().format = Format::R8Unorm;
+            }
         } else {
             reflection.addTextureInput("distanceField", "Clipped signed world distance in meters")
                 .texture3D(0, 0, 0).sampledRead().format = Format::R32Sfloat;
@@ -332,6 +455,13 @@ public:
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         device_ = context.device;
+        if (quantizedPages()) {
+            return ShaderRegistry::instance().getComputeKernel(*device_,
+                {.moduleName = "Features/DistanceField/GlobalDistanceFieldDebug",
+                    .entryPointName = "globalDistanceFieldQuantizedDebugMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = parameterAbi<QuantizedGlobalDistanceFieldDebugParams>(kQuantizedGlobalDistanceFieldDebugABI),
+                    .debugName = "QuantizedGlobalDistanceFieldDebug"}, program_, log);
+        }
         const auto abi = usePages_ ? parameterAbi<GlobalDistanceFieldPagesDebugParams>(kGlobalDistanceFieldPagesDebugABI) :
             parameterAbi<GlobalDistanceFieldDebugParams>(kGlobalDistanceFieldDebugABI);
         return ShaderRegistry::instance().getComputeKernel(*device_,
@@ -360,6 +490,13 @@ public:
             return writer.encode(params, abi);
         };
         const auto encoded = [&] {
+            if (quantizedPages()) {
+                QuantizedGlobalDistanceFieldDebugParams params{};
+                params.pageTable = writer.sampledImageHandle(context.inputTexture("pageTable").view());
+                params.pageAtlas = writer.sampledImageHandle(context.inputTexture("pageAtlas").view());
+                params.coarseMip = writer.sampledImageHandle(context.inputTexture("coarseMip").view());
+                return encode(params, kQuantizedGlobalDistanceFieldDebugABI);
+            }
             if (usePages_) {
                 GlobalDistanceFieldPagesDebugParams params{};
                 params.pageTable = writer.sampledImageHandle(context.inputTexture("pageTable").view());
@@ -375,6 +512,8 @@ public:
     }
 
 private:
+    bool quantizedPages() const { return usePages_ && properties().value("quantized", false); }
+
     bool usePages_;
     Device* device_ = nullptr;
     ComputeKernel program_;
