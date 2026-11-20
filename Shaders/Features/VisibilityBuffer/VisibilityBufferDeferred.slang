@@ -311,6 +311,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
     Ray ray = cameraRayFromPixel(basis, rayPixel);
     HitInfo hit;
     float3 radiance;
+    DeferredLumenReceiver receiver = {};
 #if MATERIAL_CLASS == 0
     bool hasSurface = ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u ||
         push.debugView != kOpenPBRDebugViewFinal) && reconstructVisibilitySurface(pixel, ray, push, hit);
@@ -346,7 +347,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
     else {
         push = withTextureFeedbackSampling(push, pixel);
         uint seed = hash(pixel.x + pixel.y * push.width);
-        radiance = shadeVisibilitySurface(ray, hit, rayPixel, push, seed,
+        radiance = shadeVisibilitySurface(ray, hit, rayPixel, push, seed, receiver,
 #if METALLIC_DEFERRED_CLASS_SPECIALIZATION
             kDeferredFixedMetalness, kDeferredOpaquePrimary);
 #else
@@ -358,6 +359,13 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
     if (resolveBuffer<StructuredBuffer<ShadowParameters>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))[0].control.w != 0u) {
         float encoded = resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset)).Load(int3(pixel, 0));
         radiance = float3(encoded * encoded);
+        if (kExportLumenReceivers) { receiver = {}; }
+    }
+    if (kExportLumenReceivers) {
+        let resources = getSceneResourceParameters();
+        resolveUniform(resources.positionCurrent)[pixel] = receiver.positionAndDepth;
+        resolveUniform(resources.normalCurrent)[pixel] = float4(receiver.normal, 0.0f);
+        resolveUniform(resources.baseColorMetalness)[pixel] = float4(receiver.diffuse, 0.0f);
     }
     sceneOutput()[pixel] = float4(max(radiance, float3(0.0)), 1.0);
 }

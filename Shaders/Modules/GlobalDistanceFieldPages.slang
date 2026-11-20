@@ -153,7 +153,8 @@ uint computeGlobalDistanceFieldClipmapIndex(StructuredBuffer<GlobalDistanceField
 // UE 5.7.4 GlobalDistanceFieldUtils.ush:90. Search from fine to coarse and resume at the previous exit.
 public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobalDistanceFieldSampler distanceField,
     StructuredBuffer<GlobalDistanceFieldDomain> domains, uint clipmapCount, float3 rayStart, float3 rayDirection,
-    float minTraceDistance, float maxTraceDistance, out uint hitClipmapIndex)
+    float minTraceDistance, float maxTraceDistance, out uint hitClipmapIndex,
+    float voxelSizeRelativeBias = 0.0f, float voxelSizeRelativeRayEndBias = 0.0f)
 {
     GlobalDistanceFieldTrace result = {-1.0f, 0u, kGlobalDistanceFieldOutside, 0.0f};
     hitClipmapIndex = ~0u;
@@ -166,17 +167,24 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobal
         QuantizedGlobalDistanceFieldSampler clipmap = distanceField;
         clipmap.domain = domains[clipmapIndex];
         clipmap.clipmapIndex = clipmapIndex;
-        float2 intersectionTimes = clipGlobalDistanceFieldRay(clipmap.domain, rayStart, rayDirection, maxTraceDistance);
+        float voxelExtent = clipmap.domain.minAndVoxelSize.w * 0.5f;
+        float clipmapRayBias = voxelExtent * voxelSizeRelativeBias;
+        float clipmapRayLength = maxTraceDistance - voxelExtent * voxelSizeRelativeRayEndBias;
+        if (clipmapRayLength <= minRayTime) {
+            break;
+        }
+        float2 intersectionTimes = clipGlobalDistanceFieldRay(clipmap.domain, rayStart, rayDirection, clipmapRayLength);
         intersectionTimes.x = max(intersectionTimes.x, minRayTime);
+        intersectionTimes.x = max(intersectionTimes.x, clipmapRayBias);
         if (!(intersectionTimes.x < intersectionTimes.y)) {
             continue;
         }
 
-        fullyCovered = fullyCovered && intersectionTimes.x <= minRayTime;
+        fullyCovered = fullyCovered && intersectionTimes.x <= max(minRayTime, clipmapRayBias);
         minRayTime = intersectionTimes.y;
         bool reachedSegmentEnd;
-        GlobalDistanceFieldTrace segment = traceGlobalDistanceFieldSegment(clipmap,
-            clipmap.domain.minAndVoxelSize.w * 0.5f, rayStart, rayDirection, intersectionTimes, reachedSegmentEnd);
+        GlobalDistanceFieldTrace segment = traceGlobalDistanceFieldSegment(clipmap, voxelExtent,
+            rayStart, rayDirection, intersectionTimes, reachedSegmentEnd, clipmapRayBias);
         result.stepCount += segment.stepCount;
         if (segment.classification == kGlobalDistanceFieldHit) {
             hitClipmapIndex = clipmapIndex;

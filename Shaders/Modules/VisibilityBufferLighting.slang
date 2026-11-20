@@ -26,12 +26,38 @@ using Metallic.Material;
 using Metallic.OpenPBR;
 using Metallic.Lighting;
 
+#ifndef METALLIC_DEFERRED_LUMEN_RECEIVERS
+#define METALLIC_DEFERRED_LUMEN_RECEIVERS 0
+#endif
+#if METALLIC_DEFERRED_LUMEN_RECEIVERS
+import LumenProbeMath;
+#endif
+
 namespace Metallic.VisibilityLighting
 {
 
 #ifndef MATERIAL_CLASS
 #define MATERIAL_CLASS -1
 #endif
+
+public static const bool kExportLumenReceivers = METALLIC_DEFERRED_LUMEN_RECEIVERS != 0;
+
+public struct DeferredLumenReceiver
+{
+    public float4 positionAndDepth;
+    public float3 normal;
+    public float3 diffuse;
+};
+
+[ForceInline]
+float3 lumenReceiverDiffuse(float3 diffuseColor, float materialAO)
+{
+#if METALLIC_DEFERRED_LUMEN_RECEIVERS
+    return diffuseColor * Metallic.Lumen::lumenDistantIlluminationRescale(diffuseColor) * materialAO;
+#else
+    return diffuseColor * materialAO;
+#endif
+}
 
 #ifndef METALLIC_DEFERRED_RUNTIME_PRECISION
 #define METALLIC_DEFERRED_RUNTIME_PRECISION 0
@@ -197,7 +223,8 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
 
 [ForceInline]
 internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, inout HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, int fixedMetalness, bool opaquePrimary, out bool applyAerial)
+    ScenePathTracePush push, inout uint seed, int fixedMetalness, bool opaquePrimary, out bool applyAerial,
+    inout DeferredLumenReceiver receiver)
 {
     applyAerial = true;
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
@@ -239,7 +266,10 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
     float3 emission = max(prepared.surfaceEmission(evaluated.emission), float3(0));
     float3 radiance = integrateDirectLighting(prepared, lights, emission);
 #endif
-    if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
+    const bool hasEnvironment = push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0;
+    const bool isOpaque = (MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3) || opaquePrimary || (summary.transmissionWeight <= 0.0);
+    const bool replaceDiffuse = kExportLumenReceivers && isOpaque;
+    if (hasEnvironment || replaceDiffuse) {
         float3 normal = hit.normal;
         float roughness = saturate(summary.roughness);
         float3 viewDirectionWS = viewDirection;
@@ -247,7 +277,6 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
 
         const bool isDielectric = (MATERIAL_CLASS == 1) || (fixedMetalness == 0);
         const bool isConductor = (MATERIAL_CLASS == 2) || (fixedMetalness == 1);
-        const bool isOpaque = (MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3) || opaquePrimary || (summary.transmissionWeight <= 0.0);
 
 #if MATERIAL_CLASS == 1
         // Dielectric class compile-time specialization: conductorFraction is 0, F0 is purely dielectric reflectance.
@@ -274,7 +303,12 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
 #endif
         DeferredColor diffuseColor = DeferredColor(summary.baseColor) * diffuseWeight *
             (DeferredColor(1.0) - specularWeight);
-        float3 diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
+        float3 diffuse = float3(0.0);
+        if (replaceDiffuse) {
+            receiver.diffuse = lumenReceiverDiffuse(float3(diffuseColor), summary.occlusion);
+        } else {
+            diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
+        }
 #elif MATERIAL_CLASS == 2
         // Conductor: zero diffuse contribution.
         float3 diffuse = float3(0.0);
@@ -293,9 +327,19 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
 #endif
             DeferredColor diffuseColor = DeferredColor(summary.baseColor) * diffuseWeight *
                 (DeferredColor(1.0) - specularWeight);
-            diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
+            if (replaceDiffuse) {
+                receiver.diffuse = lumenReceiverDiffuse(float3(diffuseColor), summary.occlusion);
+            } else {
+                diffuse = environmentDiffuseIrradiance(normal, push) / kPi * float3(diffuseColor);
+            }
         }
 #endif
+
+        if (replaceDiffuse) {
+            receiver.positionAndDepth = float4(hit.position, cameraLinearDepth(hit.position, push));
+            receiver.normal = normal;
+        }
+        if (!hasEnvironment) { return radiance; }
 
         float3 specular = realtimeEnvironmentSpecular(reflect(-viewDirectionWS, normal), roughness, push) * float3(specularWeight);
 
@@ -321,11 +365,18 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
     return radiance;
 }
 
+[ForceInline]
 public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
+    ScenePathTracePush push, inout uint seed, inout DeferredLumenReceiver receiver, int fixedMetalness = -1, bool opaquePrimary = false)
 {
     bool applyAerial;
-    float3 radiance = shadeSceneVisibilitySurfaceRadiance(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary, applyAerial);
+    float3 radiance = shadeSceneVisibilitySurfaceRadiance(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary, applyAerial, receiver);
+    if (kExportLumenReceivers && applyAerial) {
+        let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
+        let segment = physicalAerialSegment(resources, hit.position, ray.origin);
+        receiver.diffuse *= segment.transmittance;
+        return segment.transmittance * radiance + segment.radiance;
+    }
     return applyAerial ? applyPrimaryAerialPerspective(radiance, hit.position, ray.origin) : radiance;
 }
 
@@ -374,8 +425,9 @@ public struct DeferredOpenPBRMaterialSource : IOpenPBRMaterialSource
     }
 };
 
+[ForceInline]
 public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
+    ScenePathTracePush push, inout uint seed, inout DeferredLumenReceiver receiver, int fixedMetalness = -1, bool opaquePrimary = false)
 {
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
 #if METALLIC_CUSTOM_MATERIALS
@@ -387,11 +439,11 @@ public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     uint family = sceneSurfaceMaterialFamily(hit.materialIndex, specializedProgram);
     if (family == 1u) {
         var program = makeSceneSlabMaterialProgram<SceneSingleSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
-        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
+        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, receiver, fixedMetalness, opaquePrimary);
     }
     if (family == 2u) {
         var program = makeSceneSlabMaterialProgram<SceneDualSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
-        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
+        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, receiver, fixedMetalness, opaquePrimary);
     }
 #endif
     Material<OpenPBRMaterialProgram<DeferredOpenPBRMaterialSource>> program = {};
@@ -404,6 +456,6 @@ public float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     program.program.applyDebugNormalOverrides = false;
     program.program.fixedMetalness = fixedMetalness;
     program.program.opaquePrimary = opaquePrimary;
-    return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, fixedMetalness, opaquePrimary);
+    return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed, receiver, fixedMetalness, opaquePrimary);
 }
 } // namespace Metallic.VisibilityLighting

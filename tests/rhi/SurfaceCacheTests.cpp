@@ -15,6 +15,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 
 namespace metallic::tests {
 namespace {
@@ -57,6 +58,48 @@ size_t tileCenter(uint32_t cardIndex)
     return size_t(y) * kAtlasEdge + x;
 }
 
+bool writeAnalyticBoxCards(const std::filesystem::path& path, const scene::Scene& document, int32_t meshIndex,
+    std::string& log)
+{
+    scene::MeshDistanceFieldGeometry geometry;
+    if (!scene::getMeshDistanceFieldGeometry(document, meshIndex, geometry, log)) { return false; }
+    std::array<float, 3> minimum = geometry.positions.front();
+    std::array<float, 3> maximum = minimum;
+    for (const auto& position : geometry.positions) {
+        for (size_t axis = 0; axis < minimum.size(); ++axis) {
+            minimum[axis] = std::min(minimum[axis], position[axis]);
+            maximum[axis] = std::max(maximum[axis], position[axis]);
+        }
+    }
+    std::array<float, 3> center{}, halfExtent{};
+    for (size_t axis = 0; axis < center.size(); ++axis) {
+        center[axis] = (minimum[axis] + maximum[axis]) * 0.5f;
+        halfExtent[axis] = (maximum[axis] - minimum[axis]) * 0.5f;
+    }
+
+    scene::MeshCards field;
+    field.sourceFingerprint = geometry.fingerprint;
+    field.sourceMeshIndex = meshIndex;
+    // The six UE 5.7.4 cube OBBs captured from GenerateCardRepresentationData,
+    // scaled along the axes of each analytic test box.
+    for (uint32_t direction = 0; direction < kCardsPerBox; ++direction) {
+        const uint32_t axis = direction / 2;
+        const uint32_t x = axis == 0 ? 1 : 0;
+        const uint32_t y = axis == 2 ? 1 : 2;
+        const float sign = direction % 2 == 0 ? -1.0f : 1.0f;
+        scene::MeshCardBuildRecord card{};
+        card.origin = center;
+        card.origin[axis] += sign * 0.9f * halfExtent[axis];
+        card.axisX[x] = 1.0f;
+        card.axisY[y] = 1.0f;
+        card.axisZ[axis] = sign;
+        card.extent = {halfExtent[x], halfExtent[y], 0.2f * halfExtent[axis]};
+        card.axisAlignedDirectionIndex = direction;
+        field.cards.push_back(card);
+    }
+    return scene::saveMeshCards(path, field, log);
+}
+
 bool prepareSurfaceFixture(const std::filesystem::path& fixture, const std::filesystem::path& cardPath,
     scene::SceneDocument& document, std::string& log, float backFaceEmission = 0.125f)
 {
@@ -97,25 +140,7 @@ bool prepareSurfaceFixture(const std::filesystem::path& fixture, const std::file
     if (!output) { log = "Cannot write the Surface Cache material fixture"; return false; }
     if (!document.load(fixture)) { log = document.lastLoadResult().error; return false; }
 
-    scene::MeshDistanceFieldGeometry geometry;
-    if (!scene::getMeshDistanceFieldGeometry(document, 0, geometry, log)) { return false; }
-    scene::MeshCards field;
-    field.sourceFingerprint = geometry.fingerprint;
-    field.sourceMeshIndex = 0;
-    // The six UE 5.7.4 cube OBBs captured directly from GenerateCardRepresentationData.
-    for (uint32_t direction = 0; direction < kCardsPerBox; ++direction) {
-        const uint32_t axis = direction / 2;
-        const float sign = direction % 2 == 0 ? -1.0f : 1.0f;
-        scene::MeshCardBuildRecord card{};
-        card.origin[axis] = sign * 0.45f;
-        card.axisX[axis == 0 ? 1 : 0] = 1.0f;
-        card.axisY[axis == 2 ? 1 : 2] = 1.0f;
-        card.axisZ[axis] = sign;
-        card.extent = {0.5f, 0.5f, 0.1f};
-        card.axisAlignedDirectionIndex = direction;
-        field.cards.push_back(card);
-    }
-    return scene::saveMeshCards(cardPath, field, log);
+    return writeAnalyticBoxCards(cardPath, document, 0, log);
 }
 
 std::string checkSurfaceCapture(const debug::DebugCapture& capture, uint64_t sceneIdentity)
@@ -628,6 +653,311 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenGlobalTraceTest);
+
+constexpr uint32_t kSingleBounceEdge = 128;
+
+struct BounceImageStats {
+    std::array<double, 3> receiverAverage{};
+    float maxRgb = 0.0f;
+};
+
+std::optional<BounceImageStats> readSingleBounceStats(const render::RenderGraphPreviewRenderer& preview,
+    render::Format format, std::string& log)
+{
+    using HalfPixel = std::array<uint16_t, 4>;
+    using FloatPixel = std::array<float, 4>;
+    const bool fullPrecision = format == render::Format::RGBA32Sfloat;
+    const size_t pixelStride = fullPrecision ? sizeof(FloatPixel) : sizeof(HalfPixel);
+    const auto& bytes = preview.readbackBytes();
+    if (preview.readbackFormat() != format ||
+        bytes.size() != size_t(kSingleBounceEdge) * kSingleBounceEdge * pixelStride) {
+        log = "Unexpected single-bounce evidence format or resolution";
+        return std::nullopt;
+    }
+    BounceImageStats stats;
+    // Interior of the receiver on the side under the blocker.
+    constexpr uint32_t kStartX = 76, kEndX = 99, kStartY = 34, kEndY = 58;
+    constexpr double kPixelCount = (kEndX - kStartX) * (kEndY - kStartY);
+    for (uint32_t y = 0; y < kSingleBounceEdge; ++y) {
+        for (uint32_t x = 0; x < kSingleBounceEdge; ++x) {
+            const size_t index = size_t(y) * kSingleBounceEdge + x;
+            FloatPixel pixel;
+            if (fullPrecision) {
+                pixel = readSurfaceValue<FloatPixel>(bytes, index);
+            } else {
+                const auto half = readSurfaceValue<HalfPixel>(bytes, index);
+                std::transform(half.begin(), half.end(), pixel.begin(), halfToFloat);
+            }
+            for (size_t channel = 0; channel < 3; ++channel) {
+                const float radiance = pixel[channel];
+                if (!std::isfinite(radiance) || radiance < 0.0f) {
+                    log = "Single-bounce evidence contains invalid radiance";
+                    return std::nullopt;
+                }
+                stats.maxRgb = std::max(stats.maxRgb, radiance);
+                if (x >= kStartX && x < kEndX && y >= kStartY && y < kEndY) {
+                    stats.receiverAverage[channel] += radiance / kPixelCount;
+                }
+            }
+        }
+    }
+    return stats;
+}
+
+class LumenSingleBounceTest final : public RHITest {
+public:
+    LumenSingleBounceTest()
+    {
+        name = "lumen_single_bounce_realtime";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const std::filesystem::path root(PROJECT_SOURCE_DIR);
+        const auto asset = root / "Asset/Lumen/SingleBounce.gltf";
+        const auto fixture = context.outputDirectory / "LumenSingleBounce.gltf";
+        std::error_code fileError;
+        std::filesystem::copy_file(asset, fixture, std::filesystem::copy_options::overwrite_existing, fileError);
+        if (fileError) { return RHITestResult::fail("Could not copy the single-bounce fixture: " + fileError.message()); }
+        scene::SceneDocument document;
+        if (!document.load(fixture)) { return RHITestResult::fail(document.lastLoadResult().error); }
+
+        std::string log;
+        std::vector<std::string> fieldPaths, cardPaths;
+        for (int32_t mesh = 0; mesh < 3; ++mesh) {
+            const auto base = "LumenSingleBounce" + std::to_string(mesh);
+            const auto field = context.outputDirectory / (base + ".meshdf");
+            const auto cards = context.outputDirectory / (base + ".meshcards");
+            if (!writeAnalyticBoxField(field, document, log, mesh) || !writeAnalyticBoxCards(cards, document, mesh, log)) {
+                return RHITestResult::fail(log);
+            }
+            fieldPaths.push_back(field.generic_string());
+            cardPaths.push_back(cards.generic_string());
+        }
+
+        scene::SceneEntity blocker = scene::kNullSceneEntity;
+        scene::SceneEntity emitter = scene::kNullSceneEntity;
+        int32_t emitterMaterial = -1;
+        for (const auto& node : document.renderNodes()) {
+            const auto& primitive = document.renderPrimitives()[node.renderPrimitiveIndex];
+            if (primitive.meshIndex == 1) {
+                emitter = node.object;
+                emitterMaterial = node.materialIndex;
+            }
+            if (primitive.meshIndex == 2) { blocker = node.object; }
+        }
+        if (blocker == scene::kNullSceneEntity || emitter == scene::kNullSceneEntity || emitterMaterial < 0 ||
+            !document.setObjectVisible(blocker, false)) {
+            return RHITestResult::fail("Expected separately editable emitter and blocker objects");
+        }
+
+        RenderGraph graph;
+        if (!loadRenderGraphFromFile(root / "Pipelines/Samples/lumen_single_bounce.metallic_graph.json", graph, log)) {
+            return RHITestResult::fail(log);
+        }
+        const auto* fieldNode = graph.findNode("GlobalDistanceFieldPages");
+        const auto* surfaceNode = graph.findNode("SurfaceCache");
+        if (!fieldNode || !surfaceNode) {
+            return RHITestResult::fail("Missing one of the single-bounce sample producers");
+        }
+        auto fieldProperties = fieldNode->properties;
+        fieldProperties["distanceFieldPaths"] = fieldPaths;
+        auto cardProperties = surfaceNode->properties;
+        cardProperties["meshCardPaths"] = cardPaths;
+        const uint32_t tileResolution = cardProperties.value("tileResolution", kTileEdge);
+        if (!graph.setNodeProperties(fieldNode->id, std::move(fieldProperties)) ||
+            !graph.setNodeProperties(surfaceNode->id, std::move(cardProperties))) {
+            return RHITestResult::fail("Could not bind fixture fields and cards to the single-bounce sample");
+        }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {0.0f, 0.0f, 3.0f};
+        camera.orthographic = true;
+        camera.orthoHeight = 1.25f;
+        camera.farPlane = 8.0f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kSingleBounceEdge, kSingleBounceEdge)) {
+            return RHITestResult::fail("Invalid single-bounce test camera");
+        }
+
+        bench::ValidationRecorder validation;
+        RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        const auto initialized = preview.initialize(context.enableValidation, false, false,
+            context.enableValidation, validation.sink());
+        if (!initialized) { return RHITestResult::fail("Single-bounce preview setup: " + preview.lastLog()); }
+        preview.setEnvironment({.enabled = false, .visible = false});
+        if (!preview.setWorldEnvironment(environment::WorldEnvironment{})) {
+            return RHITestResult::fail("Could not select an emissive-only world");
+        }
+        preview.setLighting(document.lighting());
+        preview.setRawReadbackEnabled(true);
+
+        const auto sample = [&](std::string_view output,
+            Format format = Format::RGBA16Sfloat) -> std::optional<BounceImageStats> {
+            if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, output)) {
+                log = std::string(output) + ": " + preview.lastLog();
+                return std::nullopt;
+            }
+            return readSingleBounceStats(preview, format, log);
+        };
+        constexpr std::string_view kIndirect = "Gather.indirectDiffuse";
+        const auto baseline = sample(kIndirect);
+        if (!baseline) { return RHITestResult::fail(log); }
+        const auto directColor = sample("Deferred.color", Format::RGBA32Sfloat);
+        if (!directColor) { return RHITestResult::fail(log); }
+        const auto composite = sample("Gather.color", Format::RGBA32Sfloat);
+        if (!composite) { return RHITestResult::fail(log); }
+        if (!savePreview(preview, graph, context.outputDirectory / "LumenSingleBounceOpen.png", log)) {
+            return RHITestResult::fail(log);
+        }
+
+        const auto emissive = document.materials().at(emitterMaterial);
+        auto darkEmitter = emissive;
+        darkEmitter.emissiveFactor = float3(0.0f);
+        if (!document.setMaterialProperties(emitterMaterial, darkEmitter)) {
+            return RHITestResult::fail("Could not extinguish the offscreen emitter");
+        }
+        const auto dark = sample(kIndirect);
+        if (!dark) { return RHITestResult::fail(log); }
+        if (!document.setMaterialProperties(emitterMaterial, emissive) ||
+            !document.setObjectVisible(blocker, true)) {
+            return RHITestResult::fail("Could not restore the emitter and enable the blocker");
+        }
+        const auto blocked = sample(kIndirect);
+        if (!blocked) { return RHITestResult::fail(log); }
+        if (!savePreview(preview, graph, context.outputDirectory / "LumenSingleBounceBlocked.png", log)) {
+            return RHITestResult::fail(log);
+        }
+
+        if (!document.setObjectVisible(emitter, false) || !document.setObjectVisible(blocker, false)) {
+            return RHITestResult::fail("Could not isolate the receiver for Sun shadow validation");
+        }
+        environment::WorldEnvironment world;
+        world.sun.enabled = true;
+        world.sun.direction = float3(0.0f, -0.8f, -0.6f);
+        world.sun.illuminance = 4.0f;
+        if (!preview.setWorldEnvironment(world)) { return RHITestResult::fail("Could not set the Sun"); }
+        const auto readReceiverCard = [&]() -> std::optional<float> {
+            if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "SurfaceCache.lighting")) {
+                log = "Surface Cache receiver lighting: " + preview.lastLog();
+                return std::nullopt;
+            }
+            using Pixel = std::array<uint16_t, 4>;
+            constexpr uint32_t kReceiverFrontCard = 5;
+            const auto& pixels = preview.readbackBytes();
+            const uint32_t tilesPerRow = preview.width() / tileResolution;
+            const uint32_t x = (kReceiverFrontCard % tilesPerRow) * tileResolution + tileResolution / 2;
+            const uint32_t y = (kReceiverFrontCard / tilesPerRow) * tileResolution + tileResolution / 2;
+            if (preview.readbackFormat() != Format::RGBA16Sfloat ||
+                pixels.size() != size_t(preview.width()) * preview.height() * sizeof(Pixel)) {
+                log = "Expected an RGBA16F Surface Cache lighting atlas";
+                return std::nullopt;
+            }
+            const auto pixel = readSurfaceValue<Pixel>(pixels, size_t(y) * preview.width() + x);
+            return halfToFloat(pixel[0]);
+        };
+        const auto sunOpen = readReceiverCard();
+        if (!sunOpen) { return RHITestResult::fail(log); }
+        if (!document.setObjectVisible(blocker, true)) {
+            return RHITestResult::fail("Could not enable the Sun blocker");
+        }
+        const auto sunBlocked = readReceiverCard();
+        if (!sunBlocked) { return RHITestResult::fail(log); }
+
+        world.sun.enabled = false;
+        if (!preview.setWorldEnvironment(world) || !document.setObjectVisible(blocker, false)) {
+            return RHITestResult::fail("Could not isolate punctual card lighting");
+        }
+        scene::LightingSettings punctual = document.lighting();
+        scene::PunctualLight light;
+        light.properties.intensityUnit = scene::LightUnit::Candela;
+        light.properties.intensity = 4.0;
+        light.properties.range = 4.0;
+        light.position = float3(0.0f, 1.2f, 0.95f);
+        light.direction = float3(0.0f, -0.8f, -0.6f);
+        punctual.lights = {light};
+        preview.setLighting(punctual);
+        const auto pointOpen = readReceiverCard();
+        if (!pointOpen) { return RHITestResult::fail(log); }
+        if (!document.setObjectVisible(blocker, true)) {
+            return RHITestResult::fail("Could not enable the point light blocker");
+        }
+        const auto pointBlocked = readReceiverCard();
+        if (!pointBlocked) { return RHITestResult::fail(log); }
+
+        if (!document.setObjectVisible(blocker, false)) {
+            return RHITestResult::fail("Could not expose the receiver to the spotlight");
+        }
+        punctual.lights[0].properties.type = "spot";
+        punctual.lights[0].properties.innerConeAngle = 0.15;
+        punctual.lights[0].properties.outerConeAngle = 0.35;
+        preview.setLighting(punctual);
+        const auto spotOnAxis = readReceiverCard();
+        if (!spotOnAxis) { return RHITestResult::fail(log); }
+        punctual.lights[0].direction = -light.direction;
+        preview.setLighting(punctual);
+        const auto spotAway = readReceiverCard();
+        if (!spotAway) { return RHITestResult::fail(log); }
+
+        const nlohmann::json evidence{
+            {"receiverOpen", baseline->receiverAverage}, {"directMaximum", directColor->maxRgb},
+            {"receiverComposite", composite->receiverAverage}, {"darkMaximum", dark->maxRgb},
+            {"receiverBlocked", blocked->receiverAverage},
+            {"sunCardOpen", *sunOpen}, {"sunCardBlocked", *sunBlocked},
+            {"pointCardOpen", *pointOpen}, {"pointCardBlocked", *pointBlocked},
+            {"spotCardOnAxis", *spotOnAxis}, {"spotCardAway", *spotAway},
+        };
+        std::ofstream evidenceFile(context.outputDirectory / "LumenSingleBounceReadback.json");
+        evidenceFile << evidence.dump(2) << '\n';
+        evidenceFile.close();
+        if (!evidenceFile) { return RHITestResult::fail("Could not save single-bounce readback"); }
+
+        const auto& rgb = baseline->receiverAverage;
+        if (!(rgb[0] > 0.015 && rgb[0] > 1.25 * rgb[1] && rgb[1] > 1.25 * rgb[2] &&
+            directColor->maxRgb <= 0.001f && dark->maxRgb <= 0.001f &&
+            blocked->receiverAverage[0] < 0.8 * rgb[0])) {
+            return RHITestResult::fail("Expected warm offscreen transport, source isolation and blocker occlusion: " +
+                evidence.dump());
+        }
+        for (size_t channel = 0; channel < rgb.size(); ++channel) {
+            if (std::abs(rgb[channel] - composite->receiverAverage[channel]) > 0.001) {
+                return RHITestResult::fail("Deferred composite did not match the isolated indirect contribution: " +
+                    evidence.dump());
+            }
+        }
+        if (!(*sunOpen > 0.1f && *sunBlocked < 0.1f * *sunOpen)) {
+            return RHITestResult::fail("The offscreen blocker failed to shadow direct Sun lighting on the receiver card: " +
+                evidence.dump());
+        }
+        if (!(*pointOpen > 0.1f && *pointBlocked < 0.1f * *pointOpen &&
+            *spotOnAxis > 0.1f && *spotAway == 0.0f)) {
+            return RHITestResult::fail("Expected point shadows and spot cone attenuation on the receiver card: " +
+                evidence.dump());
+        }
+        if (validation.failed()) {
+            return RHITestResult::fail("Single-bounce Vulkan validation: " + validation.snapshot().dump());
+        }
+        return RHITestResult::pass("Offscreen emissive lighting reached the opaque receiver and decreased behind its blocker.");
+    }
+
+private:
+    static bool savePreview(render::RenderGraphPreviewRenderer& preview, render::RenderGraph& graph,
+        const std::filesystem::path& path, std::string& log)
+    {
+        if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "FinalBlit.color")) {
+            log = preview.lastLog();
+            return false;
+        }
+        return saveRgba8Png(path, reinterpret_cast<const uint8_t*>(preview.pixels().data()),
+            preview.width(), preview.height(), log);
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenSingleBounceTest);
 
 } // namespace
 } // namespace metallic::tests

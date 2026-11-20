@@ -20,6 +20,7 @@ std::unique_ptr<RenderGraphPass> createGlobalDistanceFieldPagesPass();
 std::unique_ptr<RenderGraphPass> createGlobalDistanceFieldPagesDebugPass();
 std::unique_ptr<RenderGraphPass> createLumenSurfaceCachePass();
 std::unique_ptr<RenderGraphPass> createLumenGlobalTracingPass();
+std::unique_ptr<RenderGraphPass> createLumenScreenProbeGatherPass();
 std::unique_ptr<RenderGraphPass> createStrandVisibilityPass();
 std::unique_ptr<RenderGraphPass> createStrandLightingPass();
 std::unique_ptr<RenderGraphPass> createVisibilityBufferMaterialPass();

@@ -5,6 +5,7 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/SceneColorConversion.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
+#include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Scene/MeshCards.h"
 #include "Runtime/Scene/MeshDistanceField.h"
@@ -21,6 +22,9 @@ namespace {
 constexpr char kShaderModule[] = "Features/DistanceField/SurfaceCacheCapture";
 constexpr uint64_t kCaptureABI = 0x4c554d454e010001ull;
 constexpr uint64_t kResolveABI = 0x4c554d454e010002ull;
+constexpr uint64_t kEncodeDepthABI = 0x4c554d454e010004ull;
+constexpr uint64_t kShadowedLightingABI = 0x4c554d454e010005ull;
+constexpr uint32_t kGDFDomainStride = 32;
 constexpr std::array kCaptureFormats{Format::RGBA8Unorm, Format::RGBA8Unorm, Format::RGBA16Sfloat};
 constexpr std::array kCaptureOutputs{"albedo", "normal", "emissive"};
 constexpr SamplerDesc kMaterialSampler{
@@ -56,9 +60,29 @@ struct alignas(16) ResolveParams {
     Float4 lightDirection, illuminance;
 };
 
+struct EncodeDepthParams {
+    ShaderSampledImage normal, hardwareDepth;
+    ShaderStorageImage depth;
+    uint32_t atlasSize;
+};
+
+struct alignas(16) ShadowedLightingParams {
+    ShaderSampledImage albedo, normal, emissive, depth;
+    ShaderStorageImage lighting;
+    ShaderBuffer cards;
+    uint32_t tileResolution, sunCastsShadow;
+    Float4 lightDirection, illuminance;
+    ShaderSampledImage pageTable, pageAtlas, coarseMip;
+    ShaderBuffer domains, localLights;
+    ShaderSampler distanceSampler;
+    uint32_t clipmapCount, atlasSize;
+};
+
 static_assert(sizeof(CaptureVertex) == 64 && sizeof(SurfaceCard) == 80);
 static_assert(sizeof(CaptureParams) == 288 && offsetof(CaptureParams, textureTransforms) == 160);
 static_assert(sizeof(ResolveParams) == 64 && offsetof(ResolveParams, lightDirection) == 32);
+static_assert(sizeof(EncodeDepthParams) == 16);
+static_assert(sizeof(ShadowedLightingParams) == 96 && offsetof(ShadowedLightingParams, pageTable) == 64);
 
 struct AtlasLayout {
     uint32_t edge = 128;
@@ -152,6 +176,7 @@ public:
     Result<> execute(RenderGraphExecutionContext& context) override;
 
 private:
+    bool shadowedLighting() const;
     Result<> gather(const scene::Scene& scene, std::vector<SurfaceCard>& cards, std::vector<CaptureCard>& draws,
         std::vector<CaptureSection>& sections, std::vector<CaptureVertex>& vertices) const;
     void bindMaterial(ParameterWriter& writer, const scene::Scene& scene, int32_t index, CaptureParams& params) const;
@@ -163,7 +188,15 @@ private:
     ScenePathTraceResources materialResources_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
     ComputeKernel resolve_;
+    ComputeKernel encodeDepth_;
+    ComputeKernel shadowedLighting_;
 };
+
+bool LumenSurfaceCachePass::shadowedLighting() const
+{
+    const auto property = properties().find("shadowedLighting");
+    return property != properties().end() && property->is_boolean() && property->get<bool>();
+}
 
 RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileContext&) const
 {
@@ -177,9 +210,20 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
     reflection.addTextureOutput("hardwareDepth", "Reversed-Z card capture depth")
         .texture2D(layout.edge, layout.edge).depthStencilWrite().stageAccess(RenderGraphResourceAccess::TextureSampleRead)
         .format = Format::D32Sfloat;
-    reflection.addTextureOutput("depth", "Card depth, with 1 reserved for uncovered texels")
-        .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite)
-        .format = Format::R16Unorm;
+    auto& depth = reflection.addTextureOutput("depth", "Card depth, with 1 reserved for uncovered texels")
+        .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite);
+    depth.format = Format::R16Unorm;
+    if (shadowedLighting()) {
+        depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+        reflection.addTextureInput("pageTable", "GDF page table").texture3D(0, 0, 0).sampledRead()
+            .stageAccess(RenderGraphResourceAccess::TextureSampleRead).format = Format::R32Uint;
+        reflection.addTextureInput("pageAtlas", "GDF fine page distances").texture3D(0, 0, 0).sampledRead()
+            .stageAccess(RenderGraphResourceAccess::TextureSampleRead).format = Format::R8Unorm;
+        reflection.addTextureInput("coarseMip", "GDF coarse distances").texture3D(0, 0, 0).sampledRead()
+            .stageAccess(RenderGraphResourceAccess::TextureSampleRead).format = Format::R8Unorm;
+        reflection.addBufferInput("domain", "GDF clipmap domains").buffer(0, kGDFDomainStride).storageRead()
+            .stageAccess(RenderGraphResourceAccess::BufferStorageRead);
+    }
     reflection.addTextureOutput("lighting", "Scene-linear outgoing radiance")
         .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite)
         .format = Format::RGBA16Sfloat;
@@ -209,6 +253,11 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
     if (!context.device->capabilities().shaderStorageImageExtendedFormats) {
         log = "Surface Cache requires R16 storage image support";
         return makeError(Error::Unsupported);
+    }
+    const auto shadowed = properties().find("shadowedLighting");
+    if (shadowed != properties().end() && !shadowed->is_boolean()) {
+        log = "Surface Cache shadowedLighting must be a boolean";
+        return makeError(Error::InvalidArgument);
     }
     layout_ = *layout;
     device_ = context.device;
@@ -250,6 +299,20 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
         .usesBindlessHeap = true});
     if (!pipeline) { return makeError(pipeline.error()); }
     pipeline_ = std::move(*pipeline);
+    if (shadowedLighting()) {
+        if (auto r = ShaderRegistry::instance().getComputeKernel(*device_,
+                {.moduleName = kShaderModule, .entryPointName = "surfaceCacheEncodeDepthMain",
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = parameterAbi<EncodeDepthParams>(kEncodeDepthABI),
+                    .debugName = "LumenSurfaceCacheEncodeDepth"}, encodeDepth_, log); !r) {
+            return r;
+        }
+        return ShaderRegistry::instance().getComputeKernel(*device_,
+            {.moduleName = kShaderModule, .entryPointName = "surfaceCacheShadowedLightingMain",
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            {.parameters = parameterAbi<ShadowedLightingParams>(kShadowedLightingABI),
+                .debugName = "LumenSurfaceCacheShadowedLighting"}, shadowedLighting_, log);
+    }
     return ShaderRegistry::instance().getComputeKernel(*device_,
         {.moduleName = kShaderModule, .entryPointName = "surfaceCacheResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
         {.parameters = parameterAbi<ResolveParams>(kResolveABI), .debugName = "LumenSurfaceCacheResolve"}, resolve_, log);
@@ -460,41 +523,103 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         }
     }
 
-    ParameterWriter writer(*device_, **registry, frame);
-    ResolveParams params{};
-    params.albedo = writer.sampledImageHandle(context.outputTexture("albedo").view());
-    params.normal = writer.sampledImageHandle(context.outputTexture("normal").view());
-    params.emissive = writer.sampledImageHandle(context.outputTexture("emissive").view());
-    params.hardwareDepth = writer.sampledImageHandle(context.outputTexture("hardwareDepth").view());
-    params.depth = writer.storageImageHandle(context.outputTexture("depth").view());
-    params.lighting = writer.storageImageHandle(context.outputTexture("lighting").view());
-    params.cards = writer.buffer(context.outputBuffer("cards").buffer());
-    params.tileResolution = layout_.tile;
     const auto sun = buildCelestialLightRecords(resolveWorldEnvironment(&scene, context.world()))[0];
-    params.lightDirection = {-sun.direction[0], -sun.direction[1], -sun.direction[2], 0.0f};
-    params.illuminance = {sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], 0.0f};
-    auto resolveParams = writer.encode(params, kResolveABI);
-    if (!resolveParams) { return makeError(resolveParams.error()); }
+    const auto bindLighting = [&](ParameterWriter& writer, auto& params) {
+        params.albedo = writer.sampledImageHandle(context.outputTexture("albedo").view());
+        params.normal = writer.sampledImageHandle(context.outputTexture("normal").view());
+        params.emissive = writer.sampledImageHandle(context.outputTexture("emissive").view());
+        params.lighting = writer.storageImageHandle(context.outputTexture("lighting").view());
+        params.cards = writer.buffer(context.outputBuffer("cards").buffer());
+        params.tileResolution = layout_.tile;
+        params.lightDirection = {-sun.direction[0], -sun.direction[1], -sun.direction[2], 0.0f};
+        params.illuminance = {sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], 0.0f};
+    };
 
     using Access = RenderGraphResourceAccess;
     const RenderGraphStageUse uploadUses[]{{"cards", Access::BufferTransferWrite}, {"scene", Access::BufferTransferWrite}};
     const RenderGraphStageUse captureUses[]{{"albedo", Access::TextureColorWrite}, {"normal", Access::TextureColorWrite},
         {"emissive", Access::TextureColorWrite}, {"hardwareDepth", Access::TextureDepthStencilWrite}};
-    const RenderGraphStageUse resolveUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
-        {"emissive", Access::TextureSampleRead}, {"hardwareDepth", Access::TextureSampleRead},
-        {"cards", Access::BufferStorageRead}, {"depth", Access::TextureStorageWrite}, {"lighting", Access::TextureStorageWrite}};
-    const RenderGraphStage stages[]{
+    const uint32_t groups = (layout_.edge + 7) / 8;
+    std::array<RenderGraphStage, 4> stages{{
         {"Upload card transforms", uploadUses, [&](CommandBuffer& cmd) -> Result<> {
             if (auto r = copyUpload(cmd, **cardUpload, *context.outputBuffer("cards").buffer()); !r) { return r; }
             return copyUpload(cmd, **sceneUpload, *context.outputBuffer("scene").buffer());
         }},
         {"Capture card materials", captureUses, [&](CommandBuffer& cmd) { return rasterize(context, cmd, draws); },
             RenderGraphPassKind::Raster},
-        {"Encode depth and shade cards", resolveUses, [&](CommandBuffer& cmd) {
-            const uint32_t groups = (layout_.edge + 7) / 8;
+    }};
+    if (!shadowedLighting()) {
+        ParameterWriter writer(*device_, **registry, frame);
+        ResolveParams params{};
+        bindLighting(writer, params);
+        params.hardwareDepth = writer.sampledImageHandle(context.outputTexture("hardwareDepth").view());
+        params.depth = writer.storageImageHandle(context.outputTexture("depth").view());
+        auto resolveParams = writer.encode(params, kResolveABI);
+        if (!resolveParams) { return makeError(resolveParams.error()); }
+
+        const RenderGraphStageUse resolveUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
+            {"emissive", Access::TextureSampleRead}, {"hardwareDepth", Access::TextureSampleRead},
+            {"cards", Access::BufferStorageRead}, {"depth", Access::TextureStorageWrite}, {"lighting", Access::TextureStorageWrite}};
+        stages[2] = {"Encode depth and shade cards", resolveUses, [&](CommandBuffer& cmd) {
             return resolve_.dispatch(cmd, *resolveParams, groups, groups, 1);
-        }},
-    };
+        }};
+        return context.executeStages(std::span(stages).first(3));
+    }
+
+    const auto pageTable = context.inputTexture("pageTable");
+    const auto coarseMip = context.inputTexture("coarseMip");
+    const auto domains = context.inputBuffer("domain");
+    const auto& table = pageTable.desc();
+    const auto& coarse = coarseMip.desc();
+    const uint32_t clipmapCount = coarse.depth / coarse.width;
+    if (clipmapCount < 1 || clipmapCount > 6 || coarse.width != coarse.height ||
+        coarse.depth != coarse.width * clipmapCount || table.width != table.height ||
+        table.depth != table.width * clipmapCount || domains.desc().size != clipmapCount * kGDFDomainStride) {
+        spdlog::error("Surface Cache shadowed lighting requires matching quantized GDF clipmap resources");
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto lightRecords = buildPunctualLightRecords(&scene, resolveSceneLighting(&scene, context.world()));
+    auto localLights = upload(*device_, std::as_bytes(std::span(lightRecords)), BufferUsageBits::Storage);
+    if (!localLights) { return makeError(localLights.error()); }
+
+    ParameterWriter depthWriter(*device_, **registry, frame);
+    const EncodeDepthParams depthParams{
+        depthWriter.sampledImageHandle(context.outputTexture("normal").view()),
+        depthWriter.sampledImageHandle(context.outputTexture("hardwareDepth").view()),
+        depthWriter.storageImageHandle(context.outputTexture("depth").view()), layout_.edge};
+    auto encodedDepth = depthWriter.encode(depthParams, kEncodeDepthABI);
+    if (!encodedDepth) { return makeError(encodedDepth.error()); }
+
+    ParameterWriter lightingWriter(*device_, **registry, frame);
+    ShadowedLightingParams lightingParams{};
+    bindLighting(lightingWriter, lightingParams);
+    lightingParams.depth = lightingWriter.sampledImageHandle(context.outputTexture("depth").view());
+    lightingParams.sunCastsShadow = (sun.flags & kGPUCelestialLightCastsShadow) != 0u;
+    lightingParams.pageTable = lightingWriter.sampledImageHandle(pageTable.view());
+    lightingParams.pageAtlas = lightingWriter.sampledImageHandle(context.inputTexture("pageAtlas").view());
+    lightingParams.coarseMip = lightingWriter.sampledImageHandle(coarseMip.view());
+    lightingParams.domains = lightingWriter.buffer(domains.buffer());
+    lightingParams.localLights = lightingWriter.buffer(localLights->get());
+    lightingParams.distanceSampler = lightingWriter.samplerHandle({});
+    lightingParams.clipmapCount = clipmapCount;
+    lightingParams.atlasSize = layout_.edge;
+    auto encodedLighting = lightingWriter.encode(lightingParams, kShadowedLightingABI);
+    if (!encodedLighting) { return makeError(encodedLighting.error()); }
+
+    const RenderGraphStageUse encodeDepthUses[]{{"normal", Access::TextureSampleRead},
+        {"hardwareDepth", Access::TextureSampleRead}, {"depth", Access::TextureStorageWrite}};
+    const RenderGraphStageUse lightingUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
+        {"emissive", Access::TextureSampleRead}, {"depth", Access::TextureSampleRead}, {"cards", Access::BufferStorageRead},
+        {"pageTable", Access::TextureSampleRead}, {"pageAtlas", Access::TextureSampleRead}, {"coarseMip", Access::TextureSampleRead},
+        {"domain", Access::BufferStorageRead}, {"lighting", Access::TextureStorageWrite}};
+    stages[2] = {"Encode card depth", encodeDepthUses, [&](CommandBuffer& cmd) {
+        return encodeDepth_.dispatch(cmd, *encodedDepth, groups, groups, 1);
+    }};
+    stages[3] = {"Shade cards with GDF shadows", lightingUses, [&](CommandBuffer& cmd) {
+        cmd.hostWriteBarrier();
+        return shadowedLighting_.dispatch(cmd, *encodedLighting, groups, groups, 1);
+    }};
     return context.executeStages(stages);
 }
 

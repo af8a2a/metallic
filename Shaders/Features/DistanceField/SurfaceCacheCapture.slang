@@ -4,7 +4,12 @@ import ShaderCore;
 import ParameterRoot;
 import MaterialTextureDecode;
 import LumenSurfaceCache;
+import GlobalDistanceField;
+import GlobalDistanceFieldPages;
+import Lighting;
 using Metallic;
+using Metallic.DistanceField;
+using Metallic.Lighting;
 using Metallic.Lumen;
 
 struct SurfaceCacheCaptureVertex
@@ -168,6 +173,19 @@ float3 decodeSurfaceCacheNormal(SurfaceCacheCard card, float2 encodedNormal)
         card.axisZ.xyz * cardSpaceNormal.z);
 }
 
+void writeSurfaceCacheLighting(SurfaceCacheLightingTexture finalLightingAtlas, uint2 texel,
+    Texture2D<float4> albedoAtlas, Texture2D<float4> emissiveAtlas, float3 directLighting)
+{
+    float3 encodedAlbedo = albedoAtlas.Load(int3(texel, 0)).xyz;
+    float3 albedo = encodedAlbedo * encodedAlbedo;
+    float3 emissive = emissiveAtlas.Load(int3(texel, 0)).xyz;
+    // CombineFinalLighting, with default diffuse boost and an initially empty indirect atlas.
+    float3 diffuseLambert = albedo * (1.0f / kPi);
+    float3 finalLighting = directLighting * diffuseLambert + emissive;
+    finalLighting = max(select(!isFiniteSurfaceCacheValue(finalLighting), 0.0f, finalLighting), 0.0f);
+    finalLightingAtlas[texel] = float4(finalLighting, 0.0f);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
@@ -200,14 +218,145 @@ void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
     // DeferredLightingCommon.ush:545, an unshadowed directional light at default diffuse scale.
     float3 directLighting = params.illuminance.xyz * saturate(dot(worldNormal, params.lightDirection.xyz));
 
-    Texture2D<float4> albedoAtlas = resolveUniform(params.albedo);
-    Texture2D<float4> emissiveAtlas = resolveUniform(params.emissive);
-    float3 encodedAlbedo = albedoAtlas.Load(int3(texel, 0)).xyz;
-    float3 albedo = encodedAlbedo * encodedAlbedo;
-    float3 emissive = emissiveAtlas.Load(int3(texel, 0)).xyz;
-    // CombineFinalLighting, with default diffuse boost and an initially empty indirect atlas.
-    float3 diffuseLambert = albedo * (1.0f / kPi);
-    float3 finalLighting = directLighting * diffuseLambert + emissive;
-    finalLighting = max(select(!isFiniteSurfaceCacheValue(finalLighting), 0.0f, finalLighting), 0.0f);
-    finalLightingAtlas[texel] = float4(finalLighting, 0.0f);
+    writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
+        resolveUniform(params.emissive), directLighting);
+}
+
+struct SurfaceCacheEncodeDepthParams
+{
+    ResourceHandle<Texture2D<float4>> normal;
+    ResourceHandle<Texture2D<float>> hardwareDepth;
+    ResourceHandle<SurfaceCacheDepthTexture> depth;
+    uint atlasSize;
+};
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void surfaceCacheEncodeDepthMain(uint3 threadID : SV_DispatchThreadID)
+{
+    SurfaceCacheEncodeDepthParams params = getParameters<SurfaceCacheEncodeDepthParams>();
+    if (any(threadID.xy >= params.atlasSize)) {
+        return;
+    }
+
+    Texture2D<float4> normalAtlas = resolveUniform(params.normal);
+    Texture2D<float> hardwareDepthAtlas = resolveUniform(params.hardwareDepth);
+    SurfaceCacheDepthTexture depthAtlas = resolveUniform(params.depth);
+    uint2 texel = threadID.xy;
+    depthAtlas[texel] = normalAtlas.Load(int3(texel, 0)).w > 0.5f
+        ? encodeSurfaceCacheDepth(1.0f - hardwareDepthAtlas.Load(int3(texel, 0))) : 1.0f;
+}
+
+struct SurfaceCacheShadowedLightingParams
+{
+    ResourceHandle<Texture2D<float4>> albedo;
+    ResourceHandle<Texture2D<float4>> normal;
+    ResourceHandle<Texture2D<float4>> emissive;
+    ResourceHandle<Texture2D<float>> depth;
+    ResourceHandle<SurfaceCacheLightingTexture> lighting;
+    ResourceHandle<StructuredBuffer<SurfaceCacheCard>> cards;
+    uint tileResolution;
+    uint sunCastsShadow;
+    float4 lightDirection;
+    float4 illuminance;
+    ResourceHandle<Texture3D<uint>> pageTable;
+    ResourceHandle<Texture3D<float>> pageAtlas;
+    ResourceHandle<Texture3D<float>> coarseMip;
+    ResourceHandle<StructuredBuffer<GlobalDistanceFieldDomain>> domains;
+    ResourceHandle<StructuredBuffer<GPUPunctualLight>> localLights;
+    SamplerHandle distanceSampler;
+    uint clipmapCount;
+    uint atlasSize;
+};
+
+// UE 5.7.4 LumenCardCommon.ush GetCardLocalPosition/GetCardWorldPosition,
+// using the tile texel center to address the resident card.
+float3 surfaceCacheWorldPosition(SurfaceCacheCard card, float2 cardUV, float depth)
+{
+    cardUV.x = 1.0f - cardUV.x;
+    float3 localPosition;
+    localPosition.xy = float2(card.axisX.w, card.axisY.w) * (1.0f - 2.0f * cardUV);
+    localPosition.z = -(2.0f * depth - 1.0f) * card.axisZ.w;
+    return card.axisX.xyz * localPosition.x + card.axisY.xyz * localPosition.y +
+        card.axisZ.xyz * localPosition.z + card.origin.xyz;
+}
+
+// UE 5.7.4 defaults in Scene.cpp (20000 cm) and LumenSceneDirectLighting.cpp.
+static const float kMaxCardShadowTraceDistance = 200.0f;
+static const float kGlobalSDFShadowRayBias = 1.0f;
+
+float3 shadowedSurfaceCacheLight(QuantizedGlobalDistanceFieldSampler distanceField,
+    StructuredBuffer<GlobalDistanceFieldDomain> domains, uint clipmapCount,
+    float3 worldPosition, float3 worldNormal, PunctualLightSample light, bool castsShadow, bool localLight)
+{
+    const float3 directLighting = light.illuminance * saturate(dot(worldNormal, light.direction));
+    if (!castsShadow || !any(directLighting > 0.0f)) {
+        return directLighting;
+    }
+
+    // UE 5.7.4 LumenSceneDirectLightingSoftwareRayTracing.usf TraceOffscreenShadows,
+    // full-coverage Global SDF path; LumenSceneLighting.ush GetCardBiasForShadowing.
+    float traceDistance = kMaxCardShadowTraceDistance;
+    if (localLight) {
+        traceDistance = min(light.distance, traceDistance);
+    }
+    const float slopeScaledSurfaceBias = 2.0f * kGlobalSDFShadowRayBias;
+    const float voxelSizeRelativeBias = kGlobalSDFShadowRayBias +
+        slopeScaledSurfaceBias * saturate(1.0f - dot(light.direction, worldNormal));
+    const float voxelSizeRelativeRayEndBias = localLight ? kGlobalSDFShadowRayBias : 0.0f;
+    uint hitClipmap;
+    GlobalDistanceFieldTrace result = traceGlobalDistanceFieldClipmaps(distanceField, domains, clipmapCount,
+        worldPosition, light.direction, 0.0f, traceDistance, hitClipmap, voxelSizeRelativeBias,
+        voxelSizeRelativeRayEndBias);
+    const float shadowFactor = result.classification == kGlobalDistanceFieldHit ? 0.0f : 1.0f;
+    return directLighting * shadowFactor;
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
+{
+    SurfaceCacheShadowedLightingParams params = getParameters<SurfaceCacheShadowedLightingParams>();
+    if (any(threadID.xy >= params.atlasSize)) {
+        return;
+    }
+
+    uint2 texel = threadID.xy;
+    Texture2D<float> depthAtlas = resolveUniform(params.depth);
+    SurfaceCacheLightingTexture finalLightingAtlas = resolveUniform(params.lighting);
+    float depth = depthAtlas.Load(int3(texel, 0));
+    if (depth >= 1.0f) {
+        finalLightingAtlas[texel] = float4(0.0f);
+        return;
+    }
+
+    StructuredBuffer<SurfaceCacheCard> cards = resolveUniform(params.cards);
+    uint2 tile = texel / params.tileResolution;
+    uint cardIndex = tile.x + tile.y * (params.atlasSize / params.tileResolution);
+    SurfaceCacheCard card = cards[cardIndex];
+    float2 cardUV = (float2(texel - tile * params.tileResolution) + 0.5f) / float(params.tileResolution);
+    float3 worldPosition = surfaceCacheWorldPosition(card, cardUV, depth);
+    Texture2D<float4> normalAtlas = resolveUniform(params.normal);
+    float3 worldNormal = decodeSurfaceCacheNormal(card, normalAtlas.Load(int3(texel, 0)).xy);
+
+    StructuredBuffer<GlobalDistanceFieldDomain> domains = resolveUniform(params.domains);
+    QuantizedGlobalDistanceFieldSampler distanceField = {resolveUniform(params.pageTable),
+        resolveUniform(params.pageAtlas), resolveUniform(params.coarseMip), resolveUniform(params.distanceSampler),
+        domains[0], 0u};
+    PunctualLightSample sun;
+    sun.direction = params.lightDirection.xyz;
+    sun.illuminance = params.illuminance.xyz;
+    sun.distance = kMaxCardShadowTraceDistance;
+    float3 directLighting = shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
+        worldPosition, worldNormal, sun, params.sunCastsShadow != 0u, false);
+    StructuredBuffer<GPUPunctualLight> localLights = resolveUniform(params.localLights);
+    const uint lightCount = punctualLightCount(localLights);
+    for (uint lightIndex = 0u; lightIndex < lightCount; ++lightIndex) {
+        PunctualLightSample light = samplePunctualLight(localLights, lightIndex, worldPosition);
+        directLighting += shadowedSurfaceCacheLight(distanceField, domains, params.clipmapCount,
+            worldPosition, worldNormal, light, true, true);
+    }
+
+    writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
+        resolveUniform(params.emissive), directLighting);
 }

@@ -56,6 +56,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createLumenSurfaceCachePass(); });
     registerRenderGraphPassType("LumenGlobalTracingPass", "Trace fixed world rays against the GDF and sample Surface Cache radiance",
         []() { return builtin_pass::createLumenGlobalTracingPass(); });
+    registerRenderGraphPassType("LumenScreenProbeGatherPass", "Gather single-bounce Surface Cache lighting for visible diffuse receivers",
+        []() { return builtin_pass::createLumenScreenProbeGatherPass(); });
     registerRenderGraphPassType("VisibilityBufferMaterialPass", "Resolve unified visibility using scalar materials without RTAS",
         []() { return builtin_pass::createVisibilityBufferMaterialPass(); });
     registerRenderGraphPassType(

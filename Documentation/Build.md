@@ -833,6 +833,40 @@ The reference is UE 5.7.4's full-coverage, opaque diffuse Global Tracing path. T
 - `buildObjectGrid` adds 64 four-candidate cells per physical page. It applies UE tile/cell culling and packed distance ranking to Metallic's per-frame instance list. The clipmap's positive endpoint belongs to its last page. Ranked instance indices resolve to full Metallic scene object IDs before publishing.
 - Surface sampling uses one resident tile per cardinal card, world-space card axes for orientation and bounds, and tile-order iteration for each matching object. The atlas provides scene-linear final lighting with unit exposure scale.
 
+### Lumen Single Bounce
+
+Open **Lighting / Lumen / Single Bounce** after baking the receiver, offscreen emitter and blocker. Run the existing Embree-enabled tools from the repository root. `$bakerDir` is the directory containing the two executables. The scene starts with the blocker visible and the sky and celestial lights disabled.
+
+```powershell
+$scene = 'Asset/Lumen/SingleBounce.gltf'
+$cache = '.cache/mesh-distance-field'
+$meshes = @('SingleBounceReceiver', 'SingleBounceEmitter', 'SingleBounceBlocker')
+for ($meshIndex = 0; $meshIndex -lt $meshes.Count; $meshIndex++) {
+    $stem = Join-Path $cache $meshes[$meshIndex]
+    & (Join-Path $bakerDir 'MetallicMeshDistanceFieldBake.exe') $scene $meshIndex "$stem.meshdf"
+    if ($LASTEXITCODE -ne 0) { break }
+    & (Join-Path $bakerDir 'MetallicMeshCardsBake.exe') $scene $meshIndex "$stem.meshcards" "--distance-field=$stem.meshdf"
+    if ($LASTEXITCODE -ne 0) { break }
+}
+```
+
+Toggle the blocker or edit the emitter's emissive factor to compare the next rendered frame. `Gather.indirectDiffuse` is scene-linear outgoing indirect diffuse, including the receiver response. `Gather.color` adds this contribution to the RGBA32F Deferred color. `Gather.probeRadiance` holds four floats per direction in probe-tile order, with RGB radiance and the GDF classification in the last component.
+
+The sample uses the UE 5.7.4 uniform placement, equal-area directions, plane-weighted interpolation and numerical diffuse integral. Its fixed phase samples a 16-pixel grid with 8×8 centered directions per probe. Equal trace and gather resolutions specialize the trace scatter to one writer per direction. Probe depth and normals come from the current Deferred material evaluation, and Meter-space GDF hits reuse the fixed Surface Cache. The graph evaluates only card transport, with sky disabled in the sample world. Screen traces, adaptive placement, importance sampling, history, spatial filtering and World Radiance Cache belong to later stages.
+
+`exportLumenReceivers` substitutes Lumen diffuse for the usual environment diffuse on supported opaque materials. The exported receiver response uses the existing Metallic BRDF and material occlusion, including the camera-path aerial transmittance and UE's distant illumination rescale with short-range AO disabled. `shadowedLighting` evaluates direct sunlight and world point/spot lights in a separate card lighting stage. It adapts UE's opaque GDF shadow trace to Metallic's resident tiles and uses the existing photometric light sampling. The sample uses a single fixed clipmap and per-covered-texel lighting over the world light list.
+
+### Lumen Cornell Box
+
+**Lighting / Lumen / Cornell Box** opens a 2 m room with red and green side walls and two neutral blocks. The only emitter is a downward-facing 0.66 m × 0.64 m ceiling quad named **Ceiling Emitter**. The quad is the underside of a closed panel for Mesh Distance Field baking. The sample disables sky, Sun, Moon and auto exposure, and its punctual light list is empty.
+
+Inspect `Gather.indirectDiffuse` for unexposed GI. Set the **Ceiling Emitter** material's emissive color to zero for a dark control. To regenerate the sample cache with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'` and use these stems in source mesh order.
+
+```powershell
+$meshes = @('CornellBoxFloor', 'CornellBoxCeiling', 'CornellBoxBackWall', 'CornellBoxLeftWall',
+    'CornellBoxRightWall', 'CornellBoxShortBlock', 'CornellBoxTallBlock', 'CornellBoxCeilingEmitter')
+```
+
 ## Optional RHI diagnostics
 
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing

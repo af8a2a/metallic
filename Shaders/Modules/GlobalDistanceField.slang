@@ -86,7 +86,8 @@ public float2 clipGlobalDistanceFieldRay(GlobalDistanceFieldDomain domain, float
 
 // UE 5.7.4 GlobalDistanceFieldUtils.ush:127, with the opaque visualization settings.
 public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDistanceFieldSampler>(T distanceField,
-    float voxelExtent, float3 rayStart, float3 rayDirection, float2 intersectionTimes, out bool reachedSegmentEnd)
+    float voxelExtent, float3 rayStart, float3 rayDirection, float2 intersectionTimes, out bool reachedSegmentEnd,
+    float clipmapRayBias = 0.0f)
 {
     GlobalDistanceFieldTrace result = {-1.0f, 0u, kGlobalDistanceFieldMiss, 0.0f};
     reachedSegmentEnd = false;
@@ -100,7 +101,7 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDista
             break;
         }
         ++result.stepCount;
-        float surfaceExpansion = voxelExtent * saturate(sampleRayTime / expandSurfaceFalloff);
+        float surfaceExpansion = voxelExtent * saturate((sampleRayTime - clipmapRayBias) / expandSurfaceFalloff);
         if (distance < surfaceExpansion) {
             result.hitDistance = max(sampleRayTime + distance - surfaceExpansion, 0.0f);
             result.classification = kGlobalDistanceFieldHit;

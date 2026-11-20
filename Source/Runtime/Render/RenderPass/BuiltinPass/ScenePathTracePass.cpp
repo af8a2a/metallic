@@ -98,6 +98,21 @@ constexpr ComputeResourceMember kStreamGeometryMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageTable),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterFrameInfo)
 };
+// Deferred shading can reuse these scene packet slots. RTXDI owns them in its own pass.
+struct LumenReceiverOutput {
+    const char* name;
+    const char* description;
+    Format format;
+    ComputeResourceMember member;
+};
+constexpr LumenReceiverOutput kLumenReceiverOutputs[] = {
+    {"lumenPosition", "World position and positive linear view depth", Format::RGBA32Sfloat,
+        METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positionCurrent)},
+    {"lumenNormal", "World shading normal", Format::RGBA16Sfloat,
+        METALLIC_RESOURCE_MEMBER(SceneResourceParameters, normalCurrent)},
+    {"lumenDiffuse", "Diffuse response including material occlusion and view transmittance", Format::RGBA16Sfloat,
+        METALLIC_RESOURCE_MEMBER(SceneResourceParameters, baseColorMetalness)},
+};
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 struct OpenPBRLutTexture {
@@ -456,6 +471,11 @@ public:
             reflection.addTextureOutput("deviceDepth", "Raster hardware depth for DLSS-SR")
                 .storageReadWrite().format = Format::R32Sfloat;
         }
+        if (visibilityDeferred_ && boolProperty(properties(), "exportLumenReceivers", false)) {
+            for (const auto& receiver : kLumenReceiverOutputs) {
+                reflection.addTextureOutput(receiver.name, receiver.description).storageWrite().format = receiver.format;
+            }
+        }
         if (exportGuides) {
             reflection.addTextureOutput("albedo", "DLSS-RR diffuse albedo guide")
                 .storageReadWrite()
@@ -682,7 +702,8 @@ public:
                 compiledProgramBinning_ != boolProperty(properties(), "programBinning", true) ||
                 compiledHalfPrecision_ != boolProperty(properties(), "halfPrecision", true) ||
                 compiledStochasticFiltering_ != boolProperty(properties(), "stochasticTextureFiltering", false) ||
-                compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false))) {
+                compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false) ||
+                compiledExportLumenReceivers_ != boolProperty(properties(), "exportLumenReceivers", false))) {
             return compile(context, log);
         }
         return {};
@@ -806,6 +827,7 @@ public:
 
         const bool globalView = visibilityDeferred_ && context.renderView != nullptr &&
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
+        const bool exportLumenReceivers = visibilityDeferred_ && boolProperty(properties(), "exportLumenReceivers", false);
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|pathDiagnostics=" + (pathDiagnosticsEnabled() ? properties().at("diagnosticPixels").dump() : "off") +
             "|valuePrograms=" + std::to_string(hasValuePrograms() ? valuePrograms->key() : 0) +
@@ -824,7 +846,8 @@ public:
             "|textureFeedbackWave=" + (textureFeedbackWave ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|stochasticTextureFiltering=" + (visibilityDeferred_ && boolProperty(properties(), "stochasticTextureFiltering", false) ? "1" : "0") +
-            "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
+            "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0") +
+            (exportLumenReceivers ? "|lumenReceivers=1" : "");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
             if (!result) {
@@ -955,6 +978,11 @@ public:
             // One shader/encoder layout serves both output policies.
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
+            if (exportLumenReceivers) {
+                for (const auto& receiver : kLumenReceiverOutputs) {
+                    baseBindings.push_back({.binding = receiver.member, .kind = ComputeResourceBindingKind::StorageImage});
+                }
+            }
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .kind = ComputeResourceBindingKind::SampledImage});
@@ -1079,6 +1107,7 @@ public:
             // Compile the one-ray continuation without retaining the generic
             // multi-sample integrator in its live program. Training is unchanged.
             std::vector<SlangMacroDefine> defines(extraDefines.begin(), extraDefines.end());
+            if (exportLumenReceivers) { defines.push_back({"METALLIC_DEFERRED_LUMEN_RECEIVERS", "1"}); }
             std::array<std::pair<std::string, std::string>, 17> diagnosticDefines;
             if (pathDiagnosticsEnabled()) {
                 const auto& pixels = properties().at("diagnosticPixels");
@@ -1120,7 +1149,7 @@ public:
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
-                if (splitPrimaryGuides || inlineComputeRoot || pathDiagnosticsEnabled()) {
+                if (splitPrimaryGuides || inlineComputeRoot || pathDiagnosticsEnabled() || exportLumenReceivers) {
                     clearPrograms();
                     compiledShaderKey_.clear();
                     return compiled;
@@ -1330,6 +1359,7 @@ public:
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
+        compiledExportLumenReceivers_ = exportLumenReceivers;
         return {};
     }
 
@@ -1949,6 +1979,11 @@ public:
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .textureView = depth.view()});
                 push.deferredSettings |= kScenePathTraceExportUpscalerGuides;
             }
+            if (compiledExportLumenReceivers_) {
+                for (const auto& receiver : kLumenReceiverOutputs) {
+                    bindings.push_back({.binding = receiver.member, .textureView = context.outputTexture(receiver.name).view()});
+                }
+            }
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .textureViews = {&visibilityView, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .textureViews = {&visibilityDepthView, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .textureViews = {&domainView, 1}});
@@ -2279,6 +2314,11 @@ private:
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
                 resources.uses.push_back({"output.motionVectors", Access::TextureStorageWrite});
                 resources.uses.push_back({"deviceDepth", Access::TextureStorageWrite});
+            }
+            if (compiledExportLumenReceivers_) {
+                for (const auto& receiver : kLumenReceiverOutputs) {
+                    resources.uses.push_back({receiver.name, Access::TextureStorageWrite});
+                }
             }
         }
         if (exportDenoiserGuides(context.properties())) {
@@ -3212,6 +3252,7 @@ private:
     bool compiledHalfPrecision_ = true;
     bool compiledStochasticFiltering_ = false;
     bool compiledExportUpscalerGuides_ = false;
+    bool compiledExportLumenReceivers_ = false;
     bool compiledGlobalView_ = false;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;

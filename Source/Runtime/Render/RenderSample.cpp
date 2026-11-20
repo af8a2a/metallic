@@ -262,6 +262,24 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/lumen_global_tracing.metallic_graph.json"; }
 };
 
+class LumenSingleBounceSample final : public MeshDistanceFieldSample {
+public:
+    std::string_view id() const override { return "lumen-single-bounce"; }
+    std::string_view name() const override { return "Lumen / Single Bounce"; }
+    std::string_view description() const override { return "Gather diffuse bounce lighting from offscreen Mesh Cards."; }
+    std::string scenePath() const override { return "Asset/Lumen/SingleBounce.metallic_scene.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lumen_single_bounce.metallic_graph.json"; }
+};
+
+class LumenCornellBoxSample final : public MeshDistanceFieldSample {
+public:
+    std::string_view id() const override { return "lumen-cornell-box"; }
+    std::string_view name() const override { return "Lumen / Cornell Box"; }
+    std::string_view description() const override { return "Test diffuse GI in an open-front Cornell Box lit by its emissive ceiling panel."; }
+    std::string scenePath() const override { return "Asset/Lumen/CornellBox.metallic_scene.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lumen_cornell_box.metallic_graph.json"; }
+};
+
 class VirtualShadowMapSponzaSample : public RenderSample {
 public:
     std::string_view id() const override { return kVSMSponzaSampleId; }
@@ -1084,6 +1102,8 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const QuantizedGlobalDistanceFieldSample quantizedGlobalDistanceField;
     static const LumenSurfaceCacheSample lumenSurfaceCache;
     static const LumenGlobalTracingSample lumenGlobalTracing;
+    static const LumenSingleBounceSample lumenSingleBounce;
+    static const LumenCornellBoxSample lumenCornellBox;
     static const GlobalDistanceFieldClipmapsSample globalDistanceFieldClipmaps;
     static const RealtimeLightingSample realtimeLighting;
     static const RealtimeLightingVSMSample realtimeLightingVSM;
@@ -1166,6 +1186,20 @@ std::vector<const RenderSample*> builtInRenderSamples()
         if (hasBoxDistanceField) {
             samples.push_back(&lumenGlobalTracing);
         }
+    }
+    constexpr std::array singleBounceMeshes{"SingleBounceReceiver", "SingleBounceEmitter", "SingleBounceBlocker"};
+    constexpr std::array cornellBoxMeshes{"CornellBoxFloor", "CornellBoxCeiling", "CornellBoxBackWall",
+        "CornellBoxLeftWall", "CornellBoxRightWall", "CornellBoxShortBlock", "CornellBoxTallBlock", "CornellBoxCeilingEmitter"};
+    const auto hasLumenMeshCache = [](std::string_view mesh) {
+        const auto base = ".cache/mesh-distance-field/" + std::string(mesh);
+        return std::filesystem::is_regular_file(projectPath(base + ".meshdf")) &&
+            std::filesystem::is_regular_file(projectPath(base + ".meshcards"));
+    };
+    if (std::ranges::all_of(singleBounceMeshes, hasLumenMeshCache)) {
+        samples.push_back(&lumenSingleBounce);
+    }
+    if (std::ranges::all_of(cornellBoxMeshes, hasLumenMeshCache)) {
+        samples.push_back(&lumenCornellBox);
     }
     // Optional local assets are read once, not on every ImGui frame.
     static const auto painter = loadLocalLookDevSamples("build/MaterialValidation/PainterLookDev/Catalog.json", "Painter Validation", "painter-");
