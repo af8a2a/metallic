@@ -860,7 +860,18 @@ The sample uses the UE 5.7.4 uniform placement, equal-area directions, plane-wei
 
 **Lighting / Lumen / Cornell Box** opens a 2 m room with red and green side walls and two neutral blocks. The only emitter is a downward-facing 0.66 m × 0.64 m ceiling quad named **Ceiling Emitter**. The quad is the underside of a closed panel for Mesh Distance Field baking. The sample disables sky, Sun, Moon and auto exposure, and its punctual light list is empty.
 
-Inspect `Gather.indirectDiffuse` for unexposed GI. Set the **Ceiling Emitter** material's emissive color to zero for a dark control. To regenerate the sample cache with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'` and use these stems in source mesh order.
+The Cornell Box graph enables Final Gather for static opaque diffuse GI. `ScreenTrace` builds a closest-depth HZB from current reversed-Z depth and keeps previous depth and direct color. `Gather` places adaptive probes, tries screen tracing with previous-depth validation, falls back to the GDF and Surface Cache, and runs three spatial filtering passes. `Temporal` accumulates the integrated diffuse with reprojected depth and normal rejection. Camera cuts, extent changes and scene or lighting edits invalidate both histories.
+
+Inspect `Temporal.indirectDiffuse` for accumulated, unexposed GI, `Gather.indirectDiffuse` for the current frame and `Temporal.historyWeight` for accepted history. In `Gather.probeRadiance`, the fourth component stores trace class 2 for a GDF hit and 5 for an accepted screen hit. Set the **Ceiling Emitter** material's emissive color to zero for a dark control.
+
+This port uses UE 5.7.4's opaque permutations with these adaptations.
+
+- Adaptive placement uses eight-phase Hammersley and a fixed allocation of one uniform plus up to eight adaptive probes per tile. This replaces UE's global compaction, with candidate marking recomputed from the current frame. Probe interpolation uses Deferred world position, linear depth and normal. The full-resolution blue-noise offset is zero.
+- The spatial pass uses the four axial neighbors from UE's static filter. It keeps FP32 radiance and hit distances in meters, evaluates fixed texel-center directions, rejects coincident hit endpoints, and clamps the angular cosine to its valid domain. Moving-probe taps and short-range AO are outside this variant.
+- Screen tracing uses a packed closest HZB addressed in Metallic's viewport and reversed-Z convention. Motion comes from the prior camera for static surfaces. Previous Deferred color supplies direct lighting and emission to preserve single-bounce transport. A rejected screen trace starts the GDF ray from its original world-space origin. UE's distance continuation, hair and multi-layer paths are outside this variant.
+- Temporal accumulation reprojects with Metallic's previous camera and jitter and uses the optional 45-degree normal rejection. History contains material-modulated diffuse with UE's encoded accumulation count. The rejection threshold takes its noise sample from the UE rendering commandlet's black dummy input. UE's asset-backed blue noise and fast update for moving lighting remain future work.
+
+To regenerate the sample cache with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'` and use these stems in source mesh order.
 
 ```powershell
 $meshes = @('CornellBoxFloor', 'CornellBoxCeiling', 'CornellBoxBackWall', 'CornellBoxLeftWall',

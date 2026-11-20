@@ -128,6 +128,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/LumenSurfaceCachePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/LumenGlobalTracingPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/LumenScreenProbeGatherPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/LumenScreenTraceSetupPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/LumenTemporalGatherPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferMaterialPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp

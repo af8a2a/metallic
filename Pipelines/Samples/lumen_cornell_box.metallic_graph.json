@@ -36,8 +36,10 @@
                 "atlasSize": 256, "tileResolution": 32, "shadowedLighting": true
             }},
         {"id": 5, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 665, "y": 140},
-            "properties": {"maxTraceDistance": 5}},
-        {"id": 6, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1000, "y": 140}}
+            "properties": {"maxTraceDistance": 5, "finalGather": true, "screenTraces": true}},
+        {"id": 6, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1280, "y": 140}},
+        {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 340, "y": -290}},
+        {"id": 8, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 990, "y": 140}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -61,9 +63,19 @@
         {"id": 19, "src": "SurfaceCache.scene", "dst": "Gather.cardScene"},
         {"id": 20, "src": "SurfaceCache.depth", "dst": "Gather.cardDepth"},
         {"id": 21, "src": "SurfaceCache.lighting", "dst": "Gather.cardLighting"},
-        {"id": 22, "src": "Gather.color", "dst": "FinalBlit.source"}
+        {"id": 22, "src": "Temporal.color", "dst": "FinalBlit.source"},
+        {"id": 23, "src": "VBuffer.depth", "dst": "ScreenTrace.depth"},
+        {"id": 24, "src": "Deferred.color", "dst": "ScreenTrace.color"},
+        {"id": 25, "src": "ScreenTrace.closestHZB", "dst": "Gather.closestHZB"},
+        {"id": 26, "src": "ScreenTrace.previousDepth", "dst": "Gather.previousDepth"},
+        {"id": 27, "src": "ScreenTrace.previousColor", "dst": "Gather.previousColor"},
+        {"id": 28, "src": "ScreenTrace.traceView", "dst": "Gather.traceView"},
+        {"id": 29, "src": "Gather.indirectDiffuse", "dst": "Temporal.currentIndirectDiffuse"},
+        {"id": 30, "src": "Deferred.lumenPosition", "dst": "Temporal.position"},
+        {"id": 31, "src": "Deferred.lumenNormal", "dst": "Temporal.normal"},
+        {"id": 32, "src": "Deferred.color", "dst": "Temporal.directColor"}
     ],
-    "outputs": ["FinalBlit.color", "Gather.indirectDiffuse"],
+    "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse"],
     "view": {
         "camera": {
             "eye": [0, 1.03, 3.55], "center": [0, 0.98, 0], "up": [0, 1, 0],
