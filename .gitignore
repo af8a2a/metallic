@@ -18,6 +18,9 @@
 # Debugger Files
 *.pdb
 
+# Generated GPU microcode dump
+ucode.elf
+
 # Compiled Dynamic libraries
 *.so
 *.dylib

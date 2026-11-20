@@ -21,6 +21,7 @@
 #include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
+#include <cassert>
 #include <chrono>
 #include <filesystem>
 #include <type_traits>
@@ -628,7 +629,7 @@ public:
         if (const auto* prepared = context.preparedScene(); prepared && prepared->snapshot) {
             sharedTextureResources_ = prepared->snapshot->pathTraceResources;
         }
-        Result<> syncResult = syncRuntimeGeometry(context.runtimeScene(), profilePrepare ? &prepareRecorder : nullptr);
+        Result<> syncResult = syncRuntimeGeometry(profilePrepare ? &prepareRecorder : nullptr);
         if (!syncResult) {
             return syncResult;
         }
@@ -2226,34 +2227,25 @@ private:
         return result;
     }
 
-    Result<> syncRuntimeGeometry(const scene::Scene* runtimeScene, CPUProfileRecorder* profiler)
+    Result<> syncRuntimeGeometry(CPUProfileRecorder* profiler)
     {
-        CPUProfileScope pathProfile(profiler, "Visibility scene path resolve");
-        pathProfile.work("pathResolveCalls", 1);
-        pathProfile.work("compiledSceneSelected", compiledScene_ != nullptr);
-        if (compiledScene_ != nullptr) {
-            runtimeScene = compiledScene_;
-        }
-        runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
-        pathProfile.work("matchedScene", runtimeScene != nullptr);
-        pathProfile.end();
-        if (runtimeScene == nullptr) {
-            return {};
-        }
+        // The graph recompiles this pass when its scene binding changes.
+        assert(compiledScene_ != nullptr);
+        const scene::Scene& runtimeScene = *compiledScene_;
         CPUProfileScope revisionProfile(profiler, "Visibility geometry revisions");
-        const bool refreshMaterial = runtimeScene->materialRevision() != sceneMaterialRevision_ ||
+        const bool refreshMaterial = runtimeScene.materialRevision() != sceneMaterialRevision_ ||
             (sharedTextureResources_ && sharedTextureResources_->materialTextureSnapshot() != materialSnapshot_);
         revisionProfile.work("materialRefresh", refreshMaterial);
-        revisionProfile.work("transformRevision", runtimeScene->transformRevision());
-        revisionProfile.work("visibilityRevision", runtimeScene->visibilityRevision());
-        revisionProfile.work("materialRevision", runtimeScene->materialRevision());
+        revisionProfile.work("transformRevision", runtimeScene.transformRevision());
+        revisionProfile.work("visibilityRevision", runtimeScene.visibilityRevision());
+        revisionProfile.work("materialRevision", runtimeScene.materialRevision());
         if (refreshMaterial) {
             if (device_ == nullptr) { return makeError(Error::InvalidArgument); }
             std::string log;
-            const bool materialChanged = runtimeScene->materialRevision() != sceneMaterialRevision_;
+            const bool materialChanged = runtimeScene.materialRevision() != sceneMaterialRevision_;
             const auto previousViews = materialViews_;
             const auto previousTextureIndices = logicalTextureToMaterialTexture_;
-            const auto result = prepareAlphaTestResources(*device_, *runtimeScene, log);
+            const auto result = prepareAlphaTestResources(*device_, runtimeScene, log);
             if (!result) {
                 spdlog::error("[VisibilityBufferPass] Runtime material snapshot update failed: {}", log);
                 return result;
@@ -2267,11 +2259,11 @@ private:
                 materialBindingsDirty_ = true;
                 invalidateHzbHistory();
             }
-            sceneMaterialRevision_ = runtimeScene->materialRevision();
+            sceneMaterialRevision_ = runtimeScene.materialRevision();
         }
-        const bool transformsChanged = runtimeScene->transformRevision() != sceneRevision_;
+        const bool transformsChanged = runtimeScene.transformRevision() != sceneRevision_;
         const bool visibilityChanged =
-            runtimeScene->visibilityRevision() != sceneVisibilityRevision_;
+            runtimeScene.visibilityRevision() != sceneVisibilityRevision_;
         revisionProfile.work("transformRefresh", transformsChanged);
         revisionProfile.work("visibilityRefresh", visibilityChanged);
         if (!transformsChanged && !visibilityChanged) {
@@ -2279,12 +2271,12 @@ private:
         }
 
         if (transformsChanged) {
-            drawBounds_ = runtimeScene->bounds();
-            sceneRevision_ = runtimeScene->transformRevision();
+            drawBounds_ = runtimeScene.bounds();
+            sceneRevision_ = runtimeScene.transformRevision();
         }
 
         if (visibilityChanged) {
-            sceneVisibilityRevision_ = runtimeScene->visibilityRevision();
+            sceneVisibilityRevision_ = runtimeScene.visibilityRevision();
         }
         invalidateHzbHistory();
         return {};
