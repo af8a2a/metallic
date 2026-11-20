@@ -1,0 +1,72 @@
+{
+    "name": "Lumen / Global Tracing",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "GlobalDistanceFieldPages",
+            "type": "GlobalDistanceFieldPagesPass",
+            "position": {"x": 60, "y": 120},
+            "properties": {
+                "distanceFieldPaths": [".cache/mesh-distance-field/BoxInstances.meshdf"],
+                "extent": 1.5,
+                "resolution": 56,
+                "maxPhysicalPages": 1024,
+                "quantized": true,
+                "clipmapCount": 3,
+                "buildObjectGrid": true
+            }
+        },
+        {
+            "id": 2,
+            "name": "SurfaceCache",
+            "type": "LumenSurfaceCachePass",
+            "position": {"x": 60, "y": 470},
+            "properties": {
+                "meshCardPaths": [".cache/mesh-distance-field/SurfaceCacheBoxes.meshcards"],
+                "atlasSize": 128,
+                "tileResolution": 16
+            }
+        },
+        {
+            "id": 3,
+            "name": "Trace",
+            "type": "LumenGlobalTracingPass",
+            "position": {"x": 450, "y": 240},
+            "properties": {
+                "rays": [
+                    {"origin": [-1.05, 0, 1.2], "direction": [0, 0, -1], "minDistance": 0, "maxDistance": 2},
+                    {"origin": [0.9, 0, 1.2], "direction": [0, 0, -1], "minDistance": 0, "maxDistance": 2},
+                    {"origin": [0, 1, 1.2], "direction": [0, 0, -1], "minDistance": 0, "maxDistance": 2}
+                ]
+            }
+        },
+        {"id": 4, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 815, "y": 240}}
+    ],
+    "edges": [
+        {"id": 1, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Trace.pageTable"},
+        {"id": 2, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Trace.pageAtlas"},
+        {"id": 3, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Trace.coarseMip"},
+        {"id": 4, "src": "GlobalDistanceFieldPages.domain", "dst": "Trace.domain"},
+        {"id": 5, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Trace.objectGrid"},
+        {"id": 6, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Trace.objectGridScene"},
+        {"id": 7, "src": "SurfaceCache.cards", "dst": "Trace.cards"},
+        {"id": 8, "src": "SurfaceCache.scene", "dst": "Trace.cardScene"},
+        {"id": 9, "src": "SurfaceCache.depth", "dst": "Trace.cardDepth"},
+        {"id": 10, "src": "SurfaceCache.lighting", "dst": "Trace.cardLighting"},
+        {"id": 11, "src": "Trace.radiance", "dst": "FinalBlit.source"}
+    ],
+    "outputs": ["FinalBlit.color", "Trace.radiance", "Trace.results"],
+    "view": {
+        "camera": {
+            "eye": [0, 0, 0],
+            "center": [0, 0, -1],
+            "up": [0, 1, 0],
+            "fovDegrees": 57,
+            "projection": "perspective",
+            "znear": 0.05,
+            "zfar": 12
+        },
+        "temporalJitter": false
+    }
+}

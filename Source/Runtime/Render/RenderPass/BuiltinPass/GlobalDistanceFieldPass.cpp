@@ -16,7 +16,7 @@ namespace {
 
 constexpr uint64_t kGlobalDistanceFieldABI = 0x4744460000000001ull;
 constexpr uint64_t kGlobalDistanceFieldDebugABI = 0x4744464400000001ull;
-constexpr uint64_t kGlobalDistanceFieldPagesABI = 0x4744465000000002ull;
+constexpr uint64_t kGlobalDistanceFieldPagesABI = 0x4744465000000003ull;
 constexpr uint64_t kGlobalDistanceFieldPagesDebugABI = 0x4744504400000001ull;
 constexpr uint64_t kGlobalDistanceFieldMipABI = 0x4744464d00000002ull;
 constexpr uint64_t kQuantizedGlobalDistanceFieldDebugABI = 0x4744514400000001ull;
@@ -26,10 +26,14 @@ constexpr uint32_t kCellsPerPage = 7;
 constexpr uint32_t kSamplesPerPage = kCellsPerPage + 1;
 constexpr uint32_t kDefaultPhysicalPages = 216;
 constexpr uint32_t kPageStatisticsCount = 5;
+constexpr uint32_t kObjectGridCellsPerPage = 64;
+constexpr uint32_t kObjectGridCellStride = 4 * sizeof(uint32_t);
 constexpr uint32_t kMipFactor = 4;
 constexpr uint32_t kMaxClipmaps = 6;
 constexpr uint32_t kClipmapResolutionAlignment = kMipFactor * kCellsPerPage;
 constexpr SlangMacroDefine kQuantizedPageAtlasDefines[]{{"METALLIC_GDF_PAGE_ATLAS_R8", "1"}};
+constexpr SlangMacroDefine kObjectGridDefines[]{{"METALLIC_GDF_PAGE_ATLAS_R8", "1"},
+    {"METALLIC_GDF_BUILD_OBJECT_GRID", "1"}};
 
 struct alignas(16) GlobalDistanceFieldDomain {
     std::array<float, 4> minAndVoxelSize;
@@ -53,6 +57,8 @@ struct alignas(16) GlobalDistanceFieldPagesParams {
     ShaderStorageImage pageTable, pageAtlas;
     ShaderBuffer domainOutput, statistics;
     uint32_t instanceCount, logicalResolution, maxPhysicalPages, clipmapCount;
+    ShaderBuffer objectGridObjects, objectGrid, objectGridScene;
+    std::array<uint32_t, 2> sceneIdentity;
     std::array<GlobalDistanceFieldDomain, kMaxClipmaps> domains;
 };
 
@@ -94,9 +100,11 @@ struct alignas(16) QuantizedGlobalDistanceFieldDebugParams {
 static_assert(sizeof(GlobalDistanceFieldDomain) == 32);
 static_assert(sizeof(GlobalDistanceFieldParams) == 64 && offsetof(GlobalDistanceFieldParams, domain) == 32);
 static_assert(sizeof(GlobalDistanceFieldDebugParams) == 112 && offsetof(GlobalDistanceFieldDebugParams, current) == 32);
-static_assert(sizeof(GlobalDistanceFieldPagesParams) == 256 &&
+static_assert(sizeof(GlobalDistanceFieldPagesParams) == 272 &&
     offsetof(GlobalDistanceFieldPagesParams, clipmapCount) == 48 &&
-    offsetof(GlobalDistanceFieldPagesParams, domains) == 64);
+    offsetof(GlobalDistanceFieldPagesParams, objectGridObjects) == 52 &&
+    offsetof(GlobalDistanceFieldPagesParams, sceneIdentity) == 64 &&
+    offsetof(GlobalDistanceFieldPagesParams, domains) == 80);
 static_assert(sizeof(GlobalDistanceFieldPagesDebugParams) == 112 &&
     offsetof(GlobalDistanceFieldPagesDebugParams, current) == 32);
 static_assert(sizeof(GlobalDistanceFieldMipParams) == 32 && offsetof(GlobalDistanceFieldMipParams, clipmapCount) == 28);
@@ -179,7 +187,8 @@ public:
         const uint32_t resolution = logicalResolution(properties(), clipmapCount);
         if (usePages_) {
             const uint32_t tableSize = std::max(1u, pagesPerAxis(resolution));
-            const uint32_t atlasSize = pageAtlasSize(physicalPageBudget(properties()).value_or(0));
+            const uint32_t pageBudget = physicalPageBudget(properties()).value_or(0);
+            const uint32_t atlasSize = pageAtlasSize(pageBudget);
             const bool quantized = quantizedPages();
             auto& pageTable = reflection.addTextureOutput("pageTable", "Virtual page to atlas mapping or constant page state")
                 .texture3D(tableSize, tableSize, tableSize * clipmapCount).storageWrite();
@@ -195,6 +204,13 @@ public:
                     .texture3D(mipSize, mipSize, mipSize * clipmapCount).storageReadWrite().format = Format::R8Unorm;
                 reflection.addTextureOutput("mipScratch", "Ping-pong storage for coarse distance propagation")
                     .texture3D(mipSize, mipSize, mipSize * clipmapCount).storageReadWrite().format = Format::R8Unorm;
+                if (objectGridRequested()) {
+                    const uint64_t gridSize = uint64_t(std::max(1u, pageBudget)) * kObjectGridCellsPerPage * kObjectGridCellStride;
+                    reflection.addBufferOutput("objectGrid", "Ranked scene object candidates per physical page cell")
+                        .buffer(gridSize, kObjectGridCellStride).storageWrite();
+                    reflection.addBufferOutput("objectGridScene", "Scene resource identity (low/high)")
+                        .buffer(2 * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").storageWrite();
+                }
             }
             reflection.addBufferOutput("statistics", "Required, resident, positive, negative and unavailable pages")
                 .buffer(kPageStatisticsCount * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").storageReadWrite();
@@ -216,6 +232,12 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const bool quantized = quantizedPages();
+        const auto objectGrid = properties().find("buildObjectGrid");
+        if (objectGrid != properties().end() && (!objectGrid->is_boolean() || (objectGridRequested() && !quantized))) {
+            log = "Global Distance Field buildObjectGrid must be a boolean and requires quantized pages when enabled";
+            return makeError(Error::InvalidArgument);
+        }
+        buildObjectGrid_ = objectGridRequested();
         clipmapCount_ = readClipmapCount(properties());
         if (clipmapCount_ == 0 || (clipmapCount_ > 1 && !quantized)) {
             log = "Global Distance Field clipmapCount must be an integer from 1 to 6. Multiple levels require quantized pages.";
@@ -239,6 +261,10 @@ public:
                 return makeError(Error::InvalidArgument);
             }
             maxPhysicalPages_ = *budget;
+            if (buildObjectGrid_ && maxPhysicalPages_ > UINT32_MAX / kObjectGridCellsPerPage) {
+                log = "Global Distance Field object grid exceeds its 32-bit cell index range";
+                return makeError(Error::InvalidArgument);
+            }
         }
         std::vector<std::filesystem::path> paths;
         try {
@@ -281,8 +307,9 @@ public:
                     .entryPointName = "globalDistanceFieldClearPageStatsMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
                 {.parameters = abi, .debugName = "GlobalDistanceFieldClearPageStats"}, clearPageStats_, log);
             if (!result) { return result; }
-            const std::span<const SlangMacroDefine> defines = quantized ?
-                std::span<const SlangMacroDefine>(kQuantizedPageAtlasDefines) : std::span<const SlangMacroDefine>{};
+            std::span<const SlangMacroDefine> defines;
+            if (buildObjectGrid_) { defines = kObjectGridDefines; }
+            else if (quantized) { defines = kQuantizedPageAtlasDefines; }
             result = shaders.getComputeKernel(*device_,
                 {.moduleName = "Features/DistanceField/GlobalDistanceFieldPageBuild",
                     .entryPointName = "globalDistanceFieldBuildPagesMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
@@ -332,7 +359,9 @@ public:
         }
         uint32_t instanceCount = 0;
         uint32_t unsupportedTransforms = 0;
-        auto instances = meshFields_.uploadInstances(*context.runtimeScene(), instanceCount, unsupportedTransforms);
+        std::unique_ptr<Buffer> objectGridObjects;
+        auto instances = meshFields_.uploadInstances(*context.runtimeScene(), instanceCount, unsupportedTransforms,
+            buildObjectGrid_ ? &objectGridObjects : nullptr);
         if (!instances) { return makeError(instances.error()); }
         auto registry = ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
@@ -358,6 +387,13 @@ public:
             params.logicalResolution = resolution_;
             params.maxPhysicalPages = maxPhysicalPages_;
             params.clipmapCount = clipmapCount_;
+            if (buildObjectGrid_) {
+                params.objectGridObjects = writer.buffer(objectGridObjects.get());
+                params.objectGrid = writer.buffer(context.outputBuffer("objectGrid").buffer());
+                params.objectGridScene = writer.buffer(context.outputBuffer("objectGridScene").buffer());
+                const uint64_t identity = context.runtimeScene()->resourceIdentity();
+                params.sceneIdentity = {uint32_t(identity), uint32_t(identity >> 32)};
+            }
             params.domains = domains;
             auto encoded = writer.encode(params, kGlobalDistanceFieldPagesABI);
             if (!encoded) { return makeError(encoded.error()); }
@@ -388,6 +424,11 @@ public:
 
 private:
     bool quantizedPages() const { return usePages_ && properties().value("quantized", false); }
+    bool objectGridRequested() const
+    {
+        const auto value = properties().find("buildObjectGrid");
+        return value != properties().end() && value->is_boolean() && value->get<bool>();
+    }
 
     Result<> executePages(RenderGraphExecutionContext& context, const EncodedParameters& encoded, ParameterWriter& writer)
     {
@@ -396,13 +437,16 @@ private:
         const RenderGraphStageUse buildUses[] = {
             {"pageTable", Access::TextureStorageWrite}, {"pageAtlas", Access::TextureStorageWrite},
             {"domain", Access::BufferStorageWrite}, {"statistics", Access::BufferStorageReadWrite},
+            {"objectGrid", Access::BufferStorageWrite}, {"objectGridScene", Access::BufferStorageWrite},
         };
+        std::span<const RenderGraphStageUse> enabledBuildUses = buildUses;
+        if (!buildObjectGrid_) { enabledBuildUses = enabledBuildUses.first(4); }
         const uint32_t groups = pagesPerAxis(resolution_);
         const RenderGraphStage pageStages[] = {
             {"Clear page statistics", clearUses, [&](CommandBuffer& commands) {
                 return clearPageStats_.dispatch(commands, encoded, 1, 1, 1);
             }},
-            {"Compose sparse pages", buildUses, [&](CommandBuffer& commands) {
+            {"Compose sparse pages", enabledBuildUses, [&](CommandBuffer& commands) {
                 return program_.dispatch(commands, encoded, groups, groups, groups * clipmapCount_);
             }},
         };
@@ -468,6 +512,7 @@ private:
     }
 
     bool usePages_;
+    bool buildObjectGrid_ = false;
     Device* device_ = nullptr;
     uint32_t resolution_ = 0;
     uint32_t maxPhysicalPages_ = 0;

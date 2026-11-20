@@ -245,13 +245,21 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/global_distance_field_clipmaps.metallic_graph.json"; }
 };
 
-class LumenSurfaceCacheSample final : public MeshDistanceFieldSample {
+class LumenSurfaceCacheSample : public MeshDistanceFieldSample {
 public:
     std::string_view id() const override { return "lumen-surface-cache"; }
     std::string_view name() const override { return "Lumen / Surface Cache"; }
     std::string_view description() const override { return "Inspect the lighting and material atlases captured by Mesh Cards."; }
     std::string scenePath() const override { return "Asset/Lumen/SurfaceCacheBoxes.gltf"; }
     std::string graphPath() const override { return "Pipelines/Samples/lumen_surface_cache.metallic_graph.json"; }
+};
+
+class LumenGlobalTracingSample final : public LumenSurfaceCacheSample {
+public:
+    std::string_view id() const override { return "lumen-global-tracing"; }
+    std::string_view name() const override { return "Lumen / Global Tracing"; }
+    std::string_view description() const override { return "Trace fixed world rays and inspect Surface Cache radiance."; }
+    std::string graphPath() const override { return "Pipelines/Samples/lumen_global_tracing.metallic_graph.json"; }
 };
 
 class VirtualShadowMapSponzaSample : public RenderSample {
@@ -1075,6 +1083,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GlobalDistanceFieldPagesSample globalDistanceFieldPages;
     static const QuantizedGlobalDistanceFieldSample quantizedGlobalDistanceField;
     static const LumenSurfaceCacheSample lumenSurfaceCache;
+    static const LumenGlobalTracingSample lumenGlobalTracing;
     static const GlobalDistanceFieldClipmapsSample globalDistanceFieldClipmaps;
     static const RealtimeLightingSample realtimeLighting;
     static const RealtimeLightingVSMSample realtimeLightingVSM;
@@ -1144,7 +1153,8 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainP1UnifiedSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
-    if (std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"))) {
+    const bool hasBoxDistanceField = std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/BoxInstances.meshdf"));
+    if (hasBoxDistanceField) {
         samples.push_back(&meshDistanceField);
         samples.push_back(&globalDistanceField);
         samples.push_back(&globalDistanceFieldPages);
@@ -1153,6 +1163,9 @@ std::vector<const RenderSample*> builtInRenderSamples()
     }
     if (std::filesystem::is_regular_file(projectPath(".cache/mesh-distance-field/SurfaceCacheBoxes.meshcards"))) {
         samples.push_back(&lumenSurfaceCache);
+        if (hasBoxDistanceField) {
+            samples.push_back(&lumenGlobalTracing);
+        }
     }
     // Optional local assets are read once, not on every ImGui frame.
     static const auto painter = loadLocalLookDevSamples("build/MaterialValidation/PainterLookDev/Catalog.json", "Painter Validation", "painter-");

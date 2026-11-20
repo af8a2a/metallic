@@ -54,6 +54,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createGlobalDistanceFieldPagesDebugPass(); });
     registerRenderGraphPassType("LumenSurfaceCachePass", "Capture Mesh Cards into a low-resolution Surface Cache",
         []() { return builtin_pass::createLumenSurfaceCachePass(); });
+    registerRenderGraphPassType("LumenGlobalTracingPass", "Trace fixed world rays against the GDF and sample Surface Cache radiance",
+        []() { return builtin_pass::createLumenGlobalTracingPass(); });
     registerRenderGraphPassType("VisibilityBufferMaterialPass", "Resolve unified visibility using scalar materials without RTAS",
         []() { return builtin_pass::createVisibilityBufferMaterialPass(); });
     registerRenderGraphPassType(

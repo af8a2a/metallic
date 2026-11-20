@@ -3,7 +3,9 @@ module SurfaceCacheCapture;
 import ShaderCore;
 import ParameterRoot;
 import MaterialTextureDecode;
+import LumenSurfaceCache;
 using Metallic;
+using Metallic.Lumen;
 
 struct SurfaceCacheCaptureVertex
 {
@@ -130,15 +132,6 @@ SurfaceCacheCaptureOutputs surfaceCacheCaptureFragmentMain(SurfaceCacheCaptureIn
     output.emissive = float4(emissive * params.material.z, 0.0f);
     return output;
 }
-
-struct SurfaceCacheCard
-{
-    float4 origin;
-    float4 axisX;
-    float4 axisY;
-    float4 axisZ;
-    uint4 metadata;
-};
 
 // Bindless texture formats must be carried by the Slang resource type itself.
 // _Texture format identifiers 13 and 2 select r16 and rgba16f with float texels.

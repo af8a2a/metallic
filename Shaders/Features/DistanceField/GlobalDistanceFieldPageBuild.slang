@@ -5,6 +5,9 @@ import ParameterRoot;
 import MeshDistanceField;
 import GlobalDistanceField;
 import GlobalDistanceFieldPages;
+#if defined(METALLIC_GDF_BUILD_OBJECT_GRID)
+import GlobalDistanceFieldObjectGrid;
+#endif
 using Metallic;
 using Metallic.DistanceField;
 
@@ -27,10 +30,19 @@ struct GlobalDistanceFieldPageBuildParams
     uint logicalResolution;
     uint maxPhysicalPages;
     uint clipmapCount;
+#if defined(METALLIC_GDF_BUILD_OBJECT_GRID)
+    ResourceHandle<StructuredBuffer<GlobalDistanceFieldObjectGridSource>> objectGridObjects;
+    ResourceHandle<RWStructuredBuffer<uint4>> objectGrid;
+    ResourceHandle<RWStructuredBuffer<uint>> objectGridScene;
+#else
+    uint objectGridObjects;
+    uint objectGrid;
+    uint objectGridScene;
+#endif
+    uint2 sceneIdentity;
     // Match the CPU's 16-byte domain alignment in scalar parameter storage.
     uint padding0;
     uint padding1;
-    uint padding2;
     GlobalDistanceFieldDomain domains[6];
 };
 
@@ -63,7 +75,8 @@ void globalDistanceFieldClearPageStatsMain()
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint threadIndex : SV_GroupIndex)
+void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 cellCoordinate : SV_GroupThreadID,
+    uint threadIndex : SV_GroupIndex)
 {
     GlobalDistanceFieldPageBuildParams params = getParameters<GlobalDistanceFieldPageBuildParams>();
     RWTexture3D<uint> pageTable = resolveUniform(params.pageTable);
@@ -76,6 +89,13 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint t
     if (threadIndex == 0u && all(localPage == 0u)) {
         RWStructuredBuffer<GlobalDistanceFieldDomain> domainOutput = resolveUniform(params.domainOutput);
         domainOutput[clipmapIndex] = domain;
+#if defined(METALLIC_GDF_BUILD_OBJECT_GRID)
+        if (clipmapIndex == 0u) {
+            RWStructuredBuffer<uint> objectGridScene = resolveUniform(params.objectGridScene);
+            objectGridScene[0] = params.sceneIdentity.x;
+            objectGridScene[1] = params.sceneIdentity.y;
+        }
+#endif
     }
 
     if (params.instanceCount == 0u) {
@@ -156,5 +176,10 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint t
 #endif
             pageAtlas[firstAtlasSample + local] = value;
         }
+#if defined(METALLIC_GDF_BUILD_OBJECT_GRID)
+        compositeGlobalDistanceFieldObjectGridPage(domain, localPage, cellCoordinate, threadIndex, sharedPhysicalPage,
+            meshes, instances, resolveUniform(params.objectGridObjects), params.instanceCount,
+            resolveUniform(params.objectGrid));
+#endif
     }
 }

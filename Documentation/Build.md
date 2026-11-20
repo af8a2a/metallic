@@ -810,6 +810,29 @@ Open **Lighting / Lumen / Surface Cache** after baking. The pass consumes `meshC
 
 Inspect `albedo`, `normal`, `emissive`, `depth` and `lighting`. Albedo stores the square root of the fully rough diffuse response. Normal stores card-space XY and coverage. Depth is R16 UNORM with 1 reserved for uncovered texels. Lighting stores outgoing scene-linear radiance from the world Sun with shadows disabled and material emissive. The pass captures each frame and supports single-sided, opaque static triangles with orthogonal instance transforms, including mirrors. Atlas residency and lighting feedback are subsequent stages of Lumen integration.
 
+### Lumen Global Tracing
+
+With both `BoxInstances.meshdf` and `SurfaceCacheBoxes.meshcards` baked, open **Lighting / Lumen / Global Tracing**. The graph builds quantized Global Distance Field clipmaps and the fixed Surface Cache from the same world. `Trace.rays` lists world-space ray origins, directions and `minDistance`/`maxDistance` in meters. The pass normalizes directions. `Trace.radiance` contains one scene-linear RGB texel per ray.
+
+Capture `Trace.results` at `AfterPass` to inspect the 96-byte records in ray order. Each record contains six four-component lanes.
+
+| Lane | Components |
+| --- | --- |
+| `float4 metrics` | Hit distance, surface expansion, total card weight, near-origin radiance factor |
+| `float4 normal` | World-space hit normal, dominant card weight |
+| `float4 radiance` | Scene-linear outgoing RGB, unused |
+| `uint4 state` | GDF classification, hit clipmap, sample count, cache status |
+| `uint4 candidates` | Ranked scene object IDs, `0xffffffff` for empty entries |
+| `uint4 card` | Dominant card index, scene object ID, atlas U/V as float bit patterns |
+
+The GDF classifications are outside (0), covered miss (1), hit (2), unavailable (3) and partial (4). The cache statuses are no geometry hit (0), near-origin suppression (1), no covered card sample (2), sampled (3) and mismatched producer scene identities (4). A sampled hit can have zero RGB. Unset clipmap, card and object indices are `0xffffffff`.
+
+The reference is UE 5.7.4's full-coverage, opaque diffuse Global Tracing path. This graph supplies fixed rays in place of the screen probe ray producer.
+
+- The trace uses Metallic's meter-space clipmaps, packed coarse mip, signed constant pages and explicit page-overflow classification. Fine-atlas normal taps use the current clipmap's clamped bounds. The debug step count includes the successful hit sample.
+- `buildObjectGrid` adds 64 four-candidate cells per physical page. It applies UE tile/cell culling and packed distance ranking to Metallic's per-frame instance list. The clipmap's positive endpoint belongs to its last page. Ranked instance indices resolve to full Metallic scene object IDs before publishing.
+- Surface sampling uses one resident tile per cardinal card, world-space card axes for orientation and bounds, and tile-order iteration for each matching object. The atlas provides scene-linear final lighting with unit exposure scale.
+
 ## Optional RHI diagnostics
 
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing

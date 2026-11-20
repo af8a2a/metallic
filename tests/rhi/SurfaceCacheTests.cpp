@@ -1,3 +1,4 @@
+#include "MeshDistanceFieldFixture.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -7,6 +8,7 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "harness/ValidationRecorder.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -56,7 +58,7 @@ size_t tileCenter(uint32_t cardIndex)
 }
 
 bool prepareSurfaceFixture(const std::filesystem::path& fixture, const std::filesystem::path& cardPath,
-    scene::SceneDocument& document, std::string& log)
+    scene::SceneDocument& document, std::string& log, float backFaceEmission = 0.125f)
 {
     const std::filesystem::path root(PROJECT_SOURCE_DIR);
     std::ifstream input(root / "Asset/MeshDistanceField/BoxInstances.gltf");
@@ -64,14 +66,17 @@ bool prepareSurfaceFixture(const std::filesystem::path& fixture, const std::file
     auto gltf = nlohmann::json::parse(input);
     gltf["extensionsUsed"] = {"KHR_materials_specular"};
     auto& materials = gltf["materials"] = nlohmann::json::array();
-    for (const auto& [albedo, emissive] : std::array{std::array{0.25f, 0.125f}, std::array{0.5625f, 0.5f}}) {
+    const std::array materialValues{
+        std::array{0.25f, 0.125f}, std::array{0.5625f, 0.5f}, std::array{0.25f, backFaceEmission}};
+    for (const auto& [albedo, emissive] : materialValues) {
         materials.push_back({
             {"pbrMetallicRoughness", {{"baseColorFactor", {albedo, albedo, albedo, 1.0f}}, {"metallicFactor", 0.0f}}},
             {"extensions", {{"KHR_materials_specular", {{"specularFactor", 0.0f}}}}},
             {"emissiveFactor", {emissive, emissive, emissive}},
         });
     }
-    // Source index order is -Z, +Z, -X, +X, -Y, +Y. Give +Z its own material.
+    // Source index order is -Z, +Z, -X, +X, -Y, +Y. Give each Z face its own material.
+    constexpr std::array faceMaterials{2, 1, 0, 0, 0, 0};
     auto& accessors = gltf.at("accessors");
     const auto allIndices = accessors.at(1);
     auto& primitives = gltf.at("meshes").at(0).at("primitives");
@@ -83,7 +88,7 @@ bool prepareSurfaceFixture(const std::filesystem::path& fixture, const std::file
         indices.erase("min");
         indices.erase("max");
         primitives.push_back({{"attributes", {{"POSITION", 0}}}, {"indices", accessors.size()},
-            {"material", face == 1 ? 1 : 0}});
+            {"material", faceMaterials[face]}});
         accessors.push_back(std::move(indices));
     }
     std::ofstream output(fixture, std::ios::binary);
@@ -199,6 +204,45 @@ std::string checkSurfaceCapture(const debug::DebugCapture& capture, uint64_t sce
     return {};
 }
 
+struct SurfaceCachePreview {
+    SurfaceCachePreview()
+    {
+        preview.setDebugObserver(&inspector);
+    }
+
+    ~SurfaceCachePreview()
+    {
+        preview.setDebugObserver(nullptr);
+    }
+
+    std::shared_ptr<const debug::DebugCapture> captureAfterPass(render::RenderGraph& graph, std::string_view pass,
+        debug::DebugValue resources, std::string_view output, std::string& log)
+    {
+        const auto request = inspector.core().dispatch({{"method", "capture.batch"}, {"params", {
+            {"pass", pass}, {"checkpoint", "AfterPass"}, {"resources", std::move(resources)}}}});
+        if (request.value("status", "") != "ok") {
+            log = request.dump();
+            return {};
+        }
+        if (!preview.render(graph, kAtlasEdge, kAtlasEdge, output)) {
+            log = std::string(output) + " readback: " + preview.lastLog();
+            return {};
+        }
+        inspector.poll();
+        const auto job = request.at("result").at("job").get<std::string>();
+        auto capture = inspector.core().completedCapture(job);
+        if (!capture) {
+            log = "Capture did not complete: " +
+                inspector.core().dispatch({{"method", "jobs.get"}, {"params", {{"job", job}}}}).dump();
+        }
+        return capture;
+    }
+
+    // The inspector drains pending Vulkan captures before the preview destroys its device.
+    render::RenderGraphPreviewRenderer preview;
+    render::RenderDebugRuntime inspector{{}, render::RenderDebugDetail::Resources};
+};
+
 class SurfaceCacheTest final : public RHITest {
 public:
     SurfaceCacheTest()
@@ -236,13 +280,8 @@ public:
         }
 
         bench::ValidationRecorder validation;
-        RenderGraphPreviewRenderer preview;
-        RenderDebugRuntime inspector({}, RenderDebugDetail::Resources);
-        struct DetachDebugObserver {
-            RenderGraphPreviewRenderer& preview;
-            ~DetachDebugObserver() { preview.setDebugObserver(nullptr); }
-        } detach{preview};
-        preview.setDebugObserver(&inspector);
+        SurfaceCachePreview capturePreview;
+        auto& preview = capturePreview.preview;
         preview.bindRuntimeScene(&document);
         preview.bindRenderView(&view);
         if (!preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink())) {
@@ -271,19 +310,9 @@ public:
         resources.push_back({{"id", "SurfaceCache.cards"}, {"layout", "u32"},
             {"count", kCardCount * sizeof(CapturedCard) / sizeof(uint32_t)}});
         resources.push_back({{"id", "SurfaceCache.scene"}, {"layout", "u32"}, {"count", 4}});
-        const auto request = inspector.core().dispatch({{"method", "capture.batch"}, {"params", {
-            {"pass", "SurfaceCache"}, {"checkpoint", "AfterPass"}, {"resources", std::move(resources)}}}});
-        if (request.value("status", "") != "ok") { return RHITestResult::fail(request.dump()); }
-        if (!preview.render(graph, kAtlasEdge, kAtlasEdge, "SurfaceCache.depth")) {
-            return RHITestResult::fail("Surface Cache encoded depth readback: " + preview.lastLog());
-        }
-        inspector.poll();
-        const auto job = request.at("result").at("job").get<std::string>();
-        const auto capture = inspector.core().completedCapture(job);
-        if (!capture) {
-            const auto state = inspector.core().dispatch({{"method", "jobs.get"}, {"params", {{"job", job}}}});
-            return RHITestResult::fail("Surface Cache capture did not complete: " + state.dump());
-        }
+        const auto capture = capturePreview.captureAfterPass(graph, "SurfaceCache", std::move(resources),
+            "SurfaceCache.depth", log);
+        if (!capture) { return RHITestResult::fail(log); }
         if (const auto error = checkSurfaceCapture(*capture, document.resourceIdentity()); !error.empty()) {
             return RHITestResult::fail(error);
         }
@@ -308,6 +337,297 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(SurfaceCacheTest);
+
+struct LumenRayResult {
+    float hitDistance, surfaceExpansion, weightSum, radianceFactor;
+    std::array<float, 4> normal;
+    std::array<float, 4> radiance;
+    uint32_t geometryClass, clipmap, steps, cacheStatus;
+    std::array<uint32_t, 4> candidates;
+    uint32_t cardIndex, cardObject;
+    float atlasU, atlasV;
+};
+static_assert(sizeof(LumenRayResult) == 96);
+
+constexpr uint32_t kInvalidRayIndex = ~0u;
+constexpr uint32_t kRayOutside = 0;
+constexpr uint32_t kRayMiss = 1;
+constexpr uint32_t kRayHit = 2;
+constexpr uint32_t kRayUnavailable = 3;
+constexpr uint32_t kRayPartial = 4;
+constexpr uint32_t kRayNoGeometryHit = 0;
+constexpr uint32_t kRaySuppressed = 1;
+constexpr uint32_t kRayNoCard = 2;
+constexpr uint32_t kRaySampled = 3;
+constexpr size_t kLumenRayCount = 8;
+
+debug::DebugValue lumenRay(std::array<float, 3> origin, std::array<float, 3> direction, float maxDistance)
+{
+    return {{"origin", origin}, {"direction", direction}, {"minDistance", 0.0f}, {"maxDistance", maxDistance}};
+}
+
+debug::DebugValue describeLumenRay(const LumenRayResult& ray)
+{
+    return {{"class", ray.geometryClass}, {"clipmap", ray.clipmap}, {"steps", ray.steps},
+        {"status", ray.cacheStatus}, {"distance", ray.hitDistance}, {"expansion", ray.surfaceExpansion},
+        {"normal", {ray.normal[0], ray.normal[1], ray.normal[2]}}, {"weight", ray.weightSum},
+        {"cardWeight", ray.normal[3]}, {"atlasUV", {ray.atlasU, ray.atlasV}}, {"radianceFactor", ray.radianceFactor},
+        {"radiance", ray.radiance}, {"candidates", ray.candidates},
+        {"card", ray.cardIndex}, {"object", ray.cardObject}};
+}
+
+std::string checkLumenHit(const LumenRayResult& ray, uint32_t clipmap, uint32_t object, uint32_t cardDirection,
+    const std::vector<uint8_t>& cards, std::array<float, 3> expectedNormal, float expectedDistance,
+    float expectedRadiance)
+{
+    constexpr float voxelSize = 3.0f / 56.0f;
+    const float distanceTolerance = 1.5f * std::ldexp(voxelSize, int(clipmap));
+    const float expectedExpansion = std::ldexp(voxelSize * 0.5f, int(clipmap));
+    const float normalDot = ray.normal[0] * expectedNormal[0] + ray.normal[1] * expectedNormal[1] +
+        ray.normal[2] * expectedNormal[2];
+    // Face-center rays have four covered, depth-visible taps and one dominant cardinal card.
+    // Its weight is cos² of the angle to the quantized GDF normal.
+    if (ray.geometryClass != kRayHit || ray.clipmap != clipmap || ray.cacheStatus != kRaySampled ||
+        ray.steps == 0 || !(std::abs(ray.hitDistance - expectedDistance) < distanceTolerance) ||
+        !(std::abs(ray.surfaceExpansion - expectedExpansion) < 1.0e-6f) || !(normalDot > 0.98f) ||
+        !(std::abs(ray.weightSum - 1.0f) < 0.04f) || !(std::abs(ray.normal[3] - 1.0f) < 0.04f) ||
+        ray.radianceFactor != 1.0f || ray.candidates[0] != object || ray.cardObject != object ||
+        ray.cardIndex >= kCardCount) {
+        return "Unexpected Lumen hit: " + describeLumenRay(ray).dump();
+    }
+    const auto card = readSurfaceValue<CapturedCard>(cards, ray.cardIndex);
+    const size_t center = tileCenter(ray.cardIndex);
+    const float centerU = float(center % kAtlasEdge) / float(kAtlasEdge);
+    const float centerV = float(center / kAtlasEdge) / float(kAtlasEdge);
+    constexpr float uvTolerance = 0.125f / kAtlasEdge;
+    if (card.metadata[0] != object || card.metadata[2] != cardDirection ||
+        !(std::abs(ray.atlasU - centerU) < uvTolerance) || !(std::abs(ray.atlasV - centerV) < uvTolerance) ||
+        !std::all_of(ray.radiance.begin(), ray.radiance.begin() + 3, [&](float value) {
+            return std::abs(value - expectedRadiance) < 0.002f;
+        })) {
+        return "Unexpected card direction or scene-linear outgoing radiance: " + describeLumenRay(ray).dump();
+    }
+    return {};
+}
+
+bool emptyLumenSample(const LumenRayResult& ray)
+{
+    return ray.weightSum == 0.0f && ray.cardIndex == kInvalidRayIndex && ray.cardObject == kInvalidRayIndex &&
+        ray.radiance[0] == 0.0f && ray.radiance[1] == 0.0f && ray.radiance[2] == 0.0f;
+}
+
+class LumenGlobalTraceTest final : public RHITest {
+public:
+    LumenGlobalTraceTest()
+    {
+        name = "lumen_global_tracing_surface_cache";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const std::filesystem::path root(PROJECT_SOURCE_DIR);
+        const auto fixturePath = context.outputDirectory / "LumenTraceBoxes.gltf";
+        const auto cardPath = context.outputDirectory / "LumenTraceBoxes.meshcards";
+        const auto fieldPath = context.outputDirectory / "LumenTraceBoxes.meshdf";
+        scene::SceneDocument document;
+        std::string log;
+        if (!prepareSurfaceFixture(fixturePath, cardPath, document, log, 0.0f) ||
+            !writeAnalyticBoxField(fieldPath, document, log)) {
+            return RHITestResult::fail(log);
+        }
+
+        uint32_t leftObject = kInvalidRayIndex;
+        uint32_t rightObject = kInvalidRayIndex;
+        for (const auto& node : document.renderNodes()) {
+            auto& object = node.worldMatrix.a[12] < 0.0f ? leftObject : rightObject;
+            object = uint32_t(node.object);
+        }
+        if (leftObject == rightObject || leftObject == kInvalidRayIndex || rightObject == kInvalidRayIndex) {
+            return RHITestResult::fail("The Lumen ray fixture needs two distinct instances of the same source mesh");
+        }
+
+        const float cosAngle = std::sqrt(3.0f) * 0.5f;
+        const std::array mirrorNormal{-cosAngle, 0.0f, 0.5f};
+        const std::array front{0.0f, 0.0f, 1.0f};
+        const std::array back{0.0f, 0.0f, -1.0f};
+        // y=0 is a logical page boundary for both camera-centered clipmaps.
+        const std::array rays{
+            lumenRay({-1.05f, 0.0f, 1.25f}, back, 2.0f),
+            lumenRay({0.9f - cosAngle, 0.0f, 0.35f}, {cosAngle, 0.0f, -0.5f}, 1.0f),
+            lumenRay({-1.05f, 0.0f, -1.25f}, front, 2.0f),
+            lumenRay({-1.05f, 0.0f, 2.5f}, back, 2.5f),
+            lumenRay({0.0f, 1.0f, 1.25f}, back, 2.0f),
+            lumenRay({3.5f, 0.0f, 1.25f}, back, 2.0f),
+            lumenRay({0.0f, 1.0f, 1.25f}, back, 5.0f),
+            lumenRay({-1.05f, 0.0f, 0.51f}, back, 1.0f)};
+        static_assert(rays.size() == kLumenRayCount);
+
+        RenderGraph graph;
+        if (!loadRenderGraphFromFile(root / "Pipelines/Samples/lumen_global_tracing.metallic_graph.json", graph, log)) {
+            return RHITestResult::fail(log);
+        }
+        const auto* fieldNode = graph.findNode("GlobalDistanceFieldPages");
+        const auto* surfaceNode = graph.findNode("SurfaceCache");
+        const auto* traceNode = graph.findNode("Trace");
+        if (!fieldNode || !surfaceNode || !traceNode) {
+            return RHITestResult::fail("Missing one of the Lumen global tracing sample passes");
+        }
+        const auto fieldId = fieldNode->id;
+        const auto surfaceId = surfaceNode->id;
+        nlohmann::json fieldProperties{{"distanceFieldPaths", {fieldPath.generic_string()}}, {"extent", 1.5f},
+            {"resolution", 56}, {"maxPhysicalPages", 1024}, {"quantized", true}, {"clipmapCount", 2},
+            {"buildObjectGrid", true}};
+        nlohmann::json surfaceProperties{{"meshCardPaths", {cardPath.generic_string()}}, {"atlasSize", kAtlasEdge},
+            {"tileResolution", kTileEdge}};
+        if (!graph.setNodeProperties(fieldId, fieldProperties) ||
+            !graph.setNodeProperties(surfaceId, surfaceProperties) ||
+            !graph.setNodeProperties(traceNode->id, {{"rays", rays}})) {
+            return RHITestResult::fail("Could not configure Lumen ray fixtures");
+        }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {0.0f, 0.0f, 0.0f};
+        camera.center = {0.0f, 0.0f, 1.0f};
+        if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
+            return RHITestResult::fail("Invalid Lumen ray test camera");
+        }
+
+        bench::ValidationRecorder validation;
+        SurfaceCachePreview capturePreview;
+        auto& preview = capturePreview.preview;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        if (!preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink())) {
+            return RHITestResult::fail("Lumen global tracing preview setup: " + preview.lastLog());
+        }
+        environment::WorldEnvironment world;
+        world.sun.enabled = false;
+        if (!preview.setWorldEnvironment(world)) { return RHITestResult::fail("Could not set the emissive-only world"); }
+        preview.setRawReadbackEnabled(true);
+        constexpr std::string_view output = "Trace.radiance";
+        if (const auto rendered = preview.render(graph, kAtlasEdge, kAtlasEdge, output); !rendered) {
+            const auto error = "Lumen global tracing preview: " + preview.lastLog();
+            if (rendered.error() == Error::Unsupported &&
+                (preview.lastLog().find("requires R8 storage image support") != std::string::npos ||
+                    preview.lastLog().find("requires R16 storage image support") != std::string::npos)) {
+                return RHITestResult::skip(error);
+            }
+            return RHITestResult::fail(error);
+        }
+
+        const auto surface = capturePreview.captureAfterPass(graph, "SurfaceCache", debug::DebugValue::array({
+            {{"id", "SurfaceCache.cards"}, {"layout", "u32"}, {"count", kCardCount * sizeof(CapturedCard) / sizeof(uint32_t)}},
+        }), output, log);
+        if (!surface) { return RHITestResult::fail(log); }
+        if (surface->artifacts.size() != 1 || surface->artifacts[0].bytes.size() != kCardCount * sizeof(CapturedCard)) {
+            return RHITestResult::fail("Unexpected Lumen ray fixture card layout");
+        }
+        const auto& cards = surface->artifacts[0].bytes;
+        const auto captureRays = [&](std::array<LumenRayResult, kLumenRayCount>& hits) {
+            // Capture requests belong to the currently compiled graph generation.
+            if (graph.dirty() && !preview.render(graph, kAtlasEdge, kAtlasEdge, output, false)) {
+                log = preview.lastLog();
+                return false;
+            }
+            const auto capture = capturePreview.captureAfterPass(graph, "Trace", debug::DebugValue::array({
+                {{"id", "Trace.results"}, {"layout", "u32"}, {"count", sizeof(hits) / sizeof(uint32_t)}},
+            }), output, log);
+            if (!capture) { return false; }
+            if (capture->artifacts.size() != 1 || capture->artifacts[0].bytes.size() != sizeof(hits)) {
+                log = "Unexpected fixed-ray result buffer layout";
+                return false;
+            }
+            std::memcpy(hits.data(), capture->artifacts[0].bytes.data(), sizeof(hits));
+            return true;
+        };
+
+        std::array<LumenRayResult, kLumenRayCount> hits;
+        if (!captureRays(hits)) { return RHITestResult::fail(log); }
+        for (const auto& error : {
+            checkLumenHit(hits[0], 0, leftObject, 5, cards, front, 0.75f, 0.5f),
+            checkLumenHit(hits[1], 0, rightObject, 1, cards, mirrorNormal, 0.6f, 0.125f),
+            checkLumenHit(hits[2], 0, leftObject, 4, cards, back, 0.75f, 0.0f),
+            checkLumenHit(hits[3], 1, leftObject, 5, cards, front, 2.0f, 0.5f),
+        }) {
+            if (!error.empty()) { return RHITestResult::fail(error); }
+        }
+        constexpr std::array missClasses{kRayMiss, kRayOutside, kRayPartial};
+        for (size_t i = 0; i < missClasses.size(); ++i) {
+            const auto& hit = hits[4 + i];
+            if (hit.geometryClass != missClasses[i] || hit.hitDistance != -1.0f || hit.clipmap != kInvalidRayIndex ||
+                hit.cacheStatus != kRayNoGeometryHit || !emptyLumenSample(hit) ||
+                hit.candidates[0] != kInvalidRayIndex) {
+                return RHITestResult::fail("Incorrect Lumen miss classification: " + describeLumenRay(hit).dump());
+            }
+        }
+        const auto& nearHit = hits.back();
+        if (nearHit.geometryClass != kRayHit || nearHit.cacheStatus != kRaySuppressed ||
+            nearHit.radianceFactor != 0.0f || !emptyLumenSample(nearHit)) {
+            return RHITestResult::fail("Expected the UE near-origin radiance suppression: " + describeLumenRay(nearHit).dump());
+        }
+        const auto& pixels = preview.readbackBytes();
+        if (preview.readbackFormat() != Format::RGBA16Sfloat || pixels.size() != kLumenRayCount * 4 * sizeof(uint16_t)) {
+            return RHITestResult::fail("Expected one RGBA16F radiance texel per fixed ray");
+        }
+        for (size_t i = 0; i < hits.size(); ++i) {
+            const auto rgba = readSurfaceValue<std::array<uint16_t, 4>>(pixels, i);
+            for (size_t channel = 0; channel < 3; ++channel) {
+                if (!(std::abs(halfToFloat(rgba[channel]) - hits[i].radiance[channel]) < 0.001f)) {
+                    return RHITestResult::fail("The trace radiance texture disagrees with the GPU ray result");
+                }
+            }
+        }
+        if (!preview.render(graph, kAtlasEdge, kAtlasEdge, "FinalBlit.color")) {
+            return RHITestResult::fail("Lumen fixed-ray preview: " + preview.lastLog());
+        }
+        if (!saveRgba8Png(context.outputDirectory / "LumenGlobalTraceRadiance.png",
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), preview.width(), preview.height(), log)) {
+            return RHITestResult::fail(log);
+        }
+
+        debug::DebugValue evidence{{"rays", rays}, {"fullBudget", debug::DebugValue::array()}};
+        for (const auto& hit : hits) {
+            evidence["fullBudget"].push_back(describeLumenRay(hit));
+        }
+        surfaceProperties["meshCardPaths"] = nlohmann::json::array();
+        if (!graph.setNodeProperties(surfaceId, surfaceProperties) || !captureRays(hits)) {
+            return RHITestResult::fail("Lumen geometry without cards: " + log);
+        }
+        if (hits[0].geometryClass != kRayHit || hits[0].cacheStatus != kRayNoCard ||
+            hits[0].candidates[0] != leftObject || !emptyLumenSample(hits[0])) {
+            return RHITestResult::fail("Missing card was confused with a miss or valid black: " + describeLumenRay(hits[0]).dump());
+        }
+        evidence["firstRayWithoutCards"] = describeLumenRay(hits[0]);
+
+        fieldProperties["maxPhysicalPages"] = 0;
+        surfaceProperties["meshCardPaths"] = {cardPath.generic_string()};
+        if (!graph.setNodeProperties(fieldId, fieldProperties) || !graph.setNodeProperties(surfaceId, surfaceProperties) ||
+            !captureRays(hits)) {
+            return RHITestResult::fail("Lumen zero-budget object grid: " + log);
+        }
+        if ((hits[0].geometryClass != kRayUnavailable &&
+                (hits[0].geometryClass != kRayHit || hits[0].cacheStatus != kRayNoCard)) ||
+            hits[0].candidates[0] != kInvalidRayIndex || !emptyLumenSample(hits[0])) {
+            return RHITestResult::fail("An overflow page supplied a false usable candidate: " + describeLumenRay(hits[0]).dump());
+        }
+        evidence["firstRayWithoutResidentPages"] = describeLumenRay(hits[0]);
+        if (validation.failed()) {
+            return RHITestResult::fail("Lumen global tracing Vulkan validation: " + validation.snapshot().dump());
+        }
+        const auto evidencePath = context.outputDirectory / "LumenGlobalTraceReadback.json";
+        std::ofstream outputFile(evidencePath);
+        outputFile << evidence.dump(2) << '\n';
+        outputFile.close();
+        if (!outputFile) { return RHITestResult::fail("Cannot write " + evidencePath.string()); }
+        return RHITestResult::pass(
+            "Validated clipmap hits, mirrored instance selection, card radiance, ray coverage and zero-budget pages.");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenGlobalTraceTest);
 
 } // namespace
 } // namespace metallic::tests

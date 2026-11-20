@@ -8,12 +8,14 @@
 #include <cmath>
 #include <cstring>
 #include <unordered_set>
+#include <spdlog/spdlog.h>
 
 namespace metallic::render {
 namespace {
 
 constexpr uint32_t kBrickSize = scene::kMeshDistanceFieldBrickSize;
 constexpr uint32_t kBrickBytes = kBrickSize * kBrickSize * kBrickSize;
+constexpr uint32_t kObjectGridInstanceIndexMask = 0x00ffffffu;
 
 struct alignas(16) MeshDistanceFieldGPUMip {
     std::array<uint32_t, 4> dimensionsAndIndirectionOffset;
@@ -27,8 +29,16 @@ struct alignas(16) MeshDistanceFieldGPUInstance {
     std::array<uint32_t, 4> indices;
 };
 
+struct alignas(16) MeshDistanceFieldGPUObject {
+    std::array<float, 3> center;
+    uint32_t object;
+    std::array<float, 3> extent;
+    uint32_t padding;
+};
+
 static_assert(sizeof(MeshDistanceFieldGPUMip) == 48);
 static_assert(sizeof(MeshDistanceFieldGPUInstance) == 80);
+static_assert(sizeof(MeshDistanceFieldGPUObject) == 32 && offsetof(MeshDistanceFieldGPUObject, extent) == 16);
 
 Result<std::unique_ptr<Buffer>> makeUploadBuffer(Device& device, std::span<const std::byte> bytes,
     BufferUsageBits usage, uint32_t stride = 0)
@@ -116,6 +126,20 @@ bool makeMeshDistanceFieldInstance(const float4x4& world, float3 localCenter, fl
     return true;
 }
 
+MeshDistanceFieldGPUObject makeMeshDistanceFieldGPUObject(const float4x4& world,
+    const std::array<float, 3>& center, const std::array<float, 3>& extent, scene::SceneEntity object)
+{
+    MeshDistanceFieldGPUObject result{};
+    for (size_t axis = 0; axis < 3; ++axis) {
+        result.center[axis] = world.a[axis] * center[0] + world.a[4 + axis] * center[1] +
+            world.a[8 + axis] * center[2] + world.a[12 + axis];
+        result.extent[axis] = std::abs(world.a[axis]) * extent[0] +
+            std::abs(world.a[4 + axis]) * extent[1] + std::abs(world.a[8 + axis]) * extent[2];
+    }
+    result.object = static_cast<uint32_t>(object);
+    return result;
+}
+
 } // namespace
 
 Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const scene::Scene& scene,
@@ -145,6 +169,14 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
         Asset asset{};
         asset.meshIndex = field.sourceMeshIndex;
         asset.mipBase = static_cast<uint32_t>(assets.size() * scene::kMeshDistanceFieldMipCount);
+        scene::Bounds geometryBounds;
+        for (const auto& position : geometry.positions) {
+            geometryBounds.include(float3(position[0], position[1], position[2]));
+        }
+        const float3 geometryCenter = geometryBounds.center();
+        const float3 geometryExtent = (geometryBounds.max - geometryBounds.min) * 0.5f;
+        asset.geometryCenter = {geometryCenter.x, geometryCenter.y, geometryCenter.z};
+        asset.geometryExtent = {geometryExtent.x, geometryExtent.y, geometryExtent.z};
         for (size_t axis = 0; axis < 3; ++axis) {
             asset.localCenter[axis] = (field.localBoundsMin[axis] + field.localBoundsMax[axis]) * 0.5f;
             asset.normalizedExtent[axis] = (field.localBoundsMax[axis] - field.localBoundsMin[axis]) * 0.5f;
@@ -232,9 +264,10 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
 }
 
 Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scene::Scene& scene,
-    uint32_t& count, uint32_t& unsupportedTransforms) const
+    uint32_t& count, uint32_t& unsupportedTransforms, std::unique_ptr<Buffer>* objectGridObjects) const
 {
     std::vector<MeshDistanceFieldGPUInstance> instances;
+    std::vector<MeshDistanceFieldGPUObject> gridObjects;
     std::unordered_set<scene::SceneEntity> objects;
     unsupportedTransforms = 0;
     for (const auto& node : scene.renderNodes()) {
@@ -250,13 +283,30 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
                 float3(extent[0], extent[1], extent[2]), asset->volumeToLocal,
                 asset->mipBase, static_cast<uint32_t>(node.nodeIndex) + 1u, instance)) {
             instances.push_back(instance);
+            if (objectGridObjects) {
+                gridObjects.push_back(makeMeshDistanceFieldGPUObject(node.worldMatrix,
+                    asset->geometryCenter, asset->geometryExtent, node.object));
+            }
         } else {
             ++unsupportedTransforms;
         }
     }
+    // At maximum rank, a packed 0xffffff index would collide with the invalid entry.
+    if (objectGridObjects && instances.size() > kObjectGridInstanceIndexMask) {
+        spdlog::error("Global Distance Field object grid exceeds its 24-bit instance index range");
+        return makeError(Error::Unsupported);
+    }
     count = static_cast<uint32_t>(instances.size());
     if (instances.empty()) { instances.emplace_back(); }
-    return makeUploadBuffer(*device_, std::as_bytes(std::span(instances)), BufferUsageBits::Storage, sizeof(instances[0]));
+    auto instanceBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(instances)),
+        BufferUsageBits::Storage, sizeof(instances[0]));
+    if (!instanceBuffer || !objectGridObjects) { return instanceBuffer; }
+    if (gridObjects.empty()) { gridObjects.emplace_back(); }
+    auto objectBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(gridObjects)),
+        BufferUsageBits::Storage, sizeof(gridObjects[0]));
+    if (!objectBuffer) { return makeError(objectBuffer.error()); }
+    *objectGridObjects = std::move(*objectBuffer);
+    return instanceBuffer;
 }
 
 MeshDistanceFieldGPUBindings MeshDistanceFieldGPU::bind(ParameterWriter& writer) const

@@ -126,6 +126,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/MeshDistanceFieldDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GlobalDistanceFieldPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/LumenSurfaceCachePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/LumenGlobalTracingPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferMaterialPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp
