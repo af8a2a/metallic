@@ -383,6 +383,8 @@ public:
     const std::string& passName() const { return passName_; }
     const RenderGraphProperties& properties() const { return properties_; }
     HistoryResourceManager* historyResources() const { return historyResources_; }
+    // Shared between passes of this graph and view. Ordinary camera motion preserves these textures.
+    HistoryResourceManager& graphHistoryResources() const { return graphHistoryResources_; }
     Streamer* streamer() const { return streamer_; }
     const scene::Scene* runtimeScene() const { return runtimeScene_; }
     const PreparedSceneResources* preparedScene() const { return preparedScene_.get(); }
@@ -497,6 +499,7 @@ private:
         const RenderGraphProperties& properties,
         std::vector<Binding> bindings,
         HistoryResourceManager* historyResources,
+        HistoryResourceManager& graphHistoryResources,
         Streamer* streamer,
         const scene::Scene* runtimeScene,
         RenderWorld* world,
@@ -523,6 +526,7 @@ private:
     const RenderGraphProperties& properties_;
     std::vector<Binding> bindings_;
     HistoryResourceManager* historyResources_ = nullptr;
+    HistoryResourceManager& graphHistoryResources_;
     Streamer* streamer_ = nullptr;
     const scene::Scene* runtimeScene_ = nullptr;
     RenderWorld* world_ = nullptr;

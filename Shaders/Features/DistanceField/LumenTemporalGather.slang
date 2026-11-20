@@ -9,7 +9,7 @@ using Metallic.ScenePath;
 
 typealias DiffuseTexture = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 2>;
 typealias FullPrecisionTexture = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 1>;
-typealias HistoryWeightTexture = _Texture<float, __Shape2D, 0, 0, 0, 1, 0, 0, 6>;
+typealias ScalarTexture = _Texture<float, __Shape2D, 0, 0, 0, 1, 0, 0, 6>;
 
 struct LumenTemporalGatherParams
 {
@@ -21,7 +21,7 @@ struct LumenTemporalGatherParams
     ResourceHandle<Texture2D<float4>> previousGeometry;
     ResourceHandle<DiffuseTexture> indirectOutput;
     ResourceHandle<FullPrecisionTexture> color;
-    ResourceHandle<HistoryWeightTexture> historyWeight;
+    ResourceHandle<ScalarTexture> historyWeight;
     ResourceHandle<DiffuseTexture> currentDiffuse;
     ResourceHandle<FullPrecisionTexture> currentGeometry;
     uint historyValid;
@@ -30,6 +30,10 @@ struct LumenTemporalGatherParams
     float2 previousJitter;
     ViewCameraConstants currentCamera;
     ViewCameraConstants previousCamera;
+    ResourceHandle<Texture2D<float>> sceneDepth;
+    ResourceHandle<ScalarTexture> screenHistoryDepth;
+    ResourceHandle<FullPrecisionTexture> screenHistoryColor;
+    uint publishScreenTraceHistory;
 };
 
 static const float kLumenHistoryDistanceThreshold = 0.01f;
@@ -195,12 +199,18 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
 
     DiffuseTexture indirectOutput = resolveUniform(params.indirectOutput);
     FullPrecisionTexture color = resolveUniform(params.color);
-    HistoryWeightTexture historyWeight = resolveUniform(params.historyWeight);
+    ScalarTexture historyWeight = resolveUniform(params.historyWeight);
     DiffuseTexture currentDiffuse = resolveUniform(params.currentDiffuse);
     FullPrecisionTexture currentGeometry = resolveUniform(params.currentGeometry);
     indirectOutput[thread.xy] = float4(outDiffuseIndirect, newDiffuseLighting.w);
     float4 scene = directColor.Load(texel);
-    color[thread.xy] = float4(scene.rgb + outDiffuseIndirect, scene.a);
+    float4 sceneColor = float4(scene.rgb + outDiffuseIndirect, scene.a);
+    color[thread.xy] = sceneColor;
+    // UE 5.7.4 ScreenSpaceRayTracingInput extracts resolved color and depth before postprocessing.
+    if (params.publishScreenTraceHistory != 0u) {
+        resolveUniform(params.screenHistoryDepth)[thread.xy] = resolveUniform(params.sceneDepth).Load(texel);
+        resolveUniform(params.screenHistoryColor)[thread.xy] = sceneColor;
+    }
     historyWeight[thread.xy] = outHistoryWeight;
     currentDiffuse[thread.xy] = float4(outDiffuseIndirect, packNumFramesAccumulated(newNumFramesAccumulated));
     currentGeometry[thread.xy] = float4(surfaceNormal, surface.w);

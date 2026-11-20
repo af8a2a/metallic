@@ -835,6 +835,7 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     const RenderGraphProperties& properties,
     std::vector<Binding> bindings,
     HistoryResourceManager* historyResources,
+    HistoryResourceManager& graphHistoryResources,
     Streamer* streamer,
     const scene::Scene* runtimeScene,
     RenderWorld* world,
@@ -847,6 +848,7 @@ RenderGraphExecutionContext::RenderGraphExecutionContext(
     , properties_(properties)
     , bindings_(std::move(bindings))
     , historyResources_(historyResources)
+    , graphHistoryResources_(graphHistoryResources)
     , streamer_(streamer)
     , runtimeScene_(runtimeScene)
     , world_(world)

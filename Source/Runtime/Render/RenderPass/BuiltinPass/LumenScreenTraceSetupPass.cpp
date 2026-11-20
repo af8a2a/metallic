@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenTraceHistory.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -13,7 +14,7 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kSetupABI = 0x4c554d454e020001ull;
+constexpr uint64_t kSetupABI = 0x4c554d454e020003ull;
 constexpr uint64_t kReduceABI = 0x4c554d454e020002ull;
 constexpr uint32_t kUEHZBMipBatchSize = 4u;
 using Extent = std::array<uint32_t, 2>;
@@ -29,7 +30,7 @@ struct LumenScreenTraceSetupParams {
     ShaderSampledImage depth, color, historyDepth, historyColor;
     ShaderStorageImage previousDepth, previousColor, currentDepth, currentColor;
     ShaderBuffer closestHZB, view;
-    uint32_t padding[2];
+    uint32_t writeCurrentHistory, padding;
 };
 static_assert(sizeof(LumenScreenTraceSetupParams) == 272);
 
@@ -69,8 +70,15 @@ public:
     Result<> execute(RenderGraphExecutionContext& context) override;
 
 private:
+    bool usesCompositedHistory() const
+    {
+        const auto source = properties().find("historySource");
+        return source != properties().end() && *source == "composited";
+    }
+
     Device* device_ = nullptr;
     HistoryResourceManager history_;
+    std::array<std::string, 2> historyNames_;
     HistoryContent previousContent_{};
     uint64_t previousFrame_ = 0;
     ComputeKernel snapshot_, reduce_;
@@ -80,7 +88,9 @@ RenderPassReflection LumenScreenTraceSetupPass::reflect(const RenderGraphCompile
 {
     RenderPassReflection reflection;
     reflection.addTextureInput("depth", "Current reversed-Z scene depth").sampledRead().format = Format::D32Sfloat;
-    reflection.addTextureInput("color", "Scene-linear color before indirect diffuse").sampledRead().format = Format::RGBA32Sfloat;
+    if (!usesCompositedHistory()) {
+        reflection.addTextureInput("color", "Scene-linear color before indirect diffuse").sampledRead().format = Format::RGBA32Sfloat;
+    }
     const auto layout = hzbLayout({context.width, context.height});
     reflection.addBufferOutput("closestHZB", "Closest HZB with full-resolution scene depth followed by packed mips")
         .buffer(uint64_t(layout.texelCount) * sizeof(float), sizeof(float)).storageReadWrite()
@@ -90,7 +100,7 @@ RenderPassReflection LumenScreenTraceSetupPass::reflect(const RenderGraphCompile
         .transient(RenderGraphInitialization::FullOverwrite);
     reflection.addTextureOutput("previousDepth", "Previous reversed-Z scene depth")
         .storageWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::R32Sfloat;
-    auto& previousColor = reflection.addTextureOutput("previousColor", "Previous scene-linear color before indirect diffuse")
+    auto& previousColor = reflection.addTextureOutput("previousColor", "Previous scene-linear color for screen trace hits")
         .storageWrite().transient(RenderGraphInitialization::FullOverwrite);
     previousColor.format = Format::RGBA32Sfloat;
     previousColor.colorEncoding = DisplayColorEncoding::SceneLinear;
@@ -99,8 +109,28 @@ RenderPassReflection LumenScreenTraceSetupPass::reflect(const RenderGraphCompile
 
 Result<> LumenScreenTraceSetupPass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
+    const auto source = properties().find("historySource");
+    if (source != properties().end() && *source != "deferred" && *source != "composited") {
+        log = "Lumen screen trace historySource must be deferred or composited";
+        return makeError(Error::InvalidArgument);
+    }
+    if (usesCompositedHistory()) {
+        const auto producer = properties().find("historyProducer");
+        if (producer == properties().end() || !producer->is_string() || producer->get_ref<const std::string&>().empty()) {
+            log = "Lumen composited screen history requires the name of a historyProducer pass";
+            return makeError(Error::InvalidArgument);
+        }
+        historyNames_ = lumenScreenTraceHistoryNames(producer->get_ref<const std::string&>());
+    } else {
+        historyNames_ = {"sceneDepth", "directColor"};
+    }
+
     device_ = context.device;
-    if (auto result = history_.initialize(*device_); !result) { return result; }
+    if (!usesCompositedHistory()) {
+        if (auto result = history_.initialize(*device_); !result) { return result; }
+    }
+    previousFrame_ = 0;
+    previousContent_ = {};
     constexpr char module[] = "Features/DistanceField/LumenScreenTraceSetup";
     constexpr char shaderPath[] = PROJECT_SOURCE_DIR "/Shaders";
     if (auto result = ShaderRegistry::instance().getComputeKernel(*device_,
@@ -134,31 +164,24 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
         world ? world->environmentRevision() : 0,
         extent[0], extent[1],
     };
-    // Maintain camera-reprojectable history when the global manager resets on ordinary camera motion.
-    history_.beginFrame(context.frameIndex());
+    const bool compositedHistory = usesCompositedHistory();
+    auto& history = compositedHistory ? context.graphHistoryResources() : history_;
     const bool previousContentValid = previousContent_ == content && previousFrame_ + 1 == context.frameIndex() &&
         view->frame[1] != 0u;
-    if (!previousContentValid) { history_.invalidateAll(); }
-
-    constexpr std::array historyNames{"sceneDepth", "directColor"};
-    constexpr std::array historyFormats{Format::R32Sfloat, Format::RGBA32Sfloat};
-    for (size_t index = 0; index < historyNames.size(); ++index) {
-        const TextureDesc desc{
-            .type = TextureType::Texture2D,
-            .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
-            .format = historyFormats[index],
-            .width = extent[0], .height = extent[1], .depth = 1, .mipCount = 1, .layerCount = 1,
-            .memoryLocation = MemoryLocation::Device,
-        };
-        if (auto result = history_.ensureTexture(historyNames[index], desc, TextureViewDesc{.format = desc.format}); !result) {
+    if (!compositedHistory) {
+        // Keep the Deferred comparison path reprojectable during ordinary camera motion.
+        history.beginFrame(context.frameIndex());
+        if (!previousContentValid) { history.invalidateAll(); }
+        if (auto result = ensureLumenScreenTraceHistory(history, historyNames_, extent[0], extent[1]); !result) {
             return result;
         }
     }
-    const auto currentDepth = history_.texture(historyNames[0], HistorySlot::Current);
-    const auto currentColor = history_.texture(historyNames[1], HistorySlot::Current);
-    const auto previousDepth = history_.texture(historyNames[0], HistorySlot::Previous);
-    const auto previousColor = history_.texture(historyNames[1], HistorySlot::Previous);
-    const bool historyValid = previousDepth.valid && previousColor.valid;
+    const auto previousDepth = history.texture(historyNames_[0], HistorySlot::Previous);
+    const auto previousColor = history.texture(historyNames_[1], HistorySlot::Previous);
+    const auto matchesFrame = [&](const HistoryTextureRef& texture) {
+        return texture.valid && texture.desc->width == extent[0] && texture.desc->height == extent[1];
+    };
+    const bool historyValid = previousContentValid && matchesFrame(previousDepth) && matchesFrame(previousColor);
 
     auto registry = ResourceRegistry::forDevice(*device_);
     if (!registry) { return makeError(registry.error()); }
@@ -168,35 +191,41 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
     params.traceView.cameras = *view;
     params.traceView.state = {historyValid, layout.baseExtent[0], layout.baseExtent[1], layout.mipCount};
     params.depth = writer.sampledImageHandle(context.inputTexture("depth").view());
-    params.color = writer.sampledImageHandle(context.inputTexture("color").view());
-    params.historyDepth = historyValid ? writer.sampledImageHandle(previousDepth.view) : params.depth;
-    params.historyColor = historyValid ? writer.sampledImageHandle(previousColor.view) : params.color;
+    if (historyValid) {
+        params.historyDepth = writer.sampledImageHandle(previousDepth.view);
+        params.historyColor = writer.sampledImageHandle(previousColor.view);
+    }
     params.previousDepth = writer.storageImageHandle(context.outputTexture("previousDepth").view());
     params.previousColor = writer.storageImageHandle(context.outputTexture("previousColor").view());
-    params.currentDepth = writer.storageImageHandle(currentDepth.view);
-    params.currentColor = writer.storageImageHandle(currentColor.view);
     params.closestHZB = writer.buffer(context.outputBuffer("closestHZB").buffer());
     params.view = writer.buffer(context.outputBuffer("traceView").buffer());
-    const auto encoded = writer.encode(params, kSetupABI);
-    if (!encoded) { return makeError(encoded.error()); }
-
     using Access = RenderGraphResourceAccess;
     std::vector<RenderGraphStageUse> snapshotUses{
-        {"depth", Access::TextureSampleRead}, {"color", Access::TextureSampleRead},
+        {"depth", Access::TextureSampleRead},
         {"closestHZB", Access::BufferStorageWrite}, {"traceView", Access::BufferStorageWrite},
         {"previousDepth", Access::TextureStorageWrite}, {"previousColor", Access::TextureStorageWrite},
-        {"historyCurrentDepth", Access::TextureStorageWrite}, {"historyCurrentColor", Access::TextureStorageWrite},
     };
-    std::vector<RenderGraphTextureImport> textures{
-        {"historyCurrentDepth", currentDepth.texture, currentDepth.view, currentDepth.state, ResourceState::General},
-        {"historyCurrentColor", currentColor.texture, currentColor.view, currentColor.state, ResourceState::General},
-    };
+    std::vector<RenderGraphTextureImport> textures;
+    if (!compositedHistory) {
+        const auto currentDepth = history.texture(historyNames_[0], HistorySlot::Current);
+        const auto currentColor = history.texture(historyNames_[1], HistorySlot::Current);
+        params.color = writer.sampledImageHandle(context.inputTexture("color").view());
+        params.currentDepth = writer.storageImageHandle(currentDepth.view);
+        params.currentColor = writer.storageImageHandle(currentColor.view);
+        params.writeCurrentHistory = 1;
+        snapshotUses.insert(snapshotUses.end(), {{"color", Access::TextureSampleRead},
+            {"historyCurrentDepth", Access::TextureStorageWrite}, {"historyCurrentColor", Access::TextureStorageWrite}});
+        textures.push_back({"historyCurrentDepth", currentDepth.texture, currentDepth.view, currentDepth.state, ResourceState::ShaderRead});
+        textures.push_back({"historyCurrentColor", currentColor.texture, currentColor.view, currentColor.state, ResourceState::ShaderRead});
+    }
     if (historyValid) {
         snapshotUses.push_back({"historyPreviousDepth", Access::TextureSampleRead});
         snapshotUses.push_back({"historyPreviousColor", Access::TextureSampleRead});
         textures.push_back({"historyPreviousDepth", previousDepth.texture, previousDepth.view, previousDepth.state, ResourceState::ShaderRead});
         textures.push_back({"historyPreviousColor", previousColor.texture, previousColor.view, previousColor.state, ResourceState::ShaderRead});
     }
+    const auto encoded = writer.encode(params, kSetupABI);
+    if (!encoded) { return makeError(encoded.error()); }
     std::vector<RenderGraphStage> stages;
     stages.reserve(1u + layout.mipCount);
     stages.push_back({"Snapshot scene history and seed HZB", snapshotUses, [&](CommandBuffer& cmd) {
@@ -221,11 +250,13 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
     }
 
     if (auto result = context.executeStages(stages, {}, textures); !result) { return result; }
-    for (const auto name : historyNames) {
-        if (auto result = history_.publishTextureState(context.commandBuffer(), name,
-            HistorySlot::Current, ResourceState::General, true); !result) { return result; }
+    for (const auto& name : historyNames_) {
+        if (!compositedHistory) {
+            if (auto result = history.publishTextureState(commands, name,
+                HistorySlot::Current, ResourceState::ShaderRead, true); !result) { return result; }
+        }
         if (historyValid) {
-            if (auto result = history_.publishTextureState(context.commandBuffer(), name,
+            if (auto result = history.publishTextureState(commands, name,
                 HistorySlot::Previous, ResourceState::ShaderRead); !result) { return result; }
         }
     }

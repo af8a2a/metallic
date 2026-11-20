@@ -428,6 +428,7 @@ struct RenderGraphExecutor::Impl {
     Format defaultFormat = Format::RGBA8Unorm;
     DisplayOutputParameters displayOutput;
     HistoryResourceManager* historyResources = nullptr;
+    HistoryResourceManager graphHistoryResources;
     const scene::Scene* runtimeScene = nullptr;
     RenderSubsystemHost ownedSubsystemHost;
     RenderWorld ownedWorld;
@@ -851,6 +852,7 @@ struct RenderGraphExecutor::Impl {
         if (!result) { return result; }
         sceneBindingsReady = false;
         if (history != nullptr) { history->invalidateAll(); }
+        graphHistoryResources.invalidateAll();
         const RenderGraphCompileContext context{
             .device = device, .graphicsQueue = device->getQueue(QueueType::Graphics),
             .runtimeScene = runtimeScene,
@@ -2380,6 +2382,7 @@ struct RenderGraphExecutor::Impl {
             executionProperties,
             std::move(bindings),
             historyResources,
+            graphHistoryResources,
             upload != nullptr ? upload->streamer() : nullptr,
             node.sceneBinding.source != nullptr ? node.sceneBinding.source : runtimeScene,
             world,
@@ -2800,6 +2803,11 @@ Result<> RenderGraphExecutor::compile(
         log = resultMessage("RenderGraph waitForSubmittedWork", pendingResult);
         impl_->isCompiled = false;
         return pendingResult;
+    }
+    if (auto result = impl_->graphHistoryResources.initialize(device); !result) {
+        log = resultMessage("RenderGraph history initialization", result);
+        impl_->isCompiled = false;
+        return result;
     }
 
     impl_->firstFeatureReservations.clear();
@@ -3389,6 +3397,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     impl_->historyResources = historyResources;
     std::string subsystemLog;
     const uint64_t frameIndex = impl_->executionFrameIndex++;
+    impl_->graphHistoryResources.beginFrame(frameIndex);
     impl_->beginExecutionCapture(frameIndex, true);
     Impl::ExecutionCaptureScope captureScope{*impl_};
     const profiling::NsightProfileRange executeMarker(
@@ -3841,6 +3850,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 
     std::string log;
     if (desc.historyResources != nullptr) { desc.historyResources->beginFrame(frameIndex); }
+    impl_->graphHistoryResources.beginFrame(frameIndex);
     phase.next("graph.subsystemBegin");
     RenderSubsystemFrameEndScope subsystemFrameScope(
         desc.captureWorkerIntervals ? &impl_->lastExecutionStats.subsystems : nullptr);

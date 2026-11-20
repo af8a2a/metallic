@@ -23,6 +23,7 @@ struct LumenScreenTraceSetupParams
     ResourceHandle<ScreenTraceColorImage> currentColor;
     ResourceHandle<RWStructuredBuffer<float>> closestHZB;
     ResourceHandle<RWStructuredBuffer<LumenScreenTraceView>> view;
+    uint writeCurrentHistory;
 };
 
 [shader("compute")]
@@ -37,7 +38,6 @@ void lumenScreenTraceSetupMain(uint3 dispatch : SV_DispatchThreadID)
 
     int3 pixel = int3(dispatch.xy, 0);
     float depth = resolveUniform(params.depth).Load(pixel);
-    float4 color = resolveUniform(params.color).Load(pixel);
     float previousDepth = 0.0f;
     float4 previousColor = 0.0f;
     if (params.traceView.state.x != 0u) {
@@ -47,8 +47,10 @@ void lumenScreenTraceSetupMain(uint3 dispatch : SV_DispatchThreadID)
 
     resolveUniform(params.previousDepth)[dispatch.xy] = previousDepth;
     resolveUniform(params.previousColor)[dispatch.xy] = previousColor;
-    resolveUniform(params.currentDepth)[dispatch.xy] = depth;
-    resolveUniform(params.currentColor)[dispatch.xy] = color;
+    if (params.writeCurrentHistory != 0u) {
+        resolveUniform(params.currentDepth)[dispatch.xy] = depth;
+        resolveUniform(params.currentColor)[dispatch.xy] = resolveUniform(params.color).Load(pixel);
+    }
     resolveUniform(params.closestHZB)[dispatch.y * extent.x + dispatch.x] = depth;
     if (all(dispatch.xy == 0u)) {
         resolveUniform(params.view)[0] = params.traceView;
