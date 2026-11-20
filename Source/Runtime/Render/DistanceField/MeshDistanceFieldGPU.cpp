@@ -33,7 +33,7 @@ struct alignas(16) MeshDistanceFieldGPUObject {
     std::array<float, 3> center;
     uint32_t object;
     std::array<float, 3> extent;
-    uint32_t padding;
+    uint32_t flags;
 };
 
 static_assert(sizeof(MeshDistanceFieldGPUMip) == 48);
@@ -272,8 +272,8 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
     unsupportedTransforms = 0;
     for (const auto& node : scene.renderNodes()) {
         if (!node.visible) { continue; }
-        const int32_t meshIndex = scene.renderPrimitives()[node.renderPrimitiveIndex].meshIndex;
-        const auto asset = std::ranges::find(assets_, meshIndex, &Asset::meshIndex);
+        const auto& primitive = scene.renderPrimitives()[node.renderPrimitiveIndex];
+        const auto asset = std::ranges::find(assets_, primitive.meshIndex, &Asset::meshIndex);
         if (asset == assets_.end() || !objects.insert(node.object).second) { continue; }
 
         const auto& center = asset->localCenter;
@@ -282,10 +282,16 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
         if (makeMeshDistanceFieldInstance(node.worldMatrix, float3(center[0], center[1], center[2]),
                 float3(extent[0], extent[1], extent[2]), asset->volumeToLocal,
                 asset->mipBase, static_cast<uint32_t>(node.nodeIndex) + 1u, instance)) {
+            instance.indices[2] = static_cast<uint32_t>(node.object);
             instances.push_back(instance);
             if (objectGridObjects) {
-                gridObjects.push_back(makeMeshDistanceFieldGPUObject(node.worldMatrix,
-                    asset->geometryCenter, asset->geometryExtent, node.object));
+                auto bounds = makeMeshDistanceFieldGPUObject(node.worldMatrix,
+                    asset->geometryCenter, asset->geometryExtent, node.object);
+                if (primitive.materialIndex >= 0) {
+                    const auto& emissive = scene.materials()[primitive.materialIndex].emissiveFactor;
+                    bounds.flags = emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f;
+                }
+                gridObjects.push_back(bounds);
             }
         } else {
             ++unsupportedTransforms;

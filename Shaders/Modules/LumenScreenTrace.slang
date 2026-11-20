@@ -228,7 +228,7 @@ float screenTraceHitVignette(float2 screenPosition)
     return saturate(1.0f - dot(vignette, vignette));
 }
 
-float screenTraceNoise(float2 uv, float frameId)
+public float screenTraceNoise(float2 uv, float frameId)
 {
     uv += frameId * (float2(47.0f, 17.0f) * 0.695f);
     const float3 magic = float3(0.06711056f, 0.00583715f, 52.9829189f);

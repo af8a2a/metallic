@@ -908,6 +908,30 @@ The pass marks world probes from the screen probes placed for Final Gather. It r
 
 The port follows the UE 5.7.4 software, opaque, skylight-off `FORCE_UNIFORM_TRACES` permutation with one radiance mip. It uses Metallic's perspective camera and meter-space world coordinates, current Deferred positions and normals, and the existing GDF and fixed Surface Cache. The X-packed indirection uses persistent graph buffers. Packed FP16 buffers hold directional radiance and hit distance, and the final atlas uses RGBA16F. Neighbor occlusion clamps atlas lookups to the current slot and treats a zero-length segment as visible. The angular filter skips a coincident hit that has no direction. A submitted frame with matching scene, visibility, transforms and lighting revisions can supply history. With a full atlas, a cell without a slot stays invalid and Gather continues its regular trace when the eight-probe neighborhood is incomplete. UE's BRDF-PDF trace tiles, hardware tracing, skylight and alternate irradiance or mip configurations are outside this path.
 
+### Lumen Detail Tracing
+
+**Lighting / Lumen / Detail Tracing** (`lumen-detail-tracing`) uses the Large Scene and the same Cornell Box mesh bakes. Set `Gather.detailTracing` to `true`, supply `detailDistanceFieldPaths`, and connect `VBuffer.depth` to `Gather.detailDepth`. This option requires Final Gather and can run with screen traces or WRC disabled. `meshSDFTraceDistance` defaults to 1.8 m and is capped by `maxTraceDistance`.
+
+Gather preserves confirmed screen hits, then traces eligible rays against individual Mesh Distance Fields before the GDF and WRC. The per-view grid uses 64-pixel tiles, logarithmic depth slices, closest and furthest depth bounds, and the UE froxel and SDF intersection tests. `Gather.probeRadiance` alpha 9 identifies an accepted Mesh SDF hit. `Gather.probeDistance` stores the hit distance plus the receiver-to-biased-origin offset used for handoff. The 40 m view cutoff and distance fade follow UE 5.7.4. Mesh hits sample the same scene-linear Surface Cache lighting as GDF hits. WRC updates continue to trace the GDF.
+
+This port covers opaque, uniformly scaled Mesh SDFs in perspective views with skylight disabled. Metallic builds the candidate grid with compute dispatches and reduces the current depth directly to the HZB interval inspected by the culler. The emissive exception to the object size test uses the material's emissive factor. The candidate pool reserves the full instance-cell upper bound and rejects configurations beyond its buffer limit. The stages use Metallic's baked finest SDF mip and fixed resident card tiles. Per-primitive draw-distance overrides, heightfields, hair, card feedback, and the UE moving-hit path are outside this permutation.
+
+### Lumen Probe Trace Readback
+
+Set `Gather.probeTraceReadback` to `[tileX, tileY, tileWidth, tileHeight]` in a Final Gather graph. Each tile covers 16 × 16 render pixels. Choose a nonempty rectangle inside the current view grid whose records occupy at most 128 MiB. Removing the property disables the output and selects the regular tracing shader permutation.
+
+Capture `Gather.probeTraceReadback` at `AfterPass` with layout `LumenProbeTraceReadback`. Each 48-byte record describes one direction before probe filtering. Records are ordered by selected tile in row-major order, then by probe slot (0–8), then by direction (0–63, X first). The index is `((localTileY * tileWidth + localTileX) * 9 + slot) * 64 + laneY * 8 + laneX`. Inspect `RadianceCache.placedProbes` when WRC owns placement, or `Gather.probePositions` when Gather places the probes, to match the slot to its receiver pixel.
+
+| Bytes | Fields |
+| --- | --- |
+| 0–15 | `screenEnd`, `detailEnd`, `gdfMin`, `gdfMax` in meters |
+| 16–31 | Raw scene-linear WRC RGB and `gdfHitDistance` in meters |
+| 32–47 | Original GDF classification, hit clipmap, successful sample count, and flags |
+
+An unused distance is `-1`. The screen trace can return `0` when its history or projected start is invalid. `detailEnd` includes the receiver-to-biased-origin offset. The GDF range is relative to the biased ray origin and includes empty intervals. The original GDF classification is preserved even when `Gather.probeRadiance` publishes cache class 6. A GDF invocation skipped by an early hit has classification `0xffffffff`, and any result without a GDF hit has clipmap `0xffffffff`.
+
+Flag bits 0–7 indicate a valid receiver, screen trace invoked, screen hit accepted, Detail trace invoked, Detail hit accepted, GDF invoked, WRC coverage valid, and WRC sampled. A zero RGB sample can still have `wrcSampled` set. An unused probe slot produces only sentinels and zero flags.
+
 ## Optional RHI diagnostics
 
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing

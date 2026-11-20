@@ -21,7 +21,7 @@ public struct MeshDistanceFieldInstance
     public float4 worldToVolume1;
     public float4 worldToVolume2;
     public float4 volumeExtentAndWorldScale;
-    public uint4 indices; // Finest mip record index, debug instance ID, reserved, reserved.
+    public uint4 indices; // Finest mip record index, debug instance ID, scene object ID, reserved.
 };
 
 public struct MeshDistanceFieldResources

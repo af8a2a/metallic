@@ -3,21 +3,91 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenProbePlacement.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/Debug/LumenProbeTraceReadback.h"
+#include "Runtime/Render/DistanceField/MeshDistanceFieldGPU.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
+#include "Runtime/Scene/Scene.h"
 
-#include <cmath>
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <filesystem>
+#include <limits>
+#include <optional>
 #include <vector>
 
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kScreenProbeGatherABI = 0x4c554d454e010009ull;
+constexpr uint64_t kScreenProbeGatherABI = 0x4c554d454e01000bull;
+constexpr uint64_t kMeshSDFCullingABI = 0x4c554d454e060001ull;
 constexpr uint32_t kRaysPerProbe = 8 * 8;
 constexpr uint32_t kTraceStride = 4 * sizeof(float);
 constexpr uint32_t kScreenTraceViewStride = 224;
 constexpr uint32_t kRadianceCacheClipmapStride = 48;
 constexpr uint32_t kSpatialPassCount = 3;
+constexpr uint32_t kMeshSDFGridTileSize = 64;
+constexpr uint32_t kMeshSDFGridMaxDepth = 22;
+constexpr uint32_t kMeshSDFCullThreads = 64;
+constexpr uint32_t kMeshSDFMaxDispatchGroups = 65535;
+constexpr uint32_t kMeshSDFMaxPairs = (128u * 1024 * 1024) / (2 * sizeof(uint32_t));
+constexpr float kMeshSDFTraceDistance = 1.8f;
+constexpr float kCardTraceEndDistance = 40.0f;
+constexpr uint64_t kMaxProbeTraceReadbackBytes = 128u * 1024u * 1024u;
+constexpr uint64_t kProbeTraceReadbackBytesPerTile = kLumenScreenProbeSlotsPerTile * kRaysPerProbe *
+    sizeof(LumenProbeTraceReadbackRecord);
+
+using ProbeTraceTileRectangle = std::array<uint32_t, 4>;
+
+uint64_t probeTraceReadbackBytes(const ProbeTraceTileRectangle& rectangle)
+{
+    return uint64_t(rectangle[2]) * rectangle[3] * kProbeTraceReadbackBytesPerTile;
+}
+
+std::optional<ProbeTraceTileRectangle> readProbeTraceRectangle(const RenderGraphProperties& value)
+{
+    if (!value.is_array() || value.size() != 4) { return std::nullopt; }
+    ProbeTraceTileRectangle rectangle{};
+    for (size_t index = 0; index < rectangle.size(); ++index) {
+        if (!value[index].is_number_integer()) { return std::nullopt; }
+        const uint64_t component = value[index].get<uint64_t>();
+        if (component > std::numeric_limits<uint32_t>::max()) { return std::nullopt; }
+        rectangle[index] = static_cast<uint32_t>(component);
+    }
+    if (rectangle[2] == 0 || rectangle[3] == 0 ||
+        uint64_t(rectangle[2]) * rectangle[3] > kMaxProbeTraceReadbackBytes / kProbeTraceReadbackBytesPerTile) {
+        return std::nullopt;
+    }
+    return rectangle;
+}
+
+uint32_t meshSDFGridTiles(uint32_t extent)
+{
+    return (extent + kMeshSDFGridTileSize - 1u) / kMeshSDFGridTileSize;
+}
+
+struct LumenMeshSDFGatherBindings {
+    MeshDistanceFieldGPUBindings meshes;
+    ShaderBuffer instances, gridCells, gridIndices;
+    std::array<uint32_t, 4> grid;
+    std::array<float, 3> cameraPosition;
+    float maxMeshSDFTraceDistance, cardTraceEndDistance;
+    uint32_t bricksPerAxis;
+};
+static_assert(sizeof(LumenMeshSDFGatherBindings) == 68);
+
+struct LumenMeshSDFCullingParams {
+    ViewCameraConstants camera;
+    std::array<float, 4> cull;
+    std::array<uint32_t, 4> grid;
+    ShaderSampledImage depth;
+    ShaderBuffer tileDepth, bounds, instances;
+    MeshDistanceFieldGPUBindings meshes;
+    ShaderBuffer gridCells, gridIndices, gridPairs, gridState;
+};
+static_assert(sizeof(LumenMeshSDFCullingParams) == 160 && offsetof(LumenMeshSDFCullingParams, meshes) == 128);
 
 struct LumenScreenProbeGatherParams {
     ShaderLumenGlobalTraceBindings scene;
@@ -32,8 +102,12 @@ struct LumenScreenProbeGatherParams {
     uint32_t frameIndex;
     ShaderBuffer cacheIndirection, cacheClipmaps;
     ShaderSampledImage cacheRadiance;
+    LumenMeshSDFGatherBindings detail;
+    ShaderBuffer traceReadback;
+    ProbeTraceTileRectangle traceReadbackTiles;
 };
-static_assert(sizeof(LumenScreenProbeGatherParams) == 140);
+static_assert(sizeof(LumenScreenProbeGatherParams) == 228 && offsetof(LumenScreenProbeGatherParams, detail) == 140 &&
+    offsetof(LumenScreenProbeGatherParams, traceReadback) == 208);
 
 class LumenScreenProbeGatherPass final : public ComputePass {
 public:
@@ -53,7 +127,11 @@ private:
     ComputeKernel integrate_;
     ComputeKernel place_;
     ComputeKernel filter_;
+    MeshDistanceFieldGPU meshFields_;
+    ComputeKernel meshGridClear_, meshGridDepth_, meshGridScatter_, meshGridAllocate_, meshGridCompact_;
     float maxTraceDistance_ = 4.0f;
+    float meshSDFTraceDistance_ = kMeshSDFTraceDistance;
+    std::optional<ProbeTraceTileRectangle> traceReadbackTiles_;
 };
 
 RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompileContext& context) const
@@ -75,6 +153,24 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
             .sampledRead().format = Format::RGBA32Sfloat;
         reflection.addBufferInput("traceView", "Screen trace view and history validity")
             .buffer(kScreenTraceViewStride, kScreenTraceViewStride).storageRead();
+    }
+    if (optionEnabled("detailTracing")) {
+        reflection.addTextureInput("detailDepth", "Current reversed-Z depth for Mesh SDF froxel culling")
+            .sampledRead().format = Format::D32Sfloat;
+        const uint64_t tiles = uint64_t(meshSDFGridTiles(context.width)) * meshSDFGridTiles(context.height);
+        const uint64_t cells = tiles * kMeshSDFGridMaxDepth;
+        const uint64_t maxInstances = context.runtimeScene ? context.runtimeScene->renderNodes().size() : 0u;
+        const uint64_t capacity = std::clamp(cells * maxInstances, uint64_t{1}, uint64_t{kMeshSDFMaxPairs});
+        reflection.addBufferOutput("detailTileDepth", "Closest and furthest reversed-Z depth per froxel tile")
+            .buffer(tiles * 8, 8).storageReadWrite();
+        reflection.addBufferOutput("detailGridCells", "Mesh SDF candidate start and count per froxel")
+            .buffer(cells * 8, 8).storageReadWrite().bufferLayout("RG32U");
+        reflection.addBufferOutput("detailGridPairs", "Scattered Mesh SDF instance and froxel indices")
+            .buffer(capacity * 8, 8).storageReadWrite();
+        reflection.addBufferOutput("detailGridIndices", "Compacted Mesh SDF instance indices")
+            .buffer(capacity * 4, 4).storageReadWrite().bufferLayout("u32");
+        reflection.addBufferOutput("detailGridState", "Candidate count and compacted index allocator")
+            .buffer(4 * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32");
     }
 
     const uint64_t probeCount = uint64_t(lumenScreenProbeTiles(context.width)) * lumenScreenProbeTiles(context.height);
@@ -106,6 +202,14 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
         reflection.addBufferOutput("probeDistance", "Per-direction trace distance in meters")
             .buffer(rayCount * sizeof(float), sizeof(float)).storageReadWrite()
             .transient(RenderGraphInitialization::FullOverwrite);
+        if (const auto readback = properties().find("probeTraceReadback"); readback != properties().end()) {
+            if (const auto tiles = readProbeTraceRectangle(*readback)) {
+                reflection.addBufferOutput("probeTraceReadback", "Screen, Detail, GDF and WRC state per selected probe ray")
+                    .buffer(probeTraceReadbackBytes(*tiles), sizeof(LumenProbeTraceReadbackRecord))
+                    .storageWrite().transient(RenderGraphInitialization::FullOverwrite)
+                    .bufferLayout(kLumenProbeTraceReadbackLayout);
+            }
+        }
         reflection.addBufferOutput("filteredProbeRadiance", "Spatially filtered probe ray RGB")
             .buffer(rayCount * kTraceStride, kTraceStride).storageReadWrite().transient(RenderGraphInitialization::FullOverwrite);
         reflection.addBufferOutput("probeFilterScratch", "Spatial filtering ping-pong buffer")
@@ -126,7 +230,7 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
 Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
     device_ = context.device;
-    for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache"}) {
+    for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache", "detailTracing"}) {
         const auto value = properties().find(name);
         if (value != properties().end() && !value->is_boolean()) {
             log += "Lumen Screen Probe Gather requires a boolean " + std::string(name);
@@ -137,6 +241,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     const bool screenTraces = optionEnabled("screenTraces");
     const bool stochasticInterpolation = optionEnabled("stochasticInterpolation");
     const bool radianceCache = optionEnabled("radianceCache");
+    const bool detailTracing = optionEnabled("detailTracing");
     if (screenTraces && !finalGather) {
         log += "Lumen screen tracing requires Final Gather";
         return makeError(Error::InvalidArgument);
@@ -148,6 +253,23 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     if (radianceCache && !finalGather) {
         log += "Lumen World Radiance Cache requires Final Gather";
         return makeError(Error::InvalidArgument);
+    }
+    if (detailTracing && !finalGather) {
+        log = "Lumen Detail Tracing requires Final Gather";
+        return makeError(Error::InvalidArgument);
+    }
+    traceReadbackTiles_.reset();
+    if (const auto readback = properties().find("probeTraceReadback"); readback != properties().end()) {
+        const auto tiles = readProbeTraceRectangle(*readback);
+        const uint32_t tileWidth = lumenScreenProbeTiles(context.width);
+        const uint32_t tileHeight = lumenScreenProbeTiles(context.height);
+        if (!finalGather || !tiles || uint64_t((*tiles)[0]) + (*tiles)[2] > tileWidth ||
+            uint64_t((*tiles)[1]) + (*tiles)[3] > tileHeight) {
+            log = "Lumen probeTraceReadback requires Final Gather and an in-bounds [tileX, tileY, width, height] "
+                "rectangle with at most 128 MiB of records";
+            return makeError(Error::InvalidArgument);
+        }
+        traceReadbackTiles_ = tiles;
     }
     const auto distance = properties().find("maxTraceDistance");
     if (distance != properties().end()) {
@@ -163,6 +285,48 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     if (screenTraces) { defines.push_back({"METALLIC_LUMEN_SCREEN_TRACES", "1"}); }
     if (stochasticInterpolation) { defines.push_back({"METALLIC_LUMEN_STOCHASTIC_INTERPOLATION", "1"}); }
     if (radianceCache) { defines.push_back({"METALLIC_LUMEN_RADIANCE_CACHE", "1"}); }
+    if (traceReadbackTiles_) { defines.push_back({"METALLIC_LUMEN_PROBE_TRACE_READBACK", "1"}); }
+    if (detailTracing) {
+        defines.push_back({"METALLIC_LUMEN_DETAIL_TRACING", "1"});
+        const auto paths = properties().find("detailDistanceFieldPaths");
+        if (!context.runtimeScene || !context.graphicsQueue || paths == properties().end() || !paths->is_array() || paths->empty()) {
+            log = "Lumen Detail Tracing requires a scene, graphics queue and detailDistanceFieldPaths";
+            return makeError(Error::InvalidArgument);
+        }
+        meshSDFTraceDistance_ = kMeshSDFTraceDistance;
+        if (const auto traceDistance = properties().find("meshSDFTraceDistance"); traceDistance != properties().end()) {
+            if (!traceDistance->is_number() || !std::isfinite(traceDistance->get<float>()) || traceDistance->get<float>() <= 0.0001f) {
+                log = "Lumen Detail Tracing meshSDFTraceDistance must be finite and greater than 0.0001 meters";
+                return makeError(Error::InvalidArgument);
+            }
+            meshSDFTraceDistance_ = traceDistance->get<float>();
+        }
+        meshSDFTraceDistance_ = std::min(meshSDFTraceDistance_, maxTraceDistance_);
+        std::vector<std::filesystem::path> fields;
+        for (const auto& path : *paths) {
+            if (!path.is_string()) {
+                log = "Lumen Detail Tracing detailDistanceFieldPaths must contain paths";
+                return makeError(Error::InvalidArgument);
+            }
+            fields.push_back(std::filesystem::path(PROJECT_SOURCE_DIR) / path.get_ref<const std::string&>());
+        }
+        if (auto result = meshFields_.initialize(*device_, *context.graphicsQueue, *context.runtimeScene, fields, log); !result) {
+            return result;
+        }
+        using KernelEntry = std::pair<const char*, ComputeKernel*>;
+        const KernelEntry culling[]{
+            {"lumenMeshSDFGridClearMain", &meshGridClear_}, {"lumenMeshSDFGridDepthMain", &meshGridDepth_},
+            {"lumenMeshSDFGridScatterMain", &meshGridScatter_}, {"lumenMeshSDFGridAllocateMain", &meshGridAllocate_},
+            {"lumenMeshSDFGridCompactMain", &meshGridCompact_},
+        };
+        for (const auto& [entry, kernel] : culling) {
+            auto result = ShaderRegistry::instance().getComputeKernel(*device_,
+                {.moduleName = "Features/DistanceField/LumenMeshSDFCulling", .entryPointName = entry,
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                {.parameters = parameterAbi<LumenMeshSDFCullingParams>(kMeshSDFCullingABI), .debugName = entry}, *kernel, log);
+            if (!result) { return result; }
+        }
+    }
     const auto createGather = [&](const char* entry, const char* name, ComputeKernel& kernel) {
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = "Features/DistanceField/LumenScreenProbeGather", .entryPointName = entry,
@@ -219,6 +383,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     const bool finalGather = optionEnabled("finalGather");
     const bool screenTraces = optionEnabled("screenTraces");
     const bool radianceCache = optionEnabled("radianceCache");
+    const bool detailTracing = optionEnabled("detailTracing");
     const char* probePositionsName = radianceCache ? "placedProbes" : "probePositions";
     ShaderBuffer scratch;
     if (finalGather) {
@@ -238,6 +403,61 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         params.cacheIndirection = writer.buffer(context.inputBuffer("cacheIndirection").buffer());
         params.cacheClipmaps = writer.buffer(context.inputBuffer("cacheClipmaps").buffer());
         params.cacheRadiance = writer.sampledImageHandle(context.inputTexture("cacheRadiance").view());
+    }
+    if (traceReadbackTiles_) {
+        params.traceReadback = writer.buffer(context.outputBuffer("probeTraceReadback").buffer());
+        params.traceReadbackTiles = *traceReadbackTiles_;
+    }
+    EncodedParameters meshGridParams;
+    std::unique_ptr<Buffer> meshInstances, meshBounds;
+    uint32_t meshCellGroups = 0, meshObjectGroups = 0, meshCompactGroups = 0;
+    if (detailTracing) {
+        const auto* view = context.viewConstants();
+        if (!view || view->current.upProjection[3] > 0.5f) {
+            spdlog::error("Lumen Detail Tracing requires a perspective graph camera");
+            return makeError(Error::InvalidArgument);
+        }
+        const auto* world = context.world();
+        if (world && (world->environment().enabled ||
+            world->worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere)) {
+            spdlog::error("This Lumen Detail Tracing permutation requires skylight to be disabled");
+            return makeError(Error::InvalidArgument);
+        }
+        const float depthRange = kCardTraceEndDistance - view->current.clipOrtho[0];
+        const uint32_t slices = depthRange > 0.0f ? uint32_t(std::max(0.0f, std::trunc(std::log2(depthRange) * 4.0f))) + 1u : 1u;
+        uint32_t instanceCount = 0, unsupportedTransforms = 0;
+        auto instances = meshFields_.uploadInstances(*context.runtimeScene(), instanceCount, unsupportedTransforms, &meshBounds);
+        if (!instances) { return makeError(instances.error()); }
+        meshInstances = std::move(*instances);
+        const std::array grid{meshSDFGridTiles(params.width), meshSDFGridTiles(params.height), slices, instanceCount};
+        const uint32_t cellCount = grid[0] * grid[1] * grid[2];
+        const uint32_t capacity = uint32_t(context.outputBuffer("detailGridPairs").desc().size / 8u);
+        meshCellGroups = (cellCount + kMeshSDFCullThreads - 1u) / kMeshSDFCullThreads;
+        meshObjectGroups = (instanceCount + kMeshSDFCullThreads - 1u) / kMeshSDFCullThreads;
+        if (uint64_t(cellCount) * instanceCount > capacity || meshCellGroups > kMeshSDFMaxDispatchGroups ||
+            meshObjectGroups > kMeshSDFMaxDispatchGroups) {
+            spdlog::error("Lumen Detail Tracing candidate pool cannot hold {} instances across {} froxels", instanceCount, cellCount);
+            return makeError(Error::Unsupported);
+        }
+        const uint32_t candidateSlots = cellCount * instanceCount;
+        meshCompactGroups = (candidateSlots + kMeshSDFCullThreads - 1u) / kMeshSDFCullThreads;
+        const auto bindOutput = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
+        const auto meshBindings = meshFields_.bind(writer);
+        const auto instancesHandle = writer.buffer(meshInstances.get());
+        params.detail = {meshBindings, instancesHandle, bindOutput("detailGridCells"), bindOutput("detailGridIndices"),
+            grid, {view->current.eye[0], view->current.eye[1], view->current.eye[2]}, meshSDFTraceDistance_,
+            kCardTraceEndDistance, meshFields_.bricksPerAxis()};
+        const auto& cull = writer.encode(LumenMeshSDFCullingParams{view->current,
+            {view->jitter[0], view->jitter[1], meshSDFTraceDistance_, kCardTraceEndDistance}, grid,
+            writer.sampledImageHandle(context.inputTexture("detailDepth").view()), bindOutput("detailTileDepth"),
+            writer.buffer(meshBounds.get()), instancesHandle, meshBindings, params.detail.gridCells, params.detail.gridIndices,
+            bindOutput("detailGridPairs"), bindOutput("detailGridState")}, kMeshSDFCullingABI);
+        if (!cull) { return makeError(cull.error()); }
+        meshGridParams = *cull;
+        if (context.detailedDebugSnapshots()) {
+            context.debugCheckpoint("Lumen Mesh SDF Grid", {}, {{"instanceCount", instanceCount},
+                {"unsupportedTransforms", unsupportedTransforms}, {"cellCount", cellCount}, {"capacity", capacity}});
+        }
     }
     const auto encoded = writer.encode(params, kScreenProbeGatherABI);
     if (!encoded) { return makeError(encoded.error()); }
@@ -269,6 +489,9 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             {"cacheClipmaps", Access::BufferStorageRead},
             {"cacheRadiance", Access::TextureSampleRead}});
     }
+    if (traceReadbackTiles_) {
+        traceUses.push_back({"probeTraceReadback", Access::BufferStorageWrite});
+    }
 
     const RenderGraphStageUse placeUses[] = {{"position", Access::TextureSampleRead},
         {"normal", Access::TextureSampleRead}, {"probePositions", Access::BufferStorageWrite}};
@@ -276,6 +499,40 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     EncodedParameters placeParams;
     std::array<EncodedParameters, kSpatialPassCount> filteredParams;
     std::vector<RenderGraphStage> stages;
+    const RenderGraphStageUse gridClearUses[]{{"detailGridCells", Access::BufferStorageWrite},
+        {"detailGridState", Access::BufferStorageWrite}};
+    const RenderGraphStageUse gridDepthUses[]{{"detailDepth", Access::TextureSampleRead},
+        {"detailTileDepth", Access::BufferStorageWrite}};
+    const RenderGraphStageUse gridScatterUses[]{{"detailTileDepth", Access::BufferStorageRead},
+        {"detailGridCells", Access::BufferStorageReadWrite}, {"detailGridPairs", Access::BufferStorageWrite},
+        {"detailGridState", Access::BufferStorageReadWrite}};
+    const RenderGraphStageUse gridAllocateUses[]{{"detailGridCells", Access::BufferStorageReadWrite},
+        {"detailGridState", Access::BufferStorageReadWrite}};
+    const RenderGraphStageUse gridCompactUses[]{{"detailGridCells", Access::BufferStorageReadWrite},
+        {"detailGridPairs", Access::BufferStorageRead}, {"detailGridState", Access::BufferStorageRead},
+        {"detailGridIndices", Access::BufferStorageWrite}};
+    if (detailTracing) {
+        traceUses.insert(traceUses.end(), {{"detailGridCells", Access::BufferStorageRead},
+            {"detailGridIndices", Access::BufferStorageRead}});
+        stages.push_back({"Clear Mesh SDF candidate ranges", gridClearUses, [&](CommandBuffer& cmd) {
+            return meshGridClear_.dispatch(cmd, meshGridParams, meshCellGroups, 1, 1);
+        }});
+        if (meshObjectGroups != 0) {
+            stages.push_back({"Reduce closest and furthest froxel depth", gridDepthUses, [&](CommandBuffer& cmd) {
+                return meshGridDepth_.dispatch(cmd, meshGridParams, params.detail.grid[0], params.detail.grid[1], 1);
+            }});
+            stages.push_back({"Cull Mesh SDFs to view froxels", gridScatterUses, [&](CommandBuffer& cmd) {
+                return meshGridScatter_.dispatch(cmd, meshGridParams, params.detail.grid[0], params.detail.grid[1], meshObjectGroups);
+            }});
+            stages.push_back({"Allocate Mesh SDF candidate ranges", gridAllocateUses, [&](CommandBuffer& cmd) {
+                return meshGridAllocate_.dispatch(cmd, meshGridParams, meshCellGroups, 1, 1);
+            }});
+            stages.push_back({"Compact Mesh SDF candidates", gridCompactUses, [&](CommandBuffer& cmd) {
+                return meshGridCompact_.dispatch(cmd, meshGridParams, std::min(meshCompactGroups, kMeshSDFMaxDispatchGroups),
+                    (meshCompactGroups + kMeshSDFMaxDispatchGroups - 1u) / kMeshSDFMaxDispatchGroups, 1);
+            }});
+        }
+    }
     if (finalGather) {
         traceUses.insert(traceUses.end(), {{probePositionsName, Access::BufferStorageRead},
             {"probeDistance", Access::BufferStorageWrite}});

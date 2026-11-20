@@ -298,6 +298,15 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/lumen_radiance_cache.metallic_graph.json"; }
 };
 
+class LumenDetailTracingSample final : public MeshDistanceFieldSample {
+public:
+    std::string_view id() const override { return "lumen-detail-tracing"; }
+    std::string_view name() const override { return "Lumen / Detail Tracing"; }
+    std::string_view description() const override { return "Trace individual Mesh Distance Fields before the global Lumen scene."; }
+    std::string scenePath() const override { return "Asset/Lumen/LargeScene.metallic_scene.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lumen_detail_tracing.metallic_graph.json"; }
+};
+
 class VirtualShadowMapSponzaSample : public RenderSample {
 public:
     std::string_view id() const override { return kVSMSponzaSampleId; }
@@ -1124,6 +1133,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LumenCornellBoxSample lumenCornellBox;
     static const LumenLargeSceneSample lumenLargeScene;
     static const LumenRadianceCacheSample lumenRadianceCache;
+    static const LumenDetailTracingSample lumenDetailTracing;
     static const GlobalDistanceFieldClipmapsSample globalDistanceFieldClipmaps;
     static const RealtimeLightingSample realtimeLighting;
     static const RealtimeLightingVSMSample realtimeLightingVSM;
@@ -1222,6 +1232,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         samples.push_back(&lumenCornellBox);
         samples.push_back(&lumenLargeScene);
         samples.push_back(&lumenRadianceCache);
+        samples.push_back(&lumenDetailTracing);
     }
     // Optional local assets are read once, not on every ImGui frame.
     static const auto painter = loadLocalLookDevSamples("build/MaterialValidation/PainterLookDev/Catalog.json", "Painter Validation", "painter-");

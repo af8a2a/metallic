@@ -1,6 +1,7 @@
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/Debug/LumenProbeTraceReadback.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -33,6 +34,26 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     // This semantic view is checked against the actual GPU pass by the inspector smoke.
     add({"AutoExposureState", 16, {{"multiplier", "f32", 0}, {"adaptedEV100", "f32", 4},
         {"targetEV100", "f32", 8}, {"luminance", "f32", 12}}});
+    using ProbeTrace = LumenProbeTraceReadbackRecord;
+    add({kLumenProbeTraceReadbackLayout, sizeof(ProbeTrace), {
+        {"screenEnd", "f32", offsetof(ProbeTrace, screenEnd)},
+        {"detailEnd", "f32", offsetof(ProbeTrace, detailEnd)},
+        {"gdfMin", "f32", offsetof(ProbeTrace, gdfMin)},
+        {"gdfMax", "f32", offsetof(ProbeTrace, gdfMax)},
+        {"wrcRadiance", "f32", offsetof(ProbeTrace, wrcRadiance), 3},
+        {"gdfHitDistance", "f32", offsetof(ProbeTrace, gdfHitDistance)},
+        {"gdfClassification", "u32", offsetof(ProbeTrace, gdfClassification)},
+        {"gdfHitClipmap", "u32", offsetof(ProbeTrace, gdfHitClipmap)},
+        {"gdfSteps", "u32", offsetof(ProbeTrace, gdfSteps)},
+        {"flags", "u32", offsetof(ProbeTrace, flags)},
+        {"receiverValid", "u32", offsetof(ProbeTrace, flags), 1, 0, 1},
+        {"screenInvoked", "u32", offsetof(ProbeTrace, flags), 1, 1, 1},
+        {"screenAccepted", "u32", offsetof(ProbeTrace, flags), 1, 2, 1},
+        {"detailInvoked", "u32", offsetof(ProbeTrace, flags), 1, 3, 1},
+        {"detailAccepted", "u32", offsetof(ProbeTrace, flags), 1, 4, 1},
+        {"gdfInvoked", "u32", offsetof(ProbeTrace, flags), 1, 5, 1},
+        {"wrcCovered", "u32", offsetof(ProbeTrace, flags), 1, 6, 1},
+        {"wrcSampled", "u32", offsetof(ProbeTrace, flags), 1, 7, 1}}});
     add({"R8", 1, {{"r", "u8", 0}}});
     add({"RGBA8", 4, {{"r", "u8", 0}, {"g", "u8", 1}, {"b", "u8", 2}, {"a", "u8", 3}}});
     add({"BGRA8", 4, {{"b", "u8", 0}, {"g", "u8", 1}, {"r", "u8", 2}, {"a", "u8", 3}}});
