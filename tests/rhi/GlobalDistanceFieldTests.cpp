@@ -439,12 +439,14 @@ size_t linearVoxelIndex(uint32_t x, uint32_t y, uint32_t z, uint32_t edge)
     return (size_t(z) * edge + y) * edge + x;
 }
 
-bool matchesVolumeLayout(const debug::DebugArtifact& artifact, uint32_t edge, std::string_view layout)
+bool matchesVolumeLayout(const debug::DebugArtifact& artifact, uint32_t edge, std::string_view layout,
+    uint32_t levelCount = 1)
 {
+    const uint32_t depth = edge * levelCount;
     return artifact.layout.name == layout && artifact.metadata.value("width", 0u) == edge &&
-        artifact.metadata.value("height", 0u) == edge && artifact.metadata.value("depth", 0u) == edge &&
+        artifact.metadata.value("height", 0u) == edge && artifact.metadata.value("depth", 0u) == depth &&
         artifact.metadata.value("completeCoverage", false) &&
-        artifact.bytes.size() == size_t(edge) * edge * edge * (layout == "R8" ? 1u : 4u);
+        artifact.bytes.size() == size_t(edge) * edge * depth * (layout == "R8" ? 1u : 4u);
 }
 
 size_t atlasVoxelIndex(uint32_t page, uint32_t x, uint32_t y, uint32_t z, uint32_t atlasPageEdge)
@@ -717,25 +719,30 @@ float encodedPageLimit(uint32_t page)
     return page == kNegativePage ? 0.0f : 1.0f;
 }
 
-std::string checkCoarseMip(const debug::DebugCapture& capture, uint32_t atlasPageEdge, bool empty)
+std::string checkCoarseMip(const debug::DebugCapture& capture, uint32_t atlasPageEdge, bool empty,
+    uint32_t resolution = kResolution, uint32_t levelCount = 1)
 {
+    const uint32_t coarseEdge = resolution / kCoarseFactor;
+    const uint32_t coarseDepth = coarseEdge * levelCount;
+    const uint32_t pageTableEdge = (resolution + kLogicalPageWidth - 1) / kLogicalPageWidth;
     const auto& coarse = capture.artifacts.back();
-    if (!matchesVolumeLayout(coarse, kCoarseEdge, "R8")) { return "Expected a factor-four R8 GDF coarse mip"; }
+    if (!matchesVolumeLayout(coarse, coarseEdge, "R8", levelCount)) { return "Expected a factor-four R8 GDF coarse mip"; }
     const auto& table = capture.artifacts[0].bytes;
-    const auto index = [](uint32_t x, uint32_t y, uint32_t z) { return linearVoxelIndex(x, y, z, kCoarseEdge); };
+    const auto index = [&](uint32_t x, uint32_t y, uint32_t z) { return linearVoxelIndex(x, y, z, coarseEdge); };
     std::vector<float> previous(coarse.bytes.size(), 1.0f);
     if (!empty) {
         const auto& fine = capture.artifacts[2].bytes;
-        static_assert(kCoarseEdge * kCoarseFactor == kResolution);
-        for (uint32_t z = 0; z < kCoarseEdge; ++z) {
-            for (uint32_t y = 0; y < kCoarseEdge; ++y) {
-                for (uint32_t x = 0; x < kCoarseEdge; ++x) {
-                    // At this resolution, the center of each coarse texel coincides with a fine texel.
+        for (uint32_t z = 0; z < coarseDepth; ++z) {
+            const uint32_t level = z / coarseEdge;
+            for (uint32_t y = 0; y < coarseEdge; ++y) {
+                for (uint32_t x = 0; x < coarseEdge; ++x) {
+                    // These resolutions are multiples of four, so each coarse center is a fine texel.
                     const uint32_t fx = x * kCoarseFactor + kCoarseFactor / 2;
                     const uint32_t fy = y * kCoarseFactor + kCoarseFactor / 2;
-                    const uint32_t fz = z * kCoarseFactor + kCoarseFactor / 2;
+                    const uint32_t fz = (z % coarseEdge) * kCoarseFactor + kCoarseFactor / 2;
                     const uint32_t page = readGdfElement<uint32_t>(table, linearVoxelIndex(
-                        fx / kLogicalPageWidth, fy / kLogicalPageWidth, fz / kLogicalPageWidth, kPageTableEdge));
+                        fx / kLogicalPageWidth, fy / kLogicalPageWidth,
+                        fz / kLogicalPageWidth + level * pageTableEdge, pageTableEdge));
                     const float encoded = page >= kOverflowPage ? encodedPageLimit(page) :
                         float(fine[atlasVoxelIndex(page, fx % kLogicalPageWidth, fy % kLogicalPageWidth,
                             fz % kLogicalPageWidth, atlasPageEdge)]) / 255.0f;
@@ -752,15 +759,17 @@ std::string checkCoarseMip(const debug::DebugCapture& capture, uint32_t atlasPag
     std::vector<float> next(previous.size());
     std::vector<int> expected(previous.size());
     constexpr float step = 0.125f;
+    const uint32_t last = coarseEdge - 1;
     for (uint32_t pass = 0; pass < 5; ++pass) {
-        for (uint32_t z = 0; z < kCoarseEdge; ++z) {
-            for (uint32_t y = 0; y < kCoarseEdge; ++y) {
-                for (uint32_t x = 0; x < kCoarseEdge; ++x) {
-                    constexpr uint32_t last = kCoarseEdge - 1;
+        for (uint32_t z = 0; z < coarseDepth; ++z) {
+            const uint32_t localZ = z % coarseEdge;
+            for (uint32_t y = 0; y < coarseEdge; ++y) {
+                for (uint32_t x = 0; x < coarseEdge; ++x) {
                     const std::array neighbors{
                         std::min(previous[index(x == 0 ? 0 : x - 1, y, z)], previous[index(std::min(x + 1, last), y, z)]),
                         std::min(previous[index(x, y == 0 ? 0 : y - 1, z)], previous[index(x, std::min(y + 1, last), z)]),
-                        std::min(previous[index(x, y, z == 0 ? 0 : z - 1)], previous[index(x, y, std::min(z + 1, last))]),
+                        std::min(previous[index(x, y, localZ == 0 ? z : z - 1)],
+                            previous[index(x, y, localZ == last ? z : z + 1)]),
                     };
                     const float a = std::min({neighbors[0], neighbors[1], neighbors[2]});
                     const float c = std::max({neighbors[0], neighbors[1], neighbors[2]});
@@ -1043,6 +1052,253 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(GlobalDistanceFieldR8Test);
+
+constexpr uint32_t kClipmapCount = 3;
+constexpr uint32_t kClipmapResolution = 56;
+constexpr uint32_t kClipmapPageEdge = kClipmapResolution / kLogicalPageWidth;
+constexpr uint32_t kClipmapMipEdge = kClipmapResolution / kCoarseFactor;
+constexpr uint32_t kClipmapCapacity = 512;
+constexpr uint32_t kClipmapAtlasPages = 8;
+constexpr uint32_t kClipmapAtlasEdge = kClipmapAtlasPages * kPhysicalPageWidth;
+constexpr float kClipmapOrthoHeight = 8.4f;
+
+std::string checkClipmapResources(const debug::DebugCapture& capture, const render::ViewCamera& camera,
+    uint32_t firstPopulatedLevel = 0)
+{
+    if (capture.artifacts.size() != 5) { return "Expected five clipmap capture resources"; }
+    const auto& table = capture.artifacts[0];
+    const auto& statistics = capture.artifacts[1];
+    const auto& atlas = capture.artifacts[2];
+    const auto& domains = capture.artifacts[3];
+    if (!matchesVolumeLayout(table, kClipmapPageEdge, "u32", kClipmapCount) ||
+        statistics.bytes.size() != 5 * sizeof(uint32_t) ||
+        !matchesVolumeLayout(atlas, kClipmapAtlasEdge, "R8") ||
+        domains.bytes.size() != kClipmapCount * 8 * sizeof(float)) {
+        return "Clipmap capture dimensions or formats differ from the packed GPU layout";
+    }
+
+    std::array<bool, kClipmapCapacity> allocated{};
+    PageCounts counts;
+    for (uint32_t level = 0; level < kClipmapCount; ++level) {
+        const float extent = std::ldexp(kExtent, int(level));
+        const float voxelSize = 2.0f * extent / float(kClipmapResolution);
+        const float pageSize = voxelSize * float(kLogicalPageWidth);
+        const auto domain = readGdfElement<std::array<float, 8>>(domains.bytes, level);
+        for (size_t axis = 0; axis < camera.eye.size(); ++axis) {
+            const float center = std::floor(camera.eye[axis] / pageSize + 0.5f) * pageSize;
+            if (std::abs(domain[axis] - (center - extent)) > 1.0e-6f ||
+                std::abs(domain[4 + axis] - (center + extent)) > 1.0e-6f) {
+                return "Clipmap level " + std::to_string(level) + " did not follow the page-aligned camera origin";
+            }
+        }
+        if (std::abs(domain[3] - voxelSize) > 1.0e-6f || std::abs(domain[7] - 4.0f * voxelSize) > 1.0e-6f) {
+            return "Incorrect clipmap level voxel size or influence radius";
+        }
+        constexpr size_t pagesPerLevel = size_t(kClipmapPageEdge) * kClipmapPageEdge * kClipmapPageEdge;
+        uint32_t levelResident = 0;
+        for (size_t i = 0; i < pagesPerLevel; ++i) {
+            const uint32_t page = readGdfElement<uint32_t>(table.bytes, size_t(level) * pagesPerLevel + i);
+            if (level < firstPopulatedLevel && page != kPositivePage) {
+                return "A clipmap that moved past the scene contains a stale virtual page";
+            }
+            if (page < kClipmapCapacity) {
+                if (allocated[page]) { return "Clipmap pages alias a shared physical atlas allocation"; }
+                allocated[page] = true;
+                ++levelResident;
+            } else if (page == kPositivePage) {
+                ++counts.positive;
+            } else if (page == kNegativePage) {
+                ++counts.negative;
+            } else {
+                return "Clipmap page table contains an overflow or invalid ID with a full page budget";
+            }
+        }
+        if (level >= firstPopulatedLevel && levelResident == 0) {
+            return "Missing resident pages at clipmap level " + std::to_string(level);
+        }
+        counts.resident += levelResident;
+    }
+    const std::array expectedStatistics{counts.resident, counts.resident, counts.positive, counts.negative, 0u};
+    for (size_t i = 0; i < expectedStatistics.size(); ++i) {
+        if (readGdfElement<uint32_t>(statistics.bytes, i) != expectedStatistics[i]) {
+            return "Clipmap statistics do not match the packed page table";
+        }
+    }
+    return checkCoarseMip(capture, kClipmapAtlasPages, false, kClipmapResolution, kClipmapCount);
+}
+
+std::string checkClipmapRay(const render::RenderGraphPreviewRenderer& preview, const render::ViewCamera& camera,
+    float worldX, float worldY, uint32_t classification, int hitLevel = -1)
+{
+    const auto& bytes = preview.readbackBytes();
+    if (preview.readbackFormat() != render::Format::RGBA32Sfloat ||
+        bytes.size() != size_t(kWidth) * kHeight * 4 * sizeof(float)) {
+        return "Expected RGBA32F clipmap trace data";
+    }
+    const float pixelsPerMeter = float(kHeight) / camera.orthoHeight;
+    const auto x = uint32_t(float(kWidth) * 0.5f + (worldX - camera.eye[0]) * pixelsPerMeter);
+    const auto y = uint32_t(float(kHeight) * 0.5f - (worldY - camera.eye[1]) * pixelsPerMeter);
+    const auto trace = readGdfElement<std::array<float, 4>>(bytes, size_t(y) * kWidth + x);
+    const bool hit = hitLevel >= 0;
+    const float expectedDistance = hit ? camera.eye[2] - camera.nearPlane - kBoxes[0].halfExtent.z : -1.0f;
+    const float tolerance = hit ? 3.0f * std::ldexp(2.0f * kExtent / float(kClipmapResolution), hitLevel) : 0.0f;
+    if (!std::ranges::all_of(trace, [](float value) { return std::isfinite(value); }) ||
+        std::abs(trace[0] - expectedDistance) > tolerance || trace[2] != float(classification) ||
+        trace[3] != float(hitLevel) || trace[1] < 0.0f || trace[1] > 256.0f * kClipmapCount ||
+        (classification == 0u && trace[1] != 0.0f) ||
+        ((classification == 1u || hit || classification == 4u) && trace[1] == 0.0f)) {
+        return "Clipmap ray at (" + std::to_string(worldX) + ", " + std::to_string(worldY) +
+            ") expected class " + std::to_string(classification) + ", level " + std::to_string(hitLevel) +
+            ", distance " + std::to_string(expectedDistance) + ", read " + std::to_string(trace[2]) +
+            ", " + std::to_string(trace[3]) + ", " + std::to_string(trace[0]) + ", steps " + std::to_string(trace[1]);
+    }
+    return {};
+}
+
+class GlobalDistanceFieldClipmapTest final : public RHITest {
+public:
+    GlobalDistanceFieldClipmapTest()
+    {
+        name = "global_distance_field_camera_clipmaps";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto fixtureDirectory = context.outputDirectory / "GlobalDistanceFieldClipmaps";
+        std::error_code directoryError;
+        std::filesystem::create_directories(fixtureDirectory, directoryError);
+        if (directoryError) { return RHITestResult::fail(directoryError.message()); }
+        scene::SceneDocument document;
+        std::array<std::string, 2> paths;
+        std::string log;
+        if (!prepareFieldPaths(fixtureDirectory, document, paths, log)) { return RHITestResult::fail(log); }
+        const std::filesystem::path root(PROJECT_SOURCE_DIR);
+        RenderGraph graph;
+        if (!loadRenderGraphFromFile(root / "Pipelines/Samples/global_distance_field_clipmaps.metallic_graph.json", graph, log)) {
+            return RHITestResult::fail(log);
+        }
+        const auto* producer = graph.findNode(kSparsePass);
+        if (!producer) { return RHITestResult::fail("Missing clipmap GDF producer"); }
+        const auto producerId = producer->id;
+        nlohmann::json properties{{"distanceFieldPaths", paths}, {"extent", kExtent},
+            {"resolution", kClipmapResolution - 1}, {"quantized", true},
+            {"clipmapCount", kClipmapCount}, {"maxPhysicalPages", kClipmapCapacity}};
+        if (!graph.setNodeProperties(producerId, properties)) { return RHITestResult::fail("Invalid clipmap graph"); }
+
+        ViewCamera camera;
+        camera.nearPlane = kNearPlane;
+        camera.farPlane = 10.0f;
+        camera.orthographic = true;
+        camera.orthoHeight = kClipmapOrthoHeight;
+        RenderView view;
+        const auto setEye = [&](std::array<float, 3> eye) {
+            camera.eye = eye;
+            camera.center = {eye[0], eye[1], eye[2] - 1.0f};
+            return view.setCamera(camera);
+        };
+        if (!view.setRenderResolution(kWidth, kHeight) || !setEye({0.125f, -0.125f, 1.4f})) {
+            return RHITestResult::fail("Invalid clipmap test camera");
+        }
+
+        bench::ValidationRecorder validation;
+        GdfCapturePreview capturePreview;
+        auto& preview = capturePreview.preview;
+        auto& inspector = capturePreview.inspector;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        if (!preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink())) {
+            return RHITestResult::fail("Clipmap GDF preview setup: " + preview.lastLog());
+        }
+        preview.setRawReadbackEnabled(true);
+        if (const auto rendered = preview.render(graph, kWidth, kHeight, kColorOutput); !rendered) {
+            const auto error = "Clipmap GDF composition: " + preview.lastLog();
+            if (rendered.error() == Error::Unsupported &&
+                preview.lastLog().find("requires R8 storage image support") != std::string::npos) {
+                return RHITestResult::skip(error);
+            }
+            return RHITestResult::fail(error);
+        }
+        if (!saveRgba8Png(context.outputDirectory / "GlobalDistanceFieldClipmaps.png",
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), kWidth, kHeight, log)) {
+            return RHITestResult::fail(log);
+        }
+
+        const auto captureClipmaps = [&] {
+            return captureAfterPass(preview, inspector, graph, kSparsePass, debug::DebugValue::array({
+                textureCapture("GlobalDistanceFieldPages.pageTable", kClipmapPageEdge, kClipmapPageEdge,
+                    kClipmapPageEdge * kClipmapCount),
+                {{"id", "GlobalDistanceFieldPages.statistics"}, {"layout", "u32"}, {"count", 5}},
+                textureCapture("GlobalDistanceFieldPages.pageAtlas", kClipmapAtlasEdge, kClipmapAtlasEdge, kClipmapAtlasEdge),
+                {{"id", "GlobalDistanceFieldPages.domain"}, {"layout", "f32"}, {"count", kClipmapCount * 8}},
+                textureCapture("GlobalDistanceFieldPages.coarseMip", kClipmapMipEdge, kClipmapMipEdge,
+                    kClipmapMipEdge * kClipmapCount),
+            }), kSparseTrace, log);
+        };
+        const auto initial = captureClipmaps();
+        if (!initial) { return RHITestResult::fail(log); }
+        if (const auto error = checkClipmapResources(*initial, camera); !error.empty()) { return RHITestResult::fail(error); }
+        if (const auto error = checkClipmapRay(preview, camera, kBoxes[0].center.x, 0.0f, 2, 0); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+
+        if (!setEye({0.15f, -0.15f, 1.45f})) { return RHITestResult::fail("Invalid sub-page camera movement"); }
+        const auto subPage = captureClipmaps();
+        if (!subPage) { return RHITestResult::fail(log); }
+        if (const auto error = checkClipmapResources(*subPage, camera); !error.empty()) { return RHITestResult::fail(error); }
+        if (initial->artifacts[3].bytes != subPage->artifacts[3].bytes ||
+            initial->artifacts[4].bytes != subPage->artifacts[4].bytes) {
+            return RHITestResult::fail("Sub-page camera movement changed the clipmap lattice or coarse distances");
+        }
+        if (const auto error = checkClipmapRay(preview, camera, kBoxes[0].center.x, 0.0f, 2, 0); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+
+        if (!setEye({0.25f, -0.25f, 2.1875f})) { return RHITestResult::fail("Invalid cross-page camera movement"); }
+        const auto moved = captureClipmaps();
+        if (!moved) { return RHITestResult::fail(log); }
+        if (const auto error = checkClipmapResources(*moved, camera, 1); !error.empty()) { return RHITestResult::fail(error); }
+        if (const auto error = checkClipmapRay(preview, camera, kBoxes[0].center.x, 0.0f, 2, 1); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+        if (const auto error = checkClipmapRay(preview, camera, 0.0f, 1.5f, 4); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+        if (const auto error = checkClipmapRay(preview, camera, 6.25f, 0.0f, 0); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+
+        camera.farPlane = 3.0f;
+        if (!view.setCamera(camera) || !preview.render(graph, kWidth, kHeight, kSparseTrace)) {
+            return RHITestResult::fail("Clipmap full-coverage ray: " + preview.lastLog());
+        }
+        if (const auto error = checkClipmapRay(preview, camera, 0.0f, 1.5f, 1); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+        camera.farPlane = 10.0f;
+        if (!setEye({0.25f, -0.25f, 4.8f}) || !preview.render(graph, kWidth, kHeight, kSparseTrace)) {
+            return RHITestResult::fail("Clipmap far-level trace: " + preview.lastLog());
+        }
+        if (const auto error = checkClipmapRay(preview, camera, kBoxes[0].center.x, 0.0f, 2, 2); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+
+        camera.nearPlane = 1.8f;
+        properties["maxPhysicalPages"] = 0;
+        if (!setEye({0.25f, -0.25f, 2.1875f}) || !graph.setNodeProperties(producerId, properties) ||
+            !preview.render(graph, kWidth, kHeight, kSparseTrace)) {
+            return RHITestResult::fail("Clipmap overflow trace: " + preview.lastLog());
+        }
+        if (const auto error = checkClipmapRay(preview, camera, kBoxes[2].center.x, 0.0f, 3); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+        if (validation.failed()) { return RHITestResult::fail("Clipmap GDF Vulkan validation: " + validation.snapshot().dump()); }
+        return RHITestResult::pass("Camera page snapping, packed mip isolation, three hit levels and four miss states validated.");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GlobalDistanceFieldClipmapTest);
 
 } // namespace
 } // namespace metallic::tests

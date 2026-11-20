@@ -15,7 +15,7 @@ struct GlobalDistanceFieldMipParams
     ResourceHandle<RWTexture3D<unorm float>> outputMip;
     uint logicalResolution;
     uint coarseResolution;
-    uint padding;
+    uint clipmapCount;
 };
 
 static const float kMipDownsampleFactor = 4.0f;
@@ -63,14 +63,15 @@ struct FinePageDistanceSource : IMipDistanceSource
     SamplerState sampler;
     uint logicalResolution;
     float oneOverCoarseResolution;
+    uint clipmapIndex;
 
     float load(int3 mipCoord)
     {
-        // Single fixed clipmap. Its coarse cell centers have no scroll offset.
+        // Each rebuilt clipmap is centered on its current page-snapped origin.
         float3 clipmapUV = (float3(mipCoord) + 0.5f) * oneOverCoarseResolution;
         float3 fineGridPosition = clipmapUV * float(logicalResolution);
         float3 pagePosition;
-        uint pageIndex = loadGlobalDistanceFieldPage(pageTable, fineGridPosition, pagePosition);
+        uint pageIndex = loadGlobalDistanceFieldPage(pageTable, fineGridPosition, pagePosition, clipmapIndex);
         float distanceFieldValue = sampleGlobalDistanceFieldEncodedPage(pageAtlas, sampler, pageIndex, pagePosition);
         if (distanceFieldValue < 1.0f) {
             const float scale = 1.0f / kMipDownsampleFactor;
@@ -84,9 +85,11 @@ struct FinePageDistanceSource : IMipDistanceSource
 struct PreviousMipDistanceSource : IMipDistanceSource
 {
     RWTexture3D<unorm float> texture;
+    int clipmapOffsetZ;
 
     float load(int3 mipCoord)
     {
+        mipCoord.z += clipmapOffsetZ;
         return texture[mipCoord];
     }
 };
@@ -130,27 +133,31 @@ float quantizeMipDistanceR8(float value)
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void globalDistanceFieldSeedMipMain(uint3 mipCoord : SV_DispatchThreadID)
+void globalDistanceFieldSeedMipMain(uint3 packedCoord : SV_DispatchThreadID)
 {
     GlobalDistanceFieldMipParams params = getParameters<GlobalDistanceFieldMipParams>();
-    if (all(mipCoord < params.coarseResolution)) {
+    uint mipSize = params.coarseResolution;
+    if (all(packedCoord.xy < mipSize) && packedCoord.z < mipSize * params.clipmapCount) {
+        uint clipmapIndex = packedCoord.z / mipSize;
+        int3 mipCoord = int3(packedCoord.xy, packedCoord.z % mipSize);
         FinePageDistanceSource source = {resolveUniform(params.pageTable), resolveUniform(params.pageAtlas),
-            resolveUniform(params.sampler), params.logicalResolution, 1.0f / float(params.coarseResolution)};
+            resolveUniform(params.sampler), params.logicalResolution, 1.0f / float(mipSize), clipmapIndex};
         RWTexture3D<unorm float> outputMip = resolveUniform(params.outputMip);
-        outputMip[mipCoord] = quantizeMipDistanceR8(
-            propagateMipDistance(source, int3(mipCoord), int(params.coarseResolution) - 1));
+        outputMip[packedCoord] = quantizeMipDistanceR8(propagateMipDistance(source, mipCoord, int(mipSize) - 1));
     }
 }
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void globalDistanceFieldPropagateMipMain(uint3 mipCoord : SV_DispatchThreadID)
+void globalDistanceFieldPropagateMipMain(uint3 packedCoord : SV_DispatchThreadID)
 {
     GlobalDistanceFieldMipParams params = getParameters<GlobalDistanceFieldMipParams>();
-    if (all(mipCoord < params.coarseResolution)) {
-        PreviousMipDistanceSource source = {resolveUniform(params.previousMip)};
+    uint mipSize = params.coarseResolution;
+    if (all(packedCoord.xy < mipSize) && packedCoord.z < mipSize * params.clipmapCount) {
+        int3 mipCoord = int3(packedCoord.xy, packedCoord.z % mipSize);
+        int clipmapOffsetZ = int(packedCoord.z) - mipCoord.z;
+        PreviousMipDistanceSource source = {resolveUniform(params.previousMip), clipmapOffsetZ};
         RWTexture3D<unorm float> outputMip = resolveUniform(params.outputMip);
-        outputMip[mipCoord] = quantizeMipDistanceR8(
-            propagateMipDistance(source, int3(mipCoord), int(params.coarseResolution) - 1));
+        outputMip[packedCoord] = quantizeMipDistanceR8(propagateMipDistance(source, mipCoord, int(mipSize) - 1));
     }
 }

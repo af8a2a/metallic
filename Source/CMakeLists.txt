@@ -125,6 +125,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/ColorGradingLUTPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/MeshDistanceFieldDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GlobalDistanceFieldPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/LumenSurfaceCachePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferMaterialPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp
@@ -297,6 +298,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 add_library(MetallicRuntimeScene STATIC
+    Runtime/Scene/MeshCards.cpp
     Runtime/Environment/Astronomy.cpp
     Runtime/Material/MaterialAsset.cpp
     Runtime/Material/MaterialGraph.cpp
@@ -392,7 +394,7 @@ endif()
 metallic_copy_openusd_runtime(MetallicMeshletCook)
 metallic_copy_spdlog_runtime(MetallicMeshletCook)
 
-set(METALLIC_EMBREE_ROOT "" CACHE PATH "Embree 4.3.3 SDK root for the offline mesh distance field baker")
+set(METALLIC_EMBREE_ROOT "" CACHE PATH "Embree 4.3.3 SDK root for the offline mesh distance field and card bakers")
 if(METALLIC_EMBREE_ROOT)
     find_path(METALLIC_EMBREE_INCLUDE_DIR embree4/rtcore.h REQUIRED NO_CACHE NO_DEFAULT_PATH
         PATHS "${METALLIC_EMBREE_ROOT}/include")
@@ -402,19 +404,26 @@ if(METALLIC_EMBREE_ROOT)
         Tools/MeshDistanceFieldBakeMain.cpp
         Runtime/Scene/MeshDistanceFieldBake.cpp
     )
-    target_include_directories(MetallicMeshDistanceFieldBake SYSTEM PRIVATE "${METALLIC_EMBREE_INCLUDE_DIR}")
-    target_link_libraries(MetallicMeshDistanceFieldBake PRIVATE MetallicRuntimeScene "${METALLIC_EMBREE_LIBRARY}")
+    add_executable(MetallicMeshCardsBake
+        Tools/MeshCardsBakeMain.cpp
+        Runtime/Scene/MeshCardsBake.cpp
+    )
     if(WIN32)
-        target_compile_definitions(MetallicMeshDistanceFieldBake PRIVATE NOMINMAX)
         find_file(METALLIC_EMBREE_RUNTIME embree4.dll REQUIRED NO_CACHE NO_DEFAULT_PATH
             PATHS "${METALLIC_EMBREE_ROOT}/bin" "${METALLIC_EMBREE_ROOT}/VS2015/x64/bin")
-        add_custom_command(TARGET MetallicMeshDistanceFieldBake POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${METALLIC_EMBREE_RUNTIME}"
-                "$<TARGET_FILE_DIR:MetallicMeshDistanceFieldBake>"
-            VERBATIM)
     endif()
-    metallic_copy_openusd_runtime(MetallicMeshDistanceFieldBake)
-    metallic_copy_spdlog_runtime(MetallicMeshDistanceFieldBake)
+    foreach(baker MetallicMeshDistanceFieldBake MetallicMeshCardsBake)
+        target_include_directories(${baker} SYSTEM PRIVATE "${METALLIC_EMBREE_INCLUDE_DIR}")
+        target_link_libraries(${baker} PRIVATE MetallicRuntimeScene "${METALLIC_EMBREE_LIBRARY}")
+        if(WIN32)
+            target_compile_definitions(${baker} PRIVATE NOMINMAX)
+            add_custom_command(TARGET ${baker} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${METALLIC_EMBREE_RUNTIME}" "$<TARGET_FILE_DIR:${baker}>"
+                VERBATIM)
+        endif()
+        metallic_copy_openusd_runtime(${baker})
+        metallic_copy_spdlog_runtime(${baker})
+    endforeach()
 endif()
 
 # Resident cache migration keeps the MTLMSHLT payload separate from meshstream.

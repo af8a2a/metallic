@@ -9,15 +9,16 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <spdlog/spdlog.h>
 
 namespace metallic::render::builtin_pass {
 namespace {
 
 constexpr uint64_t kGlobalDistanceFieldABI = 0x4744460000000001ull;
 constexpr uint64_t kGlobalDistanceFieldDebugABI = 0x4744464400000001ull;
-constexpr uint64_t kGlobalDistanceFieldPagesABI = 0x4744465000000001ull;
+constexpr uint64_t kGlobalDistanceFieldPagesABI = 0x4744465000000002ull;
 constexpr uint64_t kGlobalDistanceFieldPagesDebugABI = 0x4744504400000001ull;
-constexpr uint64_t kGlobalDistanceFieldMipABI = 0x4744464d00000001ull;
+constexpr uint64_t kGlobalDistanceFieldMipABI = 0x4744464d00000002ull;
 constexpr uint64_t kQuantizedGlobalDistanceFieldDebugABI = 0x4744514400000001ull;
 constexpr uint32_t kDefaultResolution = 64;
 constexpr float kInfluenceRangeInVoxels = 4.0f;
@@ -26,6 +27,8 @@ constexpr uint32_t kSamplesPerPage = kCellsPerPage + 1;
 constexpr uint32_t kDefaultPhysicalPages = 216;
 constexpr uint32_t kPageStatisticsCount = 5;
 constexpr uint32_t kMipFactor = 4;
+constexpr uint32_t kMaxClipmaps = 6;
+constexpr uint32_t kClipmapResolutionAlignment = kMipFactor * kCellsPerPage;
 constexpr SlangMacroDefine kQuantizedPageAtlasDefines[]{{"METALLIC_GDF_PAGE_ATLAS_R8", "1"}};
 
 struct alignas(16) GlobalDistanceFieldDomain {
@@ -49,15 +52,15 @@ struct alignas(16) GlobalDistanceFieldPagesParams {
     ShaderSampler atlasSampler;
     ShaderStorageImage pageTable, pageAtlas;
     ShaderBuffer domainOutput, statistics;
-    uint32_t instanceCount, logicalResolution, maxPhysicalPages;
-    GlobalDistanceFieldDomain domain;
+    uint32_t instanceCount, logicalResolution, maxPhysicalPages, clipmapCount;
+    std::array<GlobalDistanceFieldDomain, kMaxClipmaps> domains;
 };
 
 struct alignas(16) GlobalDistanceFieldMipParams {
     ShaderSampledImage pageTable, pageAtlas;
     ShaderSampler sampler;
     ShaderStorageImage previousMip, outputMip;
-    uint32_t logicalResolution, coarseResolution, padding;
+    uint32_t logicalResolution, coarseResolution, clipmapCount;
 };
 
 struct alignas(16) GlobalDistanceFieldDebugParams {
@@ -91,10 +94,12 @@ struct alignas(16) QuantizedGlobalDistanceFieldDebugParams {
 static_assert(sizeof(GlobalDistanceFieldDomain) == 32);
 static_assert(sizeof(GlobalDistanceFieldParams) == 64 && offsetof(GlobalDistanceFieldParams, domain) == 32);
 static_assert(sizeof(GlobalDistanceFieldDebugParams) == 112 && offsetof(GlobalDistanceFieldDebugParams, current) == 32);
-static_assert(sizeof(GlobalDistanceFieldPagesParams) == 80 && offsetof(GlobalDistanceFieldPagesParams, domain) == 48);
+static_assert(sizeof(GlobalDistanceFieldPagesParams) == 256 &&
+    offsetof(GlobalDistanceFieldPagesParams, clipmapCount) == 48 &&
+    offsetof(GlobalDistanceFieldPagesParams, domains) == 64);
 static_assert(sizeof(GlobalDistanceFieldPagesDebugParams) == 112 &&
     offsetof(GlobalDistanceFieldPagesDebugParams, current) == 32);
-static_assert(sizeof(GlobalDistanceFieldMipParams) == 32);
+static_assert(sizeof(GlobalDistanceFieldMipParams) == 32 && offsetof(GlobalDistanceFieldMipParams, clipmapCount) == 28);
 static_assert(sizeof(QuantizedGlobalDistanceFieldDebugParams) == 112 &&
     offsetof(QuantizedGlobalDistanceFieldDebugParams, current) == 32);
 
@@ -103,13 +108,27 @@ uint32_t coarseMipResolution(uint32_t resolution)
     return (resolution + kMipFactor - 1u) / kMipFactor;
 }
 
-uint32_t logicalResolution(const RenderGraphProperties& properties)
+uint32_t readClipmapCount(const RenderGraphProperties& properties)
+{
+    const auto value = properties.find("clipmapCount");
+    if (value == properties.end()) { return 1; }
+    if (!value->is_number_integer()) { return 0; }
+    const uint64_t count = value->get<uint64_t>();
+    return count >= 1 && count <= kMaxClipmaps ? static_cast<uint32_t>(count) : 0;
+}
+
+uint32_t logicalResolution(const RenderGraphProperties& properties, uint32_t clipmapCount)
 {
     const auto value = properties.find("resolution");
-    if (value == properties.end()) { return kDefaultResolution; }
-    if (!value->is_number_integer()) { return 0; }
-    const uint64_t resolution = value->get<uint64_t>();
-    return resolution >= 2 && resolution <= UINT32_MAX - 4 ? static_cast<uint32_t>(resolution) : 0;
+    if (value != properties.end() && !value->is_number_integer()) { return 0; }
+    const uint64_t resolution = value == properties.end() ? kDefaultResolution : value->get<uint64_t>();
+    if (resolution < 2 || resolution > UINT32_MAX - 4) { return 0; }
+    if (clipmapCount <= 1) { return static_cast<uint32_t>(resolution); }
+    // UE 5.7.4 aligns clipmaps to both the page and coarse mip lattices.
+    const uint64_t aligned = (resolution + kClipmapResolutionAlignment - 1) /
+        kClipmapResolutionAlignment * kClipmapResolutionAlignment;
+    const uint64_t pages = aligned / kCellsPerPage;
+    return pages * pages <= UINT32_MAX / clipmapCount / pages ? static_cast<uint32_t>(aligned) : 0;
 }
 
 uint32_t pagesPerAxis(uint32_t resolution)
@@ -135,6 +154,18 @@ uint32_t pageAtlasSize(uint32_t maxPhysicalPages)
     return side * kSamplesPerPage;
 }
 
+bool setDomainBounds(GlobalDistanceFieldDomain& domain, const std::array<double, 3>& center, float extent)
+{
+    for (size_t axis = 0; axis < center.size(); ++axis) {
+        const float minimum = static_cast<float>(center[axis] - extent);
+        const float maximum = static_cast<float>(center[axis] + extent);
+        if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum >= maximum) { return false; }
+        domain.minAndVoxelSize[axis] = minimum;
+        domain.maxAndInfluenceRadius[axis] = maximum;
+    }
+    return true;
+}
+
 class GlobalDistanceFieldPass final : public ComputePass {
 public:
     explicit GlobalDistanceFieldPass(bool usePages) : usePages_(usePages) {}
@@ -144,13 +175,14 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        const uint32_t resolution = logicalResolution(properties());
+        const uint32_t clipmapCount = std::max(1u, readClipmapCount(properties()));
+        const uint32_t resolution = logicalResolution(properties(), clipmapCount);
         if (usePages_) {
             const uint32_t tableSize = std::max(1u, pagesPerAxis(resolution));
             const uint32_t atlasSize = pageAtlasSize(physicalPageBudget(properties()).value_or(0));
             const bool quantized = quantizedPages();
             auto& pageTable = reflection.addTextureOutput("pageTable", "Virtual page to atlas mapping or constant page state")
-                .texture3D(tableSize, tableSize, tableSize).storageWrite();
+                .texture3D(tableSize, tableSize, tableSize * clipmapCount).storageWrite();
             pageTable.format = Format::R32Uint;
             if (quantized) { pageTable.stageAccess(RenderGraphResourceAccess::TextureSampleRead); }
             auto& pageAtlas = reflection.addTextureOutput("pageAtlas", "Physical pages of clipped signed distances")
@@ -160,9 +192,9 @@ public:
                 pageAtlas.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
                 const uint32_t mipSize = std::max(1u, coarseMipResolution(resolution));
                 reflection.addTextureOutput("coarseMip", "Propagated coarse distances encoded into R8")
-                    .texture3D(mipSize, mipSize, mipSize).storageReadWrite().format = Format::R8Unorm;
+                    .texture3D(mipSize, mipSize, mipSize * clipmapCount).storageReadWrite().format = Format::R8Unorm;
                 reflection.addTextureOutput("mipScratch", "Ping-pong storage for coarse distance propagation")
-                    .texture3D(mipSize, mipSize, mipSize).storageReadWrite().format = Format::R8Unorm;
+                    .texture3D(mipSize, mipSize, mipSize * clipmapCount).storageReadWrite().format = Format::R8Unorm;
             }
             reflection.addBufferOutput("statistics", "Required, resident, positive, negative and unavailable pages")
                 .buffer(kPageStatisticsCount * sizeof(uint32_t), sizeof(uint32_t)).bufferLayout("u32").storageReadWrite();
@@ -172,8 +204,8 @@ public:
             reflection.addTextureOutput("distanceField", "Clipped signed world distance in meters")
                 .texture3D(samples, samples, samples).storageWrite().format = Format::R32Sfloat;
         }
-        reflection.addBufferOutput("domain", "World bounds, voxel size and influence radius")
-            .buffer(sizeof(GlobalDistanceFieldDomain), sizeof(GlobalDistanceFieldDomain)).storageWrite();
+        reflection.addBufferOutput("domain", "World bounds, voxel size and influence radius per level")
+            .buffer(sizeof(GlobalDistanceFieldDomain) * clipmapCount, sizeof(GlobalDistanceFieldDomain)).storageWrite();
         return reflection;
     }
 
@@ -184,13 +216,18 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const bool quantized = quantizedPages();
+        clipmapCount_ = readClipmapCount(properties());
+        if (clipmapCount_ == 0 || (clipmapCount_ > 1 && !quantized)) {
+            log = "Global Distance Field clipmapCount must be an integer from 1 to 6. Multiple levels require quantized pages.";
+            return makeError(Error::InvalidArgument);
+        }
         if (quantized && !context.device->capabilities().shaderStorageImageExtendedFormats) {
             log = "Quantized Global Distance Field requires R8 storage image support";
             return makeError(Error::Unsupported);
         }
-        const uint32_t resolution = logicalResolution(properties());
+        const uint32_t resolution = logicalResolution(properties(), clipmapCount_);
         if (resolution == 0) {
-            log = "Global Distance Field resolution must be an integer of at least 2";
+            log = "Global Distance Field resolution must be an integer of at least 2 and fit the clipmap layout";
             return makeError(Error::InvalidArgument);
         }
         resolution_ = resolution;
@@ -206,22 +243,22 @@ public:
         std::vector<std::filesystem::path> paths;
         try {
             const float extent = properties().value("extent", 3.0f);
-            const auto center = properties().value("center", std::array<float, 3>{});
-            for (size_t axis = 0; axis < 3; ++axis) {
-                domain_.minAndVoxelSize[axis] = center[axis] - extent;
-                domain_.maxAndInfluenceRadius[axis] = center[axis] + extent;
-                if (!std::isfinite(domain_.minAndVoxelSize[axis]) || !std::isfinite(domain_.maxAndInfluenceRadius[axis]) ||
-                    domain_.minAndVoxelSize[axis] >= domain_.maxAndInfluenceRadius[axis]) {
+            const auto center = clipmapCount_ == 1 ? properties().value("center", std::array<double, 3>{}) :
+                std::array<double, 3>{};
+            for (uint32_t level = 0; level < clipmapCount_; ++level) {
+                extents_[level] = std::ldexp(extent, static_cast<int>(level));
+                auto& domain = domains_[level];
+                if (!setDomainBounds(domain, center, extents_[level])) {
                     log = "Global Distance Field requires finite bounds with a positive extent";
                     return makeError(Error::InvalidArgument);
                 }
-            }
-            const float voxelSize = (extent * 2.0f) / static_cast<float>(resolution);
-            domain_.minAndVoxelSize[3] = voxelSize;
-            domain_.maxAndInfluenceRadius[3] = voxelSize * kInfluenceRangeInVoxels;
-            if (voxelSize <= 0.0f || !std::isfinite(domain_.maxAndInfluenceRadius[3])) {
-                log = "Global Distance Field voxel size or influence radius is out of range";
-                return makeError(Error::InvalidArgument);
+                const float voxelSize = (extents_[level] * 2.0f) / static_cast<float>(resolution);
+                domain.minAndVoxelSize[3] = voxelSize;
+                domain.maxAndInfluenceRadius[3] = voxelSize * kInfluenceRangeInVoxels;
+                if (voxelSize <= 0.0f || !std::isfinite(domain.maxAndInfluenceRadius[3])) {
+                    log = "Global Distance Field voxel size or influence radius is out of range";
+                    return makeError(Error::InvalidArgument);
+                }
             }
             const auto fields = properties().value("distanceFieldPaths", std::vector<std::string>{});
             for (const auto& path : fields) { paths.push_back(std::filesystem::path(PROJECT_SOURCE_DIR) / path); }
@@ -273,6 +310,26 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        auto domains = domains_;
+        if (clipmapCount_ > 1) {
+            const auto* view = context.viewConstants();
+            if (!view) {
+                spdlog::error("Global Distance Field clipmaps require the graph camera");
+                return makeError(Error::InvalidArgument);
+            }
+            for (uint32_t level = 0; level < clipmapCount_; ++level) {
+                const double pageSize = domains[level].minAndVoxelSize[3] * float(kCellsPerPage);
+                std::array<double, 3> center;
+                for (size_t axis = 0; axis < center.size(); ++axis) {
+                    // UE FMath::RoundToInt rounds halfway toward positive infinity.
+                    center[axis] = std::floor(view->current.eye[axis] / pageSize + 0.5) * pageSize;
+                }
+                if (!setDomainBounds(domains[level], center, extents_[level])) {
+                    spdlog::error("Global Distance Field clipmap {} bounds exceed world-space float precision", level);
+                    return makeError(Error::InvalidArgument);
+                }
+            }
+        }
         uint32_t instanceCount = 0;
         uint32_t unsupportedTransforms = 0;
         auto instances = meshFields_.uploadInstances(*context.runtimeScene(), instanceCount, unsupportedTransforms);
@@ -290,7 +347,6 @@ public:
             params.atlasSampler = meshBindings.atlasSampler;
             params.domainOutput = writer.buffer(context.outputBuffer("domain").buffer());
             params.instanceCount = instanceCount;
-            params.domain = domain_;
         };
         Result<> result;
         if (usePages_) {
@@ -301,12 +357,15 @@ public:
             params.statistics = writer.buffer(context.outputBuffer("statistics").buffer());
             params.logicalResolution = resolution_;
             params.maxPhysicalPages = maxPhysicalPages_;
+            params.clipmapCount = clipmapCount_;
+            params.domains = domains;
             auto encoded = writer.encode(params, kGlobalDistanceFieldPagesABI);
             if (!encoded) { return makeError(encoded.error()); }
             result = executePages(context, *encoded, writer);
         } else {
             GlobalDistanceFieldParams params{};
             bindMeshes(params);
+            params.domain = domains[0];
             const auto distanceField = context.outputTexture("distanceField");
             params.distanceField = writer.storageImageHandle(distanceField.view());
             auto encoded = writer.encode(params, kGlobalDistanceFieldABI);
@@ -319,8 +378,8 @@ public:
                 {"assetCount", meshFields_.assetCount()}, {"instanceCount", instanceCount},
                 {"unsupportedTransforms", unsupportedTransforms}, {"sampleCountPerAxis", resolution_ + 1u},
                 {"virtualPagesPerAxis", usePages_ ? pagesPerAxis(resolution_) : 0u},
-                {"maxPhysicalPages", maxPhysicalPages_},
-                {"minAndVoxelSize", domain_.minAndVoxelSize}, {"maxAndInfluenceRadius", domain_.maxAndInfluenceRadius}});
+                {"maxPhysicalPages", maxPhysicalPages_}, {"clipmapCount", clipmapCount_},
+                {"minAndVoxelSize", domains[0].minAndVoxelSize}, {"maxAndInfluenceRadius", domains[0].maxAndInfluenceRadius}});
         }
         return result;
     }
@@ -344,7 +403,7 @@ private:
                 return clearPageStats_.dispatch(commands, encoded, 1, 1, 1);
             }},
             {"Compose sparse pages", buildUses, [&](CommandBuffer& commands) {
-                return program_.dispatch(commands, encoded, groups, groups, groups);
+                return program_.dispatch(commands, encoded, groups, groups, groups * clipmapCount_);
             }},
         };
         if (!quantizedPages()) {
@@ -364,6 +423,7 @@ private:
         params.sampler = writer.samplerHandle({});
         params.logicalResolution = resolution_;
         params.coarseResolution = coarseMipResolution(resolution_);
+        params.clipmapCount = clipmapCount_;
         params.previousMip = scratch;
         params.outputMip = coarse;
         const auto toCoarse = writer.encode(params, kGlobalDistanceFieldMipABI);
@@ -385,18 +445,19 @@ private:
             {"mipScratch", Access::TextureStorageRead}, {"coarseMip", Access::TextureStorageWrite},
         };
         const uint32_t groups = (params.coarseResolution + 3u) / 4u;
+        const uint32_t depthGroups = (params.coarseResolution * clipmapCount_ + 3u) / 4u;
         const auto toScratchStage = [&](CommandBuffer& commands) {
-            return propagateMip_.dispatch(commands, *toScratch, groups, groups, groups);
+            return propagateMip_.dispatch(commands, *toScratch, groups, groups, depthGroups);
         };
         const auto toCoarseStage = [&](CommandBuffer& commands) {
-            return propagateMip_.dispatch(commands, *toCoarse, groups, groups, groups);
+            return propagateMip_.dispatch(commands, *toCoarse, groups, groups, depthGroups);
         };
         // UE 5.7.4 GlobalDistanceField.cpp uses five R8 writes, including the
         // first Eikonal solve from fine pages. The fifth write lands in coarseMip.
         const RenderGraphStage stages[] = {
             pageStages[0], pageStages[1],
             {"Seed coarse mip from fine pages", seedUses, [&](CommandBuffer& commands) {
-                return seedMip_.dispatch(commands, *toCoarse, groups, groups, groups);
+                return seedMip_.dispatch(commands, *toCoarse, groups, groups, depthGroups);
             }},
             {"Propagate coarse mip 1", scratchUses, toScratchStage},
             {"Propagate coarse mip 2", coarseUses, toCoarseStage},
@@ -410,7 +471,9 @@ private:
     Device* device_ = nullptr;
     uint32_t resolution_ = 0;
     uint32_t maxPhysicalPages_ = 0;
-    GlobalDistanceFieldDomain domain_{};
+    uint32_t clipmapCount_ = 1;
+    std::array<float, kMaxClipmaps> extents_{};
+    std::array<GlobalDistanceFieldDomain, kMaxClipmaps> domains_{};
     ComputeKernel program_;
     ComputeKernel clearPageStats_;
     ComputeKernel seedMip_, propagateMip_;
@@ -437,17 +500,21 @@ public:
             reflection.addTextureInput("distanceField", "Clipped signed world distance in meters")
                 .texture3D(0, 0, 0).sampledRead().format = Format::R32Sfloat;
         }
-        reflection.addBufferInput("domain", "World bounds, voxel size and influence radius")
-            .buffer(sizeof(GlobalDistanceFieldDomain), sizeof(GlobalDistanceFieldDomain)).storageRead();
+        reflection.addBufferInput("domain", "World bounds, voxel size and influence radius per level")
+            .buffer(0, sizeof(GlobalDistanceFieldDomain)).storageRead();
         reflection.addTextureOutput("color", "Global distance field trace visualization")
             .storageWrite().format = Format::RGBA16Sfloat;
-        reflection.addTextureOutput("trace", "World hit distance, steps, coverage state, surface expansion")
+        reflection.addTextureOutput("trace", "World hit distance, steps, coverage state, surface expansion or clipmap index")
             .storageWrite().format = Format::RGBA32Sfloat;
         return reflection;
     }
 
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
+        if (quantizedPages()) {
+            return {runtimeEnumSetting("debugMode", "Display", "normals",
+                {{"Normals", "normals"}, {"Trace Steps", "steps"}, {"Coverage", "coverage"}, {"Clipmap Levels", "clipmaps"}})};
+        }
         return {runtimeEnumSetting("debugMode", "Display", "normals",
             {{"Normals", "normals"}, {"Trace Steps", "steps"}, {"Coverage", "coverage"}})};
     }
@@ -484,17 +551,29 @@ public:
             params.color = writer.storageImageHandle(context.outputTexture("color").view());
             params.trace = writer.storageImageHandle(context.outputTexture("trace").view());
             const auto mode = context.properties().value("debugMode", std::string("normals"));
-            params.debugMode = mode == "coverage" ? 2u : (mode == "steps" ? 1u : 0u);
+            params.debugMode = mode == "clipmaps" ? 3u : (mode == "coverage" ? 2u : (mode == "steps" ? 1u : 0u));
             params.current = context.viewConstants() ? context.viewConstants()->current :
                 RenderView{}.constants(0, context.width(), context.height(), context.width(), context.height()).current;
             return writer.encode(params, abi);
         };
-        const auto encoded = [&] {
+        const auto encoded = [&]() -> Result<EncodedParameters> {
             if (quantizedPages()) {
+                const auto pageTable = context.inputTexture("pageTable");
+                const auto coarseMip = context.inputTexture("coarseMip");
+                const auto& table = pageTable.desc();
+                const auto& coarse = coarseMip.desc();
+                const uint32_t levels = coarse.depth / coarse.width;
+                const auto& domain = context.inputBuffer("domain").desc();
+                if (levels < 1 || levels > kMaxClipmaps || coarse.width != coarse.height ||
+                    coarse.depth != coarse.width * levels || table.width != table.height ||
+                    table.depth != table.width * levels || domain.size != levels * sizeof(GlobalDistanceFieldDomain)) {
+                    spdlog::error("Global Distance Field page table, coarse mip and domain buffer must describe the same clipmap levels");
+                    return makeError(Error::InvalidArgument);
+                }
                 QuantizedGlobalDistanceFieldDebugParams params{};
-                params.pageTable = writer.sampledImageHandle(context.inputTexture("pageTable").view());
+                params.pageTable = writer.sampledImageHandle(pageTable.view());
                 params.pageAtlas = writer.sampledImageHandle(context.inputTexture("pageAtlas").view());
-                params.coarseMip = writer.sampledImageHandle(context.inputTexture("coarseMip").view());
+                params.coarseMip = writer.sampledImageHandle(coarseMip.view());
                 return encode(params, kQuantizedGlobalDistanceFieldDebugABI);
             }
             if (usePages_) {

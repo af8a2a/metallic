@@ -1,0 +1,23 @@
+{
+    "name": "Lumen / Surface Cache",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "SurfaceCache",
+            "type": "LumenSurfaceCachePass",
+            "position": {"x": 80, "y": 240},
+            "properties": {
+                "viewBinding": "local",
+                "meshCardPaths": [".cache/mesh-distance-field/SurfaceCacheBoxes.meshcards"],
+                "atlasSize": 128,
+                "tileResolution": 16
+            }
+        },
+        {"id": 2, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 430, "y": 240}}
+    ],
+    "edges": [
+        {"id": 1, "src": "SurfaceCache.lighting", "dst": "FinalBlit.source"}
+    ],
+    "outputs": ["FinalBlit.color", "SurfaceCache.albedo", "SurfaceCache.normal", "SurfaceCache.emissive", "SurfaceCache.depth"]
+}

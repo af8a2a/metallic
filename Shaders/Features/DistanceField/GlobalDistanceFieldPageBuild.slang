@@ -26,7 +26,12 @@ struct GlobalDistanceFieldPageBuildParams
     uint instanceCount;
     uint logicalResolution;
     uint maxPhysicalPages;
-    GlobalDistanceFieldDomain domain;
+    uint clipmapCount;
+    // Match the CPU's 16-byte domain alignment in scalar parameter storage.
+    uint padding0;
+    uint padding1;
+    uint padding2;
+    GlobalDistanceFieldDomain domains[6];
 };
 
 static const uint kRequiredPages = 0u;
@@ -63,9 +68,14 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint t
     GlobalDistanceFieldPageBuildParams params = getParameters<GlobalDistanceFieldPageBuildParams>();
     RWTexture3D<uint> pageTable = resolveUniform(params.pageTable);
     RWStructuredBuffer<uint> statistics = resolveUniform(params.statistics);
-    if (threadIndex == 0u && all(pageCoordinate == 0u)) {
+    uint3 tableDimensions;
+    pageTable.GetDimensions(tableDimensions.x, tableDimensions.y, tableDimensions.z);
+    uint clipmapIndex = pageCoordinate.z / tableDimensions.x;
+    uint3 localPage = uint3(pageCoordinate.xy, pageCoordinate.z % tableDimensions.x);
+    GlobalDistanceFieldDomain domain = params.domains[clipmapIndex];
+    if (threadIndex == 0u && all(localPage == 0u)) {
         RWStructuredBuffer<GlobalDistanceFieldDomain> domainOutput = resolveUniform(params.domainOutput);
-        domainOutput[0] = params.domain;
+        domainOutput[clipmapIndex] = domain;
     }
 
     if (params.instanceCount == 0u) {
@@ -87,13 +97,13 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint t
     MeshDistanceFieldResources meshes = {resolveUniform(params.mips), resolveUniform(params.indirection),
         meshAtlas, resolveUniform(params.meshSampler), meshAtlasDimensions.x / 8u};
     StructuredBuffer<MeshDistanceFieldInstance> instances = resolveUniform(params.instances);
-    uint3 firstSample = pageCoordinate * kGlobalDistanceFieldPageCells;
-    float influenceRadius = params.domain.maxAndInfluenceRadius.w;
+    uint3 firstSample = localPage * kGlobalDistanceFieldPageCells;
+    float influenceRadius = domain.maxAndInfluenceRadius.w;
     uint variation = 0u;
     for (uint index = threadIndex; index < kSamplesPerPage; index += kPageGroupSize) {
         uint3 local = globalDistanceFieldPageAtlasOffset(index, uint3(kGlobalDistanceFieldPageSamples));
         uint3 sampleCoordinate = min(firstSample + local, params.logicalResolution);
-        float3 worldPosition = globalDistanceFieldVoxelCenter(params.domain, sampleCoordinate);
+        float3 worldPosition = globalDistanceFieldVoxelCenter(domain, sampleCoordinate);
         float distance = compositeGlobalDistanceField(meshes, instances, params.instanceCount, worldPosition, influenceRadius);
         sharedPageDistances[index] = distance;
         variation |= distance < influenceRadius ? kBelowPositiveBand : 0u;

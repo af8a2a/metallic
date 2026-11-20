@@ -792,6 +792,24 @@ Each coarse write applies the Direct3D reference FLOAT-to-UNORM rounding before 
 
 Tracing starts with the coarse sample and switches to an available fine page when the coarse encoded value is below 0.625. A negative constant page seeds the mip as a fine page filled with zero. Overflow pages use the coarse estimate when propagation reaches them and keep coverage state 3 when the coarse value remains saturated positive. Both R8 textures can be inspected as normalized values. The path depends on Vulkan's extended storage image formats.
 
+**Lighting / Global Distance Field / Camera Clipmaps** enables multiple levels with `clipmapCount` on the quantized producer. Counts from 2 to 6 use the graph camera. `extent` sets the innermost half-width in meters. Each successive level doubles the half-width and voxel size, and independently snaps its center to the nearest page. The logical resolution rounds up to a multiple of 28. All levels share the R8 atlas and page budget, with the page table and coarse mip packed fine to coarse along Z. All levels are rebuilt each frame.
+
+The **Clipmap Levels** debug mode colors hits by level. Its multi-level `trace` output stores hit distance, sample count, coverage state, and hit level (`-1` for a non-hit). State 0 means the ray segment missed all clipmaps, 1 means a fully covered miss, 2 means a hit, 3 means the trace was unresolved due to unavailable samples or the step limit, and 4 means a miss with partial coverage.
+
+### Lumen Mesh Cards and Surface Cache
+
+The optional Embree SDK also enables the Mesh Cards baker. Bake a card set per source mesh. Supply a matching Mesh Distance Field to use its expanded local bounds, as in Unreal 5.7.4. The sample uses the same geometry as the Mesh Distance Field boxes.
+
+```powershell
+cmake --build build-release --target MetallicMeshCardsBake
+New-Item -ItemType Directory -Force .cache/mesh-distance-field | Out-Null
+.\build-release\Source\MetallicMeshCardsBake.exe Asset/Lumen/SurfaceCacheBoxes.gltf 0 .cache/mesh-distance-field/SurfaceCacheBoxes.meshcards --distance-field=.cache/mesh-distance-field/BoxInstances.meshdf
+```
+
+Open **Lighting / Lumen / Surface Cache** after baking. The pass consumes `meshCardPaths` in the bound world scene. `atlasSize` and `tileResolution` configure the fixed square atlas. The `cards` buffer lists world-space OBBs in tile order, with the scene object, source mesh and cardinal direction. The `scene` buffer records the live card count, tile resolution and the 64-bit scene resource identity.
+
+Inspect `albedo`, `normal`, `emissive`, `depth` and `lighting`. Albedo stores the square root of the fully rough diffuse response. Normal stores card-space XY and coverage. Depth is R16 UNORM with 1 reserved for uncovered texels. Lighting stores outgoing scene-linear radiance from the world Sun with shadows disabled and material emissive. The pass captures each frame and supports single-sided, opaque static triangles with orthogonal instance transforms, including mirrors. Atlas residency and lighting feedback are subsequent stages of Lumen integration.
+
 ## Optional RHI diagnostics
 
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing
