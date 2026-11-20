@@ -5,6 +5,8 @@
 #include "Runtime/Render/Shadow/VirtualShadowMapLODInterop.h"
 #include "Runtime/Scene/Scene.h"
 
+#include <functional>
+
 namespace metallic::render {
 
 struct MeshletStreamShadowGeometryView;
@@ -120,8 +122,6 @@ struct VirtualShadowMapCasterResources
     uint64_t geometryRevision = 0;
     uint64_t texturePublicationRevision = 0;
     uint64_t tessellationKey = 0;
-    // This layer variant's mask and parameters; excludes retained source uploads.
-    uint64_t layerBufferBytes = 0;
     VirtualShadowMapShadowLODDiagnostics shadowLOD;
     // CPU-only immutable primitive topology, shared across base upload snapshots.
     std::shared_ptr<VirtualShadowMapLODMetadataCache> lodMetadata;
@@ -161,13 +161,30 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapGPUShadowLOD(
     const MeshletStreamShadowGeometryView* stream, const VirtualShadowMapCasterResources& base,
     const VirtualShadowMapCasterSettings& settings, std::string& log);
 
-// Selects one layer from a complete producer snapshot. IDs are sorted and use
-// the source scene identity. Geometry slot IDs/capacity and complete scene
-// bounds stay unchanged; states contains only the selected layer's casters.
-// The immutable variant retains the source uploads and descriptor leases.
-Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasterLayer(
-    Device& device, CommandBuffer& commands, const VirtualShadowMapCasterResources& source,
-    std::span<const uint64_t> dynamicCasterIds, bool staticLayer, std::string& log);
+struct VirtualShadowMapCasterLayerBindings
+{
+    // A mask followed by static and dynamic parameters, or by merge parameters alone.
+    static constexpr size_t kBufferCount = 3;
+    std::array<std::shared_ptr<Buffer>, kBufferCount> buffers;
+    std::array<ResourceLease, kBufferCount> leases;
+    std::shared_ptr<void> sourceOwner;
+};
+
+// An immutable mask is keyed by triangle slots. Parameters additionally depend
+// on the source publication, which owns their referenced geometry buffers.
+class VirtualShadowMapCasterLayerCache
+{
+public:
+    using AcquireBuffer = std::function<Result<std::shared_ptr<Buffer>>(size_t, const BufferDesc&)>;
+    Result<std::shared_ptr<const VirtualShadowMapCasterLayerBindings>> prepare(
+        ResourceRegistry& registry, const VirtualShadowMapCasterResources& source,
+        std::span<const uint64_t> dynamicCasterIds, bool merge, const AcquireBuffer& acquireBuffer);
+
+private:
+    uint32_t triangleCapacity_ = 0;
+    std::vector<std::array<uint32_t, 2>> ranges_;
+    std::shared_ptr<const VirtualShadowMapCasterLayerBindings> bindings_;
+};
 
 // Pass-owned resident uploads, independent of the view and frame. The cache
 // must be destroyed before its device, like the pass's other GPU resources.

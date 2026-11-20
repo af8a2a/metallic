@@ -1253,49 +1253,76 @@ Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapGPUShadowLOD(
     return result;
 }
 
-Result<VirtualShadowMapCasterResources> prepareVirtualShadowMapCasterLayer(
-    Device& device, CommandBuffer& commands, const VirtualShadowMapCasterResources& source,
-    std::span<const uint64_t> dynamicCasterIds, bool staticLayer, std::string& log)
+Result<std::shared_ptr<const VirtualShadowMapCasterLayerBindings>> VirtualShadowMapCasterLayerCache::prepare(
+    ResourceRegistry& registry, const VirtualShadowMapCasterResources& source,
+    std::span<const uint64_t> dynamicCasterIds, bool merge, const AcquireBuffer& acquireBuffer)
 {
-    auto registry = ResourceRegistry::forDevice(device);
-    if (!registry) { return std::unexpected(registry.error()); }
-    const auto sourceOwner = std::static_pointer_cast<CasterUploads>(source.owner);
-    auto owner = std::make_shared<CasterUploads>();
-    owner->sourceOwner = source.owner;
-    owner->parameters = sourceOwner->parameters;
-    VirtualShadowMapCasterResources resources = source;
-    resources.owner = owner;
-    resources.states.clear();
-    std::vector<uint32_t> dynamicMask((uint64_t(source.triangleCapacity) + 31u) / 32u, 0u);
-    for (const auto& caster : source.states) {
-        const bool dynamic = std::ranges::binary_search(dynamicCasterIds, caster.id);
-        if (dynamic != staticLayer) { resources.states.push_back(caster); }
-        if (!dynamic || caster.triangleCount == 0) { continue; }
-        uint32_t first = caster.triangleFirst;
-        const uint32_t end = first + caster.triangleCount;
-        while (first < end) {
-            const uint32_t bit = first & 31u;
-            const uint32_t count = std::min(32u - bit, end - first);
-            dynamicMask[first / 32u] |= (UINT32_MAX >> (32u - count)) << bit;
-            first += count;
+    std::vector<std::array<uint32_t, 2>> ranges;
+    if (!dynamicCasterIds.empty()) {
+        ranges.reserve(dynamicCasterIds.size());
+        for (const auto& caster : source.states) {
+            if (caster.triangleCount != 0 && std::ranges::binary_search(dynamicCasterIds, caster.id)) {
+                ranges.push_back({caster.triangleFirst, caster.triangleCount});
+            }
         }
     }
-    auto mask = upload(device, **registry, *owner, resources.leases,
-        dynamicMask.data(), dynamicMask.size() * sizeof(uint32_t), sizeof(uint32_t));
-    if (!mask) { return std::unexpected(mask.error()); }
-    owner->parameters.casterLayerMask = *mask;
-    owner->parameters.casterLayer = staticLayer ? 1u : 2u;
-    auto parameters = upload(device, **registry, *owner, resources.leases,
-        &owner->parameters, sizeof(GeometryParameters), sizeof(GeometryParameters));
-    if (!parameters) { return std::unexpected(parameters.error()); }
-    resources.parameters = owner->buffers.back().get();
-    resources.layerBufferBytes = 0;
-    for (const auto& buffer : owner->buffers) { resources.layerBufferBytes += buffer->desc().size; }
-    if (auto result = commands.retainResource(owner); !result) { return std::unexpected(result.error()); }
-    for (const auto& lease : resources.leases) {
-        if (auto result = (*registry)->retain(commands, lease); !result) { return std::unexpected(result.error()); }
+    const bool reuseMask = bindings_ && triangleCapacity_ == source.triangleCapacity && ranges_ == ranges;
+    if (reuseMask && bindings_->sourceOwner == source.owner) { return bindings_; }
+
+    auto bindings = std::make_shared<VirtualShadowMapCasterLayerBindings>();
+    bindings->sourceOwner = source.owner;
+    const auto uploadLayer = [&](size_t index, const void* data, uint64_t bytes, uint32_t stride) -> Result<> {
+        auto buffer = acquireBuffer(index, {.size = std::max<uint64_t>(bytes, stride), .structureStride = stride,
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload});
+        if (!buffer) { return std::unexpected(buffer.error()); }
+        if (bytes != 0) {
+            auto* destination = (*buffer)->map();
+            if (!destination) { return makeError(Error::Failure); }
+            std::memcpy(destination, data, static_cast<size_t>(bytes));
+            (*buffer)->flush({0, bytes});
+            (*buffer)->unmap();
+        }
+        auto lease = registry.storageBuffer(**buffer);
+        if (!lease) { return std::unexpected(lease.error()); }
+        bindings->buffers[index] = std::move(*buffer);
+        bindings->leases[index] = std::move(*lease);
+        return {};
+    };
+    if (reuseMask) {
+        bindings->buffers[0] = bindings_->buffers[0];
+        bindings->leases[0] = bindings_->leases[0];
+    } else {
+        std::vector<uint32_t> dynamicMask((uint64_t(source.triangleCapacity) + 31u) / 32u, 0u);
+        for (const auto& range : ranges) {
+            uint32_t first = range[0];
+            const uint32_t end = first + range[1];
+            while (first < end) {
+                const uint32_t bit = first & 31u;
+                const uint32_t count = std::min(32u - bit, end - first);
+                dynamicMask[first / 32u] |= (UINT32_MAX >> (32u - count)) << bit;
+                first += count;
+            }
+        }
+        if (auto r = uploadLayer(0, dynamicMask.data(), dynamicMask.size() * sizeof(uint32_t), sizeof(uint32_t)); !r) {
+            return std::unexpected(r.error());
+        }
     }
-    return resources;
+    auto parameters = std::static_pointer_cast<CasterUploads>(source.owner)->parameters;
+    parameters.casterLayerMask = bindings->leases[0].shaderIndex();
+    parameters.casterLayer = merge ? 2u : 1u;
+    if (auto r = uploadLayer(1, &parameters, sizeof(parameters), sizeof(GeometryParameters)); !r) {
+        return std::unexpected(r.error());
+    }
+    if (!merge) {
+        parameters.casterLayer = 2u;
+        if (auto r = uploadLayer(2, &parameters, sizeof(parameters), sizeof(GeometryParameters)); !r) {
+            return std::unexpected(r.error());
+        }
+    }
+    triangleCapacity_ = source.triangleCapacity;
+    ranges_ = std::move(ranges);
+    bindings_ = std::move(bindings);
+    return bindings_;
 }
 
 struct VirtualShadowMapCasterCache::Resident

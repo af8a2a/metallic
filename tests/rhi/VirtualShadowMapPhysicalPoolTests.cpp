@@ -277,7 +277,8 @@ std::map<std::string, uint64_t> poolRecordingCommands(const CPUProfileRecorder& 
 {
     std::map<std::string, uint64_t> counts;
     for (const auto& section : recorder.sections) {
-        if (section.name != "Record VSM build and raster batches" && section.name != "Record VSM build and raster") { continue; }
+        if (section.name != "Record VSM build and raster batches" && section.name != "Record VSM build and raster" &&
+            section.name != "Acquire shared VSM frame buffers" && section.name != "Prepare VSM caster layers") { continue; }
         for (const auto& work : section.cpuWork) { counts[work.name] += work.value; }
     }
     for (const char* name : {"faces", "computeDispatches", "prepareDispatches", "meshDraws", "renderingPasses", "computeBins", "rasterBins"}) {
@@ -1684,6 +1685,14 @@ public:
                 auto idle = hot; idle.position = {100,0,3};
                 std::vector<PoolFace> faces{{0, hot}, {1, idle}};
                 auto cold = compare("cold-borrow", faces, 64);
+                requirePool(cold.commands.at("sharedFrameBufferCreates") == 3, "Cold shared pool did not allocate its three frame buffers");
+                if (layered) {
+                    requirePool(cold.commands.at("casterLayerMaskCreates") > 0 &&
+                        cold.commands.at("casterLayerMaskUploads") > 0 &&
+                        cold.commands.at("casterLayerParameterCreates") > 0 &&
+                        cold.commands.at("casterLayerParameterUploads") > cold.commands.at("casterLayerMaskUploads"),
+                        "Cold static and dynamic caster layers did not share a mask");
+                }
                 requirePool(cold.faces.at(0).stats[0] > 32 && cold.faces.at(0).stats[12] > 32,
                     "Busy face did not borrow the idle face's unused fine capacity in its first frame");
                 requirePool(cold.faces.at(1).stats[0] == 0 && cold.faces.at(1).stats[12] == 1,
@@ -1700,6 +1709,18 @@ public:
                 auto warm = compare("warm", faces, 64);
                 requirePool(warm.faces.at(0).stats[17] > 0 && warm.faces.at(0).stats[20] == 0, "Warm shared pages were not reused");
                 requireRetainedDepth(cold, warm, 0);
+                // The first two frames fill both slots. The third reuses a completed slot
+                // while the other slot still supplies the committed history.
+                auto reused = compare("warm-buffer-reuse", faces, 64);
+                requirePool(reused.commands.at("sharedFrameBufferCreates") == 0, "Warm shared pool recreated frame buffers");
+                if (layered) {
+                    for (const char* counter : {"casterLayerMaskCreates", "casterLayerParameterCreates",
+                             "casterLayerMaskUploads", "casterLayerParameterUploads"}) {
+                        requirePool(reused.commands.at(counter) == 0,
+                            std::string("Warm resident caster layers rebuilt stable data: ") + counter);
+                    }
+                }
+                requireRetainedDepth(warm, reused, 0);
                 faces.push_back({2, idle});
                 auto added = compare("cold-add", faces, 64);
                 requirePool(added.faces.at(0).stats[17] > 0, "Adding another face discarded unrelated clean pages");

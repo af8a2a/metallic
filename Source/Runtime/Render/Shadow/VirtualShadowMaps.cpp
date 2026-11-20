@@ -540,6 +540,7 @@ struct VirtualShadowMaps::Cache
 
 struct VirtualShadowMaps::ResourcePool
 {
+    static constexpr size_t kCasterLayerBufferFirst = 25;
     struct BufferEntry
     {
         std::shared_ptr<Buffer> buffer;
@@ -552,9 +553,10 @@ struct VirtualShadowMaps::ResourcePool
         uint32_t pageSize = 0;
     };
     Device* device = nullptr;
-    std::array<std::vector<BufferEntry>, 25> buffers;
+    std::array<std::vector<BufferEntry>, kCasterLayerBufferFirst + 2 * VirtualShadowMapCasterLayerBindings::kBufferCount> buffers;
     std::array<std::vector<TextureEntry>, 4> textures;
     std::array<std::shared_ptr<TextureView>, 2> externalViews;
+    std::array<VirtualShadowMapCasterLayerCache, 2> casterLayerCaches;
     VirtualShadowMapResourcePoolStats stats;
 
     Result<std::shared_ptr<Buffer>> buffer(size_t slot, const BufferDesc& desc, const GPUCompletionPoint& completion)
@@ -655,8 +657,7 @@ struct VirtualShadowMaps::State
         std::shared_ptr<Buffer> lodContext, lodGroupStates, lodSelection, lodChanges, lodStatistics;
         std::shared_ptr<VirtualShadowMapGPUHierarchy> gpuLOD;
         std::shared_ptr<SharedShadowPoolStorage> physicalPoolStorage;
-        std::array<std::shared_ptr<void>, 3> casterLayers;
-        uint64_t layerBufferBytes = 0;
+        std::array<std::shared_ptr<const VirtualShadowMapCasterLayerBindings>, 2> casterLayers;
         std::array<std::shared_ptr<Texture>, 3> textures; // atlas, shadow, debug
         std::array<std::shared_ptr<TextureView>, 3> views;
     };
@@ -1060,14 +1061,17 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
     recording->submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
     recording->faceCount = uint32_t(faces.size()); recording->frameIndex = uint32_t(context->frameIndex());
     recording->allocationSerial = reuseStorage ? pool.committed->allocationSerial + 1u : 1u;
+    CPUProfileScope frameBuffers(profiler, "Acquire shared VSM frame buffers");
+    uint32_t sharedFrameBufferCreates = 0;
     auto acquire = [&](std::shared_ptr<Buffer>& buffer, uint64_t size, uint32_t stride, MemoryLocation location,
         BufferUsageBits extraUsage = BufferUsageBits::None) -> Result<> {
         if (!buffer || buffer->desc().size < size || buffer->desc().structureStride != stride ||
-            !hasFlag(buffer->desc().usage, extraUsage)) {
+            (extraUsage != BufferUsageBits::None && !hasFlag(buffer->desc().usage, extraUsage))) {
             auto created = device.createBuffer({.size = size, .structureStride = stride,
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource | extraUsage, .memoryLocation = location});
             if (!created) { return std::unexpected(created.error()); }
             buffer = std::move(*created);
+            ++sharedFrameBufferCreates;
         }
         return {};
     };
@@ -1076,6 +1080,8 @@ Result<std::vector<VirtualShadowMapResult>> VirtualShadowMaps::recordShared(Virt
         16, MemoryLocation::Device, BufferUsageBits::Indirect); !r) { return std::unexpected(r.error()); }
     if (auto r = acquire(recording->history, uint64_t(capacity) * 16u, 8, MemoryLocation::Device); !r) { return std::unexpected(r.error()); }
     if (auto r = acquire(recording->jobs, faces.size() * sizeof(ShadowPush), sizeof(ShadowPush), MemoryLocation::HostUpload); !r) { return std::unexpected(r.error()); }
+    frameBuffers.work("sharedFrameBufferCreates", sharedFrameBufferCreates);
+    frameBuffers.end();
     const char* entries[]{"vsmSharedPoolPrepareMain", "vsmSharedPoolPhysicalMain", "vsmSharedPoolPublishMain", "vsmBatchPrepareMain"};
     for (size_t index = 0; index < (inputSettings.batchBuildRaster ? 4u : 3u); ++index) {
         if (!pool.pipelines[index]) {
@@ -2595,19 +2601,34 @@ Result<VirtualShadowMapResult> VirtualShadowMaps::recordInternal(Device& device,
         auto atlasLease = state->registry->sampledImage(*state->resources->staticAtlas->view);
         if (!atlasLease) { return std::unexpected(atlasLease.error()); }
         cacheDiagnostics[32] = atlasLease->shaderIndex(); state->leases.push_back(*atlasLease);
-        for (uint32_t layer = 0; layer < (mergeStatic ? 3u : 2u); ++layer) {
-            const bool mergeLayer = layer == 2u;
-            auto geometryLayer = prepareVirtualShadowMapCasterLayer(device, commands, casters,
-                mergeLayer ? demotedCasters : dynamicCasters, layer == 0, log);
-            if (!geometryLayer) { return std::unexpected(geometryLayer.error()); }
-            auto lease = state->registry->storageBuffer(*geometryLayer->parameters);
-            if (!lease) { return std::unexpected(lease.error()); }
-            cacheDiagnostics[mergeLayer ? kVSMCacheMergeGeometry : 33u + layer] = lease->shaderIndex();
-            state->leases.push_back(*lease);
-            state->leases.insert(state->leases.end(), geometryLayer->leases.begin(), geometryLayer->leases.end());
-            state->resources->casterLayers[layer] = geometryLayer->owner;
-            state->resources->layerBufferBytes += geometryLayer->layerBufferBytes;
+        CPUProfileScope layerProfile(profiler, "Prepare VSM caster layers");
+        std::array<uint64_t, 2> layerCreates{}, layerUploads{};
+        for (size_t group = 0; group < (mergeStatic ? 2u : 1u); ++group) {
+            const bool merge = group == 1;
+            const size_t firstSlot = ResourcePool::kCasterLayerBufferFirst + group * VirtualShadowMapCasterLayerBindings::kBufferCount;
+            const auto acquireUpload = [&](size_t index, const BufferDesc& desc) {
+                const auto before = pool_->stats.bufferCreates;
+                auto buffer = pool_->buffer(firstSlot + index, desc, completion);
+                layerCreates[index != 0] += pool_->stats.bufferCreates - before;
+                ++layerUploads[index != 0];
+                return buffer;
+            };
+            auto bindings = pool_->casterLayerCaches[group].prepare(*state->registry, casters,
+                merge ? demotedCasters : dynamicCasters, merge, acquireUpload);
+            if (!bindings) { return std::unexpected(bindings.error()); }
+            const auto& leases = (*bindings)->leases;
+            cacheDiagnostics[merge ? kVSMCacheMergeGeometry : 33u] = leases[1].shaderIndex();
+            if (!merge) { cacheDiagnostics[34] = leases[2].shaderIndex(); }
+            state->leases.insert(state->leases.end(), leases.begin(), leases.begin() + (merge ? 2 : 3));
+            state->resources->casterLayers[group] = std::move(*bindings);
         }
+        if (!mergeStatic) { pool_->casterLayerCaches[1] = {}; }
+        layerProfile.work("casterLayerMaskCreates", layerCreates[0]);
+        layerProfile.work("casterLayerParameterCreates", layerCreates[1]);
+        layerProfile.work("casterLayerMaskUploads", layerUploads[0]);
+        layerProfile.work("casterLayerParameterUploads", layerUploads[1]);
+    } else {
+        pool_->casterLayerCaches = {};
     }
     if (staticPageHZB) {
         if (sharedPhysicalPool) {
@@ -4058,7 +4079,10 @@ VirtualShadowMapMemoryUsage VirtualShadowMaps::memoryUsage() const
         addBuffer(state_->resources->lodStatistics.get());
         addBuffer(state_->resources->staticHZBJobs.get());
         addBuffer(state_->resources->clusterVisibility.get());
-        usage.bufferBytes += state_->resources->layerBufferBytes;
+        for (const auto& layer : state_->resources->casterLayers) {
+            if (!layer) { continue; }
+            for (const auto& buffer : layer->buffers) { addBuffer(buffer.get()); }
+        }
         for (size_t index = 1; index < state_->resources->textures.size(); ++index) {
             if (const auto& texture = state_->resources->textures[index]; texture && textures.insert(texture.get()).second) {
                 const auto& desc = texture->desc();
