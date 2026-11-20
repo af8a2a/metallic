@@ -4,6 +4,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 
 #include <chrono>
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -97,6 +98,7 @@ public:
     Frame presentationFrame();
     void clearHistory();
     const std::vector<Frame>& history() const { return history_; }
+    const std::deque<Frame>& timelineHistory() const { return timelineHistory_; }
     const std::vector<StreamingHistory>& streamingHistory() const { return streamingHistory_; }
 
     class FrameScope {
@@ -139,7 +141,8 @@ public:
     const std::vector<Frame>& capturedFrames() const { return capturedFrames_; }
     bool captureOverflow() const { return captureOverflow_; }
     uint64_t nextFrameIndex() const { return frameIndex_; }
-    FrameScope beginFrame(bool captureRHICPU = false);
+    FrameScope beginFrame();
+    bool recordingTimelineFrame() const { return timelineRecording_ && rhiCapture_.has_value(); }
     Scope scope(std::string_view name, uint32_t color = 0);
     // CPU wall time spent waiting; retained in inclusive parent timings.
     Scope idleScope(std::string_view name);
@@ -153,6 +156,7 @@ public:
 
 private:
     void drawTimelineChart();
+    void clearTimingHistory();
     void addCpuProfileSections(std::span<const render::RenderGraphProfileSection> sections, std::string_view prefix);
     size_t beginSection(std::string_view name, uint32_t color);
     void endSection(size_t nodeIndex);
@@ -201,7 +205,9 @@ private:
     uint64_t graphGeneration_ = UINT64_MAX;
     bool currentOverflow_ = false;
     bool detailed_ = false;
-    std::optional<Frame> timelinePinnedFrame_;
+    bool timelineRecording_ = false;
+    std::deque<Frame> timelineHistory_;
+    size_t timelineSelectedIndex_ = 0;
     double timelineStartMs_ = 0.0;
     double timelineRangeMs_ = 0.0;
     char scopeFilter_[256]{};

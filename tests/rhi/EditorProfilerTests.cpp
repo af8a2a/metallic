@@ -1141,12 +1141,34 @@ public:
                 }
             }
             checkProfile(tabs->NextSelectedTabId != 0, "Missing timeline chart tab");
-            checkProfile(draw().find("Waiting for a completed CPU frame") != std::string::npos,
-                "Timeline did not handle startup without samples");
+            checkProfile(draw().find("Press Record to capture CPU frames") != std::string::npos,
+                "Timeline recording was not off at startup");
             checkProfile(ImGui::FindWindowByName("timeline") == nullptr, "Timeline opened a standalone window");
+            const ImVec2 start(tabs->BarRect.Min.x, tabs->BarRect.Max.y + tabs->ItemSpacingY);
+            const auto clickRecordButton = [&] {
+                io.AddMousePosEvent(start.x + 8.0f, start.y + 8.0f);
+                draw();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+                draw();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+                draw();
+                return draw();
+            };
+            {
+                auto frame = profiler.beginFrame();
+                checkProfile(!profiler.recordingTimelineFrame(), "Timeline captured a frame with Record off");
+                const auto labels = clickRecordButton();
+                checkProfile(labels.find("Stop Recording") != std::string::npos &&
+                    labels.find("Waiting for a completed CPU frame") != std::string::npos,
+                    "Record did not activate on an empty timeline");
+                checkProfile(!profiler.recordingTimelineFrame(), "Timeline started capture partway through a frame");
+            }
+            checkProfile(profiler.timelineHistory().empty(), "Timeline retained a partial frame after starting");
+
             const auto recordFrame = [&](int waitMs) {
                 using namespace std::chrono_literals;
-                auto frame = profiler.beginFrame(true);
+                auto frame = profiler.beginFrame();
+                checkProfile(profiler.recordingTimelineFrame(), "Timeline did not begin capturing the next full frame");
                 auto render = profiler.scope("Render Frame");
                 {
                     auto idle = profiler.idleScope("Wait Slot Completion");
@@ -1217,7 +1239,7 @@ public:
                 }
             };
             for (int i = 0; i < 20; ++i) { recordFrame(1 + (i % 5)); }
-            const auto& latest = profiler.history().back();
+            const auto& latest = profiler.timelineHistory().back();
             const auto findNode = [&](std::string_view name) -> const EditorProfiler::Node& {
                 const auto found = std::ranges::find(latest.nodes, name, &EditorProfiler::Node::name);
                 checkProfile(found != latest.nodes.end(), "Missing imported timeline scope " + std::string(name));
@@ -1245,7 +1267,7 @@ public:
                 std::string_view(latest.rhiIntervals[1].name) == "Queue Submit" &&
                 latest.rhiIntervals[1].begin <= latest.rhiIntervals[0].begin && latest.rhiIntervals[0].end <= latest.rhiIntervals[1].end,
                 "Editor history lost nested RHI intervals or mixed in RHI calls from worker threads");
-            checkProfile(draw().find("Editor frame 19") != std::string::npos, "Live timeline did not show the latest CPU frame");
+            checkProfile(draw().find("Editor frame 20") != std::string::npos, "Live timeline did not show the latest CPU frame");
             if (const char* screenshot = std::getenv("METALLIC_TEST_TIMELINE_PNG")) {
                 std::string message;
                 const bool saved = saveImGuiTestDrawDataPng(*ImGui::GetDrawData(), atlas, atlasWidth, atlasHeight,
@@ -1253,15 +1275,22 @@ public:
                 checkProfile(saved, message);
             }
 
-            const ImVec2 start(tabs->BarRect.Min.x, tabs->BarRect.Max.y + tabs->ItemSpacingY);
-            const float firstBarX = start.x + window->WorkRect.GetWidth() / (2.0f * profiler.history().size());
+            {
+                auto frame = profiler.beginFrame();
+                checkProfile(clickRecordButton().find("Editor frame 20") != std::string::npos,
+                    "Stop Recording did not retain the latest complete frame");
+            }
+            checkProfile(profiler.timelineHistory().size() == 20, "Timeline appended a frame after stopping");
+
+            checkProfile(clickRecordButton().find("Stop Recording") != std::string::npos, "Timeline did not restart recording");
+            const float firstBarX = start.x + window->WorkRect.GetWidth() / (2.0f * profiler.timelineHistory().size());
             io.AddMousePosEvent(firstBarX, start.y + ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeight());
             draw();
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
             const auto pinned = draw();
-            checkProfile(pinned.find("Editor frame 0") != std::string::npos, "Click did not select the first frame");
+            checkProfile(pinned.find("Editor frame 1 Wall") != std::string::npos, "Click did not select the first frame");
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
-            draw();
+            checkProfile(draw().find("Stop Recording") == std::string::npos, "Selecting a history frame left recording active");
 
             ImGui::SetWindowSize("Profiler", ImVec2(width - 16.0f, 380.0f));
             draw();
@@ -1301,21 +1330,29 @@ public:
             draw();
             checkProfile(context->ActiveId == 0, "Middle release left the timeline captured");
 
-            RenderGraphExecutionStats stale{.graphGeneration = 1};
+            RenderGraphExecutionStats stale{.graphGeneration = 2};
             stale.nodes.push_back({.id = 0, .name = "Color", .type = "TestPass"});
             stale.workerIntervals = latest.workerIntervals;
             { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stale); }
-            checkProfile(profiler.history().back().workerIntervals.empty(), "Stale render tasks leaked into a later frame");
             for (int i = 0; i < 104; ++i) { auto frame = profiler.beginFrame(); }
-            checkProfile(profiler.history().front().index > 0 && draw().find("Editor frame 0") != std::string::npos,
-                "Timeline lost the pinned frame when history advanced");
-            io.AddMousePosEvent(start.x + 8.0f, start.y + 8.0f);
-            draw();
-            io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
-            draw();
-            io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
-            checkProfile(draw().find("Editor frame 124") != std::string::npos, "Resume did not return to the latest CPU frame");
-            return RHITestResult::pass("Profiler timeline history, middle-button navigation, pinned eviction and resume");
+            checkProfile(profiler.history().front().index > 20 && profiler.timelineHistory().size() == 20 &&
+                profiler.timelineHistory().front().index == 1 && profiler.timelineHistory().back().index == 20 &&
+                draw().find("Editor frame 1 Wall") != std::string::npos,
+                "Stopped timeline changed when the render graph reset and timing history advanced");
+
+            checkProfile(clickRecordButton().find("Stop Recording") != std::string::npos, "Timeline did not restart recording");
+            const auto resumedIndex = profiler.nextFrameIndex();
+            { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stale); }
+            checkProfile(profiler.timelineHistory().size() == 21 && profiler.timelineHistory().back().index == resumedIndex &&
+                profiler.timelineHistory().back().workerIntervals.empty() &&
+                draw().find("Editor frame " + std::to_string(resumedIndex)) != std::string::npos,
+                "Timeline did not append a fresh frame and follow it after restarting");
+            for (int i = 0; i < 104; ++i) { auto frame = profiler.beginFrame(); }
+            checkProfile(profiler.timelineHistory().size() == 100 &&
+                profiler.timelineHistory().front().index == resumedIndex + 5, "Timeline history is not bounded");
+            profiler.clearHistory();
+            checkProfile(profiler.timelineHistory().empty(), "Clear history retained timeline frames");
+            return RHITestResult::pass("Profiler timeline recording, frozen history, restart, and middle-button navigation");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

@@ -84,10 +84,8 @@ struct ScopeFilter {
     }
 };
 
-const EditorProfiler::Frame* drawTimelineHistory(const std::vector<EditorProfiler::Frame>& history, uint64_t selected)
+std::optional<size_t> drawTimelineHistory(const std::deque<EditorProfiler::Frame>& history, size_t selected)
 {
-    if (history.empty()) { return nullptr; }
-
     const ImVec2 size(std::max(1.0f, ImGui::GetContentRegionAvail().x), 2.5f * ImGui::GetTextLineHeight());
     ImGui::InvisibleButton("Frame history", size);
     const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
@@ -103,7 +101,7 @@ const EditorProfiler::Frame* drawTimelineHistory(const std::vector<EditorProfile
         const auto& frame = history[i];
         const float x = lo.x + static_cast<float>(i) * stride;
         const float height = std::max(1.0f, static_cast<float>(frame.cpuWallMilliseconds / maximum) * (size.y - 4.0f));
-        const bool active = frame.index == selected;
+        const bool active = i == selected;
         if (active) {
             draw->AddRectFilled(ImVec2(x, lo.y), ImVec2(x + stride, hi.y), IM_COL32(45, 83, 94, 255));
         }
@@ -111,7 +109,7 @@ const EditorProfiler::Frame* drawTimelineHistory(const std::vector<EditorProfile
             active ? IM_COL32(114, 221, 208, 255) : IM_COL32(76, 109, 140, 255));
     }
 
-    if (!ImGui::IsItemHovered()) { return nullptr; }
+    if (!ImGui::IsItemHovered()) { return std::nullopt; }
     const float offset = ImGui::GetIO().MousePos.x - lo.x;
     const size_t index = std::min(static_cast<size_t>(std::max(0.0f, offset) / stride), history.size() - 1);
     const auto& frame = history[index];
@@ -119,7 +117,8 @@ const EditorProfiler::Frame* drawTimelineHistory(const std::vector<EditorProfile
     ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
     ImGui::SetTooltip("Frame %llu\nWall %.2f ms   CPU %.2f ms",
         static_cast<unsigned long long>(frame.index), frame.cpuWallMilliseconds, frame.nodes.front().cpuMilliseconds);
-    return clicked ? &frame : nullptr;
+    if (clicked) { return index; }
+    return std::nullopt;
 }
 
 enum class TimelineScopeKind { Work, Idle, Editor, RHI, Worker };
@@ -1218,7 +1217,7 @@ void EditorProfiler::beginCapture()
     captureOverflow_ = false;
 }
 
-EditorProfiler::FrameScope EditorProfiler::beginFrame(bool captureRHICPU)
+EditorProfiler::FrameScope EditorProfiler::beginFrame()
 {
     if (frameActive_) {
         endFrame();
@@ -1232,7 +1231,7 @@ EditorProfiler::FrameScope EditorProfiler::beginFrame(bool captureRHICPU)
     stack_.clear();
     frameActive_ = true;
     beginSection("Frame", 0xffffffffu);
-    if (captureRHICPU) {
+    if (timelineRecording_) {
         currentRhiIntervals_.reserve(kProfilerRHIIntervalLimit);
         rhiCapture_.emplace(currentRhiIntervals_);
     }
@@ -1318,13 +1317,15 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
     }
     if (stats.nodes.empty()) { return; }
     if (graphGeneration_ != stats.graphGeneration) {
-        clearHistory();
+        clearTimingHistory();
         latestFrame_ = {};
         graphGeneration_ = stats.graphGeneration;
     }
     currentStreaming_.insert(currentStreaming_.end(), stats.streaming.begin(), stats.streaming.end());
-    std::ranges::copy_if(stats.workerIntervals, std::back_inserter(currentWorkerIntervals_),
-        [frameStart](const auto& interval) { return interval.begin >= frameStart; });
+    if (recordingTimelineFrame()) {
+        std::ranges::copy_if(stats.workerIntervals, std::back_inserter(currentWorkerIntervals_),
+            [frameStart](const auto& interval) { return interval.begin >= frameStart; });
+    }
     currentOverflow_ |= stats.profilingOverflow;
     const size_t parent = stack_.empty() ? 0 : stack_.back();
     addCpuProfileSections(stats.preparation, "Graph preparation / ");
@@ -1424,6 +1425,15 @@ const EditorProfiler::Frame& EditorProfiler::displayFrame() const
 }
 
 void EditorProfiler::clearHistory()
+{
+    clearTimingHistory();
+    timelineHistory_.clear();
+    timelineSelectedIndex_ = 0;
+    timelineStartMs_ = 0.0;
+    timelineRangeMs_ = 0.0;
+}
+
+void EditorProfiler::clearTimingHistory()
 {
     history_.clear();
     historyExecutions_.clear();
@@ -1627,42 +1637,36 @@ void EditorProfiler::drawTimelineChart()
         timelineStartMs_ = 0.0;
         timelineRangeMs_ = 0.0;
     };
-    const Frame* frame = timelinePinnedFrame_ ? &*timelinePinnedFrame_ : &latestFrame_;
-
-    ImGui::BeginDisabled(frame->nodes.empty());
-    if (ImGui::Button(timelinePinnedFrame_ ? "Resume" : "Pause")) {
-        if (timelinePinnedFrame_) {
-            timelinePinnedFrame_.reset();
-            frame = &latestFrame_;
+    if (ImGui::Button(timelineRecording_ ? "Stop Recording###TimelineRecord" : "Record###TimelineRecord")) {
+        timelineRecording_ = !timelineRecording_;
+        if (timelineRecording_ && !timelineHistory_.empty() && timelineSelectedIndex_ != timelineHistory_.size() - 1) {
+            timelineSelectedIndex_ = timelineHistory_.size() - 1;
             fit();
-        } else {
-            timelinePinnedFrame_ = *frame;
-            frame = &*timelinePinnedFrame_;
         }
     }
-    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Fit")) { fit(); }
     ImGui::SameLine();
     ImGui::TextDisabled("Wheel to zoom  |  Middle drag to pan and scroll  |  Shift+wheel to scroll");
 
-    if (const Frame* selected = drawTimelineHistory(history_, frame->index)) {
-        timelinePinnedFrame_ = *selected;
-        frame = &*timelinePinnedFrame_;
+    if (timelineHistory_.empty()) {
+        ImGui::TextDisabled("%s", timelineRecording_ ? "Waiting for a completed CPU frame." : "Press Record to capture CPU frames.");
+        return;
+    }
+    if (const auto selected = drawTimelineHistory(timelineHistory_, timelineSelectedIndex_)) {
+        timelineRecording_ = false;
+        timelineSelectedIndex_ = *selected;
         fit();
     }
-    if (frame->nodes.empty()) {
-        ImGui::TextDisabled("Waiting for a completed CPU frame.");
-    } else {
-        ImGui::Text("Editor frame %llu", static_cast<unsigned long long>(frame->index));
+    const auto& frame = timelineHistory_[timelineSelectedIndex_];
+    ImGui::Text("Editor frame %llu", static_cast<unsigned long long>(frame.index));
+    ImGui::SameLine();
+    ImGui::TextDisabled("Wall %.2f ms   CPU %.2f ms", frame.cpuWallMilliseconds, frame.nodes.front().cpuMilliseconds);
+    if (frame.workerIntervals.empty()) {
         ImGui::SameLine();
-        ImGui::TextDisabled("Wall %.2f ms   CPU %.2f ms", frame->cpuWallMilliseconds, frame->nodes.front().cpuMilliseconds);
-        if (frame->workerIntervals.empty()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("No render worker samples");
-        }
-        drawTimelineScopes(*frame, timelineStartMs_, timelineRangeMs_);
+        ImGui::TextDisabled("No render worker samples");
     }
+    drawTimelineScopes(frame, timelineStartMs_, timelineRangeMs_);
 }
 
 size_t EditorProfiler::beginSection(std::string_view name, uint32_t color)
@@ -1721,6 +1725,8 @@ void EditorProfiler::endFrame()
         return;
     }
 
+    // The UI can toggle recording mid-frame. Keep only frames captured from the start.
+    const bool recordTimelineFrame = recordingTimelineFrame();
     rhiCapture_.reset();
     currentOverflow_ |= currentRhiIntervals_.size() == kProfilerRHIIntervalLimit;
     while (!stack_.empty()) {
@@ -1758,7 +1764,7 @@ void EditorProfiler::endFrame()
     const auto hasGraph = [](const auto& nodes) {
         return std::any_of(nodes.begin(), nodes.end(), [](const auto& node) { return node.renderGraphExecutionId != UINT64_MAX; });
     };
-    if (hasGraph(latestFrame_.nodes) && !hasGraph(currentNodes_)) { clearHistory(); }
+    if (hasGraph(latestFrame_.nodes) && !hasGraph(currentNodes_)) { clearTimingHistory(); }
     latestFrame_.index = frameIndex_++;
     latestFrame_.profilingOverflow = currentOverflow_;
     // Remove sources no longer present, including a switch to a non-streaming scene.
@@ -1784,9 +1790,21 @@ void EditorProfiler::endFrame()
     latestFrame_.cpuWallMilliseconds = wallMilliseconds;
     latestFrame_.cpuIdleMilliseconds = idleMilliseconds;
     latestFrame_.cpuEditorMilliseconds = editorMilliseconds;
-    latestFrame_.workerIntervals = currentWorkerIntervals_;
-    latestFrame_.rhiIntervals = currentRhiIntervals_;
     latestFrame_.nodes = currentNodes_;
+    if (recordTimelineFrame) {
+        timelineHistory_.push_back({
+            .nodes = latestFrame_.nodes,
+            .index = latestFrame_.index,
+            .profilingOverflow = latestFrame_.profilingOverflow,
+            .cpuWallMilliseconds = wallMilliseconds,
+            .cpuIdleMilliseconds = idleMilliseconds,
+            .cpuEditorMilliseconds = editorMilliseconds,
+            .workerIntervals = currentWorkerIntervals_,
+            .rhiIntervals = currentRhiIntervals_,
+        });
+        if (timelineHistory_.size() > kProfilerHistorySize) { timelineHistory_.pop_front(); }
+        timelineSelectedIndex_ = timelineHistory_.size() - 1;
+    }
     registerFrameScopes(latestFrame_.nodes);
     addHistoryFrame(latestFrame_);
     history_.push_back(latestFrame_);

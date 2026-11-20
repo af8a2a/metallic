@@ -2228,7 +2228,7 @@ int EditorApplication::run(
                 swapchainOutOfDate_ = true;
             }
             METALLIC_TRACY_CPU_SCOPE("Editor Frame");
-            auto profileFrame = profiler_.beginFrame(profilerOpen_);
+            auto profileFrame = profiler_.beginFrame();
             if (!waitForFrameSlotBeforeInput()) {
                 shutdown();
                 return 1;
@@ -2296,7 +2296,7 @@ int EditorApplication::run(
             "Frame",
             render::profiling::NsightCategory::Frame,
             nsightFrameIndex++);
-        auto profileFrame = profiler_.beginFrame(profilerOpen_);
+        auto profileFrame = profiler_.beginFrame();
         if (!waitForFrameSlotBeforeInput()) {
             break;
         }
@@ -7204,7 +7204,7 @@ bool EditorApplication::renderGraphPreview()
     });
     render::Result<> result = graphExecutor_->execute(render::RenderGraphSubmitDesc{.graphicsQueue = graphicsQueue_,
         .computeQueue = device_->getQueue(render::QueueType::Compute), .historyResources = &historyResources_,
-        .recordingWorkerLimit = cpuJobRecordingWorkerLimit_, .captureWorkerIntervals = profilerOpen_});
+        .recordingWorkerLimit = cpuJobRecordingWorkerLimit_, .captureWorkerIntervals = profiler_.recordingTimelineFrame()});
     profiler_.addRenderGraphStats(graphExecutor_->executionStats());
     if (result) { historyFrameIndex_ = graphExecutor_->executionStats().executionId + 1; }
     if (smokeTest_ && result) {
