@@ -1,9 +1,13 @@
 #include "MeshDistanceFieldFixture.h"
 #include "RHITest.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/RenderView.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "harness/Fixtures.h"
 #include "harness/ValidationRecorder.h"
 
 #include <algorithm>
@@ -13,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <stdexcept>
 
 namespace metallic::tests {
 namespace {
@@ -1299,6 +1304,193 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(GlobalDistanceFieldClipmapTest);
+
+struct GdfContinuationResources {
+    render::ShaderSampledImage pageTable, coarseMip;
+    render::ShaderSampler sampler;
+    render::ShaderBuffer domains, stepLimitDomains, output;
+};
+
+struct GdfContinuationDomain {
+    std::array<float, 4> minimumAndVoxelSize, maximumAndInfluenceRadius;
+};
+
+struct GdfContinuationResult {
+    float distance;
+    uint32_t classification, hitClipmap, steps;
+};
+
+static_assert(sizeof(GdfContinuationResources) == 24);
+static_assert(sizeof(GdfContinuationDomain) == 32);
+static_assert(sizeof(GdfContinuationResult) == 16);
+
+class GlobalDistanceFieldContinuationTest final : public RHITest {
+public:
+    GlobalDistanceFieldContinuationTest()
+    {
+        name = "global_distance_field_clipmap_continuation";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto require = [](bool condition, std::string_view message) {
+            if (!condition) { throw std::runtime_error(std::string(message)); }
+        };
+        try {
+            bench::ValidationRecorder validation;
+            auto device = bench::createTestDevice(context, {.applicationName = "GDF clipmap continuation",
+                .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+                .validationSink = validation.sink()});
+            require(bool(device), "Could not initialize the GDF continuation test device");
+            auto& gpu = **device;
+            std::string log;
+            auto shader = compileSlangShaderToSpirv({.moduleName = "GlobalDistanceFieldContinuationProbe",
+                .entryPointName = "main", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+            require(bool(shader), log);
+            using Resources = GdfContinuationResources;
+            const ComputeResourceBindingDesc bindings[]{
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, pageTable), .kind = ComputeResourceBindingKind::SampledImage},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, coarseMip), .kind = ComputeResourceBindingKind::SampledImage},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, sampler), .kind = ComputeResourceBindingKind::Sampler},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, domains)},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, stepLimitDomains)},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, output)},
+            };
+            ComputeProgram program;
+            require(bool(program.initialize(gpu, {.spirv = shader->spirv, .bindings = bindings, .requiresRayQuery = false,
+                .resourceParameterSize = sizeof(Resources)}, log)), log);
+
+            constexpr uint32_t kPageSide = 3, kMipSide = 8;
+            constexpr uint32_t kPositivePage = 0xffffffffu, kOverflowPage = 0xfffffffdu;
+            constexpr std::array domains{
+                GdfContinuationDomain{{-8.0f, -8.0f, -8.0f, 1.0f}, {8.0f, 8.0f, 8.0f, 4.0f}},
+                GdfContinuationDomain{{-16.0f, -16.0f, -16.0f, 2.0f}, {16.0f, 16.0f, 16.0f, 8.0f}},
+            };
+            auto stepLimitDomains = domains;
+            stepLimitDomains[0].minimumAndVoxelSize[3] = 0.03125f;
+            stepLimitDomains[0].maximumAndInfluenceRadius[3] = 0.125f;
+            constexpr uint32_t kDomainCount = static_cast<uint32_t>(domains.size());
+            std::array<uint32_t, kPageSide * kPageSide * kPageSide * kDomainCount> pages;
+            pages.fill(kPositivePage);
+            for (uint32_t z = 0; z < kPageSide; ++z) {
+                for (uint32_t x = 0; x < kPageSide; ++x) {
+                    pages[z * kPageSide * kPageSide + x] = kOverflowPage;
+                }
+            }
+            std::array<float, kMipSide * kMipSide * kMipSide * kDomainCount> mip;
+            mip.fill(1.0f);
+            for (uint32_t z = 0; z < kMipSide; ++z) {
+                // These rows decode to the respective minimum step exactly. In
+                // the coarse rows a zero-distance texel marks the far surface.
+                const uint32_t fine = z * kMipSide * kMipSide + 6u * kMipSide;
+                std::fill_n(mip.begin() + fine, kMipSide, 0.515625f);
+                for (uint32_t y : {2u, 5u}) {
+                    const uint32_t coarse = (z + kMipSide) * kMipSide * kMipSide + y * kMipSide;
+                    std::fill_n(mip.begin() + coarse, kMipSide - 1u, 0.515625f);
+                    mip[coarse + kMipSide - 1u] = 0.5f;
+                }
+            }
+            const auto upload = [&](std::span<const std::byte> data, BufferUsageBits usage) {
+                auto buffer = gpu.createBuffer({.size = data.size_bytes(), .usage = usage, .memoryLocation = MemoryLocation::HostUpload});
+                require(bool(buffer), "Could not allocate the GDF test upload");
+                void* mapped = (*buffer)->map();
+                require(mapped != nullptr, "Could not map the GDF test upload");
+                std::memcpy(mapped, data.data(), data.size_bytes());
+                (*buffer)->flush();
+                (*buffer)->unmap();
+                return std::move(*buffer);
+            };
+            auto pageUpload = upload(std::as_bytes(std::span(pages)), BufferUsageBits::TransferSource);
+            auto mipUpload = upload(std::as_bytes(std::span(mip)), BufferUsageBits::TransferSource);
+            auto domainBuffer = upload(std::as_bytes(std::span(domains)), BufferUsageBits::Storage);
+            auto stepLimitDomainBuffer = upload(std::as_bytes(std::span(stepLimitDomains)), BufferUsageBits::Storage);
+            std::array<GdfContinuationResult, 6> actual{};
+            auto output = gpu.createBuffer({.size = sizeof(actual), .usage = BufferUsageBits::Storage,
+                .memoryLocation = MemoryLocation::HostReadback});
+            require(bool(output), "Could not allocate the GDF test readback");
+            const auto createVolume = [&](Format format, uint32_t side) {
+                return gpu.createTexture({.type = TextureType::Texture3D,
+                    .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+                    .format = format, .width = side, .height = side, .depth = side * kDomainCount});
+            };
+            auto pageTable = createVolume(Format::R32Uint, kPageSide);
+            auto coarseMip = createVolume(Format::R32Sfloat, kMipSide);
+            require(bool(pageTable) && bool(coarseMip), "Could not allocate the test page table and coarse mip");
+            auto pageTableView = gpu.createTextureView(**pageTable, {});
+            auto coarseMipView = gpu.createTextureView(**coarseMip, {});
+            require(bool(pageTableView) && bool(coarseMipView), "Could not create the GDF test views");
+            bench::GPUCommands commands(*gpu.getQueue(QueueType::Graphics));
+            require(bool(commands.initialize(gpu)), "Could not begin GDF test commands");
+            const auto recordUpload = [&](Texture& texture, Buffer& source) {
+                const TextureBarrierDesc before{.texture = &texture, .oldLayout = TextureLayout::Undefined,
+                    .newLayout = TextureLayout::TransferDestination, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+                require(bool(commands.commands->synchronize({.textures = {&before, 1}})), "GDF texture upload barrier failed");
+                const auto& desc = texture.desc();
+                require(bool(source.slice().and_then([&](const auto& slice) {
+                    return commands.commands->copyBufferToTexture({.texture = &texture, .buffer = slice,
+                        .width = desc.width, .height = desc.height, .depth = desc.depth});
+                })), "GDF texture upload failed");
+                const TextureBarrierDesc after{.texture = &texture, .oldLayout = TextureLayout::TransferDestination,
+                    .newLayout = TextureLayout::ShaderRead, .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+                require(bool(commands.commands->synchronize({.textures = {&after, 1}})), "GDF texture sampling barrier failed");
+            };
+            recordUpload(**pageTable, *pageUpload);
+            recordUpload(**coarseMip, *mipUpload);
+            const SamplerDesc sampler{.minFilter = SamplerFilter::Nearest, .magFilter = SamplerFilter::Nearest};
+            const ComputeDispatchBinding dispatch[]{
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, pageTable), .textureView = pageTableView->get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, coarseMip), .textureView = coarseMipView->get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, sampler), .sampler = &sampler},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, domains), .buffer = domainBuffer.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, stepLimitDomains), .buffer = stepLimitDomainBuffer.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(Resources, output), .buffer = output->get()},
+            };
+            require(bool(program.dispatch({.commandBuffer = commands.commands.get(), .bindings = dispatch})),
+                "GDF continuation dispatch failed");
+            const BufferBarrierDesc readbackBarrier{.buffer = output->get(),
+                .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                .after = {PipelineStageBits::Host, AccessBits::HostRead}};
+            require(bool(commands.commands->synchronize({.buffers = {&readbackBarrier, 1}})), "GDF readback barrier failed");
+            require(bool(commands.submitAndWait()), "GDF continuation execution failed");
+            (*output)->invalidate();
+            const void* mapped = (*output)->map();
+            require(mapped != nullptr, "Could not read the GDF test results");
+            std::memcpy(actual.data(), mapped, sizeof(actual));
+            (*output)->unmap();
+            require(!validation.failed(), "GDF continuation Vulkan validation: " + validation.snapshot().dump());
+
+            constexpr uint32_t kNoHit = 0xffffffffu;
+            constexpr std::array expected{
+                GdfContinuationResult{11.5f, 2u, 1u, 6u},
+                GdfContinuationResult{-1.0f, 3u, kNoHit, 1u},
+                GdfContinuationResult{-1.0f, 1u, kNoHit, 2u},
+                GdfContinuationResult{-1.0f, 8u, kNoHit, 0u},
+                GdfContinuationResult{11.984375f, 2u, 1u, 262u},
+                GdfContinuationResult{-1.0f, 7u, kNoHit, 256u},
+            };
+            constexpr std::array labels{"missing then hit", "missing then miss", "covered miss", "empty interval",
+                "step limit then hit", "step limit without later coverage"};
+            for (size_t index = 0; index < expected.size(); ++index) {
+                const auto& ref = expected[index];
+                const auto& value = actual[index];
+                if (!std::isfinite(value.distance) || std::abs(value.distance - ref.distance) > 1.0e-4f ||
+                    value.classification != ref.classification || value.hitClipmap != ref.hitClipmap || value.steps != ref.steps) {
+                    return RHITestResult::fail(std::string(labels[index]) + ": got class " + std::to_string(value.classification) +
+                        ", clipmap " + std::to_string(value.hitClipmap) + ", distance " + std::to_string(value.distance) +
+                        ", steps " + std::to_string(value.steps));
+                }
+            }
+            return RHITestResult::pass("Missing pages and step limits resume in the next clipmap and preserve unresolved states.");
+        } catch (const std::exception& error) {
+            return RHITestResult::fail(error.what());
+        }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GlobalDistanceFieldContinuationTest);
 
 } // namespace
 } // namespace metallic::tests

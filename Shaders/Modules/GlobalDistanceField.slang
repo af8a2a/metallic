@@ -10,6 +10,9 @@ public static const uint kGlobalDistanceFieldMiss = 1u;
 public static const uint kGlobalDistanceFieldHit = 2u;
 public static const uint kGlobalDistanceFieldUnavailable = 3u;
 public static const uint kGlobalDistanceFieldPartial = 4u;
+// Gather reserves classes 5 and 6 for screen hits and radiance cache samples.
+public static const uint kGlobalDistanceFieldStepLimit = 7u;
+public static const uint kGlobalDistanceFieldEmpty = 8u;
 
 public struct GlobalDistanceFieldDomain
 {
@@ -86,11 +89,10 @@ public float2 clipGlobalDistanceFieldRay(GlobalDistanceFieldDomain domain, float
 
 // UE 5.7.4 GlobalDistanceFieldUtils.ush:127, with the opaque visualization settings.
 public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDistanceFieldSampler>(T distanceField,
-    float voxelExtent, float3 rayStart, float3 rayDirection, float2 intersectionTimes, out bool reachedSegmentEnd,
+    float voxelExtent, float3 rayStart, float3 rayDirection, float2 intersectionTimes,
     float clipmapRayBias = 0.0f)
 {
-    GlobalDistanceFieldTrace result = {-1.0f, 0u, kGlobalDistanceFieldMiss, 0.0f};
-    reachedSegmentEnd = false;
+    GlobalDistanceFieldTrace result = {-1.0f, 0u, kGlobalDistanceFieldStepLimit, 0.0f};
     float sampleRayTime = intersectionTimes.x;
     const float expandSurfaceFalloff = 2.0f * voxelExtent;
     for (uint step = 0u; step < kGlobalDistanceFieldMaxTraceSteps; ++step) {
@@ -112,7 +114,7 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDista
         float stepDistance = max(distance, voxelExtent);
         sampleRayTime += stepDistance;
         if (sampleRayTime > intersectionTimes.y) {
-            reachedSegmentEnd = true;
+            result.classification = kGlobalDistanceFieldMiss;
             break;
         }
     }
@@ -124,15 +126,17 @@ public GlobalDistanceFieldTrace traceGlobalDistanceField<T : IGlobalDistanceFiel
     GlobalDistanceFieldDomain domain, float3 rayStart, float3 rayDirection,
     float minTraceDistance, float maxTraceDistance)
 {
+    if (minTraceDistance >= maxTraceDistance) {
+        return {-1.0f, 0u, kGlobalDistanceFieldEmpty, 0.0f};
+    }
     float2 intersectionTimes = clipGlobalDistanceFieldRay(domain, rayStart, rayDirection, maxTraceDistance);
     intersectionTimes.x = max(intersectionTimes.x, minTraceDistance);
     if (!(intersectionTimes.x < intersectionTimes.y)) {
         return {-1.0f, 0u, kGlobalDistanceFieldOutside, 0.0f};
     }
 
-    bool reachedSegmentEnd;
     return traceGlobalDistanceFieldSegment(distanceField, domain.minAndVoxelSize.w * 0.5f, rayStart, rayDirection,
-        intersectionTimes, reachedSegmentEnd);
+        intersectionTimes);
 }
 
 // UE 5.7.4 GlobalDistanceFieldShared.ush:291. Rescale the encoded gradient threshold for meters.

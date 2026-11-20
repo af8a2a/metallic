@@ -99,13 +99,15 @@ void writeGlobalDistanceFieldDebug<T : IGlobalDistanceFieldSampler>(uint2 pixel,
     bool hit = result.classification == kGlobalDistanceFieldHit;
     if (result.classification == kGlobalDistanceFieldUnavailable) {
         display = float3(0.95f, 0.28f, 0.08f);
+    } else if (result.classification == kGlobalDistanceFieldStepLimit) {
+        display = float3(0.86f, 0.14f, 0.44f);
     } else if (debugMode == 1u && result.stepCount != 0u) {
         float heat = saturate(log2(1.0f + float(result.stepCount)) / log2(1.0f + float(kGlobalDistanceFieldMaxTraceSteps)));
         display = lerp(float3(0.015f, 0.08f, 0.35f), float3(1.0f, 0.30f, 0.025f), heat);
     } else if (debugMode == 2u) {
         if (result.classification == kGlobalDistanceFieldPartial) {
             display = float3(0.29f, 0.20f, 0.41f);
-        } else if (result.classification != kGlobalDistanceFieldOutside) {
+        } else if (hit || result.classification == kGlobalDistanceFieldMiss) {
             display = hit ? kClipmapColors[0] : float3(0.10f, 0.30f, 0.56f);
         }
     } else if (debugMode == 3u && hit) {

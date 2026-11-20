@@ -178,8 +178,9 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
         trace = float4(compositeProbeTrace(lighting), traceClass);
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
+        bool unresolved = hit.state.x == kGlobalDistanceFieldUnavailable || hit.state.x == kGlobalDistanceFieldStepLimit;
         distances[address] = hit.state.x == kGlobalDistanceFieldHit ? hit.metrics.x :
-            (hit.state.x == kGlobalDistanceFieldUnavailable ? -1.0f : params.maxTraceDistance);
+            (unresolved ? -1.0f : params.maxTraceDistance);
 #if defined(METALLIC_LUMEN_RADIANCE_CACHE)
         if (coverage.valid) {
             // TraceVoxels with USE_VOXEL_TRACE_HIT_DISTANCE and SCREEN_PROBE_EXTRA_AO disabled.

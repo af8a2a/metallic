@@ -794,7 +794,9 @@ Tracing starts with the coarse sample and switches to an available fine page whe
 
 **Lighting / Global Distance Field / Camera Clipmaps** enables multiple levels with `clipmapCount` on the quantized producer. Counts from 2 to 6 use the graph camera. `extent` sets the innermost half-width in meters. Each successive level doubles the half-width and voxel size, and independently snaps its center to the nearest page. The logical resolution rounds up to a multiple of 28. All levels share the R8 atlas and page budget, with the page table and coarse mip packed fine to coarse along Z. All levels are rebuilt each frame.
 
-The **Clipmap Levels** debug mode colors hits by level. Its multi-level `trace` output stores hit distance, sample count, coverage state, and hit level (`-1` for a non-hit). State 0 means the ray segment missed all clipmaps, 1 means a fully covered miss, 2 means a hit, 3 means the trace was unresolved due to unavailable samples or the step limit, and 4 means a miss with partial coverage.
+The **Clipmap Levels** debug mode colors hits by level. Its multi-level `trace` output stores hit distance, sample count, coverage state, and hit level (`-1` for a non-hit). State 0 means the nonempty segment missed all clipmaps, 1 means a fully covered miss, 2 means a hit, 3 means an unavailable page sample, 4 means a miss with partial coverage, 7 means that a clipmap exhausted its step budget, and 8 means an empty ray interval.
+
+The opaque trace resumes at the clipped exit of the previous layer and gives each coarser clipmap its own step budget, following UE 5.7.4. Metallic also follows this order after a page becomes unavailable. A later hit identifies the hit clipmap and keeps the accumulated successful sample count. If the remaining layers produce no hit, the first unavailable sample or exhausted budget still determines the final state. An empty ray interval consumes zero samples and identifies no hit clipmap. UE uses a single no-hit result and counts loop iterations with a different terminal-sample convention.
 
 ### Lumen Mesh Cards and Surface Cache
 
@@ -825,7 +827,7 @@ Capture `Trace.results` at `AfterPass` to inspect the 96-byte records in ray ord
 | `uint4 candidates` | Ranked scene object IDs, `0xffffffff` for empty entries |
 | `uint4 card` | Dominant card index, scene object ID, atlas U/V as float bit patterns |
 
-The GDF classifications are outside (0), covered miss (1), hit (2), unavailable (3) and partial (4). The cache statuses are no geometry hit (0), near-origin suppression (1), no covered card sample (2), sampled (3) and mismatched producer scene identities (4). A sampled hit can have zero RGB. Unset clipmap, card and object indices are `0xffffffff`.
+The GDF classifications are outside (0), covered miss (1), hit (2), unavailable (3), partial (4), step limit (7) and empty interval (8). The cache statuses are no geometry hit (0), near-origin suppression (1), no covered card sample (2), sampled (3) and mismatched producer scene identities (4). A sampled hit can have zero RGB. Unset clipmap, card and object indices are `0xffffffff`.
 
 The reference is UE 5.7.4's full-coverage, opaque diffuse Global Tracing path. This graph supplies fixed rays in place of the screen probe ray producer.
 

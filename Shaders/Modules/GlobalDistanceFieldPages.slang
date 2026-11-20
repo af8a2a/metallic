@@ -156,8 +156,11 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobal
     float minTraceDistance, float maxTraceDistance, out uint hitClipmapIndex,
     float voxelSizeRelativeBias = 0.0f, float voxelSizeRelativeRayEndBias = 0.0f)
 {
-    GlobalDistanceFieldTrace result = {-1.0f, 0u, kGlobalDistanceFieldOutside, 0.0f};
     hitClipmapIndex = ~0u;
+    if (minTraceDistance >= maxTraceDistance) {
+        return {-1.0f, 0u, kGlobalDistanceFieldEmpty, 0.0f};
+    }
+    GlobalDistanceFieldTrace result = {-1.0f, 0u, kGlobalDistanceFieldOutside, 0.0f};
     uint minClipmapIndex = computeGlobalDistanceFieldClipmapIndex(domains, clipmapCount,
         rayStart + minTraceDistance * rayDirection);
     float minRayTime = minTraceDistance;
@@ -182,9 +185,8 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobal
 
         fullyCovered = fullyCovered && intersectionTimes.x <= max(minRayTime, clipmapRayBias);
         minRayTime = intersectionTimes.y;
-        bool reachedSegmentEnd;
         GlobalDistanceFieldTrace segment = traceGlobalDistanceFieldSegment(clipmap, voxelExtent,
-            rayStart, rayDirection, intersectionTimes, reachedSegmentEnd, clipmapRayBias);
+            rayStart, rayDirection, intersectionTimes, clipmapRayBias);
         result.stepCount += segment.stepCount;
         if (segment.classification == kGlobalDistanceFieldHit) {
             hitClipmapIndex = clipmapIndex;
@@ -193,11 +195,12 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobal
             result.classification = kGlobalDistanceFieldHit;
             return result;
         }
-        if (!reachedSegmentEnd) {
-            result.classification = kGlobalDistanceFieldUnavailable;
-            return result;
+        // Continue at the clipped exit, as in UE. A later hit proves occlusion;
+        // otherwise preserve the first segment failure across subsequent misses.
+        if (result.classification == kGlobalDistanceFieldOutside || result.classification == kGlobalDistanceFieldPartial) {
+            result.classification = segment.classification == kGlobalDistanceFieldMiss ?
+                kGlobalDistanceFieldPartial : segment.classification;
         }
-        result.classification = kGlobalDistanceFieldPartial;
     }
 
     if (result.classification == kGlobalDistanceFieldPartial && fullyCovered && minRayTime >= maxTraceDistance) {
