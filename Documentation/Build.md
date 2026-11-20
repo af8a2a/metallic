@@ -759,6 +759,23 @@ Validated on Windows x64 with MSVC 19.51.36256 and CMake 4.2.1, Debug:
   dependencies in Ninja; changing the header scheduled recompilation. Actual
   sccache cache hits were not measured because sccache was not installed.
 
+## Offline mesh distance field baker
+
+`MetallicMeshDistanceFieldBake` is available when `METALLIC_EMBREE_ROOT` points to an Embree 4.3.3 SDK. The baker accepts a glTF/GLB source mesh index and writes a `.meshdf` with three sparse mips. Supply an outward-wound, closed mesh made of single-sided opaque sections. On Windows, keep Embree's matching TBB runtime on `PATH`. For the local Unreal 5.7.4 SDK this is included in `Engine/Binaries/Win64`.
+
+From an x64 Visual Studio developer shell at the repository root, build the optional tool and bake the sample:
+
+```powershell
+$unrealEngine = 'F:/UnrealEngine/Engine'
+cmake -S . -B build-release "-DMETALLIC_EMBREE_ROOT=$unrealEngine/Source/ThirdParty/Intel/Embree/Deploy/embree-4.3.3"
+cmake --build build-release --target MetallicMeshDistanceFieldBake
+$env:Path = "$unrealEngine/Binaries/Win64;$env:Path"
+New-Item -ItemType Directory -Force .cache/mesh-distance-field | Out-Null
+.\build-release\Source\MetallicMeshDistanceFieldBake.exe Asset/MeshDistanceField/BoxInstances.gltf 0 .cache/mesh-distance-field/BoxInstances.meshdf
+```
+
+Open **Lighting / Mesh Distance Fields** in the editor. The sample traces two instances of the same mesh, including a rotated and mirrored instance. The pass can display normals, trace steps, or instance IDs. Its `trace` texture stores hit distance in meters, step count, debug instance ID, and a hit flag. The `MeshDistanceField` checkpoint exposes the R8 atlas for slice capture. The supported instance transforms are rigid or uniformly scaled, including reflections.
+
 ## Optional RHI diagnostics
 
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing

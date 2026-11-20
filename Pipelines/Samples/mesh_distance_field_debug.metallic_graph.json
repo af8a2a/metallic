@@ -1,0 +1,38 @@
+{
+    "name": "Mesh Distance Field Debug",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "MeshDistanceField",
+            "type": "MeshDistanceFieldDebugPass",
+            "position": {"x": 80, "y": 240},
+            "properties": {
+                "distanceFieldPath": ".cache/mesh-distance-field/BoxInstances.meshdf"
+            }
+        },
+        {
+            "id": 2,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {"x": 440, "y": 240},
+            "properties": {}
+        }
+    ],
+    "edges": [
+        {"id": 1, "src": "MeshDistanceField.color", "dst": "FinalBlit.source"}
+    ],
+    "outputs": ["FinalBlit.color", "MeshDistanceField.trace"],
+    "view": {
+        "camera": {
+            "eye": [0.0, 1.35, 4.2],
+            "center": [0.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0],
+            "fovDegrees": 43.0,
+            "projection": "perspective",
+            "znear": 0.05,
+            "zfar": 50.0
+        },
+        "temporalJitter": false
+    }
+}

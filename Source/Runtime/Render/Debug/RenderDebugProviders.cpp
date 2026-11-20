@@ -33,6 +33,7 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     // This semantic view is checked against the actual GPU pass by the inspector smoke.
     add({"AutoExposureState", 16, {{"multiplier", "f32", 0}, {"adaptedEV100", "f32", 4},
         {"targetEV100", "f32", 8}, {"luminance", "f32", 12}}});
+    add({"R8", 1, {{"r", "u8", 0}}});
     add({"RGBA8", 4, {{"r", "u8", 0}, {"g", "u8", 1}, {"b", "u8", 2}, {"a", "u8", 3}}});
     add({"BGRA8", 4, {{"b", "u8", 0}, {"g", "u8", 1}, {"r", "u8", 2}, {"a", "u8", 3}}});
     add({"RGBA16F", 8, {{"r", "f16", 0}, {"g", "f16", 2}, {"b", "f16", 4}, {"a", "f16", 6}}});

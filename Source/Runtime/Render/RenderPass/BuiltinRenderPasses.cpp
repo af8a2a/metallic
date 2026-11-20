@@ -42,6 +42,8 @@ void registerBuiltInRenderGraphPasses()
     registerRenderGraphPassType("ColorGradingLUTPass",
         "Compose ACES 2.0, grading and custom LUTs into a scene-linear-input 3D display LUT",
         []() { return builtin_pass::createColorGradingLUTPass(); });
+    registerRenderGraphPassType("MeshDistanceFieldDebugPass", "Trace shared object-space mesh distance fields",
+        []() { return builtin_pass::createMeshDistanceFieldDebugPass(); });
     registerRenderGraphPassType("VisibilityBufferMaterialPass", "Resolve unified visibility using scalar materials without RTAS",
         []() { return builtin_pass::createVisibilityBufferMaterialPass(); });
     registerRenderGraphPassType(

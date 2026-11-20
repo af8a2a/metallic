@@ -1,0 +1,28 @@
+{
+    "asset": {"version": "2.0"},
+    "scene": 0,
+    "scenes": [{"nodes": [0, 1]}],
+    "nodes": [
+        {"name": "Translated box", "mesh": 0, "translation": [-1.05, 0.0, 0.0]},
+        {
+            "name": "Rotated and mirrored box",
+            "mesh": 0,
+            "translation": [0.9, 0.0, -0.15],
+            "rotation": [0.0, 0.25881904510252074, 0.0, 0.9659258262890683],
+            "scale": [-0.8, 0.8, 0.8]
+        }
+    ],
+    "meshes": [{"name": "Shared unit box", "primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+    "accessors": [
+        {"bufferView": 0, "componentType": 5126, "count": 8, "type": "VEC3", "min": [-0.5, -0.5, -0.5], "max": [0.5, 0.5, 0.5]},
+        {"bufferView": 1, "componentType": 5123, "count": 36, "type": "SCALAR", "min": [0], "max": [7]}
+    ],
+    "bufferViews": [
+        {"buffer": 0, "byteOffset": 0, "byteLength": 96, "target": 34962},
+        {"buffer": 0, "byteOffset": 96, "byteLength": 72, "target": 34963}
+    ],
+    "buffers": [{
+        "byteLength": 168,
+        "uri": "data:application/octet-stream;base64,AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAACAAEAAAADAAIABAAFAAYABAAGAAcAAAAEAAcAAAAHAAMAAQACAAYAAQAGAAUAAAABAAUAAAAFAAQAAwAHAAYAAwAGAAIA"
+    }]
+}
