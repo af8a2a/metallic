@@ -53,6 +53,8 @@ struct GraphAccessPlan {
     std::vector<GraphAccessPassPlan> passes;
 };
 
+enum class GraphAccessPlanMode { Graph, InternalStages };
+
 struct GraphAccessBinding {
     // Owned allocation required; borrowed images need an external lifetime
     // contract and cannot be encoded through this planner yet.
@@ -77,9 +79,10 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
 // Passes must preserve input order on each actual queue: visibility established
 // by an earlier boundary can cover later reads, including later submissions.
 // Coverage is local to this invocation; failed/cancelled plans cannot seed it.
+// Internal stages record in order on the same queue and need only the barriers.
 Result<GraphAccessPlan> buildGraphAccessPlan(
     std::span<const GraphAccessResource> resources,
-    std::span<const GraphAccessPass> passes);
+    std::span<const GraphAccessPass> passes, GraphAccessPlanMode mode = GraphAccessPlanMode::Graph);
 
 SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassKind kind);
 // Helper algorithms declare each phase's use; the shared planner derives its

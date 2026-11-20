@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <tuple>
 
 namespace metallic::tests {
 namespace {
@@ -448,6 +449,8 @@ public:
             GraphAccessPass{.uses = {bufferUse(kComputeWrite, true),
                 {.resource = 1, .state = ResourceState::ShaderRead, .scope = kComputeRead}}},
             GraphAccessPass{.uses = {bufferUse(kComputeRead), bufferUse(kComputeWrite, true, 2)}},
+            GraphAccessPass{.uses = {
+                {.resource = 1, .state = ResourceState::General, .scope = kComputeWrite, .writes = true}}},
         };
         auto plan = buildGraphAccessPlan(resources, passes);
         ACCESS_CHECK(plan && plan->passes[0].barriers.empty());
@@ -457,6 +460,24 @@ public:
             AccessBits::ShaderWrite, PipelineStageBits::ComputeShader));
         ACCESS_CHECK(std::any_of(plan->passes[1].barriers.begin(), plan->passes[1].barriers.end(),
             [](const GraphAccessBarrier& barrier) { return barrier.resource == 2; }));
+
+        const auto internal = buildGraphAccessPlan(resources, passes, render::detail::GraphAccessPlanMode::InternalStages);
+        ACCESS_CHECK(internal && internal->passes.size() == plan->passes.size());
+        const auto useFields = [](const GraphAccessUse& use) {
+            return std::tuple{use.resource, use.state, use.scope.stages, use.scope.access, use.writes};
+        };
+        const auto barrierFields = [](const GraphAccessBarrier& barrier) {
+            return std::tuple{barrier.resource, barrier.before, barrier.after,
+                barrier.beforeScope.stages, barrier.beforeScope.access, barrier.afterScope.stages, barrier.afterScope.access,
+                barrier.executionOnly, barrier.memoryAliasing};
+        };
+        for (size_t index = 0; index < plan->passes.size(); ++index) {
+            const auto& expected = plan->passes[index];
+            const auto& stage = internal->passes[index];
+            ACCESS_CHECK(stage.predecessors.empty());
+            ACCESS_CHECK(std::ranges::equal(stage.uses, expected.uses, {}, useFields, useFields));
+            ACCESS_CHECK(std::ranges::equal(stage.barriers, expected.barriers, {}, barrierFields, barrierFields));
+        }
 
         const std::array changeLayout{GraphAccessPass{.uses = {
             {.resource = 1, .state = ResourceState::General, .scope = kComputeWrite, .writes = true}}}};

@@ -32,6 +32,7 @@ struct ResourceFrontier {
     std::optional<MemoryProducer> writer;
     std::optional<MemoryProducer> layout;
     std::vector<AccessEvent> readers;
+    size_t stageUse = SIZE_MAX;
 };
 
 bool scopeCovers(SyncScope available, SyncScope requested)
@@ -308,7 +309,7 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
 
 Result<GraphAccessPlan> buildGraphAccessPlan(
     std::span<const GraphAccessResource> resources,
-    std::span<const GraphAccessPass> passes)
+    std::span<const GraphAccessPass> passes, GraphAccessPlanMode mode)
 {
     GraphAccessPlan result;
     result.passes.resize(passes.size());
@@ -329,23 +330,25 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
     for (size_t passIndex = 0; passIndex < passes.size(); ++passIndex) {
         const auto& pass = passes[passIndex];
         auto& planned = result.passes[passIndex];
+        planned.uses.reserve(pass.uses.size());
         // A pass is one access boundary. Field order must not invent barriers
         // between aliases that will actually be used by the same GPU commands.
         for (const auto& use : pass.uses) {
             if (use.resource >= resources.size() || use.scope.stages == PipelineStageBits::None) {
                 return makeError(Error::InvalidArgument);
             }
-            const auto existing = std::find_if(planned.uses.begin(), planned.uses.end(),
-                [&](const auto& value) { return value.resource == use.resource; });
-            if (existing == planned.uses.end()) {
+            auto& useIndex = frontiers[use.resource].stageUse;
+            if (useIndex == SIZE_MAX) {
+                useIndex = planned.uses.size();
                 planned.uses.push_back(use);
-            } else if (!mergeUse(*existing, use, resources[use.resource].type)) {
+            } else if (!mergeUse(planned.uses[useIndex], use, resources[use.resource].type)) {
                 return makeError(Error::InvalidArgument);
             }
         }
 
         for (const auto& use : planned.uses) {
             auto& frontier = frontiers[use.resource];
+            frontier.stageUse = SIZE_MAX;
             const bool texture = resources[use.resource].type == RenderGraphResourceType::Texture2D;
             const bool layoutChange = texture && frontier.state != use.state;
             if (layoutChange && frontier.writer) {
@@ -356,7 +359,7 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
             SyncScope before;
             bool localMemoryProducer = false;
             const auto consume = [&](const AccessEvent& event, bool memoryProducer, bool alreadyVisible = false) {
-                if (event.pass != kInitialAccess &&
+                if (mode == GraphAccessPlanMode::Graph && event.pass != kInitialAccess &&
                     std::find(planned.predecessors.begin(), planned.predecessors.end(), event.pass) == planned.predecessors.end()) {
                     planned.predecessors.push_back(event.pass);
                 }
@@ -416,7 +419,9 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
             }
             frontier.state = use.state;
         }
-        std::sort(planned.predecessors.begin(), planned.predecessors.end());
+        if (mode == GraphAccessPlanMode::Graph) {
+            std::sort(planned.predecessors.begin(), planned.predecessors.end());
+        }
     }
     return result;
 }
