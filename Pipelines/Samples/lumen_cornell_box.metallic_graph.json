@@ -1,0 +1,74 @@
+{
+    "name": "Lumen / Cornell Box",
+    "version": 1,
+    "nodes": [
+        {"id": 1, "name": "VBuffer", "type": "VisibilityBufferPass", "position": {"x": 50, "y": 0},
+            "properties": {"visualization": "none", "enableClusterRtx": false}},
+        {"id": 2, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 340, "y": 0},
+            "properties": {"materialBinning": false, "outputLinear": true, "exportLumenReceivers": true}},
+        {"id": 3, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass",
+            "position": {"x": 50, "y": 350}, "properties": {
+                "distanceFieldPaths": [
+                    ".cache/mesh-distance-field/CornellBoxFloor.meshdf",
+                    ".cache/mesh-distance-field/CornellBoxCeiling.meshdf",
+                    ".cache/mesh-distance-field/CornellBoxBackWall.meshdf",
+                    ".cache/mesh-distance-field/CornellBoxLeftWall.meshdf",
+                    ".cache/mesh-distance-field/CornellBoxRightWall.meshdf",
+                    ".cache/mesh-distance-field/CornellBoxShortBlock.meshdf",
+                    ".cache/mesh-distance-field/CornellBoxTallBlock.meshdf",
+                    ".cache/mesh-distance-field/CornellBoxCeilingEmitter.meshdf"
+                ],
+                "center": [0, 1, 0], "extent": 1.8, "resolution": 112,
+                "maxPhysicalPages": 4096, "quantized": true, "clipmapCount": 1, "buildObjectGrid": true
+            }},
+        {"id": 4, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 340, "y": 350},
+            "properties": {
+                "meshCardPaths": [
+                    ".cache/mesh-distance-field/CornellBoxFloor.meshcards",
+                    ".cache/mesh-distance-field/CornellBoxCeiling.meshcards",
+                    ".cache/mesh-distance-field/CornellBoxBackWall.meshcards",
+                    ".cache/mesh-distance-field/CornellBoxLeftWall.meshcards",
+                    ".cache/mesh-distance-field/CornellBoxRightWall.meshcards",
+                    ".cache/mesh-distance-field/CornellBoxShortBlock.meshcards",
+                    ".cache/mesh-distance-field/CornellBoxTallBlock.meshcards",
+                    ".cache/mesh-distance-field/CornellBoxCeilingEmitter.meshcards"
+                ],
+                "atlasSize": 256, "tileResolution": 32, "shadowedLighting": true
+            }},
+        {"id": 5, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 665, "y": 140},
+            "properties": {"maxTraceDistance": 5}},
+        {"id": 6, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1000, "y": 140}}
+    ],
+    "edges": [
+        {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
+        {"id": 2, "src": "VBuffer.depth", "dst": "Deferred.depth"},
+        {"id": 3, "src": "VBuffer.rasterInfo", "dst": "Deferred.rasterInfo"},
+        {"id": 4, "src": "Deferred.lumenPosition", "dst": "Gather.position"},
+        {"id": 5, "src": "Deferred.lumenNormal", "dst": "Gather.normal"},
+        {"id": 6, "src": "Deferred.lumenDiffuse", "dst": "Gather.diffuse"},
+        {"id": 7, "src": "Deferred.color", "dst": "Gather.directColor"},
+        {"id": 8, "src": "GlobalDistanceFieldPages.pageTable", "dst": "SurfaceCache.pageTable"},
+        {"id": 9, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "SurfaceCache.pageAtlas"},
+        {"id": 10, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "SurfaceCache.coarseMip"},
+        {"id": 11, "src": "GlobalDistanceFieldPages.domain", "dst": "SurfaceCache.domain"},
+        {"id": 12, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Gather.pageTable"},
+        {"id": 13, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Gather.pageAtlas"},
+        {"id": 14, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Gather.coarseMip"},
+        {"id": 15, "src": "GlobalDistanceFieldPages.domain", "dst": "Gather.domain"},
+        {"id": 16, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Gather.objectGrid"},
+        {"id": 17, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Gather.objectGridScene"},
+        {"id": 18, "src": "SurfaceCache.cards", "dst": "Gather.cards"},
+        {"id": 19, "src": "SurfaceCache.scene", "dst": "Gather.cardScene"},
+        {"id": 20, "src": "SurfaceCache.depth", "dst": "Gather.cardDepth"},
+        {"id": 21, "src": "SurfaceCache.lighting", "dst": "Gather.cardLighting"},
+        {"id": 22, "src": "Gather.color", "dst": "FinalBlit.source"}
+    ],
+    "outputs": ["FinalBlit.color", "Gather.indirectDiffuse"],
+    "view": {
+        "camera": {
+            "eye": [0, 1.03, 3.55], "center": [0, 0.98, 0], "up": [0, 1, 0],
+            "projection": "perspective", "fovDegrees": 43, "znear": 0.05, "zfar": 8
+        },
+        "temporalJitter": false
+    }
+}

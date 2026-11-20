@@ -1,0 +1,71 @@
+{
+    "asset": {"version": "2.0"},
+    "scene": 0,
+    "extensionsUsed": ["KHR_materials_specular", "KHR_materials_emissive_strength"],
+    "scenes": [
+        {"name": "Cornell Box", "nodes": [0, 1, 2, 3, 4, 5, 6, 7, 8]}
+    ],
+    "nodes": [
+        {"name": "Floor", "mesh": 0, "translation": [0.0, -0.05, -0.05]},
+        {"name": "Ceiling", "mesh": 1, "translation": [0.0, 2.05, -0.05]},
+        {"name": "Back Wall", "mesh": 2, "translation": [0.0, 1.0, -1.05]},
+        {"name": "Left Wall", "mesh": 3, "translation": [-1.05, 1.0, 0.0]},
+        {"name": "Right Wall", "mesh": 4, "translation": [1.05, 1.0, 0.0]},
+        {"name": "Short Block", "mesh": 5, "translation": [-0.43, 0.28, 0.34], "rotation": [0.0, 0.14780941112961063, 0.0, 0.9890158633619168]},
+        {"name": "Tall Block", "mesh": 6, "translation": [0.44, 0.585, -0.33], "rotation": [0.0, -0.16504760586067765, 0.0, 0.9862856015372314]},
+        {"name": "Ceiling Emitter", "mesh": 7, "translation": [0.0, 1.95625, -0.075]},
+        {"name": "Cornell Box Camera", "camera": 0, "translation": [0.0, 1.03, 3.55], "rotation": [-0.007041729714979929, 0.0, 0.0, 0.9999752067139571]}
+    ],
+    "cameras": [
+        {"name": "Cornell Box Camera", "type": "perspective", "perspective": {"yfov": 0.7504915783575618, "znear": 0.05, "zfar": 12.0}}
+    ],
+    "materials": [
+        {"name": "Neutral Plaster", "pbrMetallicRoughness": {"baseColorFactor": [0.73, 0.73, 0.73, 1.0], "metallicFactor": 0.0, "roughnessFactor": 1.0}, "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}}},
+        {"name": "Left Wall Red", "pbrMetallicRoughness": {"baseColorFactor": [0.58, 0.035, 0.027, 1.0], "metallicFactor": 0.0, "roughnessFactor": 1.0}, "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}}},
+        {"name": "Right Wall Green", "pbrMetallicRoughness": {"baseColorFactor": [0.035, 0.49, 0.075, 1.0], "metallicFactor": 0.0, "roughnessFactor": 1.0}, "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}}},
+        {"name": "Neutral Block", "pbrMetallicRoughness": {"baseColorFactor": [0.69, 0.69, 0.69, 1.0], "metallicFactor": 0.0, "roughnessFactor": 1.0}, "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}}},
+        {"name": "Emitter Backing", "pbrMetallicRoughness": {"baseColorFactor": [0.18, 0.18, 0.18, 1.0], "metallicFactor": 0.0, "roughnessFactor": 1.0}, "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}}},
+        {"name": "Ceiling Emitter", "pbrMetallicRoughness": {"baseColorFactor": [0.0, 0.0, 0.0, 1.0], "metallicFactor": 0.0, "roughnessFactor": 1.0}, "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}, "KHR_materials_emissive_strength": {"emissiveStrength": 8.0}}, "emissiveFactor": [1.0, 1.0, 1.0]}
+    ],
+    "meshes": [
+        {"name": "Floor", "primitives": [{"attributes": {"POSITION": 4, "NORMAL": 3}, "indices": 0, "material": 0}]},
+        {"name": "Ceiling", "primitives": [{"attributes": {"POSITION": 5, "NORMAL": 3}, "indices": 0, "material": 0}]},
+        {"name": "Back Wall", "primitives": [{"attributes": {"POSITION": 6, "NORMAL": 3}, "indices": 0, "material": 0}]},
+        {"name": "Left Wall", "primitives": [{"attributes": {"POSITION": 7, "NORMAL": 3}, "indices": 0, "material": 1}]},
+        {"name": "Right Wall", "primitives": [{"attributes": {"POSITION": 8, "NORMAL": 3}, "indices": 0, "material": 2}]},
+        {"name": "Short Block", "primitives": [{"attributes": {"POSITION": 9, "NORMAL": 3}, "indices": 0, "material": 3}]},
+        {"name": "Tall Block", "primitives": [{"attributes": {"POSITION": 10, "NORMAL": 3}, "indices": 0, "material": 3}]},
+        {"name": "Ceiling Emitter", "primitives": [{"attributes": {"POSITION": 11, "NORMAL": 3}, "indices": 1, "material": 4}, {"attributes": {"POSITION": 11, "NORMAL": 3}, "indices": 2, "material": 5}]}
+    ],
+    "accessors": [
+        {"bufferView": 0, "componentType": 5123, "count": 36, "type": "SCALAR", "min": [0], "max": [23]},
+        {"bufferView": 1, "componentType": 5123, "count": 30, "type": "SCALAR", "min": [0], "max": [23]},
+        {"bufferView": 2, "componentType": 5123, "count": 6, "type": "SCALAR", "min": [8], "max": [11]},
+        {"bufferView": 3, "componentType": 5126, "count": 24, "type": "VEC3"},
+        {"bufferView": 4, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-1.1, -0.05, -1.05], "max": [1.1, 0.05, 1.05]},
+        {"bufferView": 5, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-1.1, -0.05, -1.05], "max": [1.1, 0.05, 1.05]},
+        {"bufferView": 6, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-1.1, -1.0, -0.05], "max": [1.1, 1.0, 0.05]},
+        {"bufferView": 7, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-0.05, -1.0, -1.0], "max": [0.05, 1.0, 1.0]},
+        {"bufferView": 8, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-0.05, -1.0, -1.0], "max": [0.05, 1.0, 1.0]},
+        {"bufferView": 9, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-0.29, -0.28, -0.27], "max": [0.29, 0.28, 0.27]},
+        {"bufferView": 10, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-0.27, -0.585, -0.26], "max": [0.27, 0.585, 0.26]},
+        {"bufferView": 11, "componentType": 5126, "count": 24, "type": "VEC3", "min": [-0.33, -0.04375, -0.32], "max": [0.33, 0.04375, 0.32]}
+    ],
+    "bufferViews": [
+        {"buffer": 0, "byteOffset": 0, "byteLength": 72, "target": 34963},
+        {"buffer": 0, "byteOffset": 72, "byteLength": 60, "target": 34963},
+        {"buffer": 0, "byteOffset": 132, "byteLength": 12, "target": 34963},
+        {"buffer": 0, "byteOffset": 144, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 432, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 720, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 1008, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 1296, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 1584, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 1872, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 2160, "byteLength": 288, "target": 34962},
+        {"buffer": 0, "byteOffset": 2448, "byteLength": 288, "target": 34962}
+    ],
+    "buffers": [
+        {"byteLength": 2736, "uri": "data:application/octet-stream;base64,AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcAAAABAAIAAAACAAMABAAFAAYABAAGAAcADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcACAAJAAoACAAKAAsAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/zcyMv83MTL1mZoa/zcyMv83MTL1mZoY/zcyMv83MTD1mZoY/zcyMv83MTD1mZoa/zcyMP83MTL1mZoa/zcyMP83MTD1mZoa/zcyMP83MTD1mZoY/zcyMP83MTL1mZoY/zcyMv83MTL1mZoa/zcyMP83MTL1mZoa/zcyMP83MTL1mZoY/zcyMv83MTL1mZoY/zcyMv83MTD1mZoa/zcyMv83MTD1mZoY/zcyMP83MTD1mZoY/zcyMP83MTD1mZoa/zcyMv83MTL1mZoa/zcyMv83MTD1mZoa/zcyMP83MTD1mZoa/zcyMP83MTL1mZoa/zcyMv83MTL1mZoY/zcyMP83MTL1mZoY/zcyMP83MTD1mZoY/zcyMv83MTD1mZoY/zcyMv83MTL1mZoa/zcyMv83MTL1mZoY/zcyMv83MTD1mZoY/zcyMv83MTD1mZoa/zcyMP83MTL1mZoa/zcyMP83MTD1mZoa/zcyMP83MTD1mZoY/zcyMP83MTL1mZoY/zcyMv83MTL1mZoa/zcyMP83MTL1mZoa/zcyMP83MTL1mZoY/zcyMv83MTL1mZoY/zcyMv83MTD1mZoa/zcyMv83MTD1mZoY/zcyMP83MTD1mZoY/zcyMP83MTD1mZoa/zcyMv83MTL1mZoa/zcyMv83MTD1mZoa/zcyMP83MTD1mZoa/zcyMP83MTL1mZoa/zcyMv83MTL1mZoY/zcyMP83MTL1mZoY/zcyMP83MTD1mZoY/zcyMv83MTD1mZoY/zcyMvwAAgL/NzEy9zcyMvwAAgL/NzEw9zcyMvwAAgD/NzEw9zcyMvwAAgD/NzEy9zcyMPwAAgL/NzEy9zcyMPwAAgD/NzEy9zcyMPwAAgD/NzEw9zcyMPwAAgL/NzEw9zcyMvwAAgL/NzEy9zcyMPwAAgL/NzEy9zcyMPwAAgL/NzEw9zcyMvwAAgL/NzEw9zcyMvwAAgD/NzEy9zcyMvwAAgD/NzEw9zcyMPwAAgD/NzEw9zcyMPwAAgD/NzEy9zcyMvwAAgL/NzEy9zcyMvwAAgD/NzEy9zcyMPwAAgD/NzEy9zcyMPwAAgL/NzEy9zcyMvwAAgL/NzEw9zcyMPwAAgL/NzEw9zcyMPwAAgD/NzEw9zcyMvwAAgD/NzEw9zcxMvQAAgL8AAIC/zcxMvQAAgL8AAIA/zcxMvQAAgD8AAIA/zcxMvQAAgD8AAIC/zcxMPQAAgL8AAIC/zcxMPQAAgD8AAIC/zcxMPQAAgD8AAIA/zcxMPQAAgL8AAIA/zcxMvQAAgL8AAIC/zcxMPQAAgL8AAIC/zcxMPQAAgL8AAIA/zcxMvQAAgL8AAIA/zcxMvQAAgD8AAIC/zcxMvQAAgD8AAIA/zcxMPQAAgD8AAIA/zcxMPQAAgD8AAIC/zcxMvQAAgL8AAIC/zcxMvQAAgD8AAIC/zcxMPQAAgD8AAIC/zcxMPQAAgL8AAIC/zcxMvQAAgL8AAIA/zcxMPQAAgL8AAIA/zcxMPQAAgD8AAIA/zcxMvQAAgD8AAIA/zcxMvQAAgL8AAIC/zcxMvQAAgL8AAIA/zcxMvQAAgD8AAIA/zcxMvQAAgD8AAIC/zcxMPQAAgL8AAIC/zcxMPQAAgD8AAIC/zcxMPQAAgD8AAIA/zcxMPQAAgL8AAIA/zcxMvQAAgL8AAIC/zcxMPQAAgL8AAIC/zcxMPQAAgL8AAIA/zcxMvQAAgL8AAIA/zcxMvQAAgD8AAIC/zcxMvQAAgD8AAIA/zcxMPQAAgD8AAIA/zcxMPQAAgD8AAIC/zcxMvQAAgL8AAIC/zcxMvQAAgD8AAIC/zcxMPQAAgD8AAIC/zcxMPQAAgL8AAIC/zcxMvQAAgL8AAIA/zcxMPQAAgL8AAIA/zcxMPQAAgD8AAIA/zcxMvQAAgD8AAIA/4XqUvilcj75xPYq+4XqUvilcj75xPYo+4XqUvilcjz5xPYo+4XqUvilcjz5xPYq+4XqUPilcj75xPYq+4XqUPilcjz5xPYq+4XqUPilcjz5xPYo+4XqUPilcj75xPYo+4XqUvilcj75xPYq+4XqUPilcj75xPYq+4XqUPilcj75xPYo+4XqUvilcj75xPYo+4XqUvilcjz5xPYq+4XqUvilcjz5xPYo+4XqUPilcjz5xPYo+4XqUPilcjz5xPYq+4XqUvilcj75xPYq+4XqUvilcjz5xPYq+4XqUPilcjz5xPYq+4XqUPilcj75xPYq+4XqUvilcj75xPYo+4XqUPilcj75xPYo+4XqUPilcjz5xPYo+4XqUvilcjz5xPYo+cT2Kvo/CFb+4HoW+cT2Kvo/CFb+4HoU+cT2Kvo/CFT+4HoU+cT2Kvo/CFT+4HoW+cT2KPo/CFb+4HoW+cT2KPo/CFT+4HoW+cT2KPo/CFT+4HoU+cT2KPo/CFb+4HoU+cT2Kvo/CFb+4HoW+cT2KPo/CFb+4HoW+cT2KPo/CFb+4HoU+cT2Kvo/CFb+4HoU+cT2Kvo/CFT+4HoW+cT2Kvo/CFT+4HoU+cT2KPo/CFT+4HoU+cT2KPo/CFT+4HoW+cT2Kvo/CFb+4HoW+cT2Kvo/CFT+4HoW+cT2KPo/CFT+4HoW+cT2KPo/CFb+4HoW+cT2Kvo/CFb+4HoU+cT2KPo/CFb+4HoU+cT2KPo/CFT+4HoU+cT2Kvo/CFT+4HoU+w/WovjMzM70K16O+w/WovjMzM70K16M+w/WovjMzMz0K16M+w/WovjMzMz0K16O+w/WoPjMzM70K16O+w/WoPjMzMz0K16O+w/WoPjMzMz0K16M+w/WoPjMzM70K16M+w/WovjMzM70K16O+w/WoPjMzM70K16O+w/WoPjMzM70K16M+w/WovjMzM70K16M+w/WovjMzMz0K16O+w/WovjMzMz0K16M+w/WoPjMzMz0K16M+w/WoPjMzMz0K16O+w/WovjMzM70K16O+w/WovjMzMz0K16O+w/WoPjMzMz0K16O+w/WoPjMzM70K16O+w/WovjMzM70K16M+w/WoPjMzM70K16M+w/WoPjMzMz0K16M+w/WovjMzMz0K16M+"}
+    ]
+}

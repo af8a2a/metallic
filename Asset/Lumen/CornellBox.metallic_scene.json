@@ -1,0 +1,29 @@
+{
+    "version": 4,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": false,
+            "visible": false,
+            "sun": {
+                "enabled": false
+            },
+            "moon": {
+                "enabled": false
+            }
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {
+                "enabled": false
+            },
+            "lights": []
+        }
+    },
+    "sources": [
+        {
+            "id": "cornell-box",
+            "path": "CornellBox.gltf"
+        }
+    ]
+}
