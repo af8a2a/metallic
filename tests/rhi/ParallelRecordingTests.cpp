@@ -12,6 +12,7 @@
 #include <functional>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 
 namespace metallic::tests {
@@ -350,6 +351,7 @@ public:
             if (mode == 2) {
                 RECORD_CHECK(!result && !executor.compiled() && !executor.lastSubmittedCompletion().valid());
                 RECORD_CHECK(executor.executionStats().workerIntervals.empty());
+                RECORD_CHECK(executor.executionStats().recordingBoundaries.empty());
                 std::vector<int> cancelled;
                 for (int i = 4; i >= 0; --i) { if (probe.recorded[i]) { cancelled.push_back(-(i + 1)); } }
                 RECORD_CHECK(probe.events == cancelled && !cancelled.empty());
@@ -402,6 +404,55 @@ public:
             if (mode == 0 || mode == 5) {
                 RECORD_CHECK(stats.recordingTaskCount == 0 && stats.workerIntervals.empty());
             }
+            if (mode == 0) {
+                RECORD_CHECK(!stats.pipelinedSubmission);
+                const auto& boundaries = stats.recordingBoundaries;
+                for (size_t i = 0; i < boundaries.size(); ++i) {
+                    const auto& section = boundaries[i];
+                    RECORD_CHECK(section.cpuOnly && !section.gpuTimingAvailable && section.cpuInterval);
+                    const auto& interval = *section.cpuInterval;
+                    RECORD_CHECK(executeBegin <= interval.begin && interval.begin <= interval.end && interval.end <= executeEnd);
+                    if (section.parent != UINT32_MAX) {
+                        RECORD_CHECK(section.parent < i);
+                        const auto& parent = *boundaries[section.parent].cpuInterval;
+                        RECORD_CHECK(parent.begin <= interval.begin && interval.end <= parent.end);
+                    }
+                }
+                const auto root = [&](std::string_view phase, const std::string& pass) {
+                    const auto name = std::string(phase) + " / " + pass;
+                    const auto found = std::find_if(boundaries.begin(), boundaries.end(), [&](const auto& scope) {
+                        return scope.parent == UINT32_MAX && scope.name == name;
+                    });
+                    return static_cast<size_t>(found - boundaries.begin());
+                };
+                const auto hasChild = [&](size_t parent, std::string_view name) {
+                    return std::any_of(boundaries.begin(), boundaries.end(), [&](const auto& scope) {
+                        return scope.parent == parent && scope.name == name;
+                    });
+                };
+                auto previousEnd = executeBegin;
+                for (const auto& pass : stats.nodes) {
+                    const auto open = root("Open segment", pass.name);
+                    const auto setup = root("Set up pass", pass.name);
+                    const auto finalize = root("Finalize pass", pass.name);
+                    const auto close = root("Close segment", pass.name);
+                    RECORD_CHECK(open < setup && setup < finalize && finalize < close && close < boundaries.size());
+                    RECORD_CHECK(hasChild(open, "Allocate command buffer") && hasChild(open, "Begin command buffer"));
+                    RECORD_CHECK(hasChild(open, "Register dependencies") || hasChild(setup, "Register dependencies"));
+                    RECORD_CHECK(hasChild(setup, "Apply access plan") && hasChild(setup, "Build resource bindings") &&
+                        hasChild(setup, "Build execution context") && hasChild(setup, "Initialize pass timing") &&
+                        !hasChild(setup, "Bind resource registry"));
+                    RECORD_CHECK(hasChild(close, "End command buffer") && hasChild(close, "Mark recording ready") &&
+                        !hasChild(close, "Submit ready"));
+                    RECORD_CHECK(pass.cpuInterval && !pass.cpuWorkerThreadId);
+                    RECORD_CHECK(previousEnd <= boundaries[open].cpuInterval->begin &&
+                        boundaries[open].cpuInterval->end <= boundaries[setup].cpuInterval->begin &&
+                        boundaries[setup].cpuInterval->end <= pass.cpuInterval->begin &&
+                        pass.cpuInterval->end == boundaries[finalize].cpuInterval->begin &&
+                        boundaries[finalize].cpuInterval->end <= boundaries[close].cpuInterval->begin);
+                    previousEnd = boundaries[close].cpuInterval->end;
+                }
+            }
             if (mode == 4) { RECORD_CHECK(sawInlineBatch); }
             const auto recorded = executor.executionSnapshot();
             RECORD_CHECK(recorded && recorded->success && recorded->passes.size() == 5);
@@ -426,6 +477,8 @@ public:
             RECORD_REQUIRE(executor.collectCompletedGpuExecutionStats().transform([&](auto value) { timings = std::move(value); }));
             if (context.device.capabilities().timestampQueries) {
                 RECORD_CHECK(timings.size() == 1 && timings[0].nodes.size() == 5);
+                RECORD_CHECK(std::none_of(timings[0].recordingBoundaries.begin(), timings[0].recordingBoundaries.end(),
+                    [](const auto& scope) { return scope.gpuTimingAvailable; }));
                 for (const auto& node : timings[0].nodes) {
                     RECORD_CHECK(node.gpuTimingAvailable && !node.sections.empty() && node.sections[0].gpuTimingAvailable);
                 }

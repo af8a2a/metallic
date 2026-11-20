@@ -221,6 +221,7 @@ bool EditorApplication::runCPUJobBenchmark()
         std::filesystem::create_directories(output);
         const auto& config = cpuJobBenchmarkConfig_;
         const bool diagnostics = config.value("diagnostics", false);
+        const bool captureScopeTimeline = config.value("captureScopeTimeline", false);
         if (diagnostics) {
             taskSink = std::make_shared<BenchmarkTaskSink>(output / "TaskGraphs.jsonl");
             sinkToken = task::taskSystem().subscribe(taskSink);
@@ -245,7 +246,7 @@ bool EditorApplication::runCPUJobBenchmark()
         const auto shaderDebug = render::slangShaderDebugMode();
         report["shaderDebugMode"] = shaderDebug == render::SlangShaderDebugMode::ShaderDebug ? "unoptimized-debug"
             : shaderDebug == render::SlangShaderDebugMode::CaptureSymbols ? "capture-symbols" : "disabled";
-        report["measurementKind"] = validation ? "validation" : diagnostics ? "diagnostic" : "performance";
+        report["measurementKind"] = validation ? "validation" : (diagnostics || captureScopeTimeline) ? "diagnostic" : "performance";
         if (!validation && !diagnostics &&
             (report["graphicsCaptureInjected"].get<bool>() || shaderDebug != render::SlangShaderDebugMode::Disabled)) {
             throw std::runtime_error("Performance capture requires uninjected graphics and optimized shaders without capture symbols");
@@ -298,10 +299,11 @@ bool EditorApplication::runCPUJobBenchmark()
             }
         }
         applyViewportCameraProperties({{"camera", config.at("camera")}}, nullptr);
-        report["camera"] = viewportView_.cameraProperties();
+        const auto benchmarkCamera = viewportView_.cameraProperties();
         const auto* producer = renderGraph_.findNode("VBuffer");
         if (!producer || std::filesystem::weakly_canonical(producer->properties.at("path").get<std::string>()) !=
             std::filesystem::weakly_canonical(startupScenePath_)) { throw std::runtime_error("Effective graph scene mismatch"); }
+        const bool assetScene = producer->properties.value("sceneBinding", std::string("world")) == "asset";
 
         struct Sample {
             uint64_t frame = 0;
@@ -357,12 +359,20 @@ bool EditorApplication::runCPUJobBenchmark()
         uint32_t loadingFrames = 0;
         for (;;) {
             draw(); ++loadingFrames;
-            const auto readiness = subsystemHost_.get<render::StreamerSubsystem>()->sceneReadiness();
-            if (!pendingSceneLoad_.valid() && !pendingSceneResourcePreparation_ && viewportPreviewValid_ &&
-                (producer->properties.value("sceneBinding", std::string("world")) == "asset"
-                    ? readiness.ready && readiness.requiredPages != 0 : scene_.valid())) { break; }
+            if (!pendingSceneLoad_.valid() && !pendingSceneResourcePreparation_ && viewportPreviewValid_) {
+                if (assetScene) {
+                    const auto readiness = subsystemHost_.get<render::StreamerSubsystem>()->sceneReadiness();
+                    if (readiness.ready && readiness.requiredPages != 0) { break; }
+                } else if (scene_.valid()) {
+                    break;
+                }
+            }
             if (Clock::now() - loading > std::chrono::minutes(10)) { throw std::runtime_error("Scene readiness timed out"); }
         }
+        if (viewportView_.cameraProperties() != benchmarkCamera) {
+            applyViewportCameraProperties({{"camera", benchmarkCamera}}, nullptr);
+        }
+        report["camera"] = viewportView_.cameraProperties();
         report["loadingSeconds"] = std::chrono::duration<double>(Clock::now() - loading).count();
         report["loadingFrames"] = loadingFrames;
         report["deviceMemoryAfterLoad"] = memorySnapshot(device_->memoryBudget());
@@ -441,9 +451,15 @@ bool EditorApplication::runCPUJobBenchmark()
                 auto [id, inserted] = ids.emplace(path, uint32_t(ids.size()));
                 if (inserted) { definitions.push_back({{"id", id->second}, {"path", path}, {"cpuOnly", node.cpuOnly},
                     {"cpuIdle", node.cpuIdle}, {"cpuEditor", node.cpuEditor}}); }
-                scopes.push_back({{"id", id->second}, {"cpuMs", node.cpuMilliseconds},
+                Json scope{{"id", id->second}, {"cpuMs", node.cpuMilliseconds},
                     {"gpuMs", node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)},
-                    {"executionId", node.renderGraphExecutionId == UINT64_MAX ? Json(nullptr) : Json(node.renderGraphExecutionId)}});
+                    {"executionId", node.renderGraphExecutionId == UINT64_MAX ? Json(nullptr) : Json(node.renderGraphExecutionId)}};
+                if (captureScopeTimeline) {
+                    scope["cpuStartMs"] = node.beginTime
+                        ? Json(std::chrono::duration<double, std::milli>(*node.beginTime - *frame.nodes.front().beginTime).count())
+                        : Json(nullptr);
+                }
+                scopes.push_back(std::move(scope));
                 if (node.name == "RenderGraph GPU envelope") { gpu = node.gpuTimingAvailable; }
             }
             for (const auto& state : frame.streaming) {

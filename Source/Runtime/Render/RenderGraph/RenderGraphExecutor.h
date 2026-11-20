@@ -29,7 +29,7 @@ struct RenderGraphSubmitDesc {
     // CPU attribution only; can also be enabled process-wide by
     // METALLIC_RENDER_SCHEDULING_DIAGNOSTICS=1. No diagnostic clocks run while disabled.
     bool schedulingDiagnostics = false;
-    // Publish the TaskSystem intervals for joined preparation and recording batches.
+    // Publish worker intervals and CPU timeline detail for pass recording.
     bool captureWorkerIntervals = false;
 };
 
@@ -72,6 +72,7 @@ struct RenderGraphExecutionStats {
     std::vector<SceneStreamingProfile> streaming;
     bool profilingOverflow = false;
     std::vector<RenderGraphProfileSection> preparation;
+    std::vector<RenderGraphProfileSection> recordingBoundaries;
     std::vector<RenderGraphProfileSection> subsystems;
     std::vector<std::string> overlapBlockingPasses;
     uint32_t drainReasonMask = 0; // 1: pass contract, 2: scene revision; legacy bit 4 no longer drains

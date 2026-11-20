@@ -1313,6 +1313,9 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
     if (!stats.subsystems.empty() && inFrame(stats.subsystems.front().cpuInterval)) {
         addCpuProfileSections(stats.subsystems, {});
     }
+    if (!stats.recordingBoundaries.empty() && inFrame(stats.recordingBoundaries.front().cpuInterval)) {
+        addCpuProfileSections(stats.recordingBoundaries, {});
+    }
     if (stats.nodes.empty()) { return; }
     if (graphGeneration_ != stats.graphGeneration) {
         clearHistory();

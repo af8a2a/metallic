@@ -1175,6 +1175,13 @@ public:
                     const auto visibilityBegin = EditorProfiler::Clock::now();
                     std::this_thread::sleep_for(1ms);
                     const auto visibilityPrepareEnd = EditorProfiler::Clock::now();
+                    const RenderGraphCPUInterval setupTime{prepareEnd, visibilityBegin};
+                    stats.recordingBoundaries = {
+                        {.name = "Set up pass / Visibility", .cpuMilliseconds = setupTime.milliseconds(),
+                            .cpuOnly = true, .cpuInterval = setupTime},
+                        {.name = "Apply access plan", .parent = 0, .cpuMilliseconds = setupTime.milliseconds(),
+                            .cpuOnly = true, .cpuInterval = setupTime},
+                    };
                     stats.workerIntervals.resize(2);
                     const auto recordWorker = [](RenderGraphWorkerInterval& interval, const char* name, int duration) {
                         interval.name = name;
@@ -1219,6 +1226,10 @@ public:
             const auto& hook = findNode("render.gpu-scene");
             checkProfile(hook.beginTime && latest.nodes[hook.parent].name == "Subsystems / Begin frame",
                 "Subsystem hook lost its actual start time or phase");
+            const auto& accessPlan = findNode("Apply access plan");
+            checkProfile(accessPlan.beginTime && accessPlan.cpuOnly && !accessPlan.gpuTimingAvailable &&
+                latest.nodes[accessPlan.parent].name == "Set up pass / Visibility",
+                "Recording boundary lost its CPU-only timing or its parent scope");
             const auto& visibility = findNode("Visibility (VisibilityBufferPass)");
             checkProfile(visibility.beginTime && findNode("Prepare").beginTime && findNode("Execute").beginTime &&
                 findNode("Cull instances").beginTime == findNode("Execute").beginTime,

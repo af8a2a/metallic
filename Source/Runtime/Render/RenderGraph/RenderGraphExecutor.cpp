@@ -2297,12 +2297,13 @@ struct RenderGraphExecutor::Impl {
 
     Result<> prepareNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
         RenderGraphProperties& executionProperties, std::unique_ptr<RenderGraphExecutionContext>& prepared,
-        std::vector<RenderGraphWorkerInterval>* workerIntervals,
+        std::vector<RenderGraphWorkerInterval>* workerIntervals, CPUProfileRecorder* recordingProfile,
         std::vector<RenderGraphResource>* snapshots = nullptr)
     {
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
         std::vector<RenderGraphExecutionContext::Binding> bindings;
         const size_t passIndex = size_t(&node - executionList.data());
+        CPUProfileScope phase(recordingProfile, "Apply access plan");
         const auto beforeSync = activeExecutionCapture ? commandBuffer.synchronizationStats() : SynchronizationStats{};
         auto synchronized = applyAccessPlan(commandBuffer, accessPlan.passes[passIndex], accessResources, accessBindings);
         if (!synchronized) { return synchronized; }
@@ -2311,6 +2312,7 @@ struct RenderGraphExecutor::Impl {
                 synchronizationDelta(beforeSync, commandBuffer.synchronizationStats());
         }
 
+        phase.next("Build resource bindings");
         for (const RenderGraphField& field : node.reflection.fields()) {
             const std::string localName = field.name;
             RenderGraphResource* resource = fieldResource(node, field);
@@ -2332,9 +2334,11 @@ struct RenderGraphExecutor::Impl {
         }
 
         if (resourceRegistry != nullptr && usesBindlessResource(node)) {
+            phase.next("Bind resource registry");
             if (auto commandResult = resourceRegistry->bind(commandBuffer, bindlessLeases); !commandResult) { return commandResult; }
         }
 
+        phase.next("Build execution context");
         StreamerSubsystem* upload = streamerSubsystem();
         const bool usesView = frameViewBuffer != nullptr && !node.sceneBinding.localView;
         executionProperties = node.effectiveProperties;
@@ -2395,13 +2399,15 @@ struct RenderGraphExecutor::Impl {
         CommandBuffer& commands,
         CompiledNode& node,
         uint64_t frameIndex,
-        std::vector<RenderGraphWorkerInterval>* workerIntervals)
+        std::vector<RenderGraphWorkerInterval>* workerIntervals, CPUProfileRecorder* recordingProfile)
     {
+        CPUProfileScope setup(recordingProfile, recordingProfile ? "Set up pass / " + node.name : std::string{});
         recording.node = &node;
         recording.stats = {.id = node.id, .name = node.name, .type = node.type, .queue = recordingQueue->type()};
         auto result = prepareNode(commands, node, frameIndex, recording.properties, recording.context,
-            workerIntervals, &recording.resources);
+            workerIntervals, recordingProfile, &recording.resources);
         if (!result) { return result; }
+        CPUProfileScope timing(recordingProfile, "Initialize pass timing");
         if (activeGpuTimingSlot && activeGpuTimingValid) {
             auto& slot = *activeGpuTimingSlot;
             const uint32_t queue = timingQueueIndex();
@@ -2417,6 +2423,8 @@ struct RenderGraphExecutor::Impl {
             recording.profile.active = slot.profile.active;
         }
         recording.passTimer = recording.beginInterval(commands);
+        timing.end();
+        setup.end();
         const auto begin = std::chrono::steady_clock::now();
         {
             profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
@@ -2506,12 +2514,14 @@ struct RenderGraphExecutor::Impl {
 
     Result<> executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
         const RenderGraphExecutionContext::ParallelRecorder& parallel = {},
-        std::vector<RenderGraphWorkerInterval>* workerIntervals = nullptr)
+        std::vector<RenderGraphWorkerInterval>* workerIntervals = nullptr, CPUProfileRecorder* recordingProfile = nullptr)
     {
+        CPUProfileScope setup(recordingProfile, recordingProfile ? "Set up pass / " + node.name : std::string{});
         RenderGraphProperties executionProperties;
         std::unique_ptr<RenderGraphExecutionContext> prepared;
-        auto preparation = prepareNode(commandBuffer, node, frameIndex, executionProperties, prepared, workerIntervals);
+        auto preparation = prepareNode(commandBuffer, node, frameIndex, executionProperties, prepared, workerIntervals, recordingProfile);
         if (!preparation) { return preparation; }
+        CPUProfileScope timing(recordingProfile, "Initialize pass timing");
         auto& context = *prepared;
         StreamerSubsystem* upload = streamerSubsystem();
         const std::string markerName = passProfileMarkerName(node.name, node.type);
@@ -2597,6 +2607,8 @@ struct RenderGraphExecutor::Impl {
             }
         };
         context.streamingProfile_ = [&](SceneStreamingProfile sample) { lastExecutionStats.streaming.push_back(std::move(sample)); };
+        timing.end();
+        setup.end();
         const auto cpuBegin = std::chrono::steady_clock::now();
         const auto featureReservation = firstFeatureReservations.find(node.name);
         const bool firstFeature = featureReservation != firstFeatureReservations.end() && bool(featureReservation->second);
@@ -3748,6 +3760,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->lastExecutionStats.overlapBlockingPasses = std::move(overlapBlockingPasses);
     impl_->lastExecutionStats.pipelinedSubmission = pipelined;
     impl_->lastExecutionStats.submissionBlockingPasses = std::move(submissionBlockingPasses);
+    struct BoundaryCapture {
+        CPUProfileRecorder recorder;
+        std::vector<RenderGraphProfileSection>& output;
+        ~BoundaryCapture() { output = std::move(recorder.sections); }
+    } boundaryCapture{.output = impl_->lastExecutionStats.recordingBoundaries};
+    auto* recordingProfile = desc.captureWorkerIntervals ? &boundaryCapture.recorder : nullptr;
+    if (recordingProfile) { recordingProfile->sections.reserve(impl_->executionList.size() * 16); }
     const auto updateCpuTime = [&]() {
         scheduling.executeNs = schedulingCapture.elapsed();
         impl_->lastExecutionStats.scheduling = scheduling;
@@ -3816,7 +3835,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     uint32_t capturePassId = UINT32_MAX;
     const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimingSlots[0].queryPools[0];
     const auto beginSegment = [&](QueueType type, CommandRecordingContext* recording = nullptr,
-        RenderGraphSegmentRole role = RenderGraphSegmentRole::Pass) -> Result<> {
+        RenderGraphSegmentRole role = RenderGraphSegmentRole::Pass, CPUProfileRecorder* profile = nullptr) -> Result<> {
         Queue* queue = selectedQueue(type);
         Result<> created;
         auto& tracker = impl_->submissionTrackers[queue];
@@ -3827,16 +3846,19 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
         CommandBuffer* commands = nullptr;
         if (recording) {
+            CPUProfileScope scope(profile, "Prepare recording context");
             created = recording->prepare(slot.frame).transform([&](auto value) { commands = value; });
         } else {
             CommandPool* pool = nullptr;
             created = impl_->prepareCommandPool(slot, type, *queue, pool);
             if (!created) { return created; }
+            CPUProfileScope scope(profile, "Allocate command buffer");
             std::unique_ptr<CommandBuffer> buffer;
             created = pool->createCommandBuffer().transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!created) { return created; }
             slot.commandBuffers.push_back(std::move(buffer));
             commands = slot.commandBuffers.back().get();
+            scope.next("Begin command buffer");
             created = commands->begin(slot.frame.submissionContext());
         }
         if (!created) { return created; }
@@ -4129,6 +4151,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     std::unordered_set<RenderGraphResource*> pendingAccelerationStructurePublications;
     const auto flushRecordings = [&]() -> Result<> {
         if (batches.empty()) { return {}; }
+        CPUProfileScope scope(recordingProfile, "Flush recording batches");
         phase.next("graph.recordBatches", batches.size());
         std::mutex completionMutex;
         std::condition_variable completionCv;
@@ -4246,6 +4269,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         return makeError(Error::Failure);
     };
     for (auto& node : impl_->executionList) {
+        CPUProfileScope open(recordingProfile, recordingProfile ? "Open segment / " + node.name : std::string{});
         const size_t passIndex = size_t(&node - impl_->executionList.data());
         capturePassId = node.id;
         const QueueType type = selectedType(node);
@@ -4296,8 +4320,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             result = flushRecordings();
             if (!result) { return abort(result); }
         }
-        result = beginSegment(type, batch ? batch->context : nullptr);
+        result = beginSegment(type, batch ? batch->context : nullptr, RenderGraphSegmentRole::Pass, recordingProfile);
         if (!result) { return abort(result); }
+        CPUProfileScope dependencies(recordingProfile, "Register dependencies");
         const size_t index = segments.size() - 1;
         segments[index].passWork = true;
         if (orderingBoundary != SIZE_MAX) { addDependency(index, orderingBoundary); }
@@ -4312,10 +4337,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             addDependency(index, passCompletions[predecessor]);
         }
         passCompletions[passIndex] = index;
+        dependencies.end();
+        open.end();
         if (batch) {
             auto recording = std::make_unique<Impl::NodeRecording>();
             result = invokePass([&] {
-                return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex, workerIntervals);
+                return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex,
+                    workerIntervals, recordingProfile);
             });
             if (!result) { return abort(result); }
             batch->nodes.push_back(std::move(recording));
@@ -4331,7 +4359,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
         result = invokePass([&] { return impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,
             segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{},
-            workerIntervals); });
+            workerIntervals, recordingProfile); });
         if (!result) {
             if (subsystemCommands && beginSegment(QueueType::Graphics)) {
                 std::string cleanupLog;
@@ -4340,13 +4368,28 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             }
             return abort(result);
         }
-        const size_t completedIndex = segments.size() - 1;
-        if (opaque) { orderingBoundary = completedIndex; }
-        passCompletions[passIndex] = completedIndex;
-        result = segments[completedIndex].commandBuffer->end();
-        if (!result) { return abort(result); }
-        result = finishRecordings(index, completedIndex + 1);
-        if (result && pipelined) { result = submitReady(); }
+        if (recordingProfile) {
+            const RenderGraphCPUInterval interval{
+                impl_->lastExecutionStats.nodes.back().cpuInterval->end, RenderGraphLogClock::now()};
+            recordingProfile->sections.push_back({.name = "Finalize pass / " + node.name,
+                .cpuMilliseconds = interval.milliseconds(), .cpuOnly = true, .cpuInterval = interval});
+        }
+        {
+            CPUProfileScope close(recordingProfile, recordingProfile ? "Close segment / " + node.name : std::string{});
+            const size_t completedIndex = segments.size() - 1;
+            if (opaque) { orderingBoundary = completedIndex; }
+            passCompletions[passIndex] = completedIndex;
+            CPUProfileScope phaseScope(recordingProfile, "End command buffer");
+            result = segments[completedIndex].commandBuffer->end();
+            if (result) {
+                phaseScope.next("Mark recording ready");
+                result = finishRecordings(index, completedIndex + 1);
+            }
+            if (result && pipelined) {
+                phaseScope.next("Submit ready");
+                result = submitReady();
+            }
+        }
         if (!result) { return abort(result); }
     }
     result = flushRecordings();
