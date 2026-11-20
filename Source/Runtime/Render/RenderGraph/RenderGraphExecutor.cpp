@@ -3332,7 +3332,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
             currentScene->visibilityRevision()}
         : std::array<uint64_t, 5>{};
     const bool requiresCompletedFrame = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
-        [](const Impl::CompiledNode& node) { return !node.pass->supportsFrameOverlap(); });
+        [](const Impl::CompiledNode& node) { return !node.pass->supportsExternalFrameOverlap(); });
     if (requiresCompletedFrame || sceneStamp != impl_->recordedSceneStamp || impl_->hasSubmittedWork) {
         const profiling::NsightProfileRange waitMarker(profiling::NsightDomain::Render,
             "Wait Graph Resources", profiling::NsightCategory::RenderGraph);

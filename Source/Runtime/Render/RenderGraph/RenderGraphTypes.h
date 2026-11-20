@@ -583,6 +583,8 @@ public:
     // Opt in only when execute() preserves resources/descriptors used by earlier
     // submissions. Legacy passes with singleton host uploads/readbacks wait.
     virtual bool supportsFrameOverlap() const { return false; }
+    // External recording does not always add the graph's inter-frame GPU waits.
+    virtual bool supportsExternalFrameOverlap() const { return supportsFrameOverlap(); }
     // Opt in only when GPU dependencies are reflected graph resources and any
     // private resources support the selected queue family. Other passes execute
     // on graphics and form an ordering boundary for independent graph branches.

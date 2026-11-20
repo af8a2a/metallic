@@ -55,7 +55,10 @@ public:
         return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,
             .textureFeedback = true};
     }
-    bool supportsFrameOverlap() const override { return false; }
+    // VSM uploads and feedback slots follow their recording completion. The
+    // graph orders GPU access to shared cache and output resources across frames.
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsExternalFrameOverlap() const override { return false; }
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
         static constexpr std::array required{GPUSceneSubsystem::kSubsystemId};
