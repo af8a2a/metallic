@@ -11,6 +11,10 @@ import LumenAdaptiveProbes;
 #if defined(METALLIC_LUMEN_SCREEN_TRACES)
 import LumenScreenTrace;
 #endif
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+import LumenRadianceCache;
+import LumenRadianceCacheInterpolation;
+#endif
 
 using Metallic;
 using Metallic.Lumen;
@@ -56,6 +60,13 @@ struct LumenScreenProbeGatherParams
     uint traceView;
 #endif
     uint frameIndex;
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+    ResourceHandle<StructuredBuffer<uint>> cacheIndirection;
+    ResourceHandle<StructuredBuffer<LumenRadianceCacheClipmap>> cacheClipmaps;
+    ResourceHandle<Texture2D<float4>> cacheRadiance;
+#else
+    uint3 unusedRadianceCache;
+#endif
 };
 
 // UE 5.7.4 GetUniformScreenProbeScreenPosition at Hammersley phase zero.
@@ -120,29 +131,61 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         Texture2D<float4> normal = resolveUniform(params.normal);
         float3 rayDirection = probeRayDirection(lane.xy);
         float3 receiverNormal = normalize(normal.Load(int3(probePixel, 0)).xyz);
-        // UE 5.7.4 TraceVoxels, with neither screen nor Mesh SDF trace continuation.
+        // UE 5.7.4 TraceVoxels, opaque software tracing.
         float3 samplePosition = receiver.xyz + kSurfaceBias * rayDirection;
         samplePosition += kSurfaceBias * receiverNormal;
+        float traceDistance = params.maxTraceDistance;
+        float voxelStartDistance = kMinTraceDistance;
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+        LumenRadianceCacheInputs cacheInputs = {resolveUniform(params.cacheIndirection), resolveUniform(params.cacheClipmaps),
+            resolveUniform(params.cacheRadiance), resolveUniform(params.scene.sampler)};
+        LumenRadianceCacheCoverage coverage = getLumenRadianceCacheCoverage(cacheInputs, receiver.xyz);
+        if (coverage.valid) {
+            traceDistance = min(traceDistance, coverage.minTraceDistance);
+        }
+#endif
 #if defined(METALLIC_LUMEN_SCREEN_TRACES)
         LumenScreenTraceInputs screenInputs = {resolveUniform(params.closestHZB), resolveUniform(params.previousDepth),
             resolveUniform(params.previousColor), resolveUniform(params.traceView)};
         float3 screenRadiance;
         float screenDistance;
         uint2 traceBufferCoord = uint2(group.x * kLumenProbeSlotsPerTile + group.z, group.y) * kProbeRayResolution + lane.xy;
-        if (traceLumenScreenRay(screenInputs, receiver.xyz, receiverNormal, rayDirection, params.maxTraceDistance, traceBufferCoord,
-                screenRadiance, screenDistance)) {
+        if (traceLumenScreenRay(screenInputs, receiver.xyz, receiverNormal, rayDirection, traceDistance, params.maxTraceDistance,
+                traceBufferCoord, screenRadiance, screenDistance)) {
             traceOutput[address] = float4(compositeProbeTrace(screenRadiance), 5.0f);
             distances[address] = screenDistance;
             return;
         }
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+        if (coverage.valid) {
+            // TraceVoxels also handles unresolved screen rays that reached the cache interval.
+            voxelStartDistance = max(kMinTraceDistance, screenDistance - kSurfaceBias * 2.0f);
+        }
 #endif
-        LumenGlobalTraceRay ray = {float4(samplePosition, kMinTraceDistance), float4(rayDirection, params.maxTraceDistance)};
+#endif
+        LumenGlobalTraceRay ray = {float4(samplePosition, voxelStartDistance), float4(rayDirection, traceDistance)};
         LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
         LumenGlobalTraceResult hit = traceLumenGlobalRay(scene, ray);
-        trace = float4(compositeProbeTrace(hit.radiance.xyz), float(hit.state.x));
+        float3 lighting = hit.radiance.xyz;
+        float traceClass = float(hit.state.x);
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+        float transparency = hit.state.x == kGlobalDistanceFieldHit ? 0.0f : 1.0f;
+        if (coverage.valid && transparency > 0.5f) {
+            // UE 5.7.4 SampleRadianceCacheAndApply, no sky visibility or extra AO.
+            lighting += sampleLumenRadianceCache(cacheInputs, coverage, receiver.xyz, rayDirection) * transparency;
+            traceClass = 6.0f;
+        }
+#endif
+        trace = float4(compositeProbeTrace(lighting), traceClass);
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
         distances[address] = hit.state.x == kGlobalDistanceFieldHit ? hit.metrics.x :
             (hit.state.x == kGlobalDistanceFieldUnavailable ? -1.0f : params.maxTraceDistance);
+#if defined(METALLIC_LUMEN_RADIANCE_CACHE)
+        if (coverage.valid) {
+            // TraceVoxels with USE_VOXEL_TRACE_HIT_DISTANCE and SCREEN_PROBE_EXTRA_AO disabled.
+            distances[address] = transparency <= 0.5f ? traceDistance : params.maxTraceDistance;
+        }
+#endif
 #endif
     } else {
 #if defined(METALLIC_LUMEN_FINAL_GATHER)

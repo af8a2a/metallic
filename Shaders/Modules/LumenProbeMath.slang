@@ -36,6 +36,36 @@ public float3 lumenEquiAreaSphericalMapping(float2 uv)
     return float3(f * sign(uv.x) * abs(cos(phi)), f * sign(uv.y) * abs(sin(phi)), sign(d) * (1.0f - r * r));
 }
 
+// UE 5.7.4 MonteCarlo.ush:178.
+public float2 lumenInverseEquiAreaSphericalMapping(float3 direction)
+{
+    direction = normalize(direction);
+    float3 absDir = abs(direction);
+    float r = sqrt(1.0f - absDir.z);
+    const float epsilon = 5.42101086243e-20f;
+    float x = min(absDir.x, absDir.y) / (max(absDir.x, absDir.y) + epsilon);
+
+    const float t1 = 0.406758566246788489601959989e-5f;
+    const float t2 = 0.636226545274016134946890922156f;
+    const float t3 = 0.61572017898280213493197203466e-2f;
+    const float t4 = -0.247333733281268944196501420480f;
+    const float t5 = 0.881770664775316294736387951347e-1f;
+    const float t6 = 0.419038818029165735901852432784e-1f;
+    const float t7 = -0.251390972343483509333252996350e-1f;
+    float phi = t6 + t7 * x;
+    phi = t5 + phi * x;
+    phi = t4 + phi * x;
+    phi = t3 + phi * x;
+    phi = t2 + phi * x;
+    phi = t1 + phi * x;
+
+    phi = absDir.x < absDir.y ? 1.0f - phi : phi;
+    float2 uv = float2(r - phi * r, phi * r);
+    uv = direction.z < 0.0f ? 1.0f - uv.yx : uv;
+    uv = asfloat(asuint(uv) ^ (asuint(direction.xy) & 0x80000000u));
+    return uv * 0.5f + 0.5f;
+}
+
 // UE 5.7.4 LumenScreenSpaceBentNormal.ush:19, with short range AO disabled.
 public float3 lumenDistantIlluminationRescale(float3 diffuseColor)
 {

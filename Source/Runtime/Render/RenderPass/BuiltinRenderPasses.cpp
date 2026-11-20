@@ -56,6 +56,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createLumenSurfaceCachePass(); });
     registerRenderGraphPassType("LumenRadiosityPass", "Update Surface Cache lighting with multi-bounce card feedback",
         []() { return builtin_pass::createLumenRadiosityPass(); });
+    registerRenderGraphPassType("LumenRadianceCachePass", "Update persistent clipmaps of directional world probe radiance",
+        []() { return builtin_pass::createLumenRadianceCachePass(); });
     registerRenderGraphPassType("LumenGlobalTracingPass", "Trace fixed world rays against the GDF and sample Surface Cache radiance",
         []() { return builtin_pass::createLumenGlobalTracingPass(); });
     registerRenderGraphPassType("LumenScreenProbeGatherPass", "Gather single-bounce Surface Cache lighting for visible diffuse receivers",

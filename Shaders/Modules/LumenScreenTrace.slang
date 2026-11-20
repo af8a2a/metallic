@@ -124,13 +124,15 @@ float screenTraceLineBoxExit(float3 rayOrigin, float3 rayEnd, float3 boxMax)
 // UE 5.7.4 HZBTracing.ush TraceHZB, default hierarchical full-resolution opaque path.
 bool traceScreenHZB(StructuredBuffer<float> hzb, ScreenTraceProjection view, uint2 hzbExtent,
     uint mipCount, float3 rayOrigin, float3 rayDirection, float maxTraceDistance,
-    float relativeDepthThickness, out float3 hitUVz)
+    float relativeDepthThickness, out float3 hitUVz, out bool hasEndpoint)
 {
     hitUVz = 0.0f;
+    hasEndpoint = false;
     float4 rayStartClip = screenTraceWorldToClip(view, rayOrigin);
     if (any(abs(rayStartClip.xy) > rayStartClip.w) || rayStartClip.w <= 0.0f) {
         return false;
     }
+    hasEndpoint = true;
 
     float2 hzbBaseTexelSize = 1.0f / float2(hzbExtent);
     float2 hzbUvFactor = view.extent / (2.0f * float2(hzbExtent));
@@ -154,6 +156,7 @@ bool traceScreenHZB(StructuredBuffer<float> hzb, ScreenTraceProjection view, uin
     float mipLevel = baseMipLevel;
     float3 rayDirectionScreenUV = rayEndScreenUV - rayStartScreenUV;
     float currentIntersectionTime = 0.0f;
+    float lastAboveSurfaceTime = 0.0f;
     float2 floorOffset = select(rayDirectionScreenUV.xy < 0.0f, 0.0f, 1.0f);
     float3 rayScreenUV = rayStartScreenUV;
 
@@ -168,6 +171,9 @@ bool traceScreenHZB(StructuredBuffer<float> hzb, ScreenTraceProjection view, uin
         float2 planeIntersectionTimes = (xyPlane - rayStartScreenUV.xy) / rayDirectionScreenUV.xy;
         currentIntersectionTime = min(planeIntersectionTimes.x, planeIntersectionTimes.y);
         rayScreenUV = rayStartScreenUV + currentIntersectionTime * rayDirectionScreenUV;
+    }
+    if (currentIntersectionTime >= 1.0f) {
+        rayScreenUV = rayStartScreenUV;
     }
 
     float numIterations = 0.0f;
@@ -191,21 +197,28 @@ bool traceScreenHZB(StructuredBuffer<float> hzb, ScreenTraceProjection view, uin
         intersectionTime = min(intersectionTime, planeIntersectionTimes.z);
         skippedTile &= intersectionTime != planeIntersectionTimes.z;
 
+        if (skippedTile) {
+            lastAboveSurfaceTime = intersectionTime;
+        }
         currentIntersectionTime = aboveSurface ? intersectionTime : currentIntersectionTime;
         rayScreenUV = rayStartScreenUV + min(currentIntersectionTime, 1.0f) * rayDirectionScreenUV;
         mipLevel += skippedTile ? 1.0f : -1.0f;
         ++numIterations;
     }
 
+    bool hit = false;
     if (mipLevel < baseMipLevel && currentIntersectionTime < 1.0f) {
         float2 sampleUV = rayScreenUV.xy * hzbUvInvFactor;
         float tileZ = sampleScreenTraceFullDepth(hzb, uint2(view.extent), sampleUV);
         float hitSceneDepth = screenTraceConvertFromDeviceZ(view, tileZ);
         float raySceneDepth = screenTraceConvertFromDeviceZ(view, rayScreenUV.z);
-        hitUVz = float3(sampleUV, rayScreenUV.z);
-        return tileZ > 0.0f && (raySceneDepth - hitSceneDepth) < relativeDepthThickness * max(hitSceneDepth, 0.0000001f);
+        hit = tileZ > 0.0f && (raySceneDepth - hitSceneDepth) < relativeDepthThickness * max(hitSceneDepth, 0.0000001f);
+        if (!hit) {
+            rayScreenUV = rayStartScreenUV + lastAboveSurfaceTime * rayDirectionScreenUV;
+        }
     }
-    return false;
+    hitUVz = float3(rayScreenUV.xy * hzbUvInvFactor, rayScreenUV.z);
+    return hit;
 }
 
 // UE 5.7.4 SSRTRayCast.ush and RandomInterleavedGradientNoise.ush.
@@ -224,7 +237,7 @@ float screenTraceNoise(float2 uv, float frameId)
 
 // UE 5.7.4 LumenScreenProbeTracing.usf, camera reprojection for static opaque surfaces.
 public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, float3 receiverPosition, float3 receiverNormal,
-    float3 rayDirection, float maxTraceDistance, uint2 noisePixel, out float3 radiance, out float distance)
+    float3 rayDirection, float traceDistance, float maxTraceDistance, uint2 noisePixel, out float3 radiance, out float distance)
 {
     radiance = 0.0f;
     distance = 0.0f;
@@ -248,14 +261,23 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, float3 receiverPo
     }
 
     float3 hitUVz;
-    if (!traceScreenHZB(inputs.closestHZB, current, traceView.state.yz, traceView.state.w, rayOrigin,
-            rayDirection, maxTraceDistance, 0.02f * depthThicknessScale, hitUVz)) {
+    bool hasEndpoint;
+    bool hit = traceScreenHZB(inputs.closestHZB, current, traceView.state.yz, traceView.state.w, rayOrigin,
+        rayDirection, traceDistance, 0.02f * depthThicknessScale, hitUVz, hasEndpoint);
+    if (!hasEndpoint) {
         return false;
     }
 
     float2 hitScreenPosition = screenTraceScreenPosition(hitUVz.xy);
     float hitSceneDepth = screenTraceConvertFromDeviceZ(current, hitUVz.z);
     float3 hitWorldPosition = screenTraceScreenToWorld(current, hitScreenPosition, hitSceneDepth);
+    // UE 5.7.4 LumenScreenProbeTracing.usf:293. The two-centimeter
+    // extension applies to a certain miss before evaluating history rejection.
+    float hitDistanceOffset = hit ? 0.0f : 0.02f;
+    distance = min(length(receiverPosition - hitWorldPosition) + hitDistanceOffset, maxTraceDistance);
+    if (!hit) {
+        return false;
+    }
     // ClipToPrevClip excludes both cameras' jitter in the UE history lookup.
     current.jitter = 0.0f;
     float3 reprojectWorldPosition = screenTraceScreenToWorld(current, hitScreenPosition, hitSceneDepth);
@@ -283,7 +305,6 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, float3 receiverPo
     float2 colorHalfTexel = 0.5f / previous.extent;
     uint2 colorPixel = pointClampedPixel(clamp(historyUV, colorHalfTexel, 1.0f - colorHalfTexel), extent);
     radiance = -min(-inputs.previousColor.Load(int3(colorPixel, 0)).rgb, 0.0f);
-    distance = min(length(receiverPosition - hitWorldPosition), maxTraceDistance);
     return true;
 }
 

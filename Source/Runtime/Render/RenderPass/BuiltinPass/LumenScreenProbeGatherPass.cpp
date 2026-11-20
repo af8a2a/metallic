@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenGlobalTraceBindings.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenProbePlacement.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
@@ -11,19 +12,12 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kScreenProbeGatherABI = 0x4c554d454e010006ull;
-constexpr uint64_t kScreenProbeFilterABI = 0x4c554d454e010007ull;
-constexpr uint32_t kProbeDownsampleFactor = 16;
+constexpr uint64_t kScreenProbeGatherABI = 0x4c554d454e010009ull;
 constexpr uint32_t kRaysPerProbe = 8 * 8;
 constexpr uint32_t kTraceStride = 4 * sizeof(float);
-constexpr uint32_t kSlotsPerTile = 9;
 constexpr uint32_t kScreenTraceViewStride = 224;
+constexpr uint32_t kRadianceCacheClipmapStride = 48;
 constexpr uint32_t kSpatialPassCount = 3;
-
-uint32_t screenProbeCount(uint32_t pixels)
-{
-    return (pixels + kProbeDownsampleFactor - 1) / kProbeDownsampleFactor;
-}
 
 struct LumenScreenProbeGatherParams {
     ShaderLumenGlobalTraceBindings scene;
@@ -36,15 +30,10 @@ struct LumenScreenProbeGatherParams {
     ShaderSampledImage previousDepth, previousColor;
     ShaderBuffer traceView;
     uint32_t frameIndex;
+    ShaderBuffer cacheIndirection, cacheClipmaps;
+    ShaderSampledImage cacheRadiance;
 };
-static_assert(sizeof(LumenScreenProbeGatherParams) == 128);
-
-struct LumenScreenProbeFilterParams {
-    ShaderSampledImage position, normal;
-    ShaderBuffer probeOutput, probeInput, inputRadiance, inputDistance, outputRadiance;
-    uint32_t width, height, probeWidth, probeHeight, frameIndex;
-};
-static_assert(sizeof(LumenScreenProbeFilterParams) == 48);
+static_assert(sizeof(LumenScreenProbeGatherParams) == 140);
 
 class LumenScreenProbeGatherPass final : public ComputePass {
 public:
@@ -88,16 +77,32 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
             .buffer(kScreenTraceViewStride, kScreenTraceViewStride).storageRead();
     }
 
-    const uint64_t probeCount = uint64_t(screenProbeCount(context.width)) * screenProbeCount(context.height);
+    const uint64_t probeCount = uint64_t(lumenScreenProbeTiles(context.width)) * lumenScreenProbeTiles(context.height);
     const bool finalGather = optionEnabled("finalGather");
-    const uint64_t rayCount = probeCount * (finalGather ? kSlotsPerTile : 1u) * kRaysPerProbe;
+    const uint64_t probePositionsBytes = probeCount * kLumenScreenProbeSlotsPerTile * 2 * sizeof(uint32_t);
+    const bool radianceCache = optionEnabled("radianceCache");
+    if (radianceCache) {
+        reflection.addBufferInput("placedProbes", "Uniform and adaptive receiver pixels used to mark the World Radiance Cache")
+            .buffer(probePositionsBytes, 2 * sizeof(uint32_t)).storageRead();
+        reflection.addBufferInput("cacheIndirection", "World Radiance Cache clipmap cell-to-probe indices")
+            .buffer(0, sizeof(uint32_t)).storageRead();
+        reflection.addBufferInput("cacheClipmaps", "World Radiance Cache clipmap geometry and atlas layout")
+            .buffer(0, kRadianceCacheClipmapStride).storageRead();
+        auto& cacheRadiance = reflection.addTextureInput("cacheRadiance", "Bordered directional World Radiance Cache atlas")
+            .sampledRead();
+        cacheRadiance.format = Format::RGBA16Sfloat;
+        cacheRadiance.matchOutputExtent = false;
+    }
+    const uint64_t rayCount = probeCount * (finalGather ? kLumenScreenProbeSlotsPerTile : 1u) * kRaysPerProbe;
     reflection.addBufferOutput("probeRadiance", "Probe ray RGB and trace classification in tile order")
         .buffer(rayCount * kTraceStride, kTraceStride).storageReadWrite()
         .transient(RenderGraphInitialization::FullOverwrite);
     if (finalGather) {
-        reflection.addBufferOutput("probePositions", "Uniform and adaptive receiver pixels by tile and slot")
-            .buffer(probeCount * kSlotsPerTile * 2 * sizeof(uint32_t), 2 * sizeof(uint32_t)).storageReadWrite()
-            .transient(RenderGraphInitialization::FullOverwrite);
+        if (!radianceCache) {
+            reflection.addBufferOutput("probePositions", "Uniform and adaptive receiver pixels by tile and slot")
+                .buffer(probePositionsBytes, 2 * sizeof(uint32_t)).storageReadWrite()
+                .transient(RenderGraphInitialization::FullOverwrite);
+        }
         reflection.addBufferOutput("probeDistance", "Per-direction trace distance in meters")
             .buffer(rayCount * sizeof(float), sizeof(float)).storageReadWrite()
             .transient(RenderGraphInitialization::FullOverwrite);
@@ -121,7 +126,7 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
 Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
     device_ = context.device;
-    for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation"}) {
+    for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache"}) {
         const auto value = properties().find(name);
         if (value != properties().end() && !value->is_boolean()) {
             log += "Lumen Screen Probe Gather requires a boolean " + std::string(name);
@@ -131,12 +136,17 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     const bool finalGather = optionEnabled("finalGather");
     const bool screenTraces = optionEnabled("screenTraces");
     const bool stochasticInterpolation = optionEnabled("stochasticInterpolation");
+    const bool radianceCache = optionEnabled("radianceCache");
     if (screenTraces && !finalGather) {
         log += "Lumen screen tracing requires Final Gather";
         return makeError(Error::InvalidArgument);
     }
     if (stochasticInterpolation && !finalGather) {
         log += "Lumen stochastic probe interpolation requires Final Gather";
+        return makeError(Error::InvalidArgument);
+    }
+    if (radianceCache && !finalGather) {
+        log += "Lumen World Radiance Cache requires Final Gather";
         return makeError(Error::InvalidArgument);
     }
     const auto distance = properties().find("maxTraceDistance");
@@ -152,6 +162,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     if (finalGather) { defines.push_back({"METALLIC_LUMEN_FINAL_GATHER", "1"}); }
     if (screenTraces) { defines.push_back({"METALLIC_LUMEN_SCREEN_TRACES", "1"}); }
     if (stochasticInterpolation) { defines.push_back({"METALLIC_LUMEN_STOCHASTIC_INTERPOLATION", "1"}); }
+    if (radianceCache) { defines.push_back({"METALLIC_LUMEN_RADIANCE_CACHE", "1"}); }
     const auto createGather = [&](const char* entry, const char* name, ComputeKernel& kernel) {
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = "Features/DistanceField/LumenScreenProbeGather", .entryPointName = entry,
@@ -172,8 +183,10 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
             {.parameters = parameterAbi<LumenScreenProbeFilterParams>(kScreenProbeFilterABI), .debugName = name}, kernel, log);
     };
-    if (auto result = createFilter("lumenPlaceAdaptiveProbesMain", "LumenPlaceAdaptiveProbes", place_); !result) {
-        return result;
+    if (!radianceCache) {
+        if (auto result = createFilter("lumenPlaceAdaptiveProbesMain", "LumenPlaceAdaptiveProbes", place_); !result) {
+            return result;
+        }
     }
     return createFilter("lumenFilterScreenProbesMain", "LumenFilterScreenProbes", filter_);
 }
@@ -198,16 +211,19 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     params.color = writer.storageImageHandle(context.outputTexture("color").view());
     params.width = context.width();
     params.height = context.height();
-    params.probeWidth = screenProbeCount(params.width);
-    params.probeHeight = screenProbeCount(params.height);
+    params.probeWidth = lumenScreenProbeTiles(params.width);
+    params.probeHeight = lumenScreenProbeTiles(params.height);
     params.clipmapCount = *clipmapCount;
     params.maxTraceDistance = maxTraceDistance_;
     params.frameIndex = static_cast<uint32_t>(context.frameIndex());
     const bool finalGather = optionEnabled("finalGather");
     const bool screenTraces = optionEnabled("screenTraces");
+    const bool radianceCache = optionEnabled("radianceCache");
+    const char* probePositionsName = radianceCache ? "placedProbes" : "probePositions";
     ShaderBuffer scratch;
     if (finalGather) {
-        params.probePositions = writer.buffer(context.outputBuffer("probePositions").buffer());
+        params.probePositions = writer.buffer(radianceCache ? context.inputBuffer(probePositionsName).buffer() :
+            context.outputBuffer(probePositionsName).buffer());
         params.traceDistance = writer.buffer(context.outputBuffer("probeDistance").buffer());
         params.traceInput = writer.buffer(context.outputBuffer("filteredProbeRadiance").buffer());
         scratch = writer.buffer(context.outputBuffer("probeFilterScratch").buffer());
@@ -217,6 +233,11 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         params.previousDepth = writer.sampledImageHandle(context.inputTexture("previousDepth").view());
         params.previousColor = writer.sampledImageHandle(context.inputTexture("previousColor").view());
         params.traceView = writer.buffer(context.inputBuffer("traceView").buffer());
+    }
+    if (radianceCache) {
+        params.cacheIndirection = writer.buffer(context.inputBuffer("cacheIndirection").buffer());
+        params.cacheClipmaps = writer.buffer(context.inputBuffer("cacheClipmaps").buffer());
+        params.cacheRadiance = writer.sampledImageHandle(context.inputTexture("cacheRadiance").view());
     }
     const auto encoded = writer.encode(params, kScreenProbeGatherABI);
     if (!encoded) { return makeError(encoded.error()); }
@@ -243,6 +264,11 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             {"previousDepth", Access::TextureSampleRead}, {"previousColor", Access::TextureSampleRead},
             {"traceView", Access::BufferStorageRead}});
     }
+    if (radianceCache) {
+        traceUses.insert(traceUses.end(), {{"cacheIndirection", Access::BufferStorageRead},
+            {"cacheClipmaps", Access::BufferStorageRead},
+            {"cacheRadiance", Access::TextureSampleRead}});
+    }
 
     const RenderGraphStageUse placeUses[] = {{"position", Access::TextureSampleRead},
         {"normal", Access::TextureSampleRead}, {"probePositions", Access::BufferStorageWrite}};
@@ -251,25 +277,27 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     std::array<EncodedParameters, kSpatialPassCount> filteredParams;
     std::vector<RenderGraphStage> stages;
     if (finalGather) {
-        traceUses.insert(traceUses.end(), {{"probePositions", Access::BufferStorageRead},
+        traceUses.insert(traceUses.end(), {{probePositionsName, Access::BufferStorageRead},
             {"probeDistance", Access::BufferStorageWrite}});
-        integrateUses.push_back({"probePositions", Access::BufferStorageRead});
+        integrateUses.push_back({probePositionsName, Access::BufferStorageRead});
         LumenScreenProbeFilterParams filterParams{params.position, params.normal, params.probePositions,
             params.probePositions, {}, params.traceDistance, {}, params.width, params.height, params.probeWidth,
             params.probeHeight, params.frameIndex};
-        auto placement = writer.encode(filterParams, kScreenProbeFilterABI);
-        if (!placement) { return makeError(placement.error()); }
-        placeParams = std::move(*placement);
-        stages.push_back({"Place uniform and adaptive probes", placeUses, [&](CommandBuffer& cmd) {
-            return place_.dispatch(cmd, placeParams, params.probeWidth, params.probeHeight, 1);
-        }});
+        if (!radianceCache) {
+            auto placement = writer.encode(filterParams, kScreenProbeFilterABI);
+            if (!placement) { return makeError(placement.error()); }
+            placeParams = std::move(*placement);
+            stages.push_back({"Place uniform and adaptive probes", placeUses, [&](CommandBuffer& cmd) {
+                return place_.dispatch(cmd, placeParams, params.probeWidth, params.probeHeight, 1);
+            }});
+        }
 
         constexpr std::array inputNames{"probeRadiance", "filteredProbeRadiance", "probeFilterScratch"};
         constexpr std::array outputNames{"filteredProbeRadiance", "probeFilterScratch", "filteredProbeRadiance"};
         const std::array inputs{params.traceOutput, params.traceInput, scratch};
         const std::array outputs{params.traceInput, scratch, params.traceInput};
         for (uint32_t index = 0; index < kSpatialPassCount; ++index) {
-            filterUses[index] = {{{"position", Access::TextureSampleRead}, {"probePositions", Access::BufferStorageRead},
+            filterUses[index] = {{{"position", Access::TextureSampleRead}, {probePositionsName, Access::BufferStorageRead},
                 {"probeDistance", Access::BufferStorageRead}, {inputNames[index], Access::BufferStorageRead},
                 {outputNames[index], Access::BufferStorageWrite}}};
             filterParams.inputRadiance = inputs[index];
@@ -280,11 +308,11 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         }
     }
     stages.push_back({"Trace screen probes", traceUses, [&](CommandBuffer& cmd) {
-        return trace_.dispatch(cmd, *encoded, params.probeWidth, params.probeHeight, finalGather ? kSlotsPerTile : 1);
+        return trace_.dispatch(cmd, *encoded, params.probeWidth, params.probeHeight, finalGather ? kLumenScreenProbeSlotsPerTile : 1);
     }});
     for (uint32_t index = 0; finalGather && index < kSpatialPassCount; ++index) {
         stages.push_back({"Spatially filter probe radiance", filterUses[index], [&, index](CommandBuffer& cmd) {
-            return filter_.dispatch(cmd, filteredParams[index], params.probeWidth, params.probeHeight, kSlotsPerTile);
+            return filter_.dispatch(cmd, filteredParams[index], params.probeWidth, params.probeHeight, kLumenScreenProbeSlotsPerTile);
         }});
     }
     stages.push_back({"Integrate and composite diffuse", integrateUses, [&](CommandBuffer& cmd) {
