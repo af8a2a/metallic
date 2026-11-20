@@ -16,6 +16,8 @@ std::unique_ptr<RenderGraphPass> createColorGradingLUTPass();
 std::unique_ptr<RenderGraphPass> createMeshDistanceFieldDebugPass();
 std::unique_ptr<RenderGraphPass> createGlobalDistanceFieldPass();
 std::unique_ptr<RenderGraphPass> createGlobalDistanceFieldDebugPass();
+std::unique_ptr<RenderGraphPass> createGlobalDistanceFieldPagesPass();
+std::unique_ptr<RenderGraphPass> createGlobalDistanceFieldPagesDebugPass();
 std::unique_ptr<RenderGraphPass> createStrandVisibilityPass();
 std::unique_ptr<RenderGraphPass> createStrandLightingPass();
 std::unique_ptr<RenderGraphPass> createVisibilityBufferMaterialPass();

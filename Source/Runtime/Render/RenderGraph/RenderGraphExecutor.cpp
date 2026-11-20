@@ -987,16 +987,18 @@ struct RenderGraphExecutor::Impl {
         std::string& log) const
     {
         resolvedExtents.clear();
-        std::unordered_map<std::string, std::vector<std::string>> nodeTextureOutputs;
+        std::unordered_map<std::string, std::vector<std::string>> node2DTextureOutputs;
         for (const CompiledNode& node : executionList) {
-            std::vector<std::string>& outputs = nodeTextureOutputs[node.name];
+            std::vector<std::string>& outputs = node2DTextureOutputs[node.name];
             for (const RenderGraphField& field : node.reflection.fields()) {
                 if (field.visibility != RenderGraphFieldVisibility::Output ||
                     field.resourceType != RenderGraphResourceType::Texture2D) {
                     continue;
                 }
                 const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-                outputs.push_back(fullName);
+                if (field.textureType == TextureType::Texture2D) {
+                    outputs.push_back(fullName);
+                }
                 resolvedExtents.emplace(
                     fullName,
                     ResolvedTextureExtent{
@@ -1069,7 +1071,7 @@ struct RenderGraphExecutor::Impl {
             const bool forceRefresh = !sceneBindingsReady;
         bool changed = forceRefresh;
 
-            for (const auto& [nodeName, outputNames] : nodeTextureOutputs) {
+            for (const auto& [nodeName, outputNames] : node2DTextureOutputs) {
                 if (outputNames.size() < 2) {
                     continue;
                 }
@@ -1121,9 +1123,9 @@ struct RenderGraphExecutor::Impl {
                 const std::string destinationName = makeRenderGraphFieldName(
                     edge.dstPass,
                     edge.dstField);
-                const auto destinationOutputs = nodeTextureOutputs.find(edge.dstPass);
+                const auto destinationOutputs = node2DTextureOutputs.find(edge.dstPass);
                 const bool destinationHasTextureOutputs =
-                    destinationOutputs != nodeTextureOutputs.end() &&
+                    destinationOutputs != node2DTextureOutputs.end() &&
                     !destinationOutputs->second.empty();
 
                 if (destinationField->width != 0) {
@@ -1232,6 +1234,7 @@ struct RenderGraphExecutor::Impl {
             node.executionWidth = renderWidth;
             node.executionHeight = renderHeight;
             bool foundTextureOutput = false;
+            const RenderGraphResource* firstVolumeOutput = nullptr;
             for (const RenderGraphField& field : node.reflection.fields()) {
                 if (field.visibility != RenderGraphFieldVisibility::Output ||
                     field.resourceType != RenderGraphResourceType::Texture2D) {
@@ -1244,6 +1247,12 @@ struct RenderGraphExecutor::Impl {
                     log = validationPrefix(std::string("texture output resource is missing '") + fullName + "'");
                     return makeError(Error::InvalidArgument);
                 }
+                // Volume passes dispatch from their individual texture extents.
+                // A page table and its physical atlas can have different dimensions.
+                if (output->desc.type == TextureType::Texture3D) {
+                    if (!firstVolumeOutput) { firstVolumeOutput = output; }
+                    continue;
+                }
                 if (!foundTextureOutput) {
                     node.executionWidth = output->desc.width;
                     node.executionHeight = output->desc.height;
@@ -1254,9 +1263,13 @@ struct RenderGraphExecutor::Impl {
                     node.executionHeight != output->desc.height) {
                     log = validationPrefix(
                         std::string("pass '") + node.name +
-                        "' has texture outputs with different extents; split the pass or use matching output extents");
+                        "' has 2D texture outputs with different extents; split the pass or use matching output extents");
                     return makeError(Error::InvalidArgument);
                 }
+            }
+            if (!foundTextureOutput && firstVolumeOutput) {
+                node.executionWidth = firstVolumeOutput->desc.width;
+                node.executionHeight = firstVolumeOutput->desc.height;
             }
         }
         return {};

@@ -782,6 +782,10 @@ Open **Lighting / Mesh Distance Fields** in the editor. The sample traces two in
 
 The volume is rebuilt from the current scene instances each frame. It stores the minimum mesh distance clipped to plus or minus four voxel widths. The debug pass shows normals, step count, or coverage. Its RGBA32F `trace` contains hit distance in meters, the number of samples, coverage state, and surface expansion in meters. Coverage states are 0 for a ray segment outside the sampled domain, 1 for a covered segment without a hit, and 2 for a hit.
 
+**Lighting / Global Distance Field / Sparse Pages** uses the same world-space lattice. Each virtual page covers seven cells per axis and stores eight samples along each axis so neighboring pages share their boundary. The R32Uint page table points to an R32F atlas page or contains one of three states. `0xffffffff` means the whole page equals the positive distance limit, `0xfffffffe` means it equals the negative limit, and `0xfffffffd` means its physical allocation exceeded `maxPhysicalPages`. The sparse trace reports coverage state 3 and displays orange if it reaches an unavailable page. Its `statistics` buffer lists required physical pages, resident pages, positive constant pages, negative constant pages and unavailable pages.
+
+The sparse pass composes each page's samples on every frame and allocates atlas storage for pages with varying distances. It uses the same samples as the dense pass, including the clipped tail of a partial page. This provides a dense comparison for the first sparse version. The Unreal production path additionally uses page-center admission estimates, R8 encoding and a coarse mip.
+
 ## Optional RHI diagnostics
 
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing

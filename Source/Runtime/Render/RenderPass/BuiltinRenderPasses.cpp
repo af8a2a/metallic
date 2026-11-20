@@ -48,6 +48,10 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createGlobalDistanceFieldPass(); });
     registerRenderGraphPassType("GlobalDistanceFieldDebugPass", "Trace and visualize a bounded global distance field",
         []() { return builtin_pass::createGlobalDistanceFieldDebugPass(); });
+    registerRenderGraphPassType("GlobalDistanceFieldPagesPass", "Compose a bounded global distance field into sparse pages",
+        []() { return builtin_pass::createGlobalDistanceFieldPagesPass(); });
+    registerRenderGraphPassType("GlobalDistanceFieldPagesDebugPass", "Trace a sparse global distance field",
+        []() { return builtin_pass::createGlobalDistanceFieldPagesDebugPass(); });
     registerRenderGraphPassType("VisibilityBufferMaterialPass", "Resolve unified visibility using scalar materials without RTAS",
         []() { return builtin_pass::createVisibilityBufferMaterialPass(); });
     registerRenderGraphPassType(

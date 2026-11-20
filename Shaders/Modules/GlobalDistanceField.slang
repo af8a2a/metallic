@@ -8,6 +8,7 @@ public static const uint kGlobalDistanceFieldMaxTraceSteps = 256u;
 public static const uint kGlobalDistanceFieldOutside = 0u;
 public static const uint kGlobalDistanceFieldMiss = 1u;
 public static const uint kGlobalDistanceFieldHit = 2u;
+public static const uint kGlobalDistanceFieldUnavailable = 3u;
 
 public struct GlobalDistanceFieldDomain
 {
@@ -21,6 +22,11 @@ public struct GlobalDistanceFieldTrace
     public uint stepCount;
     public uint classification;
     public float surfaceExpansion;
+};
+
+public interface IGlobalDistanceFieldSampler
+{
+    bool sample(float3 worldPosition, out float distance);
 };
 
 public float3 globalDistanceFieldVoxelCenter(GlobalDistanceFieldDomain domain, uint3 texel)
@@ -55,8 +61,21 @@ public float sampleGlobalDistanceField(Texture3D<float> distanceField, SamplerSt
     return distanceField.SampleLevel(sampler, uv, 0.0f);
 }
 
+public struct DenseGlobalDistanceFieldSampler : IGlobalDistanceFieldSampler
+{
+    public Texture3D<float> distanceField;
+    public SamplerState sampler;
+    public GlobalDistanceFieldDomain domain;
+
+    public bool sample(float3 worldPosition, out float distance)
+    {
+        distance = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition);
+        return true;
+    }
+};
+
 // UE 5.7.4 GlobalDistanceFieldUtils.ush:90, one level and the opaque visualization settings.
-public GlobalDistanceFieldTrace traceGlobalDistanceField(Texture3D<float> distanceField, SamplerState sampler,
+public GlobalDistanceFieldTrace traceGlobalDistanceField<T : IGlobalDistanceFieldSampler>(T distanceField,
     GlobalDistanceFieldDomain domain, float3 rayStart, float3 rayDirection,
     float minTraceDistance, float maxTraceDistance)
 {
@@ -76,7 +95,11 @@ public GlobalDistanceFieldTrace traceGlobalDistanceField(Texture3D<float> distan
     const float expandSurfaceFalloff = 2.0f * voxelExtent;
     for (uint step = 0u; step < kGlobalDistanceFieldMaxTraceSteps; ++step) {
         float3 worldPosition = rayStart + rayDirection * sampleRayTime;
-        float distance = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition);
+        float distance;
+        if (!distanceField.sample(worldPosition, distance)) {
+            result.classification = kGlobalDistanceFieldUnavailable;
+            break;
+        }
         ++result.stepCount;
         float surfaceExpansion = voxelExtent * saturate(sampleRayTime / expandSurfaceFalloff);
         if (distance < surfaceExpansion) {
@@ -96,19 +119,19 @@ public GlobalDistanceFieldTrace traceGlobalDistanceField(Texture3D<float> distan
 }
 
 // UE 5.7.4 GlobalDistanceFieldShared.ush:291. Rescale the encoded gradient threshold for meters.
-public float3 calculateGlobalDistanceFieldNormal(Texture3D<float> distanceField, SamplerState sampler,
+public float3 calculateGlobalDistanceFieldNormal<T : IGlobalDistanceFieldSampler>(T distanceField,
     GlobalDistanceFieldDomain domain, float3 worldPosition, float3 fallbackNormal)
 {
     float extent = domain.minAndVoxelSize.w * 0.5f;
     float3 x = float3(extent, 0.0f, 0.0f);
     float3 y = float3(0.0f, extent, 0.0f);
     float3 z = float3(0.0f, 0.0f, extent);
-    float right = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition + x);
-    float left = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition - x);
-    float front = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition + y);
-    float back = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition - y);
-    float up = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition + z);
-    float down = sampleGlobalDistanceField(distanceField, sampler, domain, worldPosition - z);
+    float right, left, front, back, up, down;
+    if (!distanceField.sample(worldPosition + x, right) || !distanceField.sample(worldPosition - x, left) ||
+        !distanceField.sample(worldPosition + y, front) || !distanceField.sample(worldPosition - y, back) ||
+        !distanceField.sample(worldPosition + z, up) || !distanceField.sample(worldPosition - z, down)) {
+        return fallbackNormal;
+    }
     float3 gradient = float3(right - left, front - back, up - down);
     float gradientLength = length(gradient);
     float threshold = 0.001f * (2.0f * domain.maxAndInfluenceRadius.w);

@@ -1,0 +1,52 @@
+{
+    "name": "Global Distance Field / Sparse Pages",
+    "version": 1,
+    "nodes": [
+        {
+            "id": 1,
+            "name": "GlobalDistanceFieldPages",
+            "type": "GlobalDistanceFieldPagesPass",
+            "position": {"x": 80, "y": 240},
+            "properties": {
+                "distanceFieldPaths": [".cache/mesh-distance-field/BoxInstances.meshdf"],
+                "center": [0.0, 0.0, 0.0],
+                "extent": 3.0,
+                "resolution": 64,
+                "maxPhysicalPages": 216
+            }
+        },
+        {
+            "id": 2,
+            "name": "GlobalDistanceFieldPagesDebug",
+            "type": "GlobalDistanceFieldPagesDebugPass",
+            "position": {"x": 440, "y": 240},
+            "properties": {}
+        },
+        {
+            "id": 3,
+            "name": "FinalBlit",
+            "type": "FinalBlitPass",
+            "position": {"x": 810, "y": 240},
+            "properties": {}
+        }
+    ],
+    "edges": [
+        {"id": 1, "src": "GlobalDistanceFieldPages.pageTable", "dst": "GlobalDistanceFieldPagesDebug.pageTable"},
+        {"id": 2, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "GlobalDistanceFieldPagesDebug.pageAtlas"},
+        {"id": 3, "src": "GlobalDistanceFieldPages.domain", "dst": "GlobalDistanceFieldPagesDebug.domain"},
+        {"id": 4, "src": "GlobalDistanceFieldPagesDebug.color", "dst": "FinalBlit.source"}
+    ],
+    "outputs": ["FinalBlit.color", "GlobalDistanceFieldPagesDebug.trace"],
+    "view": {
+        "camera": {
+            "eye": [0.0, 1.35, 4.2],
+            "center": [0.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0],
+            "fovDegrees": 43.0,
+            "projection": "perspective",
+            "znear": 0.05,
+            "zfar": 50.0
+        },
+        "temporalJitter": false
+    }
+}
