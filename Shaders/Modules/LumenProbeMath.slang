@@ -4,6 +4,27 @@ namespace Metallic.Lumen
 {
 public static const float kLumenProbePi = 3.14159265358979323846f;
 
+// UE 5.7.4 RandomPCG.ush:12 and MonteCarlo.ush:65.
+public uint3 lumenRand3DPCG16(int3 p)
+{
+    uint3 v = uint3(p);
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    return v >> 16u;
+}
+
+public float2 lumenHammersley16(uint index, uint numSamples, uint2 random)
+{
+    float e1 = frac(float(index) / numSamples + float(random.x) * (1.0f / 65536.0f));
+    float e2 = float((reversebits(index) >> 16u) ^ random.y) * (1.0f / 65536.0f);
+    return float2(e1, e2);
+}
+
 // UE 5.7.4 MonteCarlo.ush:159 (Clarberg equal-area sphere mapping).
 public float3 lumenEquiAreaSphericalMapping(float2 uv)
 {

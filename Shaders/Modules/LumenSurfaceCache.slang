@@ -11,6 +11,27 @@ public struct SurfaceCacheCard
     public uint4 metadata;
 };
 
+public float3 decodeSurfaceCacheNormal(SurfaceCacheCard card, float2 encodedNormal)
+{
+    float3 cardSpaceNormal;
+    cardSpaceNormal.xy = encodedNormal * 2.0f - 1.0f;
+    cardSpaceNormal.z = sqrt(max(1.0f - dot(cardSpaceNormal.xy, cardSpaceNormal.xy), 0.0001f));
+    return normalize(card.axisX.xyz * cardSpaceNormal.x + card.axisY.xyz * cardSpaceNormal.y +
+        card.axisZ.xyz * cardSpaceNormal.z);
+}
+
+// UE 5.7.4 LumenCardCommon.ush GetCardLocalPosition/GetCardWorldPosition,
+// using the tile texel center to address the resident card.
+public float3 surfaceCacheWorldPosition(SurfaceCacheCard card, float2 cardUV, float depth)
+{
+    cardUV.x = 1.0f - cardUV.x;
+    float3 localPosition;
+    localPosition.xy = float2(card.axisX.w, card.axisY.w) * (1.0f - 2.0f * cardUV);
+    localPosition.z = -(2.0f * depth - 1.0f) * card.axisZ.w;
+    return card.axisX.xyz * localPosition.x + card.axisY.xyz * localPosition.y +
+        card.axisZ.xyz * localPosition.z + card.origin.xyz;
+}
+
 public struct LumenSurfaceCache
 {
     public StructuredBuffer<SurfaceCacheCard> cards;

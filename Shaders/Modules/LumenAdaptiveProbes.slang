@@ -1,5 +1,7 @@
 module LumenAdaptiveProbes;
 
+import LumenProbeMath;
+
 namespace Metallic.Lumen
 {
 public static const uint kLumenProbeDownsampleFactor = 16u;
@@ -29,30 +31,9 @@ public uint lumenProbeRayAddress(uint probeIndex, uint2 ray)
     return (probeIndex * kLumenProbeRayResolution + ray.y) * kLumenProbeRayResolution + ray.x;
 }
 
-// UE 5.7.4 RandomPCG.ush:12 and MonteCarlo.ush:65.
-uint3 probeRand3DPCG16(int3 p)
-{
-    uint3 v = uint3(p);
-    v = v * 1664525u + 1013904223u;
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    return v >> 16u;
-}
-
-float2 probeHammersley16(uint index, uint numSamples, uint2 random)
-{
-    float e1 = frac(float(index) / numSamples + float(random.x) * (1.0f / 65536.0f));
-    float e2 = float((reversebits(index) >> 16u) ^ random.y) * (1.0f / 65536.0f);
-    return float2(e1, e2);
-}
-
 uint2 probeTileJitter(uint frameIndex)
 {
-    return uint2(probeHammersley16(frameIndex % 8u, 8u, uint2(0u)) * kLumenProbeDownsampleFactor);
+    return uint2(lumenHammersley16(frameIndex % 8u, 8u, uint2(0u)) * kLumenProbeDownsampleFactor);
 }
 
 public uint2 lumenUniformProbePosition(uint2 tile, uint2 viewSize, uint frameIndex)
@@ -63,8 +44,8 @@ public uint2 lumenUniformProbePosition(uint2 tile, uint2 viewSize, uint frameInd
 uint2 adaptiveProbePosition(uint2 tile, uint sampleIndex, uint frameIndex)
 {
     uint2 uniformPosition = tile * kLumenProbeDownsampleFactor + probeTileJitter(frameIndex);
-    uint2 sampleSeed = probeRand3DPCG16(int3(tile, frameIndex % 8u)).xy;
-    return uniformPosition + uint2(clamp(probeHammersley16(sampleIndex, kAdaptiveProbesPerTile, sampleSeed) *
+    uint2 sampleSeed = lumenRand3DPCG16(int3(tile, frameIndex % 8u)).xy;
+    return uniformPosition + uint2(clamp(lumenHammersley16(sampleIndex, kAdaptiveProbesPerTile, sampleSeed) *
         kLumenProbeDownsampleFactor, 0.0f, float(kLumenProbeDownsampleFactor - 1u)));
 }
 

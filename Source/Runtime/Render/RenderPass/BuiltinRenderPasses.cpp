@@ -54,6 +54,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createGlobalDistanceFieldPagesDebugPass(); });
     registerRenderGraphPassType("LumenSurfaceCachePass", "Capture Mesh Cards into a low-resolution Surface Cache",
         []() { return builtin_pass::createLumenSurfaceCachePass(); });
+    registerRenderGraphPassType("LumenRadiosityPass", "Update Surface Cache lighting with multi-bounce card feedback",
+        []() { return builtin_pass::createLumenRadiosityPass(); });
     registerRenderGraphPassType("LumenGlobalTracingPass", "Trace fixed world rays against the GDF and sample Surface Cache radiance",
         []() { return builtin_pass::createLumenGlobalTracingPass(); });
     registerRenderGraphPassType("LumenScreenProbeGatherPass", "Gather single-bounce Surface Cache lighting for visible diffuse receivers",

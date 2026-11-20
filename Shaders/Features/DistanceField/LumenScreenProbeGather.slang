@@ -253,6 +253,25 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
         uint4 probeIndices = sample.indices;
         // UE 5.7.4 InterpolateAndIntegrate, static lighting with zero moving fraction.
         encodedAlpha = sample.lightingValid ? 0.004f : 0.0f;
+#if defined(METALLIC_LUMEN_STOCHASTIC_INTERPOLATION)
+        // UE 5.7.4 STOCHASTIC_PROBE_INTERPOLATION and the rendering-commandlet BlackDummy.
+        bool sampleProbes = any(sample.weights > 0.0f);
+        float randomValue = min(0.0f, 0.99f);
+        float weightSum = dot(sample.weights, 1.0f);
+        randomValue *= weightSum;
+        uint pickedProbe;
+        if (randomValue >= sample.weights[0] + sample.weights[1] + sample.weights[2]) {
+            pickedProbe = sample.indices[3];
+        } else if (randomValue >= sample.weights[0] + sample.weights[1]) {
+            pickedProbe = sample.indices[2];
+        } else if (randomValue >= sample.weights[0]) {
+            pickedProbe = sample.indices[1];
+        } else {
+            pickedProbe = sample.indices[0];
+        }
+        probeIndices = uint4(pickedProbe);
+        sample.weights = float4(sampleProbes ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+#endif
 #else
         ScreenProbeSample sample = calculateProbeInterpolation(thread.xy, viewSize,
             uint2(params.probeWidth, params.probeHeight), receiver, normal, position);

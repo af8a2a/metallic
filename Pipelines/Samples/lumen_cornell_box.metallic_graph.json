@@ -33,13 +33,15 @@
                     ".cache/mesh-distance-field/CornellBoxTallBlock.meshcards",
                     ".cache/mesh-distance-field/CornellBoxCeilingEmitter.meshcards"
                 ],
-                "atlasSize": 256, "tileResolution": 32, "shadowedLighting": true
+                "atlasSize": 256, "tileResolution": 32, "shadowedLighting": true, "exportDirectIrradiance": true
             }},
         {"id": 5, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 665, "y": 140},
             "properties": {"maxTraceDistance": 5, "finalGather": true, "screenTraces": true}},
         {"id": 6, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1280, "y": 140}},
         {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 340, "y": -290}},
-        {"id": 8, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 990, "y": 140}}
+        {"id": 8, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 990, "y": 140}},
+        {"id": 9, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 665, "y": 520},
+            "properties": {"atlasSize": 256, "tileResolution": 32, "maxTraceDistance": 5}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -62,7 +64,7 @@
         {"id": 18, "src": "SurfaceCache.cards", "dst": "Gather.cards"},
         {"id": 19, "src": "SurfaceCache.scene", "dst": "Gather.cardScene"},
         {"id": 20, "src": "SurfaceCache.depth", "dst": "Gather.cardDepth"},
-        {"id": 21, "src": "SurfaceCache.lighting", "dst": "Gather.cardLighting"},
+        {"id": 21, "src": "Radiosity.lighting", "dst": "Gather.cardLighting"},
         {"id": 22, "src": "Temporal.color", "dst": "FinalBlit.source"},
         {"id": 23, "src": "VBuffer.depth", "dst": "ScreenTrace.depth"},
         {"id": 24, "src": "Deferred.color", "dst": "ScreenTrace.color"},
@@ -73,7 +75,21 @@
         {"id": 29, "src": "Gather.indirectDiffuse", "dst": "Temporal.currentIndirectDiffuse"},
         {"id": 30, "src": "Deferred.lumenPosition", "dst": "Temporal.position"},
         {"id": 31, "src": "Deferred.lumenNormal", "dst": "Temporal.normal"},
-        {"id": 32, "src": "Deferred.color", "dst": "Temporal.directColor"}
+        {"id": 32, "src": "Deferred.color", "dst": "Temporal.directColor"},
+        {"id": 33, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Radiosity.pageTable"},
+        {"id": 34, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Radiosity.pageAtlas"},
+        {"id": 35, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Radiosity.coarseMip"},
+        {"id": 36, "src": "GlobalDistanceFieldPages.domain", "dst": "Radiosity.domain"},
+        {"id": 37, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Radiosity.objectGrid"},
+        {"id": 38, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Radiosity.objectGridScene"},
+        {"id": 39, "src": "SurfaceCache.cards", "dst": "Radiosity.cards"},
+        {"id": 40, "src": "SurfaceCache.scene", "dst": "Radiosity.cardScene"},
+        {"id": 41, "src": "SurfaceCache.depth", "dst": "Radiosity.cardDepth"},
+        {"id": 42, "src": "SurfaceCache.lighting", "dst": "Radiosity.cardLighting"},
+        {"id": 43, "src": "SurfaceCache.normal", "dst": "Radiosity.cardNormal"},
+        {"id": 44, "src": "SurfaceCache.albedo", "dst": "Radiosity.cardAlbedo"},
+        {"id": 45, "src": "SurfaceCache.emissive", "dst": "Radiosity.cardEmissive"},
+        {"id": 46, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse"],
     "view": {

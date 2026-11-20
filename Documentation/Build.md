@@ -860,7 +860,7 @@ The sample uses the UE 5.7.4 uniform placement, equal-area directions, plane-wei
 
 **Lighting / Lumen / Cornell Box** opens a 2 m room with red and green side walls and two neutral blocks. The only emitter is a downward-facing 0.66 m × 0.64 m ceiling quad named **Ceiling Emitter**. The quad is the underside of a closed panel for Mesh Distance Field baking. The sample disables sky, Sun, Moon and auto exposure, and its punctual light list is empty.
 
-The Cornell Box graph enables Final Gather for static opaque diffuse GI. `ScreenTrace` builds a closest-depth HZB from current reversed-Z depth and keeps previous depth and direct color. `Gather` places adaptive probes, tries screen tracing with previous-depth validation, falls back to the GDF and Surface Cache, and runs three spatial filtering passes. `Temporal` accumulates the integrated diffuse with reprojected depth and normal rejection. Camera cuts, extent changes and scene or lighting edits invalidate both histories.
+The Cornell Box graph enables Final Gather and multi-bounce card lighting for static opaque diffuse GI. `ScreenTrace` builds a closest-depth HZB from current reversed-Z depth and keeps previous depth and direct color. `Gather` places adaptive probes, tries screen tracing with previous-depth validation, falls back to the GDF and Surface Cache, and runs three spatial filtering passes. `Temporal` accumulates the integrated diffuse with reprojected depth and normal rejection. Camera cuts, extent changes and scene or lighting edits invalidate both screen-space histories.
 
 Inspect `Temporal.indirectDiffuse` for accumulated, unexposed GI, `Gather.indirectDiffuse` for the current frame and `Temporal.historyWeight` for accepted history. In `Gather.probeRadiance`, the fourth component stores trace class 2 for a GDF hit and 5 for an accepted screen hit. Set the **Ceiling Emitter** material's emissive color to zero for a dark control.
 
@@ -868,8 +868,16 @@ This port uses UE 5.7.4's opaque permutations with these adaptations.
 
 - Adaptive placement uses eight-phase Hammersley and a fixed allocation of one uniform plus up to eight adaptive probes per tile. This replaces UE's global compaction, with candidate marking recomputed from the current frame. Probe interpolation uses Deferred world position, linear depth and normal. The full-resolution blue-noise offset is zero.
 - The spatial pass uses the four axial neighbors from UE's static filter. It keeps FP32 radiance and hit distances in meters, evaluates fixed texel-center directions, rejects coincident hit endpoints, and clamps the angular cosine to its valid domain. Moving-probe taps and short-range AO are outside this variant.
-- Screen tracing uses a packed closest HZB addressed in Metallic's viewport and reversed-Z convention. Motion comes from the prior camera for static surfaces. Previous Deferred color supplies direct lighting and emission to preserve single-bounce transport. A rejected screen trace starts the GDF ray from its original world-space origin. UE's distance continuation, hair and multi-layer paths are outside this variant.
+- Screen tracing uses a packed closest HZB addressed in Metallic's viewport and reversed-Z convention. Motion comes from the prior camera for static surfaces. Accepted screen hits still read direct lighting and emission from previous Deferred color. GDF hits sample `Radiosity.lighting` and carry the multi-bounce feedback. UE's previous composited scene-color path, distance continuation, hair and multi-layer paths are outside this variant.
 - Temporal accumulation reprojects with Metallic's previous camera and jitter and uses the optional 45-degree normal rejection. History contains material-modulated diffuse with UE's encoded accumulation count. The rejection threshold takes its noise sample from the UE rendering commandlet's black dummy input. UE's asset-backed blue noise and fast update for moving lighting remain future work.
+
+The `Radiosity` pass traces last frame's outgoing card radiance with 4 × 4 hemisphere directions per probe and a four-texel probe spacing. It filters with four axial neighbors, projects to two-band spherical harmonics and integrates by card plane. It accumulates up to four updates per texel, then applies the card response to the sum of direct and indirect irradiance before adding emission. Inspect `Radiosity.indirectIrradiance` for irradiance in RGB and the accumulation count in alpha. Compare outgoing `Radiosity.lighting` with direct-and-emissive `SurfaceCache.lighting`. Material, light, geometry or visibility changes reset card feedback. Ordinary camera motion and cuts keep card history while the fixed atlas and scene revisions match.
+
+The radiosity path adapts UE 5.7.4's software GDF branch for a sky-disabled scene.
+
+- Every card owns a fixed tile and all tiles update each frame. A dense dispatch replaces UE's mapped page allocator, prioritized update budget and per-page update phases. The initial frame exports direct lighting and emission and clears indirect history.
+- Ray and filter noise use the UE rendering commandlet's black dummy inputs. Trace, SH, irradiance and outgoing lighting use the reference PF_FloatRGBA precision with scene-linear exposure. SH coefficients use packed FP16 buffers. The history count occupies the irradiance texture's alpha. Metallic exports direct irradiance in RGBA32F and uses its card normal, depth and shared GDF trace. Ray distance and bias use meters.
+- Software probe occlusion is disabled, matching the reference default. The fixed atlas consumes one resolution for each card and has no cone-driven mip selection or page feedback.
 
 To regenerate the sample cache with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'` and use these stems in source mesh order.
 
@@ -877,6 +885,18 @@ To regenerate the sample cache with the baking loop above, set `$scene = 'Asset/
 $meshes = @('CornellBoxFloor', 'CornellBoxCeiling', 'CornellBoxBackWall', 'CornellBoxLeftWall',
     'CornellBoxRightWall', 'CornellBoxShortBlock', 'CornellBoxTallBlock', 'CornellBoxCeilingEmitter')
 ```
+
+### Lumen Large Scene
+
+**Lighting / Lumen / Large Scene** places four emissive rooms at X = 0, 40, 82 and 156 m. Their geometry instances reuse the eight Cornell Box mesh bakes. Each room has a suspended, uniformly scaled ceiling panel for coarse GDF coverage. The Mesh SDF instance path requires orthogonal, equal-length transform axes. The sample uses the same world lighting settings as Cornell Box.
+
+The four camera-centered GDF levels have half-extents of 25, 50, 100 and 200 m. They follow UE 5.7.4's 25 m first level and doubling rule. This fixture uses 112 cells per axis and a shared pool of 4096 R8 pages. Its fixed 512 × 512 Surface Cache uses 32 × 32 tiles. The graph rebuilds all GDF levels and recaptures the fixed atlas each frame. The sample exercises coverage across levels under a bounded static budget.
+
+The graph enables `stochasticInterpolation` on Gather. This uses UE's single-probe selection and unit sample weight with the rendering commandlet's black dummy noise input.
+
+World Radiance Cache is a separate UE stage. Camera clipmaps provide geometry coverage here. Persistent world probe allocation, budgeted directional tracing, depth-based parallax interpolation, incremental GDF updates and Surface Cache residency remain pending.
+
+At the opening camera, the first four rays in `Trace.results` target the tall blocks in near-to-far order. The next four target the emitters. The second component of each ray's `state` identifies the GDF hit level. `GlobalDistanceFieldPages.statistics` reports page residency and overflow. To inspect recentering after a camera cut, move to eye `[156, 12.36, 20]` and look at `[156, 11.76, 0]` with a 60-degree vertical field of view. The far room is then covered by the finest clipmap. Inspect `Temporal.indirectDiffuse` for the scene output and `Temporal.historyWeight` for camera history.
 
 ## Optional RHI diagnostics
 

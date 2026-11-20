@@ -164,15 +164,6 @@ float encodeSurfaceCacheDepth(float depth)
     return min(depth, maxValidDepth);
 }
 
-float3 decodeSurfaceCacheNormal(SurfaceCacheCard card, float2 encodedNormal)
-{
-    float3 cardSpaceNormal;
-    cardSpaceNormal.xy = encodedNormal * 2.0f - 1.0f;
-    cardSpaceNormal.z = sqrt(max(1.0f - dot(cardSpaceNormal.xy, cardSpaceNormal.xy), 0.0001f));
-    return normalize(card.axisX.xyz * cardSpaceNormal.x + card.axisY.xyz * cardSpaceNormal.y +
-        card.axisZ.xyz * cardSpaceNormal.z);
-}
-
 void writeSurfaceCacheLighting(SurfaceCacheLightingTexture finalLightingAtlas, uint2 texel,
     Texture2D<float4> albedoAtlas, Texture2D<float4> emissiveAtlas, float3 directLighting)
 {
@@ -267,19 +258,10 @@ struct SurfaceCacheShadowedLightingParams
     SamplerHandle distanceSampler;
     uint clipmapCount;
     uint atlasSize;
+    ResourceHandle<_Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 1>> directIrradiance;
+    uint exportDirectIrradiance;
+    uint2 padding;
 };
-
-// UE 5.7.4 LumenCardCommon.ush GetCardLocalPosition/GetCardWorldPosition,
-// using the tile texel center to address the resident card.
-float3 surfaceCacheWorldPosition(SurfaceCacheCard card, float2 cardUV, float depth)
-{
-    cardUV.x = 1.0f - cardUV.x;
-    float3 localPosition;
-    localPosition.xy = float2(card.axisX.w, card.axisY.w) * (1.0f - 2.0f * cardUV);
-    localPosition.z = -(2.0f * depth - 1.0f) * card.axisZ.w;
-    return card.axisX.xyz * localPosition.x + card.axisY.xyz * localPosition.y +
-        card.axisZ.xyz * localPosition.z + card.origin.xyz;
-}
 
 // UE 5.7.4 defaults in Scene.cpp (20000 cm) and LumenSceneDirectLighting.cpp.
 static const float kMaxCardShadowTraceDistance = 200.0f;
@@ -327,6 +309,9 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
     float depth = depthAtlas.Load(int3(texel, 0));
     if (depth >= 1.0f) {
         finalLightingAtlas[texel] = float4(0.0f);
+        if (params.exportDirectIrradiance != 0u) {
+            resolveUniform(params.directIrradiance)[texel] = float4(0.0f);
+        }
         return;
     }
 
@@ -357,6 +342,9 @@ void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
             worldPosition, worldNormal, light, true, true);
     }
 
+    if (params.exportDirectIrradiance != 0u) {
+        resolveUniform(params.directIrradiance)[texel] = float4(directLighting, 0.0f);
+    }
     writeSurfaceCacheLighting(finalLightingAtlas, texel, resolveUniform(params.albedo),
         resolveUniform(params.emissive), directLighting);
 }

@@ -121,7 +121,7 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
 Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
     device_ = context.device;
-    for (std::string_view name : {"finalGather", "screenTraces"}) {
+    for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation"}) {
         const auto value = properties().find(name);
         if (value != properties().end() && !value->is_boolean()) {
             log += "Lumen Screen Probe Gather requires a boolean " + std::string(name);
@@ -130,8 +130,13 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     }
     const bool finalGather = optionEnabled("finalGather");
     const bool screenTraces = optionEnabled("screenTraces");
+    const bool stochasticInterpolation = optionEnabled("stochasticInterpolation");
     if (screenTraces && !finalGather) {
         log += "Lumen screen tracing requires Final Gather";
+        return makeError(Error::InvalidArgument);
+    }
+    if (stochasticInterpolation && !finalGather) {
+        log += "Lumen stochastic probe interpolation requires Final Gather";
         return makeError(Error::InvalidArgument);
     }
     const auto distance = properties().find("maxTraceDistance");
@@ -143,12 +148,15 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
         maxTraceDistance_ = distance->get<float>();
     }
 
-    const SlangMacroDefine defines[]{{"METALLIC_LUMEN_FINAL_GATHER", "1"}, {"METALLIC_LUMEN_SCREEN_TRACES", "1"}};
+    std::vector<SlangMacroDefine> defines;
+    if (finalGather) { defines.push_back({"METALLIC_LUMEN_FINAL_GATHER", "1"}); }
+    if (screenTraces) { defines.push_back({"METALLIC_LUMEN_SCREEN_TRACES", "1"}); }
+    if (stochasticInterpolation) { defines.push_back({"METALLIC_LUMEN_STOCHASTIC_INTERPOLATION", "1"}); }
     const auto createGather = [&](const char* entry, const char* name, ComputeKernel& kernel) {
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = "Features/DistanceField/LumenScreenProbeGather", .entryPointName = entry,
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-                .macroDefines = std::span(defines).first(screenTraces ? 2 : (finalGather ? 1 : 0))},
+                .macroDefines = defines},
             {.parameters = parameterAbi<LumenScreenProbeGatherParams>(kScreenProbeGatherABI), .debugName = name}, kernel, log);
     };
     if (auto result = createGather("lumenTraceScreenProbesMain", "LumenTraceScreenProbes", trace_); !result) {

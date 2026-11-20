@@ -23,7 +23,7 @@ constexpr char kShaderModule[] = "Features/DistanceField/SurfaceCacheCapture";
 constexpr uint64_t kCaptureABI = 0x4c554d454e010001ull;
 constexpr uint64_t kResolveABI = 0x4c554d454e010002ull;
 constexpr uint64_t kEncodeDepthABI = 0x4c554d454e010004ull;
-constexpr uint64_t kShadowedLightingABI = 0x4c554d454e010005ull;
+constexpr uint64_t kShadowedLightingABI = 0x4c554d454e010008ull;
 constexpr uint32_t kGDFDomainStride = 32;
 constexpr std::array kCaptureFormats{Format::RGBA8Unorm, Format::RGBA8Unorm, Format::RGBA16Sfloat};
 constexpr std::array kCaptureOutputs{"albedo", "normal", "emissive"};
@@ -76,13 +76,17 @@ struct alignas(16) ShadowedLightingParams {
     ShaderBuffer domains, localLights;
     ShaderSampler distanceSampler;
     uint32_t clipmapCount, atlasSize;
+    ShaderStorageImage directIrradiance;
+    uint32_t exportDirectIrradiance;
+    uint32_t padding[2];
 };
 
 static_assert(sizeof(CaptureVertex) == 64 && sizeof(SurfaceCard) == 80);
 static_assert(sizeof(CaptureParams) == 288 && offsetof(CaptureParams, textureTransforms) == 160);
 static_assert(sizeof(ResolveParams) == 64 && offsetof(ResolveParams, lightDirection) == 32);
 static_assert(sizeof(EncodeDepthParams) == 16);
-static_assert(sizeof(ShadowedLightingParams) == 96 && offsetof(ShadowedLightingParams, pageTable) == 64);
+static_assert(sizeof(ShadowedLightingParams) == 112 && offsetof(ShadowedLightingParams, pageTable) == 64 &&
+    offsetof(ShadowedLightingParams, directIrradiance) == 96);
 
 struct AtlasLayout {
     uint32_t edge = 128;
@@ -177,6 +181,7 @@ public:
 
 private:
     bool shadowedLighting() const;
+    bool exportDirectIrradiance() const;
     Result<> gather(const scene::Scene& scene, std::vector<SurfaceCard>& cards, std::vector<CaptureCard>& draws,
         std::vector<CaptureSection>& sections, std::vector<CaptureVertex>& vertices) const;
     void bindMaterial(ParameterWriter& writer, const scene::Scene& scene, int32_t index, CaptureParams& params) const;
@@ -195,6 +200,12 @@ private:
 bool LumenSurfaceCachePass::shadowedLighting() const
 {
     const auto property = properties().find("shadowedLighting");
+    return property != properties().end() && property->is_boolean() && property->get<bool>();
+}
+
+bool LumenSurfaceCachePass::exportDirectIrradiance() const
+{
+    const auto property = properties().find("exportDirectIrradiance");
     return property != properties().end() && property->is_boolean() && property->get<bool>();
 }
 
@@ -227,6 +238,11 @@ RenderPassReflection LumenSurfaceCachePass::reflect(const RenderGraphCompileCont
     reflection.addTextureOutput("lighting", "Scene-linear outgoing radiance")
         .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite)
         .format = Format::RGBA16Sfloat;
+    if (exportDirectIrradiance()) {
+        reflection.addTextureOutput("directIrradiance", "Direct light irradiance before the card material response")
+            .texture2D(layout.edge, layout.edge).storageWrite().stageAccess(RenderGraphResourceAccess::TextureStorageWrite)
+            .format = Format::RGBA32Sfloat;
+    }
     reflection.addBufferOutput("cards", "World card boxes and scene object identity in atlas tile order")
         .buffer(layout.capacity() * sizeof(SurfaceCard), sizeof(SurfaceCard)).transferWrite()
         .stageAccess(RenderGraphResourceAccess::BufferStorageRead);
@@ -245,6 +261,12 @@ Result<std::unique_ptr<ShaderModule>> captureShader(Device& device, const char* 
 
 Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
+    const auto exportIrradiance = properties().find("exportDirectIrradiance");
+    if (exportIrradiance != properties().end() &&
+        (!exportIrradiance->is_boolean() || (exportDirectIrradiance() && !shadowedLighting()))) {
+        log = "Surface Cache exportDirectIrradiance must be a boolean and requires shadowedLighting when enabled";
+        return makeError(Error::InvalidArgument);
+    }
     const auto layout = readLayout(properties());
     if (!layout || !context.device || !context.graphicsQueue || !context.runtimeScene) {
         log = "Surface Cache requires a world scene, graphics queue and an atlas divisible by its tile resolution";
@@ -604,6 +626,10 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     lightingParams.distanceSampler = lightingWriter.samplerHandle({});
     lightingParams.clipmapCount = clipmapCount;
     lightingParams.atlasSize = layout_.edge;
+    if (exportDirectIrradiance()) {
+        lightingParams.directIrradiance = lightingWriter.storageImageHandle(context.outputTexture("directIrradiance").view());
+        lightingParams.exportDirectIrradiance = true;
+    }
     auto encodedLighting = lightingWriter.encode(lightingParams, kShadowedLightingABI);
     if (!encodedLighting) { return makeError(encodedLighting.error()); }
 
@@ -612,11 +638,13 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     const RenderGraphStageUse lightingUses[]{{"albedo", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
         {"emissive", Access::TextureSampleRead}, {"depth", Access::TextureSampleRead}, {"cards", Access::BufferStorageRead},
         {"pageTable", Access::TextureSampleRead}, {"pageAtlas", Access::TextureSampleRead}, {"coarseMip", Access::TextureSampleRead},
-        {"domain", Access::BufferStorageRead}, {"lighting", Access::TextureStorageWrite}};
+        {"domain", Access::BufferStorageRead}, {"lighting", Access::TextureStorageWrite},
+        {"directIrradiance", Access::TextureStorageWrite}};
     stages[2] = {"Encode card depth", encodeDepthUses, [&](CommandBuffer& cmd) {
         return encodeDepth_.dispatch(cmd, *encodedDepth, groups, groups, 1);
     }};
-    stages[3] = {"Shade cards with GDF shadows", lightingUses, [&](CommandBuffer& cmd) {
+    stages[3] = {"Shade cards with GDF shadows", std::span{lightingUses}.first(
+        std::size(lightingUses) - (lightingParams.exportDirectIrradiance ? 0u : 1u)), [&](CommandBuffer& cmd) {
         cmd.hostWriteBarrier();
         return shadowedLighting_.dispatch(cmd, *encodedLighting, groups, groups, 1);
     }};
