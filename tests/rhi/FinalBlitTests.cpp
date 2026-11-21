@@ -398,6 +398,14 @@ private:
 };
 
 class FinalBlitPipelinesTest : public RHITest {
+    struct ExpectedPresentation {
+        ExpectedPresentation(const char* source, bool fixedDisplay = false)
+            : source(source), fixedDisplay(fixedDisplay) {}
+
+        std::string_view source;
+        bool fixedDisplay;
+    };
+
 public:
     FinalBlitPipelinesTest()
     {
@@ -407,7 +415,7 @@ public:
 
     RHITestResult run(RHITestContext&) override
     {
-        const std::unordered_map<std::string, std::string> expectedSources{
+        const std::unordered_map<std::string, ExpectedPresentation> expectedSources{
             {"default.metallic_graph.json", "PathTrace.color"},
             {"hdr_calibration.metallic_graph.json", ""},
             {"material_shader_object.metallic_graph.json", "MaterialScene.color"},
@@ -447,6 +455,20 @@ public:
             {"virtual_shadow_map_sponza.metallic_graph.json", "Deferred.color"},
             {"virtual_shadow_map_sponza_dlss.metallic_graph.json", "DLSSSR.color"},
             {"rtxdi_meet_mat.metallic_graph.json", "Composite.color"},
+            {"cornell_box_path_tracing.metallic_graph.json", {"PathTrace.color", true}},
+            {"lumen_cornell_box.metallic_graph.json", {"Temporal.color", true}},
+            {"cornell_box_compare.metallic_graph.json", {"Slider.color", true}},
+            {"mesh_distance_field_debug.metallic_graph.json", {"MeshDistanceField.color", true}},
+            {"global_distance_field.metallic_graph.json", {"GlobalDistanceFieldDebug.color", true}},
+            {"global_distance_field_pages.metallic_graph.json", {"GlobalDistanceFieldPagesDebug.color", true}},
+            {"global_distance_field_r8.metallic_graph.json", {"GlobalDistanceFieldPagesDebug.color", true}},
+            {"global_distance_field_clipmaps.metallic_graph.json", {"GlobalDistanceFieldPagesDebug.color", true}},
+            {"lumen_surface_cache.metallic_graph.json", {"SurfaceCache.lighting", true}},
+            {"lumen_global_tracing.metallic_graph.json", {"Trace.radiance", true}},
+            {"lumen_single_bounce.metallic_graph.json", {"Gather.color", true}},
+            {"lumen_large_scene.metallic_graph.json", {"Temporal.color", true}},
+            {"lumen_radiance_cache.metallic_graph.json", {"Temporal.color", true}},
+            {"lumen_detail_tracing.metallic_graph.json", {"Temporal.color", true}},
         };
         std::string log;
         size_t graphCount = 0;
@@ -483,9 +505,11 @@ public:
     }
 
 private:
-    static bool hasFinalOutput(const render::RenderGraph& graph, std::string_view sourceOutput)
+    static bool hasFinalOutput(const render::RenderGraph& graph, ExpectedPresentation expected)
     {
+        std::string_view sourceOutput = expected.source;
         const auto* exposure = graph.findNode("AutoExposure");
+        const auto* grading = graph.findNode("ColorGrading");
         bool physical = false;
         for (const auto& node : graph.nodes()) {
             if (node.type == "ScenePathTracePass" || node.type == "SceneRealtimeLightingPass" ||
@@ -495,7 +519,8 @@ private:
                 if (!node.properties.value("outputLinear", false)) { return false; }
             }
         }
-        if (physical != (exposure != nullptr)) { return false; }
+        const bool needsExposure = physical && !expected.fixedDisplay;
+        if (needsExposure != (exposure != nullptr) || (expected.fixedDisplay && grading != nullptr)) { return false; }
         if (exposure != nullptr) {
             if (exposure->type != "AutoExposurePass") { return false; }
             size_t hdrConnections = 0;
@@ -521,12 +546,11 @@ private:
             sourceOutput = "DLSSNR.color";
         }
         const render::RenderGraphNode* final = graph.findNode("FinalBlit");
-        if (final == nullptr || final->type != "FinalBlitPass" || !graph.outputs().empty() ||
+        if (final == nullptr || final->type != "FinalBlitPass" || (!expected.fixedDisplay && !graph.outputs().empty()) ||
             graph.firstOutputName() != "FinalBlit.color") {
             return false;
         }
-        if (physical) {
-            const auto* grading = graph.findNode("ColorGrading");
+        if (needsExposure) {
             if (!grading || grading->type != "ColorGradingLUTPass" ||
                 grading->properties.value("toneCurve", "aces2") != "aces2") { return false; }
             if (std::none_of(graph.edges().begin(), graph.edges().end(), [](const auto& edge) {

@@ -271,13 +271,26 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/lumen_single_bounce.metallic_graph.json"; }
 };
 
-class LumenCornellBoxSample final : public MeshDistanceFieldSample {
+class CornellBoxSample final : public RenderSample {
 public:
-    std::string_view id() const override { return "lumen-cornell-box"; }
-    std::string_view name() const override { return "Lumen / Cornell Box"; }
-    std::string_view description() const override { return "Test diffuse GI in an open-front Cornell Box lit by its emissive ceiling panel."; }
+    CornellBoxSample(std::string_view id, std::string_view name, std::string_view description, std::string_view graphPath)
+        : id_(id), name_(name), description_(description), graphPath_(graphPath)
+    {}
+
+    std::string_view id() const override { return id_; }
+    std::string_view name() const override { return name_; }
+    std::string_view category() const override { return "GI Playground"; }
+    std::string_view description() const override { return description_; }
     std::string scenePath() const override { return "Asset/Lumen/CornellBox.metallic_scene.json"; }
-    std::string graphPath() const override { return "Pipelines/Samples/lumen_cornell_box.metallic_graph.json"; }
+    std::string graphPath() const override { return std::string(graphPath_); }
+    std::vector<std::string> scenePathTargets() const override { return {}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+
+private:
+    std::string_view id_;
+    std::string_view name_;
+    std::string_view description_;
+    std::string_view graphPath_;
 };
 
 class LumenLargeSceneSample final : public MeshDistanceFieldSample {
@@ -1130,7 +1143,15 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LumenSurfaceCacheSample lumenSurfaceCache;
     static const LumenGlobalTracingSample lumenGlobalTracing;
     static const LumenSingleBounceSample lumenSingleBounce;
-    static const LumenCornellBoxSample lumenCornellBox;
+    static const CornellBoxSample cornellBoxPathTracing{"cornell-box-path-tracing", "Cornell Box / Path Tracing",
+        "Progressive path tracing of the Cornell Box with its emissive ceiling panel.",
+        "Pipelines/Samples/cornell_box_path_tracing.metallic_graph.json"};
+    static const CornellBoxSample cornellBoxRealtime{"lumen-cornell-box", "Cornell Box / Realtime GI",
+        "Rasterized Cornell Box with Lumen screen probes and multi-bounce card lighting.",
+        "Pipelines/Samples/lumen_cornell_box.metallic_graph.json"};
+    static const CornellBoxSample cornellBoxCompare{"cornell-box-compare", "Cornell Box / GI Comparison",
+        "Compare path tracing and realtime GI with a draggable divider and a shared camera and exposure.",
+        "Pipelines/Samples/cornell_box_compare.metallic_graph.json"};
     static const LumenLargeSceneSample lumenLargeScene;
     static const LumenRadianceCacheSample lumenRadianceCache;
     static const LumenDetailTracingSample lumenDetailTracing;
@@ -1162,6 +1183,9 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GPUDrivenMiniZorahSample gpuDrivenMiniZorah;
     static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
     std::vector<const RenderSample*> samples{
+        &cornellBoxPathTracing,
+        &cornellBoxRealtime,
+        &cornellBoxCompare,
         &realtimeLighting,
         &realtimeLightingVSM,
         &gpuDrivenVSM,
@@ -1229,7 +1253,6 @@ std::vector<const RenderSample*> builtInRenderSamples()
         samples.push_back(&lumenSingleBounce);
     }
     if (std::ranges::all_of(cornellBoxMeshes, hasLumenMeshCache)) {
-        samples.push_back(&lumenCornellBox);
         samples.push_back(&lumenLargeScene);
         samples.push_back(&lumenRadianceCache);
         samples.push_back(&lumenDetailTracing);

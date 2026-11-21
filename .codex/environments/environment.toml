@@ -1,0 +1,75 @@
+version = 1
+name = "metallic"
+
+[setup]
+script = ""
+
+[[actions]]
+name = "Run Metallic"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target Metallic"
+
+[[actions]]
+name = "Cornell Box - Path Tracing"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'cornell-box-path-tracing')\""
+
+[[actions]]
+name = "Cornell Box - Realtime GI"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'lumen-cornell-box')\""
+
+[[actions]]
+name = "Cornell Box - GI Comparison"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'cornell-box-compare')\""
+
+[[actions]]
+name = "Build Metallic"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target Metallic -BuildOnly"
+
+[[actions]]
+name = "Run LookDev"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target LookDev"
+
+[[actions]]
+name = "Run Material Visualization"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target MetallicMaterialVisualizationSample"
+
+[[actions]]
+name = "Run Path Tracing"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target MetallicPathTracingSample"
+
+[[actions]]
+name = "Run RTXDI"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target MetallicRTXDISample"
+
+[[actions]]
+name = "Run GPU-Driven"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target MetallicGPUDrivenSample"
+
+[[actions]]
+name = "Run VSM"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target MetallicVSMSample"
+
+[[actions]]
+name = "Run RTXCR"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target MetallicRTXCRSample"
+
+[[actions]]
+name = "Metallic Smoke Test"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target Metallic -ProgramArguments '--smoke-test'"
+
+[[actions]]
+name = "metallicctl Help"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target MetallicCtl -ProgramArguments '--help'"

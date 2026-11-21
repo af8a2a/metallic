@@ -858,9 +858,17 @@ The sample uses the UE 5.7.4 uniform placement, equal-area directions, plane-wei
 
 `exportLumenReceivers` substitutes Lumen diffuse for the usual environment diffuse on supported opaque materials. The exported receiver response uses the existing Metallic BRDF and material occlusion, including the camera-path aerial transmittance and UE's distant illumination rescale with short-range AO disabled. `shadowedLighting` evaluates direct sunlight and world point/spot lights in a separate card lighting stage. It adapts UE's opaque GDF shadow trace to Metallic's resident tiles and uses the existing photometric light sampling. The sample uses a single fixed clipmap and per-covered-texel lighting over the world light list.
 
-### Lumen Cornell Box
+### Cornell Box GI Playground
 
-**Lighting / Lumen / Cornell Box** opens a 2 m room with red and green side walls and two neutral blocks. The only emitter is a downward-facing 0.66 m × 0.64 m ceiling quad named **Ceiling Emitter**. The quad is the underside of a closed panel for Mesh Distance Field baking. The sample disables sky, Sun, Moon and auto exposure, and its punctual light list is empty.
+In the **Render Graph Editor**, open **Built-in Sample** and select a Cornell Box variant.
+
+| Sample | ID | Rendering |
+| --- | --- | --- |
+| Cornell Box / Path Tracing | `cornell-box-path-tracing` | Progressive OpenPBR path tracing at four samples per pixel per frame and a maximum depth of 12. |
+| Cornell Box / Realtime GI | `lumen-cornell-box` | Raster visibility and shading with Lumen Final Gather, temporal accumulation and multi-bounce card lighting. |
+| Cornell Box / GI Comparison | `cornell-box-compare` | Path tracing on the left and realtime GI on the right. Drag the divider in the viewport to compare the same pixels. |
+
+All three variants open the same 2 m room, with red and green side walls, two neutral blocks and a fixed initial camera and exposure. The only emitter is a downward-facing 0.66 m × 0.64 m ceiling quad named **Ceiling Emitter**. The quad is the underside of a closed panel for Mesh Distance Field baking. The sample disables sky, Sun, Moon and auto exposure, and its punctual light list is empty. The realtime and comparison variants load their pre-baked Mesh SDFs and Mesh Cards from `Asset/Lumen/CornellBoxBakes/`.
 
 The Cornell Box graph enables Final Gather and multi-bounce card lighting for static opaque diffuse GI. `ScreenTrace` builds a closest-depth HZB from current reversed-Z depth and reads the previous frame's composited color and depth. `Gather` places adaptive probes, tries screen tracing with previous-depth validation, falls back to the GDF and Surface Cache, and runs three spatial filtering passes. `Temporal` accumulates the integrated diffuse with reprojected depth and normal rejection. Camera cuts, extent changes and scene or lighting edits invalidate both screen-space histories.
 
@@ -883,7 +891,7 @@ The radiosity path adapts UE 5.7.4's software GDF branch for a sky-disabled scen
 - Ray and filter noise use the UE rendering commandlet's black dummy inputs. Trace, SH, irradiance and outgoing lighting use the reference PF_FloatRGBA precision with scene-linear exposure. SH coefficients use packed FP16 buffers. The history count occupies the irradiance texture's alpha. Metallic exports direct irradiance in RGBA32F and uses its card normal, depth and shared GDF trace. Ray distance and bias use meters.
 - Software probe occlusion is disabled, matching the reference default. The fixed atlas consumes one resolution for each card and has no cone-driven mip selection or page feedback.
 
-To regenerate the sample cache with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'` and use these stems in source mesh order.
+To regenerate the shipped bakes with the baking loop above, set `$scene = 'Asset/Lumen/CornellBox.gltf'`, `$cache = 'Asset/Lumen/CornellBoxBakes'` and use these stems in source mesh order. The Large Scene, World Radiance Cache and Detail Tracing fixtures use the same bakes in `.cache/mesh-distance-field/`.
 
 ```powershell
 $meshes = @('CornellBoxFloor', 'CornellBoxCeiling', 'CornellBoxBackWall', 'CornellBoxLeftWall',

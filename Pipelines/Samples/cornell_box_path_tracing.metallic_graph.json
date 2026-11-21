@@ -1,0 +1,28 @@
+{
+    "name": "Cornell Box / Path Tracing",
+    "version": 1,
+    "nodes": [
+        {"id": 1, "name": "PathTrace", "type": "ScenePathTracePass", "position": {"x": 50, "y": 140},
+            "properties": {
+                "path": "Asset/Lumen/CornellBox.metallic_scene.json",
+                "samples": 4,
+                "bsdf": "openpbr",
+                "maxDepth": 12,
+                "accumulate": true,
+                "cacheMode": "off",
+                "outputLinear": true
+            }},
+        {"id": 2, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 370, "y": 140}}
+    ],
+    "edges": [
+        {"id": 1, "src": "PathTrace.color", "dst": "FinalBlit.source"}
+    ],
+    "outputs": ["FinalBlit.color"],
+    "view": {
+        "camera": {
+            "eye": [0, 1.03, 3.55], "center": [0, 0.98, 0], "up": [0, 1, 0],
+            "projection": "perspective", "fovDegrees": 43, "znear": 0.05, "zfar": 8
+        },
+        "temporalJitter": false
+    }
+}
