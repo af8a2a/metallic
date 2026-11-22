@@ -4,6 +4,7 @@
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -228,6 +229,9 @@ void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, dou
         ImGui::EndChild();
         return;
     }
+    // BeginChild runs the native scrollbar's hit test before the canvas is submitted.
+    const bool scrollbarHovered = ImGui::GetCurrentContext()->HoveredId ==
+        ImGui::GetWindowScrollbarID(ImGui::GetCurrentWindow(), ImGuiAxis_Y);
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing() + 2.0f;
     const float rulerHeight = rowHeight + 3.0f;
     const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
@@ -237,6 +241,13 @@ void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, dou
     const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
     const auto& io = ImGui::GetIO();
     const bool hovered = ImGui::IsItemHovered();
+    const ImGuiID wheelOwner = ImGui::GetItemID();
+    float wheel = 0.0f;
+    if ((hovered || scrollbarHovered) && ImGui::TestKeyOwner(ImGuiKey_MouseWheelY, wheelOwner)) {
+        // Share ownership so a wheel event can cross directly between the canvas and scrollbar.
+        ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, wheelOwner);
+        wheel = io.MouseWheel;
+    }
     const bool active = ImGui::IsItemActive();
     const bool middlePanning = active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
     const bool panning = middlePanning || (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left));
@@ -244,12 +255,12 @@ void drawTimelineScopes(const EditorProfiler::Frame& frame, double& startMs, dou
     const double fullRange = std::max(frame.cpuWallMilliseconds, kMinimumRangeMs);
     double visibleRange = rangeMs > 0.0 ? std::min(rangeMs, fullRange) : fullRange;
     double visibleStart = std::clamp(startMs, 0.0, fullRange - visibleRange);
-    if (hovered && ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY) && io.MouseWheel != 0.0f) {
-        if (io.KeyShift) {
-            ImGui::SetScrollY(ImGui::GetScrollY() - io.MouseWheel * rowHeight * 3.0f);
+    if (wheel != 0.0f) {
+        if (scrollbarHovered || io.KeyShift) {
+            ImGui::SetScrollY(ImGui::GetScrollY() - wheel * rowHeight * 3.0f);
         } else {
             const double cursor = static_cast<double>((io.MousePos.x - lo.x) / width);
-            const double zoomedRange = std::clamp(visibleRange * std::pow(1.25, -io.MouseWheel), kMinimumRangeMs, fullRange);
+            const double zoomedRange = std::clamp(visibleRange * std::pow(1.25, -wheel), kMinimumRangeMs, fullRange);
             startMs = visibleStart + cursor * (visibleRange - zoomedRange);
             rangeMs = zoomedRange < fullRange ? zoomedRange : 0.0;
             visibleRange = zoomedRange;
@@ -1647,7 +1658,7 @@ void EditorProfiler::drawTimelineChart()
     ImGui::SameLine();
     if (ImGui::Button("Fit")) { fit(); }
     ImGui::SameLine();
-    ImGui::TextDisabled("Wheel to zoom  |  Middle drag to pan and scroll  |  Shift+wheel to scroll");
+    ImGui::TextDisabled("Wheel to zoom  |  Middle drag to pan and scroll  |  Shift+wheel or wheel over scrollbar to scroll");
 
     if (timelineHistory_.empty()) {
         ImGui::TextDisabled("%s", timelineRecording_ ? "Waiting for a completed CPU frame." : "Press Record to capture CPU frames.");

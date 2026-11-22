@@ -1300,28 +1300,47 @@ public:
             });
             checkProfile(timelineChild != window->DC.ChildWindows.end(), "Missing timeline canvas child");
             auto* canvas = *timelineChild;
-            checkProfile(canvas->ScrollMax.y > 0.0f, "Middle drag fixture needs vertical scroll space");
+            checkProfile(canvas->ScrollbarY && canvas->ScrollMax.y > 0.0f, "Timeline fixture needs a vertical scrollbar");
             const ImVec2 dragStart = canvas->InnerClipRect.GetCenter();
+            const auto rulerLabelPositions = [&] {
+                std::vector<float> positions;
+                constexpr ImU32 kRulerLabelColor = IM_COL32(191, 205, 219, 255);
+                for (const auto& vertex : canvas->DrawList->VtxBuffer) {
+                    if (vertex.col == kRulerLabelColor) { positions.push_back(vertex.pos.x); }
+                }
+                return positions;
+            };
+            const auto unzoomedRuler = rulerLabelPositions();
             io.AddMousePosEvent(dragStart.x, dragStart.y);
             draw();
             io.AddMouseWheelEvent(0.0f, 2.0f);
             draw();
-            const auto rulerVertices = [&] {
-                std::vector<float> positions;
-                const float top = canvas->DC.CursorStartPos.y;
-                const float bottom = top + ImGui::GetTextLineHeight();
-                for (const auto& vertex : canvas->DrawList->VtxBuffer) {
-                    if (vertex.pos.y >= top && vertex.pos.y < bottom) { positions.push_back(vertex.pos.x); }
-                }
-                return positions;
-            };
-            const auto rulerBefore = rulerVertices();
+            const auto rulerBefore = rulerLabelPositions();
+            checkProfile(!rulerBefore.empty() && rulerBefore != unzoomedRuler && canvas->Scroll.y == 0.0f,
+                "Wheel over the canvas did not zoom without scrolling the tracks");
+
+            const ImVec2 scrollbar = ImGui::GetWindowScrollbarRect(canvas, ImGuiAxis_Y).GetCenter();
+            io.AddMousePosEvent(scrollbar.x, scrollbar.y);
+            draw();
+            io.AddMouseWheelEvent(0.0f, -1.0f);
+            draw();
+            draw();
+            checkProfile(canvas->Scroll.y > 0.0f, "Wheel over the scrollbar did not scroll down");
+            checkProfile(rulerLabelPositions() == rulerBefore, "Wheel over the scrollbar zoomed the timeline");
+            io.AddMouseWheelEvent(0.0f, 1.0f);
+            draw();
+            draw();
+            checkProfile(canvas->Scroll.y == 0.0f && rulerLabelPositions() == rulerBefore,
+                "Wheel over the scrollbar did not scroll back up without zooming");
+
+            io.AddMousePosEvent(dragStart.x, dragStart.y);
+            draw();
             io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true);
             draw();
             checkProfile(context->ActiveId == canvas->GetID("Timeline canvas"), "Middle press did not capture the canvas");
             io.AddMousePosEvent(dragStart.x + 64.0f, dragStart.y);
             draw();
-            checkProfile(!rulerBefore.empty() && rulerBefore != rulerVertices(), "Middle drag did not pan the time ruler");
+            checkProfile(rulerBefore != rulerLabelPositions(), "Middle drag did not pan the time ruler");
             io.AddMousePosEvent(dragStart.x + 64.0f, canvas->InnerClipRect.Min.y - 20.0f);
             draw();
             draw();
@@ -1352,7 +1371,7 @@ public:
                 profiler.timelineHistory().front().index == resumedIndex + 5, "Timeline history is not bounded");
             profiler.clearHistory();
             checkProfile(profiler.timelineHistory().empty(), "Clear history retained timeline frames");
-            return RHITestResult::pass("Profiler timeline recording, frozen history, restart, and middle-button navigation");
+            return RHITestResult::pass("Profiler timeline recording, frozen history, restart, and wheel and drag navigation");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
