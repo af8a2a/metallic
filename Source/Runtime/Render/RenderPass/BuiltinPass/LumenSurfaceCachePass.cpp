@@ -166,6 +166,20 @@ struct CaptureCard {
     uint32_t firstSection, sectionCount;
 };
 
+struct CaptureGeometryRevision {
+    uint64_t sceneIdentity, transforms, visibility;
+
+    bool operator==(const CaptureGeometryRevision&) const = default;
+};
+
+struct CaptureGeometry {
+    CaptureGeometryRevision revision;
+    std::vector<SurfaceCard> cards;
+    std::vector<CaptureSection> sections;
+    std::vector<CaptureCard> cardsToDraw;
+    std::unique_ptr<Buffer> vertexBuffer;
+};
+
 struct CaptureDraw {
     Rect rect;
     uint32_t vertexCount;
@@ -174,6 +188,8 @@ struct CaptureDraw {
 
 class LumenSurfaceCachePass final : public RasterPass {
 public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsExternalFrameOverlap() const override { return false; }
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;
@@ -182,6 +198,7 @@ public:
 private:
     bool shadowedLighting() const;
     bool exportDirectIrradiance() const;
+    Result<> prepareCaptureGeometry(const scene::Scene& scene);
     Result<> gather(const scene::Scene& scene, std::vector<SurfaceCard>& cards, std::vector<CaptureCard>& draws,
         std::vector<CaptureSection>& sections, std::vector<CaptureVertex>& vertices) const;
     void bindMaterial(ParameterWriter& writer, const scene::Scene& scene, int32_t index, CaptureParams& params) const;
@@ -190,6 +207,7 @@ private:
     Device* device_ = nullptr;
     AtlasLayout layout_;
     std::unordered_map<int32_t, std::vector<scene::MeshCardBuildRecord>> fields_;
+    std::optional<CaptureGeometry> captureGeometry_;
     ScenePathTraceResources materialResources_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
     ComputeKernel resolve_;
@@ -281,6 +299,7 @@ Result<> LumenSurfaceCachePass::compile(const RenderGraphCompileContext& context
         log = "Surface Cache shadowedLighting must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    captureGeometry_.reset();
     layout_ = *layout;
     device_ = context.device;
     fields_.clear();
@@ -441,6 +460,28 @@ Result<> LumenSurfaceCachePass::gather(const scene::Scene& scene, std::vector<Su
     return {};
 }
 
+Result<> LumenSurfaceCachePass::prepareCaptureGeometry(const scene::Scene& scene)
+{
+    // The scene identity covers imported geometry and section material indices.
+    const CaptureGeometryRevision revision{scene.resourceIdentity(), scene.geometryTransformRevision(),
+        scene.visibilityRevision()};
+    if (captureGeometry_ && captureGeometry_->revision == revision) { return {}; }
+
+    CaptureGeometry geometry{.revision = revision};
+    geometry.cards.resize(layout_.capacity());
+    std::vector<CaptureVertex> vertices;
+    if (auto result = gather(scene, geometry.cards, geometry.cardsToDraw, geometry.sections, vertices); !result) {
+        return result;
+    }
+    if (!vertices.empty()) {
+        auto buffer = upload(*device_, std::as_bytes(std::span(vertices)), BufferUsageBits::Storage);
+        if (!buffer) { return makeError(buffer.error()); }
+        geometry.vertexBuffer = std::move(*buffer);
+    }
+    captureGeometry_ = std::move(geometry);
+    return {};
+}
+
 void LumenSurfaceCachePass::bindMaterial(ParameterWriter& writer, const scene::Scene& scene,
     int32_t index, CaptureParams& params) const
 {
@@ -510,34 +551,25 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
     auto registry = ResourceRegistry::forDevice(*device_);
     if (!registry) { return makeError(registry.error()); }
     auto* frame = RenderFrameContext::from(context.commandBuffer());
-    std::vector<SurfaceCard> cards(layout_.capacity());
-    std::vector<CaptureVertex> vertices;
-    std::vector<CaptureSection> sections;
-    std::vector<CaptureCard> cardsToDraw;
-    if (auto r = gather(scene, cards, cardsToDraw, sections, vertices); !r) { return r; }
+    if (auto result = prepareCaptureGeometry(scene); !result) { return result; }
 
-    std::unique_ptr<Buffer> vertexBuffer;
-    if (!vertices.empty()) {
-        auto buffer = upload(*device_, std::as_bytes(std::span(vertices)), BufferUsageBits::Storage);
-        if (!buffer) { return makeError(buffer.error()); }
-        vertexBuffer = std::move(*buffer);
-    }
-    const auto identity = scene.resourceIdentity();
-    const std::array metadata{uint32_t(cardsToDraw.size()), layout_.tile, uint32_t(identity), uint32_t(identity >> 32)};
-    auto cardUpload = upload(*device_, std::as_bytes(std::span(cards)), BufferUsageBits::TransferSource);
+    const auto& geometry = *captureGeometry_;
+    const auto identity = geometry.revision.sceneIdentity;
+    const std::array metadata{uint32_t(geometry.cardsToDraw.size()), layout_.tile, uint32_t(identity), uint32_t(identity >> 32)};
+    auto cardUpload = upload(*device_, std::as_bytes(std::span(geometry.cards)), BufferUsageBits::TransferSource);
     if (!cardUpload) { return makeError(cardUpload.error()); }
     auto sceneUpload = upload(*device_, std::as_bytes(std::span(metadata)), BufferUsageBits::TransferSource);
     if (!sceneUpload) { return makeError(sceneUpload.error()); }
 
     std::vector<CaptureDraw> draws;
-    for (uint32_t card = 0; card < cardsToDraw.size(); ++card) {
-        const auto& range = cardsToDraw[card];
-        for (const auto& section : std::span(sections).subspan(range.firstSection, range.sectionCount)) {
+    for (uint32_t card = 0; card < geometry.cardsToDraw.size(); ++card) {
+        const auto& range = geometry.cardsToDraw[card];
+        for (const auto& section : std::span(geometry.sections).subspan(range.firstSection, range.sectionCount)) {
             ParameterWriter writer(*device_, **registry, frame);
             CaptureParams params{};
-            params.geometry = {writer.buffer(vertexBuffer.get()).index, section.firstVertex,
+            params.geometry = {writer.buffer(geometry.vertexBuffer.get()).index, section.firstVertex,
                 writer.samplerHandle(kMaterialSampler).index, 0};
-            projectCard(params, cards[card]);
+            projectCard(params, geometry.cards[card]);
             bindMaterial(writer, scene, section.materialIndex, params);
             auto encoded = writer.encode(params, kCaptureABI);
             if (!encoded) { return makeError(encoded.error()); }

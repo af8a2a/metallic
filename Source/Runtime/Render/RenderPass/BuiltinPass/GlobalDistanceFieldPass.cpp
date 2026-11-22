@@ -178,6 +178,8 @@ class GlobalDistanceFieldPass final : public ComputePass {
 public:
     explicit GlobalDistanceFieldPass(bool usePages) : usePages_(usePages) {}
 
+    bool supportsFrameOverlap() const override { return usePages_; }
+    bool supportsExternalFrameOverlap() const override { return false; }
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override

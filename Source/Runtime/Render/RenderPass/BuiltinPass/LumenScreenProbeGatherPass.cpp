@@ -125,6 +125,8 @@ static_assert(sizeof(LumenScreenProbeGatherParams) == 272 && offsetof(LumenScree
 
 class LumenScreenProbeGatherPass final : public ComputePass {
 public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsExternalFrameOverlap() const override { return false; }
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override;
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {

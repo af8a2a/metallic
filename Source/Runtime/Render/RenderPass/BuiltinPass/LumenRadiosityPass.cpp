@@ -65,6 +65,8 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;
     Result<> execute(RenderGraphExecutionContext& context) override;
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsExternalFrameOverlap() const override { return false; }
 
 private:
     Device* device_ = nullptr;
