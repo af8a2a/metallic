@@ -230,7 +230,9 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
 Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& context, std::string& log)
 {
     device_ = context.device;
-    for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache", "detailTracing"}) {
+    for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache",
+            "detailTracing", "screenGDFContinuation", "gdfPrefixValidation", "gdfPrefixRejectReceding",
+            "gdfPrefixMeshValidation"}) {
         const auto value = properties().find(name);
         if (value != properties().end() && !value->is_boolean()) {
             log += "Lumen Screen Probe Gather requires a boolean " + std::string(name);
@@ -242,8 +244,28 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     const bool stochasticInterpolation = optionEnabled("stochasticInterpolation");
     const bool radianceCache = optionEnabled("radianceCache");
     const bool detailTracing = optionEnabled("detailTracing");
+    const bool screenGDFContinuation = optionEnabled("screenGDFContinuation");
+    const bool gdfPrefixValidation = optionEnabled("gdfPrefixValidation");
+    const bool gdfPrefixRejectReceding = optionEnabled("gdfPrefixRejectReceding");
+    const bool gdfPrefixMeshValidation = optionEnabled("gdfPrefixMeshValidation");
     if (screenTraces && !finalGather) {
         log += "Lumen screen tracing requires Final Gather";
+        return makeError(Error::InvalidArgument);
+    }
+    if (screenGDFContinuation && !screenTraces) {
+        log += "Lumen screenGDFContinuation requires screenTraces";
+        return makeError(Error::InvalidArgument);
+    }
+    if (gdfPrefixValidation && (!screenGDFContinuation || detailTracing)) {
+        log += "Lumen gdfPrefixValidation requires screenGDFContinuation with detailTracing disabled";
+        return makeError(Error::InvalidArgument);
+    }
+    if (gdfPrefixRejectReceding && !gdfPrefixValidation) {
+        log += "Lumen gdfPrefixRejectReceding requires gdfPrefixValidation";
+        return makeError(Error::InvalidArgument);
+    }
+    if (gdfPrefixMeshValidation && !gdfPrefixValidation) {
+        log += "Lumen gdfPrefixMeshValidation requires gdfPrefixValidation";
         return makeError(Error::InvalidArgument);
     }
     if (stochasticInterpolation && !finalGather) {
@@ -283,16 +305,33 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     std::vector<SlangMacroDefine> defines;
     if (finalGather) { defines.push_back({"METALLIC_LUMEN_FINAL_GATHER", "1"}); }
     if (screenTraces) { defines.push_back({"METALLIC_LUMEN_SCREEN_TRACES", "1"}); }
+    if (screenGDFContinuation) { defines.push_back({"METALLIC_LUMEN_SCREEN_GDF_CONTINUATION", "1"}); }
+    if (gdfPrefixValidation) { defines.push_back({"METALLIC_LUMEN_GDF_PREFIX_VALIDATION", "1"}); }
+    if (gdfPrefixRejectReceding) { defines.push_back({"METALLIC_LUMEN_GDF_PREFIX_REJECT_RECEDING", "1"}); }
+    if (gdfPrefixMeshValidation) { defines.push_back({"METALLIC_LUMEN_GDF_PREFIX_MESH_VALIDATION", "1"}); }
     if (stochasticInterpolation) { defines.push_back({"METALLIC_LUMEN_STOCHASTIC_INTERPOLATION", "1"}); }
     if (radianceCache) { defines.push_back({"METALLIC_LUMEN_RADIANCE_CACHE", "1"}); }
     if (traceReadbackTiles_) { defines.push_back({"METALLIC_LUMEN_PROBE_TRACE_READBACK", "1"}); }
-    if (detailTracing) {
-        defines.push_back({"METALLIC_LUMEN_DETAIL_TRACING", "1"});
+    if (detailTracing || gdfPrefixMeshValidation) {
         const auto paths = properties().find("detailDistanceFieldPaths");
         if (!context.runtimeScene || !context.graphicsQueue || paths == properties().end() || !paths->is_array() || paths->empty()) {
-            log = "Lumen Detail Tracing requires a scene, graphics queue and detailDistanceFieldPaths";
+            log = "Lumen Mesh SDF tracing requires a scene, graphics queue and detailDistanceFieldPaths";
             return makeError(Error::InvalidArgument);
         }
+        std::vector<std::filesystem::path> fields;
+        for (const auto& path : *paths) {
+            if (!path.is_string()) {
+                log = "Lumen detailDistanceFieldPaths must contain paths";
+                return makeError(Error::InvalidArgument);
+            }
+            fields.push_back(std::filesystem::path(PROJECT_SOURCE_DIR) / path.get_ref<const std::string&>());
+        }
+        if (auto result = meshFields_.initialize(*device_, *context.graphicsQueue, *context.runtimeScene, fields, log); !result) {
+            return result;
+        }
+    }
+    if (detailTracing) {
+        defines.push_back({"METALLIC_LUMEN_DETAIL_TRACING", "1"});
         meshSDFTraceDistance_ = kMeshSDFTraceDistance;
         if (const auto traceDistance = properties().find("meshSDFTraceDistance"); traceDistance != properties().end()) {
             if (!traceDistance->is_number() || !std::isfinite(traceDistance->get<float>()) || traceDistance->get<float>() <= 0.0001f) {
@@ -302,17 +341,6 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
             meshSDFTraceDistance_ = traceDistance->get<float>();
         }
         meshSDFTraceDistance_ = std::min(meshSDFTraceDistance_, maxTraceDistance_);
-        std::vector<std::filesystem::path> fields;
-        for (const auto& path : *paths) {
-            if (!path.is_string()) {
-                log = "Lumen Detail Tracing detailDistanceFieldPaths must contain paths";
-                return makeError(Error::InvalidArgument);
-            }
-            fields.push_back(std::filesystem::path(PROJECT_SOURCE_DIR) / path.get_ref<const std::string&>());
-        }
-        if (auto result = meshFields_.initialize(*device_, *context.graphicsQueue, *context.runtimeScene, fields, log); !result) {
-            return result;
-        }
         using KernelEntry = std::pair<const char*, ComputeKernel*>;
         const KernelEntry culling[]{
             {"lumenMeshSDFGridClearMain", &meshGridClear_}, {"lumenMeshSDFGridDepthMain", &meshGridDepth_},
@@ -409,7 +437,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         params.traceReadbackTiles = *traceReadbackTiles_;
     }
     EncodedParameters meshGridParams;
-    std::unique_ptr<Buffer> meshInstances, meshBounds;
+    std::unique_ptr<Buffer> meshInstances, meshBounds, validationBounds;
     uint32_t meshCellGroups = 0, meshObjectGroups = 0, meshCompactGroups = 0;
     if (detailTracing) {
         const auto* view = context.viewConstants();
@@ -458,6 +486,18 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             context.debugCheckpoint("Lumen Mesh SDF Grid", {}, {{"instanceCount", instanceCount},
                 {"unsupportedTransforms", unsupportedTransforms}, {"cellCount", cellCount}, {"capacity", capacity}});
         }
+    } else if (optionEnabled("gdfPrefixMeshValidation")) {
+        uint32_t instanceCount = 0, unsupportedTransforms = 0;
+        auto instances = meshFields_.uploadInstances(*context.runtimeScene(), instanceCount, unsupportedTransforms,
+            nullptr, &validationBounds);
+        if (!instances) { return makeError(instances.error()); }
+        meshInstances = std::move(*instances);
+        params.detail.meshes = meshFields_.bind(writer);
+        params.detail.instances = writer.buffer(meshInstances.get());
+        // The prefix permutation uses this slot for object bounds instead of froxel cells.
+        params.detail.gridCells = writer.buffer(validationBounds.get());
+        params.detail.grid[3] = instanceCount;
+        params.detail.bricksPerAxis = meshFields_.bricksPerAxis();
     }
     const auto encoded = writer.encode(params, kScreenProbeGatherABI);
     if (!encoded) { return makeError(encoded.error()); }

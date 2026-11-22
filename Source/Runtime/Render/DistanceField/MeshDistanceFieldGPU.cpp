@@ -264,17 +264,26 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
 }
 
 Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scene::Scene& scene,
-    uint32_t& count, uint32_t& unsupportedTransforms, std::unique_ptr<Buffer>* objectGridObjects) const
+    uint32_t& count, uint32_t& unsupportedTransforms, std::unique_ptr<Buffer>* objectGridObjects,
+    std::unique_ptr<Buffer>* validationBounds) const
 {
     std::vector<MeshDistanceFieldGPUInstance> instances;
     std::vector<MeshDistanceFieldGPUObject> gridObjects;
+    std::vector<std::array<float, 8>> localBounds;
     std::unordered_set<scene::SceneEntity> objects;
     unsupportedTransforms = 0;
     for (const auto& node : scene.renderNodes()) {
         if (!node.visible) { continue; }
         const auto& primitive = scene.renderPrimitives()[node.renderPrimitiveIndex];
         const auto asset = std::ranges::find(assets_, primitive.meshIndex, &Asset::meshIndex);
-        if (asset == assets_.end() || !objects.insert(node.object).second) { continue; }
+        if (asset == assets_.end()) {
+            if (validationBounds) {
+                spdlog::error("Mesh SDF verification is missing a bake for visible mesh {}", primitive.meshIndex);
+                return makeError(Error::InvalidArgument);
+            }
+            continue;
+        }
+        if (!objects.insert(node.object).second) { continue; }
 
         const auto& center = asset->localCenter;
         const auto& extent = asset->normalizedExtent;
@@ -284,6 +293,15 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
                 asset->mipBase, static_cast<uint32_t>(node.nodeIndex) + 1u, instance)) {
             instance.indices[2] = static_cast<uint32_t>(node.object);
             instances.push_back(instance);
+            if (validationBounds) {
+                std::array<float, 8> bounds{};
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    const float center = asset->geometryCenter[axis] - asset->localCenter[axis];
+                    bounds[axis] = (center - asset->geometryExtent[axis]) / asset->volumeToLocal;
+                    bounds[axis + 4] = (center + asset->geometryExtent[axis]) / asset->volumeToLocal;
+                }
+                localBounds.push_back(bounds);
+            }
             if (objectGridObjects) {
                 auto bounds = makeMeshDistanceFieldGPUObject(node.worldMatrix,
                     asset->geometryCenter, asset->geometryExtent, node.object);
@@ -295,6 +313,11 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
             }
         } else {
             ++unsupportedTransforms;
+            if (validationBounds) {
+                spdlog::error("Mesh SDF verification requires a uniform transform for object {}",
+                    static_cast<uint32_t>(node.object));
+                return makeError(Error::Unsupported);
+            }
         }
     }
     // At maximum rank, a packed 0xffffff index would collide with the invalid entry.
@@ -306,6 +329,13 @@ Result<std::unique_ptr<Buffer>> MeshDistanceFieldGPU::uploadInstances(const scen
     if (instances.empty()) { instances.emplace_back(); }
     auto instanceBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(instances)),
         BufferUsageBits::Storage, sizeof(instances[0]));
+    if (instanceBuffer && validationBounds) {
+        if (localBounds.empty()) { localBounds.emplace_back(); }
+        auto boundsBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(localBounds)),
+            BufferUsageBits::Storage, sizeof(localBounds[0]));
+        if (!boundsBuffer) { return makeError(boundsBuffer.error()); }
+        *validationBounds = std::move(*boundsBuffer);
+    }
     if (!instanceBuffer || !objectGridObjects) { return instanceBuffer; }
     if (gridObjects.empty()) { gridObjects.emplace_back(); }
     auto objectBuffer = makeUploadBuffer(*device_, std::as_bytes(std::span(gridObjects)),

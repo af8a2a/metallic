@@ -600,6 +600,13 @@ function(configure_metallic_editor_sample target_name)
     metallic_copy_spdlog_runtime(${target_name})
 endfunction()
 
+# Explicit image baseline capture. Keep it out of default and editor builds.
+add_executable(MetallicCornellBoxGIBaseline EXCLUDE_FROM_ALL Tools/CornellBoxGIBaseline.cpp)
+configure_metallic_editor_sample(MetallicCornellBoxGIBaseline)
+if(MSVC)
+    target_compile_options(MetallicCornellBoxGIBaseline PRIVATE /EHsc)
+endif()
+
 option(METALLIC_BUILD_CPU_JOB_PRODUCTION_BENCHMARKS "Build the legacy-adapter production editor A/B control" OFF)
 if(METALLIC_BUILD_CPU_JOB_PRODUCTION_BENCHMARKS)
     add_executable(MetallicCPUJobsLegacy EXCLUDE_FROM_ALL Main.cpp ${METALLIC_EDITOR_SOURCES}

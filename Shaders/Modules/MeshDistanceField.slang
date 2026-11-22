@@ -123,7 +123,8 @@ public float2 lineBoxIntersect(float3 rayOrigin, float3 rayEnd, float3 boxMin, f
 // hitDistance is initialized to the maximum ray distance and shortened only by accepted hits.
 public bool rayTraceSingleMeshSDF(MeshDistanceFieldResources resources, MeshDistanceFieldInstance instance,
     float3 worldRayStart, float3 worldRayDirection, float minTraceDistance, float maxTraceDistance,
-    bool expandUsingRayTime, float initialMaxDistance, inout float hitDistance, out uint stepCount)
+    bool expandUsingRayTime, float initialMaxDistance, inout float hitDistance, out uint stepCount,
+    bool requireSignedSurface = false)
 {
     stepCount = 0u;
     MeshDistanceFieldMip finestMip = resources.mips[instance.indices.x];
@@ -131,7 +132,7 @@ public bool rayTraceSingleMeshSDF(MeshDistanceFieldResources resources, MeshDist
     // Default r.DistanceFields.SurfaceBiasExpand and the renderer's finest-mip bias calculation.
     float volumeSurfaceBias = length(0.25f * extent /
         float3(finestMip.dimensionsAndIndirectionOffset.xyz * kUniqueBrickSize));
-    maxTraceDistance = min(maxTraceDistance, hitDistance + volumeSurfaceBias);
+    maxTraceDistance = min(maxTraceDistance, hitDistance + (requireSignedSurface ? 0.0f : volumeSurfaceBias));
 
     float3 worldRayEnd = worldRayStart + worldRayDirection * maxTraceDistance;
     float3 volumeRayStart = meshDistanceFieldWorldToVolume(instance, worldRayStart);
@@ -162,8 +163,9 @@ public bool rayTraceSingleMeshSDF(MeshDistanceFieldResources resources, MeshDist
         maxDistance = max(distanceField, maxDistance);
         float expandSurfaceTime = expandUsingRayTime ? sampleRayTime : maxDistance;
         float expandSurfaceFalloff = 2.0f * volumeSurfaceBias;
-        float expandSurfaceAmount = volumeSurfaceBias * saturate(expandSurfaceTime / expandSurfaceFalloff);
-        if (distanceField < expandSurfaceAmount) {
+        float expandSurfaceAmount = requireSignedSurface ? 0.0f :
+            volumeSurfaceBias * saturate(expandSurfaceTime / expandSurfaceFalloff);
+        if (requireSignedSurface ? distanceField <= 0.0f : distanceField < expandSurfaceAmount) {
             sampleRayTime = clamp(sampleRayTime + distanceField - expandSurfaceAmount,
                 intersectionTimes.x, intersectionTimes.y);
             hit = true;
@@ -177,7 +179,7 @@ public bool rayTraceSingleMeshSDF(MeshDistanceFieldResources resources, MeshDist
         }
     }
 
-    if (stepIndex == kMeshDistanceFieldMaxTraceSteps) {
+    if (!requireSignedSurface && stepIndex == kMeshDistanceFieldMaxTraceSteps) {
         hit = true;
     }
     if (hit) {

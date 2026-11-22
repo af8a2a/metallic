@@ -236,11 +236,13 @@ public float screenTraceNoise(float2 uv, float frameId)
 }
 
 // UE 5.7.4 LumenScreenProbeTracing.usf, camera reprojection for static opaque surfaces.
-public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, float3 receiverPosition, float3 receiverNormal,
-    float3 rayDirection, float traceDistance, float maxTraceDistance, uint2 noisePixel, out float3 radiance, out float distance)
+public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPixel, float3 receiverPosition,
+    float3 receiverNormal, float3 rayDirection, float traceDistance, float maxTraceDistance, uint2 noisePixel,
+    out float3 radiance, out float distance, out float continuationDistance)
 {
     radiance = 0.0f;
     distance = 0.0f;
+    continuationDistance = 0.0f;
     LumenScreenTraceView traceView = inputs.view[0];
     if (traceView.state.x == 0u) {
         return false;
@@ -248,9 +250,9 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, float3 receiverPo
 
     ScreenTraceProjection current = makeScreenTraceProjection(traceView.cameras.current, traceView.cameras.jitter.xy);
     float receiverDepth = dot(receiverPosition - current.eye, current.forward);
-    float4 receiverClip = screenTraceWorldToClip(current, receiverPosition);
-    float2 screenUV = screenTraceScreenUV(receiverClip.xy / receiverClip.w);
-    float2 cornerScreenPosition = screenTraceScreenPosition(screenUV + 0.5f / current.extent);
+    float2 invViewSize = 1.0f / current.extent;
+    float2 screenUV = (float2(receiverPixel) + 0.5f) * invViewSize;
+    float2 cornerScreenPosition = screenTraceScreenPosition(screenUV + 0.5f * invViewSize);
     float3 cornerWorldPosition = screenTraceScreenToWorld(current, cornerScreenPosition, receiverDepth);
     float normalBias = abs(dot(cornerWorldPosition - receiverPosition, receiverNormal)) * 2.0f;
     float3 rayOrigin = receiverPosition + normalBias * receiverNormal;
@@ -271,10 +273,15 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, float3 receiverPo
     float2 hitScreenPosition = screenTraceScreenPosition(hitUVz.xy);
     float hitSceneDepth = screenTraceConvertFromDeviceZ(current, hitUVz.z);
     float3 hitWorldPosition = screenTraceScreenToWorld(current, hitScreenPosition, hitSceneDepth);
-    // UE 5.7.4 LumenScreenProbeTracing.usf:293. The two-centimeter
-    // extension applies to a certain miss before evaluating history rejection.
-    float hitDistanceOffset = hit ? 0.0f : 0.02f;
-    distance = min(length(receiverPosition - hitWorldPosition) + hitDistanceOffset, maxTraceDistance);
+    // UE 5.7.4 ComputeRayHitSqrDistance and Encode/DecodeProbeRayDistance.
+    // Pack in centimeters, before history rejection. The WRC limit uses the unencoded distance.
+    float3 receiverToHitCm = (receiverPosition - hitWorldPosition) * 100.0f;
+    float hitDistanceOffset = hit ? 0.0f : 2.0f;
+    float hitDistanceCm = min(sqrt(dot(receiverToHitCm, receiverToHitCm)) + hitDistanceOffset,
+        maxTraceDistance * 100.0f);
+    distance = hitDistanceCm * 0.01f;
+    uint encodedDistance = asuint(max(hitDistanceCm, 0.0f)) & 0x7ffffffcu;
+    continuationDistance = asfloat(encodedDistance & 0x7ffffffcu) * 0.01f;
     if (!hit) {
         return false;
     }

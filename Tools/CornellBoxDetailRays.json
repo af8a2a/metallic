@@ -1,0 +1,6 @@
+{
+  "witnesses": {
+    "detail_accepted": {"pixel": [286, 302], "tile": [17, 18], "slot": 0, "lane": [2, 5]},
+    "gdf_continuation": {"pixel": [286, 302], "tile": [17, 18], "slot": 0, "lane": [3, 7]}
+  }
+}

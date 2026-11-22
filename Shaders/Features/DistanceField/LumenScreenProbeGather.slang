@@ -13,6 +13,8 @@ import LumenScreenTrace;
 #endif
 #if defined(METALLIC_LUMEN_DETAIL_TRACING)
 import LumenMeshSDFGrid;
+#endif
+#if defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_GDF_PREFIX_MESH_VALIDATION)
 import LumenMeshSDFTrace;
 import MeshDistanceField;
 #endif
@@ -61,6 +63,13 @@ static const uint kReadbackDetailAccepted = 1u << 4u;
 static const uint kReadbackGDFInvoked = 1u << 5u;
 static const uint kReadbackWRCCovered = 1u << 6u;
 static const uint kReadbackWRCSampled = 1u << 7u;
+static const uint kReadbackGDFPrefixInvoked = 1u << 8u;
+static const uint kReadbackGDFPrefixAccepted = 1u << 9u;
+static const uint kReadbackGDFPrefixClassificationShift = 10u;
+static const uint kReadbackGDFPrefixRecedingRejected = 1u << 14u;
+static const uint kReadbackGDFPrefixMeshSDFInvoked = 1u << 15u;
+static const uint kReadbackGDFPrefixMeshSDFConfirmed = 1u << 16u;
+static const uint kReadbackGDFPrefixMeshSDFInconclusive = 1u << 17u;
 static const uint kInvalidProbeTraceReadbackIndex = ~0u;
 
 void writeProbeTraceReadback(ResourceHandle<RWStructuredBuffer<LumenProbeTraceReadback>> buffer, uint index,
@@ -72,7 +81,7 @@ void writeProbeTraceReadback(ResourceHandle<RWStructuredBuffer<LumenProbeTraceRe
 }
 #endif
 
-#if defined(METALLIC_LUMEN_DETAIL_TRACING)
+#if defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_GDF_PREFIX_MESH_VALIDATION)
 struct LumenMeshSDFGatherBindings
 {
     ResourceHandle<StructuredBuffer<MeshDistanceFieldMip>> mips;
@@ -80,7 +89,11 @@ struct LumenMeshSDFGatherBindings
     ResourceHandle<Texture3D<float>> atlas;
     SamplerHandle atlasSampler;
     ResourceHandle<StructuredBuffer<MeshDistanceFieldInstance>> instances;
+#if defined(METALLIC_LUMEN_GDF_PREFIX_MESH_VALIDATION)
+    ResourceHandle<StructuredBuffer<LumenMeshSDFValidationBounds>> validationBounds;
+#else
     ResourceHandle<StructuredBuffer<uint2>> gridCells;
+#endif
     ResourceHandle<StructuredBuffer<uint>> gridIndices;
     uint4 grid;
     float3 cameraPosition;
@@ -125,7 +138,7 @@ struct LumenScreenProbeGatherParams
 #else
     uint3 unusedRadianceCache;
 #endif
-#if defined(METALLIC_LUMEN_DETAIL_TRACING)
+#if defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_GDF_PREFIX_MESH_VALIDATION)
     LumenMeshSDFGatherBindings detail;
 #else
     uint unusedDetail[17];
@@ -232,16 +245,18 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #if defined(METALLIC_LUMEN_SCREEN_TRACES) || defined(METALLIC_LUMEN_DETAIL_TRACING)
         uint2 traceBufferCoord = uint2(group.x * kLumenProbeSlotsPerTile + group.z, group.y) * kProbeRayResolution + lane.xy;
         float screenDistance = 0.0f;
+        float screenContinuationDistance = 0.0f;
 #endif
 #if defined(METALLIC_LUMEN_SCREEN_TRACES)
         LumenScreenTraceInputs screenInputs = {resolveUniform(params.closestHZB), resolveUniform(params.previousDepth),
             resolveUniform(params.previousColor), resolveUniform(params.traceView)};
         float3 screenRadiance;
-        const bool screenHit = traceLumenScreenRay(screenInputs, receiver.xyz, receiverNormal, rayDirection, traceDistance,
-            params.maxTraceDistance, traceBufferCoord, screenRadiance, screenDistance);
+        const bool screenHit = traceLumenScreenRay(screenInputs, probePixel, receiver.xyz, receiverNormal,
+            rayDirection, traceDistance, params.maxTraceDistance, traceBufferCoord, screenRadiance,
+            screenDistance, screenContinuationDistance);
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
         readback.flags |= kReadbackScreenInvoked;
-        readback.screenEnd = screenDistance;
+        readback.screenEnd = screenContinuationDistance;
 #endif
         if (screenHit) {
             traceOutput[address] = float4(compositeProbeTrace(screenRadiance), 5.0f);
@@ -252,12 +267,12 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
             return;
         }
-#if defined(METALLIC_LUMEN_DETAIL_TRACING)
-        voxelStartDistance = max(kMinTraceDistance, screenDistance - kSurfaceBias * 2.0f);
+#if defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_SCREEN_GDF_CONTINUATION)
+        voxelStartDistance = max(kMinTraceDistance, screenContinuationDistance - kSurfaceBias * 2.0f);
 #elif defined(METALLIC_LUMEN_RADIANCE_CACHE)
         if (coverage.valid) {
             // TraceVoxels also handles unresolved screen rays that reached the cache interval.
-            voxelStartDistance = max(kMinTraceDistance, screenDistance - kSurfaceBias * 2.0f);
+            voxelStartDistance = max(kMinTraceDistance, screenContinuationDistance - kSurfaceBias * 2.0f);
         }
 #endif
 #endif
@@ -270,7 +285,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
         // UE ScreenProbeCompactTracesCS tests the screen endpoint and view depth before TraceMeshSDFs.
         if (detail.grid.w != 0u && scene.identityMatches && !reachedRadianceCache &&
-            receiver.w < detail.cardTraceEndDistance && screenDistance < detail.maxMeshSDFTraceDistance) {
+            receiver.w < detail.cardTraceEndDistance && screenContinuationDistance < detail.maxMeshSDFTraceDistance) {
             uint cellIndex = lumenMeshSDFGridCellIndex(probePixel, receiver.w, detail.grid.xyz);
             uint2 cell = resolveUniform(detail.gridCells)[cellIndex];
             MeshDistanceFieldResources meshes = {resolveUniform(detail.mips), resolveUniform(detail.indirection),
@@ -301,11 +316,68 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         }
 #endif
         LumenGlobalTraceRay ray = {float4(samplePosition, voxelStartDistance), float4(rayDirection, traceDistance)};
-        LumenGlobalTraceResult hit = traceLumenGlobalRay(scene, ray);
+        LumenGlobalTraceResult hit;
+#if defined(METALLIC_LUMEN_GDF_PREFIX_VALIDATION)
+        // Screen tracing uses a different biased origin. Verify the part it would skip on this ray.
+        const float prefixEnd = min(voxelStartDistance, traceDistance);
+        bool prefixAccepted = false;
+        if (prefixEnd > kMinTraceDistance) {
+            LumenGlobalTraceRay prefix = {float4(samplePosition, kMinTraceDistance), float4(rayDirection, prefixEnd)};
+#if defined(METALLIC_LUMEN_GDF_PREFIX_REJECT_RECEDING)
+            bool recedingExpansionRejected;
+            hit = traceLumenGlobalRay(scene, prefix, true, recedingExpansionRejected);
+#else
+            hit = traceLumenGlobalRay(scene, prefix);
+#endif
+            prefixAccepted = hit.state.x == kGlobalDistanceFieldHit;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+            readback.flags |= kReadbackGDFPrefixInvoked |
+                ((hit.state.x & 0xfu) << kReadbackGDFPrefixClassificationShift);
+#if defined(METALLIC_LUMEN_GDF_PREFIX_REJECT_RECEDING)
+            if (recedingExpansionRejected) { readback.flags |= kReadbackGDFPrefixRecedingRejected; }
+#endif
+#endif
+#if defined(METALLIC_LUMEN_GDF_PREFIX_MESH_VALIDATION)
+            if (prefixAccepted) {
+                const LumenMeshSDFGatherBindings validation = params.detail;
+                MeshDistanceFieldResources meshes = {resolveUniform(validation.mips),
+                    resolveUniform(validation.indirection), resolveUniform(validation.atlas),
+                    resolveUniform(validation.atlasSampler), validation.bricksPerAxis};
+                float meshDistance;
+                float3 meshRadiance;
+                bool inconclusive;
+                const bool confirmed = validateLumenMeshSDFPrefix(meshes, resolveUniform(validation.instances),
+                    resolveUniform(validation.validationBounds), validation.grid.w, scene.cache,
+                    samplePosition, rayDirection, kMinTraceDistance, prefixEnd,
+                    meshDistance, meshRadiance, inconclusive);
+                prefixAccepted = confirmed || inconclusive;
+                if (confirmed) {
+                    hit.metrics.x = meshDistance;
+                    hit.radiance.xyz = meshRadiance;
+                }
+#if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+                readback.flags |= kReadbackGDFPrefixMeshSDFInvoked;
+                if (confirmed) { readback.flags |= kReadbackGDFPrefixMeshSDFConfirmed; }
+                if (inconclusive) { readback.flags |= kReadbackGDFPrefixMeshSDFInconclusive; }
+#endif
+            }
+#endif
+            if (prefixAccepted) {
+                ray = prefix;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+                readback.flags |= kReadbackGDFPrefixAccepted;
+#endif
+            }
+        }
+        if (!prefixAccepted)
+#endif
+        {
+            hit = traceLumenGlobalRay(scene, ray);
+        }
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
         readback.flags |= kReadbackGDFInvoked;
-        readback.gdfMin = voxelStartDistance;
-        readback.gdfMax = traceDistance;
+        readback.gdfMin = ray.originAndMinDistance.w;
+        readback.gdfMax = ray.directionAndMaxDistance.w;
         readback.gdfClassification = hit.state.x;
         readback.gdfHitClipmap = hit.state.y;
         readback.gdfSteps = hit.state.z;
@@ -314,16 +386,18 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         float3 lighting = hit.radiance.xyz;
         float traceClass = float(hit.state.x);
 #if defined(METALLIC_LUMEN_RADIANCE_CACHE)
-        float transparency = hit.state.x == kGlobalDistanceFieldHit ? 0.0f : 1.0f;
-        if (coverage.valid && transparency > 0.5f) {
-            // UE 5.7.4 SampleRadianceCacheAndApply, no sky visibility or extra AO.
+        const float transparency = hit.state.x == kGlobalDistanceFieldHit ? 0.0f : 1.0f;
+        if (coverage.valid) {
+            if (transparency > 0.5f) {
+                traceClass = 6.0f;
+            }
+            // UE 5.7.4 TraceVoxels calls SampleRadianceCacheAndApply for valid coverage.
             const float3 cacheRadiance = sampleLumenRadianceCache(cacheInputs, coverage, receiver.xyz, rayDirection);
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
             readback.flags |= kReadbackWRCSampled;
             readback.wrcRadiance = cacheRadiance;
 #endif
             lighting += cacheRadiance * transparency;
-            traceClass = 6.0f;
         }
 #endif
         trace = float4(compositeProbeTrace(lighting), traceClass);

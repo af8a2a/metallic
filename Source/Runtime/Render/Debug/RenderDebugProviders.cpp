@@ -53,7 +53,14 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
         {"detailAccepted", "u32", offsetof(ProbeTrace, flags), 1, 4, 1},
         {"gdfInvoked", "u32", offsetof(ProbeTrace, flags), 1, 5, 1},
         {"wrcCovered", "u32", offsetof(ProbeTrace, flags), 1, 6, 1},
-        {"wrcSampled", "u32", offsetof(ProbeTrace, flags), 1, 7, 1}}});
+        {"wrcSampled", "u32", offsetof(ProbeTrace, flags), 1, 7, 1},
+        {"gdfPrefixInvoked", "u32", offsetof(ProbeTrace, flags), 1, 8, 1},
+        {"gdfPrefixAccepted", "u32", offsetof(ProbeTrace, flags), 1, 9, 1},
+        {"gdfPrefixClassification", "u32", offsetof(ProbeTrace, flags), 1, 10, 4},
+        {"gdfPrefixRecedingRejected", "u32", offsetof(ProbeTrace, flags), 1, 14, 1},
+        {"gdfPrefixMeshSDFInvoked", "u32", offsetof(ProbeTrace, flags), 1, 15, 1},
+        {"gdfPrefixMeshSDFConfirmed", "u32", offsetof(ProbeTrace, flags), 1, 16, 1},
+        {"gdfPrefixMeshSDFInconclusive", "u32", offsetof(ProbeTrace, flags), 1, 17, 1}}});
     add({"R8", 1, {{"r", "u8", 0}}});
     add({"RGBA8", 4, {{"r", "u8", 0}, {"g", "u8", 1}, {"b", "u8", 2}, {"a", "u8", 3}}});
     add({"BGRA8", 4, {{"b", "u8", 0}, {"g", "u8", 1}, {"r", "u8", 2}, {"a", "u8", 3}}});

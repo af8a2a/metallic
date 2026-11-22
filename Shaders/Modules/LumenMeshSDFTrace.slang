@@ -34,6 +34,63 @@ public struct LumenMeshSDFTraceResult
     public float3 normal;
 };
 
+float3 sampleLumenMeshSDFRadiance(LumenSurfaceCache cache, MeshDistanceFieldInstance instance,
+    float3 hitPosition, float3 hitNormal)
+{
+    // The fixed-resolution atlas uses a single resident tile per card.
+    const float surfaceCacheBias = 0.20f; // 20 cm in UE.
+    LumenCardSampleAccumulator accumulator = initLumenCardSampleAccumulator();
+    sampleLumenMeshCards(cache, instance.indices.z, hitPosition, hitNormal, surfaceCacheBias, accumulator);
+    return evaluateLumenCardRadiance(accumulator);
+}
+
+public struct LumenMeshSDFValidationBounds
+{
+    public float4 minimum;
+    public float4 maximum;
+};
+
+// The prefix verifier uses actual local mesh bounds and every resident instance.
+public bool validateLumenMeshSDFPrefix(MeshDistanceFieldResources meshes,
+    StructuredBuffer<MeshDistanceFieldInstance> instances, StructuredBuffer<LumenMeshSDFValidationBounds> bounds,
+    uint instanceCount, LumenSurfaceCache cache,
+    float3 origin, float3 direction, float minDistance, float maxDistance,
+    out float hitDistance, out float3 radiance, out bool inconclusive)
+{
+    hitDistance = maxDistance;
+    radiance = 0.0f;
+    float earliestUnconfirmed = maxDistance;
+    uint hitObject = ~0u;
+    const float3 end = origin + direction * maxDistance;
+    for (uint objectIndex = 0u; objectIndex < instanceCount; ++objectIndex) {
+        const MeshDistanceFieldInstance instance = instances[objectIndex];
+        const LumenMeshSDFValidationBounds objectBounds = bounds[objectIndex];
+        const float2 interval = lineBoxIntersect(meshDistanceFieldWorldToVolume(instance, origin),
+            meshDistanceFieldWorldToVolume(instance, end), objectBounds.minimum.xyz, objectBounds.maximum.xyz) * maxDistance;
+        const float entry = max(minDistance, interval.x);
+        if (entry > interval.y || entry >= hitDistance) {
+            continue;
+        }
+        uint stepCount;
+        if (rayTraceSingleMeshSDF(meshes, instance, origin, direction, entry, interval.y,
+                false, 0.0f, hitDistance, stepCount, true)) {
+            hitObject = objectIndex;
+        } else {
+            // The baked field can miss an edge even when the original mesh bounds intersect.
+            earliestUnconfirmed = min(earliestUnconfirmed, entry);
+        }
+    }
+    inconclusive = earliestUnconfirmed < maxDistance && earliestUnconfirmed <= hitDistance;
+    if (inconclusive || hitObject == ~0u) {
+        return false;
+    }
+    const MeshDistanceFieldInstance instance = instances[hitObject];
+    const float3 hitPosition = origin + direction * hitDistance;
+    const float3 hitNormal = calculateMeshSDFWorldNormal(meshes, instance, hitPosition);
+    radiance = sampleLumenMeshSDFRadiance(cache, instance, hitPosition, hitNormal);
+    return true;
+}
+
 // UE 5.7.4 LumenSoftwareRayTracing.ush:589,828. The receiver supplies the
 // candidates and the opaque, uniform-scale Mesh SDF path uses its finest mip.
 public LumenMeshSDFTraceResult traceLumenMeshSDFs(LumenMeshSDFTraceScene scene, LumenMeshSDFTraceInput input)
@@ -60,12 +117,7 @@ public LumenMeshSDFTraceResult traceLumenMeshSDFs(LumenMeshSDFTraceScene scene, 
             const float3 interpolatePosition = input.origin + input.direction * hitDistance;
             result.normal = calculateMeshSDFWorldNormal(scene.meshes, instance, interpolatePosition);
 
-            // The fixed-resolution atlas uses a single resident tile per card.
-            const float surfaceCacheBias = 0.20f; // 20 cm in UE.
-            LumenCardSampleAccumulator accumulator = initLumenCardSampleAccumulator();
-            sampleLumenMeshCards(scene.cache, instance.indices.z, interpolatePosition, result.normal,
-                surfaceCacheBias, accumulator);
-            result.radiance = evaluateLumenCardRadiance(accumulator);
+            result.radiance = sampleLumenMeshSDFRadiance(scene.cache, instance, interpolatePosition, result.normal);
             result.transparency = 0.0f;
         }
 

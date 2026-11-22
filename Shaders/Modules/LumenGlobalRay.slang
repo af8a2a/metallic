@@ -101,13 +101,15 @@ float3 computeLumenGlobalDistanceFieldNormal(QuantizedGlobalDistanceFieldSampler
     return gradientLength > 0.001f ? gradient / gradientLength : fallbackNormal;
 }
 
-public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray)
+public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
+    bool rejectRecedingExpansion, out bool recedingExpansionRejected)
 {
     LumenGlobalTraceResult result = (LumenGlobalTraceResult)0;
     result.metrics.x = -1.0f;
     result.state.y = ~0u;
     result.candidates = uint4(~0u);
     result.card.xy = uint2(~0u);
+    recedingExpansionRejected = false;
 
     if (!scene.identityMatches) {
         result.state.w = kCacheSceneMismatch;
@@ -121,7 +123,9 @@ public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, L
     // UE 5.7.4 FConeTraceInput: unit SDF step factors, full coverage and expansion
     // from ray time. The existing quantized tracer uses this same specialization.
     GlobalDistanceFieldTrace hit = traceGlobalDistanceFieldClipmaps(field, scene.domains, scene.clipmapCount,
-        origin, rayDirection, ray.originAndMinDistance.w, ray.directionAndMaxDistance.w, hitClipmapIndex);
+        origin, rayDirection, ray.originAndMinDistance.w, ray.directionAndMaxDistance.w, hitClipmapIndex,
+        0.0f, 0.0f, rejectRecedingExpansion);
+    recedingExpansionRejected = hit.recedingExpansionRejected;
     result.metrics.xy = float2(hit.hitDistance, hit.surfaceExpansion);
     result.state.xyz = uint3(hit.classification, hitClipmapIndex, hit.stepCount);
     if (hit.classification != kGlobalDistanceFieldHit) {
@@ -168,6 +172,12 @@ public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, L
         result.card.zw = asuint(accumulator.physicalAtlasUV);
     }
     return result;
+}
+
+public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray)
+{
+    bool recedingExpansionRejected;
+    return traceLumenGlobalRay(scene, ray, false, recedingExpansionRejected);
 }
 
 } // namespace Metallic.Lumen

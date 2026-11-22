@@ -874,6 +874,77 @@ The Cornell Box graph enables Final Gather and multi-bounce card lighting for st
 
 Inspect `Temporal.indirectDiffuse` for accumulated, unexposed GI, `Gather.indirectDiffuse` for the current frame and `Temporal.historyWeight` for accepted history. In `Gather.probeRadiance`, the fourth component stores trace class 2 for a GDF hit and 5 for an accepted screen hit. Set the **Ceiling Emitter** material's emissive color to zero for a dark control.
 
+#### Repeatable GI image baseline
+
+From the repository root, capture the built-in Comparison graph with its fixed camera at 384 × 384. Use a new output directory for each capture.
+
+```powershell
+cmake --build build-relwithdebinfo --target MetallicCornellBoxGIBaseline
+.\build-relwithdebinfo\Source\MetallicCornellBoxGIBaseline.exe build/cornell-gi-baseline/run-001 Tools/CornellBoxGIRegions.json
+python -B Tools/MeasureCornellBoxGI.py --manifest build/cornell-gi-baseline/run-001/capture.json --out build/cornell-gi-baseline/run-001/metrics.json
+```
+
+The tool uses a Vulkan preview device with ray queries and synchronization validation. At frames 128 and 256 it captures `PathTrace.color`, `Temporal.color` and `Temporal.indirectDiffuse` in the same graph execution before presentation. It zeros the scene's emissive material and captures the first and eighth dark frames. The manifest records execution stamps and the five top-left pixel rectangles. The regions all lie on the floor and cover its center, the floor side of each block contact, and mirrored areas near the red and green walls.
+
+The report compares scene-linear ACEScg luminance, contact-to-floor luminance ratios and the red or green channel fraction relative to the center floor. It checks the reference's change between the two lit captures at the same probe phase and verifies exact RGB zero in the settled dark capture.
+
+For a Detail Tracing comparison, use `--trace` in both groups and `--detail` in group B. The capture tool saves the effective graph and reads probe placement, receiver position and normal, radiance, distance, and the per-ray handoff at the same execution as the lit images.
+
+```powershell
+$capture = '.\build-relwithdebinfo\Source\MetallicCornellBoxGIBaseline.exe'
+$ab = 'build/cornell-detail-ab/run-001'
+& $capture "$ab/a" Tools/CornellBoxGIRegions.json --trace
+& $capture "$ab/b" Tools/CornellBoxGIRegions.json --trace --detail
+foreach ($group in 'a', 'b') {
+    python -B Tools/MeasureCornellBoxGI.py --manifest "$ab/$group/capture.json" --out "$ab/$group/metrics.json"
+}
+python -B Tools/MeasureCornellBoxGI.py --baseline "$ab/a/metrics.json" --candidate "$ab/b/metrics.json" --screen-traces on --out "$ab/ab.json"
+python -B Tools/CheckCornellBoxDetailRays.py --a "$ab/a/capture.json" --b "$ab/b/capture.json" --pin Tools/CornellBoxDetailRays.json --out "$ab/triangle-oracle.json"
+```
+
+The fixed floor probe at pixel `[286, 302]` tests both outcomes. Lane `[2, 5]` hits the tall block within the Mesh SDF interval. Lane `[3, 7]` first intersects the ceiling beyond that interval and continues in the GDF. The triangle oracle starts from the same biased origin as Gather. It subtracts the receiver-to-origin offset from `detailEnd` before comparing hit distances, and checks GDF continuation using the recorded endpoints.
+
+Group C isolates Screen-to-GDF continuation. The capture flag `--screen-gdf-continuation` sets `Gather.screenGDFContinuation` and uses the same GDF start as Detail Tracing after a rejected screen trace, `max(MinTraceDistance, ScreenEnd - 2 * SurfaceBias)`. Group C uses the existing GDF and Surface Cache without the Mesh SDF stage. Compare A to C for the effect of the Screen endpoint and C to B for the added Detail stage and its handoff.
+
+```powershell
+& $capture "$ab/c" Tools/CornellBoxGIRegions.json --trace --screen-gdf-continuation
+python -B Tools/MeasureCornellBoxGI.py --manifest "$ab/c/capture.json" --out "$ab/c/metrics.json"
+python -B Tools/MeasureCornellBoxGI.py --baseline "$ab/a/metrics.json" --candidate "$ab/c/metrics.json" --screen-traces on --out "$ab/ac.json"
+python -B Tools/MeasureCornellBoxGI.py --baseline "$ab/c/metrics.json" --candidate "$ab/b/metrics.json" --screen-traces on --out "$ab/cb.json"
+python -B Tools/CheckCornellBoxDetailRays.py --a "$ab/a/capture.json" --c "$ab/c/capture.json" --b "$ab/b/capture.json" --pin Tools/CornellBoxDetailRays.json --out "$ab/triangle-oracle-abc.json"
+```
+
+Use `--floor-rays` in place of `--trace` for the floor witness set. It expands the probe rectangle and captures `ScreenTrace.closestHZB` in the same execution. Run `CheckCornellBoxDetailRays.py --floor` with the A and C manifests to compare the captured start with the first triangle hit from each biased origin. Pass `--c-fixed` to include a second continuation capture.
+
+Group D is an opt-in deviation from the UE handoff. `Gather.gdfPrefixValidation` uses the same biased world ray to trace from `MinTraceDistance` to the earlier of the Screen handoff and the trace cap. A GDF hit uses the regular Surface Cache lighting for that first hit. All other prefix results proceed from the original continuation point. The feature requires `screenGDFContinuation` and the Mesh SDF stage disabled. It uses the existing quantized GDF, including its surface expansion and residency semantics.
+
+```powershell
+& $capture "$ab/d" Tools/CornellBoxGIRegions.json --floor-rays --gdf-prefix-validation
+python -B Tools/MeasureCornellBoxGI.py --manifest "$ab/d/capture.json" --out "$ab/d/metrics.json"
+```
+
+Use the same `--floor-rays` capture for the C comparison, with `--screen-gdf-continuation`. The floor oracle accepts `--d` alongside `--c-fixed` to verify the emissive hit.
+
+Group E adds `Gather.gdfPrefixRejectReceding` to group D. At an expanded prefix candidate with positive signed distance, the same quantized GDF supplies the gradient at the march sample. If its dot product with the ray direction is positive, the ray is moving away from the surface and continues with the existing step. An unavailable or degenerate gradient retains the candidate. The rule changes the UE expansion test only in the opt-in prefix stage. It uses the quantized field's local gradient as evidence, so it can still accept false hits where that evidence is inconclusive.
+
+```powershell
+& $capture "$ab/e" Tools/CornellBoxGIRegions.json --floor-rays --gdf-prefix-reject-receding
+python -B Tools/MeasureCornellBoxGI.py --manifest "$ab/e/capture.json" --out "$ab/e/metrics.json"
+python -B Tools/MeasureCornellBoxGI.py --baseline "$ab/d/metrics.json" --candidate "$ab/e/metrics.json" --screen-traces on --out "$ab/de.json"
+```
+
+Pass `--e` with the E manifest to the same floor oracle invocation. The fixed room-opening ray checks the receding hit from the short block's side, and the emissive ray checks that the forward-facing prefix hit survives.
+
+Group F adds `Gather.gdfPrefixMeshValidation` to group E. It only verifies accepted GDF prefix candidates. It uses the complete list of visible Mesh SDF instances from `detailDistanceFieldPaths`, without the view-dependent Detail grid or the 1.8 m Detail limit. Each instance clips the prefix to its original local mesh bounds, then tests the finest baked Mesh SDF for a nonpositive sample with zero expansion. A confirmed nearest hit uses that mesh's distance and Surface Cache radiance. When all original bounds miss, tracing continues from the Screen handoff. If an earlier bound intersects but its Mesh SDF cannot confirm a hit, F preserves the GDF result. This preserves the Cornell emitter edge where the baked field stays positive.
+
+```powershell
+& $capture "$ab/f" Tools/CornellBoxGIRegions.json --floor-rays --gdf-prefix-mesh-validation
+python -B Tools/MeasureCornellBoxGI.py --manifest "$ab/f/capture.json" --out "$ab/f/metrics.json"
+python -B Tools/MeasureCornellBoxGI.py --baseline "$ab/e/metrics.json" --candidate "$ab/f/metrics.json" --screen-traces on --out "$ab/ef.json"
+```
+
+Add `--f` with the F manifest to the floor oracle invocation. The fixed rays cover two short-block corner misses, two near-plane hits returned by the GDF tail, the emitter edge and a farther ceiling hit that takes precedence over an earlier GDF candidate.
+
 This port uses UE 5.7.4's opaque permutations with these adaptations.
 
 - Adaptive placement uses eight-phase Hammersley and a fixed allocation of one uniform plus up to eight adaptive probes per tile. This replaces UE's global compaction, with candidate marking recomputed from the current frame. Probe interpolation uses Deferred world position, linear depth and normal. The full-resolution blue-noise offset is zero.
@@ -912,9 +983,11 @@ At the opening camera, the first four rays in `Trace.results` target the tall bl
 
 **Lighting / Lumen / World Radiance Cache** (`lumen-radiance-cache`) uses the Large Scene geometry and Cornell Box mesh bakes. The sample tracks four world-space probe clipmaps with 48 cells per axis. They double in size from a 25 m half-extent. Each physical slot stores 32 × 32 equal-area directional samples. The sample uses a 32 × 32 slot atlas, a refresh budget equivalent to 100 full-resolution probe traces per frame, and a 100 m directional trace limit. New slots are initialized even when this requires tracing them at a reduced directional resolution.
 
-The pass marks world probes from the screen probes placed for Final Gather. It remaps resident slots as clipmaps scroll, traces new slots before exposing them to Gather, and refreshes older slots in priority order. Directional traces read the same GDF and Surface Cache lighting as Gather. The cache filters adjacent probes using hit distances and fixes up the octahedral borders for bilinear sampling. Gather limits near tracing when all eight neighboring probes are resident. After a miss it samples the cache with sphere parallax correction and trilinear interpolation. `Gather.probeRadiance` alpha identifies cache lookups with value 6, including lookups that return black. `RadianceCache.updateState` words 24–29 count marked, reused, allocated, evicted and overflowed probes, followed by directional trace tiles. `RadianceCache.cacheRadiance` holds the bordered scene-linear atlas.
+The pass marks world probes from the screen probes placed for Final Gather. It remaps resident slots as clipmaps scroll, traces new slots before exposing them to Gather, and refreshes older slots in priority order. Directional traces read the same GDF and Surface Cache lighting as Gather. The cache filters adjacent probes using hit distances and fixes up the octahedral borders for bilinear sampling. `RadianceCache.updateState` words 24–29 count marked, reused, allocated, evicted and overflowed probes, followed by directional trace tiles. `RadianceCache.cacheRadiance` holds the bordered scene-linear atlas.
 
-The port follows the UE 5.7.4 software, opaque, skylight-off `FORCE_UNIFORM_TRACES` permutation with one radiance mip. It uses Metallic's perspective camera and meter-space world coordinates, current Deferred positions and normals, and the existing GDF and fixed Surface Cache. The X-packed indirection uses persistent graph buffers. Packed FP16 buffers hold directional radiance and hit distance, and the final atlas uses RGBA16F. Neighbor occlusion clamps atlas lookups to the current slot and treats a zero-length segment as visible. The angular filter skips a coincident hit that has no direction. A submitted frame with matching scene, visibility, transforms and lighting revisions can supply history. With a full atlas, a cell without a slot stays invalid and Gather continues its regular trace when the eight-probe neighborhood is incomplete. UE's BRDF-PDF trace tiles, hardware tracing, skylight and alternate irradiance or mip configurations are outside this path.
+Gather follows the UE 5.7.4 software `TraceVoxels` sampling condition. After any accepted Screen or Detail hit exits, valid WRC coverage caps the GDF trace and enables the cache sample with sphere parallax correction and trilinear interpolation. Remaining transparency weights the sample. A GDF miss, unavailable page with no later hit, or empty interval leaves transparency at 1. These rays publish `Gather.probeRadiance` alpha 6, including samples that return black. An opaque GDF hit has transparency 0 and keeps alpha 2. The readback still reports its cache sample.
+
+The port follows the UE 5.7.4 software, opaque, skylight-off `FORCE_UNIFORM_TRACES` permutation with one radiance mip. It uses Metallic's perspective camera and meter-space world coordinates, current Deferred positions and normals, and the existing GDF and fixed Surface Cache. The X-packed indirection uses persistent graph buffers. Packed FP16 buffers hold directional radiance and hit distance, and the final atlas uses RGBA16F. Neighbor occlusion clamps atlas lookups to the current slot and treats a zero-length segment as visible. The angular filter skips a coincident hit that has no direction. A submitted frame with matching scene, visibility, transforms and lighting revisions can supply history. UE's WRC coverage test uses clipmap membership at marked positions. Metallic also requires all eight neighboring probes to have resident atlas slots. UE marches using the coarse mip when a fine page is missing. Metallic treats an overflow page with a saturated coarse mip as unavailable and continues at the next clipmap. Metallic reports empty intervals explicitly and takes zero steps. UE's BRDF-PDF trace tiles, hardware tracing, skylight and alternate irradiance or mip configurations are outside this path.
 
 ### Lumen Detail Tracing
 
@@ -936,9 +1009,9 @@ Capture `Gather.probeTraceReadback` at `AfterPass` with layout `LumenProbeTraceR
 | 16–31 | Raw scene-linear WRC RGB and `gdfHitDistance` in meters |
 | 32–47 | Original GDF classification, hit clipmap, successful sample count, and flags |
 
-An unused distance is `-1`. The screen trace can return `0` when its history or projected start is invalid. `detailEnd` includes the receiver-to-biased-origin offset. The GDF range is relative to the biased ray origin and includes empty intervals. The original GDF classification is preserved even when `Gather.probeRadiance` publishes cache class 6. A GDF invocation skipped by an early hit has classification `0xffffffff`, and any result without a GDF hit has clipmap `0xffffffff`.
+An unused distance is `-1`. `screenEnd` records the decoded UE-style handoff distance. Screen tracing derives its normal bias from the probe pixel center and corner. It measures from the unshifted receiver to the reconstructed screen endpoint, adds 2 cm for a definite HZB miss, and encodes and decodes the centimeter distance with mask `0x7FFFFFFC` before converting it back to meters. The screen trace can return `0` when its history or projected start is invalid. Metallic keeps the raw distance for the WRC reach test and for the output of an accepted Screen hit. `detailEnd` includes the receiver-to-biased-origin offset. The GDF range is relative to the biased ray origin and includes empty intervals. The original GDF classification is preserved even when `Gather.probeRadiance` publishes cache class 6. A GDF invocation skipped by an early hit has classification `0xffffffff`, and any result without a GDF hit has clipmap `0xffffffff`.
 
-Flag bits 0–7 indicate a valid receiver, screen trace invoked, screen hit accepted, Detail trace invoked, Detail hit accepted, GDF invoked, WRC coverage valid, and WRC sampled. A zero RGB sample can still have `wrcSampled` set. An unused probe slot produces only sentinels and zero flags.
+Flag bits 0–7 indicate a valid receiver, screen trace invoked, screen hit accepted, Detail trace invoked, Detail hit accepted, GDF invoked, WRC coverage valid, and WRC sampled. `wrcSampled` records interpolation even if the sample returns black or an opaque GDF hit gives it zero weight. Bits 8 and 9 indicate a GDF prefix invocation and a selected prefix hit. Bits 10–13 contain the raw prefix classification when invoked. Bit 14 records any rejected receding expansion sample in the prefix, even if a later hit is accepted. Bits 15–17 indicate Mesh SDF verification invoked, confirmed, and inconclusive. The interval and step fields describe the selected GDF segment. When Mesh SDF confirms the prefix, the hit distance is the selected Mesh SDF distance. An unused probe slot produces only sentinels and zero flags.
 
 ## Optional RHI diagnostics
 
