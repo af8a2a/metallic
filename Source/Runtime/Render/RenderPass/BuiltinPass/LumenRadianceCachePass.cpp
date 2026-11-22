@@ -145,7 +145,7 @@ public:
             .domainName = "render.pass.lumen-radiance-cache",
             .ownership = RenderGraphResourceOwnership::ExternallyOwned,
             .hasUndeclaredImplicitAccesses = true,
-            .conservativeReason = "Persistent multi-frame radiance cache probe atlas and indirection tables",
+            .conservativeReason = "Persistent probe atlas, probeFrames, and freeList remain conservative; indirection history is declaratively TemporalOwned",
         };
     }
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override;
@@ -188,7 +188,10 @@ RenderPassReflection LumenRadianceCachePass::reflect(const RenderGraphCompileCon
         return reflection.addBufferOutput(name, description).buffer(count * stride, stride).storageReadWrite();
     };
     addBuffer("cacheIndirection", "World probe cell to physical atlas slot", layout.gridCells(), 4).bufferLayout("u32");
-    addBuffer("previousIndirection", "Last frame's world probe cell to atlas slot", layout.gridCells(), 4);
+    reflection.addBufferInput("previousIndirection", "Last frame's world probe cell to atlas slot")
+        .buffer(uint64_t(layout.gridCells()) * 4u, 4).storageRead().temporalRead("indirection", -1, /*graphOwned=*/true);
+    reflection.addBufferOutput("savedIndirection", "Saved world probe cell to atlas slot for next frame")
+        .buffer(uint64_t(layout.gridCells()) * 4u, 4).storageWrite().temporalWrite("indirection", /*graphOwned=*/true);
     addBuffer("freeList", "Freed atlas slots", layout.probeCapacity(), 4);
     addBuffer("probeFrames", "Last traced and last used frame per slot", layout.probeCapacity(), 8);
     addBuffer("updateState", "Allocators, update budget, priority histogram and residency counters", kUpdateStateWords, 4)
@@ -272,6 +275,7 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         scene ? scene->geometryTransformRevision() : 0, scene ? scene->visibilityRevision() : 0,
         world ? world->lightingRevision() : 0, world ? world->environmentRevision() : 0};
     const bool historyValid = previousContent_ == content && previousFrame_ + 1u == context.frameIndex() &&
+        context.temporalValid("previousIndirection") &&
         previousSubmission_ && previousSubmission_->resolved() && !previousSubmission_->cancelled();
     const std::array eye{view->current.eye[0], view->current.eye[1], view->current.eye[2]};
     const auto clipmaps = makeClipmaps(layout_, eye);
@@ -291,8 +295,16 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
     if (!registry) { return makeError(registry.error()); }
     auto& commands = context.commandBuffer();
     ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
-    const auto buffer = [&](const char* name) { return context.outputBuffer(name).buffer(); };
+    const auto buffer = [&](const char* name) -> Buffer* {
+        if (std::string_view(name) == "previousIndirection" || std::string_view(name) == "savedIndirection") {
+            return context.temporalBuffer(name).buffer.buffer();
+        }
+        return context.outputBuffer(name).buffer();
+    };
     const auto bind = [&](const char* name) { return writer.buffer(buffer(name)); };
+    if (buffer("previousIndirection") == nullptr || buffer("savedIndirection") == nullptr) {
+        return makeError(Error::InvalidArgument);
+    }
     const auto position = context.inputTexture("position");
     const uint32_t width = position.desc().width;
     const uint32_t height = position.desc().height;
@@ -318,6 +330,14 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
         uint32_t(context.frameIndex() + 1u), historyValid, layout_.traceBudget, layout_.probeResolution, eye},
         kUpdateABI);
     if (!update) { return makeError(update.error()); }
+    const auto saveUpdate = writer.encode(RadianceCacheUpdateParams{
+        positionHandle, bind("placedProbes"), bind("cacheClipmaps"), bind("previousClipmaps"),
+        bind("cacheIndirection"), bind("savedIndirection"), bind("freeList"), bind("probeFrames"),
+        bind("updateState"), bind("traceData"), bind("indirectArgs"),
+        layout_.gridResolution, layout_.clipmapCount, layout_.probeCapacity(), probeCount,
+        uint32_t(context.frameIndex() + 1u), historyValid, layout_.traceBudget, layout_.probeResolution, eye},
+        kUpdateABI);
+    if (!saveUpdate) { return makeError(saveUpdate.error()); }
     const auto trace = writer.encode(RadianceCacheTraceParams{
         bindLumenGlobalTrace(context, writer), bind("cacheClipmaps"), bind("cacheIndirection"), bind("traceData"),
         bind("updateState"), bind("traceTiles"), bind("indirectArgs"),
@@ -405,10 +425,11 @@ Result<> LumenRadianceCachePass::execute(RenderGraphExecutionContext& context)
             {"rawAtlas", read}, {"filteredAtlas", write}});
     dispatchIndirect("Fix up octahedral atlas borders", borders_, 2,
         {{"cacheClipmaps", read}, {"traceData", read}, {"filteredAtlas", read}, {"cacheRadiance", Access::TextureStorageWrite}});
-    dispatch("Save world probe indirection", save_, *update, groups,
-        {{"cacheIndirection", read}, {"previousIndirection", write}});
+    dispatch("Save world probe indirection", save_, *saveUpdate, groups,
+        {{"cacheIndirection", read}, {"savedIndirection", write}});
 
     if (auto result = context.executeStages(stages); !result) { return result; }
+    context.setTemporalWritten("savedIndirection", true);
     auto submission = std::make_shared<SubmissionTransaction>([] {}, [] {});
     if (auto result = commands.addSubmissionTransaction(submission); !result) { return result; }
     previousSubmission_ = std::move(submission);

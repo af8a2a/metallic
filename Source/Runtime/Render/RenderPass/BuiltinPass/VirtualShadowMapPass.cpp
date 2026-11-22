@@ -69,8 +69,60 @@ public:
             .domainName = "render.pass.virtual-shadow-map",
             .ownership = RenderGraphResourceOwnership::ExternallyOwned,
             .hasUndeclaredImplicitAccesses = true,
-            .conservativeReason = "Persistent virtual shadow map physical page pool and page table",
+            .conservativeReason = "In-place VSM page raster and HZB remain conservative; persistent atlas, pageTable, and projections are declared via trackPublishedResource()",
         };
+    }
+
+    Result<> declareResourceRequests(
+        const RenderGraphResourceRequestContext& context,
+        RenderGraphResourceRequestBuilder& builder,
+        std::string&) override
+    {
+        if (!publishedShadow_.owner) { return {}; }
+        const uint64_t viewId = context.viewKey();
+        if (publishedShadow_.atlas != nullptr && publishedShadow_.atlasView != nullptr) {
+            const ResourceMemoryInfo mem = publishedShadow_.atlas->memoryInfo();
+            const uint64_t backingId = mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
+            const LogicalResourceId logicalId = makeLogicalResourceId("render.vsm", "atlas", viewId, 0);
+            Result<> r = builder.trackPublishedResource(ExternalResourcePublication{
+                .logicalId = logicalId,
+                .version = {.logicalId = logicalId, .version = publishedShadow_.revision,
+                    .contentRevision = publishedShadow_.revision,
+                    .allocationGeneration = backingId != 0 ? backingId : publishedShadow_.revision},
+                .ownership = RenderGraphResourceOwnership::ProviderOwned,
+                .type = RenderGraphResourceType::Texture2D,
+                .texture = publishedShadow_.atlas,
+                .textureView = publishedShadow_.atlasView,
+                .backingAllocationId = backingId,
+                .sizeBytes = mem.backingSizeBytes != 0 ? mem.backingSizeBytes : mem.sizeBytes,
+                .finalState = ResourceState::ShaderRead,
+                .writtenByProducer = false,
+                .owner = publishedShadow_.owner,
+            }, false);
+            if (!r) { return r; }
+        }
+        const auto publishBuffer = [&](std::string_view name, Buffer* buffer) -> Result<> {
+            if (buffer == nullptr) { return {}; }
+            const ResourceMemoryInfo mem = buffer->memoryInfo();
+            const uint64_t backingId = mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
+            const LogicalResourceId logicalId = makeLogicalResourceId("render.vsm", name, viewId, 0);
+            return builder.trackPublishedResource(ExternalResourcePublication{
+                .logicalId = logicalId,
+                .version = {.logicalId = logicalId, .version = publishedShadow_.revision,
+                    .contentRevision = publishedShadow_.revision,
+                    .allocationGeneration = backingId != 0 ? backingId : publishedShadow_.revision},
+                .ownership = RenderGraphResourceOwnership::ProviderOwned,
+                .type = RenderGraphResourceType::Buffer,
+                .buffer = buffer,
+                .backingAllocationId = backingId,
+                .sizeBytes = mem.backingSizeBytes != 0 ? mem.backingSizeBytes : buffer->desc().size,
+                .finalState = ResourceState::ShaderRead,
+                .writtenByProducer = false,
+                .owner = publishedShadow_.owner,
+            }, false);
+        };
+        if (auto r = publishBuffer("pageTable", publishedShadow_.pageTable); !r) { return r; }
+        return publishBuffer("projections", publishedShadow_.projections);
     }
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override
@@ -177,7 +229,7 @@ public:
             log = "VirtualShadowMapPass requires mesh shaders and bindless descriptors";
             return makeError(Error::Unsupported);
         }
-        if (device_ != context.device) { casterCache_ = {}; resolution_ = {}; }
+        if (device_ != context.device) { casterCache_ = {}; resolution_ = {}; publishedShadow_ = {}; }
         device_ = context.device;
         return {};
     }
@@ -504,6 +556,24 @@ public:
             (void)context.streamer()->cancelCopyBatch(*copyBatch);
             return result;
         }
+        if (shadow->resourceOwner) {
+            PublishedShadowCache nextCache{
+                .owner = shadow->resourceOwner,
+                .atlas = shadow->atlas,
+                .atlasView = shadow->atlasView,
+                .pageTable = shadow->pageTable,
+                .projections = shadow->projections,
+                .revision = publishedShadow_.revision + 1,
+            };
+            auto alive = aliveToken_;
+            Result<> tx = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+                [this, alive, nextCache]() {
+                    if (!alive || !*alive) { return; }
+                    publishedShadow_ = nextCache;
+                },
+                [] {}));
+            if (!tx) { return tx; }
+        }
         const std::array resources{
             DebugResourceBinding{.id = "atlas", .texture = shadow->atlas, .state = ResourceState::ShaderRead},
             DebugResourceBinding{.id = "pageTable", .buffer = shadow->pageTable, .state = ResourceState::ShaderRead},
@@ -517,12 +587,25 @@ public:
     }
 
 private:
+    struct PublishedShadowCache {
+        std::shared_ptr<void> owner;
+        Texture* atlas = nullptr;
+        TextureView* atlasView = nullptr;
+        Buffer* pageTable = nullptr;
+        Buffer* projections = nullptr;
+        uint64_t revision = 0;
+    };
+
     bool collectGPUWork_ = false;
     Device* device_ = nullptr;
     uint64_t sceneIdentity_ = 0;
     VirtualShadowMapResolutionController resolution_;
     VirtualShadowMapCasterCache casterCache_;
     VirtualShadowMaps shadows_;
+    PublishedShadowCache publishedShadow_;
+    std::shared_ptr<bool> aliveToken_ = std::make_shared<bool>(true);
+public:
+    ~VirtualShadowMapPass() override { if (aliveToken_) { *aliveToken_ = false; } }
 };
 
 } // namespace

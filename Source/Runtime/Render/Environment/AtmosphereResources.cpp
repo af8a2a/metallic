@@ -157,6 +157,41 @@ struct AtmosphereResourcesGPU::Impl {
 AtmosphereResourcesGPU::AtmosphereResourcesGPU() : impl_(std::make_unique<Impl>()) {}
 AtmosphereResourcesGPU::~AtmosphereResourcesGPU() = default;
 
+Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const SharedMediumHandle& sharedMedium)
+{
+    if (impl_->device != nullptr) { return makeError(Error::InvalidArgument); }
+    if (!sharedMedium.valid() || sharedMedium.device != &device) {
+        log = "Shared atmosphere medium handle is invalid or belongs to another device";
+        return makeError(Error::InvalidArgument);
+    }
+    impl_->transmittance = std::static_pointer_cast<Impl::Image>(sharedMedium.transmittanceOwner);
+    impl_->multiScattering = std::static_pointer_cast<Impl::Image>(sharedMedium.multiScatteringOwner);
+    impl_->mediumParameters = sharedMedium.parameters;
+    impl_->sharedMedium = true;
+    return initialize(device, log, nullptr, nullptr);
+}
+
+AtmosphereResourcesGPU::SharedMediumHandle AtmosphereResourcesGPU::sharedMediumHandle(
+    const GPUAtmosphereParameters* overrideParameters) const
+{
+    if (!impl_ || !impl_->device || !impl_->transmittance || !impl_->transmittance->texture ||
+        !impl_->transmittance->view || !impl_->multiScattering || !impl_->multiScattering->texture ||
+        !impl_->multiScattering->view) {
+        return {};
+    }
+    return SharedMediumHandle{
+        .transmittanceOwner = impl_->transmittance,
+        .multiScatteringOwner = impl_->multiScattering,
+        .transmittanceTexture = impl_->transmittance->texture.get(),
+        .transmittanceView = impl_->transmittance->view.get(),
+        .multiScatteringTexture = impl_->multiScattering->texture.get(),
+        .multiScatteringView = impl_->multiScattering->view.get(),
+        .device = impl_->device,
+        .parameters = overrideParameters != nullptr ? *overrideParameters
+            : (impl_->recorded ? impl_->parameters : impl_->mediumParameters),
+    };
+}
+
 Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium,
     const GPUAtmosphereParameters* expectedMediumParameters)
 {

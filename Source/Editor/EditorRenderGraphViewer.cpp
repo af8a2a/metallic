@@ -422,7 +422,22 @@ std::string captureJson(const Snapshot& snapshot)
         {"maxFramesInFlight", snapshot.maxFramesInFlight},
         {"extraVersionCount", snapshot.extraVersionCount},
         {"extraVersionBytes", snapshot.extraVersionBytes},
+        {"graphManagedVramBytes", snapshot.graphManagedVramBytes},
         {"peakManagedVramBytes", snapshot.peakManagedVramBytes},
+        {"providerManagedVramBytes", snapshot.providerManagedVramBytes},
+        {"historyManagedVramBytes", snapshot.historyManagedVramBytes},
+        {"deviceTrackedVramBytes", snapshot.deviceTrackedVramBytes},
+        {"peakDeviceTrackedVramBytes", snapshot.peakDeviceTrackedVramBytes},
+        {"driverDeviceVramAvailable", snapshot.driverDeviceVramAvailable},
+        {"driverDeviceVramBytes", snapshot.driverDeviceVramBytes},
+        {"peakDriverDeviceVramBytes", snapshot.peakDriverDeviceVramBytes},
+        {"memoryAccountingScopes", {
+            {"graphManaged", "Graph-owned texture/buffer backings + version-pool extra versions"},
+            {"provider", "Captured ProviderOwned published backings observed in this execution"},
+            {"history", "Captured TemporalOwned history ring slots bound in this execution"},
+            {"deviceTracked", "All RHI device-local allocations (scene/streaming/history/providers; excludes opaque SDKs)"},
+            {"driverDevice", "VK_EXT_memory_budget primary device-local heap usage (includes opaque SDKs such as NRD/DLSS and driver slack)"},
+        }},
         {"conservativeFallbackReasons", snapshot.conservativeFallbackReasons},
         {"externalRecording", snapshot.externalRecording}, {"scope", "Declared graph and captured internal stages; opaque internals excluded"},
         {"resources", Json::array()}, {"passes", Json::array()}, {"queues", Json::array()},
@@ -508,7 +523,7 @@ std::string captureJson(const Snapshot& snapshot)
     }
     for (const auto& q : snapshot.queues) { value["queues"].push_back({{"id", q.id}, {"type", queueName(q.type)}}); }
     for (const auto& s : snapshot.segments) { value["segments"].push_back({{"id", s.id}, {"pass", s.passId},
-        {"queue", s.queueId}, {"role", roleName(s.role)}, {"predecessors", s.predecessors},
+        {"queue", s.queueId}, {"role", roleName(s.role)}, {"debugName", s.debugName}, {"predecessors", s.predecessors},
         {"recorded", s.recorded}, {"accepted", s.accepted}, {"completionKnown", s.completionKnown}, {"completed", s.completed}}); }
     for (const auto& b : snapshot.batches) { value["batches"].push_back({{"id", b.id}, {"queue", b.queueId},
         {"segments", b.segmentIds}, {"waitPredecessors", b.waitPredecessors}, {"externalWaitCount", b.externalWaitCount},
@@ -676,8 +691,28 @@ void RenderGraphExecutionViewer::drawResources(float scale)
                 ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
                 if (ImGui::BeginTooltip()) {
                     ImGui::TextUnformatted(resource.name.c_str());
-                    ImGui::Text("%s | %s", resource.privateResource ? "Private import" : "Graph resource",
+                    ImGui::Text("%s / %s | %s",
+                        renderGraphResourceOwnershipName(resource.ownership),
+                        resource.privateResource ? "Private import" : "Graph resource",
                         resource.memory.known ? bytesText(resource.memory.sizeBytes).c_str() : "Memory unknown");
+                    if (!resource.producerName.empty()) {
+                        ImGui::Text("Producer: %s", resource.producerName.c_str());
+                    }
+                    if (!resource.consumerNames.empty()) {
+                        std::string joined;
+                        for (size_t c = 0; c < resource.consumerNames.size(); ++c) {
+                            if (c != 0) { joined += ", "; }
+                            joined += resource.consumerNames[c];
+                        }
+                        ImGui::Text("Consumers (%zu): %s", resource.consumerNames.size(), joined.c_str());
+                    }
+                    if (resource.logicalResourceId != 0) {
+                        ImGui::Text("Version #%llu (content %llu, gen %llu) | Backing #%llu",
+                            static_cast<unsigned long long>(resource.versionId),
+                            static_cast<unsigned long long>(resource.contentRevision),
+                            static_cast<unsigned long long>(resource.allocationGeneration),
+                            static_cast<unsigned long long>(resource.memory.backingAllocationId ? resource.memory.backingAllocationId : resource.id));
+                    }
                     for (const auto& alias : resource.aliases) { ImGui::TextUnformatted(alias.c_str()); }
                     ImGui::EndTooltip();
                 }
@@ -797,7 +832,9 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
         draw->AddRect(p, ImVec2(p.x + 132 * diagramScale, p.y + 70 * diagramScale), selectedPassId_ == segment.passId ? IM_COL32(245, 245, 245, 255) : color, 4 * diagramScale);
         char label[80]; std::snprintf(label, sizeof(label), "S%u  %s", segment.id, roleName(segment.role));
         draw->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom, ImVec2(p.x + 6 * diagramScale, p.y + 5 * diagramScale), color, label);
-        const auto name = pass ? pass->name.substr(0, 17) : std::string("Frame boundary");
+        const std::string rawName = pass ? pass->name
+            : (!segment.debugName.empty() ? segment.debugName : std::string("Frame boundary"));
+        const auto name = rawName.size() > 17 ? rawName.substr(0, 15) + ".." : rawName;
         draw->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom, ImVec2(p.x + 6 * diagramScale, p.y + 26 * diagramScale), ImGui::GetColorU32(ImGuiCol_Text), name.c_str());
         draw->AddText(ImGui::GetFont(), ImGui::GetFontSize() * zoom, ImVec2(p.x + 6 * diagramScale, p.y + 47 * diagramScale), ImGui::GetColorU32(ImGuiCol_TextDisabled),
             segment.completed ? "GPU complete" : segment.accepted ? "Accepted" : segment.recorded ? "Recorded" : "Planned");
@@ -808,6 +845,7 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
             if (ImGui::BeginTooltip()) {
                 ImGui::Text("S%u  %s", segment.id, roleName(segment.role));
                 if (pass) { ImGui::TextUnformatted(pass->name.c_str()); }
+                else if (!segment.debugName.empty()) { ImGui::TextUnformatted(segment.debugName.c_str()); }
                 ImGui::Text("Q%u | %zu predecessors", segment.queueId, segment.predecessors.size());
                 if (!segment.completionKnown) { ImGui::TextDisabled("GPU completion unavailable in this capture."); }
                 ImGui::EndTooltip();
@@ -846,10 +884,28 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
         snapshot_->crossFrameResourceScheduled ? "Per-resource frontier" : "Conservative",
         renderGraphMemoryPolicyName(snapshot_->memoryPolicy),
         snapshot_->maxFramesInFlight);
-    ImGui::Text("Extra physical versions: %u (%s) | Peak managed VRAM: %s",
+    const uint64_t graphManagedNow = snapshot_->graphManagedVramBytes != 0
+        ? snapshot_->graphManagedVramBytes
+        : (snapshot_->textureMemory.backingBytes + snapshot_->bufferMemory.backingBytes + snapshot_->extraVersionBytes);
+    ImGui::Text("Graph-managed VRAM: %s (peak %s) | Extra physical versions: %u (%s)",
+        bytesText(graphManagedNow).c_str(),
+        bytesText(snapshot_->peakManagedVramBytes).c_str(),
         snapshot_->extraVersionCount,
-        bytesText(snapshot_->extraVersionBytes).c_str(),
-        bytesText(snapshot_->peakManagedVramBytes).c_str());
+        bytesText(snapshot_->extraVersionBytes).c_str());
+    ImGui::Text("Captured scope backings -> Provider: %s | History: %s",
+        bytesText(snapshot_->providerManagedVramBytes).c_str(),
+        bytesText(snapshot_->historyManagedVramBytes).c_str());
+    ImGui::Text("Device-wide RHI VRAM: %s (peak %s)",
+        bytesText(snapshot_->deviceTrackedVramBytes).c_str(),
+        bytesText(snapshot_->peakDeviceTrackedVramBytes).c_str());
+    if (snapshot_->driverDeviceVramAvailable) {
+        ImGui::Text("Device-wide Driver heap (incl. opaque SDKs): %s (peak %s)",
+            bytesText(snapshot_->driverDeviceVramBytes).c_str(),
+            bytesText(snapshot_->peakDriverDeviceVramBytes).c_str());
+    } else {
+        ImGui::TextDisabled("Device-wide Driver heap (VK_EXT_memory_budget): unavailable on this device/capture.");
+    }
+    ImGui::TextDisabled("Scopes: Graph-managed = graph targets + pool versions; Provider = captured ProviderOwned backings; History = bound TemporalOwned slots; Opaque SDK = excluded from graph/RHI counts, reflected in Driver heap.");
     if (!snapshot_->conservativeFallbackReasons.empty() && ImGui::TreeNode("Conservative fallback reasons")) {
         for (const auto& reason : snapshot_->conservativeFallbackReasons) {
             ImGui::TextWrapped("- %s", reason.c_str());
@@ -1000,7 +1056,7 @@ void RenderGraphExecutionViewer::drawInspector()
         if (!resource->producerName.empty()) {
             ImGui::TextWrapped("Producer: %s", resource->producerName.c_str());
         }
-        if (!resource->consumerNames.empty() && ImGui::TreeNode("Consumers")) {
+        if (!resource->consumerNames.empty() && ImGui::TreeNodeEx("Consumers", ImGuiTreeNodeFlags_DefaultOpen)) {
             for (const auto& consumer : resource->consumerNames) { ImGui::TextWrapped("%s", consumer.c_str()); }
             ImGui::TreePop();
         }

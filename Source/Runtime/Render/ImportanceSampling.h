@@ -45,6 +45,7 @@ public:
     [[nodiscard]] Result<> endGpuBuild(CommandBuffer& commandBuffer);
 
     bool valid() const;
+    Texture* texture() const;
     TextureView* view() const;
     TextureView* mipView(uint32_t mipLevel) const;
     uint32_t sourceWidth() const;

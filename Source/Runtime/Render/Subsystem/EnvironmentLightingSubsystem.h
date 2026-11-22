@@ -14,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace metallic::render {
@@ -156,6 +157,7 @@ public:
     uint64_t physicalCacheHitCount() const { return physicalCacheHitCount_; }
     uint64_t mediumShareCount() const { return mediumShareCount_; }
     uint64_t physicalAllocationGeneration() const { return nextPhysicalAllocationGeneration_; }
+    uint64_t mediumAllocationGeneration() const { return nextMediumAllocationGeneration_; }
 
 private:
     struct DecodedEnvironment;
@@ -193,6 +195,11 @@ private:
     std::vector<MediumPublication> mediumPublications_;
     std::mutex physicalMutex_;
     uint64_t nextPhysicalAllocationGeneration_ = 0;
+    uint64_t nextMediumAllocationGeneration_ = 0;
+    uint64_t nextContentRevision_ = 0;
+    uint64_t nextMediumContentRevision_ = 0;
+    std::unordered_map<uint64_t, uint64_t> contentRevisionByKey_;
+    std::unordered_map<uint64_t, uint64_t> mediumContentRevisionByKey_;
     uint64_t physicalProducerCount_ = 0;
     uint64_t physicalCacheHitCount_ = 0;
     uint64_t mediumShareCount_ = 0;

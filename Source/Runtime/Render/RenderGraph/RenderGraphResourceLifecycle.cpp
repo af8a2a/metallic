@@ -33,9 +33,21 @@ bool sameActualQueue(const Queue* lhs, const Queue* rhs)
     return lhs != nullptr && rhs != nullptr && lhs->sameQueue(*rhs);
 }
 
-void appendUniqueCompletion(std::vector<GPUCompletionPoint>& destination, const GPUCompletionPoint& completion)
+void appendUniqueActiveCompletion(std::vector<GPUCompletionPoint>& destination, const GPUCompletionPoint& completion)
 {
     if (!completion.valid() || completion.isCancelled() || !completion.isSubmitted() || completion.isComplete()) {
+        return;
+    }
+    const bool exists = std::any_of(destination.begin(), destination.end(),
+        [&](const GPUCompletionPoint& existing) { return existing.sameSubmission(completion); });
+    if (!exists) {
+        destination.push_back(completion);
+    }
+}
+
+void appendUniqueSubmittedCompletion(std::vector<GPUCompletionPoint>& destination, const GPUCompletionPoint& completion)
+{
+    if (!completion.valid() || completion.isCancelled() || !completion.isSubmitted()) {
         return;
     }
     const bool exists = std::any_of(destination.begin(), destination.end(),
@@ -171,6 +183,36 @@ bool ResourceFrontierAccess::isActive() const
     return completion.valid() && completion.isSubmitted() && !completion.isCancelled() && !completion.isComplete();
 }
 
+bool ResourceFrontierAccess::hasSubmittedCompletion() const
+{
+    return completion.valid() && completion.isSubmitted() && !completion.isCancelled();
+}
+
+bool ResourceFrontierAccess::isVisibleTo(const Queue* targetQueue) const
+{
+    if (targetQueue == nullptr) {
+        return true;
+    }
+    if (sameActualQueue(queue, targetQueue)) {
+        return true;
+    }
+    return std::any_of(visibleQueues.begin(), visibleQueues.end(),
+        [&](const Queue* visible) { return sameActualQueue(visible, targetQueue); });
+}
+
+bool ResourceFrontierAccess::needsVisibilityOn(const Queue* targetQueue) const
+{
+    return hasSubmittedCompletion() && !isVisibleTo(targetQueue);
+}
+
+void ResourceFrontierAccess::markVisibleTo(Queue* targetQueue)
+{
+    if (targetQueue == nullptr || isVisibleTo(targetQueue)) {
+        return;
+    }
+    visibleQueues.push_back(targetQueue);
+}
+
 void ResourceAccessFrontier::pruneCompleted()
 {
     if (lastWriter && lastWriter->status == FrontierEntryStatus::Accepted && lastWriter->completion.isComplete()) {
@@ -207,14 +249,14 @@ std::vector<GPUCompletionPoint> ResourceAccessFrontier::activeCompletions() cons
 {
     std::vector<GPUCompletionPoint> completions;
     if (lastWriter && lastWriter->isActive()) {
-        appendUniqueCompletion(completions, lastWriter->completion);
+        appendUniqueActiveCompletion(completions, lastWriter->completion);
     }
     if (layoutAnchor && layoutAnchor->isActive()) {
-        appendUniqueCompletion(completions, layoutAnchor->completion);
+        appendUniqueActiveCompletion(completions, layoutAnchor->completion);
     }
     for (const ResourceFrontierAccess& reader : outstandingReaders) {
         if (reader.isActive()) {
-            appendUniqueCompletion(completions, reader.completion);
+            appendUniqueActiveCompletion(completions, reader.completion);
         }
     }
     return completions;
@@ -229,15 +271,18 @@ void ResourceAccessFrontier::collectWaitsForRead(
     const std::string resourceLabel = logicalId.name.empty()
         ? ("backing#" + std::to_string(backingAllocationId))
         : logicalId.name;
-    if (lastWriter && lastWriter->isActive() && !sameActualQueue(lastWriter->queue, consumerQueue)) {
-        appendUniqueCompletion(outWaits, lastWriter->completion);
+    // Wait whenever consumerQueue has not yet established a device-side
+    // semaphore dependency against the writer/layout anchor, even if the host
+    // already observed the producer's timeline value as complete.
+    if (lastWriter && lastWriter->needsVisibilityOn(consumerQueue)) {
+        appendUniqueSubmittedCompletion(outWaits, lastWriter->completion);
         if (outReasons != nullptr) {
             outReasons->push_back("Cross-frame RAW on " + resourceLabel +
                 " (frame " + std::to_string(lastWriter->frameIndex) + ")");
         }
     }
-    if (layoutAnchor && layoutAnchor->isActive() && !sameActualQueue(layoutAnchor->queue, consumerQueue)) {
-        appendUniqueCompletion(outWaits, layoutAnchor->completion);
+    if (layoutAnchor && layoutAnchor->needsVisibilityOn(consumerQueue)) {
+        appendUniqueSubmittedCompletion(outWaits, layoutAnchor->completion);
         if (outReasons != nullptr) {
             outReasons->push_back("Cross-frame layout RAW on " + resourceLabel +
                 " (frame " + std::to_string(layoutAnchor->frameIndex) + ")");
@@ -247,7 +292,7 @@ void ResourceAccessFrontier::collectWaitsForRead(
         size_t remoteReaders = 0;
         for (const ResourceFrontierAccess& reader : outstandingReaders) {
             if (reader.isActive() && !sameActualQueue(reader.queue, consumerQueue)) {
-                appendUniqueCompletion(outWaits, reader.completion);
+                appendUniqueActiveCompletion(outWaits, reader.completion);
                 ++remoteReaders;
             }
         }
@@ -266,15 +311,15 @@ void ResourceAccessFrontier::collectWaitsForWrite(
     const std::string resourceLabel = logicalId.name.empty()
         ? ("backing#" + std::to_string(backingAllocationId))
         : logicalId.name;
-    if (lastWriter && lastWriter->isActive() && !sameActualQueue(lastWriter->queue, writerQueue)) {
-        appendUniqueCompletion(outWaits, lastWriter->completion);
+    if (lastWriter && lastWriter->needsVisibilityOn(writerQueue)) {
+        appendUniqueSubmittedCompletion(outWaits, lastWriter->completion);
         if (outReasons != nullptr) {
             outReasons->push_back("Cross-frame WAW on " + resourceLabel +
                 " (frame " + std::to_string(lastWriter->frameIndex) + ")");
         }
     }
-    if (layoutAnchor && layoutAnchor->isActive() && !sameActualQueue(layoutAnchor->queue, writerQueue)) {
-        appendUniqueCompletion(outWaits, layoutAnchor->completion);
+    if (layoutAnchor && layoutAnchor->needsVisibilityOn(writerQueue)) {
+        appendUniqueSubmittedCompletion(outWaits, layoutAnchor->completion);
         if (outReasons != nullptr) {
             outReasons->push_back("Cross-frame layout WAW on " + resourceLabel +
                 " (frame " + std::to_string(layoutAnchor->frameIndex) + ")");
@@ -283,7 +328,7 @@ void ResourceAccessFrontier::collectWaitsForWrite(
     size_t remoteReaders = 0;
     for (const ResourceFrontierAccess& reader : outstandingReaders) {
         if (reader.isActive() && !sameActualQueue(reader.queue, writerQueue)) {
-            appendUniqueCompletion(outWaits, reader.completion);
+            appendUniqueActiveCompletion(outWaits, reader.completion);
             ++remoteReaders;
         }
     }
@@ -325,11 +370,11 @@ CrossFrameAccessPlanResult CrossFrameResourceTracker::planAccess(
     const bool isExclusive = exclusiveQueueOwnership || frontier.exclusiveQueueOwnership;
     if (isExclusive) {
         auto crossesQueue = [&](const std::optional<ResourceFrontierAccess>& access) {
-            return access && access->isActive() && !sameActualQueue(access->queue, targetQueue);
+            return access && access->queue != nullptr && !sameActualQueue(access->queue, targetQueue);
         };
         const bool readerCrossesQueue = std::any_of(frontier.outstandingReaders.begin(), frontier.outstandingReaders.end(),
             [&](const ResourceFrontierAccess& reader) {
-                return reader.isActive() && !sameActualQueue(reader.queue, targetQueue);
+                return reader.queue != nullptr && !sameActualQueue(reader.queue, targetQueue);
             });
         if (crossesQueue(frontier.lastWriter) || crossesQueue(frontier.layoutAnchor) || readerCrossesQueue) {
             result.requiresConservativeFallback = true;
@@ -377,7 +422,7 @@ void CrossFrameResourceTracker::commitAcceptedAccess(const AcceptedCrossFrameAcc
         (!access.completion.valid() || access.completion.isComplete())
             ? FrontierEntryStatus::Complete
             : FrontierEntryStatus::Accepted;
-    const ResourceFrontierAccess record{
+    ResourceFrontierAccess record{
         .frameIndex = access.frameIndex,
         .queue = access.queue,
         .scope = access.scope,
@@ -385,14 +430,22 @@ void CrossFrameResourceTracker::commitAcceptedAccess(const AcceptedCrossFrameAcc
         .status = status,
         .passName = access.passName,
     };
+    if (access.queue != nullptr) {
+        record.visibleQueues.push_back(access.queue);
+    }
 
     if (access.layoutChanged && access.type == RenderGraphResourceType::Texture2D) {
         frontier.layoutAnchor = record;
+    } else if (frontier.layoutAnchor && access.queue != nullptr) {
+        frontier.layoutAnchor->markVisibleTo(access.queue);
     }
     if (access.writes) {
         frontier.lastWriter = record;
         frontier.outstandingReaders.clear();
     } else {
+        if (frontier.lastWriter && access.queue != nullptr) {
+            frontier.lastWriter->markVisibleTo(access.queue);
+        }
         auto existing = std::find_if(frontier.outstandingReaders.begin(), frontier.outstandingReaders.end(),
             [&](const ResourceFrontierAccess& reader) {
                 return sameActualQueue(reader.queue, record.queue) &&
@@ -407,6 +460,16 @@ void CrossFrameResourceTracker::commitAcceptedAccess(const AcceptedCrossFrameAcc
         }
     }
     frontier.state = access.state;
+}
+
+void CrossFrameResourceTracker::updateBackingState(uint64_t backingAllocationId, ResourceState state)
+{
+    if (backingAllocationId == 0) {
+        return;
+    }
+    if (auto found = frontiers_.find(backingAllocationId); found != frontiers_.end()) {
+        found->second.state = state;
+    }
 }
 
 void CrossFrameResourceTracker::forgetBacking(uint64_t backingAllocationId)

@@ -119,6 +119,7 @@ Result<> ImportancePdfTexture::initialize(
             .mipCount = impl_->mipCount,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
         }).transform([&](auto rhiValue) { impl_->texture = std::move(rhiValue); });
     if (!result || impl_->texture == nullptr) {
         log = resultMessage(std::string("createTexture(") + std::string(debugName) + ")", result);
@@ -229,6 +230,11 @@ void ImportancePdfTexture::appendDebugBindings(std::vector<DebugResourceBinding>
     if (valid() && impl_->state != ResourceState::Undefined) {
         bindings.push_back({.id = name, .texture = impl_->texture.get(), .state = impl_->state});
     }
+}
+
+Texture* ImportancePdfTexture::texture() const
+{
+    return impl_ != nullptr ? impl_->texture.get() : nullptr;
 }
 
 TextureView* ImportancePdfTexture::view() const

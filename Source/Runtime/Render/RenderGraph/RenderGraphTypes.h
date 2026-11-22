@@ -747,6 +747,13 @@ public:
     {
         return {};
     }
+    // Optional predicate allowing passes to skip allocating optional temporal
+    // history resources when runtime toggles (e.g. accumulate=false or debug
+    // views) disable temporal accumulation for the current frame.
+    virtual bool shouldAllocateTemporalField(const RenderGraphProperties&, std::string_view /*fieldName*/) const
+    {
+        return true;
+    }
     // Optional explicit external/SDK domain contract for passes owning native
     // resources or opaque SDK accesses outside reflected graph fields.
     virtual std::optional<RenderGraphExternalDomainContract> externalDomainContract() const

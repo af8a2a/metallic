@@ -510,6 +510,18 @@ public:
         return reflection;
     }
 
+    bool shouldAllocateTemporalField(
+        const RenderGraphProperties& properties,
+        std::string_view fieldName) const override
+    {
+        if (fieldName == "historyPrevious" || fieldName == "historyCurrent") {
+            const bool debugViewEnabled = useOpenPBRBsdf(properties) &&
+                debugViewFromProperties(properties) != kScenePathTraceDebugViewFinal;
+            return !realtime_ && !debugViewEnabled && boolProperty(properties, "accumulate", true);
+        }
+        return true;
+    }
+
     void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
     {
         if (auto* color = context.output("color")) {

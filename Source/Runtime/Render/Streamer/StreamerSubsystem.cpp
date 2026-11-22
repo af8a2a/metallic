@@ -618,4 +618,62 @@ Result<> StreamerSubsystem::flush(CommandBuffer& commands, const StreamUploadPha
     return {};
 }
 
+Result<> StreamerSubsystem::declarePreparedSceneResources(
+    const PreparedSceneResources& prepared,
+    uint64_t viewId,
+    RenderGraphResourceRequestBuilder& builder) const
+{
+    if (auto contract = externalDomainContract()) {
+        Result<> domainResult = builder.declareExternalDomain(std::move(*contract));
+        if (!domainResult) { return domainResult; }
+    }
+    const auto publishBuffer = [&](std::string_view name, Buffer* buffer, uint64_t revision,
+                                   std::shared_ptr<void> owner) -> Result<> {
+        if (buffer == nullptr) { return {}; }
+        const ResourceMemoryInfo mem = buffer->memoryInfo();
+        const uint64_t backingId = mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
+        const LogicalResourceId logicalId = makeLogicalResourceId("render.streamer", name, viewId, 0);
+        ExternalResourcePublication pub{
+            .logicalId = logicalId,
+            .version = ResourceVersionId{
+                .logicalId = logicalId,
+                .version = revision != 0 ? revision : 1ull,
+                .contentRevision = revision != 0 ? revision : 1ull,
+                .allocationGeneration = backingId != 0 ? backingId : 1ull,
+            },
+            .ownership = RenderGraphResourceOwnership::ProviderOwned,
+            .type = RenderGraphResourceType::Buffer,
+            .buffer = buffer,
+            .backingAllocationId = backingId,
+            .sizeBytes = mem.backingSizeBytes != 0 ? mem.backingSizeBytes : buffer->desc().size,
+            .finalState = ResourceState::ShaderRead,
+            .writtenByProducer = false,
+            .owner = std::move(owner),
+        };
+        return builder.trackPublishedResource(pub, false);
+    };
+    if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
+        const auto& pt = prepared.snapshot->pathTraceResources;
+        if (auto r = publishBuffer("materials", pt->materialBuffer(), pt->revision(), pt); !r) {
+            return r;
+        }
+        if (auto binding = pt->materialBinding(); binding && binding->valueBuffer() != nullptr) {
+            if (auto r = publishBuffer("materialValues", binding->valueBuffer(), pt->revision(), pt); !r) {
+                return r;
+            }
+        }
+    }
+    if (prepared.geometry) {
+        const auto deferred = prepared.geometry->deferredGpuResources();
+        const uint64_t rev = prepared.geometry->shadingRevision();
+        if (auto r = publishBuffer("pages", deferred.pageBuffer, rev, prepared.geometry); !r) {
+            return r;
+        }
+        if (auto r = publishBuffer("pageTable", deferred.pageTableBuffer, rev, prepared.geometry); !r) {
+            return r;
+        }
+    }
+    return {};
+}
+
 } // namespace metallic::render

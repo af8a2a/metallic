@@ -105,6 +105,9 @@ struct ExternalResourcePublication {
     bool exclusiveQueueOwnership = false;
     bool supportsCrossFrameReadSharing = true;
     bool needsHostWriteBarrier = false;
+    // True when a same-frame ProviderProducer work writes this backing; false
+    // when the resource is read-only (e.g. shared static medium or cached hit).
+    bool writtenByProducer = false;
 };
 
 // Explicit contract for external/native/SDK domains (e.g. GPUScene bindless/BDA,
@@ -131,8 +134,15 @@ struct ResourceFrontierAccess {
     GPUCompletionPoint completion;
     FrontierEntryStatus status = FrontierEntryStatus::Recording;
     std::string passName;
+    // Queues that have established a device-side dependency chain against this
+    // access's completion. Separate from host-observed isActive() / retirement.
+    std::vector<Queue*> visibleQueues;
 
     bool isActive() const;
+    bool hasSubmittedCompletion() const;
+    bool isVisibleTo(const Queue* targetQueue) const;
+    bool needsVisibilityOn(const Queue* targetQueue) const;
+    void markVisibleTo(Queue* targetQueue);
 };
 
 // Per-physical-backing cross-frame hazard frontier. Tracks the last writer,
@@ -207,6 +217,7 @@ public:
         bool exclusiveQueueOwnership = false) const;
 
     void commitAcceptedAccess(const AcceptedCrossFrameAccess& access);
+    void updateBackingState(uint64_t backingAllocationId, ResourceState state);
     void forgetBacking(uint64_t backingAllocationId);
 
     bool isBackingIdle(uint64_t backingAllocationId);

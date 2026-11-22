@@ -311,10 +311,13 @@ struct EnvironmentLightingSubsystem::PhysicalPublication {
     uint64_t revision = 0;
     uint64_t contentKey = 0;
     uint64_t mediumKey = 0;
+    uint64_t mediumContentRevision = 0;
     uint64_t allocationGeneration = 0;
+    uint64_t mediumAllocationGeneration = 0;
     uint64_t producerDedupKey = 0;
     uint64_t preparedFrameSerial = 0;
     GPUCompletionPoint completion;
+    GPUCompletionPoint mediumCompletion;
     bool committed = false;
     bool cancelled = false;
     bool mediumShared = false;
@@ -324,7 +327,9 @@ struct EnvironmentLightingSubsystem::PhysicalPublication {
 struct EnvironmentLightingSubsystem::MediumPublication {
     GPUAtmosphereParameters parameters{};
     uint64_t mediumKey = 0;
-    std::shared_ptr<PhysicalPublication> source;
+    uint64_t contentRevision = 0;
+    uint64_t allocationGeneration = 0;
+    AtmosphereResourcesGPU::SharedMediumHandle medium;
     GPUCompletionPoint completion;
     uint64_t lastUsedFrame = 0;
 };
@@ -350,7 +355,10 @@ public:
         if (owner_.host_ != nullptr) {
             for (const auto& publication : owner_.physicalPublications_) { owner_.host_->retire(publication); }
             for (const auto& publication : owner_.pendingFramePublications_) { owner_.host_->retire(publication); }
-            for (const auto& medium : owner_.mediumPublications_) { owner_.host_->retire(medium.source); }
+            for (const auto& medium : owner_.mediumPublications_) {
+                owner_.host_->retire(medium.medium.transmittanceOwner);
+                owner_.host_->retire(medium.medium.multiScatteringOwner);
+            }
         }
         owner_.physicalPublications_.clear();
         owner_.pendingFramePublications_.clear();
@@ -932,16 +940,18 @@ bool sameAtmosphereMedium(const GPUAtmosphereParameters& lhs, const GPUAtmospher
 ExternalResourcePublication makePublishedTexture(
     std::string_view name,
     uint64_t viewId,
-    uint64_t contentKey,
     uint64_t contentRevision,
     uint64_t allocationGeneration,
     Texture* texture,
     TextureView* view,
     std::shared_ptr<void> owner,
-    const GPUCompletionPoint& completion)
+    const GPUCompletionPoint& completion,
+    bool writtenByProducer = false)
 {
     ExternalResourcePublication pub{};
-    pub.logicalId = makeLogicalResourceId("render.environment", name, viewId, contentKey);
+    // Stable logical identity keyed only by semantic role and view identity;
+    // sun/weather/observer edits advance contentRevision instead of minting new IDs.
+    pub.logicalId = makeLogicalResourceId("render.environment", name, viewId, 0);
     pub.version = ResourceVersionId{
         .logicalId = pub.logicalId,
         .version = allocationGeneration,
@@ -956,6 +966,7 @@ ExternalResourcePublication makePublishedTexture(
     pub.initialState = ResourceState::ShaderRead;
     pub.finalState = ResourceState::ShaderRead;
     pub.producerCompletion = completion;
+    pub.writtenByProducer = writtenByProducer;
     if (texture != nullptr) {
         const auto mem = texture->memoryInfo();
         pub.backingAllocationId = mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
@@ -967,16 +978,16 @@ ExternalResourcePublication makePublishedTexture(
 ExternalResourcePublication makePublishedBuffer(
     std::string_view name,
     uint64_t viewId,
-    uint64_t contentKey,
     uint64_t contentRevision,
     uint64_t allocationGeneration,
     Buffer* buffer,
     std::shared_ptr<void> owner,
     const GPUCompletionPoint& completion,
-    bool needsHostWriteBarrier = false)
+    bool needsHostWriteBarrier = false,
+    bool writtenByProducer = false)
 {
     ExternalResourcePublication pub{};
-    pub.logicalId = makeLogicalResourceId("render.environment", name, viewId, contentKey);
+    pub.logicalId = makeLogicalResourceId("render.environment", name, viewId, 0);
     pub.version = ResourceVersionId{
         .logicalId = pub.logicalId,
         .version = allocationGeneration,
@@ -991,6 +1002,7 @@ ExternalResourcePublication makePublishedBuffer(
     pub.finalState = ResourceState::ShaderRead;
     pub.producerCompletion = completion;
     pub.needsHostWriteBarrier = needsHostWriteBarrier;
+    pub.writtenByProducer = writtenByProducer;
     if (buffer != nullptr) {
         const auto mem = buffer->memoryInfo();
         pub.backingAllocationId = mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
@@ -1038,7 +1050,8 @@ Result<CelestialLightingResources> EnvironmentLightingSubsystem::prepareCelestia
         std::unique_ptr<Buffer> next;
         auto result = device.createBuffer({.size = sizeof(outRecords),
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-            .memoryLocation = MemoryLocation::HostUpload})
+            .memoryLocation = MemoryLocation::HostUpload,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy})
             .transform([&](auto buffer) { next = std::move(buffer); });
         if (!result) { return makeError(result.error()); }
         if (next == nullptr) { return makeError(Error::Failure); }
@@ -1065,7 +1078,10 @@ Result<CelestialLightingResources> EnvironmentLightingSubsystem::updateCelestial
     bool newlyUploaded = false;
     auto result = prepareCelestialResources(device, host, environment, records, newlyUploaded);
     if (!result) { return result; }
-    if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(result->buffer); }
+    if (result->buffer != nullptr) {
+        if (auto retained = commands.retainResource(result->buffer); !retained) { return makeError(retained.error()); }
+        if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(result->buffer); }
+    }
     commands.hostWriteBarrier();
     return result;
 }
@@ -1094,7 +1110,7 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
             set->lighting.celestialResourceRevision = set->celestial.revision;
         }
         set->contentKey = resourceRevision_;
-        set->logicalId = makeLogicalResourceId("render.environment", "hdri", request.viewId, resourceRevision_);
+        set->logicalId = makeLogicalResourceId("render.environment", "hdri", request.viewId, 0);
         set->version = ResourceVersionId{
             .logicalId = set->logicalId,
             .version = resourceRevision_ + 1,
@@ -1104,18 +1120,28 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
         set->cacheHit = true;
         set->producedThisFrame = false;
         if (resources_ != nullptr) {
-            set->publications.push_back(makePublishedTexture("hdri.radiance", 0, resourceRevision_,
+            set->publications.push_back(makePublishedTexture("hdri.radiance", 0,
                 resourceRevision_, resourceRevision_ + 1, resources_->radiance.get(), resources_->radianceView.get(),
                 resources_, {}));
-            set->publications.push_back(makePublishedBuffer("hdri.sphericalHarmonics", 0, resourceRevision_,
+            if (resources_->pdf.valid() && resources_->pdf.texture() != nullptr) {
+                set->publications.push_back(makePublishedTexture("hdri.pdf", 0,
+                    resourceRevision_, resourceRevision_ + 1, resources_->pdf.texture(), resources_->pdf.view(),
+                    resources_, {}));
+            }
+            set->publications.push_back(makePublishedBuffer("hdri.sphericalHarmonics", 0,
                 resourceRevision_, resourceRevision_ + 1, resources_->sphericalHarmonicsBuffer.get(),
                 resources_, {}));
-            set->publications.push_back(makePublishedBuffer("hdri.prefilteredSpecular", 0, resourceRevision_,
+            set->publications.push_back(makePublishedBuffer("hdri.prefilteredSpecular", 0,
                 resourceRevision_, resourceRevision_ + 1, resources_->prefilteredSpecularBuffer.get(),
                 resources_, {}));
+            if (resources_->filteredSpecular.texture != nullptr) {
+                set->publications.push_back(makePublishedTexture("hdri.filteredSpecular", 0,
+                    resourceRevision_, resourceRevision_ + 1, resources_->filteredSpecular.texture.get(),
+                    resources_->filteredSpecular.view.get(), resources_, {}));
+            }
         }
         if (request.needCelestial && set->celestial.buffer != nullptr) {
-            set->publications.push_back(makePublishedBuffer("celestialLights", 0, set->celestial.revision,
+            set->publications.push_back(makePublishedBuffer("celestialLights", 0,
                 set->celestial.revision, set->celestial.revision, set->celestial.buffer.get(),
                 set->celestial.buffer, {}, set->celestialNeedsHostBarrier));
         }
@@ -1154,6 +1180,11 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
 
     {
         std::scoped_lock lock(physicalMutex_);
+        auto& contentRevision = contentRevisionByKey_[contentKey];
+        if (contentRevision == 0) { contentRevision = ++nextContentRevision_; }
+        auto& mediumContentRevision = mediumContentRevisionByKey_[mediumKey];
+        if (mediumContentRevision == 0) { mediumContentRevision = ++nextMediumContentRevision_; }
+
         auto committedFound = std::find_if(physicalPublications_.begin(), physicalPublications_.end(),
             [&](const auto& candidate) {
                 return candidate->committed && !candidate->cancelled &&
@@ -1164,6 +1195,16 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
             physicalPublications_.erase(committedFound);
             physicalPublications_.push_back(publication);
             publication->lastUsedFrame = frameSerial_;
+            if (publication->mediumShared && !publication->mediumCompletion.valid()) {
+                auto mediumIter = std::find_if(mediumPublications_.begin(), mediumPublications_.end(),
+                    [&](const MediumPublication& candidate) {
+                        return candidate.allocationGeneration == publication->mediumAllocationGeneration &&
+                            candidate.completion.valid();
+                    });
+                if (mediumIter != mediumPublications_.end()) {
+                    publication->mediumCompletion = mediumIter->completion;
+                }
+            }
             cacheHit = true;
             mediumShared = publication->mediumShared;
             ++physicalCacheHitCount_;
@@ -1183,9 +1224,10 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
             } else {
                 publication = std::make_shared<PhysicalPublication>();
                 publication->parameters = parameters;
-                publication->revision = contentKey;
+                publication->revision = contentRevision;
                 publication->contentKey = contentKey;
                 publication->mediumKey = mediumKey;
+                publication->mediumContentRevision = mediumContentRevision;
                 publication->allocationGeneration = ++nextPhysicalAllocationGeneration_;
                 publication->preparedFrameSerial = frameSerial_;
                 publication->lastUsedFrame = frameSerial_;
@@ -1194,18 +1236,21 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
                     publication->producerDedupKey = contentKey;
                 }
 
-                // Prefer committed cross-frame static medium cache first (survives
-                // full PhysicalPublication eviction across views/sun edits).
-                const AtmosphereResourcesGPU* sharedMediumAtmosphere = nullptr;
+                // Prefer committed cross-frame static medium cache first (retains
+                // only the two medium LUT image owners, independent of evicted
+                // sky/radiance/SH/specular publications).
+                AtmosphereResourcesGPU::SharedMediumHandle committedMediumHandle;
+                const AtmosphereResourcesGPU* pendingMediumAtmosphere = nullptr;
                 const GPUAtmosphereParameters* expectedMediumParams = nullptr;
                 auto mediumIter = std::find_if(mediumPublications_.begin(), mediumPublications_.end(),
                     [&](const MediumPublication& candidate) {
-                        return candidate.source && !candidate.source->cancelled && candidate.source->committed &&
-                            sameAtmosphereMedium(candidate.parameters, parameters);
+                        return candidate.medium.valid() && sameAtmosphereMedium(candidate.parameters, parameters);
                     });
                 if (mediumIter != mediumPublications_.end()) {
-                    sharedMediumAtmosphere = &mediumIter->source->atmosphere;
+                    committedMediumHandle = mediumIter->medium;
                     mediumWaitCompletion = mediumIter->completion;
+                    publication->mediumAllocationGeneration = mediumIter->allocationGeneration;
+                    publication->mediumCompletion = mediumIter->completion;
                     mediumShared = true;
                     auto promoted = std::move(*mediumIter);
                     promoted.lastUsedFrame = frameSerial_;
@@ -1221,17 +1266,21 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
                                 !candidate->mediumShared && sameAtmosphereMedium(candidate->parameters, parameters);
                         });
                     if (pendingMedium != pendingFramePublications_.end()) {
-                        sharedMediumAtmosphere = &(*pendingMedium)->atmosphere;
+                        pendingMediumAtmosphere = &(*pendingMedium)->atmosphere;
                         expectedMediumParams = &(*pendingMedium)->parameters;
                         prerequisiteMediumDedupKey = (*pendingMedium)->producerDedupKey;
+                        publication->mediumAllocationGeneration = (*pendingMedium)->mediumAllocationGeneration;
                         mediumShared = true;
                         ++mediumShareCount_;
+                    } else {
+                        publication->mediumAllocationGeneration = ++nextMediumAllocationGeneration_;
                     }
                 }
 
                 publication->mediumShared = mediumShared;
-                Result<> result = publication->atmosphere.initialize(
-                    device, log, sharedMediumAtmosphere, expectedMediumParams);
+                Result<> result = committedMediumHandle.valid()
+                    ? publication->atmosphere.initialize(device, log, committedMediumHandle)
+                    : publication->atmosphere.initialize(device, log, pendingMediumAtmosphere, expectedMediumParams);
                 if (!result) { return makeError(result.error()); }
 
                 constexpr uint32_t width = AtmosphereResourcesGPU::kRadianceWidth;
@@ -1288,7 +1337,7 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
     resolved.mapAvailable = true;
     resolved.retainedResources = publication;
 
-    set->logicalId = makeLogicalResourceId("render.environment", "physical", request.viewId, contentKey);
+    set->logicalId = makeLogicalResourceId("render.environment", "physical", request.viewId, 0);
     set->version = ResourceVersionId{
         .logicalId = set->logicalId,
         .version = publication->allocationGeneration,
@@ -1304,36 +1353,62 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
     set->producerCompletion = publication->committed ? publication->completion : GPUCompletionPoint{};
     set->producerDedupKey = (!cacheHit || sameFramePendingHit) ? publication->producerDedupKey : 0;
 
-    // Publish logical/physical resource metadata for RenderGraph tracking and Viewer inspection.
+    // Publish logical/physical resource metadata for GraphAccessPlan, cross-frame
+    // synchronization, and Viewer inspection. Cover every resource actually sampled
+    // by consumers, including PDF, filterable specular texture, and atmosphere parameters.
     const auto& completion = set->producerCompletion;
-    set->publications.push_back(makePublishedTexture("atmosphere.transmittance", 0, mediumKey, mediumKey,
-        publication->allocationGeneration, publication->atmosphere.transmittanceTexture(),
-        publication->atmosphere.transmittanceView(), publication, completion));
-    set->publications.push_back(makePublishedTexture("atmosphere.multiScattering", 0, mediumKey, mediumKey,
-        publication->allocationGeneration, publication->atmosphere.multiScatteringTexture(),
-        publication->atmosphere.multiScatteringView(), publication, completion));
-    set->publications.push_back(makePublishedTexture("atmosphere.skyView", request.viewId, contentKey,
+    const auto mediumHandle = publication->atmosphere.sharedMediumHandle(&publication->parameters);
+    const GPUCompletionPoint mediumCompletion = publication->mediumCompletion.valid()
+        ? publication->mediumCompletion : completion;
+    const bool mediumWrittenHere = !cacheHit && !publication->mediumShared;
+    const bool viewWrittenHere = !cacheHit;
+    set->publications.push_back(makePublishedTexture("atmosphere.transmittance", 0,
+        publication->mediumContentRevision, publication->mediumAllocationGeneration,
+        publication->atmosphere.transmittanceTexture(), publication->atmosphere.transmittanceView(),
+        mediumHandle.transmittanceOwner ? mediumHandle.transmittanceOwner : std::static_pointer_cast<void>(publication),
+        mediumCompletion, mediumWrittenHere));
+    set->publications.push_back(makePublishedTexture("atmosphere.multiScattering", 0,
+        publication->mediumContentRevision, publication->mediumAllocationGeneration,
+        publication->atmosphere.multiScatteringTexture(), publication->atmosphere.multiScatteringView(),
+        mediumHandle.multiScatteringOwner ? mediumHandle.multiScatteringOwner : std::static_pointer_cast<void>(publication),
+        mediumCompletion, mediumWrittenHere));
+    set->publications.push_back(makePublishedTexture("atmosphere.skyView", request.viewId,
         publication->revision, publication->allocationGeneration, publication->atmosphere.skyViewTexture(),
-        publication->atmosphere.skyView(), publication, completion));
-    set->publications.push_back(makePublishedTexture("atmosphere.radiance", request.viewId, contentKey,
+        publication->atmosphere.skyView(), publication, completion, viewWrittenHere));
+    set->publications.push_back(makePublishedTexture("atmosphere.radiance", request.viewId,
         publication->revision, publication->allocationGeneration, publication->atmosphere.radianceTexture(),
-        publication->atmosphere.radianceView(), publication, completion));
-    set->publications.push_back(makePublishedTexture("atmosphere.cloudShadow", request.viewId, contentKey,
+        publication->atmosphere.radianceView(), publication, completion, viewWrittenHere));
+    set->publications.push_back(makePublishedTexture("atmosphere.cloudShadow", request.viewId,
         publication->revision, publication->allocationGeneration, publication->atmosphere.cloudShadowTexture(),
-        publication->atmosphere.cloudShadowView(), publication, completion));
-    set->publications.push_back(makePublishedBuffer("atmosphere.aerialPerspective", request.viewId, contentKey,
+        publication->atmosphere.cloudShadowView(), publication, completion, viewWrittenHere));
+    set->publications.push_back(makePublishedBuffer("atmosphere.aerialPerspective", request.viewId,
         publication->revision, publication->allocationGeneration, publication->atmosphere.aerialBuffer(),
-        publication, completion));
-    set->publications.push_back(makePublishedBuffer("atmosphere.sphericalHarmonics", request.viewId, contentKey,
+        publication, completion, false, viewWrittenHere));
+    if (publication->atmosphere.parametersBuffer() != nullptr) {
+        set->publications.push_back(makePublishedBuffer("atmosphere.parameters", request.viewId,
+            publication->revision, publication->allocationGeneration, publication->atmosphere.parametersBuffer(),
+            publication, completion, false, viewWrittenHere));
+    }
+    if (publication->pdf.valid() && publication->pdf.texture() != nullptr) {
+        set->publications.push_back(makePublishedTexture("atmosphere.pdf", request.viewId,
+            publication->revision, publication->allocationGeneration, publication->pdf.texture(),
+            publication->pdf.view(), publication, completion, viewWrittenHere));
+    }
+    set->publications.push_back(makePublishedBuffer("atmosphere.sphericalHarmonics", request.viewId,
         publication->revision, publication->allocationGeneration, publication->sphericalHarmonicsBuffer.get(),
-        publication, completion));
-    set->publications.push_back(makePublishedBuffer("atmosphere.prefilteredSpecular", request.viewId, contentKey,
+        publication, completion, false, viewWrittenHere));
+    set->publications.push_back(makePublishedBuffer("atmosphere.prefilteredSpecular", request.viewId,
         publication->revision, publication->allocationGeneration, publication->prefilteredSpecularBuffer.get(),
-        publication, completion));
+        publication, completion, false, viewWrittenHere));
+    if (publication->filteredSpecular.texture != nullptr) {
+        set->publications.push_back(makePublishedTexture("atmosphere.filteredSpecular", request.viewId,
+            publication->revision, publication->allocationGeneration, publication->filteredSpecular.texture.get(),
+            publication->filteredSpecular.view.get(), publication, completion, viewWrittenHere));
+    }
     if (request.needCelestial && set->celestial.buffer != nullptr) {
-        set->publications.push_back(makePublishedBuffer("celestialLights", 0, set->celestial.revision,
+        set->publications.push_back(makePublishedBuffer("celestialLights", 0,
             set->celestial.revision, set->celestial.revision, set->celestial.buffer.get(),
-            set->celestial.buffer, {}, set->celestialNeedsHostBarrier));
+            set->celestial.buffer, {}, set->celestialNeedsHostBarrier, false));
     }
 
     if (!cacheHit) {
@@ -1343,10 +1418,12 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
         work.dedupKey = publication->producerDedupKey;
         work.preferredQueue = QueueType::Graphics;
         for (const auto& pub : set->publications) {
-            work.producedResources.push_back(pub.logicalId);
+            if (pub.writtenByProducer) {
+                work.producedResources.push_back(pub.logicalId);
+            }
             work.publications.push_back(pub);
         }
-        if (mediumWaitCompletion.valid() && !mediumWaitCompletion.isComplete()) {
+        if (mediumWaitCompletion.valid() && mediumWaitCompletion.isSubmitted() && !mediumWaitCompletion.isCancelled()) {
             work.waitCompletions.push_back(mediumWaitCompletion);
         }
         if (prerequisiteMediumDedupKey != 0) {
@@ -1355,6 +1432,7 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
         const environment::EnvironmentSnapshot envCopy = request.environment;
         const std::array<double, 3> observerCopy = request.observerWorldMetres;
         work.record = [this, publication, envCopy, observerCopy](CommandBuffer& commands, std::string& recordLog) -> Result<> {
+            if (auto retained = commands.retainResource(publication); !retained) { return retained; }
             if (auto* frame = RenderFrameContext::from(commands)) {
                 frame->retain(publication);
             }
@@ -1405,24 +1483,38 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
             physicalPublications_.push_back(publication);
 
             if (!publication->mediumShared) {
+                publication->mediumCompletion = acceptedCompletion;
                 auto mediumExisting = std::find_if(mediumPublications_.begin(), mediumPublications_.end(),
                     [&](const MediumPublication& candidate) {
                         return sameAtmosphereMedium(candidate.parameters, publication->parameters);
                     });
                 if (mediumExisting != mediumPublications_.end()) {
-                    if (mediumExisting->source != publication) { hostPtr->retire(mediumExisting->source); }
+                    hostPtr->retire(mediumExisting->medium.transmittanceOwner);
+                    hostPtr->retire(mediumExisting->medium.multiScatteringOwner);
                     mediumPublications_.erase(mediumExisting);
                 } else if (mediumPublications_.size() >= 8) {
-                    hostPtr->retire(mediumPublications_.front().source);
+                    hostPtr->retire(mediumPublications_.front().medium.transmittanceOwner);
+                    hostPtr->retire(mediumPublications_.front().medium.multiScatteringOwner);
                     mediumPublications_.erase(mediumPublications_.begin());
                 }
                 mediumPublications_.push_back(MediumPublication{
                     .parameters = publication->parameters,
                     .mediumKey = publication->mediumKey,
-                    .source = publication,
+                    .contentRevision = publication->mediumContentRevision,
+                    .allocationGeneration = publication->mediumAllocationGeneration,
+                    .medium = publication->atmosphere.sharedMediumHandle(&publication->parameters),
                     .completion = acceptedCompletion,
                     .lastUsedFrame = publication->lastUsedFrame,
                 });
+            } else if (!publication->mediumCompletion.valid()) {
+                auto mediumIter = std::find_if(mediumPublications_.begin(), mediumPublications_.end(),
+                    [&](const MediumPublication& candidate) {
+                        return candidate.allocationGeneration == publication->mediumAllocationGeneration &&
+                            candidate.completion.valid();
+                    });
+                if (mediumIter != mediumPublications_.end()) {
+                    publication->mediumCompletion = mediumIter->completion;
+                }
             }
         };
         work.onCancelled = [this, hostPtr, publication]() {
@@ -1473,7 +1565,8 @@ Result<std::shared_ptr<const EnvironmentResourceSet>> EnvironmentLightingSubsyst
     } else if (set->producerDedupKey != 0) {
         bindResult = builder.requireProducer(set->producerDedupKey);
         if (!bindResult) { return makeError(bindResult.error()); }
-    } else if (set->producerCompletion.valid() && !set->producerCompletion.isComplete()) {
+    } else if (set->producerCompletion.valid() && set->producerCompletion.isSubmitted() &&
+        !set->producerCompletion.isCancelled()) {
         bindResult = builder.addExternalDependency(set->producerCompletion,
             "EnvironmentProvider cached physical atmosphere");
         if (!bindResult) { return makeError(bindResult.error()); }
@@ -1492,8 +1585,13 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
         producerWork, log);
     if (!prepared) { return makeError(prepared.error()); }
     const auto& set = *prepared;
-    if (auto* frame = RenderFrameContext::from(commands); frame != nullptr && set->lighting.retainedResources != nullptr) {
-        frame->retain(set->lighting.retainedResources);
+    if (set->lighting.retainedResources != nullptr) {
+        if (auto retained = commands.retainResource(set->lighting.retainedResources); !retained) {
+            return makeError(retained.error());
+        }
+        if (auto* frame = RenderFrameContext::from(commands); frame != nullptr) {
+            frame->retain(set->lighting.retainedResources);
+        }
     }
     if (producerWork.has_value()) {
         if (set->lighting.retainedResources != nullptr) {
@@ -1513,14 +1611,15 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
             return makeError(result.error());
         }
         for (const auto& wait : producerWork->waitCompletions) {
-            if (wait.valid() && !wait.isComplete()) {
+            if (wait.valid() && wait.isSubmitted() && !wait.isCancelled()) {
                 result = addCommandDependency(commands, wait);
                 if (!result) { return makeError(result.error()); }
             }
         }
         result = producerWork->record(commands, log);
         if (!result) { return makeError(result.error()); }
-    } else if (set->producerCompletion.valid() && !set->producerCompletion.isComplete()) {
+    } else if (set->producerCompletion.valid() && set->producerCompletion.isSubmitted() &&
+        !set->producerCompletion.isCancelled()) {
         Result<> depResult = addCommandDependency(commands, set->producerCompletion);
         if (!depResult) { return makeError(depResult.error()); }
     }
@@ -1625,6 +1724,11 @@ void EnvironmentLightingSubsystem::shutdown()
     pendingFramePublications_.clear();
     mediumPublications_.clear();
     nextPhysicalAllocationGeneration_ = 0;
+    nextMediumAllocationGeneration_ = 0;
+    nextContentRevision_ = 0;
+    nextMediumContentRevision_ = 0;
+    contentRevisionByKey_.clear();
+    mediumContentRevisionByKey_.clear();
     physicalProducerCount_ = 0;
     physicalCacheHitCount_ = 0;
     mediumShareCount_ = 0;

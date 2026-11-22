@@ -101,7 +101,15 @@ struct RenderGraphExecutionStats {
     uint32_t crossFrameWaitCount = 0;
     uint32_t extraVersionCount = 0;
     uint64_t extraVersionBytes = 0;
+    uint64_t graphManagedVramBytes = 0;
     uint64_t peakManagedVramBytes = 0;
+    uint64_t providerManagedVramBytes = 0;
+    uint64_t historyManagedVramBytes = 0;
+    uint64_t deviceTrackedVramBytes = 0;
+    uint64_t peakDeviceTrackedVramBytes = 0;
+    uint64_t driverDeviceVramBytes = 0;
+    uint64_t peakDriverDeviceVramBytes = 0;
+    bool driverDeviceVramAvailable = false;
     std::vector<std::string> conservativeFallbackReasons;
 };
 

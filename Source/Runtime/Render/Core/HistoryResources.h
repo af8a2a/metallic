@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace metallic::render {
@@ -28,6 +29,8 @@ struct HistoryTextureRef {
     ResourceState state = ResourceState::Undefined;
     uint64_t allocationGeneration = 0;
     uint64_t backingAllocationId = 0;
+    uint64_t version = 0;
+    uint64_t writtenFrameIndex = 0;
     std::shared_ptr<void> owner;
 };
 
@@ -40,6 +43,8 @@ struct HistoryBufferRef {
     ResourceState state = ResourceState::Undefined;
     uint64_t allocationGeneration = 0;
     uint64_t backingAllocationId = 0;
+    uint64_t version = 0;
+    uint64_t writtenFrameIndex = 0;
     std::shared_ptr<void> owner;
 };
 
@@ -57,6 +62,7 @@ public:
     Result<> initialize(Device& device, uint32_t slotCount = 2);
     void reset();
     uint32_t slotCount() const;
+    bool isValidFrameOffset(int32_t frameOffset) const;
 
     void beginFrame(uint64_t frameIndex);
     uint64_t frameIndex() const;
@@ -112,6 +118,31 @@ public:
         int32_t frameOffset,
         ResourceState state,
         bool written = false);
+
+    // Coordinator-only state commit called in deterministic queue-acceptance
+    // order after recording tasks have joined.
+    Result<> commitAcceptedTextureStateAtOffset(
+        std::string_view name,
+        int32_t frameOffset,
+        ResourceState state,
+        bool written = false,
+        uint64_t expectedGeneration = 0,
+        std::optional<uint32_t> explicitSlotIndex = std::nullopt);
+    Result<> commitAcceptedBufferStateAtOffset(
+        std::string_view name,
+        int32_t frameOffset,
+        ResourceState state,
+        bool written = false,
+        uint64_t expectedGeneration = 0,
+        std::optional<uint32_t> explicitSlotIndex = std::nullopt);
+    void invalidateSlotAtOffset(
+        std::string_view name,
+        int32_t frameOffset,
+        uint64_t expectedGeneration = 0,
+        std::optional<uint32_t> explicitSlotIndex = std::nullopt);
+    std::optional<uint32_t> slotIndexForOffset(int32_t frameOffset) const;
+    bool hasRecord(std::string_view name) const;
+    uint64_t peekNextVersion(std::string_view name) const;
 
     Result<> transitionTexture(
         CommandBuffer& commandBuffer,

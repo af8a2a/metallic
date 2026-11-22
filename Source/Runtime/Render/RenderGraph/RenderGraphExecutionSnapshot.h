@@ -151,6 +151,7 @@ struct RenderGraphExecutionSegmentSnapshot {
     uint32_t passId = UINT32_MAX;
     uint32_t queueId = UINT32_MAX;
     RenderGraphSegmentRole role = RenderGraphSegmentRole::Pass;
+    std::string debugName; // Non-empty for ProviderProducer or named frame-boundary segments.
     std::vector<uint32_t> predecessors; // Recording dependencies; same-queue edges need no semaphore.
     bool recorded = false;
     bool accepted = false;
@@ -185,7 +186,21 @@ struct RenderGraphExecutionSnapshot {
     uint32_t maxFramesInFlight = 2;
     uint32_t extraVersionCount = 0;
     uint64_t extraVersionBytes = 0;
+    // Graph-managed VRAM: graph-owned texture + buffer backings + version-pool extra backings.
+    uint64_t graphManagedVramBytes = 0;
     uint64_t peakManagedVramBytes = 0;
+    // Captured per-scope backing totals observed in this execution (deduplicated by backing ID).
+    // Excludes uncaptured slots and opaque external SDK allocations.
+    uint64_t providerManagedVramBytes = 0;
+    uint64_t historyManagedVramBytes = 0;
+    // Device-wide VRAM from Device::memoryBudget(): RHI-tracked device-local allocations
+    // (excludes opaque SDKs like NRD/DLSS) and VK_EXT_memory_budget driver heap usage
+    // (includes opaque SDKs and driver slack when driverDeviceVramAvailable is true).
+    uint64_t deviceTrackedVramBytes = 0;
+    uint64_t peakDeviceTrackedVramBytes = 0;
+    uint64_t driverDeviceVramBytes = 0;
+    uint64_t peakDriverDeviceVramBytes = 0;
+    bool driverDeviceVramAvailable = false;
     std::vector<std::string> conservativeFallbackReasons;
     std::vector<RenderGraphExecutionQueueSnapshot> queues;
     std::vector<RenderGraphExecutionResourceSnapshot> resources;

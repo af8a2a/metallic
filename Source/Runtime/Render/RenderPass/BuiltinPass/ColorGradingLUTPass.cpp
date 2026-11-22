@@ -13,6 +13,8 @@ class ColorGradingLUTPass final : public ComputePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return true; }
 
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {

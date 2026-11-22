@@ -16,17 +16,17 @@ namespace {
 constexpr uint32_t kDefaultHistorySlotCount = 2;
 constexpr uint32_t kMaxHistorySlotCount = 3;
 
-bool textureDescEquals(const TextureDesc& lhs, const TextureDesc& rhs)
+bool textureDescSatisfies(const TextureDesc& existing, const TextureDesc& requested)
 {
-    return lhs.type == rhs.type &&
-        lhs.usage == rhs.usage &&
-        lhs.format == rhs.format &&
-        lhs.width == rhs.width &&
-        lhs.height == rhs.height &&
-        lhs.depth == rhs.depth &&
-        lhs.mipCount == rhs.mipCount &&
-        lhs.layerCount == rhs.layerCount &&
-        lhs.memoryLocation == rhs.memoryLocation;
+    return existing.type == requested.type &&
+        hasFlag(existing.usage, requested.usage) &&
+        existing.format == requested.format &&
+        existing.width == requested.width &&
+        existing.height == requested.height &&
+        existing.depth == requested.depth &&
+        existing.mipCount == requested.mipCount &&
+        existing.layerCount == requested.layerCount &&
+        existing.memoryLocation == requested.memoryLocation;
 }
 
 bool textureViewDescEquals(const TextureViewDesc& lhs, const TextureViewDesc& rhs)
@@ -39,12 +39,12 @@ bool textureViewDescEquals(const TextureViewDesc& lhs, const TextureViewDesc& rh
         lhs.forceArray == rhs.forceArray;
 }
 
-bool bufferDescEquals(const BufferDesc& lhs, const BufferDesc& rhs)
+bool bufferDescSatisfies(const BufferDesc& existing, const BufferDesc& requested)
 {
-    return lhs.size == rhs.size &&
-        lhs.structureStride == rhs.structureStride &&
-        lhs.usage == rhs.usage &&
-        lhs.memoryLocation == rhs.memoryLocation;
+    return existing.size == requested.size &&
+        existing.structureStride == requested.structureStride &&
+        hasFlag(existing.usage, requested.usage) &&
+        existing.memoryLocation == requested.memoryLocation;
 }
 
 bool bufferViewDescEquals(const BufferViewDesc& lhs, const BufferViewDesc& rhs)
@@ -106,6 +106,8 @@ struct HistoryResourceManager::Impl {
         std::unique_ptr<TextureView> view;
         ResourceState state = ResourceState::Undefined;
         uint64_t generation = 0;
+        uint64_t publishedVersion = 0;
+        uint64_t writtenFrameIndex = 0;
         bool valid = false;
     };
 
@@ -114,12 +116,15 @@ struct HistoryResourceManager::Impl {
         std::unique_ptr<BufferView> view;
         ResourceState state = ResourceState::Undefined;
         uint64_t generation = 0;
+        uint64_t publishedVersion = 0;
+        uint64_t writtenFrameIndex = 0;
         bool valid = false;
     };
 
     struct Record {
         ResourceKind kind = ResourceKind::None;
         uint64_t generation = 0;
+        uint64_t nextVersion = 1;
         TextureDesc textureDesc;
         TextureViewDesc textureViewDesc;
         BufferDesc bufferDesc;
@@ -295,14 +300,29 @@ struct HistoryResourceManager::Impl {
         return currentSlot;
     }
 
-    uint32_t slotIndexForOffset(int32_t frameOffset) const
+    bool isValidFrameOffset(int32_t frameOffset) const
     {
+        if (frameOffset == 0) {
+            return true;
+        }
+        if (frameOffset > 0 || slotCount < 2) {
+            return false;
+        }
+        const int64_t minOffset = -static_cast<int64_t>(slotCount - 1u);
+        return static_cast<int64_t>(frameOffset) >= minOffset;
+    }
+
+    std::optional<uint32_t> trySlotIndexForOffset(int32_t frameOffset) const
+    {
+        if (!isValidFrameOffset(frameOffset)) {
+            return std::nullopt;
+        }
         const uint32_t count = std::max(slotCount, 1u);
-        if (frameOffset >= 0) {
+        if (frameOffset == 0) {
             return currentSlot;
         }
-        const uint32_t back = static_cast<uint32_t>(-frameOffset) % count;
-        return (currentSlot + count - back) % count;
+        const uint64_t back = static_cast<uint64_t>(-static_cast<int64_t>(frameOffset));
+        return static_cast<uint32_t>((currentSlot + count - back) % count);
     }
 };
 
@@ -345,6 +365,11 @@ void HistoryResourceManager::reset()
 uint32_t HistoryResourceManager::slotCount() const
 {
     return impl_->slotCount;
+}
+
+bool HistoryResourceManager::isValidFrameOffset(int32_t frameOffset) const
+{
+    return impl_->isValidFrameOffset(frameOffset);
 }
 
 void HistoryResourceManager::beginFrame(uint64_t frameIndex)
@@ -419,7 +444,7 @@ Result<> HistoryResourceManager::ensureTexture(
     const Impl::Record* existing = impl_->findRecord(name);
     if (existing != nullptr &&
         impl_->textureRecordComplete(*existing) &&
-        textureDescEquals(existing->textureDesc, desc) &&
+        textureDescSatisfies(existing->textureDesc, desc) &&
         textureViewDescEquals(existing->textureViewDesc, normalizedViewDesc)) {
         return {};
     }
@@ -451,7 +476,7 @@ Result<> HistoryResourceManager::ensureBuffer(
     const Impl::Record* existing = impl_->findRecord(name);
     if (existing != nullptr &&
         impl_->bufferRecordComplete(*existing) &&
-        bufferDescEquals(existing->bufferDesc, desc) &&
+        bufferDescSatisfies(existing->bufferDesc, desc) &&
         optionalBufferViewDescEquals(existing->bufferViewDesc, normalizedViewDesc)) {
         return {};
     }
@@ -478,8 +503,12 @@ HistoryTextureRef HistoryResourceManager::textureAtOffset(std::string_view name,
     if (found == impl_->records.end() || found->second->kind != Impl::ResourceKind::Texture) {
         return {};
     }
+    const auto indexOpt = impl_->trySlotIndexForOffset(frameOffset);
+    if (!indexOpt) {
+        return {};
+    }
     const auto& record = *found->second;
-    const uint32_t index = impl_->slotIndexForOffset(frameOffset);
+    const uint32_t index = *indexOpt;
     if (index >= record.textureSlots.size()) {
         return {};
     }
@@ -489,14 +518,17 @@ HistoryTextureRef HistoryResourceManager::textureAtOffset(std::string_view name,
         const auto mem = textureSlot.texture->memoryInfo();
         backingId = mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
     }
+    const bool valid = impl_->slotDataValid(textureSlot, record);
     return HistoryTextureRef{
         .texture = textureSlot.texture.get(),
         .view = textureSlot.view.get(),
         .desc = &record.textureDesc,
-        .valid = impl_->slotDataValid(textureSlot, record),
+        .valid = valid,
         .state = textureSlot.state,
         .allocationGeneration = record.generation,
         .backingAllocationId = backingId,
+        .version = valid ? textureSlot.publishedVersion : 0,
+        .writtenFrameIndex = valid ? textureSlot.writtenFrameIndex : 0,
         .owner = found->second,
     };
 }
@@ -512,8 +544,12 @@ HistoryBufferRef HistoryResourceManager::bufferAtOffset(std::string_view name, i
     if (found == impl_->records.end() || found->second->kind != Impl::ResourceKind::Buffer) {
         return {};
     }
+    const auto indexOpt = impl_->trySlotIndexForOffset(frameOffset);
+    if (!indexOpt) {
+        return {};
+    }
     const auto& record = *found->second;
-    const uint32_t index = impl_->slotIndexForOffset(frameOffset);
+    const uint32_t index = *indexOpt;
     if (index >= record.bufferSlots.size()) {
         return {};
     }
@@ -523,15 +559,18 @@ HistoryBufferRef HistoryResourceManager::bufferAtOffset(std::string_view name, i
         const auto mem = bufferSlot.buffer->memoryInfo();
         backingId = mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
     }
+    const bool valid = impl_->slotDataValid(bufferSlot, record);
     return HistoryBufferRef{
         .buffer = bufferSlot.buffer.get(),
         .view = bufferSlot.view.get(),
         .desc = &record.bufferDesc,
         .viewDesc = record.bufferViewDesc.has_value() ? &(*record.bufferViewDesc) : nullptr,
-        .valid = impl_->slotDataValid(bufferSlot, record),
+        .valid = valid,
         .state = bufferSlot.state,
         .allocationGeneration = record.generation,
         .backingAllocationId = backingId,
+        .version = valid ? bufferSlot.publishedVersion : 0,
+        .writtenFrameIndex = valid ? bufferSlot.writtenFrameIndex : 0,
         .owner = found->second,
     };
 }
@@ -592,26 +631,31 @@ Result<> HistoryResourceManager::publishTextureStateAtOffset(
         state == ResourceState::Undefined) {
         return makeError(Error::InvalidArgument);
     }
+    const auto indexOpt = impl_->trySlotIndexForOffset(frameOffset);
+    if (!indexOpt) { return makeError(Error::InvalidArgument); }
     const auto record = found->second;
-    const uint32_t index = impl_->slotIndexForOffset(frameOffset);
+    const uint32_t index = *indexOpt;
     if (index >= record->textureSlots.size()) { return makeError(Error::InvalidArgument); }
     auto& textureSlot = record->textureSlots[index];
     if (textureSlot.texture == nullptr) { return makeError(Error::InvalidArgument); }
     auto result = commandBuffer.retainResource(record);
     if (!result) { return result; }
     const ResourceState before = textureSlot.state;
-    const bool wasValid = textureSlot.valid;
     result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
-        [] {}, [record, index, before, wasValid, written] {
+        [] {}, [record, index, before] {
             auto& cancelledSlot = record->textureSlots[index];
             cancelledSlot.state = before;
-            cancelledSlot.valid = written ? false : wasValid;
+            cancelledSlot.valid = false;
+            cancelledSlot.publishedVersion = 0;
+            cancelledSlot.writtenFrameIndex = 0;
         }));
     if (!result) { return result; }
     textureSlot.state = state;
     if (written) {
         textureSlot.valid = true;
         textureSlot.generation = record->generation;
+        textureSlot.publishedVersion = record->nextVersion++;
+        textureSlot.writtenFrameIndex = impl_->frameIndex;
     }
     return {};
 }
@@ -638,28 +682,141 @@ Result<> HistoryResourceManager::publishBufferStateAtOffset(
         state == ResourceState::Undefined) {
         return makeError(Error::InvalidArgument);
     }
+    const auto indexOpt = impl_->trySlotIndexForOffset(frameOffset);
+    if (!indexOpt) { return makeError(Error::InvalidArgument); }
     const auto record = found->second;
-    const uint32_t index = impl_->slotIndexForOffset(frameOffset);
+    const uint32_t index = *indexOpt;
     if (index >= record->bufferSlots.size()) { return makeError(Error::InvalidArgument); }
     auto& bufferSlot = record->bufferSlots[index];
     if (bufferSlot.buffer == nullptr) { return makeError(Error::InvalidArgument); }
     auto result = commandBuffer.retainResource(record);
     if (!result) { return result; }
     const ResourceState before = bufferSlot.state;
-    const bool wasValid = bufferSlot.valid;
     result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
-        [] {}, [record, index, before, wasValid, written] {
+        [] {}, [record, index, before] {
             auto& cancelledSlot = record->bufferSlots[index];
             cancelledSlot.state = before;
-            cancelledSlot.valid = written ? false : wasValid;
+            cancelledSlot.valid = false;
+            cancelledSlot.publishedVersion = 0;
+            cancelledSlot.writtenFrameIndex = 0;
         }));
     if (!result) { return result; }
     bufferSlot.state = state;
     if (written) {
         bufferSlot.valid = true;
         bufferSlot.generation = record->generation;
+        bufferSlot.publishedVersion = record->nextVersion++;
+        bufferSlot.writtenFrameIndex = impl_->frameIndex;
     }
     return {};
+}
+
+Result<> HistoryResourceManager::commitAcceptedTextureStateAtOffset(
+    std::string_view name,
+    int32_t frameOffset,
+    ResourceState state,
+    bool written,
+    uint64_t expectedGeneration,
+    std::optional<uint32_t> explicitSlotIndex)
+{
+    const auto found = impl_->records.find(std::string(name));
+    if (found == impl_->records.end() || found->second->kind != Impl::ResourceKind::Texture ||
+        state == ResourceState::Undefined) {
+        return makeError(Error::InvalidArgument);
+    }
+    const auto indexOpt = explicitSlotIndex.has_value() ? explicitSlotIndex : impl_->trySlotIndexForOffset(frameOffset);
+    if (!indexOpt) { return makeError(Error::InvalidArgument); }
+    auto& record = *found->second;
+    if (expectedGeneration != 0 && record.generation != expectedGeneration) {
+        return {};
+    }
+    const uint32_t index = *indexOpt;
+    if (index >= record.textureSlots.size()) { return makeError(Error::InvalidArgument); }
+    auto& textureSlot = record.textureSlots[index];
+    if (textureSlot.texture == nullptr) { return makeError(Error::InvalidArgument); }
+    textureSlot.state = state;
+    if (written) {
+        textureSlot.valid = true;
+        textureSlot.generation = record.generation;
+        textureSlot.publishedVersion = record.nextVersion++;
+        textureSlot.writtenFrameIndex = impl_->frameIndex;
+    }
+    return {};
+}
+
+Result<> HistoryResourceManager::commitAcceptedBufferStateAtOffset(
+    std::string_view name,
+    int32_t frameOffset,
+    ResourceState state,
+    bool written,
+    uint64_t expectedGeneration,
+    std::optional<uint32_t> explicitSlotIndex)
+{
+    const auto found = impl_->records.find(std::string(name));
+    if (found == impl_->records.end() || found->second->kind != Impl::ResourceKind::Buffer ||
+        state == ResourceState::Undefined) {
+        return makeError(Error::InvalidArgument);
+    }
+    const auto indexOpt = explicitSlotIndex.has_value() ? explicitSlotIndex : impl_->trySlotIndexForOffset(frameOffset);
+    if (!indexOpt) { return makeError(Error::InvalidArgument); }
+    auto& record = *found->second;
+    if (expectedGeneration != 0 && record.generation != expectedGeneration) {
+        return {};
+    }
+    const uint32_t index = *indexOpt;
+    if (index >= record.bufferSlots.size()) { return makeError(Error::InvalidArgument); }
+    auto& bufferSlot = record.bufferSlots[index];
+    if (bufferSlot.buffer == nullptr) { return makeError(Error::InvalidArgument); }
+    bufferSlot.state = state;
+    if (written) {
+        bufferSlot.valid = true;
+        bufferSlot.generation = record.generation;
+        bufferSlot.publishedVersion = record.nextVersion++;
+        bufferSlot.writtenFrameIndex = impl_->frameIndex;
+    }
+    return {};
+}
+
+void HistoryResourceManager::invalidateSlotAtOffset(
+    std::string_view name,
+    int32_t frameOffset,
+    uint64_t expectedGeneration,
+    std::optional<uint32_t> explicitSlotIndex)
+{
+    const auto found = impl_->records.find(std::string(name));
+    if (found == impl_->records.end()) { return; }
+    const auto indexOpt = explicitSlotIndex.has_value() ? explicitSlotIndex : impl_->trySlotIndexForOffset(frameOffset);
+    if (!indexOpt) { return; }
+    auto& record = *found->second;
+    if (expectedGeneration != 0 && record.generation != expectedGeneration) { return; }
+    const uint32_t index = *indexOpt;
+    if (record.kind == Impl::ResourceKind::Texture && index < record.textureSlots.size()) {
+        auto& slot = record.textureSlots[index];
+        slot.valid = false;
+        slot.publishedVersion = 0;
+        slot.writtenFrameIndex = 0;
+    } else if (record.kind == Impl::ResourceKind::Buffer && index < record.bufferSlots.size()) {
+        auto& slot = record.bufferSlots[index];
+        slot.valid = false;
+        slot.publishedVersion = 0;
+        slot.writtenFrameIndex = 0;
+    }
+}
+
+std::optional<uint32_t> HistoryResourceManager::slotIndexForOffset(int32_t frameOffset) const
+{
+    return impl_->trySlotIndexForOffset(frameOffset);
+}
+
+bool HistoryResourceManager::hasRecord(std::string_view name) const
+{
+    return impl_->findRecord(name) != nullptr;
+}
+
+uint64_t HistoryResourceManager::peekNextVersion(std::string_view name) const
+{
+    const Impl::Record* record = impl_->findRecord(name);
+    return record != nullptr ? record->nextVersion : 0;
 }
 
 Result<> HistoryResourceManager::transitionTexture(

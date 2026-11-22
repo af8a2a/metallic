@@ -9,6 +9,9 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -600,6 +603,29 @@ public:
                 RenderGraphResourceOwnership::ExternallyOwned, "VirtualShadowMapPass"); !err.empty()) {
             return RHITestResult::fail(err);
         }
+        if (auto err = checkPassContract(builtin_pass::createVirtualShadowMapLightsPass(),
+                RenderGraphResourceOwnership::ExternallyOwned, "VirtualShadowMapLightsPass"); !err.empty()) {
+            return RHITestResult::fail(err);
+        }
+        StreamerSubsystem streamerSub;
+        const auto streamerContract = streamerSub.externalDomainContract();
+        if (streamerSub.providerSubsystemId() != StreamerSubsystem::kSubsystemId ||
+            !streamerContract || streamerContract->ownership != RenderGraphResourceOwnership::ProviderOwned ||
+            !streamerContract->hasUndeclaredImplicitAccesses || streamerContract->conservativeReason.empty()) {
+            return RHITestResult::fail("StreamerSubsystem missing explicit ProviderOwned conservative externalDomainContract()");
+        }
+        // Verify LumenRadianceCachePass declares indirection history as graph-owned temporal fields!
+        {
+            auto rcPass = builtin_pass::createLumenRadianceCachePass();
+            const auto refl = rcPass->reflect({.width = 64, .height = 64});
+            const auto* prevInd = refl.findField("previousIndirection", RenderGraphFieldVisibility::Input);
+            const auto* savedInd = refl.findField("savedIndirection", RenderGraphFieldVisibility::Output);
+            if (!prevInd || !prevInd->isTemporal() || !prevInd->temporal.graphOwnedHistory ||
+                prevInd->temporal.frameOffset != -1 || !savedInd || !savedInd->isTemporal() ||
+                !savedInd->temporal.graphOwnedHistory) {
+                return RHITestResult::fail("LumenRadianceCachePass did not declare previousIndirection/savedIndirection as graph-owned temporal history");
+            }
+        }
         if (auto err = checkPassContract(builtin_pass::createNrdDenoisePass(),
                 RenderGraphResourceOwnership::OpaqueSDK, "NRDDenoisePass"); !err.empty()) {
             return RHITestResult::fail(err);
@@ -624,7 +650,15 @@ public:
         snapshot->maxFramesInFlight = 3;
         snapshot->extraVersionCount = 1;
         snapshot->extraVersionBytes = 4ull * 1024 * 1024;
+        snapshot->graphManagedVramBytes = 16ull * 1024 * 1024;
         snapshot->peakManagedVramBytes = 20ull * 1024 * 1024;
+        snapshot->providerManagedVramBytes = 6ull * 1024 * 1024;
+        snapshot->historyManagedVramBytes = 4ull * 1024 * 1024;
+        snapshot->deviceTrackedVramBytes = 48ull * 1024 * 1024;
+        snapshot->peakDeviceTrackedVramBytes = 64ull * 1024 * 1024;
+        snapshot->driverDeviceVramAvailable = true;
+        snapshot->driverDeviceVramBytes = 96ull * 1024 * 1024;
+        snapshot->peakDriverDeviceVramBytes = 112ull * 1024 * 1024;
         snapshot->crossFrameResourceScheduled = false;
         snapshot->conservativeFallbackReasons.push_back(
             "Subsystem 'render.gpu-scene' (ExternallyOwned): " + gpuSceneContract->conservativeReason);
@@ -637,7 +671,8 @@ public:
             .logicalQueue = QueueType::Graphics, .actualQueueId = 0, .predecessors = {1}, .recorded = true});
         snapshot->passes.back().uses.push_back({.resourceId = 101, .reads = true});
         snapshot->segments.push_back({.id = 0, .passId = UINT32_MAX, .queueId = 0,
-            .role = RenderGraphSegmentRole::ProviderProducer, .recorded = true, .accepted = true});
+            .role = RenderGraphSegmentRole::ProviderProducer, .debugName = "EnvironmentProvider.PhysicalAtmosphere",
+            .recorded = true, .accepted = true});
         snapshot->segments.push_back({.id = 1, .passId = 1, .queueId = 1,
             .role = RenderGraphSegmentRole::Pass, .recorded = true, .accepted = true});
         snapshot->batches.push_back({.id = 0, .queueId = 0, .segmentIds = {0}, .accepted = true});
@@ -681,6 +716,164 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(RenderGraphViewerLifecycleAndContractsTest);
+
+class ViewerRealEnvProviderConsumerPass final : public render::ComputePass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return true; }
+
+    std::span<const render::RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{render::EnvironmentLightingSubsystem::kSubsystemId};
+        return required;
+    }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureOutput("out", "Viewer real provider consumer output")
+            .texture2D(16, 16).storageWrite().format = render::Format::RGBA8Unorm;
+        return reflection;
+    }
+
+    render::Result<> declareResourceRequests(
+        const render::RenderGraphResourceRequestContext& context,
+        render::RenderGraphResourceRequestBuilder& builder,
+        std::string& log) override
+    {
+        auto* env = context.subsystem<render::EnvironmentLightingSubsystem>();
+        if (!env || !context.world()) { return render::makeError(render::Error::InvalidArgument); }
+        auto declared = env->declareEnvironmentRequest(context, builder,
+            {.environment = render::resolveWorldEnvironment(nullptr, context.world()),
+             .observerWorldMetres = {0.0, 2.0, 0.0}, .viewId = context.viewKey(), .needCelestial = true}, log);
+        if (!declared) { return render::makeError(declared.error()); }
+        return {};
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        const auto* set = context.resources<render::EnvironmentResourceSet>();
+        if (!set || !set->lighting.valid()) { return render::makeError(render::Error::InvalidArgument); }
+        return {};
+    }
+};
+
+class RenderGraphViewerRealProviderAndMemoryScopesTest final : public RHITest {
+public:
+    RenderGraphViewerRealProviderAndMemoryScopesTest()
+    {
+        type = RHITestType::Rendering;
+        name = "render_graph_viewer_real_provider_and_memory_scopes";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        static const bool registered = registerRenderGraphPassType("ViewerRealEnvProviderConsumerPass",
+            "Viewer real environment provider consumer",
+            [] { return std::make_unique<ViewerRealEnvProviderConsumerPass>(); });
+        (void)registered;
+
+        std::unique_ptr<Device> device;
+        DeviceDesc desc{
+            .applicationName = "Viewer real provider and memory scopes",
+            .enableValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true,
+            .enableAsyncCompute = true,
+        };
+        vulkan::deviceExtensions(desc).preferUnifiedImageLayouts = false;
+        auto created = createDevice(desc).transform([&](auto d) { device = std::move(d); });
+        if (hasError(created, Error::Unsupported)) {
+            return RHITestResult::skip("requires bindless descriptor heap");
+        }
+        if (!created) { return RHITestResult::fail("createDevice failed"); }
+        Queue* graphics = device->getQueue(QueueType::Graphics);
+        Queue* compute = device->getQueue(QueueType::Compute);
+
+        RenderWorld world;
+        environment::WorldEnvironment env;
+        env.source = environment::EnvironmentSource::PhysicalAtmosphere;
+        env.sun.enabled = true;
+        env.sun.direction = float3(0.0f, -1.0f, 0.0f);
+        env.moon.enabled = false;
+        world.setWorldEnvironment(env);
+
+        RenderGraph graph;
+        graph.setName("ViewerRealProviderScopes");
+        graph.addNode("ViewerRealEnvProviderConsumerPass", "EnvConsumer");
+        graph.markOutput("EnvConsumer.out");
+
+        RenderGraphExecutor exec;
+        exec.bindRenderWorld(&world);
+        exec.setExecutionCaptureEnabled(true);
+        std::string log;
+        if (!exec.compile(*device, graph, 16, 16, log)) {
+            return RHITestResult::fail("compile failed: " + log);
+        }
+        if (!exec.execute({.graphicsQueue = graphics, .computeQueue = compute, .recordingWorkerLimit = 1}) ||
+            !exec.waitForSubmittedWork(5'000'000'000ull)) {
+            return RHITestResult::fail("Frame 0 execute failed");
+        }
+        const auto snap = exec.executionSnapshot();
+        if (!snap) { return RHITestResult::fail("Missing execution snapshot"); }
+
+        bool foundProducerSegment = false;
+        for (const auto& seg : snap->segments) {
+            if (seg.role == RenderGraphSegmentRole::ProviderProducer &&
+                seg.debugName == "EnvironmentProvider.PhysicalAtmosphere") {
+                foundProducerSegment = true;
+            }
+        }
+        if (!foundProducerSegment) {
+            return RHITestResult::fail("Captured execution snapshot missing named ProviderProducer segment");
+        }
+
+        uint32_t providerResourceCount = 0;
+        bool foundEnvConsumer = false;
+        for (const auto& res : snap->resources) {
+            if (res.ownership == RenderGraphResourceOwnership::ProviderOwned &&
+                res.name.find("render.environment.") == 0) {
+                ++providerResourceCount;
+                if (res.producerName.empty() || res.logicalResourceId == 0 || res.versionId == 0 ||
+                    res.memory.backingAllocationId == 0) {
+                    return RHITestResult::fail("Provider resource '" + res.name + "' missing producer/version/backing metadata");
+                }
+                if (std::find(res.consumerNames.begin(), res.consumerNames.end(), "EnvConsumer") != res.consumerNames.end()) {
+                    foundEnvConsumer = true;
+                }
+            }
+        }
+        if (providerResourceCount < 8 || !foundEnvConsumer) {
+            return RHITestResult::fail("Expected >=8 ProviderOwned environment resources with real producer/consumer names, got " +
+                std::to_string(providerResourceCount));
+        }
+
+        if (snap->graphManagedVramBytes == 0 || snap->peakManagedVramBytes < snap->graphManagedVramBytes ||
+            snap->providerManagedVramBytes == 0 ||
+            snap->deviceTrackedVramBytes < snap->graphManagedVramBytes ||
+            snap->peakDeviceTrackedVramBytes < snap->deviceTrackedVramBytes) {
+            return RHITestResult::fail("Separated graph-managed / provider / device-wide VRAM snapshot metrics are inconsistent");
+        }
+
+        // Render all 3 viewer tabs from the REAL captured provider snapshot to PNGs!
+        editor::RenderGraphExecutionViewer viewer;
+        viewer.update(snap);
+        std::filesystem::create_directories(context.outputDirectory);
+        ViewerUIContext ui(true);
+        using Tab = editor::RenderGraphExecutionViewer::Tab;
+        for (const auto& [tab, tag] : std::array{
+                std::pair{Tab::Resources, "real_provider_resources"},
+                std::pair{Tab::Queues, "real_provider_queues"},
+                std::pair{Tab::Memory, "real_provider_memory"}}) {
+            const auto err = ui.save(viewer, tab, context.outputDirectory / (std::string("render_graph_viewer_") + tag + ".png"));
+            if (!err.empty()) { return RHITestResult::fail(std::string(tag) + ": " + err); }
+        }
+        return RHITestResult::pass("Real ProviderProducer segment names, Provider producer/consumers/version/backing metadata, separated Graph vs Provider vs Device-wide VRAM scopes, and Viewer rendering verified");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RenderGraphViewerRealProviderAndMemoryScopesTest);
 
 } // namespace
 } // namespace metallic::tests

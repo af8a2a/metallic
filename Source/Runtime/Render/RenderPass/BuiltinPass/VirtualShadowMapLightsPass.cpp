@@ -59,6 +59,15 @@ public:
     // graph orders GPU access to shared cache and output resources across frames.
     bool supportsFrameOverlap() const override { return true; }
     bool supportsExternalFrameOverlap() const override { return false; }
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override
+    {
+        return RenderGraphExternalDomainContract{
+            .domainName = "render.pass.virtual-shadow-map-lights",
+            .ownership = RenderGraphResourceOwnership::ExternallyOwned,
+            .hasUndeclaredImplicitAccesses = true,
+            .conservativeReason = "Persistent shared VSM physical page pool, per-light caches, and per-light SMRT temporal histories",
+        };
+    }
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
         static constexpr std::array required{GPUSceneSubsystem::kSubsystemId};

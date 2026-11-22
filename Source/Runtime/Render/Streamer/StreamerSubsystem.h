@@ -4,6 +4,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
+#include "Runtime/Render/RenderGraph/RenderGraphResourceLifecycle.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <optional>
@@ -13,10 +14,25 @@ namespace metallic::render {
 
 // One owner for scene resources, geometry residency, page IO, CLAS pools and
 // upload completion. Raster passes borrow a session; GPUScene owns identities.
-class StreamerSubsystem final : public IRenderSubsystem {
+class StreamerSubsystem final : public IRenderSubsystem, public IRenderGraphResourceProvider {
 public:
     struct Desc {};
     static constexpr RenderSubsystemId kSubsystemId = "render.streamer";
+
+    RenderSubsystemId providerSubsystemId() const override { return kSubsystemId; }
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override
+    {
+        return RenderGraphExternalDomainContract{
+            .domainName = "render.streamer",
+            .ownership = RenderGraphResourceOwnership::ProviderOwned,
+            .hasUndeclaredImplicitAccesses = true,
+            .conservativeReason = "Demand-driven meshlet page IO, CLAS BLAS/TLAS relocation, and async bindless material texture residency retain conservative frame boundaries",
+        };
+    }
+    Result<> declarePreparedSceneResources(
+        const PreparedSceneResources& prepared,
+        uint64_t viewId,
+        RenderGraphResourceRequestBuilder& builder) const;
 
     Result<> initialize(const RenderSubsystemInitContext& context, std::string& log) override;
     Result<> beginFrame(

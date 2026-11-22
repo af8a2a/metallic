@@ -57,3 +57,15 @@ void benchComputeWork(uint3 thread : SV_DispatchThreadID)
     }
     gOutput[thread.x] = x;
 }
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void fillSolidTexture(uint3 thread : SV_DispatchThreadID)
+{
+    ProbePush push = getConstants<ProbePush>();
+    float r = float((push.index >> 0) & 0xFFu) / 255.0;
+    float g = float((push.index >> 8) & 0xFFu) / 255.0;
+    float b = float((push.index >> 16) & 0xFFu) / 255.0;
+    float a = float((push.index >> 24) & 0xFFu) / 255.0;
+    gCurrent[thread.xy] = float4(r, g, b, a);
+}

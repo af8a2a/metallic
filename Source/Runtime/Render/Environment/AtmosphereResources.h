@@ -33,6 +33,29 @@ public:
     static constexpr uint32_t kRadianceMipCount = 10;
     static constexpr uint32_t kCloudShadowSize = 256;
 
+    // Independent ownership handle for the two static atmosphere medium LUTs
+    // (Transmittance + MultiScattering), allowing callers to retain only those
+    // two LUTs across physical environment evictions without keeping the rest
+    // of an evicted publication alive.
+    struct SharedMediumHandle {
+        std::shared_ptr<void> transmittanceOwner;
+        std::shared_ptr<void> multiScatteringOwner;
+        Texture* transmittanceTexture = nullptr;
+        TextureView* transmittanceView = nullptr;
+        Texture* multiScatteringTexture = nullptr;
+        TextureView* multiScatteringView = nullptr;
+        Device* device = nullptr;
+        GPUAtmosphereParameters parameters{};
+
+        bool valid() const
+        {
+            return transmittanceOwner != nullptr && multiScatteringOwner != nullptr &&
+                transmittanceTexture != nullptr && transmittanceView != nullptr &&
+                multiScatteringTexture != nullptr && multiScatteringView != nullptr &&
+                device != nullptr;
+        }
+    };
+
     AtmosphereResourcesGPU();
     ~AtmosphereResourcesGPU();
     AtmosphereResourcesGPU(const AtmosphereResourcesGPU&) = delete;
@@ -42,6 +65,8 @@ public:
     // medium LUTs. Their image owners remain retained independently of it.
     Result<> initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium = nullptr,
         const GPUAtmosphereParameters* expectedMediumParameters = nullptr);
+    Result<> initialize(Device& device, std::string& log, const SharedMediumHandle& sharedMedium);
+    SharedMediumHandle sharedMediumHandle(const GPUAtmosphereParameters* overrideParameters = nullptr) const;
     Result<> record(CommandBuffer& commands, const environment::EnvironmentSnapshot& environment,
         const std::array<double, 3>& observerWorldMetres, std::string& log);
     Texture* radianceTexture() const;

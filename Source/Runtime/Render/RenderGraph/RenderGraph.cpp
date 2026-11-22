@@ -1553,9 +1553,11 @@ bool RenderGraph::validate(std::string& log) const
                     return false;
                 }
                 if (field.temporal.access == RenderGraphTemporalAccess::ReadPrevious &&
-                    (field.visibility != RenderGraphFieldVisibility::Input || field.temporal.frameOffset >= 0)) {
+                    (field.visibility != RenderGraphFieldVisibility::Input ||
+                        field.temporal.frameOffset >= 0 ||
+                        static_cast<int64_t>(field.temporal.frameOffset) < -2)) {
                     log = validationPrefix(
-                        std::string("temporalRead field must be an input with negative frameOffset '") +
+                        std::string("temporalRead field must be an input with frameOffset in [-2, -1] '") +
                         makeRenderGraphFieldName(node.name, field.name) +
                         "'");
                     return false;
