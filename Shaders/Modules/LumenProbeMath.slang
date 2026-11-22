@@ -3,6 +3,44 @@ module LumenProbeMath;
 namespace Metallic.Lumen
 {
 public static const float kLumenProbePi = 3.14159265358979323846f;
+static const float kMaxScreenProbeRayIntensity = 10.0f;
+
+public struct ThreeBandSHVector
+{
+    public float4 v0;
+    public float4 v1;
+    public float v2;
+};
+
+// UE 5.7.4 SHCommon.ush, SHBasisFunction3 and CalcDiffuseTransferSH3.
+public ThreeBandSHVector shBasisFunction3(float3 inputVector)
+{
+    ThreeBandSHVector result;
+    result.v0.x = 0.282095f;
+    result.v0.y = -0.488603f * inputVector.y;
+    result.v0.z = 0.488603f * inputVector.z;
+    result.v0.w = -0.488603f * inputVector.x;
+    float3 vectorSquared = inputVector * inputVector;
+    result.v1.x = 1.092548f * inputVector.x * inputVector.y;
+    result.v1.y = -1.092548f * inputVector.y * inputVector.z;
+    result.v1.z = 0.315392f * (3.0f * vectorSquared.z - 1.0f);
+    result.v1.w = -1.092548f * inputVector.x * inputVector.z;
+    result.v2 = 0.546274f * (vectorSquared.x - vectorSquared.y);
+    return result;
+}
+
+public ThreeBandSHVector calcDiffuseTransferSH3(float3 normal, float exponent)
+{
+    ThreeBandSHVector result = shBasisFunction3(normal);
+    float l0 = 2.0f * kLumenProbePi / (1.0f + exponent);
+    float l1 = 2.0f * kLumenProbePi / (2.0f + exponent);
+    float l2 = exponent * 2.0f * kLumenProbePi / (3.0f + 4.0f * exponent + exponent * exponent);
+    result.v0.x *= l0;
+    result.v0.yzw *= l1;
+    result.v1 *= l2;
+    result.v2 *= l2;
+    return result;
+}
 
 // UE 5.7.4 RandomPCG.ush:12 and MonteCarlo.ush:65.
 public uint3 lumenRand3DPCG16(int3 p)
@@ -34,6 +72,54 @@ public float3 lumenEquiAreaSphericalMapping(float2 uv)
     float phi = r == 0.0f ? 0.0f : (kLumenProbePi / 4.0f) * ((abs(uv.y) - abs(uv.x)) / r + 1.0f);
     float f = r * sqrt(2.0f - r * r);
     return float3(f * sign(uv.x) * abs(cos(phi)), f * sign(uv.y) * abs(sin(phi)), sign(d) * (1.0f - r * r));
+}
+
+// UE 5.7.4 BlueNoise.ush:26. The vec2 LUT stacks 64 frames vertically.
+public float2 lumenProbeBlueNoiseVec2(Texture2D<float2> noise, uint2 screenTileCoord, uint frameIndex)
+{
+    uint3 wrapped = uint3(screenTileCoord, frameIndex) & uint3(127u, 127u, 63u);
+    return noise.Load(int3(wrapped.x, wrapped.z * 128u + wrapped.y, 0));
+}
+
+// UE 5.7.4 LumenScreenProbeFiltering.usf, equal trace and gather resolutions.
+public uint3 lumenQuantizeProbeLighting(float3 lighting, uint raysPerProbe)
+{
+    float maxLighting = max(lighting.x, max(lighting.y, lighting.z));
+    if (maxLighting > kMaxScreenProbeRayIntensity) {
+        lighting *= kMaxScreenProbeRayIntensity / maxLighting;
+    }
+    const float maxValuePerThread = float(0xffffffffu) / float(raysPerProbe);
+    const float lightingQuantizeScale = maxValuePerThread / kMaxScreenProbeRayIntensity;
+    return uint3(lighting * lightingQuantizeScale);
+}
+
+public float3 lumenDecodeProbeLighting(uint3 quantized, uint raysPerProbe)
+{
+    const float invMaxValuePerThread = float(raysPerProbe) / float(0xffffffffu);
+    const float invLightingQuantizeScale = kMaxScreenProbeRayIntensity * invMaxValuePerThread;
+    return float3(quantized) * invLightingQuantizeScale;
+}
+
+// UE 5.7.4 OctahedralCommon.ush, OctahedralMapWrapBorder.
+public uint2 wrapOctahedralBorder(uint2 texel, uint resolution, uint border)
+{
+    if (texel.x < border) {
+        texel.x = border - 1u + border - texel.x;
+        texel.y = resolution - 1u - texel.y;
+    }
+    if (texel.x >= resolution - border) {
+        texel.x = (resolution - border) - (texel.x - (resolution - border - 1u));
+        texel.y = resolution - 1u - texel.y;
+    }
+    if (texel.y < border) {
+        texel.y = border - 1u + border - texel.y;
+        texel.x = resolution - 1u - texel.x;
+    }
+    if (texel.y >= resolution - border) {
+        texel.y = (resolution - border) - (texel.y - (resolution - border - 1u));
+        texel.x = resolution - 1u - texel.x;
+    }
+    return texel - border;
 }
 
 // UE 5.7.4 MonteCarlo.ush:178.

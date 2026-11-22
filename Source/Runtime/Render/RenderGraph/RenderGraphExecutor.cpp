@@ -998,7 +998,7 @@ struct RenderGraphExecutor::Impl {
                     continue;
                 }
                 const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-                if (field.textureType == TextureType::Texture2D) {
+                if (field.textureType == TextureType::Texture2D && field.matchOutputExtent) {
                     outputs.push_back(fullName);
                 }
                 resolvedExtents.emplace(
@@ -1253,6 +1253,9 @@ struct RenderGraphExecutor::Impl {
                 // A page table and its physical atlas can have different dimensions.
                 if (output->desc.type == TextureType::Texture3D) {
                     if (!firstVolumeOutput) { firstVolumeOutput = output; }
+                    continue;
+                }
+                if (!field.matchOutputExtent) {
                     continue;
                 }
                 if (!foundTextureOutput) {

@@ -631,6 +631,11 @@ public:
         output.layerCount = outputLayers;
         output.presentationOutput = presentationOutput;
         output.format = outputRgba16 ? render::Format::RGBA16Sfloat : render::Format::RGBA8Unorm;
+        if (passProperties.contains("atlasWidth")) {
+            reflection.addTextureOutput("atlas", "Independently sized auxiliary atlas")
+                .texture2D(passProperties.at("atlasWidth").get<uint32_t>(), passProperties.at("atlasHeight").get<uint32_t>())
+                .storageReadWrite().matchOutputExtent = false;
+        }
         return reflection;
     }
 
@@ -6899,6 +6904,8 @@ public:
         constexpr uint32_t kProducerHeight = 45;
         constexpr uint32_t kUpdatedProducerWidth = 64;
         constexpr uint32_t kUpdatedProducerHeight = 36;
+        constexpr uint32_t kAtlasWidth = 96;
+        constexpr uint32_t kAtlasHeight = 72;
 
         render::RenderGraphProperties consumerProperties = render::RenderGraphProperties::object();
         consumerProperties["inputWidth"] = kProducerWidth;
@@ -6906,11 +6913,15 @@ public:
 
         render::RenderGraph graph;
         graph.setName("TextureExtentConstraintPropagation");
-        render::RenderGraphNode* producer = graph.addNode("TestTextureExtentProducerPass", "Producer");
+        render::RenderGraphNode* atlasReader = graph.addNode("TestTextureExtentRelayPass", "AtlasReader");
+        render::RenderGraphNode* producer = graph.addNode("TestTextureExtentProducerPass", "Producer",
+            {{"atlasWidth", kAtlasWidth}, {"atlasHeight", kAtlasHeight}});
         render::RenderGraphNode* consumer = graph.addNode("TestTextureExtentConsumerPass", "Consumer");
-        if (producer == nullptr ||
+        if (atlasReader == nullptr || producer == nullptr ||
             consumer == nullptr ||
             !graph.addEdge("Producer.color", "Consumer.input") ||
+            !graph.addEdge("Producer.atlas", "AtlasReader.input") ||
+            !graph.markOutput("AtlasReader.color") ||
             !graph.markOutput("Consumer.color")) {
             return RHITestResult::fail("failed to construct texture extent propagation graph");
         }
@@ -6963,6 +6974,10 @@ public:
         }
 
         const TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
+        if (state.relayInputWidth != kAtlasWidth || state.relayInputHeight != kAtlasHeight ||
+            state.relayContextWidth != kAtlasWidth || state.relayContextHeight != kAtlasHeight) {
+            return RHITestResult::fail("independent atlas extent did not reach its downstream reader");
+        }
         if (state.producerContextWidth != kProducerWidth ||
             state.producerContextHeight != kProducerHeight ||
             state.producerOutputWidth != kProducerWidth ||

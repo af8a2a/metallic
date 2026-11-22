@@ -323,6 +323,21 @@ public:
     }
 };
 
+class DebugPackedTexturePass final : public UnsafePass {
+public:
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addTextureOutput("color").transferWrite().format = Format::B10G11R11UfloatPack32;
+        return reflection;
+    }
+    Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        return context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
+            TextureLayout::TransferDestination, {1.0f, 2.0f, 0.5f, 0.0f});
+    }
+};
+
 class DebugControlTextureTest final : public RHITest {
 public:
     DebugControlTextureTest() { name = "DebugControl texture ROI and validation events"; type = RHITestType::Rendering; }
@@ -333,13 +348,18 @@ public:
         FrameCommands frame;
         executor.setDebugObserver(&runtime);
         RenderGraph graph = RenderGraph::createDefaultTriangleGraph();
+        const std::string output = graph.firstOutputName();
+        registerRenderGraphPassType("DebugPackedTexturePass", "Packed texture fixture", [] { return std::make_unique<DebugPackedTexturePass>(); });
+        graph.addNode("DebugPackedTexturePass", "Packed");
+        graph.markOutput("Packed.color");
         std::string log;
         DEBUG_REQUIRE(executor.compile(context.device, graph, 16, 16, log));
-        const std::string output = graph.firstOutputName();
         const std::string pass = output.substr(0, output.find('.'));
         const auto queued = call(runtime, "capture.batch", {{"pass", pass}, {"resources", DebugValue::array({
             {{"id", output}, {"roi", {{"x", 4}, {"y", 4}, {"width", 3}, {"height", 2}}}}})}});
         if (queued["status"] != "ok") { return RHITestResult::fail(queued.dump()); }
+        const auto packedJob = call(runtime, "capture.batch", {{"pass", "Packed"}, {"resources", {{{"id", "Packed.color"}}}}});
+        if (packedJob["status"] != "ok") { return RHITestResult::fail(packedJob.dump()); }
         DEBUG_REQUIRE(frame.initialize(context.device, context.graphicsQueue));
         DEBUG_REQUIRE(frame.begin(0)); DEBUG_REQUIRE(executor.execute(*frame.commands));
         DEBUG_REQUIRE(frame.submit()); DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
@@ -347,6 +367,17 @@ public:
         auto response = call(runtime, "eval", {{"job", job}, {"expression", "count(buffers[\"" + output + "\"])"}});
         if (response["status"] != "ok" || response["result"]["value"] != 6 || response["result"]["coverage"][output]["completeCoverage"] != false) {
             return RHITestResult::fail("ROI shape or coverage mismatch: " + response.dump());
+        }
+        const auto capture = runtime.core().completedCapture(packedJob["result"]["job"].get<std::string>());
+        if (!capture || capture->artifacts.size() != 1 || capture->artifacts[0].layout.name != "B10G11R11_UFLOAT_PACK32") {
+            return RHITestResult::fail("Packed float texture did not publish its native layout");
+        }
+        const auto& artifact = capture->artifacts[0];
+        const auto decoded = debug::decodeBuffer(artifact.bytes, artifact.layout);
+        // R=1, G=2, B=0.5 have biased exponents 15, 16, 14 and zero mantissas.
+        constexpr uint32_t packed = (15u << 6) | (16u << 17) | (14u << 27);
+        if (!decoded || *decoded != DebugValue::array({{{"packed", packed}}})) {
+            return RHITestResult::fail("Packed float texture readback lost native RGB bits");
         }
         const auto sink = runtime.validationSink();
         sink.callback(sink.context, {.severity = render::ValidationSeverity::Error, .messageId = 7, .messageIdName = "fixture", .message = "validation evidence"});

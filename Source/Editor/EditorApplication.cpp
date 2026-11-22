@@ -6621,6 +6621,78 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
     sceneSelection_ = selection;
 }
 
+void EditorApplication::drawLumenDebugViews()
+{
+    const auto findPass = [this](std::string_view type) -> const render::RenderGraphNode* {
+        for (const auto& node : renderGraph_.nodes()) {
+            if (node.type == type) { return &node; }
+        }
+        return nullptr;
+    };
+    const auto* scene = findPass("LumenSceneVisualizePass");
+    const auto* probes = findPass("LumenProbeVisualizePass");
+    if (scene == nullptr && probes == nullptr) { return; }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Lumen")) { ImGui::OpenPopup("Lumen Debug Views"); }
+    ImGui::SetItemTooltip("Preview the Lumen Scene, probe traces and indirect lighting");
+    if (!ImGui::BeginPopup("Lumen Debug Views")) { return; }
+
+    const auto view = [this](const render::RenderGraphNode* node, std::string_view field, const char* label,
+                          const char* tooltip = nullptr) {
+        if (node == nullptr) { return; }
+        auto output = render::makeRenderGraphFieldName(node->name, field);
+        if (ImGui::MenuItem(label, nullptr, activePreviewOutput_ == output)) {
+            setActivePreviewOutput(std::move(output));
+        }
+        if (tooltip != nullptr) { ImGui::SetItemTooltip("%s", tooltip); }
+    };
+    const auto presentation = renderGraph_.presentationOutputName();
+    if (!presentation.empty() && ImGui::MenuItem("Final Output", nullptr, activePreviewOutput_ == presentation)) {
+        if (graphExecutor_ != nullptr && graphExecutor_->compiled() &&
+            ((scene != nullptr && graphExecutor_->outputResource(render::makeRenderGraphFieldName(scene->name, "scene"))) ||
+             (probes != nullptr && graphExecutor_->outputResource(render::makeRenderGraphFieldName(probes->name, "placement"))))) {
+            renderGraph_.markDirty();
+        }
+        setActivePreviewOutput(presentation);
+    }
+    ImGui::Separator();
+    view(scene, "scene", "Lumen Scene");
+    view(scene, "geometryNormals", "Geometry Normals");
+    view(scene, "surfaceCache", "Surface Cache", "Magenta marks a geometry hit with missing card coverage.");
+    if (probes != nullptr) {
+        ImGui::Separator();
+        view(probes, "placement", "Probe Placement", "Yellow marks uniform probes. Magenta marks adaptive probes.");
+        view(probes, "traceSource", "Probe Trace Source", "Red marks Screen, green Mesh SDF, blue GDF, and cyan World Radiance Cache.\n"
+            "Orange marks unavailable GDF, violet partial coverage, and magenta the step limit.");
+        view(probes, "rawRadiance", "Raw Probe Radiance");
+        view(probes, "filteredRadiance", "Filtered Probe Radiance");
+        view(probes, "hitDistance", "Probe Hit Distance", "Black to white over the Distance Range (4 m by default).");
+        if (ImGui::BeginMenu("Probe Slot")) {
+            uint32_t activeSlot = 0;
+            for (const auto* properties : {&probes->properties, &probes->runtimeProperties}) {
+                const auto slotProperty = properties->find("probeSlot");
+                if (slotProperty != properties->end() && slotProperty->is_number_integer()) {
+                    activeSlot = slotProperty->get<uint32_t>();
+                }
+            }
+            for (uint32_t slot = 0; slot <= 8; ++slot) {
+                const auto label = slot == 0 ? std::string("Uniform") : "Adaptive " + std::to_string(slot);
+                if (ImGui::MenuItem(label.c_str(), nullptr, activeSlot == slot)) {
+                    renderGraph_.setNodeRuntimeProperty(probes->id, "probeSlot", slot);
+                }
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        view(findPass("LumenScreenProbeGatherPass"), "indirectDiffuse", "Final Gather");
+        view(findPass("LumenTemporalGatherPass"), "indirectDiffuse", "Temporal GI");
+        view(probes, "historyWeightView", "History Weight");
+    }
+    view(findPass("LumenRadianceCachePass"), "cacheRadiance", "World Radiance Cache Atlas");
+    ImGui::EndPopup();
+}
+
 void EditorApplication::drawViewportPanel()
 {
     // The graph editor is drawn after this panel. Apply its preview changes on
@@ -6719,6 +6791,7 @@ void EditorApplication::drawViewportPanel()
         ImGui::EndDisabled();
         ImGui::EndPopup();
     }
+    drawLumenDebugViews();
     drawSliderDebugControls();
     if (viewportCompileFailed_) {
         ImGui::SameLine();

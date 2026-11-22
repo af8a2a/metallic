@@ -56,6 +56,7 @@ std::string textureLayout(Format format)
     case Format::R8Unorm: return "R8";
     case Format::RGBA8Unorm: case Format::RGBA8sRGB: return "RGBA8";
     case Format::BGRA8Unorm: case Format::BGRA8sRGB: return "BGRA8";
+    case Format::B10G11R11UfloatPack32: return "B10G11R11_UFLOAT_PACK32";
     case Format::RGBA16Sfloat: return "RGBA16F";
     case Format::RGBA32Sfloat: return "RGBA32F";
     case Format::R16Sfloat: return "R16F";

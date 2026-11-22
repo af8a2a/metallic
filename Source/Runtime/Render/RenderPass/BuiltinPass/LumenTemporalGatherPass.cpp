@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenTraceHistory.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenBlueNoise.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -10,12 +11,13 @@
 #include "Runtime/Scene/Scene.h"
 
 #include <array>
+#include <limits>
 #include <optional>
 
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030002ull;
+constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030004ull;
 
 struct LumenTemporalGatherParams {
     ShaderSampledImage indirectDiffuse, position, normal, directColor;
@@ -28,8 +30,11 @@ struct LumenTemporalGatherParams {
     ShaderSampledImage sceneDepth;
     ShaderStorageImage screenHistoryDepth, screenHistoryColor;
     uint32_t publishScreenTraceHistory;
+    float maxFramesAccumulated;
+    ShaderSampledImage blueNoiseScalar;
+    uint32_t frameIndex;
 };
-static_assert(sizeof(LumenTemporalGatherParams) == 240 && offsetof(LumenTemporalGatherParams, sceneDepth) == 224);
+static_assert(sizeof(LumenTemporalGatherParams) == 256 && offsetof(LumenTemporalGatherParams, maxFramesAccumulated) == 240);
 
 struct HistoryContent {
     uint64_t reprojectionRevision = 0;
@@ -60,6 +65,8 @@ private:
 
     Device* device_ = nullptr;
     ComputeKernel kernel_;
+    std::unique_ptr<TextureView> blueNoiseScalar_;
+    float maxFramesAccumulated_ = 10.0f;
     // The shared manager invalidates its resources during ordinary editor camera
     // motion. Retain this pass's reprojectable history across that event.
     HistoryResourceManager history_;
@@ -102,12 +109,37 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
         log = "Lumen Temporal Gather publishScreenTraceHistory must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    const auto frames = properties().find("maxFramesAccumulated");
+    if (frames != properties().end() && (!frames->is_number_integer() || *frames < 1 ||
+        *frames > std::numeric_limits<int32_t>::max())) {
+        log = "Lumen maxFramesAccumulated must be a positive 32-bit integer";
+        return makeError(Error::InvalidArgument);
+    }
+    maxFramesAccumulated_ = static_cast<float>(properties().value("maxFramesAccumulated", 10u));
+    const auto quantization = properties().find("stochasticHistoryQuantization");
+    if (quantization != properties().end() && !quantization->is_boolean()) {
+        log = "Lumen stochasticHistoryQuantization must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
     device_ = context.device;
+    const bool ditherHistory = properties().value("stochasticHistoryQuantization", false);
+    if (ditherHistory) {
+        if (!context.graphicsQueue) {
+            log = "Lumen temporal quantization requires a graphics queue to upload blue noise";
+            return makeError(Error::InvalidArgument);
+        }
+        auto loaded = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Scalar, log);
+        if (!loaded) { return makeError(loaded.error()); }
+        blueNoiseScalar_ = std::move(*loaded);
+    } else {
+        blueNoiseScalar_.reset();
+    }
+    const SlangMacroDefine ditherDefine{"METALLIC_LUMEN_DITHER_HISTORY", "1"};
     lastContent_.reset();
     if (auto result = history_.initialize(*device_); !result) { return result; }
     return ShaderRegistry::instance().getComputeKernel(*device_,
         {.moduleName = "Features/DistanceField/LumenTemporalGather", .entryPointName = "lumenTemporalGatherMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = {&ditherDefine, ditherHistory ? 1u : 0u}},
         {.parameters = parameterAbi<LumenTemporalGatherParams>(kLumenTemporalGatherABI),
             .debugName = "LumenTemporalGather"}, kernel_, log);
 }
@@ -166,6 +198,11 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     auto& commands = context.commandBuffer();
     ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
     LumenTemporalGatherParams params{};
+    params.maxFramesAccumulated = maxFramesAccumulated_;
+    if (blueNoiseScalar_) {
+        params.blueNoiseScalar = writer.sampledImageHandle(blueNoiseScalar_.get());
+        params.frameIndex = static_cast<uint32_t>(context.frameIndex());
+    }
     params.indirectDiffuse = writer.sampledImageHandle(context.inputTexture("currentIndirectDiffuse").view());
     params.position = writer.sampledImageHandle(context.inputTexture("position").view());
     params.normal = writer.sampledImageHandle(context.inputTexture("normal").view());

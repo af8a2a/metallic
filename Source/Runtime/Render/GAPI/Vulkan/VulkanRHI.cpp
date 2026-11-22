@@ -1237,14 +1237,13 @@ void configureAftermathDiagnostics(VulkanEnabledFeatureChain& chain, const Vulka
 {
 #if defined(VK_NV_device_diagnostics_config)
     if (const char* shaderDebugInfo = std::getenv("METALLIC_AFTERMATH_SHADER_DEBUG_INFO");
-        shaderDebugInfo != nullptr && std::strcmp(shaderDebugInfo, "0") == 0) {
-        chain.diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
+        shaderDebugInfo != nullptr && std::strcmp(shaderDebugInfo, "1") == 0) {
+        chain.diagnosticsConfigCreateInfo.flags |= VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
     }
     const bool nsightAftermath = selection.aftermath && vulkan::toolingHooks().captureInjected();
     // TODO(Nsight Aftermath): Restore automatic checkpoints after an updated
     // capture runtime passes the injected Sponza OMM/BLAS compaction test.
-    // Nsight 2026.3.1 + driver 616.64 faults with Error_DMA_PageFault here;
-    // shader debug info and resource tracking remain enabled. See
+    // Nsight 2026.3.1 + driver 616.64 faults with Error_DMA_PageFault here. See
     // Documentation/NsightKhrOpacityMicromapInvestigation.md.
     bool automaticCheckpoints = !nsightAftermath;
     if (const char* checkpoints = std::getenv("METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS")) {
@@ -1256,7 +1255,7 @@ void configureAftermathDiagnostics(VulkanEnabledFeatureChain& chain, const Vulka
     }
     if (nsightAftermath && !automaticCheckpoints) {
         spdlog::warn("[Vulkan] Aftermath automatic checkpoints disabled during Nsight Graphics injection "
-            "to avoid the RTAS GPU page fault; crash dumps, resource tracking and shader debug info remain available");
+            "to avoid the RTAS GPU page fault");
     }
 #endif
 }

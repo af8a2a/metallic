@@ -18,8 +18,8 @@
                     "Asset/Lumen/CornellBoxBakes/CornellBoxTallBlock.meshdf",
                     "Asset/Lumen/CornellBoxBakes/CornellBoxCeilingEmitter.meshdf"
                 ],
-                "center": [0, 1, 0], "extent": 1.8, "resolution": 112,
-                "maxPhysicalPages": 4096, "quantized": true, "clipmapCount": 1, "buildObjectGrid": true
+                "center": [0, 1, 0], "extent": 1.8, "resolution": 252,
+                "maxPhysicalPages": 8000, "quantized": true, "clipmapCount": 1, "buildObjectGrid": true
             }},
         {"id": 4, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 340, "y": 350},
             "properties": {
@@ -36,12 +36,12 @@
                 "atlasSize": 256, "tileResolution": 32, "shadowedLighting": true, "exportDirectIrradiance": true
             }},
         {"id": 5, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 665, "y": 140},
-            "properties": {"maxTraceDistance": 5, "finalGather": true, "screenTraces": true}},
+            "properties": {"maxTraceDistance": 5, "finalGather": true, "screenTraces": true, "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "SH3", "maxRayDirections": 64}},
         {"id": 6, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1570, "y": 140}},
         {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 340, "y": -290},
             "properties": {"historySource": "composited", "historyProducer": "Temporal"}},
         {"id": 8, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 990, "y": 140},
-            "properties": {"publishScreenTraceHistory": true}},
+            "properties": {"publishScreenTraceHistory": true, "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},
         {"id": 9, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 665, "y": 520},
             "properties": {"atlasSize": 256, "tileResolution": 32, "maxTraceDistance": 5}},
         {"id": 10, "name": "PathTrace", "type": "ScenePathTracePass", "position": {"x": 990, "y": -180},
@@ -51,7 +51,9 @@
                 "accumulate": true, "cacheMode": "off", "outputLinear": true
             }},
         {"id": 11, "name": "Slider", "type": "SliderDebugPass", "position": {"x": 1280, "y": 140},
-            "properties": {"splitPosition": 0.5, "orientation": "vertical", "swapSides": false}}
+            "properties": {"splitPosition": 0.5, "orientation": "vertical", "swapSides": false}},
+        {"id": 12, "name": "LumenSceneDebug", "type": "LumenSceneVisualizePass", "position": {"x": 1000, "y": 830}},
+        {"id": 13, "name": "LumenProbeDebug", "type": "LumenProbeVisualizePass", "position": {"x": 1350, "y": 830}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -101,7 +103,23 @@
         {"id": 45, "src": "SurfaceCache.emissive", "dst": "Radiosity.cardEmissive"},
         {"id": 46, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"},
         {"id": 47, "src": "PathTrace.color", "dst": "Slider.sourceA"},
-        {"id": 48, "src": "Slider.color", "dst": "FinalBlit.source"}
+        {"id": 48, "src": "Slider.color", "dst": "FinalBlit.source"},
+        {"id": 49, "src": "GlobalDistanceFieldPages.pageTable", "dst": "LumenSceneDebug.pageTable"},
+        {"id": 50, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "LumenSceneDebug.pageAtlas"},
+        {"id": 51, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "LumenSceneDebug.coarseMip"},
+        {"id": 52, "src": "GlobalDistanceFieldPages.domain", "dst": "LumenSceneDebug.domain"},
+        {"id": 53, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "LumenSceneDebug.objectGrid"},
+        {"id": 54, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "LumenSceneDebug.objectGridScene"},
+        {"id": 55, "src": "SurfaceCache.cards", "dst": "LumenSceneDebug.cards"},
+        {"id": 56, "src": "SurfaceCache.scene", "dst": "LumenSceneDebug.cardScene"},
+        {"id": 57, "src": "SurfaceCache.depth", "dst": "LumenSceneDebug.cardDepth"},
+        {"id": 58, "src": "Radiosity.lighting", "dst": "LumenSceneDebug.cardLighting"},
+        {"id": 59, "src": "Gather.probePositions", "dst": "LumenProbeDebug.probePositions"},
+        {"id": 60, "src": "Gather.probeRadiance", "dst": "LumenProbeDebug.probeRadiance"},
+        {"id": 61, "src": "Gather.filteredProbeRadiance", "dst": "LumenProbeDebug.filteredProbeRadiance"},
+        {"id": 62, "src": "Gather.probeDistance", "dst": "LumenProbeDebug.probeDistance"},
+        {"id": 63, "src": "Temporal.color", "dst": "LumenProbeDebug.sceneColor"},
+        {"id": 64, "src": "Temporal.historyWeight", "dst": "LumenProbeDebug.historyWeight"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse"],
     "view": {

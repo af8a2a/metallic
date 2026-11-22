@@ -294,16 +294,21 @@ struct SnapshotCompileContext {
         }
         if (!producerValid) { return false; }
         const auto sourceStarted = Clock::now();
-        const bool sourceValid = validation == SnapshotValidation::Complete ? snapshot.validate(log) :
-            validation == SnapshotValidation::CacheHit ? provenance->validateCacheHit(log) : snapshot.validateNotifications(log);
+        std::string sourceReason;
+        const bool sourceValid = validation == SnapshotValidation::Complete ? snapshot.validate(sourceReason) :
+            validation == SnapshotValidation::CacheHit ? provenance->validateCacheHit(sourceReason) :
+            snapshot.validateNotifications(sourceReason);
         if (invocationMetrics) {
             auto& time = validation == SnapshotValidation::Notifications ? invocationMetrics->sourceNotificationValidationTimeNanoseconds :
                 invocationMetrics->sourceValidationTimeNanoseconds;
             time += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - sourceStarted).count());
         }
-        if (!sourceValid && ordinaryRetry) {
-            if (validation == SnapshotValidation::Notifications) { ordinaryRetry->notificationFailure = log; }
-            else { snapshot.validateNotifications(ordinaryRetry->notificationFailure); }
+        if (!sourceValid) {
+            log += sourceReason + '\n';
+            if (ordinaryRetry) {
+                if (validation == SnapshotValidation::Notifications) { ordinaryRetry->notificationFailure = std::move(sourceReason); }
+                else { snapshot.validateNotifications(ordinaryRetry->notificationFailure); }
+            }
         }
         return sourceValid;
     }

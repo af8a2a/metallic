@@ -34,11 +34,13 @@ struct LumenTemporalGatherParams
     ResourceHandle<ScalarTexture> screenHistoryDepth;
     ResourceHandle<FullPrecisionTexture> screenHistoryColor;
     uint publishScreenTraceHistory;
+    float maxFramesAccumulated;
+    ResourceHandle<Texture2D<float>> blueNoiseScalar;
+    uint frameIndex;
 };
 
 static const float kLumenHistoryDistanceThreshold = 0.01f;
 static const float kLumenHistoryNormalCosThreshold = 0.7071067811865476f;
-static const float kMaxFramesAccumulated = 10.0f;
 
 // UE 5.7.4 LumenScreenProbeGatherTemporal.usf, GetBilinearCustomWeights.
 float4 getBilinearCustomWeights(float2 fraction, float4 customWeights)
@@ -84,23 +86,23 @@ float4 decodeHistoryFootprint(float2 historyScreenUV, uint2 viewSize)
 
 // LumenScreenProbeGatherTemporal.usf Pack/UnpackFastUpdateModeAmountAndNumFramesAccumulated,
 // specialized to the static-lighting branch where the high nibble is zero.
-float packNumFramesAccumulated(float numFramesAccumulated)
+float packNumFramesAccumulated(float numFramesAccumulated, float maxFramesAccumulated)
 {
-    float localMaxFramesAccumulated = min(kMaxFramesAccumulated, 15.0f);
+    float localMaxFramesAccumulated = min(maxFramesAccumulated, 15.0f);
     float encodedNumFramesAccumulated = round(saturate(numFramesAccumulated / localMaxFramesAccumulated) * 15.0f);
     return encodedNumFramesAccumulated / 255.0f;
 }
 
-float4 unpackNumFramesAccumulated(float4 packed)
+float4 unpackNumFramesAccumulated(float4 packed, float maxFramesAccumulated)
 {
     float4 encodedNumFramesAccumulated = round(packed * 255.0f);
-    return select(encodedNumFramesAccumulated == 15.0f, kMaxFramesAccumulated,
-        encodedNumFramesAccumulated / 15.0f * min(kMaxFramesAccumulated, 15.0f));
+    return select(encodedNumFramesAccumulated == 15.0f, maxFramesAccumulated,
+        encodedNumFramesAccumulated / 15.0f * min(maxFramesAccumulated, 15.0f));
 }
 
 // Reprojection for static opaque surfaces in
 // UE 5.7.4 StochasticLightingTileClassification.usf, the linear-depth branch.
-void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, float3 normal, float4 newDiffuseLighting,
+void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, float3 normal, float4 newDiffuseLighting, float randomScalar,
     out float3 outDiffuseIndirect, out float newNumFramesAccumulated, out float outHistoryWeight)
 {
     outDiffuseIndirect = newDiffuseLighting.rgb;
@@ -135,9 +137,6 @@ void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, f
     float4 geometry11 = previousGeometry.Load(int3(p11, 0));
     float4 historySampleSceneDepth = float4(geometry00.w, geometry10.w, geometry01.w, geometry11.w);
     float4 distanceToHistoryValue = abs(historySampleSceneDepth - reprojectedSceneDepth);
-    // UE BlueNoise.cpp GetBlueNoiseDummyParameters uses BlackDummy for rendering
-    // commandlets. The sample uses that branch without importing Epic's texture.
-    const float randomScalar = 0.0f;
     float lumenDisocclusionDistanceThreshold = kLumenHistoryDistanceThreshold;
     lumenDisocclusionDistanceThreshold *= lerp(0.5f, 1.5f, randomScalar);
     float3 v = normalize(params.currentCamera.eye.xyz - worldPosition);
@@ -162,8 +161,8 @@ void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, f
     float4 history01 = previousDiffuse.Load(int3(p01, 0));
     float4 history11 = previousDiffuse.Load(int3(p11, 0));
     float3 historyDiffuseIndirect = weightedAverage(history00.rgb, history10.rgb, history01.rgb, history11.rgb, finalWeights);
-    float4 historyNumFramesAccumulated = unpackNumFramesAccumulated(float4(history00.w, history10.w, history01.w, history11.w));
-    float numFramesAccumulated = min(weightedAverage(historyNumFramesAccumulated + 1.0f, finalWeights), kMaxFramesAccumulated);
+    float4 historyNumFramesAccumulated = unpackNumFramesAccumulated(float4(history00.w, history10.w, history01.w, history11.w), params.maxFramesAccumulated);
+    float numFramesAccumulated = min(weightedAverage(historyNumFramesAccumulated + 1.0f, finalWeights), params.maxFramesAccumulated);
     newNumFramesAccumulated = numFramesAccumulated;
     float alpha = 1.0f / (1.0f + newNumFramesAccumulated);
     if (newDiffuseLighting.w <= 0.0f && newNumFramesAccumulated >= 1.0f) {
@@ -192,8 +191,15 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
     float3 outDiffuseIndirect = newDiffuseLighting.rgb;
     float newNumFramesAccumulated = 0.0f;
     float outHistoryWeight = 0.0f;
+#if defined(METALLIC_LUMEN_DITHER_HISTORY)
+    // UE 5.7.4 BlueNoiseScalar(ScreenCoord, ScreenProbeGatherStateFrameIndex).
+    uint3 wrapped = uint3(thread.xy, params.frameIndex) & uint3(127u, 127u, 63u);
+    float randomScalar = resolveUniform(params.blueNoiseScalar).Load(int3(wrapped.x, wrapped.z * 128u + wrapped.y, 0));
+#else
+    const float randomScalar = 0.0f;
+#endif
     if (params.historyValid != 0u && surface.w > 0.0f) {
-        accumulateDiffuse(params, surface.xyz, surfaceNormal, newDiffuseLighting, outDiffuseIndirect,
+        accumulateDiffuse(params, surface.xyz, surfaceNormal, newDiffuseLighting, randomScalar, outDiffuseIndirect,
             newNumFramesAccumulated, outHistoryWeight);
     }
 
@@ -202,7 +208,14 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
     ScalarTexture historyWeight = resolveUniform(params.historyWeight);
     DiffuseTexture currentDiffuse = resolveUniform(params.currentDiffuse);
     FullPrecisionTexture currentGeometry = resolveUniform(params.currentGeometry);
-    indirectOutput[thread.xy] = float4(outDiffuseIndirect, newDiffuseLighting.w);
+    float3 storedDiffuse = outDiffuseIndirect;
+#if defined(METALLIC_LUMEN_DITHER_HISTORY)
+    // UE QuantizeForFloatRenderTarget / QuantizeFloatColor, RGBA16F has ten mantissa bits.
+    float3 error = outDiffuseIndirect * (1.0f / 1024.0f);
+    error = asfloat(asuint(error) & ~0x007fffffu);
+    storedDiffuse = outDiffuseIndirect + error * randomScalar;
+#endif
+    indirectOutput[thread.xy] = float4(storedDiffuse, newDiffuseLighting.w);
     float4 scene = directColor.Load(texel);
     float4 sceneColor = float4(scene.rgb + outDiffuseIndirect, scene.a);
     color[thread.xy] = sceneColor;
@@ -212,6 +225,6 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
         resolveUniform(params.screenHistoryColor)[thread.xy] = sceneColor;
     }
     historyWeight[thread.xy] = outHistoryWeight;
-    currentDiffuse[thread.xy] = float4(outDiffuseIndirect, packNumFramesAccumulated(newNumFramesAccumulated));
+    currentDiffuse[thread.xy] = float4(storedDiffuse, packNumFramesAccumulated(newNumFramesAccumulated, params.maxFramesAccumulated));
     currentGeometry[thread.xy] = float4(surfaceNormal, surface.w);
 }

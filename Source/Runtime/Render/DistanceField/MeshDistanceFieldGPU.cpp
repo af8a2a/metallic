@@ -1,6 +1,7 @@
 #include "Runtime/Render/DistanceField/MeshDistanceFieldGPU.h"
 
 #include "Runtime/Render/Core/ResourceRegistry.h"
+#include "Runtime/Render/Core/StaticTextureUpload.h"
 #include "Runtime/Scene/MeshDistanceField.h"
 #include "Runtime/Scene/scene.h"
 
@@ -56,44 +57,6 @@ Result<std::unique_ptr<Buffer>> makeUploadBuffer(Device& device, std::span<const
     (*buffer)->flush();
     (*buffer)->unmap();
     return buffer;
-}
-
-Result<> uploadMeshDistanceFieldAtlas(Device& device, Queue& queue, Texture& atlas,
-    std::span<const uint8_t> bytes, uint32_t size)
-{
-    auto source = makeUploadBuffer(device, std::as_bytes(bytes), BufferUsageBits::TransferSource);
-    if (!source) { return makeError(source.error()); }
-    auto sourceSlice = (*source)->slice();
-    if (!sourceSlice) { return makeError(sourceSlice.error()); }
-    auto pool = device.createCommandPool(queue);
-    if (!pool) { return makeError(pool.error()); }
-    auto commands = (*pool)->createCommandBuffer();
-    if (!commands) { return makeError(commands.error()); }
-    auto fence = device.createFence(false);
-    if (!fence) { return makeError(fence.error()); }
-    auto result = (*commands)->begin();
-    if (!result) { return result; }
-
-    TextureBarrierDesc barrier{.texture = &atlas, .oldLayout = TextureLayout::Undefined,
-        .newLayout = TextureLayout::TransferDestination,
-        .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
-    result = (*commands)->synchronize({.textures = {&barrier, 1}});
-    if (!result) { return result; }
-    result = (*commands)->copyBufferToTexture({.texture = &atlas, .buffer = *sourceSlice,
-        .bufferRowPitch = size, .bufferSlicePitch = size * size,
-        .width = size, .height = size, .depth = size});
-    if (!result) { return result; }
-    barrier.oldLayout = TextureLayout::TransferDestination;
-    barrier.newLayout = TextureLayout::ShaderRead;
-    barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
-    barrier.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
-    result = (*commands)->synchronize({.textures = {&barrier, 1}});
-    if (!result) { return result; }
-    result = (*commands)->end();
-    if (!result) { return result; }
-    CommandBuffer* command = commands->get();
-    result = queue.submit({.commandBuffers = {&command, 1}, .signalFence = fence->get()});
-    return result ? (*fence)->wait() : result;
 }
 
 bool makeMeshDistanceFieldInstance(const float4x4& world, float3 localCenter, float3 normalizedExtent,
@@ -251,7 +214,9 @@ Result<> MeshDistanceFieldGPU::initialize(Device& device, Queue& queue, const sc
     auto indirectionBuffer = makeUploadBuffer(device, std::as_bytes(std::span(indirection)),
         BufferUsageBits::Storage, sizeof(uint32_t));
     if (!indirectionBuffer) { return makeError(indirectionBuffer.error()); }
-    auto result = uploadMeshDistanceFieldAtlas(device, queue, **atlas, voxels, size);
+    auto staging = makeUploadBuffer(device, std::as_bytes(std::span(voxels)), BufferUsageBits::TransferSource);
+    if (!staging) { return makeError(staging.error()); }
+    auto result = uploadStaticComputeTexture(device, queue, **atlas, **staging);
     if (!result) { return result; }
 
     device_ = &device;

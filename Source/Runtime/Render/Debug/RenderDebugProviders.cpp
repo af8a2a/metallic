@@ -64,6 +64,7 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"R8", 1, {{"r", "u8", 0}}});
     add({"RGBA8", 4, {{"r", "u8", 0}, {"g", "u8", 1}, {"b", "u8", 2}, {"a", "u8", 3}}});
     add({"BGRA8", 4, {{"b", "u8", 0}, {"g", "u8", 1}, {"r", "u8", 2}, {"a", "u8", 3}}});
+    add({"B10G11R11_UFLOAT_PACK32", 4, {{"packed", "u32", 0}}});
     add({"RGBA16F", 8, {{"r", "f16", 0}, {"g", "f16", 2}, {"b", "f16", 4}, {"a", "f16", 6}}});
     add({"RGBA32F", 16, {{"r", "f32", 0}, {"g", "f32", 4}, {"b", "f32", 8}, {"a", "f32", 12}}});
     add({"R16F", 2, {{"r", "f16", 0}}});

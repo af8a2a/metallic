@@ -95,6 +95,8 @@ Asset/MeshletCache/
 cache/
 Asset/SuperSponza/
 Asset/MiniZorah/
+/Asset/Lumen/FastBlueNoiseVec2.rg8
+/Asset/Lumen/FastBlueNoiseScalar.r8
 Asset/Caldera/*
 Asset/ZorahFull/*
 Captures/NsightGraphics/

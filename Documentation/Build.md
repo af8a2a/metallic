@@ -617,10 +617,15 @@ To export a warmed-up Sponza frame without a window, run
 The runner prints the capture path under the output directory's `nsight` folder;
 verify it with `ngfx-replay --present-hidden --loop-count 3 --no-block-on-incompatibility <capture>`.
 
-Nsight Graphics injection also disables Aftermath automatic checkpoints by
+When Aftermath is enabled, ordinary runs capture GPU crash dumps with resource
+tracking and automatic checkpoints. Driver shader debug information is opt-in.
+Set `METALLIC_AFTERMATH_SHADER_DEBUG_INFO=1` before launch when you need to map
+GPU instructions to SPIR-V or source lines. On affected NVIDIA drivers, the
+default avoids `ucode.elf` writes during pipeline creation.
+
+Nsight Graphics injection disables Aftermath automatic checkpoints by
 default to avoid a separately reproduced GPU page fault during Sponza BLAS
-compaction/TLAS preparation. Aftermath crash dumps, resource tracking and shader
-debug information remain available; ordinary runs keep automatic checkpoints.
+compaction/TLAS preparation.
 TODO(Nsight Aftermath): Restore checkpoints after a fixed capture runtime passes
 the regression. `METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS=1` forces them on for
 that verification (`0` forces them off). The editor-equivalent headless check is
@@ -872,6 +877,20 @@ All three variants open the same 2 m room, with red and green side walls, two ne
 
 The Cornell Box graph enables Final Gather and multi-bounce card lighting for static opaque diffuse GI. `ScreenTrace` builds a closest-depth HZB from current reversed-Z depth and reads the previous frame's composited color and depth. `Gather` places adaptive probes, tries screen tracing with previous-depth validation, falls back to the GDF and Surface Cache, and runs three spatial filtering passes. `Temporal` accumulates the integrated diffuse with reprojected depth and normal rejection. Camera cuts, extent changes and scene or lighting edits invalidate both screen-space histories.
 
+Final Gather uses UE 5.7.4 vector blue noise for screen-probe directions. The Cornell Box also uses scalar blue noise when storing diffuse history in FP16. On Windows, import both textures from a local engine installation.
+
+```powershell
+python -B Tools/ImportLumenProbeBlueNoise.py E:/UnrealEngine
+```
+
+The importer verifies the decoded pixels by SHA-256 and writes `Asset/Lumen/FastBlueNoiseVec2.rg8` and `Asset/Lumen/FastBlueNoiseScalar.r8`. The vector package uses the installation's Oodle decoder. An original 128 × 8192 source PNG export also works with Pillow installed. Use `--scalar` for a renamed scalar export.
+
+The Cornell Box realtime and comparison graphs default to 64 rays (8 × 8) per active probe. For a higher-sample reference, select the `Gather` node and set **Runtime Settings → Rays per Probe → 256 (Reference)**, or set `Gather.tracingOctahedronResolution` to `16` in the graph. Select **64 (Standard)** to switch back. Both modes scatter into 8 × 8 gather directions before spatial filtering.
+
+The SH3 format stores a packed R11G11B10 ambient coefficient in `Gather.probeSHAmbient` and the eight signed directional coefficients per channel in the RGBA16F `Gather.probeSHDirectional` atlas. Integration evaluates the interpolated coefficients at the receiver normal. Both graphs use a relative HZB thickness of 0.003 and a 252³ Global Distance Field over 3.6 m with an 8,000-page budget. The sample cycles through 64 ray-direction phases and sets the history limit to 32 frames. Stochastic rounding uses the scalar texture's 64 phases.
+
+The gather pass defaults to 8 × 8 trace directions, 8 direction phases, a relative screen-trace thickness of 0.02 and a bordered 6 × 6 OCT irradiance map. The temporal pass defaults to a history limit of 10. The classic fixed-ray diagnostics select their original grid and history settings.
+
 Inspect `Temporal.indirectDiffuse` for accumulated, unexposed GI, `Gather.indirectDiffuse` for the current frame and `Temporal.historyWeight` for accepted history. In `Gather.probeRadiance`, the fourth component stores trace class 2 for a GDF hit and 5 for an accepted screen hit. Set the **Ceiling Emitter** material's emissive color to zero for a dark control.
 
 #### Repeatable GI image baseline
@@ -888,7 +907,7 @@ The tool uses a Vulkan preview device with ray queries and synchronization valid
 
 The report compares scene-linear ACEScg luminance, contact-to-floor luminance ratios and the red or green channel fraction relative to the center floor. It checks the reference's change between the two lit captures at the same probe phase and verifies exact RGB zero in the settled dark capture.
 
-For a Detail Tracing comparison, use `--trace` in both groups and `--detail` in group B. The capture tool saves the effective graph and reads probe placement, receiver position and normal, radiance, distance, and the per-ray handoff at the same execution as the lit images.
+For a Detail Tracing comparison, use `--trace` in both groups and `--detail` in group B. The fixed-ray triangle fixtures use centered directions, the original 112³ GDF with 4,096 physical pages and a screen-trace relative depth thickness of 0.02. The capture tool saves the effective graph and reads probe placement, receiver position and normal, radiance, distance, and the per-ray handoff at the same execution as the lit images.
 
 ```powershell
 $capture = '.\build-relwithdebinfo\Source\MetallicCornellBoxGIBaseline.exe'
@@ -945,12 +964,55 @@ python -B Tools/MeasureCornellBoxGI.py --baseline "$ab/e/metrics.json" --candida
 
 Add `--f` with the F manifest to the floor oracle invocation. The fixed rays cover two short-block corner misses, two near-plane hits returned by the GDF tail, the emitter edge and a farther ceiling hit that takes precedence over an earlier GDF candidate.
 
+#### Tall-block contact visibility replay
+
+`--contact-visibility` enables the F configuration and captures the probe taps used by Gather integration. The lit and settled dark captures include scene-linear Gather and Temporal outputs, the Deferred receiver data, and the probe radiance before and after all three spatial filter passes. Use fresh directories for the plain F control and the instrumented capture.
+
+```powershell
+$capture = '.\build-relwithdebinfo\Source\MetallicCornellBoxGIBaseline.exe'
+$ab = 'build/cornell-contact-visibility/run-001'
+& $capture "$ab/f" Tools/CornellBoxGIRegions.json --floor-rays --gdf-prefix-mesh-validation
+& $capture "$ab/g" Tools/CornellBoxGIRegions.json --contact-visibility
+python -B Tools/MeasureCornellBoxContactVisibility.py --baseline "$ab/f/capture.json" --manifest "$ab/g/capture.json" --out "$ab/contact-visibility.json"
+```
+
+The replay verifies Gather integration against the GPU output and follows lane `[3, 7]` at probe pixel `[286, 334]` through the original spatial filter weights. It also checks emitter-colored Screen and GDF samples within three filter steps of the ROI taps against their triangle first hits. Group G removes the verified emitter contributions from the current Gather result where the receiver-to-emitter segment hits the tall block first. The report separates the pinned sample at receiver pixel `[286, 322]` from the combined result, and includes the measured Temporal result and settled dark check.
+
+`Gather.probeInterpolationReadback` takes an in-bounds `[x, y, width, height]` pixel rectangle with at most 128 MiB of records. Each row-major, 32-byte record contains four `uint32` probe indices followed by four FP32 weights actually used by integration. A pixel without a receiver has four `0xffffffff` indices and zero weights. Read the raw buffer through RenderDebug as eight `u32` words per pixel.
+
+#### Temporal comparison across all probe phases
+
+Use `--contact-temporal-phases` to capture the F configuration at eight consecutive graph executions from 248 through 255, with execution 247 as the Temporal seed. Each phase includes the Gather and Temporal images, history weights, probe data for the visibility replay, and the same-frame Path Trace reference. The capture also records the first and eighth frames after the emitter is extinguished.
+
+```powershell
+$run = 'build/cornell-contact-temporal/run-001'
+& $capture "$run" Tools/CornellBoxGIRegions.json --contact-temporal-phases
+python -B Tools/MeasureCornellBoxContactTemporal.py --manifest "$run/capture.json" --out "$run/temporal-replay.json"
+```
+
+The replay verifies that the fixed camera reprojects each ROI pixel to its original texel and that the measured weights reproduce the F blend and FP16 history. It then applies the triangle-verified subtraction to each phase's Gather input and advances the corrected history from the F seed. The report distinguishes the net shift relative to current Gather from the weighted history term relative to Path Trace. The replay uses the captured F Screen Trace inputs for all eight phases.
+
+Use `--steady` with the same manifest to repeat the corrected Gather inputs and measured history weights. The replay stops when one full period leaves the FP16 history unchanged and the linear weight of the initial history is at most `1e-6`. A second replay starts from zero history to measure any remaining sensitivity to the initial FP16 values. The report compares the first cycle with the converged cycle, and applies the captured first dark frame to the converged history.
+
+```powershell
+python -B Tools/MeasureCornellBoxContactTemporal.py --manifest "$run/capture.json" --out "$run/temporal-steady.json" --steady
+```
+
+Use the same capture and steady report to attribute the remaining Gather error.
+
+```powershell
+python -B Tools/MeasureCornellBoxGatherResidual.py --manifest "$run/capture.json" --steady "$run/temporal-steady.json" --out "$run/gather-residual.json"
+```
+
+This diagnostic follows the raw ray contributions through all three spatial passes and applies G's verified emitter subtraction at each stage. It compares the captured interpolation weights with an estimate using only the highest-weight tap. The report traces emitter-colored candidates to their triangle first hits and reconstructed Screen history texels. Separate estimates set candidate radiance to zero to bound its influence. The measured G metrics retain the original F trace inputs and G subtraction.
+
 This port uses UE 5.7.4's opaque permutations with these adaptations.
 
 - Adaptive placement uses eight-phase Hammersley and a fixed allocation of one uniform plus up to eight adaptive probes per tile. This replaces UE's global compaction, with candidate marking recomputed from the current frame. Probe interpolation uses Deferred world position, linear depth and normal. The full-resolution blue-noise offset is zero.
-- The spatial pass uses the four axial neighbors from UE's static filter. It keeps FP32 radiance and hit distances in meters, evaluates fixed texel-center directions, rejects coincident hit endpoints, and clamps the angular cosine to its valid domain. Moving-probe taps and short-range AO are outside this variant.
+- Final Gather uses UE's uniform tracing branch at matching 8 × 8 trace and gather resolutions. All rays in a screen tile share the vector blue-noise offset at `frameIndex % 8`. Before spatial filtering, the composite pass uses the same offset and a second lookup 31 slices later to scatter each ray into an octahedrally wrapped gather bin. Colliding samples sum their quantized radiance and retain the minimum valid hit distance. Metallic's unresolved rays have a negative distance and contribute no sample. Empty bins have zero radiance and distance −1. The raw ray outputs retain tracing-lane order. The Cornell ray-witness tool sets `Gather.fixedProbeDirections` for pinned geometry and contact replays.
+- The spatial pass uses the four axial neighbors from UE's static filter and the jittered cone direction of the receiving probe. The final numerical diffuse integral evaluates the centers of the gather bins. Metallic keeps FP32 radiance and hit distances in meters, rejects coincident hit endpoints, and clamps the angular cosine to its valid domain. Moving-probe taps and short-range AO are outside this variant.
 - Screen tracing uses a packed closest HZB addressed in Metallic's viewport and reversed-Z convention. Motion comes from the prior camera for static surfaces. Accepted screen hits read the previous composited scene-linear color before postprocessing, corresponding to UE's default screen-tracing source. GDF hits sample `Radiosity.lighting`. Metallic publishes the composited color and its device depth as graph-owned textures and uses unexposed radiance, with a pre-exposure ratio of one. UE's distance continuation, hair and multi-layer paths are outside this variant.
-- Temporal accumulation reprojects with Metallic's previous camera and jitter and uses the optional 45-degree normal rejection. History contains material-modulated diffuse with UE's encoded accumulation count. The rejection threshold takes its noise sample from the UE rendering commandlet's black dummy input. UE's asset-backed blue noise and fast update for moving lighting remain future work.
+- Temporal accumulation reprojects with Metallic's previous camera and jitter and uses the optional 45-degree normal rejection. History contains material-modulated diffuse with UE's encoded accumulation count. The rejection threshold uses the scalar value from the UE rendering commandlet's black dummy input. Fast updates for moving lighting remain outside this variant.
 
 The `Radiosity` pass traces last frame's outgoing card radiance with 4 × 4 hemisphere directions per probe and a four-texel probe spacing. It filters with four axial neighbors, projects to two-band spherical harmonics and integrates by card plane. It accumulates up to four updates per texel, then applies the card response to the sum of direct and indirect irradiance before adding emission. Inspect `Radiosity.indirectIrradiance` for irradiance in RGB and the accumulation count in alpha. Compare outgoing `Radiosity.lighting` with direct-and-emissive `SurfaceCache.lighting`. Material, light, geometry or visibility changes reset card feedback. Ordinary camera motion and cuts keep card history while the fixed atlas and scene revisions match.
 
@@ -996,6 +1058,26 @@ The port follows the UE 5.7.4 software, opaque, skylight-off `FORCE_UNIFORM_TRAC
 Gather preserves confirmed screen hits, then traces eligible rays against individual Mesh Distance Fields before the GDF and WRC. The per-view grid uses 64-pixel tiles, logarithmic depth slices, closest and furthest depth bounds, and the UE froxel and SDF intersection tests. `Gather.probeRadiance` alpha 9 identifies an accepted Mesh SDF hit. `Gather.probeDistance` stores the hit distance plus the receiver-to-biased-origin offset used for handoff. The 40 m view cutoff and distance fade follow UE 5.7.4. Mesh hits sample the same scene-linear Surface Cache lighting as GDF hits. WRC updates continue to trace the GDF.
 
 This port covers opaque, uniformly scaled Mesh SDFs in perspective views with skylight disabled. Metallic builds the candidate grid with compute dispatches and reduces the current depth directly to the HZB interval inspected by the culler. The emissive exception to the object size test uses the material's emissive factor. The candidate pool reserves the full instance-cell upper bound and rejects configurations beyond its buffer limit. The stages use Metallic's baked finest SDF mip and fixed resident card tiles. Per-primitive draw-distance overrides, heightfields, hair, card feedback, and the UE moving-hit path are outside this permutation.
+
+### Lumen Debug Views
+
+Open **Lumen** in the viewport toolbar for **Cornell Box / Realtime GI**, **Cornell Box / GI Comparison**, **Lumen / Large Scene**, **Lumen / Detail Tracing**, or **Lumen / World Radiance Cache**. **Final Output** returns to the graph's presentation view.
+
+| View | Reading the result |
+| --- | --- |
+| Lumen Scene | Scene-linear Surface Cache lighting at the software GDF hit. |
+| Geometry Normals | World-space GDF normals encoded as `N * 0.5 + 0.5`. |
+| Surface Cache | Scene lighting with magenta where the trace attempted card sampling and found zero coverage. |
+| Probe Placement | Yellow uniform probes and magenta adaptive probes at their actual receiver pixels. |
+| Probe Trace Source | Red for Screen, green for Mesh SDF, blue for GDF, and cyan for World Radiance Cache. Orange identifies unavailable GDF data, violet partial coverage, and magenta the step limit. Gray is a miss, dark gray an empty interval, and the checker an absent probe slot. |
+| Raw Probe Radiance / Filtered Probe Radiance | Scene-linear directional radiance before and after the spatial filter. |
+| Probe Hit Distance | Original Gather trace distances displayed over 0–4 m by default. Negative unresolved distances use the trace source color. |
+| Final Gather / Temporal GI / History Weight | Current indirect diffuse, accumulated indirect diffuse, and the accepted history contribution as grayscale. |
+| World Radiance Cache Atlas | The resident directional radiance atlas on graphs with a World Radiance Cache. |
+
+The trace and radiance views use one directional atlas cell per 16 × 16 screen tile. **Probe Slot** selects the uniform probe or an adaptive slot in every tile. Raw traces use Gather's 8 × 8 or 16 × 16 lanes, and the filtered view uses its 8 × 8 directions. The optional `LumenProbeDebug.distanceRange` runtime setting changes the distance display range in meters.
+
+The world views use the UE 5.7.4 geometry-normal remap and uncovered-card color from `LumenSurfaceCacheSampling.ush`, with Metallic camera rays, GDF tracing and fixed card tiles. The probe views adapt the `LumenScreenProbeDebug.usf` point colors and `LumenScreenProbeTracing.usf` trace colors to a screen overlay and directional atlases. Their additional colors expose Metallic trace classifications. The debug passes are preview sinks. The graph's presentation outputs drive the regular render, and a preview recompile restarts Temporal history.
 
 ### Lumen Probe Trace Readback
 

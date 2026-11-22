@@ -25,6 +25,8 @@ std::unique_ptr<RenderGraphPass> createLumenGlobalTracingPass();
 std::unique_ptr<RenderGraphPass> createLumenScreenProbeGatherPass();
 std::unique_ptr<RenderGraphPass> createLumenScreenTraceSetupPass();
 std::unique_ptr<RenderGraphPass> createLumenTemporalGatherPass();
+std::unique_ptr<RenderGraphPass> createLumenSceneVisualizePass();
+std::unique_ptr<RenderGraphPass> createLumenProbeVisualizePass();
 std::unique_ptr<RenderGraphPass> createStrandVisibilityPass();
 std::unique_ptr<RenderGraphPass> createStrandLightingPass();
 std::unique_ptr<RenderGraphPass> createVisibilityBufferMaterialPass();

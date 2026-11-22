@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <stdexcept>
 
 namespace {
@@ -24,11 +25,13 @@ using debug::DebugValue;
 constexpr uint32_t kExtent = 384;
 constexpr uint32_t kLitFrames = 256;
 constexpr uint32_t kDarkFrames = 8;
+constexpr uint32_t kContactProbePhases = 8;
 constexpr std::string_view kOutput = "FinalBlit.color";
 constexpr uint32_t kTileSize = 16;
 constexpr uint32_t kProbesPerTile = 9;
 constexpr uint32_t kRaysPerProbe = 64;
 constexpr uint32_t kProbeCount = (kExtent / kTileSize) * (kExtent / kTileSize) * kProbesPerTile;
+constexpr uint32_t kPixelCount = kExtent * kExtent;
 // Full depth followed by all eight packed mips from 256x256 to 2x2.
 constexpr uint32_t kHZBElements = kExtent * kExtent + (4u * 256u * 256u - 4u) / 3u;
 
@@ -54,11 +57,19 @@ struct BaselineOptions {
     bool gdfPrefixValidation = false;
     bool gdfPrefixRejectReceding = false;
     bool gdfPrefixMeshValidation = false;
+    bool contactVisibility = false;
+    bool contactTemporalPhases = false;
 };
 
 struct BaselineCapture final : IRenderDebugObserver {
+    // Contact visibility reads the full Deferred guides and both ray buffers in one frame.
+    explicit BaselineCapture(bool contactVisibility)
+        : inspector(contactVisibility ? debug::DebugLimits{.frameBytes = 40ull << 20} : debug::DebugLimits{},
+              RenderDebugDetail::Resources)
+    {}
+
     RenderGraphPreviewRenderer preview;
-    RenderDebugRuntime inspector{{}, RenderDebugDetail::Resources};
+    RenderDebugRuntime inspector;
     DebugValue request;
     DebugValue reply;
 
@@ -139,7 +150,7 @@ void addRayCaptureBatches(DebugValue& batches, const RayCaptureRegion& region)
 }
 
 DebugValue saveRayCapture(BaselineCapture& capture, const std::filesystem::path& directory,
-    const debug::DebugEvidenceStamp& frame, const RayCaptureRegion& region)
+    std::string_view label, const debug::DebugEvidenceStamp& frame, const RayCaptureRegion& region)
 {
     const auto deferred = getCapture(capture, 2);
     const auto gather = getCapture(capture, 3);
@@ -149,31 +160,102 @@ DebugValue saveRayCapture(BaselineCapture& capture, const std::filesystem::path&
     const size_t pixelCount = pixels[2] * pixels[3];
     const auto& geometry = deferred->artifacts;
     const auto& traces = gather->artifacts;
-    saveReadback(geometry.at(0), directory / "rays-position.bin", "RGBA32F", pixelCount * 16);
-    saveReadback(geometry.at(1), directory / "rays-normal.bin", "RGBA16F", pixelCount * 8);
-    saveReadback(traces.at(0), directory / "rays-probe-positions.bin", "u32", kProbeCount * 8);
-    saveReadback(traces.at(1), directory / "rays-trace.bin", kLumenProbeTraceReadbackLayout,
-        region.traces() * sizeof(LumenProbeTraceReadbackRecord));
-    saveReadback(traces.at(2), directory / "rays-radiance.bin", "u32", kProbeCount * kRaysPerProbe * 16);
-    saveReadback(traces.at(3), directory / "rays-distance.bin", "u32", kProbeCount * kRaysPerProbe * 4);
     DebugValue result{{"frame", frame.execution}, {"tiles", region.tiles}, {"pixel_rect", pixels},
-        {"position", "rays-position.bin"}, {"normal", "rays-normal.bin"},
-        {"probe_positions", "rays-probe-positions.bin"}, {"trace", "rays-trace.bin"},
-        {"radiance", "rays-radiance.bin"}, {"distance", "rays-distance.bin"},
         {"evidence", {deferred->snapshot.evidence.value(), gather->snapshot.evidence.value()}}};
+    const auto prefix = label == "on" ? "rays-" : std::string(label) + "-rays-";
+    auto saveRay = [&](std::string_view key, std::string_view suffix, const debug::DebugArtifact& artifact,
+                       std::string_view layout, size_t bytes) {
+        const auto file = prefix + std::string(suffix) + ".bin";
+        saveReadback(artifact, directory / file, layout, bytes);
+        result[key] = file;
+    };
+    saveRay("position", "position", geometry.at(0), "RGBA32F", pixelCount * 16);
+    saveRay("normal", "normal", geometry.at(1), "RGBA16F", pixelCount * 8);
+    saveRay("probe_positions", "probe-positions", traces.at(0), "u32", kProbeCount * 8);
+    saveRay("trace", "trace", traces.at(1), kLumenProbeTraceReadbackLayout,
+        region.traces() * sizeof(LumenProbeTraceReadbackRecord));
+    saveRay("radiance", "radiance", traces.at(2), "u32", kProbeCount * kRaysPerProbe * 16);
+    saveRay("distance", "distance", traces.at(3), "u32", kProbeCount * kRaysPerProbe * 4);
     if (region.captureHZB) {
         const auto screen = getCapture(capture, 4);
         checkSameFrame(frame, screen->snapshot.evidence);
-        saveReadback(screen->artifacts.at(0), directory / "rays-closest-hzb.bin", "u32", kHZBElements * 4);
-        result["closest_hzb"] = "rays-closest-hzb.bin";
+        saveRay("closest_hzb", "closest-hzb", screen->artifacts.at(0), "u32", kHZBElements * 4);
         result["evidence"].push_back(screen->snapshot.evidence.value());
+    }
+    return result;
+}
+
+struct ContactResource {
+    std::string_view key;
+    std::string_view id;
+    std::string_view layout;
+    std::string_view format;
+    uint32_t bytes;
+};
+
+constexpr std::array kContactDeferred{
+    ContactResource{"position", "Deferred.lumenPosition", "RGBA32F", "rgba32f", kPixelCount * 16},
+    ContactResource{"normal", "Deferred.lumenNormal", "RGBA16F", "rgba16f", kPixelCount * 8},
+    ContactResource{"diffuse", "Deferred.lumenDiffuse", "RGBA16F", "rgba16f", kPixelCount * 8},
+    ContactResource{"direct_color", "Deferred.color", "RGBA32F", "rgba32f", kPixelCount * 16},
+};
+constexpr std::array kContactGather{
+    ContactResource{"interpolation", "Gather.probeInterpolationReadback", "u32", "u32x4_f32x4", kPixelCount * 32},
+    ContactResource{"filtered_radiance", "Gather.filteredProbeRadiance", "u32", "rgba32f", kProbeCount * kRaysPerProbe * 16},
+    ContactResource{"gather_indirect", "Gather.indirectDiffuse", "RGBA16F", "rgba16f", kPixelCount * 8},
+    ContactResource{"gather_color", "Gather.color", "RGBA32F", "rgba32f", kPixelCount * 16},
+};
+constexpr std::array kContactTemporal{
+    ContactResource{"history_weight", "Temporal.historyWeight", "f32", "f32", kPixelCount * 4},
+};
+constexpr std::array kContactRaw{
+    ContactResource{"raw_radiance", "Gather.probeRadiance", "u32", "rgba32f", kProbeCount * kRaysPerProbe * 16},
+};
+
+void addContactBatch(DebugValue& batches, std::string_view pass, std::span<const ContactResource> resources,
+    const DebugValue& roi)
+{
+    auto requests = DebugValue::array();
+    for (const auto& resource : resources) {
+        if (resource.layout == "u32") {
+            requests.push_back({{"id", resource.id}, {"layout", resource.layout}, {"count", resource.bytes / sizeof(uint32_t)}});
+        } else {
+            requests.push_back({{"id", resource.id}, {"roi", roi}});
+        }
+    }
+    batches.push_back({{"pass", pass}, {"checkpoint", "AfterPass"}, {"resources", std::move(requests)}});
+}
+
+DebugValue saveContactVisibilityCapture(BaselineCapture& capture, const std::filesystem::path& directory,
+    std::string_view label, const debug::DebugEvidenceStamp& frame, size_t jobIndex, const DebugValue* rayCapture)
+{
+    DebugValue result{{"frame", frame.execution}, {"evidence", DebugValue::array()}};
+    auto saveBatch = [&](std::span<const ContactResource> resources) {
+        const auto job = getCapture(capture, jobIndex++);
+        checkSameFrame(frame, job->snapshot.evidence);
+        result["evidence"].push_back(job->snapshot.evidence.value());
+        for (size_t i = 0; i < resources.size(); ++i) {
+            const auto& resource = resources[i];
+            const auto file = std::string(label) + "-contact-" + std::string(resource.key) + ".bin";
+            saveReadback(job->artifacts.at(i), directory / file, resource.layout, resource.bytes);
+            result[resource.key] = {{"file", file}, {"format", resource.format}, {"frame", frame.execution}};
+        }
+    };
+    saveBatch(kContactDeferred);
+    saveBatch(kContactGather);
+    saveBatch(kContactTemporal);
+    if (rayCapture) {
+        result["raw_radiance"] = {{"file", rayCapture->at("radiance")},
+            {"format", kContactRaw[0].format}, {"frame", frame.execution}};
+    } else {
+        saveBatch(kContactRaw);
     }
     return result;
 }
 
 DebugValue captureFrame(BaselineCapture& capture, RenderGraph& graph,
     const std::filesystem::path& directory, std::string_view label, uint32_t accumulatedFrames,
-    DebugValue* rayCapture = nullptr, const RayCaptureRegion& region = kDetailRayRegion)
+    DebugValue* rayCapture = nullptr, const RayCaptureRegion& region = kDetailRayRegion, bool contactVisibility = false)
 {
     constexpr std::array<std::string_view, 3> keys{"path_trace", "realtime", "indirect"};
     constexpr std::array<std::string_view, 3> ids{"PathTrace.color", "Temporal.color", "Temporal.indirectDiffuse"};
@@ -188,6 +270,13 @@ DebugValue captureFrame(BaselineCapture& capture, RenderGraph& graph,
             {"resources", DebugValue::array({{{"id", ids[1]}, {"roi", roi}}, {{"id", ids[2]}, {"roi", roi}}})}},
     });
     if (rayCapture) { addRayCaptureBatches(batches, region); }
+    const size_t contactJobIndex = batches.size();
+    if (contactVisibility) {
+        addContactBatch(batches, "Deferred", kContactDeferred, roi);
+        addContactBatch(batches, "Gather", kContactGather, roi);
+        addContactBatch(batches, "Temporal", kContactTemporal, roi);
+        if (!rayCapture) { addContactBatch(batches, "Gather", kContactRaw, roi); }
+    }
     capture.request = {{"method", "capture.batch"}, {"params", {{"batches", std::move(batches)}}}};
     renderFrame(capture.preview, graph);
     if (capture.reply.value("status", "") != "ok") {
@@ -208,7 +297,11 @@ DebugValue captureFrame(BaselineCapture& capture, RenderGraph& graph,
         saveReadback(artifact, directory / file, layouts[i], kExtent * kExtent * strides[i]);
         output[keys[i]] = {{"file", file}, {"format", formats[i]}, {"frame", frame}};
     }
-    if (rayCapture) { *rayCapture = saveRayCapture(capture, directory, pathStamp, region); }
+    if (rayCapture) { *rayCapture = saveRayCapture(capture, directory, label, pathStamp, region); }
+    if (contactVisibility) {
+        output["contact_visibility"] = saveContactVisibilityCapture(capture, directory, label, pathStamp,
+            contactJobIndex, rayCapture);
+    }
     std::cout << "Captured " << label << " at graph execution " << frame << std::endl;
     return output;
 }
@@ -221,9 +314,30 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
         throw std::runtime_error("Could not load GI Comparison: " + log);
     }
     const auto gather = *sample.graph.findNode("Gather");
+    const auto gdf = *sample.graph.findNode("GlobalDistanceFieldPages");
     auto gatherProperties = gather.properties;
+    auto gdfProperties = gdf.properties;
     const auto& rayRegion = options.floorRays ? kFloorRayRegion : kDetailRayRegion;
-    if (options.trace) { gatherProperties["probeTraceReadback"] = rayRegion.tiles; }
+    if (options.trace) {
+        // The fixed triangle and contact witnesses were captured at these tracing settings.
+        gatherProperties["fixedProbeDirections"] = true;
+        gatherProperties.erase("tracingOctahedronResolution");
+        gatherProperties["probeTraceReadback"] = rayRegion.tiles;
+        gatherProperties["screenTraceRelativeDepthThickness"] = 0.02f;
+        const auto temporal = *sample.graph.findNode("Temporal");
+        auto temporalProperties = temporal.properties;
+        temporalProperties.erase("maxFramesAccumulated");
+        temporalProperties.erase("stochasticHistoryQuantization");
+        if (!sample.graph.setNodeProperties(temporal.id, temporalProperties)) {
+            throw std::runtime_error("Could not configure the fixed Cornell Box temporal history");
+        }
+        gdfProperties["resolution"] = 112;
+        gdfProperties["maxPhysicalPages"] = 4096;
+        if (!sample.graph.setNodeProperties(gdf.id, gdfProperties)) {
+            throw std::runtime_error("Could not configure the fixed Cornell Box distance-field grid");
+        }
+    }
+    if (options.contactVisibility) { gatherProperties["probeInterpolationReadback"] = {0, 0, kExtent, kExtent}; }
     if (options.screenGDFContinuation) { gatherProperties["screenGDFContinuation"] = true; }
     if (options.gdfPrefixValidation) { gatherProperties["gdfPrefixValidation"] = true; }
     if (options.gdfPrefixRejectReceding) { gatherProperties["gdfPrefixRejectReceding"] = true; }
@@ -231,7 +345,7 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
     if (options.detail) { gatherProperties["detailTracing"] = true; }
     if (options.detail || options.gdfPrefixMeshValidation) {
         gatherProperties["detailDistanceFieldPaths"] =
-            sample.graph.findNode("GlobalDistanceFieldPages")->properties.at("distanceFieldPaths");
+            gdfProperties.at("distanceFieldPaths");
     }
     if (!sample.graph.setNodeProperties(gather.id, gatherProperties) ||
         (options.detail && !sample.graph.addEdge("VBuffer.depth", "Gather.detailDepth")) ||
@@ -267,8 +381,10 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
     }, .context = &errors};
     DebugValue captures = DebugValue::object();
     DebugValue rayCapture;
+    DebugValue temporalSeed;
+    DebugValue temporalPhases = DebugValue::array();
     {
-        BaselineCapture capture;
+        BaselineCapture capture(options.contactVisibility);
         auto& preview = capture.preview;
         preview.bindRenderView(&view);
         preview.bindRuntimeScene(&scene);
@@ -278,11 +394,26 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
         }
         preview.setEnvironment({.enabled = false, .visible = false});
         preview.setDebugObserver(&capture);
+        constexpr uint32_t temporalSeedFrame = kLitFrames - kContactProbePhases;
         for (uint32_t frame = 1; frame <= kLitFrames; ++frame) {
-            if (frame == kLitFrames / 2 || frame == kLitFrames) {
-                const auto label = frame == kLitFrames ? "on" : "prior_on";
-                captures[label] = captureFrame(capture, sample.graph, directory, label, frame,
-                    options.trace && frame == kLitFrames ? &rayCapture : nullptr, rayRegion);
+            const bool finalLitFrame = frame == kLitFrames;
+            const bool temporalPhase = options.contactTemporalPhases && frame > temporalSeedFrame;
+            if (frame == kLitFrames / 2) {
+                captures["prior_on"] = captureFrame(capture, sample.graph, directory, "prior_on", frame);
+            } else if (options.contactTemporalPhases && frame == temporalSeedFrame) {
+                temporalSeed = captureFrame(capture, sample.graph, directory, "temporal_seed", frame);
+            } else if (temporalPhase || finalLitFrame) {
+                const auto label = finalLitFrame ? "on" : "phase_" + std::to_string(frame - temporalSeedFrame - 1);
+                DebugValue phaseRays;
+                auto phase = captureFrame(capture, sample.graph, directory, label, frame,
+                    options.trace ? &phaseRays : nullptr, rayRegion, options.contactVisibility);
+                if (temporalPhase) {
+                    temporalPhases.push_back({{"capture", phase}, {"ray_capture", phaseRays}});
+                }
+                if (finalLitFrame) {
+                    captures["on"] = std::move(phase);
+                    rayCapture = std::move(phaseRays);
+                }
             } else {
                 renderFrame(preview, sample.graph);
             }
@@ -295,22 +426,33 @@ void runBaseline(const std::filesystem::path& directory, const DebugValue& regio
         for (uint32_t frame = 1; frame <= kDarkFrames; ++frame) {
             if (frame == 1 || frame == kDarkFrames) {
                 const auto label = frame == 1 ? "first_off" : "off";
-                captures[label] = captureFrame(capture, sample.graph, directory, label, frame);
+                captures[label] = captureFrame(capture, sample.graph, directory, label, frame, nullptr, rayRegion,
+                    options.contactTemporalPhases || (options.contactVisibility && frame == kDarkFrames));
             } else {
                 renderFrame(preview, sample.graph);
             }
         }
     }
     if (errors != 0) { throw std::runtime_error("Cornell Box produced Vulkan validation errors"); }
+    const double gdfExtent = gdfProperties.at("extent").get<double>();
+    const uint32_t gdfResolution = gdfProperties.at("resolution").get<uint32_t>();
     DebugValue manifest{{"sample", sample.desc.id}, {"color_space", "acescg"},
         {"resolution", {kExtent, kExtent}}, {"view", sample.graph.viewProperties()}, {"regions", regions},
         {"detail_tracing", options.detail}, {"screen_traces", gatherProperties.at("screenTraces")},
+        {"screen_trace_relative_depth_thickness", gatherProperties.value("screenTraceRelativeDepthThickness", 0.02f)},
+        {"gdf_extent_m", gdfExtent}, {"gdf_resolution", gdfResolution},
+        {"gdf_voxel_size_m", 2.0 * gdfExtent / gdfResolution},
+        {"fixed_probe_directions", options.trace},
         {"screen_gdf_continuation", options.screenGDFContinuation || options.detail},
         {"gdf_prefix_validation", options.gdfPrefixValidation},
         {"gdf_prefix_reject_receding", options.gdfPrefixRejectReceding},
         {"gdf_prefix_mesh_validation", options.gdfPrefixMeshValidation},
         {"captures", captures}, {"vulkan_validation_errors", errors.load()}};
     if (options.trace) { manifest["ray_capture"] = std::move(rayCapture); }
+    if (options.contactTemporalPhases) {
+        manifest["temporal_seed"] = std::move(temporalSeed);
+        manifest["temporal_phases"] = std::move(temporalPhases);
+    }
     std::ofstream stream(directory / "capture.json");
     stream << manifest.dump(2) << '\n';
     if (!stream) { throw std::runtime_error("Could not write Cornell Box capture manifest"); }
@@ -323,7 +465,8 @@ int main(int argc, char** argv)
     if (argc < 3) {
         std::cerr << "Usage: MetallicCornellBoxGIBaseline <new-output-directory> <regions.json>"
             " [--trace|--floor-rays] [--detail] [--screen-gdf-continuation|--gdf-prefix-validation]"
-            " [--gdf-prefix-reject-receding|--gdf-prefix-mesh-validation]\n";
+            " [--gdf-prefix-reject-receding|--gdf-prefix-mesh-validation]"
+            " [--contact-visibility|--contact-temporal-phases]\n";
         return 1;
     }
     try {
@@ -344,7 +487,16 @@ int main(int argc, char** argv)
                 options.screenGDFContinuation = options.gdfPrefixValidation = true;
                 options.gdfPrefixRejectReceding = options.gdfPrefixMeshValidation = true;
             }
+            else if (argument == "--contact-visibility" || argument == "--contact-temporal-phases") {
+                options.contactTemporalPhases |= argument == "--contact-temporal-phases";
+                options.contactVisibility = options.trace = options.floorRays = true;
+                options.screenGDFContinuation = options.gdfPrefixValidation = true;
+                options.gdfPrefixRejectReceding = options.gdfPrefixMeshValidation = true;
+            }
             else { throw std::runtime_error("Unknown Cornell Box capture option: " + std::string(argument)); }
+        }
+        if (options.contactVisibility && options.detail) {
+            throw std::runtime_error("Cornell Box contact visibility captures require group F with Detail Tracing disabled");
         }
         if (sceneWorkingColorSpace() != SceneWorkingColorSpace::ACEScg) {
             throw std::runtime_error("Cornell Box baseline requires METALLIC_WORKING_COLOR_SPACE=acescg");

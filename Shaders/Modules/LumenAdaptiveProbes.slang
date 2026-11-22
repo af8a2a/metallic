@@ -5,8 +5,17 @@ import LumenProbeMath;
 namespace Metallic.Lumen
 {
 public static const uint kLumenProbeDownsampleFactor = 16u;
-public static const uint kLumenProbeRayResolution = 8u;
+public static const uint kLumenProbeGatherResolution = 8u;
+#if defined(METALLIC_LUMEN_TRACE_RESOLUTION_16)
+public static const uint kLumenProbeTraceResolution = 16u;
+#else
+public static const uint kLumenProbeTraceResolution = 8u;
+#endif
 public static const uint kLumenProbeSlotsPerTile = 9u;
+public static const uint kLumenIrradianceProbeResolution = 6u;
+public static const uint kLumenIrradianceProbeWithBorderResolution = kLumenIrradianceProbeResolution + 2u;
+public static const uint kLumenProbeSlotsPerTileAxis = 3u;
+public static const uint kLumenIrradianceProbeTileStride = kLumenProbeSlotsPerTileAxis * kLumenIrradianceProbeWithBorderResolution;
 public static const uint kLumenInvalidProbe = ~0u;
 
 static const uint kAdaptiveProbesPerTile = kLumenProbeSlotsPerTile - 1u;
@@ -26,14 +35,34 @@ public uint lumenProbeIndex(uint2 tile, uint slot, uint probeWidth)
     return (tile.y * probeWidth + tile.x) * kLumenProbeSlotsPerTile + slot;
 }
 
-public uint lumenProbeRayAddress(uint probeIndex, uint2 ray)
+// A screen tile owns one uniform and eight adaptive slots, packed into 3x3 bordered probes.
+public uint2 lumenProbeAtlasCoord(uint probeIndex, uint probeWidth)
 {
-    return (probeIndex * kLumenProbeRayResolution + ray.y) * kLumenProbeRayResolution + ray.x;
+    uint tile = probeIndex / kLumenProbeSlotsPerTile;
+    uint slot = probeIndex % kLumenProbeSlotsPerTile;
+    return uint2(tile % probeWidth, tile / probeWidth) * kLumenProbeSlotsPerTileAxis
+        + uint2(slot % kLumenProbeSlotsPerTileAxis, slot / kLumenProbeSlotsPerTileAxis);
+}
+
+public uint lumenProbeGatherAddress(uint probeIndex, uint2 ray)
+{
+    return (probeIndex * kLumenProbeGatherResolution + ray.y) * kLumenProbeGatherResolution + ray.x;
+}
+
+public uint lumenProbeTraceAddress(uint probeIndex, uint2 ray)
+{
+    return (probeIndex * kLumenProbeTraceResolution + ray.y) * kLumenProbeTraceResolution + ray.x;
 }
 
 uint2 probeTileJitter(uint frameIndex)
 {
     return uint2(lumenHammersley16(frameIndex % 8u, 8u, uint2(0u)) * kLumenProbeDownsampleFactor);
+}
+
+// UE 5.7.4 GetScreenTileCoord, including probes clamped to the final partial tile.
+public uint2 lumenScreenTileCoord(uint2 probePixel, uint frameIndex)
+{
+    return (probePixel - probeTileJitter(frameIndex)) / kLumenProbeDownsampleFactor;
 }
 
 public uint2 lumenUniformProbePosition(uint2 tile, uint2 viewSize, uint frameIndex)

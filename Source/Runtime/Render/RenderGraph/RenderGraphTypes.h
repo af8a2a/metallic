@@ -157,7 +157,7 @@ struct RenderGraphField {
     // the executor separately excludes passes it can skip for scene readiness.
     RenderGraphInitialization initialization = RenderGraphInitialization::Unknown;
     DisplayColorEncoding colorEncoding = DisplayColorEncoding::sRGB;
-    // Disable for inputs that can be resampled to a different output extent.
+    // Disable for resampled inputs or auxiliary 2D outputs sized independently of the pass.
     bool matchOutputExtent = true;
     uint32_t width = 0;
     uint32_t height = 0;

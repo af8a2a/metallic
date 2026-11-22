@@ -99,6 +99,7 @@ private:
         bool hideCameraSettings,
         bool showEmptyMessage);
     void drawViewportPanel();
+    void drawLumenDebugViews();
     render::RenderGraphNode* viewportSliderDebugNode();
     void drawSliderDebugControls();
     bool drawSliderDebugOverlay(const ImVec2& min, const ImVec2& max);

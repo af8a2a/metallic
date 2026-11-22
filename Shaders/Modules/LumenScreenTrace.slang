@@ -237,7 +237,8 @@ public float screenTraceNoise(float2 uv, float frameId)
 
 // UE 5.7.4 LumenScreenProbeTracing.usf, camera reprojection for static opaque surfaces.
 public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPixel, float3 receiverPosition,
-    float3 receiverNormal, float3 rayDirection, float traceDistance, float maxTraceDistance, uint2 noisePixel,
+    float3 receiverNormal, float3 rayDirection, float traceDistance, float maxTraceDistance, float relativeDepthThickness,
+    uint2 noisePixel,
     out float3 radiance, out float distance, out float continuationDistance)
 {
     radiance = 0.0f;
@@ -265,7 +266,7 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPix
     float3 hitUVz;
     bool hasEndpoint;
     bool hit = traceScreenHZB(inputs.closestHZB, current, traceView.state.yz, traceView.state.w, rayOrigin,
-        rayDirection, traceDistance, 0.02f * depthThicknessScale, hitUVz, hasEndpoint);
+        rayDirection, traceDistance, relativeDepthThickness * depthThicknessScale, hitUVz, hasEndpoint);
     if (!hasEndpoint) {
         return false;
     }

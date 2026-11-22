@@ -36,7 +36,6 @@ HANDOFF_TOLERANCE = 1.0e-6
 DETAIL_TRIANGLE_TOLERANCE = 0.005
 GDF_MISS = 1
 GDF_HIT = 2
-CORNELL_GDF_VOXEL_SIZE = 3.6 / 112
 EMITTER_RGB_TOLERANCE = 0.01
 GDF_PREFIX_INVOKED = 1 << 8
 GDF_PREFIX_ACCEPTED = 1 << 9
@@ -68,6 +67,14 @@ RECEIVER_VALID, SCREEN_INVOKED, SCREEN_ACCEPTED, DETAIL_INVOKED, DETAIL_ACCEPTED
     1 << bit for bit in range(6)
 )
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def capture_gdf_voxel_size(manifest):
+    # Historical Cornell captures used one 3.6 m clipmap with 112 voxels per axis.
+    size = manifest.get("gdf_voxel_size_m", 3.6 / 112)
+    if not math.isfinite(size) or size <= 0.0:
+        raise ValueError("Capture GDF voxel size must be positive and finite")
+    return size
 
 
 def add(a, b):
@@ -477,6 +484,8 @@ def key(ray):
 
 
 def check_capture_alignment(a, b, name):
+    if not math.isclose(capture_gdf_voxel_size(a), capture_gdf_voxel_size(b)):
+        raise ValueError(f"A and {name} must use the same GDF voxel size")
     if a["resolution"] != b["resolution"] or a["view"] != b["view"] or any(
             a["ray_capture"][field] != b["ray_capture"][field] for field in ("frame", "tiles", "pixel_rect")):
         raise ValueError(f"A and {name} must use the same camera, resolution, execution frame and capture rectangles")
@@ -538,7 +547,7 @@ def readback_address(record_index, tiles, probe_pixels):
         "lane": (ray % RAY_EDGE, ray // RAY_EDGE)}
 
 
-def count_prefix_control(c_trace, d_trace, tiles, probe_pixels, mesh_validation=False):
+def count_prefix_control(c_trace, d_trace, tiles, probe_pixels, voxel_size, mesh_validation=False):
     counts = Counter({name: 0 for name in (
         "prefix_invoked", "prefix_accepted", "prefix_rejected", "expected_prefix_invocation_mismatches",
         "selected_prefix_interval_mismatches", "selected_tail_mismatches", "prefix_outcome_mismatches",
@@ -573,7 +582,7 @@ def count_prefix_control(c_trace, d_trace, tiles, probe_pixels, mesh_validation=
             if c[8] == GDF_HIT:
                 counts["accepted_with_c_tail_hit"] += 1
                 counts["accepted_with_c_tail_hit_before_cutoff"] += c[7] < prefix_max
-                counts["accepted_with_c_tail_hit_within_one_voxel"] += abs(c[7] - d[7]) <= CORNELL_GDF_VOXEL_SIZE
+                counts["accepted_with_c_tail_hit_within_one_voxel"] += abs(c[7] - d[7]) <= voxel_size
             else:
                 counts["accepted_without_c_tail_hit"] += 1
         else:
@@ -588,7 +597,7 @@ def count_prefix_control(c_trace, d_trace, tiles, probe_pixels, mesh_validation=
         "tail_hit_distance_differences_above_handoff_tolerance": tail_distance_differences}
 
 
-def check_prefix_witnesses(witnesses, checks):
+def check_prefix_witnesses(witnesses, checks, voxel_size):
     for name, ray in witnesses.items():
         if ray:
             c, d = ray["c_fixed"], ray["d"]
@@ -603,7 +612,7 @@ def check_prefix_witnesses(witnesses, checks):
             c["gdf_start_past_triangle"])
         checks["emitter_d_accepts_prefix_near_triangle"] = bool(hit and d["prefix"]["accepted"] and
             d["gdf_classification"] == GDF_HIT and
-            abs(d["gdf_hit_distance"] - hit["distance"]) <= CORNELL_GDF_VOXEL_SIZE and
+            abs(d["gdf_hit_distance"] - hit["distance"]) <= voxel_size and
             d["gdf_min"] <= d["gdf_hit_distance"] < d["gdf_max"])
         checks["emitter_d_writes_emissive_hit"] = (d["radiance_and_class"][3] == GDF_HIT and
             d["trace_distance"] == d["gdf_hit_distance"] and
@@ -653,7 +662,7 @@ def same_selected_trace(a, b):
         all(abs(lhs - rhs) <= HANDOFF_TOLERANCE for lhs, rhs in zip(a["radiance_and_class"], b["radiance_and_class"])))
 
 
-def compare_prefix_triangles(probes, d_buffers, e_buffers, triangles, trace_limit):
+def compare_prefix_triangles(probes, d_buffers, e_buffers, triangles, trace_limit, voxel_size):
     counts = Counter()
     rows = []
     for pixel, slots in sorted(probes.items()):
@@ -678,7 +687,7 @@ def compare_prefix_triangles(probes, d_buffers, e_buffers, triangles, trace_limi
                 error = abs(d["gdf_hit_distance"] - hit["distance"])
                 e_keeps_prefix = bool(e["flags"] & GDF_PREFIX_ACCEPTED)
                 counts["d_accepted_with_cpu_triangle_in_prefix"] += 1
-                counts["d_hit_within_one_voxel_of_triangle"] += error <= CORNELL_GDF_VOXEL_SIZE
+                counts["d_hit_within_one_voxel_of_triangle"] += error <= voxel_size
                 counts["e_keeps_prefix_with_cpu_triangle_in_prefix"] += e_keeps_prefix
                 rows.append({"pixel": pixel, "tile": slot[:2], "slot": slot[2], "lane": lane,
                     "triangle": hit, "d_hit_m": d["gdf_hit_distance"], "e_hit_m": e["gdf_hit_distance"],
@@ -768,7 +777,7 @@ def add_mesh_validation_geometry(mesh, e_probes, e_buffers, triangles):
     mesh["cpu_box_counts"] = counts
 
 
-def check_mesh_witnesses(witnesses, checks, triangles):
+def check_mesh_witnesses(witnesses, checks, triangles, voxel_size):
     for name, ray in witnesses.items():
         if not ray:
             continue
@@ -798,7 +807,7 @@ def check_mesh_witnesses(witnesses, checks, triangles):
             surfaces = ray.get("surfaces_at_f_hit", {})
             checks[f"{name}_f_keeps_same_near_surface"] = bool(hit and hit["object"] == surface and
                 hit["front_face"] and hit["distance"] < 0.5 and ray["e"]["prefix"]["accepted"] and
-                next(iter(surfaces), None) == surface and surfaces[surface]["distance"] <= CORNELL_GDF_VOXEL_SIZE)
+                next(iter(surfaces), None) == surface and surfaces[surface]["distance"] <= voxel_size)
 
     emitter = witnesses["emissive_edge"]
     if emitter:
@@ -806,7 +815,7 @@ def check_mesh_witnesses(witnesses, checks, triangles):
         mesh = f["prefix"]["mesh_validation"]
         checks["emitter_f_keeps_emissive_hit"] = bool(hit and hit["emissive"] and f["prefix"]["accepted"] and
             (mesh["confirmed"] or (mesh["inconclusive"] and same_selected_trace(emitter["e"], f))) and
-            abs(f["gdf_hit_distance"] - hit["distance"]) <= CORNELL_GDF_VOXEL_SIZE and
+            abs(f["gdf_hit_distance"] - hit["distance"]) <= voxel_size and
             all(abs(channel - 8.0) <= EMITTER_RGB_TOLERANCE for channel in f["radiance_and_class"][:3]))
     open_front = witnesses["open_front"]
     if open_front:
@@ -827,6 +836,7 @@ def measure_floor(a_path, c_path, c_fixed_path, scene_path, trace_limit, d_path=
         paths["f"] = f_path
     captures = {name: read_capture(path) for name, path in paths.items()}
     manifest = captures["a"][0]
+    voxel_size = capture_gdf_voxel_size(manifest)
     view = manifest["view"]
     if view["temporalJitter"] or view["camera"]["projection"] != "perspective":
         raise ValueError("Floor oracle requires the fixed perspective view without jitter")
@@ -891,6 +901,7 @@ def measure_floor(a_path, c_path, c_fixed_path, scene_path, trace_limit, d_path=
 
     report = {
         "scene": str(scene_path), "captures": {name: str(path) for name, path in paths.items()},
+        "gdf_voxel_size_m": voxel_size,
         "resolution": manifest["resolution"], "frame": manifest["ray_capture"]["frame"],
         "probe_tiles": manifest["ray_capture"]["tiles"], "guide_crop": manifest["ray_capture"]["pixel_rect"],
         "screen_end_scope": {
@@ -903,7 +914,7 @@ def measure_floor(a_path, c_path, c_fixed_path, scene_path, trace_limit, d_path=
     if d_path:
         c, d = captures["c_fixed"], captures["d"]
         probe_pixels = {slot: pixel for pixel, probes in c[1].items() for slot in probes}
-        prefix = count_prefix_control(c[3][0], d[3][0], manifest["ray_capture"]["tiles"], probe_pixels)
+        prefix = count_prefix_control(c[3][0], d[3][0], manifest["ray_capture"]["tiles"], probe_pixels, voxel_size)
         counts = prefix["counts"]
         checks["d_uses_prefix_validation"] = d[0]["gdf_prefix_validation"] is True
         checks["d_matches_c_fixed_probe_placement"] = c[1] == d[1]
@@ -913,14 +924,14 @@ def measure_floor(a_path, c_path, c_fixed_path, scene_path, trace_limit, d_path=
         checks["d_accepts_only_gdf_hits"] = counts["prefix_outcome_mismatches"] == 0
         checks["d_selects_correct_prefix_or_tail"] = (
             counts["selected_prefix_interval_mismatches"] == counts["selected_tail_mismatches"] == 0)
-        check_prefix_witnesses(witnesses, checks)
+        check_prefix_witnesses(witnesses, checks, voxel_size)
         report["gdf_prefix_control"] = prefix
-        report["d_tolerances"] = {"handoff_m": HANDOFF_TOLERANCE, "triangle_distance_m": CORNELL_GDF_VOXEL_SIZE,
+        report["d_tolerances"] = {"handoff_m": HANDOFF_TOLERANCE, "triangle_distance_m": voxel_size,
             "emitter_rgb": EMITTER_RGB_TOLERANCE}
     if e_path:
         e = captures["e"]
         tiles = manifest["ray_capture"]["tiles"]
-        prefix_e = count_prefix_control(c[3][0], e[3][0], tiles, probe_pixels)
+        prefix_e = count_prefix_control(c[3][0], e[3][0], tiles, probe_pixels, voxel_size)
         receding = count_receding_rejections(d[3][0], e[3][0], tiles, probe_pixels)
         receding_counts = receding["counts"]
         counts_e = prefix_e["counts"]
@@ -933,7 +944,7 @@ def measure_floor(a_path, c_path, c_fixed_path, scene_path, trace_limit, d_path=
         checks["e_rejections_occur_inside_prefix"] = (receding_counts["receding_rejected"] > 0 and
             receding_counts["receding_rejected_outside_prefix"] == 0)
         check_receding_witnesses(witnesses, checks, triangles)
-        prefix_geometry = compare_prefix_triangles(d[1], d[3], e[3], triangles, trace_limit)
+        prefix_geometry = compare_prefix_triangles(d[1], d[3], e[3], triangles, trace_limit, voxel_size)
         geometry_counts = prefix_geometry["counts"]
         checks["e_triangle_oracle_covers_all_d_prefix_hits"] = geometry_counts["d_accepted"] == counts["prefix_accepted"]
         checks["e_retains_d_prefix_hits_with_cpu_triangle_in_prefix"] = (
@@ -944,7 +955,7 @@ def measure_floor(a_path, c_path, c_fixed_path, scene_path, trace_limit, d_path=
         report["gdf_prefix_triangle_retention"] = prefix_geometry
     if f_path:
         f = captures["f"]
-        prefix_f = count_prefix_control(c[3][0], f[3][0], tiles, probe_pixels, mesh_validation=True)
+        prefix_f = count_prefix_control(c[3][0], f[3][0], tiles, probe_pixels, voxel_size, mesh_validation=True)
         mesh = count_mesh_validation(e[3][0], f[3][0], tiles, probe_pixels)
         add_mesh_validation_geometry(mesh, e[1], e[3], triangles)
         counts_f = prefix_f["counts"]
@@ -957,7 +968,7 @@ def measure_floor(a_path, c_path, c_fixed_path, scene_path, trace_limit, d_path=
         checks["f_selects_valid_prefix_or_tail"] = all(counts_f[field] == 0 for field in (
             "expected_prefix_invocation_mismatches", "prefix_outcome_mismatches", "selected_prefix_interval_mismatches",
             "selected_tail_mismatches"))
-        check_mesh_witnesses(witnesses, checks, triangles)
+        check_mesh_witnesses(witnesses, checks, triangles, voxel_size)
         report["f_gdf_prefix_control"] = prefix_f
         report["gdf_prefix_mesh_validation"] = mesh
     return report
@@ -1082,6 +1093,7 @@ def measure(a_path, b_path, scene_path, detail_limit, trace_limit, pin_path, c_p
 
     result = {
         "scene": str(scene_path), "a": str(a_path), "b": str(b_path), "resolution": a["resolution"],
+        "gdf_voxel_size_m": capture_gdf_voxel_size(a),
         "frame": a_info["frame"], "probe_tiles": a_info["tiles"], "guide_crop": a_info["pixel_rect"],
         "detail_distance_limit": detail_limit, "trace_distance_limit": trace_limit,
         "a_probe_counts": a_counts, "b_probe_counts": b_counts, "matching_probe_pixels": len(matched_pixels),

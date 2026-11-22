@@ -28,11 +28,10 @@ using Metallic.Lumen;
 using Metallic.DistanceField;
 
 static const uint kProbeDownsampleFactor = 16u;
-static const uint kProbeRayResolution = 8u;
+static const uint kProbeRayResolution = kLumenProbeTraceResolution;
 static const uint kRaysPerProbe = kProbeRayResolution * kProbeRayResolution;
 static const float kSurfaceBias = 0.05f;
 static const float kMinTraceDistance = 0.0001f;
-static const float kMaxRayIntensity = 10.0f;
 static const float kInterpolationDepthWeight = -200.0f;
 static const float kMinInterpolationFallbackWeight = 0.0001f;
 
@@ -79,6 +78,14 @@ void writeProbeTraceReadback(ResourceHandle<RWStructuredBuffer<LumenProbeTraceRe
         resolveUniform(buffer)[index] = record;
     }
 }
+#endif
+
+#if defined(METALLIC_LUMEN_PROBE_INTERPOLATION_READBACK)
+struct LumenProbeInterpolationReadback
+{
+    uint4 indices;
+    float4 weights;
+};
 #endif
 
 #if defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_GDF_PREFIX_MESH_VALIDATION)
@@ -149,6 +156,18 @@ struct LumenScreenProbeGatherParams
 #else
     uint unusedProbeTraceReadback[5];
 #endif
+#if defined(METALLIC_LUMEN_PROBE_INTERPOLATION_READBACK)
+    ResourceHandle<RWStructuredBuffer<LumenProbeInterpolationReadback>> interpolationReadback;
+    uint4 interpolationReadbackPixels;
+#else
+    uint unusedProbeInterpolationReadback[5];
+#endif
+    ResourceHandle<Texture2D<float2>> blueNoiseVec2;
+    ResourceHandle<Texture2D<float4>> probeIrradiance;
+    SamplerHandle irradianceSampler;
+    float screenTraceRelativeDepthThickness;
+    ResourceHandle<Texture2D<float4>> shDirectional;
+    uint rayDirectionFrameIndex;
 };
 
 // UE 5.7.4 GetUniformScreenProbeScreenPosition at Hammersley phase zero.
@@ -157,35 +176,23 @@ uint2 uniformProbePosition(uint2 tile, uint2 viewSize)
     return min(tile * kProbeDownsampleFactor, viewSize - 1u);
 }
 
-uint probeRayAddress(uint probeIndex, uint2 ray)
+float3 probeRayDirection(uint2 ray, float2 probeTexelCenter)
 {
-    return probeIndex * kRaysPerProbe + ray.y * kProbeRayResolution + ray.x;
+    return lumenEquiAreaSphericalMapping((float2(ray) + probeTexelCenter) / float(kProbeRayResolution));
 }
 
-float3 probeRayDirection(uint2 ray)
+float3 storeTraceLighting(float3 lighting)
 {
-    // GetProbeTracingUV with one sample and the fixed center branch of GetProbeTexelCenter.
-    return lumenEquiAreaSphericalMapping((float2(ray) + 0.5f) / float(kProbeRayResolution));
-}
-
-// UE 5.7.4 LumenScreenProbeFiltering.usf:77. Equal trace/gather resolutions and a centered ray
-// send each sample to its own texel, so the scatter has one writer per destination.
-float3 compositeProbeTrace(float3 lighting)
-{
-    float maxLighting = max(lighting.x, max(lighting.y, lighting.z));
-    if (maxLighting > kMaxRayIntensity) {
-        lighting *= kMaxRayIntensity / maxLighting;
-    }
-    const float maxValuePerThread = float(0xffffffffu) / float(kRaysPerProbe);
-    const float lightingQuantizeScale = maxValuePerThread / kMaxRayIntensity;
-    uint3 quantizedLighting = uint3(lighting * lightingQuantizeScale);
-    const float invMaxValuePerThread = float(kRaysPerProbe) / float(0xffffffffu);
-    const float invLightingQuantizeScale = kMaxRayIntensity * invMaxValuePerThread;
-    return float3(quantizedLighting) * invLightingQuantizeScale;
+#if defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
+    // The composite pass clamps and quantizes each raw trace before scattering.
+    return lighting;
+#else
+    return lumenDecodeProbeLighting(lumenQuantizeProbeLighting(lighting, kRaysPerProbe), kRaysPerProbe);
+#endif
 }
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
+[numthreads(kProbeRayResolution, kProbeRayResolution, 1)]
 void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
 {
     LumenScreenProbeGatherParams params = getParameters<LumenScreenProbeGatherParams>();
@@ -194,7 +201,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
     const uint2 readbackTile = group.xy - params.traceReadbackTiles.xy;
     const uint readbackIndex = all(readbackTile < params.traceReadbackTiles.zw) ?
-        probeRayAddress(lumenProbeIndex(readbackTile, group.z, params.traceReadbackTiles.z), lane.xy) :
+        lumenProbeTraceAddress(lumenProbeIndex(readbackTile, group.z, params.traceReadbackTiles.z), lane.xy) :
         kInvalidProbeTraceReadbackIndex;
     LumenProbeTraceReadback readback = {-1.0f, -1.0f, -1.0f, -1.0f, float3(0.0f), -1.0f, ~0u, ~0u, 0u, 0u};
 #endif
@@ -204,7 +211,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
     StructuredBuffer<uint2> probes = resolveUniform(params.probePositions);
     RWStructuredBuffer<float> distances = resolveUniform(params.traceDistance);
     uint2 probePixel = probes[probeIndex];
-    uint address = probeRayAddress(probeIndex, lane.xy);
+    uint address = lumenProbeTraceAddress(probeIndex, lane.xy);
     if (probePixel.x == kLumenInvalidProbe) {
         traceOutput[address] = 0.0f;
         distances[address] = -1.0f;
@@ -215,7 +222,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
     }
 #else
     uint2 probePixel = uniformProbePosition(group.xy, uint2(params.width, params.height));
-    uint address = probeRayAddress(probeIndex, lane.xy);
+    uint address = lumenProbeTraceAddress(probeIndex, lane.xy);
 #endif
     float4 receiver = position.Load(int3(probePixel, 0));
     float4 trace = 0.0f;
@@ -224,7 +231,15 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         readback.flags |= kReadbackReceiverValid;
 #endif
         Texture2D<float4> normal = resolveUniform(params.normal);
-        float3 rayDirection = probeRayDirection(lane.xy);
+#if defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
+        // Every lane and adaptive slot in a screen tile uses the same UE GetProbeTexelCenter.
+        uint2 screenTileCoord = lumenScreenTileCoord(probePixel, params.frameIndex);
+        float2 probeTexelCenter = lumenProbeBlueNoiseVec2(resolveUniform(params.blueNoiseVec2), screenTileCoord,
+            params.rayDirectionFrameIndex);
+#else
+        float2 probeTexelCenter = 0.5f;
+#endif
+        float3 rayDirection = probeRayDirection(lane.xy, probeTexelCenter);
         float3 receiverNormal = normalize(normal.Load(int3(probePixel, 0)).xyz);
         // UE 5.7.4 TraceVoxels, opaque software tracing.
         float3 samplePosition = receiver.xyz + kSurfaceBias * rayDirection;
@@ -252,14 +267,15 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             resolveUniform(params.previousColor), resolveUniform(params.traceView)};
         float3 screenRadiance;
         const bool screenHit = traceLumenScreenRay(screenInputs, probePixel, receiver.xyz, receiverNormal,
-            rayDirection, traceDistance, params.maxTraceDistance, traceBufferCoord, screenRadiance,
+            rayDirection, traceDistance, params.maxTraceDistance, params.screenTraceRelativeDepthThickness,
+            traceBufferCoord, screenRadiance,
             screenDistance, screenContinuationDistance);
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
         readback.flags |= kReadbackScreenInvoked;
         readback.screenEnd = screenContinuationDistance;
 #endif
         if (screenHit) {
-            traceOutput[address] = float4(compositeProbeTrace(screenRadiance), 5.0f);
+            traceOutput[address] = float4(storeTraceLighting(screenRadiance), 5.0f);
             distances[address] = screenDistance;
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
             readback.flags |= kReadbackScreenAccepted;
@@ -304,7 +320,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             readback.detailEnd = detailDistance;
 #endif
             if (transparency < screenTraceNoise(float2(traceBufferCoord) + 0.5f, 0.0f)) {
-                traceOutput[address] = float4(compositeProbeTrace(detailHit.radiance * (1.0f - distanceFade)), 9.0f);
+                traceOutput[address] = float4(storeTraceLighting(detailHit.radiance * (1.0f - distanceFade)), 9.0f);
                 distances[address] = detailDistance;
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
                 readback.flags |= kReadbackDetailAccepted;
@@ -400,7 +416,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             lighting += cacheRadiance * transparency;
         }
 #endif
-        trace = float4(compositeProbeTrace(lighting), traceClass);
+        trace = float4(storeTraceLighting(lighting), traceClass);
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
         bool unresolved = hit.state.x == kGlobalDistanceFieldUnavailable || hit.state.x == kGlobalDistanceFieldStepLimit;
         distances[address] = hit.state.x == kGlobalDistanceFieldHit ? hit.metrics.x :
@@ -461,6 +477,70 @@ ScreenProbeSample calculateProbeInterpolation(uint2 pixel, uint2 viewSize, uint2
     return sample;
 }
 
+#if defined(METALLIC_LUMEN_FINAL_GATHER) && defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
+#if defined(METALLIC_LUMEN_IRRADIANCE_SH3)
+// UE 5.7.4 GetScreenProbeSH and EvaluateSHIrradiance, opaque diffuse with AO = 1.
+float3 interpolateScreenProbeSH(uint4 probeIndices, float4 weights, float3 normal,
+    uint probeWidth, Texture2D<float4> ambient, Texture2D<float4> directional)
+{
+    const ThreeBandSHVector transfer = calcDiffuseTransferSH3(normal, 1.0f);
+    uint atlasWidth = probeWidth * kLumenProbeSlotsPerTileAxis;
+    ThreeBandSHVector lighting[3];
+    [unroll]
+    for (uint c = 0u; c < 3u; ++c) {
+        lighting[c] = (ThreeBandSHVector)0;
+    }
+#if defined(METALLIC_LUMEN_STOCHASTIC_INTERPOLATION)
+    const uint numCorners = 1u;
+#else
+    const uint numCorners = 4u;
+#endif
+    [unroll]
+    for (uint corner = 0u; corner < numCorners; ++corner) {
+        uint2 coord = lumenProbeAtlasCoord(probeIndices[corner], probeWidth);
+        float3 ambientRGB = ambient.Load(int3(coord, 0)).xyz;
+        [unroll]
+        for (uint c = 0u; c < 3u; ++c) {
+            float4 sh0 = directional.Load(int3(coord.x + (c * 2u) * atlasWidth, coord.y, 0));
+            float4 sh1 = directional.Load(int3(coord.x + (c * 2u + 1u) * atlasWidth, coord.y, 0));
+            lighting[c].v0 += float4(ambientRGB[c], sh0.xyz) * weights[corner];
+            lighting[c].v1 += float4(sh0.w, sh1.xyz) * weights[corner];
+            lighting[c].v2 += sh1.w * weights[corner];
+        }
+    }
+    float3 diffuse;
+    [unroll]
+    for (uint c = 0u; c < 3u; ++c) {
+        float coefficient = dot(lighting[c].v0, transfer.v0);
+        coefficient += dot(lighting[c].v1, transfer.v1);
+        coefficient += lighting[c].v2 * transfer.v2;
+        diffuse[c] = max(0.0f, coefficient);
+    }
+    return 4.0f * kLumenProbePi * diffuse;
+}
+#else
+// UE 5.7.4 GetScreenProbeIrradiance and InterpolateScreenProbeIrradiance.
+float3 interpolateScreenProbeIrradiance(uint4 probeIndices, float4 weights, float3 normal,
+    uint2 probeSize, Texture2D<float4> irradiance, SamplerState bilinearSampler)
+{
+    float2 probeUV = lumenInverseEquiAreaSphericalMapping(normal);
+    float2 probeUVCoord = probeUV * kLumenIrradianceProbeResolution + 1.0f;
+    float2 atlasExtent = float2(probeSize * kLumenIrradianceProbeTileStride);
+    float3 result = 0.0f;
+#if defined(METALLIC_LUMEN_STOCHASTIC_INTERPOLATION)
+    const uint numCorners = 1u;
+#else
+    const uint numCorners = 4u;
+#endif
+    [unroll]
+    for (uint corner = 0u; corner < numCorners; ++corner) {
+        float2 atlasUV = (lumenProbeAtlasCoord(probeIndices[corner], probeSize.x) * kLumenIrradianceProbeWithBorderResolution + probeUVCoord) / atlasExtent;
+        result += irradiance.SampleLevel(bilinearSampler, atlasUV, 0.0f).xyz * weights[corner];
+    }
+    return result;
+}
+#endif
+#else
 // UE 5.7.4 DIFFUSE_INTEGRATION_NUMERICAL_INTEGRAL, opaque receivers.
 float3 integrateProbeDiffuse(uint4 probeIndices, float4 weights, float3 normal,
     StructuredBuffer<float4> radiance)
@@ -470,14 +550,14 @@ float3 integrateProbeDiffuse(uint4 probeIndices, float4 weights, float3 normal,
     for (uint y = 0u; y < kProbeRayResolution; ++y) {
         for (uint x = 0u; x < kProbeRayResolution; ++x) {
             uint2 ray = uint2(x, y);
-            float nDotL = dot(probeRayDirection(ray), normal);
+            float nDotL = dot(probeRayDirection(ray, 0.5f), normal);
             if (nDotL > 0.0f) {
                 float sampleWeight = saturate(nDotL);
                 float3 interpolatedRadiance = 0.0f;
                 [unroll]
                 for (uint corner = 0u; corner < 4u; ++corner) {
                     if (weights[corner] > 0.0f) {
-                        uint address = probeRayAddress(probeIndices[corner], ray);
+                        uint address = lumenProbeTraceAddress(probeIndices[corner], ray);
                         interpolatedRadiance += radiance[address].xyz * weights[corner];
                     }
                 }
@@ -492,6 +572,7 @@ float3 integrateProbeDiffuse(uint4 probeIndices, float4 weights, float3 normal,
     }
     return diffuseLighting * (1.0f / kLumenProbePi);
 }
+#endif
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -508,6 +589,9 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
     LumenCompositeTexture color = resolveUniform(params.color);
     float4 receiver = position.Load(int3(thread.xy, 0));
     float3 indirect = 0.0f;
+#if defined(METALLIC_LUMEN_PROBE_INTERPOLATION_READBACK)
+    LumenProbeInterpolationReadback readback = {uint4(~0u), float4(0.0f)};
+#endif
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
     float encodedAlpha = 0.0f;
 #else
@@ -552,12 +636,35 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
             probeIndices[corner] = sample.atlasCoords[corner].y * params.probeWidth + sample.atlasCoords[corner].x;
         }
 #endif
+#if defined(METALLIC_LUMEN_PROBE_INTERPOLATION_READBACK)
+        readback.indices = probeIndices;
+        readback.weights = sample.weights;
+#endif
         if (any(sample.weights > 0.0f)) {
+#if defined(METALLIC_LUMEN_FINAL_GATHER) && defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
+#if defined(METALLIC_LUMEN_IRRADIANCE_SH3)
+            float3 irradiance = interpolateScreenProbeSH(probeIndices, sample.weights, normal, params.probeWidth,
+                resolveUniform(params.probeIrradiance), resolveUniform(params.shDirectional));
+#else
+            float3 irradiance = interpolateScreenProbeIrradiance(probeIndices, sample.weights, normal,
+                uint2(params.probeWidth, params.probeHeight), resolveUniform(params.probeIrradiance),
+                resolveUniform(params.irradianceSampler));
+#endif
+            float3 irradianceOverPi = irradiance * (1.0f / kLumenProbePi);
+#else
             StructuredBuffer<float4> radiance = resolveUniform(params.traceInput);
             float3 irradianceOverPi = integrateProbeDiffuse(probeIndices, sample.weights, normal, radiance);
+#endif
             indirect = irradianceOverPi * diffuse.Load(int3(thread.xy, 0)).rgb;
         }
     }
+#if defined(METALLIC_LUMEN_PROBE_INTERPOLATION_READBACK)
+    uint2 readbackPixel = thread.xy - params.interpolationReadbackPixels.xy;
+    if (all(readbackPixel < params.interpolationReadbackPixels.zw)) {
+        uint index = readbackPixel.y * params.interpolationReadbackPixels.z + readbackPixel.x;
+        resolveUniform(params.interpolationReadback)[index] = readback;
+    }
+#endif
     indirectDiffuse[thread.xy] = float4(indirect, encodedAlpha);
     color[thread.xy] = float4(directColor.Load(int3(thread.xy, 0)).rgb + indirect, 1.0f);
 }

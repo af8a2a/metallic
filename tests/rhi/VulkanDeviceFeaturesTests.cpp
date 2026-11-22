@@ -556,6 +556,9 @@ TEST_F(DeviceFeatures, AftermathRequiresInitializationAndBothExtensions)
     const auto types = chainTypes(chain.features.pNext);
     EXPECT_TRUE(types.contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV));
     EXPECT_TRUE(types.contains(VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV));
+    EXPECT_EQ(chain.diagnosticsConfigCreateInfo.flags,
+        VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV |
+            VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV);
     extensions.aftermathDiagnosticCheckpoints = false;
     EXPECT_FALSE(select(true, true).aftermath);
 }

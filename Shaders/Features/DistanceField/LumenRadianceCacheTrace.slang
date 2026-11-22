@@ -292,28 +292,6 @@ void lumenRadianceCacheFilterMain(uint3 thread : SV_DispatchThreadID)
     resolveUniform(params.filteredAtlas)[atlasAddress] = packRadianceDepth(radiance / totalWeight, hitDistance);
 }
 
-// UE 5.7.4 OctahedralCommon.ush, OctahedralMapWrapBorder.
-uint2 wrapOctahedralBorder(uint2 texel, uint resolution, uint border)
-{
-    if (texel.x < border) {
-        texel.x = border - 1u + border - texel.x;
-        texel.y = resolution - 1u - texel.y;
-    }
-    if (texel.x >= resolution - border) {
-        texel.x = (resolution - border) - (texel.x - (resolution - border - 1u));
-        texel.y = resolution - 1u - texel.y;
-    }
-    if (texel.y < border) {
-        texel.y = border - 1u + border - texel.y;
-        texel.x = resolution - 1u - texel.x;
-    }
-    if (texel.y >= resolution - border) {
-        texel.y = (resolution - border) - (texel.y - (resolution - border - 1u));
-        texel.x = resolution - 1u - texel.x;
-    }
-    return texel - border;
-}
-
 // UE 5.7.4 LumenRadianceCache.usf, FixupBordersAndGenerateMipsCS at the default single mip.
 [shader("compute")]
 [numthreads(8, 8, 1)]

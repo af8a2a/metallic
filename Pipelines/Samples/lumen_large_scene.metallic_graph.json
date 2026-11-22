@@ -55,7 +55,9 @@
                 {"origin": [82, 5.2, -0.6], "direction": [0, 1, 0], "minDistance": 0, "maxDistance": 12},
                 {"origin": [156, 7.8, -0.9], "direction": [0, 1, 0], "minDistance": 0, "maxDistance": 18}
             ]
-        }}
+        }},
+        {"id": 11, "name": "LumenSceneDebug", "type": "LumenSceneVisualizePass", "position": {"x": 720, "y": 850}},
+        {"id": 12, "name": "LumenProbeDebug", "type": "LumenProbeVisualizePass", "position": {"x": 1070, "y": 850}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -113,7 +115,23 @@
         {"id": 53, "src": "SurfaceCache.normal", "dst": "Radiosity.cardNormal"},
         {"id": 54, "src": "SurfaceCache.albedo", "dst": "Radiosity.cardAlbedo"},
         {"id": 55, "src": "SurfaceCache.emissive", "dst": "Radiosity.cardEmissive"},
-        {"id": 56, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"}
+        {"id": 56, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"},
+        {"id": 57, "src": "GlobalDistanceFieldPages.pageTable", "dst": "LumenSceneDebug.pageTable"},
+        {"id": 58, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "LumenSceneDebug.pageAtlas"},
+        {"id": 59, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "LumenSceneDebug.coarseMip"},
+        {"id": 60, "src": "GlobalDistanceFieldPages.domain", "dst": "LumenSceneDebug.domain"},
+        {"id": 61, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "LumenSceneDebug.objectGrid"},
+        {"id": 62, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "LumenSceneDebug.objectGridScene"},
+        {"id": 63, "src": "SurfaceCache.cards", "dst": "LumenSceneDebug.cards"},
+        {"id": 64, "src": "SurfaceCache.scene", "dst": "LumenSceneDebug.cardScene"},
+        {"id": 65, "src": "SurfaceCache.depth", "dst": "LumenSceneDebug.cardDepth"},
+        {"id": 66, "src": "Radiosity.lighting", "dst": "LumenSceneDebug.cardLighting"},
+        {"id": 67, "src": "Gather.probePositions", "dst": "LumenProbeDebug.probePositions"},
+        {"id": 68, "src": "Gather.probeRadiance", "dst": "LumenProbeDebug.probeRadiance"},
+        {"id": 69, "src": "Gather.filteredProbeRadiance", "dst": "LumenProbeDebug.filteredProbeRadiance"},
+        {"id": 70, "src": "Gather.probeDistance", "dst": "LumenProbeDebug.probeDistance"},
+        {"id": 71, "src": "Temporal.color", "dst": "LumenProbeDebug.sceneColor"},
+        {"id": 72, "src": "Temporal.historyWeight", "dst": "LumenProbeDebug.historyWeight"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Trace.results"],
     "view": {

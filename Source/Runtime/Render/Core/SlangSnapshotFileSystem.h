@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cctype>
 #include <cassert>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -355,7 +356,7 @@ public:
         output["notification_watchers"] = Json::array();
         for (const auto& watcher : watches_) {
             output["notification_watchers"].push_back({{"root", watcher->rootText}, {"recursive", watcher->recursive},
-                {"api", "ReadDirectoryChangesW-overlapped-no-rearm"}, {"buffer_bytes", sizeof(watcher->buffer)}});
+                {"api", "ReadDirectoryChangesW-overlapped"}, {"buffer_bytes", sizeof(watcher->buffer)}});
         }
 #endif
         return output;
@@ -567,15 +568,17 @@ private:
     struct DirectoryWatch {
         std::string rootText;
         bool recursive;
+        fs::path pipelineDump;
         HANDLE directory = INVALID_HANDLE_VALUE, completionPort = nullptr;
-        OVERLAPPED overlapped{};
-        // DWORD-aligned 64KiB buffer; exactly one request, never re-armed.
-        std::array<DWORD, 16384> buffer{};
-        bool queued = false;
+        mutable OVERLAPPED overlapped{};
+        // DWORD-aligned 64 KiB buffer for the active request.
+        mutable std::array<DWORD, 16384> buffer{};
         mutable bool completed = false;
         mutable DWORD completionBytes = 0, completionError = ERROR_SUCCESS;
-        explicit DirectoryWatch(const fs::path& root, bool watchSubtree) : rootText(pathText(root)), recursive(watchSubtree)
+        DirectoryWatch(const fs::path& root, bool watchSubtree, bool workingDirectory)
+            : rootText(pathText(root)), recursive(watchSubtree)
         {
+            if (workingDirectory && !recursive) { pipelineDump = root / L"ucode.elf"; }
             if (GetDriveTypeW(root.root_path().c_str()) == DRIVE_REMOTE) {
                 throw std::runtime_error("Remote source notification semantics unsupported");
             }
@@ -590,13 +593,7 @@ private:
                 // serializes state, so the port must not throttle those threads.
                 completionPort = CreateIoCompletionPort(directory, nullptr, 0, MAXDWORD);
                 if (!completionPort) { throw std::runtime_error("Cannot create source watcher completion port"); }
-                const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-                    FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SECURITY |
-                    (recursive ? FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE : 0);
-                const BOOL started = ReadDirectoryChangesW(directory, buffer.data(), static_cast<DWORD>(sizeof(buffer)),
-                    recursive ? TRUE : FALSE, filter, nullptr, &overlapped, nullptr);
-                if (!started) { throw std::runtime_error("Source filesystem cannot queue notifications: " + root.string()); }
-                queued = true;
+                if (!queueRead()) { throw std::runtime_error("Source filesystem cannot queue notifications: " + root.string()); }
             } catch (...) {
                 closeHandles();
                 throw;
@@ -604,7 +601,7 @@ private:
         }
         ~DirectoryWatch()
         {
-            if (queued && !completed) {
+            if (!completed) {
                 CancelIoEx(directory, &overlapped);
                 DWORD bytes = 0;
                 ULONG_PTR completionKey = 0;
@@ -622,9 +619,40 @@ private:
         }
         DirectoryWatch(const DirectoryWatch&) = delete;
         DirectoryWatch& operator=(const DirectoryWatch&) = delete;
+        bool queueRead() const
+        {
+            overlapped = {};
+            const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SECURITY |
+                (recursive ? FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE : 0);
+            return ReadDirectoryChangesW(directory, buffer.data(), static_cast<DWORD>(sizeof(buffer)),
+                recursive ? TRUE : FALSE, filter, nullptr, &overlapped, nullptr) != FALSE;
+        }
+        bool onlyPipelineDumpWrites() const
+        {
+            if (pipelineDump.empty() || !completionBytes) { return false; }
+            constexpr std::wstring_view name = L"ucode.elf";
+            const auto* record = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer.data());
+            for (;;) {
+                if (record->Action != FILE_ACTION_MODIFIED || record->FileNameLength != name.size() * sizeof(wchar_t) ||
+                    CompareStringOrdinal(record->FileName, static_cast<int>(name.size()),
+                        name.data(), static_cast<int>(name.size()), TRUE) != CSTR_EQUAL) {
+                    return false;
+                }
+                if (record->NextEntryOffset == 0) { break; }
+                record = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(
+                    reinterpret_cast<const std::byte*>(record) + record->NextEntryOffset);
+            }
+            // The implicit cwd mapping captures the name of this driver
+            // output, but never its contents. Keep name changes and directory
+            // or reparse-point notifications as epoch invalidations.
+            const DWORD attributes = GetFileAttributesW(pipelineDump.c_str());
+            return attributes != INVALID_FILE_ATTRIBUTES &&
+                !(attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+        }
         bool unchanged(std::string& reason) const
         {
-            if (!completed) {
+            while (!completed) {
                 ULONG_PTR completionKey = 0;
                 OVERLAPPED* packet = nullptr;
                 const BOOL succeeded = GetQueuedCompletionStatus(completionPort, &completionBytes, &completionKey, &packet, 0);
@@ -635,11 +663,18 @@ private:
                     return false;
                 }
                 assert(packet == &overlapped);
+                if (succeeded && onlyPipelineDumpWrites()) {
+                    // Windows buffers changes between reads on this handle.
+                    // Drain the next packet before accepting the epoch.
+                    if (queueRead()) { continue; }
+                    completionError = GetLastError();
+                    completed = true;
+                    break;
+                }
                 completed = true;
                 completionError = error;
             }
-            // Consuming the single completion packet must never make a later
-            // validation treat an already advanced epoch as unchanged.
+            // A relevant completion permanently invalidates this epoch.
             if (completionError == ERROR_SUCCESS) {
                 reason = (completionBytes ? "source epoch notification advanced: " : "source epoch notification overflow/zero-byte completion: ") + rootText;
             } else {
@@ -675,7 +710,7 @@ private:
         rejectReparse(root);
         const auto key = std::make_pair(pathKey(root), recursive);
         if (watchedRoots_.contains(key)) { return; }
-        watches_.push_back(std::make_unique<DirectoryWatch>(root, recursive));
+        watches_.push_back(std::make_unique<DirectoryWatch>(root, recursive, key.first == cwdKey_));
         watchedRoots_.insert(key);
 #else
         (void)root; (void)recursive;

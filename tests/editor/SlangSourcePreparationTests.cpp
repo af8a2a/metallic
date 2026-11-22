@@ -313,7 +313,7 @@ TEST_F(SlangSourcePreparationTest, NewShadowingHeaderInvalidatesPreparedNamespac
     EXPECT_NE(changed->spirv, primed->shaders[0].spirv);
 }
 
-TEST_F(SlangSourcePreparationTest, OrdinaryCompileRetriesAfterWorkingDirectoryNotification)
+TEST_F(SlangSourcePreparationTest, PipelineDumpOverwriteKeepsWatchingTheWorkingDirectory)
 {
     const auto workingDirectory = directory_ / "run";
     fs::create_directory(workingDirectory);
@@ -322,6 +322,8 @@ TEST_F(SlangSourcePreparationTest, OrdinaryCompileRetriesAfterWorkingDirectoryNo
         ~RestoreWorkingDirectory() { fs::current_path(previous); }
     } restoreWorkingDirectory;
     fs::current_path(workingDirectory);
+    const auto pipelineDump = workingDirectory / "ucode.elf";
+    writeText(pipelineDump, "old driver output");
     writeText(source_ / "PreparationProbe.slang", "module PreparationProbe; RWStructuredBuffer<uint> output;\n"
         "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = 17u; }\n");
     const auto desc = request();
@@ -336,8 +338,11 @@ TEST_F(SlangSourcePreparationTest, OrdinaryCompileRetriesAfterWorkingDirectoryNo
     auto sink = std::make_shared<spdlog::sinks::callback_sink_st>([&](const spdlog::details::log_msg& message) {
         const std::string_view payload(message.payload.data(), message.payload.size());
         // This log is emitted after the request has acquired its source epoch.
-        if (payload.starts_with("[Slang] Begin compile PreparationProbe.probe ") && ++compileAttempts == 1) {
-            writeText(workingDirectory / "profile-output.elf", "runtime output");
+        if (payload.starts_with("[Slang] Begin compile PreparationProbe.probe ")) {
+            writeText(pipelineDump, "new driver output");
+            if (++compileAttempts == 2) {
+                writeText(workingDirectory / "NewLookup.h", "#define SHADOWING_HEADER 1\n");
+            }
         }
     });
     struct RestoreLogger {
@@ -350,9 +355,15 @@ TEST_F(SlangSourcePreparationTest, OrdinaryCompileRetriesAfterWorkingDirectoryNo
     options.enableDiskCache = false;
     const auto compiled = compileSlangShaderToSpirv(desc, options, log);
     ASSERT_TRUE(compiled) << log;
-    EXPECT_EQ(compileAttempts, 2u);
-    EXPECT_GT(compiled->metrics.sourceEpochCaptureTimeNanoseconds, 0u);
+    EXPECT_EQ(compileAttempts, 1u);
+    EXPECT_TRUE(compiled->metrics.sourceEpochReused);
     EXPECT_EQ(compiled->spirv, primed->shaders[0].spirv);
+
+    const auto retried = compileSlangShaderToSpirv(desc, options, log);
+    ASSERT_TRUE(retried) << log;
+    EXPECT_EQ(compileAttempts, 3u);
+    EXPECT_GT(retried->metrics.sourceEpochCaptureTimeNanoseconds, 0u);
+    EXPECT_EQ(retried->spirv, compiled->spirv);
 }
 
 TEST_F(SlangSourcePreparationTest, ConcurrentPreparationAndOrdinaryAcquisitionCaptureOnce)
