@@ -37,11 +37,18 @@ public:
     ~AtmosphereResourcesGPU();
     AtmosphereResourcesGPU(const AtmosphereResourcesGPU&) = delete;
     AtmosphereResourcesGPU& operator=(const AtmosphereResourcesGPU&) = delete;
-    // A submitted publication with identical static medium can supply the two
+    // A submitted publication (or same-frame prerequisite producer with explicit
+    // expectedMediumParameters) with identical static medium can supply the two
     // medium LUTs. Their image owners remain retained independently of it.
-    Result<> initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium = nullptr);
+    Result<> initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium = nullptr,
+        const GPUAtmosphereParameters* expectedMediumParameters = nullptr);
     Result<> record(CommandBuffer& commands, const environment::EnvironmentSnapshot& environment,
         const std::array<double, 3>& observerWorldMetres, std::string& log);
+    Texture* radianceTexture() const;
+    Texture* transmittanceTexture() const;
+    Texture* multiScatteringTexture() const;
+    Texture* skyViewTexture() const;
+    Texture* cloudShadowTexture() const;
     TextureView* radianceView() const;
     TextureView* transmittanceView() const;
     TextureView* multiScatteringView() const;
@@ -50,6 +57,8 @@ public:
     Buffer* aerialBuffer() const;
     Buffer* parametersBuffer() const;
     const GPUAtmosphereParameters& parameters() const;
+    bool sharesMedium() const;
+    bool recorded() const;
     void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const;
 
 private:

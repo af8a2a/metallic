@@ -4,6 +4,7 @@
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Runtime/Render/RenderGraph/RenderGraphResourceLifecycle.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <span>
@@ -89,11 +90,22 @@ struct GPUSceneViewGPUResourcesView {
     bool hzbInitialized = false;
 };
 
-class GPUSceneSubsystem final : public IRenderSubsystem {
+class GPUSceneSubsystem final : public IRenderSubsystem, public IRenderGraphResourceProvider {
 public:
     struct Desc {};
 
     static constexpr RenderSubsystemId kSubsystemId = "render.gpu-scene";
+
+    RenderSubsystemId providerSubsystemId() const override { return kSubsystemId; }
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override
+    {
+        return RenderGraphExternalDomainContract{
+            .domainName = "render.gpu-scene",
+            .ownership = RenderGraphResourceOwnership::ExternallyOwned,
+            .hasUndeclaredImplicitAccesses = true,
+            .conservativeReason = "GPUScene bindless/BDA geometry, visibility streams, and light tables remain conservative",
+        };
+    }
 
     Result<> initialize(const RenderSubsystemInitContext& context, std::string& log) override;
     void onWorldChanged(RenderWorld* world) override;

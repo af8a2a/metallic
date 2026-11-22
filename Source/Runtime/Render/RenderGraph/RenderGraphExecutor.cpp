@@ -32,6 +32,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <map>
@@ -287,6 +288,12 @@ struct RenderGraphExecutor::Impl {
         bool transientCandidate = false;
         bool pinned = false;
         bool aliasTransient = false;
+        bool versionPoolEligible = false;
+        uint64_t versionPoolLogicalId = 0;
+        uint64_t allocationGeneration = 0;
+        uint32_t physicalVersionCount = 1;
+        bool extraPhysicalVersion = false;
+        std::shared_ptr<void> poolOwner;
     };
 
     struct SceneBinding {
@@ -347,6 +354,51 @@ struct RenderGraphExecutor::Impl {
         GPUCompletionPoint completion;
         uint64_t readyNs = 0;
         bool passWork = false;
+        bool accepted = false;
+        std::function<void(const GPUCompletionPoint&)> onAccepted;
+        std::function<void()> onCancelled;
+        std::vector<GPUCompletionPoint> crossFrameWaits;
+        std::vector<std::string> crossFrameWaitReasons;
+        std::vector<AcceptedCrossFrameAccess> acceptedAccesses;
+    };
+
+    struct TemporalResourceEntry {
+        HistoryResourceManager* manager = nullptr;
+        std::string historyKey;
+        int32_t frameOffset = 0;
+        uint64_t backingAllocationId = 0;
+        uint64_t allocationGeneration = 0;
+        uint64_t invalidationRevision = 0;
+        uint32_t physicalVersionCount = 2;
+        bool valid = false;
+        LogicalResourceId logicalId;
+        ResourceVersionId version;
+        std::shared_ptr<void> owner;
+        RenderGraphResource resource;
+    };
+
+    struct FrameProviderPlan {
+        std::vector<std::shared_ptr<FrameExecutionResourceSnapshot>> passSnapshots;
+        std::unordered_map<std::string, std::array<double, 3>> publishedObservers;
+        std::vector<RenderGraphProviderProducerWork> producerWorks;
+        std::unordered_map<uint64_t, size_t> producerByDedupKey;
+        std::vector<std::vector<size_t>> passRequiredProducers;
+        std::vector<std::vector<GPUCompletionPoint>> passExternalWaits;
+        std::vector<std::vector<std::string>> passExternalWaitReasons;
+        std::vector<bool> passNeedsHostWriteBarrier;
+        std::vector<ExternalResourcePublication> trackedPublications;
+        std::vector<RenderGraphExternalDomainContract> externalDomains;
+
+        void cancelPendingProducers()
+        {
+            for (auto& work : producerWorks) {
+                if (work.onCancelled) {
+                    work.onCancelled();
+                    work.onCancelled = nullptr;
+                }
+                work.onAccepted = nullptr;
+            }
+        }
     };
 
     struct BindlessResourcePlan {
@@ -465,10 +517,20 @@ struct RenderGraphExecutor::Impl {
     std::vector<ResourceLease> bindlessLeases;
     std::shared_ptr<SceneResourceSnapshot> pendingSceneResourceSnapshot;
     std::vector<std::string> requiredSubsystemIds;
-    std::array<std::unique_ptr<SubmissionSlot>, 2> submissionSlots{
-        std::make_unique<SubmissionSlot>(0), std::make_unique<SubmissionSlot>(1)};
+    std::vector<std::unique_ptr<SubmissionSlot>> submissionSlots;
     std::unordered_map<Queue*, std::unique_ptr<QueueSubmissionTracker>> submissionTrackers;
     GPUCompletionPoint lastSubmittedCompletion;
+    RenderGraphCompileOptions compileOptions;
+    CrossFrameResourceTracker crossFrameTracker;
+    RenderGraphResourceVersionPool versionPool;
+    DeferredReleaseQueue versionPoolDeferredReleases;
+    uint64_t peakManagedVramBytes = 0;
+    std::deque<TemporalResourceEntry> frameTemporalEntries;
+    std::unordered_map<std::string, TemporalResourceEntry*> frameTemporalFieldMap;
+    std::unordered_map<const RenderGraphResource*, TemporalResourceEntry*> frameTemporalByResource;
+    std::vector<std::shared_ptr<const FrameExecutionResourceSnapshot>> activePassSnapshots;
+    std::vector<bool> activePassHostBarrier;
+    uint64_t preparedViewFrameIndex = UINT64_MAX;
     Queue* recordingQueue = nullptr;
     GraphAccessPlan accessPlan;
     std::vector<RenderGraphResource*> accessResources;
@@ -580,15 +642,32 @@ struct RenderGraphExecutor::Impl {
                 {"historyFrame", historyResources ? debug::DebugValue(historyResources->frameIndex()) : debug::DebugValue(nullptr)}}}, subsystemHost);
     }
 
-    ~Impl() { (void)waitForSubmittedWork(UINT64_MAX); }
+    Impl()
+    {
+        submissionSlots.push_back(std::make_unique<SubmissionSlot>(0));
+        submissionSlots.push_back(std::make_unique<SubmissionSlot>(1));
+    }
+
+    ~Impl()
+    {
+        (void)waitForSubmittedWork(UINT64_MAX);
+        versionPool.retireAll(crossFrameTracker, versionPoolDeferredReleases);
+        versionPoolDeferredReleases.collect();
+        versionPool.clear();
+    }
 
     RenderView* renderView() { return externalView != nullptr ? externalView : hasOwnedView ? &ownedView : nullptr; }
 
-    Result<> prepareView(CommandBuffer& commands, uint64_t frameIndex)
+    void prepareViewCPU(uint64_t frameIndex)
     {
         auto* view = renderView();
-        frameViewBuffer = nullptr;
-        if (view == nullptr) { return {}; }
+        if (view == nullptr) {
+            preparedViewFrameIndex = UINT64_MAX;
+            return;
+        }
+        if (preparedViewFrameIndex == frameIndex) {
+            return;
+        }
         uint32_t sceneWidth = renderWidth, sceneHeight = renderHeight;
         // Resolution negotiation already resolved scene producers before recording.
         // The view uses the scene's render extent, not an upscaler's display extent.
@@ -597,7 +676,7 @@ struct RenderGraphExecutor::Impl {
                 !node.sceneBinding.localView) {
                 const auto hasTextureOutput = [&](TextureType type) {
                     return std::ranges::any_of(node.reflection.fields(), [&](const RenderGraphField& field) {
-                        return field.visibility == RenderGraphFieldVisibility::Output &&
+                        return !field.isTemporal() && field.visibility == RenderGraphFieldVisibility::Output &&
                             field.resourceType == RenderGraphResourceType::Texture2D && field.textureType == type;
                     });
                 };
@@ -613,6 +692,15 @@ struct RenderGraphExecutor::Impl {
         frameView = view->constants(frameIndex, sceneWidth, sceneHeight, renderWidth, renderHeight,
             hasPreviousView && previousViewCompletion.isSubmitted() ? &previousView : nullptr);
         frameCameraProperties = view->cameraProperties();
+        preparedViewFrameIndex = frameIndex;
+    }
+
+    Result<> prepareView(CommandBuffer& commands, uint64_t frameIndex)
+    {
+        auto* view = renderView();
+        frameViewBuffer = nullptr;
+        if (view == nullptr) { return {}; }
+        prepareViewCPU(frameIndex);
         RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commands);
         const uint32_t slot = frame != nullptr ? frame->slotIndex() : 0;
         if (viewBuffers.size() <= slot) { viewBuffers.resize(slot + 1); }
@@ -636,6 +724,232 @@ struct RenderGraphExecutor::Impl {
         previousView = frameView;
         hasPreviousView = frame != nullptr;
         previousViewCompletion = frame != nullptr ? frame->completion() : GPUCompletionPoint{};
+        return {};
+    }
+
+    Result<> prepareResourceRequests(uint64_t frameIndex, FrameProviderPlan& plan, std::string& log)
+    {
+        plan = {};
+        const size_t passCount = executionList.size();
+        plan.passSnapshots.resize(passCount);
+        plan.passRequiredProducers.resize(passCount);
+        plan.passExternalWaits.resize(passCount);
+        plan.passExternalWaitReasons.resize(passCount);
+        plan.passNeedsHostWriteBarrier.assign(passCount, false);
+
+        class PassRequestBuilder final : public RenderGraphResourceRequestBuilder {
+        public:
+            PassRequestBuilder(
+                FrameProviderPlan& plan,
+                size_t passIndex,
+                std::string passName,
+                FrameExecutionResourceSnapshot& snapshot)
+                : plan_(plan)
+                , passIndex_(passIndex)
+                , passName_(std::move(passName))
+                , snapshot_(snapshot)
+            {
+            }
+
+            void publishOutputObserver(
+                std::string_view outputFieldName,
+                const std::array<double, 3>& observerWorldMetres) override
+            {
+                plan_.publishedObservers[makeRenderGraphFieldName(passName_, std::string(outputFieldName))] = observerWorldMetres;
+            }
+
+            Result<> bindResourceSetRaw(
+                std::type_index type,
+                std::shared_ptr<const void> data,
+                std::shared_ptr<void> owner,
+                LogicalResourceId setId,
+                ResourceVersionId version) override
+            {
+                return snapshot_.bindResourceSetRaw(type, std::move(data), std::move(owner), std::move(setId), std::move(version));
+            }
+
+            Result<> registerProducerWork(RenderGraphProviderProducerWork work) override
+            {
+                if (!work.record) { return makeError(Error::InvalidArgument); }
+                if (work.dedupKey != 0) {
+                    if (plan_.producerByDedupKey.contains(work.dedupKey)) {
+                        if (work.onCancelled) { work.onCancelled(); }
+                        return {};
+                    }
+                    plan_.producerByDedupKey.emplace(work.dedupKey, plan_.producerWorks.size());
+                }
+                for (const auto& pub : work.publications) {
+                    if (pub.owner) {
+                        (void)snapshot_.retainOwner(pub.owner);
+                    }
+                }
+                plan_.producerWorks.push_back(std::move(work));
+                return {};
+            }
+
+            Result<> requireProducer(uint64_t producerDedupKey) override
+            {
+                const auto found = plan_.producerByDedupKey.find(producerDedupKey);
+                if (found == plan_.producerByDedupKey.end()) {
+                    return makeError(Error::InvalidArgument);
+                }
+                auto& required = plan_.passRequiredProducers[passIndex_];
+                if (std::find(required.begin(), required.end(), found->second) == required.end()) {
+                    required.push_back(found->second);
+                }
+                return {};
+            }
+
+            Result<> addExternalDependency(const GPUCompletionPoint& completion, std::string reason) override
+            {
+                if (!completion.valid() || completion.isCancelled() || completion.isComplete()) {
+                    return {};
+                }
+                auto& waits = plan_.passExternalWaits[passIndex_];
+                const bool exists = std::any_of(waits.begin(), waits.end(),
+                    [&](const GPUCompletionPoint& existing) { return existing.sameSubmission(completion); });
+                if (!exists) {
+                    waits.push_back(completion);
+                    if (!reason.empty()) {
+                        plan_.passExternalWaitReasons[passIndex_].push_back(std::move(reason));
+                    }
+                }
+                return {};
+            }
+
+            Result<> declareExternalDomain(RenderGraphExternalDomainContract contract) override
+            {
+                plan_.externalDomains.push_back(std::move(contract));
+                return {};
+            }
+
+            Result<> trackPublishedResource(const ExternalResourcePublication& publication, bool) override
+            {
+                if (publication.needsHostWriteBarrier) {
+                    plan_.passNeedsHostWriteBarrier[passIndex_] = true;
+                }
+                if (publication.owner) {
+                    Result<> retained = snapshot_.retainOwner(publication.owner);
+                    if (!retained) { return retained; }
+                }
+                ResolvedLogicalBinding binding{
+                    .logicalId = publication.logicalId,
+                    .version = publication.version,
+                    .ownership = publication.ownership,
+                    .type = publication.type,
+                    .texture = publication.texture,
+                    .textureView = publication.textureView,
+                    .buffer = publication.buffer,
+                    .bufferView = publication.bufferView,
+                    .accelerationStructure = publication.accelerationStructure,
+                    .backingAllocationId = publication.backingAllocationId,
+                    .sizeBytes = publication.sizeBytes,
+                    .producerCompletion = publication.producerCompletion,
+                    .owner = publication.owner,
+                    .producerName = publication.logicalId.ownerDomain,
+                };
+                const std::string key = publication.logicalId.ownerDomain + "." + publication.logicalId.name;
+                (void)snapshot_.bindLogicalResource(key, std::move(binding));
+                plan_.trackedPublications.push_back(publication);
+                return {};
+            }
+
+        private:
+            FrameProviderPlan& plan_;
+            size_t passIndex_ = 0;
+            std::string passName_;
+            FrameExecutionResourceSnapshot& snapshot_;
+        };
+
+        auto* view = renderView();
+        for (size_t passIndex = 0; passIndex < passCount; ++passIndex) {
+            CompiledNode& node = executionList[passIndex];
+            auto snapshot = std::make_shared<FrameExecutionResourceSnapshot>();
+            snapshot->beginBuild(frameIndex, profilingGeneration);
+            const bool usesView = view != nullptr && !node.sceneBinding.localView;
+            RenderGraphProperties executionProperties = node.effectiveProperties;
+            if (usesView) {
+                executionProperties["camera"] = frameCameraProperties;
+                executionProperties["temporalJitter"] = frameView.frame[2] != 0;
+            }
+            uint64_t viewKey = node.sceneBinding.localView
+                ? uint64_t(node.id)
+                : (view != nullptr ? uint64_t(reinterpret_cast<uintptr_t>(view)) : 0ull);
+            viewKey = (viewKey * 1099511628211ull) ^ node.sceneBinding.version[0];
+            auto observerResolver = [&](std::string_view inputFieldName) -> std::optional<std::array<double, 3>> {
+                const std::string inputFull = makeRenderGraphFieldName(node.name, std::string(inputFieldName));
+                const auto alias = inputAliases.find(inputFull);
+                if (alias == inputAliases.end()) { return std::nullopt; }
+                const auto found = plan.publishedObservers.find(alias->second);
+                if (found == plan.publishedObservers.end()) { return std::nullopt; }
+                return found->second;
+            };
+            RenderGraphResourceRequestContext requestContext(
+                device,
+                frameIndex,
+                viewKey,
+                node.executionWidth,
+                node.executionHeight,
+                node.name,
+                executionProperties,
+                node.sceneBinding.source != nullptr ? node.sceneBinding.source : runtimeScene,
+                world,
+                subsystemHost,
+                usesView ? &frameView : nullptr,
+                observerResolver);
+            PassRequestBuilder builder(plan, passIndex, node.name, *snapshot);
+            std::string passLog;
+            Result<> requestResult = node.pass->declareResourceRequests(requestContext, builder, passLog);
+            if (!requestResult) {
+                log = passLog.empty()
+                    ? ("Pass '" + node.name + "' failed declareResourceRequests")
+                    : ("Pass '" + node.name + "' declareResourceRequests: " + passLog);
+                plan.cancelPendingProducers();
+                return requestResult;
+            }
+            if (auto passDomain = node.pass->externalDomainContract()) {
+                plan.externalDomains.push_back(std::move(*passDomain));
+            }
+            snapshot->freeze();
+            plan.passSnapshots[passIndex] = std::move(snapshot);
+        }
+
+        activePassSnapshots.clear();
+        activePassSnapshots.reserve(passCount);
+        for (const auto& snapshot : plan.passSnapshots) {
+            activePassSnapshots.push_back(snapshot);
+        }
+        activePassHostBarrier = plan.passNeedsHostWriteBarrier;
+
+        if (activeExecutionCapture) {
+            auto& capture = *activeExecutionCapture;
+            for (const auto& pub : plan.trackedPublications) {
+                if (pub.backingAllocationId == 0) { continue; }
+                const auto found = std::find_if(capture.resources.begin(), capture.resources.end(),
+                    [&](const RenderGraphExecutionResourceSnapshot& existing) {
+                        return existing.id == pub.backingAllocationId && existing.logicalResourceId == pub.logicalId.value;
+                    });
+                if (found != capture.resources.end()) { continue; }
+                auto& entry = capture.resources.emplace_back();
+                entry.id = pub.backingAllocationId;
+                entry.name = pub.logicalId.ownerDomain + "." + pub.logicalId.name;
+                entry.type = pub.type;
+                entry.privateResource = true;
+                entry.ownership = pub.ownership;
+                entry.logicalResourceId = pub.logicalId.value;
+                entry.contentRevision = pub.version.contentRevision;
+                entry.allocationGeneration = pub.version.allocationGeneration;
+                entry.versionId = pub.version.version;
+                entry.producerName = pub.logicalId.ownerDomain;
+                if (pub.type == RenderGraphResourceType::Texture2D && pub.texture != nullptr) {
+                    entry.textureDesc = pub.texture->desc();
+                    entry.memory = pub.texture->memoryInfo();
+                } else if (pub.type == RenderGraphResourceType::Buffer && pub.buffer != nullptr) {
+                    entry.bufferDesc = pub.buffer->desc();
+                    entry.memory = pub.buffer->memoryInfo();
+                }
+            }
+        }
         return {};
     }
 
@@ -954,7 +1268,7 @@ struct RenderGraphExecutor::Impl {
         BindlessResourcePlan plan;
         for (const CompiledNode& node : executionList) {
             for (const RenderGraphField& field : node.reflection.fields()) {
-                if (!isBindlessField(field)) {
+                if (field.isTemporal() || !isBindlessField(field)) {
                     continue;
                 }
 
@@ -993,7 +1307,8 @@ struct RenderGraphExecutor::Impl {
         for (const CompiledNode& node : executionList) {
             std::vector<std::string>& outputs = node2DTextureOutputs[node.name];
             for (const RenderGraphField& field : node.reflection.fields()) {
-                if (field.visibility != RenderGraphFieldVisibility::Output ||
+                if (field.isTemporal() ||
+                    field.visibility != RenderGraphFieldVisibility::Output ||
                     field.resourceType != RenderGraphResourceType::Texture2D) {
                     continue;
                 }
@@ -1238,7 +1553,8 @@ struct RenderGraphExecutor::Impl {
             bool foundTextureOutput = false;
             const RenderGraphResource* firstVolumeOutput = nullptr;
             for (const RenderGraphField& field : node.reflection.fields()) {
-                if (field.visibility != RenderGraphFieldVisibility::Output ||
+                if (field.isTemporal() ||
+                    field.visibility != RenderGraphFieldVisibility::Output ||
                     field.resourceType != RenderGraphResourceType::Texture2D) {
                     continue;
                 }
@@ -1301,8 +1617,8 @@ struct RenderGraphExecutor::Impl {
             else { return slot.resource.bufferDesc; }
         };
         const auto memoryInfo = [](const ResourceSlot& slot) {
-            if constexpr (texture) { return slot.texture->memoryInfo(); }
-            else { return slot.buffer->memoryInfo(); }
+            if constexpr (texture) { return slot.resource.texture->memoryInfo(); }
+            else { return slot.resource.buffer->memoryInfo(); }
         };
         names.clear();
         aliasPlan = {};
@@ -1310,7 +1626,7 @@ struct RenderGraphExecutor::Impl {
             const auto& node = executionList[passIndex];
             passIndices.emplace(node.name, passIndex);
             for (const auto& field : node.reflection.fields()) {
-                if (field.visibility != RenderGraphFieldVisibility::Output || field.resourceType != resourceType) { continue; }
+                if (field.isTemporal() || field.visibility != RenderGraphFieldVisibility::Output || field.resourceType != resourceType) { continue; }
                 auto name = makeRenderGraphFieldName(node.name, field.name);
                 auto& slot = resources.at(name);
                 ++count;
@@ -1378,37 +1694,68 @@ struct RenderGraphExecutor::Impl {
                 if constexpr (texture) { slot.texture = std::move((*allocations)[member]); }
                 else { slot.buffer = std::move((*allocations)[member]); }
                 slot.aliasTransient = true;
+                slot.versionPoolEligible = false;
             }
         }
         for (const auto& name : names) {
             auto& slot = resources.at(name);
             const auto& desc = description(slot);
             if constexpr (texture) {
-                if (!slot.texture) {
-                    auto image = graphDevice.createTexture(desc);
-                    if (!image) { log += "Create texture failed: " + name; return makeError(image.error()); }
-                    slot.texture = std::move(*image);
+                if (slot.versionPoolEligible && !slot.texture) {
+                    const TextureViewDesc viewDesc{.format = desc.format,
+                        .range = {.baseMip = 0, .mipCount = desc.mipCount, .baseLayer = 0, .layerCount = desc.layerCount}};
+                    auto acquired = versionPool.acquireTexture(
+                        graphDevice, slot.versionPoolLogicalId, desc, viewDesc, 0,
+                        crossFrameTracker, versionPoolDeferredReleases);
+                    if (!acquired) { log += "Create version-pooled texture failed: " + name; return makeError(acquired.error()); }
+                    slot.poolOwner = acquired->owner;
+                    slot.allocationGeneration = acquired->allocationGeneration;
+                    slot.physicalVersionCount = acquired->physicalVersionCount;
+                    slot.extraPhysicalVersion = acquired->extraVersion;
+                    slot.resource.texture = acquired->texture;
+                    slot.resource.view = acquired->view;
+                    slot.resource.state = acquired->state;
+                } else {
+                    if (!slot.texture) {
+                        auto image = graphDevice.createTexture(desc);
+                        if (!image) { log += "Create texture failed: " + name; return makeError(image.error()); }
+                        slot.texture = std::move(*image);
+                    }
+                    auto view = graphDevice.createTextureView(*slot.texture, {.format = desc.format,
+                        .range = {.baseMip = 0, .mipCount = desc.mipCount, .baseLayer = 0, .layerCount = desc.layerCount}});
+                    if (!view) { log += "Create texture view failed: " + name; return makeError(view.error()); }
+                    slot.textureView = std::move(*view);
+                    slot.resource.texture = slot.texture.get();
+                    slot.resource.view = slot.textureView.get();
                 }
-                auto view = graphDevice.createTextureView(*slot.texture, {.format = desc.format,
-                    .range = {.baseMip = 0, .mipCount = desc.mipCount, .baseLayer = 0, .layerCount = desc.layerCount}});
-                if (!view) { log += "Create texture view failed: " + name; return makeError(view.error()); }
-                slot.textureView = std::move(*view);
-                slot.resource.texture = slot.texture.get();
-                slot.resource.view = slot.textureView.get();
             } else {
-                if (!slot.buffer) {
-                    auto buffer = graphDevice.createBuffer(desc);
-                    if (!buffer) { log += "Create buffer failed: " + name; return makeError(buffer.error()); }
-                    slot.buffer = std::move(*buffer);
+                if (slot.versionPoolEligible && !slot.buffer) {
+                    auto acquired = versionPool.acquireBuffer(
+                        graphDevice, slot.versionPoolLogicalId, desc, nullptr, 0,
+                        crossFrameTracker, versionPoolDeferredReleases);
+                    if (!acquired) { log += "Create version-pooled buffer failed: " + name; return makeError(acquired.error()); }
+                    slot.poolOwner = acquired->owner;
+                    slot.allocationGeneration = acquired->allocationGeneration;
+                    slot.physicalVersionCount = acquired->physicalVersionCount;
+                    slot.extraPhysicalVersion = acquired->extraVersion;
+                    slot.resource.buffer = acquired->buffer;
+                    slot.resource.bufferView = acquired->view;
+                    slot.resource.state = acquired->state;
+                } else {
+                    if (!slot.buffer) {
+                        auto buffer = graphDevice.createBuffer(desc);
+                        if (!buffer) { log += "Create buffer failed: " + name; return makeError(buffer.error()); }
+                        slot.buffer = std::move(*buffer);
+                    }
+                    if (bindlessPlan.bufferResourceSet.contains(name)) {
+                        auto view = graphDevice.createBufferView(*slot.buffer, slot.resource.bufferViewDesc);
+                        if (!view) { log += "Create buffer view failed: " + name; return makeError(view.error()); }
+                        slot.bufferView = std::move(*view);
+                        slot.resource.bufferViewDesc = slot.bufferView->desc();
+                    }
+                    slot.resource.buffer = slot.buffer.get();
+                    slot.resource.bufferView = slot.bufferView.get();
                 }
-                if (bindlessPlan.bufferResourceSet.contains(name)) {
-                    auto view = graphDevice.createBufferView(*slot.buffer, slot.resource.bufferViewDesc);
-                    if (!view) { log += "Create buffer view failed: " + name; return makeError(view.error()); }
-                    slot.bufferView = std::move(*view);
-                    slot.resource.bufferViewDesc = slot.bufferView->desc();
-                }
-                slot.resource.buffer = slot.buffer.get();
-                slot.resource.bufferView = slot.bufferView.get();
             }
         }
         // Compile-time native measurements only. A failed counterfactual query
@@ -1494,6 +1841,14 @@ struct RenderGraphExecutor::Impl {
         textureMemory = {};
         bufferMemory = {};
         resources.clear();
+        versionPool.retireAll(crossFrameTracker, versionPoolDeferredReleases);
+        versionPoolDeferredReleases.collect();
+        versionPool.clear();
+        versionPool.setPolicy({
+            .mode = options.memoryPolicy,
+            .extraVersionBudgetBytes = options.versionPoolBudgetBytes,
+            .maxPhysicalVersionsPerResource = std::clamp(options.maxPhysicalVersionsPerResource, 1u, 3u),
+        });
         resourceRegistry.reset();
         bindlessLeases.clear();
 
@@ -1509,7 +1864,7 @@ struct RenderGraphExecutor::Impl {
 
         for (const CompiledNode& node : executionList) {
             for (const RenderGraphField& field : node.reflection.fields()) {
-                if (field.visibility != RenderGraphFieldVisibility::Output) {
+                if (field.isTemporal() || field.visibility != RenderGraphFieldVisibility::Output) {
                     continue;
                 }
 
@@ -1569,6 +1924,11 @@ struct RenderGraphExecutor::Impl {
                         field.initialization != RenderGraphInitialization::Unknown && fieldAccessWrites(field);
                     slot.pinned = field.presentationOutput || isOutputMarked(graph, fullName) ||
                         std::find(options.extraOutputs.begin(), options.extraOutputs.end(), fullName) != options.extraOutputs.end();
+                    slot.versionPoolLogicalId = makeLogicalResourceId("render.graph", fullName).value;
+                    slot.versionPoolEligible = !debugReadback &&
+                        !node.preparedScene && node.sceneDependency.source == RenderGraphSceneSource::None &&
+                        field.initialization != RenderGraphInitialization::Unknown && fieldAccessWrites(field) &&
+                        !bindlessPlan.sampledImageResourceSet.contains(fullName);
                     slot.resource = RenderGraphResource{
                         .type = RenderGraphResourceType::Texture2D,
                         .texture = slot.texture.get(),
@@ -1641,6 +2001,12 @@ struct RenderGraphExecutor::Impl {
                         field.initialization != RenderGraphInitialization::Unknown && fieldAccessWrites(field);
                     slot.pinned = field.presentationOutput || isOutputMarked(graph, fullName) ||
                         std::find(options.extraOutputs.begin(), options.extraOutputs.end(), fullName) != options.extraOutputs.end();
+                    slot.versionPoolLogicalId = makeLogicalResourceId("render.graph", fullName).value;
+                    slot.versionPoolEligible = !debugReadback &&
+                        desc.memoryLocation == MemoryLocation::Device &&
+                        !node.preparedScene && node.sceneDependency.source == RenderGraphSceneSource::None &&
+                        field.initialization != RenderGraphInitialization::Unknown && fieldAccessWrites(field) &&
+                        !bindlessPlan.bufferResourceSet.contains(fullName);
                     BufferViewDesc viewDesc{
                         .type = viewType,
                         .range = {.offset = 0, .size = desc.size},
@@ -1792,6 +2158,8 @@ struct RenderGraphExecutor::Impl {
             Result<> result = slot->frame.reset();
             if (!result) { return result; }
         }
+        crossFrameTracker.clear();
+        versionPoolDeferredReleases.collect();
         return {};
     }
 
@@ -1995,8 +2363,273 @@ struct RenderGraphExecutor::Impl {
         return out != nullptr ? Result<>{} : makeError(Error::Failure);
     }
 
+    static std::string makeTemporalFieldMapKey(
+        std::string_view nodeName,
+        RenderGraphFieldVisibility visibility,
+        std::string_view fieldName)
+    {
+        std::string key;
+        key.reserve(nodeName.size() + fieldName.size() + 6);
+        key.append(nodeName);
+        key.append(visibility == RenderGraphFieldVisibility::Input ? ".in." : ".out.");
+        key.append(fieldName);
+        return key;
+    }
+
+    static uint64_t backingAllocationIdFor(const RenderGraphResource& resource)
+    {
+        if (resource.type == RenderGraphResourceType::Texture2D && resource.texture != nullptr) {
+            const auto mem = resource.texture->memoryInfo();
+            return mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
+        }
+        if (resource.type == RenderGraphResourceType::Buffer && resource.buffer != nullptr) {
+            const auto mem = resource.buffer->memoryInfo();
+            return mem.backingAllocationId != 0 ? mem.backingAllocationId : mem.allocationId;
+        }
+        if (resource.type == RenderGraphResourceType::AccelerationStructure) {
+            return resource.logicalResourceId;
+        }
+        return 0;
+    }
+
+    Result<> acquireVersionPoolBackings(uint64_t frameIndex, RenderFrameContext* frame)
+    {
+        crossFrameTracker.pruneCompleted();
+        versionPoolDeferredReleases.collect();
+        for (auto& [name, slot] : resources) {
+            (void)name;
+            if (!slot.versionPoolEligible || slot.aliasTransient) { continue; }
+            if (slot.resource.type == RenderGraphResourceType::Texture2D) {
+                const TextureViewDesc viewDesc{
+                    .format = slot.resource.desc.format,
+                    .range = {.baseMip = 0, .mipCount = slot.resource.desc.mipCount,
+                        .baseLayer = 0, .layerCount = slot.resource.desc.layerCount},
+                };
+                auto acquired = versionPool.acquireTexture(
+                    *device, slot.versionPoolLogicalId, slot.resource.desc, viewDesc,
+                    frameIndex, crossFrameTracker, versionPoolDeferredReleases);
+                if (!acquired) { return makeError(acquired.error()); }
+                slot.poolOwner = acquired->owner;
+                slot.allocationGeneration = acquired->allocationGeneration;
+                slot.physicalVersionCount = acquired->physicalVersionCount;
+                slot.extraPhysicalVersion = acquired->extraVersion;
+                slot.resource.texture = acquired->texture;
+                slot.resource.view = acquired->view;
+                slot.resource.state = acquired->state;
+                if (frame != nullptr && acquired->owner) { frame->retain(acquired->owner); }
+            } else if (slot.resource.type == RenderGraphResourceType::Buffer) {
+                auto acquired = versionPool.acquireBuffer(
+                    *device, slot.versionPoolLogicalId, slot.resource.bufferDesc, nullptr,
+                    frameIndex, crossFrameTracker, versionPoolDeferredReleases);
+                if (!acquired) { return makeError(acquired.error()); }
+                slot.poolOwner = acquired->owner;
+                slot.allocationGeneration = acquired->allocationGeneration;
+                slot.physicalVersionCount = acquired->physicalVersionCount;
+                slot.extraPhysicalVersion = acquired->extraVersion;
+                slot.resource.buffer = acquired->buffer;
+                slot.resource.bufferView = acquired->view;
+                slot.resource.state = acquired->state;
+                if (frame != nullptr && acquired->owner) { frame->retain(acquired->owner); }
+            }
+        }
+        const auto poolStats = versionPool.stats();
+        const uint64_t currentVram = textureMemory.backingBytes + bufferMemory.backingBytes + poolStats.extraVersionBytes;
+        peakManagedVramBytes = std::max(peakManagedVramBytes, std::max(currentVram, poolStats.peakManagedBytes));
+        return {};
+    }
+
+    Result<> prepareTemporalResources(uint64_t frameIndex, RenderFrameContext* frame, std::string& log)
+    {
+        frameTemporalEntries.clear();
+        frameTemporalFieldMap.clear();
+        frameTemporalByResource.clear();
+        std::unordered_map<std::string, TemporalResourceEntry*> dedupSlots;
+
+        for (const CompiledNode& node : executionList) {
+            for (const RenderGraphField& field : node.reflection.fields()) {
+                if (!field.isTemporal()) { continue; }
+                HistoryResourceManager* manager = field.temporal.graphOwnedHistory
+                    ? &graphHistoryResources
+                    : historyResources;
+                if (manager == nullptr) {
+                    if (!field.optional) {
+                        log = "Temporal field '" + makeRenderGraphFieldName(node.name, field.name) +
+                            "' requires a HistoryResourceManager";
+                        return makeError(Error::InvalidArgument);
+                    }
+                    continue;
+                }
+                const std::string historyKey = field.temporal.perPassScope
+                    ? makeRenderGraphFieldName(node.name, field.temporal.key)
+                    : field.temporal.key;
+                const std::string fieldMapKey = makeTemporalFieldMapKey(node.name, field.visibility, field.name);
+
+                if (field.resourceType == RenderGraphResourceType::Texture2D) {
+                    TextureUsageBits usage = textureUsageForField(field);
+                    usage = addTextureUsage(usage, TextureUsageBits::Sampled);
+                    usage = addTextureUsage(usage, TextureUsageBits::Storage);
+                    usage = addTextureUsage(usage, TextureUsageBits::TransferSource);
+                    const Format format = resolveFormat(field.format, defaultFormat);
+                    const TextureDesc texDesc{
+                        .type = field.textureType,
+                        .usage = usage,
+                        .format = format,
+                        .width = field.width != 0 ? field.width : node.executionWidth,
+                        .height = field.height != 0 ? field.height : node.executionHeight,
+                        .depth = field.depth,
+                        .mipCount = 1,
+                        .layerCount = field.layerCount,
+                        .memoryLocation = MemoryLocation::Device,
+                        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
+                    };
+                    Result<> ensured = manager->ensureTexture(historyKey, texDesc, TextureViewDesc{.format = format});
+                    if (!ensured) { return ensured; }
+                    const HistoryTextureRef ref = manager->textureAtOffset(historyKey, field.temporal.frameOffset);
+                    if (ref.texture == nullptr || ref.view == nullptr) { return makeError(Error::InvalidArgument); }
+                    if (frame != nullptr && ref.owner) { frame->retain(ref.owner); }
+                    const std::string dedupKey = std::to_string(reinterpret_cast<uintptr_t>(manager)) + ":" +
+                        historyKey + ":" + std::to_string(ref.backingAllocationId);
+                    TemporalResourceEntry* entry = nullptr;
+                    if (auto found = dedupSlots.find(dedupKey); found != dedupSlots.end()) {
+                        entry = found->second;
+                    } else {
+                        const LogicalResourceId logicalId = makeLogicalResourceId("render.temporal", historyKey);
+                        const uint64_t versionNum = frameIndex + 1 + static_cast<uint64_t>(std::max(0, -field.temporal.frameOffset));
+                        frameTemporalEntries.push_back(TemporalResourceEntry{
+                            .manager = manager,
+                            .historyKey = historyKey,
+                            .frameOffset = field.temporal.frameOffset,
+                            .backingAllocationId = ref.backingAllocationId,
+                            .allocationGeneration = ref.allocationGeneration,
+                            .invalidationRevision = manager->invalidationRevision(),
+                            .physicalVersionCount = manager->slotCount(),
+                            .valid = ref.valid,
+                            .logicalId = logicalId,
+                            .version = ResourceVersionId{
+                                .logicalId = logicalId,
+                                .version = versionNum,
+                                .contentRevision = manager->invalidationRevision(),
+                                .allocationGeneration = ref.allocationGeneration,
+                            },
+                            .owner = ref.owner,
+                            .resource = RenderGraphResource{
+                                .type = RenderGraphResourceType::Texture2D,
+                                .texture = ref.texture,
+                                .view = ref.view,
+                                .desc = ref.desc != nullptr ? *ref.desc : texDesc,
+                                .colorEncoding = field.colorEncoding,
+                                .logicalResourceId = logicalId.value,
+                                .state = ref.state,
+                            },
+                        });
+                        entry = &frameTemporalEntries.back();
+                        dedupSlots.emplace(dedupKey, entry);
+                        frameTemporalByResource.emplace(&entry->resource, entry);
+                    }
+                    frameTemporalFieldMap.emplace(fieldMapKey, entry);
+                } else if (field.resourceType == RenderGraphResourceType::Buffer) {
+                    BufferUsageBits usage = bufferUsageForField(field);
+                    usage = addBufferUsage(usage, BufferUsageBits::Storage);
+                    usage = addBufferUsage(usage, BufferUsageBits::TransferSource);
+                    usage = addBufferUsage(usage, BufferUsageBits::TransferDestination);
+                    const BufferDesc bufDesc{
+                        .size = field.size,
+                        .structureStride = field.structureStride,
+                        .usage = usage,
+                        .memoryLocation = field.memoryLocation,
+                        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
+                    };
+                    Result<> ensured = manager->ensureBuffer(historyKey, bufDesc);
+                    if (!ensured) { return ensured; }
+                    const HistoryBufferRef ref = manager->bufferAtOffset(historyKey, field.temporal.frameOffset);
+                    if (ref.buffer == nullptr) { return makeError(Error::InvalidArgument); }
+                    if (frame != nullptr && ref.owner) { frame->retain(ref.owner); }
+                    const std::string dedupKey = std::to_string(reinterpret_cast<uintptr_t>(manager)) + ":" +
+                        historyKey + ":" + std::to_string(ref.backingAllocationId);
+                    TemporalResourceEntry* entry = nullptr;
+                    if (auto found = dedupSlots.find(dedupKey); found != dedupSlots.end()) {
+                        entry = found->second;
+                    } else {
+                        const LogicalResourceId logicalId = makeLogicalResourceId("render.temporal", historyKey);
+                        const uint64_t versionNum = frameIndex + 1 + static_cast<uint64_t>(std::max(0, -field.temporal.frameOffset));
+                        frameTemporalEntries.push_back(TemporalResourceEntry{
+                            .manager = manager,
+                            .historyKey = historyKey,
+                            .frameOffset = field.temporal.frameOffset,
+                            .backingAllocationId = ref.backingAllocationId,
+                            .allocationGeneration = ref.allocationGeneration,
+                            .invalidationRevision = manager->invalidationRevision(),
+                            .physicalVersionCount = manager->slotCount(),
+                            .valid = ref.valid,
+                            .logicalId = logicalId,
+                            .version = ResourceVersionId{
+                                .logicalId = logicalId,
+                                .version = versionNum,
+                                .contentRevision = manager->invalidationRevision(),
+                                .allocationGeneration = ref.allocationGeneration,
+                            },
+                            .owner = ref.owner,
+                            .resource = RenderGraphResource{
+                                .type = RenderGraphResourceType::Buffer,
+                                .buffer = ref.buffer,
+                                .bufferView = ref.view,
+                                .bufferDesc = ref.desc != nullptr ? *ref.desc : bufDesc,
+                                .logicalResourceId = logicalId.value,
+                                .state = ref.state,
+                                .debugLayout = field.debugLayout,
+                            },
+                        });
+                        entry = &frameTemporalEntries.back();
+                        dedupSlots.emplace(dedupKey, entry);
+                        frameTemporalByResource.emplace(&entry->resource, entry);
+                    }
+                    frameTemporalFieldMap.emplace(fieldMapKey, entry);
+                }
+            }
+        }
+        return {};
+    }
+
+    Result<> finalizeTemporalPublications(
+        CommandBuffer& commands,
+        const RenderGraphExecutionContext& context,
+        const CompiledNode& node)
+    {
+        for (const auto& binding : context.bindings_) {
+            if (!binding.temporal || binding.resource == nullptr) { continue; }
+            const RenderGraphField* field = node.reflection.findField(binding.fieldName, binding.visibility);
+            if (field == nullptr || !field->isTemporal()) { continue; }
+            const auto found = frameTemporalFieldMap.find(
+                makeTemporalFieldMapKey(node.name, field->visibility, field->name));
+            if (found == frameTemporalFieldMap.end() || found->second == nullptr || found->second->manager == nullptr) {
+                continue;
+            }
+            TemporalResourceEntry& entry = *found->second;
+            const bool written = field->temporal.access == RenderGraphTemporalAccess::WriteCurrent &&
+                binding.temporalWritten;
+            const ResourceState state = binding.resource->state != ResourceState::Undefined
+                ? binding.resource->state
+                : stateForAccess(field->access);
+            Result<> published;
+            if (entry.resource.type == RenderGraphResourceType::Texture2D) {
+                published = entry.manager->publishTextureStateAtOffset(
+                    commands, entry.historyKey, field->temporal.frameOffset, state, written);
+            } else if (entry.resource.type == RenderGraphResourceType::Buffer) {
+                published = entry.manager->publishBufferStateAtOffset(
+                    commands, entry.historyKey, field->temporal.frameOffset, state, written);
+            }
+            if (!published) { return published; }
+        }
+        return {};
+    }
+
     RenderGraphResource* fieldResource(const CompiledNode& node, const RenderGraphField& field)
     {
+        if (field.isTemporal()) {
+            const auto found = frameTemporalFieldMap.find(
+                makeTemporalFieldMapKey(node.name, field.visibility, field.name));
+            return found == frameTemporalFieldMap.end() ? nullptr : &found->second->resource;
+        }
         const std::string name = makeRenderGraphFieldName(node.name, field.name);
         if (field.visibility == RenderGraphFieldVisibility::Output) { return resource(name); }
         const auto alias = inputAliases.find(name);
@@ -2045,11 +2678,23 @@ struct RenderGraphExecutor::Impl {
         for (auto* queue : queues) { captureQueue(queue); }
         std::vector<uint64_t> ids;
         ids.reserve(accessResources.size());
+        const auto poolStats = versionPool.stats();
+        capture.memoryPolicy = compileOptions.memoryPolicy;
+        capture.maxFramesInFlight = uint32_t(submissionSlots.size());
+        capture.extraVersionCount = poolStats.extraVersionCount;
+        capture.extraVersionBytes = poolStats.extraVersionBytes;
+        capture.peakManagedVramBytes = std::max(peakManagedVramBytes,
+            textureMemory.backingBytes + bufferMemory.backingBytes + poolStats.extraVersionBytes);
         for (const auto* source : accessResources) {
             auto& resource = capture.resources.emplace_back();
             resource.type = source->type;
             resource.textureDesc = source->desc;
             resource.bufferDesc = source->bufferDesc;
+            const auto temporalIter = frameTemporalByResource.find(source);
+            const bool isTemporalResource = temporalIter != frameTemporalByResource.end();
+            resource.ownership = isTemporalResource
+                ? RenderGraphResourceOwnership::TemporalOwned
+                : RenderGraphResourceOwnership::GraphOwned;
             if (source->type == RenderGraphResourceType::AccelerationStructure) {
                 if (source->accelerationStructure) {
                     resource.memory = source->accelerationStructure->memoryInfo();
@@ -2070,8 +2715,39 @@ struct RenderGraphExecutor::Impl {
                         [&](const auto& candidate) { return candidate.name == field.name; }) > 1;
                     resource.aliases.push_back(ambiguous ? makeRenderGraphFieldName(node.name,
                         (field.visibility == RenderGraphFieldVisibility::Input ? "input." : "output.") + field.name) : name);
-                    if (field.visibility == RenderGraphFieldVisibility::Output) { resource.name = name; }
+                    if (field.visibility == RenderGraphFieldVisibility::Output) {
+                        resource.name = name;
+                        resource.producerName = node.name;
+                    } else if (std::find(resource.consumerNames.begin(), resource.consumerNames.end(), node.name) ==
+                        resource.consumerNames.end()) {
+                        resource.consumerNames.push_back(node.name);
+                    }
                 }
+            }
+            if (isTemporalResource) {
+                const auto& t = *temporalIter->second;
+                if (resource.name.empty()) { resource.name = "temporal." + t.historyKey; }
+                resource.logicalResourceId = t.logicalId.value;
+                resource.contentRevision = t.version.contentRevision;
+                resource.allocationGeneration = t.allocationGeneration;
+                resource.versionId = t.version.version;
+                resource.physicalVersionCount = t.physicalVersionCount;
+            } else {
+                if (!resource.name.empty()) {
+                    resource.logicalResourceId = makeLogicalResourceId("render.graph", resource.name).value;
+                    if (const auto slotIter = resources.find(resource.name); slotIter != resources.end()) {
+                        resource.allocationGeneration = slotIter->second.allocationGeneration != 0
+                            ? slotIter->second.allocationGeneration : resource.id;
+                        resource.physicalVersionCount = slotIter->second.physicalVersionCount;
+                        resource.extraPhysicalVersion = slotIter->second.extraPhysicalVersion;
+                    } else {
+                        resource.allocationGeneration = resource.id;
+                    }
+                } else {
+                    resource.allocationGeneration = resource.id;
+                }
+                resource.versionId = frameIndex + 1;
+                resource.contentRevision = frameIndex + 1;
             }
         }
         capture.passes.reserve(executionList.size());
@@ -2344,8 +3020,7 @@ struct RenderGraphExecutor::Impl {
         for (const RenderGraphField& field : node.reflection.fields()) {
             const std::string localName = field.name;
             RenderGraphResource* resource = fieldResource(node, field);
-
-            bindings.push_back(RenderGraphExecutionContext::Binding{
+            RenderGraphExecutionContext::Binding binding{
                 .fieldName = localName,
                 .resource = resource,
                 .visibility = field.visibility,
@@ -2358,7 +3033,19 @@ struct RenderGraphExecutor::Impl {
                 .sampledImageBindlessHandle = resource != nullptr
                     ? resource->sampledImageBindlessHandle
                     : BindlessHandle{},
-            });
+            };
+            if (field.isTemporal()) {
+                binding.temporal = true;
+                const auto found = frameTemporalFieldMap.find(
+                    makeTemporalFieldMapKey(node.name, field.visibility, field.name));
+                if (found != frameTemporalFieldMap.end() && found->second != nullptr) {
+                    binding.temporalValid = found->second->valid;
+                    binding.temporalInvalidationRevision = found->second->invalidationRevision;
+                    binding.logicalId = found->second->logicalId;
+                    binding.version = found->second->version;
+                }
+            }
+            bindings.push_back(std::move(binding));
         }
 
         if (resourceRegistry != nullptr && usesBindlessResource(node)) {
@@ -2405,6 +3092,10 @@ struct RenderGraphExecutor::Impl {
         context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
         context.debugPassId_ = node.id;
+        context.resourceSnapshot_ = passIndex < activePassSnapshots.size() ? activePassSnapshots[passIndex] : nullptr;
+        if (passIndex < activePassHostBarrier.size() && activePassHostBarrier[passIndex]) {
+            commandBuffer.hostWriteBarrier();
+        }
         node.pass->prepareResourceMetadata(context);
         if (snapshots) {
             snapshots->reserve(context.bindings_.size());
@@ -2516,6 +3207,9 @@ struct RenderGraphExecutor::Impl {
         const RenderGraphCPUInterval interval{begin, RenderGraphLogClock::now()};
         stats.cpuMilliseconds += interval.milliseconds();
         if (captureCPUIntervals) { stats.cpuExecuteInterval = interval; }
+        if (recording.result) {
+            recording.result = finalizeTemporalPublications(commands, context, *recording.node);
+        }
         tracyGpuProfiler.endZone(recording.profile);
         if (recording.result) { recording.endInterval(commands, recording.passTimer); }
         labels.suspend();
@@ -2675,6 +3369,9 @@ struct RenderGraphExecutor::Impl {
             profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::serialExecuteNs);
             const auto begin = workerIntervals ? RenderGraphLogClock::now() : RenderGraphLogClock::time_point{};
             result = node.pass->execute(context);
+            if (result) {
+                result = finalizeTemporalPublications(context.commandBuffer(), context, node);
+            }
             if (workerIntervals) {
                 lastExecutionStats.nodes[nodeIndex].cpuExecuteInterval = RenderGraphCPUInterval{begin, RenderGraphLogClock::now()};
             }
@@ -2807,7 +3504,16 @@ Result<> RenderGraphExecutor::compile(
         impl_->isCompiled = false;
         return pendingResult;
     }
-    if (auto result = impl_->graphHistoryResources.initialize(device); !result) {
+    const uint32_t requestedFrameSlots = std::clamp(options.maxFramesInFlight, 1u, 3u);
+    if (impl_->submissionSlots.size() != requestedFrameSlots) {
+        impl_->submissionSlots.clear();
+        impl_->submissionSlots.reserve(requestedFrameSlots);
+        for (uint32_t i = 0; i < requestedFrameSlots; ++i) {
+            impl_->submissionSlots.push_back(std::make_unique<Impl::SubmissionSlot>(i));
+        }
+    }
+    impl_->peakManagedVramBytes = 0;
+    if (auto result = impl_->graphHistoryResources.initialize(device, std::max(2u, requestedFrameSlots)); !result) {
         log = resultMessage("RenderGraph history initialization", result);
         impl_->isCompiled = false;
         return result;
@@ -2885,8 +3591,14 @@ Result<> RenderGraphExecutor::compile(
         }
         impl_->subsystemHost->shutdown();
     }
+    if (impl_->subsystemHost == &impl_->ownedSubsystemHost &&
+        impl_->subsystemHost->device() == &device &&
+        impl_->subsystemHost->frameSlotCount() != 0 &&
+        impl_->subsystemHost->frameSlotCount() != requestedFrameSlots) {
+        impl_->subsystemHost->shutdown();
+    }
     Result<> subsystemResult = impl_->subsystemHost->initialize(device,
-        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 2, log);
+        impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : requestedFrameSlots, log);
     if (!subsystemResult) {
         impl_->isCompiled = false;
         return subsystemResult;
@@ -2945,6 +3657,7 @@ Result<> RenderGraphExecutor::compile(
     impl_->displayOutput = options.displayOutput;
 
     impl_->device = &device;
+    impl_->compileOptions = options;
     impl_->width = width;
     impl_->height = height;
     impl_->renderWidth = renderWidth;
@@ -3394,15 +4107,10 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     }
     Result<> dependencyResult = addCommandDependency(commandBuffer, impl_->lastSubmittedCompletion);
     if (!dependencyResult) { return dependencyResult; }
-    const std::vector<uint32_t> queues(impl_->executionList.size(), 0);
-    Result<> planned = impl_->buildAccessPlan(queues);
-    if (!planned) { return planned; }
     impl_->historyResources = historyResources;
     std::string subsystemLog;
     const uint64_t frameIndex = impl_->executionFrameIndex++;
     impl_->graphHistoryResources.beginFrame(frameIndex);
-    impl_->beginExecutionCapture(frameIndex, true);
-    Impl::ExecutionCaptureScope captureScope{*impl_};
     const profiling::NsightProfileRange executeMarker(
         profiling::NsightDomain::Render,
         "Render Graph Execute",
@@ -3421,6 +4129,23 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         impl_->historyResources = nullptr;
         return result;
     }
+    std::string temporalLog;
+    result = impl_->prepareTemporalResources(frameIndex, frameResources, temporalLog);
+    if (!result) {
+        spdlog::error("[RenderGraph] {}", temporalLog);
+        impl_->subsystemHost->endFrame();
+        impl_->historyResources = nullptr;
+        return result;
+    }
+    const std::vector<uint32_t> queues(impl_->executionList.size(), 0);
+    Result<> planned = impl_->buildAccessPlan(queues);
+    if (!planned) {
+        impl_->subsystemHost->endFrame();
+        impl_->historyResources = nullptr;
+        return planned;
+    }
+    impl_->beginExecutionCapture(frameIndex, true);
+    Impl::ExecutionCaptureScope captureScope{*impl_};
     result = impl_->prepareView(commandBuffer, frameIndex);
     if (!result) {
         impl_->subsystemHost->endFrame();
@@ -3451,6 +4176,101 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         impl_->historyResources = nullptr;
         return result;
     }
+    Impl::FrameProviderPlan providerPlan;
+    std::string requestLog;
+    result = impl_->prepareResourceRequests(frameIndex, providerPlan, requestLog);
+    if (!result) {
+        spdlog::error("[RenderGraph] {}", requestLog);
+        std::string cleanupLog;
+        (void)impl_->subsystemHost->recordPostGraph(
+            commandBuffer,
+            upload != nullptr ? upload->streamer() : nullptr,
+            requiredSubsystems,
+            cleanupLog);
+        impl_->subsystemHost->endFrame();
+        impl_->historyResources = nullptr;
+        return result;
+    }
+    if (frameResources != nullptr) {
+        for (const auto& snapshot : providerPlan.passSnapshots) {
+            if (snapshot) { frameResources->retain(snapshot); }
+        }
+    }
+    for (size_t prodIndex = 0; prodIndex < providerPlan.producerWorks.size(); ++prodIndex) {
+        auto& work = providerPlan.producerWorks[prodIndex];
+        for (const auto& wait : work.waitCompletions) {
+            if (wait.valid() && !wait.isComplete()) {
+                result = addCommandDependency(commandBuffer, wait);
+                if (!result) { break; }
+            }
+        }
+        if (result) {
+            auto onAccepted = std::move(work.onAccepted);
+            auto onCancelled = std::move(work.onCancelled);
+            work.onAccepted = nullptr;
+            work.onCancelled = nullptr;
+            auto transaction = std::make_shared<SubmissionTransaction>(
+                [onAccepted = std::move(onAccepted), completion = frameResources ? frameResources->completion() : GPUCompletionPoint{}]() {
+                    if (onAccepted) { onAccepted(completion); }
+                },
+                [onCancelled = std::move(onCancelled)]() {
+                    if (onCancelled) { onCancelled(); }
+                });
+            result = commandBuffer.addSubmissionTransaction(std::move(transaction));
+        }
+        if (result) {
+            std::string producerLog;
+            result = work.record(commandBuffer, producerLog);
+            if (!result && !producerLog.empty()) {
+                spdlog::error("[RenderGraph] Provider producer '{}' failed: {}", work.debugName, producerLog);
+            }
+        }
+        if (!result) {
+            for (size_t remaining = prodIndex + 1; remaining < providerPlan.producerWorks.size(); ++remaining) {
+                if (providerPlan.producerWorks[remaining].onCancelled) {
+                    providerPlan.producerWorks[remaining].onCancelled();
+                    providerPlan.producerWorks[remaining].onCancelled = nullptr;
+                }
+            }
+            impl_->activePassSnapshots.clear();
+            impl_->activePassHostBarrier.clear();
+            std::string cleanupLog;
+            (void)impl_->subsystemHost->recordPostGraph(
+                commandBuffer,
+                upload != nullptr ? upload->streamer() : nullptr,
+                requiredSubsystems,
+                cleanupLog);
+            impl_->subsystemHost->endFrame();
+            impl_->historyResources = nullptr;
+            return result;
+        }
+    }
+    for (const auto& waits : providerPlan.passExternalWaits) {
+        for (const auto& wait : waits) {
+            if (wait.valid() && !wait.isComplete()) {
+                result = addCommandDependency(commandBuffer, wait);
+                if (!result) { break; }
+            }
+        }
+        if (!result) { break; }
+    }
+    if (!result) {
+        impl_->activePassSnapshots.clear();
+        impl_->activePassHostBarrier.clear();
+        std::string cleanupLog;
+        (void)impl_->subsystemHost->recordPostGraph(
+            commandBuffer,
+            upload != nullptr ? upload->streamer() : nullptr,
+            requiredSubsystems,
+            cleanupLog);
+        impl_->subsystemHost->endFrame();
+        impl_->historyResources = nullptr;
+        return result;
+    }
+    const auto clearActiveFrameSnapshot = [&]() {
+        impl_->activePassSnapshots.clear();
+        impl_->activePassHostBarrier.clear();
+    };
     impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex, .graphGeneration = impl_->profilingGeneration};
     impl_->lastExecutionStats.textureMemory = impl_->textureMemory;
     impl_->lastExecutionStats.bufferMemory = impl_->bufferMemory;
@@ -3485,6 +4305,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
 
     debugScope.success = graphResult.has_value() && postResult.has_value();
     if (!debugScope.success) { impl_->isCompiled = false; }
+    clearActiveFrameSnapshot();
     impl_->historyResources = nullptr;
     if (impl_->activeExecutionCapture) {
         // The external owner submits later. Queue acceptance and GPU completion
@@ -3691,11 +4512,6 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (found == nativeQueues.end()) { nativeQueues.push_back(queue); }
         accessQueues.push_back(identity);
     }
-    Result<> planned = impl_->buildAccessPlan(accessQueues);
-    if (!planned) { return planned; }
-    impl_->beginExecutionCapture(impl_->executionFrameIndex, false, nativeQueues, accessQueues);
-    Impl::ExecutionCaptureScope captureScope{*impl_};
-    if (impl_->activeExecutionCapture) { impl_->activeExecutionCapture->pipelinedSubmission = pipelined; }
     preflightDetail.next("Append incoming waits");
     std::vector<SemaphoreSubmitDesc> initialWaits;
     for (const auto& point : desc.waitCompletions) {
@@ -3734,7 +4550,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     }
 
     const uint64_t frameIndex = impl_->executionFrameIndex;
-    const uint32_t slotCount = std::min(2u, impl_->subsystemHost->frameSlotCount());
+    const uint32_t slotCount = std::min(
+        uint32_t(impl_->submissionSlots.size()),
+        impl_->subsystemHost->frameSlotCount());
     if (slotCount == 0) { return makeError(Error::InvalidArgument); }
     Impl::SubmissionSlot& slot = *impl_->submissionSlots[frameIndex % slotCount];
     phase.next("graph.slotWait", frameIndex);
@@ -3766,11 +4584,6 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     if (!result) { return result; }
     phase.next("graph.frameSetup");
     preparationPhase.next("Frame setup");
-    // Shared graph targets/history remain ordered across frames on the GPU.
-    // This bounds CPU recording to two slots without cloning persistent targets.
-    result = impl_->lastSubmittedCompletion.appendWaits(initialWaits);
-    if (!result) { slot.frame.cancel(); return result; }
-    slot.frame.retain(std::make_shared<GPUCompletionPoint>(impl_->lastSubmittedCompletion));
     for (const auto& point : desc.waitCompletions) {
         slot.frame.retain(std::make_shared<GPUCompletionPoint>(point));
     }
@@ -3795,6 +4608,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     impl_->lastExecutionStats.overlapBlockingPasses = std::move(overlapBlockingPasses);
     impl_->lastExecutionStats.pipelinedSubmission = pipelined;
     impl_->lastExecutionStats.submissionBlockingPasses = std::move(submissionBlockingPasses);
+    impl_->lastExecutionStats.memoryPolicy = impl_->compileOptions.memoryPolicy;
+    impl_->lastExecutionStats.maxFramesInFlight = slotCount;
     struct BoundaryCapture {
         CPUProfileRecorder recorder;
         std::vector<RenderGraphProfileSection>& output;
@@ -3816,11 +4631,24 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             }
         }
     };
+    Impl::ExecutionCaptureScope captureScope{*impl_};
+    std::vector<Impl::SubmissionSegment> segments;
+    Impl::FrameProviderPlan providerPlan;
     const auto abort = [&](Result<> failure) {
+        impl_->activePassSnapshots.clear();
+        impl_->activePassHostBarrier.clear();
         impl_->recordingQueue = nullptr;
         impl_->historyResources = nullptr;
         impl_->activeGpuTimingSlot = nullptr;
         impl_->activeGpuTimingValid = false;
+        for (auto& segment : segments) {
+            if (!segment.accepted && segment.onCancelled) {
+                segment.onCancelled();
+                segment.onCancelled = nullptr;
+            }
+            segment.onAccepted = nullptr;
+        }
+        providerPlan.cancelPendingProducers();
         const bool discardAll = !slot.frame.hasAcceptedWork();
         // Roll back in reverse recording order before destroying individual
         // command buffers; container destruction order is not transaction order.
@@ -3862,12 +4690,170 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         desc.historyResources, log, &slot.frame, subsystemProfile);
     if (!result) { return abort(result); }
     subsystemFrameScope.endFrameOnExit(*impl_->subsystemHost);
+    impl_->prepareViewCPU(frameIndex);
+
+    // Acquire budgeted physical backings and resolve declarative temporal slots
+    // BEFORE building the access plan and cross-frame hazard frontiers.
+    result = impl_->acquireVersionPoolBackings(frameIndex, &slot.frame);
+    if (!result) { return abort(result); }
+    {
+        std::string temporalLog;
+        result = impl_->prepareTemporalResources(frameIndex, &slot.frame, temporalLog);
+        if (!result) {
+            spdlog::error("[RenderGraph] {}", temporalLog);
+            return abort(result);
+        }
+    }
+    result = impl_->buildAccessPlan(accessQueues);
+    if (!result) { return abort(result); }
+
+    // Evaluate explicit opt-in proof for per-resource cross-frame scheduling.
+    // Any unmigrated pass, opaque subsystem, debug observer, or undeclared external
+    // domain falls back conservatively to prior-frame aggregate completion ordering.
+    std::vector<std::string> conservativeFallbackReasons;
+    std::unordered_set<std::string> seenConservativeReasons;
+    const auto pushConservativeReason = [&](std::string reason) {
+        if (seenConservativeReasons.insert(reason).second) {
+            conservativeFallbackReasons.push_back(std::move(reason));
+        }
+    };
+    if (drainReasonMask != 0) {
+        pushConservativeReason("Prior-frame CPU drain active (overlap-blocking pass or scene revision change)");
+    }
+    if (subsystemCommands) {
+        pushConservativeReason("Opaque subsystem pre/post-graph commands active");
+    }
+    if (impl_->debugObserver != nullptr) {
+        pushConservativeReason("Debug capture observer attached");
+    }
+    for (const auto& node : impl_->executionList) {
+        if (!node.pass->supportsCrossFrameResourceScheduling()) {
+            pushConservativeReason("Pass '" + node.name + "' does not opt into supportsCrossFrameResourceScheduling()");
+        }
+        if (node.preparedScene || node.sceneDependency.source != RenderGraphSceneSource::None) {
+            pushConservativeReason("Pass '" + node.name + "' depends on prepared scene/streaming state");
+        }
+        for (const RenderSubsystemId subId : node.pass->requiredSubsystems()) {
+            const IRenderSubsystem* subsystem = impl_->subsystemHost ? impl_->subsystemHost->get(subId) : nullptr;
+            const auto* provider = dynamic_cast<const IRenderGraphResourceProvider*>(subsystem);
+            if (provider != nullptr) {
+                if (auto contract = provider->externalDomainContract(); contract && contract->hasUndeclaredImplicitAccesses) {
+                    pushConservativeReason("Subsystem '" + contract->domainName + "' (" +
+                        renderGraphResourceOwnershipName(contract->ownership) + "): " +
+                        (contract->conservativeReason.empty() ? "undeclared implicit accesses" : contract->conservativeReason));
+                }
+            } else {
+                pushConservativeReason("Pass '" + node.name + "' requires unmigrated subsystem '" + std::string(subId) + "'");
+            }
+        }
+        if (auto contract = node.pass->externalDomainContract(); contract && contract->hasUndeclaredImplicitAccesses) {
+            pushConservativeReason("Pass '" + node.name + "' external domain '" + contract->domainName +
+                "' (" + renderGraphResourceOwnershipName(contract->ownership) + "): " +
+                (contract->conservativeReason.empty() ? "undeclared implicit accesses" : contract->conservativeReason));
+        }
+    }
+    bool crossFrameScheduled = conservativeFallbackReasons.empty();
+
+    std::vector<std::vector<GPUCompletionPoint>> passCrossFrameWaits(impl_->executionList.size());
+    std::vector<std::vector<std::string>> passCrossFrameWaitReasons(impl_->executionList.size());
+    std::vector<std::vector<AcceptedCrossFrameAccess>> passAcceptedAccesses(impl_->executionList.size());
+    {
+        std::unordered_set<uint64_t> writtenInCurrentFrame;
+        std::unordered_map<uint64_t, std::unordered_set<Queue*>> readQueuesInCurrentFrame;
+        for (size_t passIndex = 0; passIndex < impl_->executionList.size(); ++passIndex) {
+            const auto& node = impl_->executionList[passIndex];
+            Queue* passQueue = nativeQueues[accessQueues[passIndex]];
+            const auto& passPlan = impl_->accessPlan.passes[passIndex];
+            for (const auto& use : passPlan.uses) {
+                if (use.resource >= impl_->accessResources.size() || impl_->accessResources[use.resource] == nullptr) {
+                    continue;
+                }
+                const RenderGraphResource& res = *impl_->accessResources[use.resource];
+                const uint64_t backingId = Impl::backingAllocationIdFor(res);
+                if (backingId == 0) {
+                    if (crossFrameScheduled) {
+                        crossFrameScheduled = false;
+                        pushConservativeReason("Pass '" + node.name + "' uses resource with unknown backingAllocationId");
+                    }
+                    continue;
+                }
+                const bool layoutChanged = std::any_of(passPlan.barriers.begin(), passPlan.barriers.end(),
+                    [&](const GraphAccessBarrier& barrier) {
+                        return barrier.resource == use.resource && barrier.before != barrier.after;
+                    });
+                const bool mutatesResource = use.writes || layoutChanged;
+                if (crossFrameScheduled && !writtenInCurrentFrame.contains(backingId)) {
+                    const bool needsPlan = mutatesResource || readQueuesInCurrentFrame[backingId].insert(passQueue).second;
+                    if (needsPlan) {
+                        const auto plannedAccess = impl_->crossFrameTracker.planAccess(
+                            backingId, node.name, res.type, passQueue, use.state, mutatesResource, false);
+                        if (plannedAccess.requiresConservativeFallback) {
+                            crossFrameScheduled = false;
+                            pushConservativeReason(plannedAccess.conservativeReason);
+                        } else {
+                            for (const auto& wait : plannedAccess.waits) {
+                                passCrossFrameWaits[passIndex].push_back(wait);
+                                slot.frame.retain(std::make_shared<GPUCompletionPoint>(wait));
+                            }
+                            for (const auto& reason : plannedAccess.waitReasons) {
+                                passCrossFrameWaitReasons[passIndex].push_back(reason);
+                            }
+                        }
+                    }
+                    if (mutatesResource) {
+                        writtenInCurrentFrame.insert(backingId);
+                    }
+                }
+                passAcceptedAccesses[passIndex].push_back(AcceptedCrossFrameAccess{
+                    .backingAllocationId = backingId,
+                    .logicalId = res.logicalResourceId != 0
+                        ? LogicalResourceId{.value = res.logicalResourceId, .name = node.name}
+                        : makeLogicalResourceId("render.graph", node.name),
+                    .version = {},
+                    .type = res.type,
+                    .frameIndex = frameIndex,
+                    .queue = passQueue,
+                    .state = use.state,
+                    .scope = use.scope,
+                    .writes = use.writes,
+                    .layoutChanged = layoutChanged,
+                    .exclusiveQueueOwnership = false,
+                    .completion = {},
+                    .passName = node.name,
+                });
+            }
+        }
+    }
+
+    if (!crossFrameScheduled) {
+        for (auto& waits : passCrossFrameWaits) { waits.clear(); }
+        for (auto& reasons : passCrossFrameWaitReasons) { reasons.clear(); }
+        // Conservative path: shared graph targets/history remain ordered across
+        // frames via the previous graph's aggregate completion point.
+        result = impl_->lastSubmittedCompletion.appendWaits(initialWaits);
+        if (!result) { return abort(result); }
+        slot.frame.retain(std::make_shared<GPUCompletionPoint>(impl_->lastSubmittedCompletion));
+    }
+
+    const auto poolStats = impl_->versionPool.stats();
+    impl_->lastExecutionStats.crossFrameResourceScheduled = crossFrameScheduled;
+    impl_->lastExecutionStats.extraVersionCount = poolStats.extraVersionCount;
+    impl_->lastExecutionStats.extraVersionBytes = poolStats.extraVersionBytes;
+    impl_->lastExecutionStats.peakManagedVramBytes = std::max(impl_->peakManagedVramBytes,
+        impl_->textureMemory.backingBytes + impl_->bufferMemory.backingBytes + poolStats.extraVersionBytes);
+    impl_->lastExecutionStats.conservativeFallbackReasons = conservativeFallbackReasons;
+
+    impl_->beginExecutionCapture(frameIndex, false, nativeQueues, accessQueues);
+    if (impl_->activeExecutionCapture) {
+        impl_->activeExecutionCapture->pipelinedSubmission = pipelined;
+        impl_->activeExecutionCapture->crossFrameResourceScheduled = crossFrameScheduled;
+        impl_->activeExecutionCapture->conservativeFallbackReasons = conservativeFallbackReasons;
+    }
     phase.next("graph.record");
     impl_->beginDebugExecution(frameIndex, slot.frame.slotIndex());
     debugScope.observer = impl_->debugObserver;
     StreamerSubsystem* upload = impl_->streamerSubsystem();
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
-    std::vector<Impl::SubmissionSegment> segments;
     uint32_t capturePassId = UINT32_MAX;
     const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimingSlots[0].queryPools[0];
     const auto beginSegment = [&](QueueType type, CommandRecordingContext* recording = nullptr,
@@ -4012,6 +4998,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                     found->second = wait.value;
                 }
             }
+            if (!segments[index].crossFrameWaits.empty()) {
+                newWait = true;
+            }
             if (index > first && (queueIds[index - 1] != queueId || signalBoundaries[index - 1] || newWait)) {
                 auto sealed = sealRange(first, index, true, readyNs);
                 if (!sealed) { return sealed; }
@@ -4033,9 +5022,27 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             RenderGraphExecutionBatchSnapshot* capturedBatch = impl_->activeExecutionCapture
                 ? &impl_->activeExecutionCapture->batches[ready->second.captureId] : nullptr;
             std::vector<SemaphoreSubmitDesc> waits;
-            if (!startedQueues.contains(queue)) { waits = initialWaits; }
+            if (!startedQueues.contains(queue)) {
+                waits = initialWaits;
+                if (capturedBatch && !crossFrameScheduled && impl_->lastSubmittedCompletion.isSubmitted()) {
+                    capturedBatch->waitReasons.push_back("Conservative prior-frame aggregate wait");
+                }
+            }
             if (capturedBatch) { capturedBatch->externalWaitCount = uint32_t(waits.size()); }
             for (size_t i = nextSubmission; i < end; ++i) {
+                for (const auto& crossWait : segments[i].crossFrameWaits) {
+                    const size_t beforeCount = waits.size();
+                    auto appended = crossWait.appendWaits(waits);
+                    if (!appended) { return appended; }
+                    if (waits.size() > beforeCount) {
+                        impl_->lastExecutionStats.crossFrameWaitCount += uint32_t(waits.size() - beforeCount);
+                    }
+                }
+                if (capturedBatch) {
+                    for (const auto& reason : segments[i].crossFrameWaitReasons) {
+                        capturedBatch->waitReasons.push_back(reason);
+                    }
+                }
                 for (size_t predecessor : segments[i].predecessors) {
                     if (predecessor >= nextSubmission && predecessor < end) { continue; }
                     const auto& producer = segments[predecessor];
@@ -4046,6 +5053,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                         if (capturedBatch && std::find(capturedBatch->waitPredecessors.begin(),
                                 capturedBatch->waitPredecessors.end(), uint32_t(predecessor)) == capturedBatch->waitPredecessors.end()) {
                             capturedBatch->waitPredecessors.push_back(uint32_t(predecessor));
+                            capturedBatch->waitReasons.push_back("Intra-frame cross-queue wait on S" + std::to_string(predecessor));
                         }
                     }
                 }
@@ -4074,7 +5082,21 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                         [](const auto& segment) { return segment.passWork; })) { scheduling.firstPassSubmitNs = submitBegin; }
             }
             startedQueues.insert(queue);
-            for (size_t i = nextSubmission; i < end; ++i) { segments[i].completion = receipt.completion(); }
+            for (size_t i = nextSubmission; i < end; ++i) {
+                segments[i].completion = receipt.completion();
+                segments[i].accepted = true;
+                for (auto& access : segments[i].acceptedAccesses) {
+                    access.completion = receipt.completion();
+                    impl_->crossFrameTracker.commitAcceptedAccess(access);
+                    impl_->versionPool.updateBackingState(access.backingAllocationId, access.state);
+                }
+                segments[i].acceptedAccesses.clear();
+                if (segments[i].onAccepted) {
+                    segments[i].onAccepted(receipt.completion());
+                    segments[i].onAccepted = nullptr;
+                    segments[i].onCancelled = nullptr;
+                }
+            }
             ++impl_->lastExecutionStats.submittedBatchCount;
             if (whileRecording) { ++impl_->lastExecutionStats.batchesSubmittedWhileRecording; }
             nextSubmission = end;
@@ -4159,6 +5181,57 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (result) { result = segments.back().commandBuffer->end(); }
         if (!result) { return abort(result); }
     }
+
+    // Resolve declarative resource requests and schedule conditional hidden
+    // ProviderProducer segments BEFORE any pass recording begins.
+    {
+        std::string requestLog;
+        result = impl_->prepareResourceRequests(frameIndex, providerPlan, requestLog);
+        if (!result) {
+            spdlog::error("[RenderGraph] {}", requestLog);
+            return abort(result);
+        }
+        for (const auto& snapshot : providerPlan.passSnapshots) {
+            if (snapshot) { slot.frame.retain(snapshot); }
+        }
+    }
+    std::vector<size_t> producerSegments(providerPlan.producerWorks.size(), SIZE_MAX);
+    capturePassId = UINT32_MAX;
+    for (size_t prodIndex = 0; prodIndex < providerPlan.producerWorks.size(); ++prodIndex) {
+        auto& work = providerPlan.producerWorks[prodIndex];
+        result = beginSegment(work.preferredQueue, nullptr, RenderGraphSegmentRole::ProviderProducer);
+        if (!result) { return abort(result); }
+        const size_t segIndex = segments.size() - 1;
+        producerSegments[prodIndex] = segIndex;
+        segments[segIndex].onAccepted = std::move(work.onAccepted);
+        segments[segIndex].onCancelled = std::move(work.onCancelled);
+        work.onAccepted = nullptr;
+        work.onCancelled = nullptr;
+        if (subsystemCommands) { addDependency(segIndex, 0); }
+        for (uint64_t prereqKey : work.prerequisiteDedupKeys) {
+            const auto found = providerPlan.producerByDedupKey.find(prereqKey);
+            if (found != providerPlan.producerByDedupKey.end() && producerSegments[found->second] != SIZE_MAX) {
+                addDependency(segIndex, producerSegments[found->second]);
+            }
+        }
+        for (const auto& wait : work.waitCompletions) {
+            if (wait.valid() && !wait.isComplete()) {
+                result = addCommandDependency(*segments[segIndex].commandBuffer, wait);
+                if (!result) { return abort(result); }
+            }
+        }
+        std::string producerLog;
+        result = work.record(*segments[segIndex].commandBuffer, producerLog);
+        if (!result) {
+            if (!producerLog.empty()) {
+                spdlog::error("[RenderGraph] Provider producer '{}' failed: {}", work.debugName, producerLog);
+            }
+            return abort(result);
+        }
+        result = segments[segIndex].commandBuffer->end();
+        if (!result) { return abort(result); }
+    }
+
     std::vector<size_t> passCompletions(impl_->executionList.size(), SIZE_MAX);
     result = finishRecordings(0, segments.size());
     if (result && pipelined) { result = submitReady(); }
@@ -4372,10 +5445,26 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         for (const size_t predecessor : impl_->accessPlan.passes[passIndex].predecessors) {
             addDependency(index, passCompletions[predecessor]);
         }
+        for (const size_t prodIdx : providerPlan.passRequiredProducers[passIndex]) {
+            if (prodIdx < producerSegments.size() && producerSegments[prodIdx] != SIZE_MAX) {
+                addDependency(index, producerSegments[prodIdx]);
+            }
+        }
+        for (const auto& wait : providerPlan.passExternalWaits[passIndex]) {
+            if (wait.valid() && !wait.isComplete()) {
+                result = addCommandDependency(*segments[index].commandBuffer, wait);
+                if (!result) { return abort(result); }
+            }
+        }
+        if (crossFrameScheduled) {
+            segments[index].crossFrameWaits = std::move(passCrossFrameWaits[passIndex]);
+            segments[index].crossFrameWaitReasons = std::move(passCrossFrameWaitReasons[passIndex]);
+        }
         passCompletions[passIndex] = index;
         dependencies.end();
         open.end();
         if (batch) {
+            segments[index].acceptedAccesses = std::move(passAcceptedAccesses[passIndex]);
             auto recording = std::make_unique<Impl::NodeRecording>();
             result = invokePass([&] {
                 return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex,
@@ -4413,6 +5502,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         {
             CPUProfileScope close(recordingProfile, recordingProfile ? "Close segment / " + node.name : std::string{});
             const size_t completedIndex = segments.size() - 1;
+            segments[completedIndex].acceptedAccesses = std::move(passAcceptedAccesses[passIndex]);
             if (opaque) { orderingBoundary = completedIndex; }
             passCompletions[passIndex] = completedIndex;
             CPUProfileScope phaseScope(recordingProfile, "End command buffer");
@@ -4457,6 +5547,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         result = segments[index].commandBuffer->end();
         if (!result) { return abort(result); }
     }
+    impl_->activePassSnapshots.clear();
+    impl_->activePassHostBarrier.clear();
     impl_->recordingQueue = nullptr;
     impl_->historyResources = nullptr;
 

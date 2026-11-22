@@ -7,6 +7,8 @@
 #include "Editor/EditorRenderGraphViewer.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -558,6 +560,127 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(RenderGraphViewerTest);
+
+class RenderGraphViewerLifecycleAndContractsTest final : public RHITest {
+public:
+    RenderGraphViewerLifecycleAndContractsTest()
+    {
+        type = RHITestType::Command;
+        name = "render_graph_viewer_lifecycle_and_contracts";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+
+        // Verify explicit P4 external domain contracts on GPUSceneSubsystem and key GI/VSM/SDK passes.
+        GPUSceneSubsystem gpuScene;
+        const auto gpuSceneContract = gpuScene.externalDomainContract();
+        if (gpuScene.providerSubsystemId() != GPUSceneSubsystem::kSubsystemId ||
+            !gpuSceneContract || gpuSceneContract->ownership != RenderGraphResourceOwnership::ExternallyOwned ||
+            !gpuSceneContract->hasUndeclaredImplicitAccesses || gpuSceneContract->conservativeReason.empty()) {
+            return RHITestResult::fail("GPUSceneSubsystem missing explicit conservative externalDomainContract()");
+        }
+        const auto checkPassContract = [](std::unique_ptr<RenderGraphPass> pass,
+            RenderGraphResourceOwnership expectedOwnership, const char* label) -> std::string {
+            if (!pass) { return std::string("null pass: ") + label; }
+            const auto contract = pass->externalDomainContract();
+            if (!contract || contract->ownership != expectedOwnership ||
+                !contract->hasUndeclaredImplicitAccesses || contract->domainName.empty() ||
+                contract->conservativeReason.empty()) {
+                return std::string("missing or mismatched externalDomainContract on ") + label;
+            }
+            return {};
+        };
+        if (auto err = checkPassContract(builtin_pass::createLumenRadianceCachePass(),
+                RenderGraphResourceOwnership::ExternallyOwned, "LumenRadianceCachePass"); !err.empty()) {
+            return RHITestResult::fail(err);
+        }
+        if (auto err = checkPassContract(builtin_pass::createVirtualShadowMapPass(),
+                RenderGraphResourceOwnership::ExternallyOwned, "VirtualShadowMapPass"); !err.empty()) {
+            return RHITestResult::fail(err);
+        }
+        if (auto err = checkPassContract(builtin_pass::createNrdDenoisePass(),
+                RenderGraphResourceOwnership::OpaqueSDK, "NRDDenoisePass"); !err.empty()) {
+            return RHITestResult::fail(err);
+        }
+        if (auto err = checkPassContract(builtin_pass::createStreamlineDlssSrPass(),
+                RenderGraphResourceOwnership::OpaqueSDK, "StreamlineDLSSSRPass"); !err.empty()) {
+            return RHITestResult::fail(err);
+        }
+        if (auto err = checkPassContract(builtin_pass::createStreamlineDlssRrPass(),
+                RenderGraphResourceOwnership::OpaqueSDK, "StreamlineDLSSRRPass"); !err.empty()) {
+            return RHITestResult::fail(err);
+        }
+
+        // Verify RenderGraphExecutionViewer renders P0-P4 lifecycle, ProviderProducer,
+        // version pool, and conservative fallback metadata cleanly across all tabs.
+        auto snapshot = std::make_shared<RenderGraphExecutionSnapshot>();
+        snapshot->graphName = "LifecycleDiagnostics";
+        snapshot->graphGeneration = 3;
+        snapshot->executionId = 7;
+        snapshot->status = RenderGraphExecutionSnapshotStatus::Submitted;
+        snapshot->memoryPolicy = RenderGraphMemoryPolicy::MaximizeOverlap;
+        snapshot->maxFramesInFlight = 3;
+        snapshot->extraVersionCount = 1;
+        snapshot->extraVersionBytes = 4ull * 1024 * 1024;
+        snapshot->peakManagedVramBytes = 20ull * 1024 * 1024;
+        snapshot->crossFrameResourceScheduled = false;
+        snapshot->conservativeFallbackReasons.push_back(
+            "Subsystem 'render.gpu-scene' (ExternallyOwned): " + gpuSceneContract->conservativeReason);
+        snapshot->queues.push_back({.id = 0, .type = QueueType::Graphics});
+        snapshot->queues.push_back({.id = 1, .type = QueueType::Compute});
+        snapshot->passes.push_back({.id = 1, .name = "ProducerPass", .type = "Fixture",
+            .logicalQueue = QueueType::Compute, .actualQueueId = 1, .recorded = true});
+        snapshot->passes.back().uses.push_back({.resourceId = 101, .writes = true});
+        snapshot->passes.push_back({.id = 2, .name = "ConsumerPass", .type = "Fixture",
+            .logicalQueue = QueueType::Graphics, .actualQueueId = 0, .predecessors = {1}, .recorded = true});
+        snapshot->passes.back().uses.push_back({.resourceId = 101, .reads = true});
+        snapshot->segments.push_back({.id = 0, .passId = UINT32_MAX, .queueId = 0,
+            .role = RenderGraphSegmentRole::ProviderProducer, .recorded = true, .accepted = true});
+        snapshot->segments.push_back({.id = 1, .passId = 1, .queueId = 1,
+            .role = RenderGraphSegmentRole::Pass, .recorded = true, .accepted = true});
+        snapshot->batches.push_back({.id = 0, .queueId = 0, .segmentIds = {0}, .accepted = true});
+        snapshot->batches.push_back({.id = 1, .queueId = 1, .segmentIds = {1}, .accepted = true,
+            .waitReasons = {"Cross-frame WAR on stage (Compute -> Graphics)"}});
+
+        RenderGraphExecutionResourceSnapshot res;
+        res.id = 101;
+        res.name = "ProducerPass.stage";
+        res.type = RenderGraphResourceType::Buffer;
+        res.logicalResourceId = makeLogicalResourceId("render.graph", "ProducerPass.stage").value;
+        res.versionId = 7;
+        res.contentRevision = 2;
+        res.allocationGeneration = 1;
+        res.physicalVersionCount = 2;
+        res.extraPhysicalVersion = true;
+        res.ownership = RenderGraphResourceOwnership::TemporalOwned;
+        res.producerName = "ProducerPass";
+        res.consumerNames = {"ConsumerPass"};
+        res.bufferDesc.size = 4ull * 1024 * 1024;
+        res.memory.known = true;
+        res.memory.memoryBlockId = 1;
+        res.memory.allocationId = 101;
+        res.memory.backingAllocationId = 101;
+        res.memory.sizeBytes = res.memory.backingSizeBytes = 4ull * 1024 * 1024;
+        snapshot->resources.push_back(res);
+
+        editor::RenderGraphExecutionViewer viewer;
+        viewer.update(snapshot);
+        std::filesystem::create_directories(context.outputDirectory);
+        ViewerUIContext ui(true);
+        using Tab = editor::RenderGraphExecutionViewer::Tab;
+        for (const auto& [tab, tag] : std::array{
+                std::pair{Tab::Resources, "lifecycle_resources"},
+                std::pair{Tab::Queues, "lifecycle_queues"},
+                std::pair{Tab::Memory, "lifecycle_memory"}}) {
+            const auto err = ui.save(viewer, tab, context.outputDirectory / (std::string("render_graph_viewer_") + tag + ".png"));
+            if (!err.empty()) { return RHITestResult::fail(std::string(tag) + ": " + err); }
+        }
+        return RHITestResult::pass("P4 externalDomainContracts and RenderGraphExecutionViewer P0-P4 lifecycle diagnostics verified");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RenderGraphViewerLifecycleAndContractsTest);
 
 } // namespace
 } // namespace metallic::tests

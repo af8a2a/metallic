@@ -328,6 +328,42 @@ public:
         return result;
     }
 
+    Result<> declareResourceRequests(
+        const RenderGraphResourceRequestContext& context,
+        RenderGraphResourceRequestBuilder& builder,
+        std::string& log) override
+    {
+        EnvironmentLightingSubsystem* environmentSubsystem =
+            context.subsystem<EnvironmentLightingSubsystem>();
+        const scene::Scene* lightScene = context.runtimeScene();
+        if (environmentSubsystem == nullptr || lightScene == nullptr || context.subsystems() == nullptr) {
+            return {};
+        }
+        const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
+        std::array<double, 3> observer{0.0, 0.0, 0.0};
+        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
+            SceneRTXDIPush observerPush{};
+            buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
+                environmentSubsystem->snapshot().settings, observerPush);
+            observer = {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]};
+        }
+        auto declared = environmentSubsystem->declareEnvironmentRequest(
+            context,
+            builder,
+            EnvironmentRequest{
+                .environment = worldEnvironment,
+                .observerWorldMetres = observer,
+                .viewId = context.viewKey(),
+                .needCelestial = true,
+            },
+            log);
+        if (!declared) {
+            spdlog::error("Physical environment: {}", log);
+            return makeError(declared.error());
+        }
+        return {};
+    }
+
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         if (hasSlabMaterials()) { return makeError(Error::Unsupported); }
@@ -340,31 +376,17 @@ public:
         if (device_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        EnvironmentLightingSubsystem* environmentSubsystem =
-            context.subsystem<EnvironmentLightingSubsystem>();
-        if (environmentSubsystem == nullptr) {
+        const EnvironmentResourceSet* environmentResources = context.resources<EnvironmentResourceSet>();
+        if (environmentResources == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        EnvironmentLightingSnapshot environment = environmentSubsystem->snapshot();
+        const EnvironmentLightingSnapshot& environment = environmentResources->lighting;
         const scene::Scene* lightScene = context.runtimeScene();
         if (!lightScene || !context.subsystems()) { return makeError(Error::InvalidArgument); }
-        const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
-        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
-            SceneRTXDIPush observerPush;
-            buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
-                environment.settings, observerPush);
-            auto resolved = environmentSubsystem->resolveRadiance(*device_, context.commandBuffer(), *context.subsystems(),
-                worldEnvironment, {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]}, syncLog)
-                .transform([&](auto value) { environment = std::move(value); });
-            if (!resolved) { spdlog::error("Physical environment: {}", syncLog); return makeError(resolved.error()); }
-        }
         if (!environment.valid()) { return {}; }
-        const auto celestialRecords = buildCelestialLightRecords(worldEnvironment);
-        CelestialLightingResources celestial;
-        auto celestialResult = environmentSubsystem->updateCelestial(*device_, context.commandBuffer(),
-            *context.subsystems(), worldEnvironment)
-            .transform([&](auto value) { celestial = std::move(value); });
-        if (!celestialResult) { return celestialResult; }
+        const auto& celestialRecords = environmentResources->celestialRecords;
+        const CelestialLightingResources& celestial = environmentResources->celestial;
+        if (celestial.buffer == nullptr) { return makeError(Error::InvalidArgument); }
         if (!celestialRecordsInitialized_ ||
             std::memcmp(celestialRecords.data(), celestialRecords_.data(), sizeof(celestialRecords)) != 0) {
             celestialRecords_ = celestialRecords;

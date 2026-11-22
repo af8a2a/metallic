@@ -139,6 +139,15 @@ struct CacheContent {
 
 class LumenRadianceCachePass final : public ComputePass {
 public:
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override
+    {
+        return RenderGraphExternalDomainContract{
+            .domainName = "render.pass.lumen-radiance-cache",
+            .ownership = RenderGraphResourceOwnership::ExternallyOwned,
+            .hasUndeclaredImplicitAccesses = true,
+            .conservativeReason = "Persistent multi-frame radiance cache probe atlas and indirection tables",
+        };
+    }
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override;
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override;
     Result<> execute(RenderGraphExecutionContext& context) override;

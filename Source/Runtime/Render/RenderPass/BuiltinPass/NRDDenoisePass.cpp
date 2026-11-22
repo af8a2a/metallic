@@ -23,6 +23,16 @@ public:
 
     bool supportsFrameOverlap() const override { return false; }
 
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override
+    {
+        return RenderGraphExternalDomainContract{
+            .domainName = "render.sdk.nrd",
+            .ownership = RenderGraphResourceOwnership::OpaqueSDK,
+            .hasUndeclaredImplicitAccesses = true,
+            .conservativeReason = "NVIDIA NRD third-party SDK opaque temporal history and internal barriers",
+        };
+    }
+
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;

@@ -43,3 +43,17 @@ void sampleImages(uint3 thread : SV_DispatchThreadID)
     float b = resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<FrameImagesProbeResources>().images.load(1))).Load(int3(0, 0, 0)).x;
     resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<FrameImagesProbeResources>().output)[push.index] = uint(a + b);
 }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void benchComputeWork(uint3 thread : SV_DispatchThreadID)
+{
+    ProbePush push = getConstants<ProbePush>();
+    uint x = gInput[0] ^ (thread.x * 2654435761u);
+    [loop]
+    for (uint i = 0; i < push.index; ++i)
+    {
+        x = (x * 1664525u + 1013904223u) ^ (x >> 13);
+    }
+    gOutput[thread.x] = x;
+}

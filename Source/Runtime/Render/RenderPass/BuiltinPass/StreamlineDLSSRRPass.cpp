@@ -50,6 +50,16 @@ class StreamlineDLSSPass final : public UnsafePass {
 public:
     // SDK work and graph history are ordered by the graph's GPU completion chain.
     bool supportsFrameOverlap() const override { return variant_ == DLSSVariant::SuperResolution; }
+
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override
+    {
+        return RenderGraphExternalDomainContract{
+            .domainName = variant_ == DLSSVariant::RayReconstruction ? "render.sdk.dlss-rr" : "render.sdk.dlss-sr",
+            .ownership = RenderGraphResourceOwnership::OpaqueSDK,
+            .hasUndeclaredImplicitAccesses = true,
+            .conservativeReason = "NVIDIA Streamline / DLSS third-party SDK opaque temporal state",
+        };
+    }
     explicit StreamlineDLSSPass(DLSSVariant variant)
         : variant_(variant)
     {

@@ -63,6 +63,16 @@ public:
 
     bool supportsFrameOverlap() const override { return false; }
 
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override
+    {
+        return RenderGraphExternalDomainContract{
+            .domainName = "render.pass.virtual-shadow-map",
+            .ownership = RenderGraphResourceOwnership::ExternallyOwned,
+            .hasUndeclaredImplicitAccesses = true,
+            .conservativeReason = "Persistent virtual shadow map physical page pool and page table",
+        };
+    }
+
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
         static constexpr std::array required{GPUSceneSubsystem::kSubsystemId};

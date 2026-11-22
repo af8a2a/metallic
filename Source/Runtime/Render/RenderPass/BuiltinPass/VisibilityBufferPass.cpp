@@ -255,6 +255,34 @@ public:
         return reflection;
     }
 
+    Result<> declareResourceRequests(
+        const RenderGraphResourceRequestContext& context,
+        RenderGraphResourceRequestBuilder& builder,
+        std::string&) override
+    {
+        GPUDrivenPreviewGPUParams camera{};
+        buildParams(
+            context.width(),
+            context.height(),
+            context.properties(),
+            drawBounds_,
+            instanceCount_,
+            hzbMipCount_,
+            frameIndex_,
+            hzbValid_,
+            nullptr,
+            materialTextureCount_,
+            materialCount_,
+            camera);
+        if (const ViewConstants* view = context.viewConstants()) {
+            applyViewCamera(view->current, camera);
+        }
+        builder.publishOutputObserver(
+            "rasterInfo",
+            {double(camera.renderEye[0]), double(camera.renderEye[1]), double(camera.renderEye[2])});
+        return {};
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{

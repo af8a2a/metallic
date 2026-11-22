@@ -26,6 +26,9 @@ struct HistoryTextureRef {
     const TextureDesc* desc = nullptr;
     bool valid = false;
     ResourceState state = ResourceState::Undefined;
+    uint64_t allocationGeneration = 0;
+    uint64_t backingAllocationId = 0;
+    std::shared_ptr<void> owner;
 };
 
 struct HistoryBufferRef {
@@ -34,6 +37,10 @@ struct HistoryBufferRef {
     const BufferDesc* desc = nullptr;
     const BufferViewDesc* viewDesc = nullptr;
     bool valid = false;
+    ResourceState state = ResourceState::Undefined;
+    uint64_t allocationGeneration = 0;
+    uint64_t backingAllocationId = 0;
+    std::shared_ptr<void> owner;
 };
 
 class HistoryResourceManager {
@@ -47,8 +54,9 @@ public:
     HistoryResourceManager(const HistoryResourceManager&) = delete;
     HistoryResourceManager& operator=(const HistoryResourceManager&) = delete;
 
-    Result<> initialize(Device& device);
+    Result<> initialize(Device& device, uint32_t slotCount = 2);
     void reset();
+    uint32_t slotCount() const;
 
     void beginFrame(uint64_t frameIndex);
     uint64_t frameIndex() const;
@@ -72,6 +80,8 @@ public:
 
     HistoryTextureRef texture(std::string_view name, HistorySlot slot) const;
     HistoryBufferRef buffer(std::string_view name, HistorySlot slot) const;
+    HistoryTextureRef textureAtOffset(std::string_view name, int32_t frameOffset) const;
+    HistoryBufferRef bufferAtOffset(std::string_view name, int32_t frameOffset) const;
     bool hasPrevious(std::string_view name) const;
 
     void markWritten(std::string_view name);
@@ -82,6 +92,24 @@ public:
         CommandBuffer& commandBuffer,
         std::string_view name,
         HistorySlot slot,
+        ResourceState state,
+        bool written = false);
+    Result<> publishTextureStateAtOffset(
+        CommandBuffer& commandBuffer,
+        std::string_view name,
+        int32_t frameOffset,
+        ResourceState state,
+        bool written = false);
+    Result<> publishBufferState(
+        CommandBuffer& commandBuffer,
+        std::string_view name,
+        HistorySlot slot,
+        ResourceState state,
+        bool written = false);
+    Result<> publishBufferStateAtOffset(
+        CommandBuffer& commandBuffer,
+        std::string_view name,
+        int32_t frameOffset,
         ResourceState state,
         bool written = false);
 

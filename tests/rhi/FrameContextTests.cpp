@@ -16,9 +16,13 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <condition_variable>
 #include <mutex>
@@ -2031,6 +2035,787 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(FrameSubmissionTransactionsTest);
 METALLIC_REGISTER_RHI_TEST(FrameEnvironmentRecoveryTest);
+
+class CrossFrameGateGraphicsPass final : public render::RasterPass {
+public:
+    static inline render::Semaphore* gateSemaphore = nullptr;
+    static inline uint64_t gateWaitValue = 0;
+
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return true; }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureOutput("color", "Gated clear color")
+            .transient(render::RenderGraphInitialization::Clear)
+            .format = render::Format::RGBA8Unorm;
+        return reflection;
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        if (gateSemaphore != nullptr && gateWaitValue != 0) {
+            const render::SemaphoreSubmitDesc wait{
+                .semaphore = gateSemaphore,
+                .value = gateWaitValue,
+                .stages = render::PipelineStageBits::AllCommands,
+            };
+            auto dep = context.commandBuffer().addDependency({&wait, 1});
+            if (!dep) { return dep; }
+        }
+        return clear_->execute(context);
+    }
+
+private:
+    std::unique_ptr<render::RenderGraphPass> clear_ = render::builtin_pass::createClearColorPass();
+};
+
+class CrossFrameConservativeOptOutPass final : public render::RasterPass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    // Deliberately false even though overlap/async/pipelined are all true.
+    bool supportsCrossFrameResourceScheduling() const override { return false; }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        return clear_->reflect({});
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        return clear_->execute(context);
+    }
+
+private:
+    std::unique_ptr<render::RenderGraphPass> clear_ = render::builtin_pass::createClearColorPass();
+};
+
+class CrossFrameGraphicsBufferCopyPass final : public render::ComputePass {
+public:
+    render::QueueType queueType() const override { return render::QueueType::Graphics; }
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return true; }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        return copy_->reflect(context);
+    }
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    {
+        return copy_->compile(context, log);
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        return copy_->execute(context);
+    }
+
+private:
+    std::unique_ptr<render::RenderGraphPass> copy_ = render::builtin_pass::createRenderGraphBufferCopyPass();
+};
+
+class FrameCrossFrameOverlapAndHazardTest final : public RHITest {
+public:
+    FrameCrossFrameOverlapAndHazardTest()
+    {
+        type = RHITestType::Rendering;
+        name = "frame_cross_frame_overlap_and_hazards";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.cross_frame.gpu_overlap", "graph.cross_frame.conservative_fallback",
+            "graph.cross_frame.version_pool"}, bench::Layer::RenderGraph, "async", "sync");
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        static const bool registered = [] {
+            registerRenderGraphPassType("CrossFrameGateGraphicsPass", "Timeline-gated cross-frame graphics pass",
+                [] { return std::make_unique<CrossFrameGateGraphicsPass>(); });
+            registerRenderGraphPassType("CrossFrameConservativeOptOutPass", "Cross-frame opt-out pass",
+                [] { return std::make_unique<CrossFrameConservativeOptOutPass>(); });
+            registerRenderGraphPassType("CrossFrameGraphicsBufferCopyPass", "Cross-frame graphics buffer copy",
+                [] { return std::make_unique<CrossFrameGraphicsBufferCopyPass>(); });
+            return true;
+        }();
+        (void)registered;
+
+        std::unique_ptr<Device> device;
+        auto created = createDevice({.applicationName = "Cross-frame overlap and hazards",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableAsyncCompute = true}).transform([&](auto v) { device = std::move(v); });
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("requires bindless descriptor heap"); }
+        FRAME_REQUIRE(created);
+        Queue* graphics = device->getQueue(QueueType::Graphics);
+        Queue* compute = device->getQueue(QueueType::Compute);
+        if (!graphics || !compute) { return RHITestResult::fail("missing graphics or compute queue"); }
+
+        // Subtest A: True cross-frame GPU queue overlap + MaximizeOverlap version pool.
+        std::unique_ptr<Semaphore> gate;
+        FRAME_REQUIRE(device->createSemaphore({.initialValue = 0}).transform([&](auto s) { gate = std::move(s); }));
+        bool gateSignaled = false;
+
+        RenderGraph overlapGraph;
+        overlapGraph.setName("CrossFrameOverlap");
+        overlapGraph.addNode("CrossFrameGateGraphicsPass", "Gfx");
+        overlapGraph.addNode("RenderGraphBufferWritePass", "Cmp");
+        overlapGraph.markOutput("Gfx.color");
+        overlapGraph.markOutput("Cmp.data");
+
+        RenderGraphExecutor executor;
+        struct GateGuard {
+            Semaphore* sem = nullptr;
+            bool* signaled = nullptr;
+            ~GateGuard()
+            {
+                CrossFrameGateGraphicsPass::gateSemaphore = nullptr;
+                CrossFrameGateGraphicsPass::gateWaitValue = 0;
+                if (sem && signaled && !*signaled) {
+                    (void)sem->signal(1);
+                    *signaled = true;
+                }
+            }
+        } gateGuard{gate.get(), &gateSignaled};
+        executor.setExecutionCaptureEnabled(true);
+        std::string log;
+        RenderGraphCompileOptions overlapOpts;
+        overlapOpts.memoryPolicy = RenderGraphMemoryPolicy::MaximizeOverlap;
+        overlapOpts.maxFramesInFlight = 3;
+        overlapOpts.versionPoolBudgetBytes = 4ull * 1024 * 1024;
+        overlapOpts.maxPhysicalVersionsPerResource = 2;
+        FRAME_REQUIRE(executor.compile(*device, overlapGraph, 64, 64, overlapOpts, log));
+
+        // Frame 0: gate Graphics on unsignaled gate semaphore.
+        CrossFrameGateGraphicsPass::gateSemaphore = gate.get();
+        CrossFrameGateGraphicsPass::gateWaitValue = 1;
+        FRAME_REQUIRE(executor.execute({.graphicsQueue = graphics, .computeQueue = compute}));
+        if (!executor.executionStats().crossFrameResourceScheduled) {
+            return RHITestResult::fail("Frame 0 did not enable crossFrameResourceScheduled");
+        }
+        const auto* gfxRes0 = executor.outputResource("Gfx.color");
+        const Texture* frame0Tex = gfxRes0 ? gfxRes0->texture : nullptr;
+
+        // Frame 1: remove gate and execute while Frame 0's Graphics is still blocked!
+        CrossFrameGateGraphicsPass::gateSemaphore = nullptr;
+        CrossFrameGateGraphicsPass::gateWaitValue = 0;
+        FRAME_REQUIRE(executor.execute({.graphicsQueue = graphics, .computeQueue = compute}));
+        const auto stats1 = executor.executionStats();
+        const auto snap1 = executor.executionSnapshot();
+        if (!stats1.crossFrameResourceScheduled || !snap1 || !snap1->crossFrameResourceScheduled ||
+            !stats1.conservativeFallbackReasons.empty() || stats1.maxFramesInFlight != 3) {
+            return RHITestResult::fail("Frame 1 cross-frame scheduling diagnostics mismatch");
+        }
+        const auto* gfxRes1 = executor.outputResource("Gfx.color");
+        if (!gfxRes1 || !frame0Tex || gfxRes1->texture == frame0Tex || stats1.extraVersionCount == 0) {
+            return RHITestResult::fail("MaximizeOverlap did not allocate extra physical version while Frame 0 backing was busy");
+        }
+
+        // Prove Frame 1 Compute finishes ON THE GPU while Frame 0 Graphics is STILL blocked!
+        if (!graphics->sameQueue(*compute)) {
+            std::unique_ptr<Fence> computeFence;
+            FRAME_REQUIRE(device->createFence(false).transform([&](auto f) { computeFence = std::move(f); }));
+            FRAME_REQUIRE(compute->submit({.signalFence = computeFence.get()}));
+            auto waited = computeFence->wait(5'000'000'000ull);
+            if (!waited) {
+                return RHITestResult::fail("Frame 1 disjoint Compute did not complete while Frame 0 Graphics was gated (no true GPU overlap)");
+            }
+            const auto* cmpOut = executor.outputResource("Cmp.data");
+            constexpr std::array expected{0x11223344u, 0xAABBCCDDu, 0xDEADBEEFu, 0xCAFEBABEu};
+            std::array<uint32_t, 4> actual{};
+            if (!cmpOut || !cmpOut->buffer || !readWords(*cmpOut->buffer, actual.data(), actual.size()) || actual != expected) {
+                return RHITestResult::fail("Frame 1 overlapping Compute output readback mismatch");
+            }
+        }
+
+        // Release Gate so Frame 0 and Frame 1 Graphics complete cleanly.
+        FRAME_REQUIRE(gate->signal(1));
+        gateSignaled = true;
+        FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+
+        // Subtest B: Opt-out pass forces conservative fallback even when overlap/async/pipelined are true.
+        RenderGraph fallbackGraph;
+        fallbackGraph.setName("CrossFrameConservativeFallback");
+        fallbackGraph.addNode("CrossFrameConservativeOptOutPass", "OptOut");
+        fallbackGraph.addNode("RenderGraphBufferWritePass", "Cmp");
+        fallbackGraph.markOutput("OptOut.color");
+        fallbackGraph.markOutput("Cmp.data");
+        FRAME_REQUIRE(executor.compile(*device, fallbackGraph, 32, 32, log));
+        FRAME_REQUIRE(executor.execute({.graphicsQueue = graphics, .computeQueue = compute}));
+        FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        const auto fbStats = executor.executionStats();
+        const auto fbSnap = executor.executionSnapshot();
+        if (fbStats.crossFrameResourceScheduled || fbStats.conservativeFallbackReasons.empty() ||
+            !fbSnap || fbSnap->crossFrameResourceScheduled || fbSnap->conservativeFallbackReasons.empty()) {
+            return RHITestResult::fail("Opt-out pass failed to force conservative fallback or report reason");
+        }
+
+        // Subtest C: Multi-queue cross-frame RAW/WAR hazard test across 6 frames with 3 frames in flight.
+        RenderGraph hazardGraph;
+        hazardGraph.setName("CrossFrameMultiQueueHazard");
+        hazardGraph.addNode("RenderGraphBufferWritePass", "Writer");
+        hazardGraph.addNode("CrossFrameGraphicsBufferCopyPass", "ReaderGfx");
+        hazardGraph.addEdge("Writer.data", "ReaderGfx.source");
+        hazardGraph.markOutput("ReaderGfx.data");
+        RenderGraphCompileOptions hazardOpts;
+        hazardOpts.maxFramesInFlight = 3;
+        hazardOpts.memoryPolicy = RenderGraphMemoryPolicy::MinimizeMemory;
+        FRAME_REQUIRE(executor.compile(*device, hazardGraph, 1, 1, hazardOpts, log));
+        for (uint32_t f = 0; f < 6; ++f) {
+            FRAME_REQUIRE(executor.execute({.graphicsQueue = graphics, .computeQueue = compute}));
+            if (!executor.executionStats().crossFrameResourceScheduled ||
+                executor.executionStats().extraVersionCount != 0) {
+                return RHITestResult::fail("MinimizeMemory multi-queue hazard test violated policy or scheduling");
+            }
+        }
+        FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+        const auto* hazardOut = executor.outputResource("ReaderGfx.data");
+        constexpr std::array expected{0x11223344u, 0xAABBCCDDu, 0xDEADBEEFu, 0xCAFEBABEu};
+        std::array<uint32_t, 4> actual{};
+        if (!hazardOut || !hazardOut->buffer || !readWords(*hazardOut->buffer, actual.data(), actual.size()) || actual != expected) {
+            return RHITestResult::fail("Multi-queue cross-frame RAW/WAR output mismatch");
+        }
+
+        return RHITestResult::pass(graphics->sameQueue(*compute)
+            ? "Cross-frame scheduling, version pool, conservative fallback and hazards verified (aliased queues)"
+            : "Cross-frame GPU overlap (Compute completed while Graphics gated), MaximizeOverlap version pool, conservative fallback and multi-queue RAW/WAR verified");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameCrossFrameOverlapAndHazardTest);
+
+class TemporalCounterProbePass final : public render::ComputePass {
+public:
+    static inline bool skipWrite = false;
+    static inline bool failExecute = false;
+    static inline bool lastPrevValid = false;
+
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return true; }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferInput("prev", "Previous frame counter")
+            .buffer(16, 4).transferRead().temporalRead("counter", -1, /*graphOwned=*/true);
+        reflection.addBufferOutput("curr", "Current frame counter")
+            .buffer(16, 4).transferWrite().temporalWrite("counter", /*graphOwned=*/true);
+        reflection.addBufferOutput("out", "Observed previous counter")
+            .buffer(16, 4).transferWrite().hostReadback();
+        return reflection;
+    }
+
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string&) override
+    {
+        using namespace render;
+        if (!context.device) { return makeError(Error::InvalidArgument); }
+        BufferDesc desc;
+        desc.size = 16 * 16;
+        desc.usage = BufferUsageBits::TransferSource;
+        desc.memoryLocation = MemoryLocation::HostUpload;
+        desc.queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy;
+        auto created = context.device->createBuffer(desc);
+        if (!created) { return std::unexpected(created.error()); }
+        constants_ = std::move(*created);
+        auto* mapped = static_cast<uint32_t*>(constants_->map());
+        if (!mapped) { return makeError(Error::Failure); }
+        for (uint32_t slot = 0; slot < 16; ++slot) {
+            const uint32_t value = slot == 0 ? 0xFFFFFFFFu : (100u + (slot - 1u));
+            for (uint32_t w = 0; w < 4; ++w) { mapped[slot * 4 + w] = value; }
+        }
+        constants_->flush();
+        constants_->unmap();
+        return {};
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        using namespace render;
+        const BufferHandle prev = context.temporalBuffer("prev").buffer;
+        const BufferHandle curr = context.temporalBuffer("curr").buffer;
+        const BufferHandle out = context.outputBuffer("out");
+        if (!prev.valid() || !curr.valid() || !out.valid() || !constants_) {
+            return makeError(Error::InvalidArgument);
+        }
+        lastPrevValid = context.temporalValid("prev");
+        if (failExecute) {
+            return makeError(Error::Failure);
+        }
+        const uint64_t tagSlot = 1ull + (context.frameIndex() % 15ull);
+        auto currSlice = curr.buffer()->slice({0, 16});
+        auto prevSlice = prev.buffer()->slice({0, 16});
+        auto outSlice = out.buffer()->slice({0, 16});
+        auto invalidSlice = constants_->slice({0, 16});
+        auto tagSlice = constants_->slice({tagSlot * 16ull, 16});
+        if (!currSlice || !prevSlice || !outSlice || !invalidSlice || !tagSlice) {
+            return makeError(Error::Failure);
+        }
+        if (lastPrevValid) {
+            auto r = context.commandBuffer().copyBuffer(*prevSlice, *outSlice);
+            if (!r) { return r; }
+        } else {
+            auto r = context.commandBuffer().copyBuffer(*invalidSlice, *outSlice);
+            if (!r) { return r; }
+        }
+        if (skipWrite) {
+            context.setTemporalWritten("curr", false);
+        } else {
+            auto r = context.commandBuffer().copyBuffer(*tagSlice, *currSlice);
+            if (!r) { return r; }
+        }
+        const BufferBarrierDesc hostBarrier{
+            .buffer = out.buffer(),
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::Host, AccessBits::HostRead},
+        };
+        return context.commandBuffer().synchronize({.buffers = {&hostBarrier, 1}});
+    }
+
+private:
+    std::unique_ptr<render::Buffer> constants_;
+};
+
+class FrameDeclarativeTemporalHistoryTest final : public RHITest {
+public:
+    FrameDeclarativeTemporalHistoryTest()
+    {
+        type = RHITestType::Rendering;
+        name = "frame_declarative_temporal_history";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.temporal.declarative_history", "graph.temporal.three_slot_ring"},
+            bench::Layer::RenderGraph, "async", "sync");
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        static const bool registered = registerRenderGraphPassType("TemporalCounterProbePass",
+            "Declarative temporal history probe",
+            [] { return std::make_unique<TemporalCounterProbePass>(); });
+        (void)registered;
+
+        for (uint32_t framesInFlight : {2u, 3u}) {
+            TemporalCounterProbePass::skipWrite = false;
+            TemporalCounterProbePass::failExecute = false;
+            RenderGraph graph;
+            graph.setName("DeclarativeTemporalTest");
+            graph.addNode("TemporalCounterProbePass", "Counter");
+            graph.markOutput("Counter.out");
+
+            RenderGraphExecutor executor;
+            executor.setExecutionCaptureEnabled(true);
+            std::string log;
+            RenderGraphCompileOptions opts;
+            opts.maxFramesInFlight = framesInFlight;
+            FRAME_REQUIRE(executor.compile(context.device, graph, 16, 16, opts, log));
+
+            auto readOut = [&]() -> uint32_t {
+                auto* out = executor.outputResource("Counter.out");
+                std::array<uint32_t, 4> words{};
+                if (!out || !out->buffer || !readWords(*out->buffer, words.data(), words.size())) { return 0; }
+                return words[0];
+            };
+
+            // Frame 0: no valid previous -> out == 0xFFFFFFFF, writes 100.
+            FRAME_REQUIRE(executor.execute({.graphicsQueue = &context.graphicsQueue}));
+            FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+            if (TemporalCounterProbePass::lastPrevValid || readOut() != 0xFFFFFFFFu) {
+                return RHITestResult::fail("Frame 0 expected invalid temporal previous");
+            }
+            const auto snap = executor.executionSnapshot();
+            const bool hasTemporalResource = snap && std::any_of(snap->resources.begin(), snap->resources.end(),
+                [](const auto& r) { return r.ownership == RenderGraphResourceOwnership::TemporalOwned && r.logicalResourceId != 0; });
+            if (!hasTemporalResource) {
+                return RHITestResult::fail("Execution snapshot did not classify declarative temporal resource as TemporalOwned");
+            }
+
+            // Frames 1..3: each frame observes previous frame's written tag (100, 101, 102).
+            for (uint32_t f = 1; f <= 3; ++f) {
+                FRAME_REQUIRE(executor.execute({.graphicsQueue = &context.graphicsQueue}));
+                FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+                if (!TemporalCounterProbePass::lastPrevValid || readOut() != 100u + (f - 1)) {
+                    return RHITestResult::fail("Frame " + std::to_string(f) + " observed wrong temporal value");
+                }
+            }
+
+            // Frame 4: setTemporalWritten("curr", false) -> Frame 5 sees temporalValid == false!
+            TemporalCounterProbePass::skipWrite = true;
+            FRAME_REQUIRE(executor.execute({.graphicsQueue = &context.graphicsQueue}));
+            FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+            TemporalCounterProbePass::skipWrite = false;
+            FRAME_REQUIRE(executor.execute({.graphicsQueue = &context.graphicsQueue}));
+            FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+            if (TemporalCounterProbePass::lastPrevValid || readOut() != 0xFFFFFFFFu) {
+                return RHITestResult::fail("setTemporalWritten(false) did not suppress next frame temporal validity");
+            }
+
+            // Frame 6: failure rolls back current slot cleanly.
+            TemporalCounterProbePass::failExecute = true;
+            if (executor.execute({.graphicsQueue = &context.graphicsQueue}).has_value()) {
+                return RHITestResult::fail("Expected failing temporal pass to return error");
+            }
+            TemporalCounterProbePass::failExecute = false;
+        }
+        return RHITestResult::pass("Declarative temporal fields verified for 2-slot and 3-slot rings, skipWrite, failure rollback, and ExecutionSnapshot TemporalOwned metadata");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameDeclarativeTemporalHistoryTest);
+
+class BenchComputeStagePass final : public render::ComputePass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return properties().value("crossFrame", true); }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        const uint64_t elements = properties().value("elements", 262144ull);
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("stage", "Async compute stage output")
+            .buffer(elements * sizeof(uint32_t), sizeof(uint32_t)).storageWrite()
+            .transient(render::RenderGraphInitialization::FullOverwrite);
+        return reflection;
+    }
+
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    {
+        using namespace render;
+        if (!context.device) { return makeError(Error::InvalidArgument); }
+        BufferDesc inputDesc;
+        inputDesc.size = 16;
+        inputDesc.usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination;
+        inputDesc.memoryLocation = MemoryLocation::HostUpload;
+        inputDesc.queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy;
+        auto created = context.device->createBuffer(inputDesc);
+        if (!created) { return std::unexpected(created.error()); }
+        seed_ = std::move(*created);
+        if (auto* mapped = static_cast<uint32_t*>(seed_->map())) {
+            mapped[0] = 0x13579BDFu;
+            mapped[1] = 0;
+            mapped[2] = 0;
+            mapped[3] = 0;
+            seed_->flush();
+            seed_->unmap();
+        }
+        const ComputeResourceBindingDesc bindings[] = {
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer},
+        };
+        return createProbe(*context.device, "benchComputeWork", bindings, program_, log);
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        using namespace render;
+        const BufferHandle stage = context.outputBuffer("stage");
+        if (!stage.valid() || !seed_ || !program_.valid()) { return makeError(Error::InvalidArgument); }
+        const uint32_t iterations = properties().value("iterations", 512u);
+        const uint64_t elements = properties().value("elements", 262144ull);
+        const uint32_t groupsX = static_cast<uint32_t>((elements + 63ull) / 64ull);
+        const ComputeDispatchBinding bindings[] = {
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .buffer = seed_.get()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .buffer = stage.buffer()},
+        };
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = bindings,
+            .pushData = &iterations,
+            .pushDataSize = sizeof(iterations),
+            .groupCountX = groupsX,
+            .groupCountY = 1,
+            .groupCountZ = 1,
+        });
+    }
+
+private:
+    render::ComputeProgram program_;
+    std::unique_ptr<render::Buffer> seed_;
+};
+
+class BenchGraphicsStagePass final : public render::RasterPass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return properties().value("crossFrame", true); }
+
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        const uint64_t elements = properties().value("elements", 262144ull);
+        render::RenderPassReflection reflection;
+        reflection.addBufferInput("stage", "Async compute stage input")
+            .buffer(elements * sizeof(uint32_t), sizeof(uint32_t)).transferRead();
+        reflection.addBufferOutput("copyOut", "Graphics consumed copy")
+            .buffer(elements * sizeof(uint32_t), sizeof(uint32_t)).transferWrite()
+            .transient(render::RenderGraphInitialization::FullOverwrite);
+        auto& color = reflection.addTextureOutput("color", "Graphics render target")
+            .texture2D(context.width, context.height).colorWrite()
+            .transient(render::RenderGraphInitialization::Clear);
+        color.format = render::Format::RGBA16Sfloat;
+        return reflection;
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        using namespace render;
+        const BufferHandle stage = context.inputBuffer("stage");
+        const BufferHandle copyOut = context.outputBuffer("copyOut");
+        const TextureHandle color = context.outputTexture("color");
+        if (!stage.valid() || !copyOut.valid() || !color.valid()) { return makeError(Error::InvalidArgument); }
+        auto srcSlice = stage.buffer()->slice();
+        auto dstSlice = copyOut.buffer()->slice();
+        if (!srcSlice || !dstSlice) { return makeError(Error::Failure); }
+        if (auto r = context.commandBuffer().copyBuffer(*srcSlice, *dstSlice); !r) { return r; }
+
+        const uint32_t clearPasses = properties().value("clearPasses", 6u);
+        for (uint32_t pass = 0; pass < clearPasses; ++pass) {
+            if (pass > 0) {
+                const TextureBarrierDesc barrier{
+                    .texture = color.texture(),
+                    .oldLayout = TextureLayout::ColorAttachment,
+                    .newLayout = TextureLayout::ColorAttachment,
+                    .before = {PipelineStageBits::ColorAttachment, AccessBits::ColorWrite},
+                    .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorWrite},
+                };
+                if (auto r = context.commandBuffer().synchronize({.textures = {&barrier, 1}}); !r) { return r; }
+            }
+            const float v = static_cast<float>((context.frameIndex() + pass) & 7u) / 7.0f;
+            const RenderingAttachmentDesc attachment{
+                .view = color.view(),
+                .loadOp = LoadOp::Clear,
+                .storeOp = StoreOp::Store,
+                .clearColor = {v, 0.25f, 0.5f, 1.0f},
+            };
+            auto r = context.commandBuffer().beginRendering({
+                .renderArea = {.width = color.desc().width, .height = color.desc().height},
+                .colorAttachments = {&attachment, 1},
+            });
+            if (!r) { return r; }
+            context.commandBuffer().endRendering();
+        }
+        return {};
+    }
+};
+
+class FrameCrossFramePolicyBenchmarkTest final : public RHITest {
+public:
+    FrameCrossFramePolicyBenchmarkTest()
+    {
+        type = RHITestType::Rendering;
+        name = "frame_cross_frame_policy_benchmark";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.cross_frame.policy_benchmark"}, bench::Layer::RenderGraph, "async", "sync");
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        static const bool registered = [] {
+            registerRenderGraphPassType("BenchComputeStagePass", "Cross-frame benchmark compute stage",
+                [] { return std::make_unique<BenchComputeStagePass>(); });
+            registerRenderGraphPassType("BenchGraphicsStagePass", "Cross-frame benchmark graphics stage",
+                [] { return std::make_unique<BenchGraphicsStagePass>(); });
+            return true;
+        }();
+        (void)registered;
+
+        std::unique_ptr<Device> device;
+        auto created = createDevice({.applicationName = "Cross-frame policy benchmark",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableAsyncCompute = true}).transform([&](auto v) { device = std::move(v); });
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("requires bindless descriptor heap"); }
+        FRAME_REQUIRE(created);
+        Queue* graphics = device->getQueue(QueueType::Graphics);
+        Queue* compute = device->getQueue(QueueType::Compute);
+        if (!graphics || !compute) { return RHITestResult::fail("missing graphics or compute queue"); }
+
+        struct BenchConfig {
+            std::string name;
+            uint32_t maxFramesInFlight = 2;
+            RenderGraphMemoryPolicy policy = RenderGraphMemoryPolicy::MinimizeMemory;
+            uint64_t budgetBytes = 0;
+            bool crossFrame = true;
+            uint32_t width = 1024;
+            uint32_t height = 1024;
+            uint64_t elements = 262144;
+            uint32_t iterations = 512;
+            uint32_t clearPasses = 6;
+            uint32_t warmupFrames = 16;
+            uint32_t measureFrames = 64;
+        };
+
+        const char* envConfig = std::getenv("METALLIC_RG_BENCH_CONFIG");
+        const bool benchmarkMode = envConfig != nullptr && envConfig[0] != '\0';
+        std::vector<BenchConfig> configs;
+        if (benchmarkMode) {
+            const std::string mode(envConfig);
+            BenchConfig cfg;
+            cfg.name = mode;
+            cfg.width = 2048;
+            cfg.height = 2048;
+            cfg.elements = 524288;
+            cfg.iterations = 1024;
+            cfg.clearPasses = 8;
+            cfg.warmupFrames = 16;
+            cfg.measureFrames = 80;
+            if (mode == "2_conservative") {
+                cfg.maxFramesInFlight = 2; cfg.policy = RenderGraphMemoryPolicy::MinimizeMemory; cfg.crossFrame = false;
+            } else if (mode == "2_crossframe_minmem") {
+                cfg.maxFramesInFlight = 2; cfg.policy = RenderGraphMemoryPolicy::MinimizeMemory; cfg.crossFrame = true;
+            } else if (mode == "3_crossframe_minmem") {
+                cfg.maxFramesInFlight = 3; cfg.policy = RenderGraphMemoryPolicy::MinimizeMemory; cfg.crossFrame = true;
+            } else if (mode == "2_crossframe_maxoverlap") {
+                cfg.maxFramesInFlight = 2; cfg.policy = RenderGraphMemoryPolicy::MaximizeOverlap;
+                cfg.budgetBytes = 64ull * 1024 * 1024; cfg.crossFrame = true;
+            } else if (mode == "3_crossframe_maxoverlap") {
+                cfg.maxFramesInFlight = 3; cfg.policy = RenderGraphMemoryPolicy::MaximizeOverlap;
+                cfg.budgetBytes = 64ull * 1024 * 1024; cfg.crossFrame = true;
+            } else {
+                return RHITestResult::fail("Unknown METALLIC_RG_BENCH_CONFIG: " + mode);
+            }
+            configs.push_back(cfg);
+        } else {
+            // Fast validation mode for standard test runs: check all 4 policy modes with small dimensions.
+            configs.push_back({"2_conservative", 2, RenderGraphMemoryPolicy::MinimizeMemory, 0, false, 64, 64, 4096, 16, 2, 2, 4});
+            configs.push_back({"2_crossframe_minmem", 2, RenderGraphMemoryPolicy::MinimizeMemory, 0, true, 64, 64, 4096, 16, 2, 2, 4});
+            configs.push_back({"3_crossframe_minmem", 3, RenderGraphMemoryPolicy::MinimizeMemory, 0, true, 64, 64, 4096, 16, 2, 2, 4});
+            configs.push_back({"3_crossframe_maxoverlap", 3, RenderGraphMemoryPolicy::MaximizeOverlap, 16ull * 1024 * 1024, true, 64, 64, 4096, 16, 2, 2, 4});
+        }
+
+        for (const auto& cfg : configs) {
+            RenderGraph graph;
+            graph.setName("CrossFramePolicyBench_" + cfg.name);
+            graph.addNode("BenchComputeStagePass", "ComputeStage", {
+                {"crossFrame", cfg.crossFrame}, {"elements", cfg.elements}, {"iterations", cfg.iterations}});
+            graph.addNode("BenchGraphicsStagePass", "GraphicsStage", {
+                {"crossFrame", cfg.crossFrame}, {"elements", cfg.elements}, {"clearPasses", cfg.clearPasses}});
+            graph.addEdge("ComputeStage.stage", "GraphicsStage.stage");
+            graph.markOutput("GraphicsStage.copyOut");
+            graph.markOutput("GraphicsStage.color");
+
+            RenderGraphExecutor executor;
+            std::string log;
+            RenderGraphCompileOptions opts;
+            opts.maxFramesInFlight = cfg.maxFramesInFlight;
+            opts.memoryPolicy = cfg.policy;
+            opts.versionPoolBudgetBytes = cfg.budgetBytes;
+            opts.maxPhysicalVersionsPerResource = 2;
+            FRAME_REQUIRE(executor.compile(*device, graph, cfg.width, cfg.height, opts, log));
+
+            const RenderGraphSubmitDesc submitDesc{
+                .graphicsQueue = graphics,
+                .computeQueue = compute,
+                .submissionMode = FrameSubmissionMode::Pipelined,
+            };
+            for (uint32_t i = 0; i < cfg.warmupFrames; ++i) {
+                FRAME_REQUIRE(executor.execute(submitDesc));
+                (void)executor.collectCompletedGpuExecutionStats();
+            }
+            FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+            (void)executor.collectCompletedGpuExecutionStats();
+
+            double cpuMsSum = 0.0;
+            double waitMsSum = 0.0;
+            double gpuMsSum = 0.0;
+            double computeGpuMsSum = 0.0;
+            double graphicsGpuMsSum = 0.0;
+            uint32_t gpuSamples = 0;
+            uint32_t maxExtraVersions = 0;
+            uint64_t maxExtraBytes = 0;
+            uint64_t maxPeakVram = 0;
+            bool observedScheduled = false;
+
+            const auto collectGpu = [&]() {
+                if (auto completedList = executor.collectCompletedGpuExecutionStats(); completedList) {
+                    for (const auto& completed : *completedList) {
+                        if (completed.gpuTimingAvailable) {
+                            gpuMsSum += completed.gpuMilliseconds;
+                            for (const auto& nodeStat : completed.nodes) {
+                                if (nodeStat.gpuTimingAvailable) {
+                                    if (nodeStat.name == "ComputeStage") { computeGpuMsSum += nodeStat.gpuMilliseconds; }
+                                    else if (nodeStat.name == "GraphicsStage") { graphicsGpuMsSum += nodeStat.gpuMilliseconds; }
+                                }
+                            }
+                            ++gpuSamples;
+                        }
+                    }
+                }
+            };
+
+            const auto wallStart = std::chrono::steady_clock::now();
+            for (uint32_t i = 0; i < cfg.measureFrames; ++i) {
+                FRAME_REQUIRE(executor.execute(submitDesc));
+                const auto stats = executor.executionStats();
+                cpuMsSum += stats.cpuMilliseconds;
+                waitMsSum += double(stats.scheduling.frameWaitNs) / 1e6;
+                maxExtraVersions = std::max(maxExtraVersions, stats.extraVersionCount);
+                maxExtraBytes = std::max(maxExtraBytes, stats.extraVersionBytes);
+                maxPeakVram = std::max(maxPeakVram, stats.peakManagedVramBytes);
+                observedScheduled |= stats.crossFrameResourceScheduled;
+                collectGpu();
+            }
+            FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
+            const auto wallEnd = std::chrono::steady_clock::now();
+            collectGpu();
+
+            if (cfg.crossFrame && !observedScheduled) {
+                return RHITestResult::fail("Config '" + cfg.name + "' failed to engage crossFrameResourceScheduled");
+            }
+            if (!cfg.crossFrame && observedScheduled) {
+                return RHITestResult::fail("Conservative config '" + cfg.name + "' unexpectedly enabled crossFrameResourceScheduled");
+            }
+            if (cfg.policy == RenderGraphMemoryPolicy::MinimizeMemory && maxExtraVersions != 0) {
+                return RHITestResult::fail("MinimizeMemory config '" + cfg.name + "' allocated extra versions");
+            }
+
+            const double wallTotalMs = std::chrono::duration<double, std::milli>(wallEnd - wallStart).count();
+            const double wallPerFrameMs = wallTotalMs / double(cfg.measureFrames);
+            const double cpuPerFrameMs = cpuMsSum / double(cfg.measureFrames);
+            const double waitPerFrameMs = waitMsSum / double(cfg.measureFrames);
+            const double gpuPerFrameMs = gpuSamples > 0 ? (gpuMsSum / double(gpuSamples)) : 0.0;
+            const double computePerFrameMs = gpuSamples > 0 ? (computeGpuMsSum / double(gpuSamples)) : 0.0;
+            const double graphicsPerFrameMs = gpuSamples > 0 ? (graphicsGpuMsSum / double(gpuSamples)) : 0.0;
+            if (benchmarkMode) {
+                std::printf(
+                    "RG_BENCH_JSON:{\"config\":\"%s\",\"asyncCompute\":%s,\"maxFramesInFlight\":%u,\"policy\":\"%s\","
+                    "\"crossFrameScheduled\":%s,\"warmupFrames\":%u,\"measureFrames\":%u,"
+                    "\"wallMsPerFrame\":%.4f,\"cpuMsPerFrame\":%.4f,\"slotWaitMsPerFrame\":%.4f,"
+                    "\"gpuMsPerFrame\":%.4f,\"computeGpuMs\":%.4f,\"graphicsGpuMs\":%.4f,\"gpuSamples\":%u,"
+                    "\"extraVersionCount\":%u,\"extraVersionBytes\":%llu,\"peakManagedVramBytes\":%llu}\n",
+                    cfg.name.c_str(),
+                    graphics->sameQueue(*compute) ? "false" : "true",
+                    cfg.maxFramesInFlight,
+                    renderGraphMemoryPolicyName(cfg.policy),
+                    observedScheduled ? "true" : "false",
+                    cfg.warmupFrames,
+                    cfg.measureFrames,
+                    wallPerFrameMs,
+                    cpuPerFrameMs,
+                    waitPerFrameMs,
+                    gpuPerFrameMs,
+                    computePerFrameMs,
+                    graphicsPerFrameMs,
+                    gpuSamples,
+                    maxExtraVersions,
+                    static_cast<unsigned long long>(maxExtraBytes),
+                    static_cast<unsigned long long>(maxPeakVram));
+                std::fflush(stdout);
+            }
+        }
+        return RHITestResult::pass("Cross-frame policy benchmark configs validated");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameCrossFramePolicyBenchmarkTest);
 
 #undef FRAME_REQUIRE
 } // namespace

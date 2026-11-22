@@ -1,8 +1,10 @@
 #include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
+#include "Runtime/Render/RenderGraph/RenderGraphResourceLifecycle.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 
 #include <algorithm>
@@ -838,6 +840,305 @@ public:
     }
 };
 
+class TemporalValidationTestPass final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("prevHistory").sampledRead().temporalRead("accum", -1);
+        reflection.addTextureOutput("currHistory").storageWrite().temporalWrite("accum");
+        reflection.addTextureOutput("color").colorWrite();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext&) override { return {}; }
+};
+
+class ResourceLifecycleContractTest final : public RHITest {
+public:
+    ResourceLifecycleContractTest() { name = "render_graph_resource_lifecycle_contracts"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {"graph.lifecycle.contract.ids_versions_snapshot_temporal"}};
+    }
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
+    {
+        const auto idA = render::makeLogicalResourceId("render.environment", "radiance", 1, 0x1234);
+        const auto idA2 = render::makeLogicalResourceId("render.environment", "radiance", 1, 0x1234);
+        const auto idViewB = render::makeLogicalResourceId("render.environment", "radiance", 2, 0x1234);
+        const auto idSharedMedium = render::makeLogicalResourceId("render.environment", "transmittance", 0, 0xABCD);
+        ACCESS_CHECK(idA.valid() && idA == idA2);
+        ACCESS_CHECK(idA.value != idViewB.value);
+        ACCESS_CHECK(idSharedMedium.viewId == 0 && idSharedMedium.value != idA.value);
+
+        const render::ResourceVersionId v1{.logicalId = idA, .version = 1, .contentRevision = 42, .allocationGeneration = 1};
+        const render::ResourceVersionId v2Rebuilt{.logicalId = idA, .version = 2, .contentRevision = 42, .allocationGeneration = 2};
+        ACCESS_CHECK(v1.valid() && v2Rebuilt.valid());
+        ACCESS_CHECK(v1.contentRevision == v2Rebuilt.contentRevision);
+        ACCESS_CHECK(v1.allocationGeneration != v2Rebuilt.allocationGeneration);
+        ACCESS_CHECK(!(v1 == v2Rebuilt));
+
+        struct DummySet {
+            int value = 0;
+        };
+        auto alive = std::make_shared<bool>(true);
+        std::weak_ptr<bool> weakAlive = alive;
+        render::FrameExecutionResourceSnapshot snapshotN;
+        snapshotN.beginBuild(10, 1);
+        auto setN = std::make_shared<DummySet>(DummySet{.value = 77});
+        ACCESS_REQUIRE(snapshotN.bindResourceSet<DummySet>(setN, alive, idA, v1));
+        ACCESS_REQUIRE(snapshotN.bindLogicalResource("env.radiance", render::ResolvedLogicalBinding{
+            .logicalId = idA, .version = v1, .ownership = render::RenderGraphResourceOwnership::ProviderOwned,
+            .type = render::RenderGraphResourceType::Texture2D, .backingAllocationId = 9001, .owner = alive,
+            .producerName = "render.environment"}));
+        snapshotN.freeze();
+        ACCESS_CHECK(snapshotN.frozen());
+        // Post-freeze mutation must fail without altering frozen bindings.
+        ACCESS_CHECK(render::hasError(snapshotN.bindResourceSet<DummySet>(
+            std::make_shared<DummySet>(DummySet{.value = 99}), nullptr, idViewB, v2Rebuilt), render::Error::InvalidArgument));
+        ACCESS_CHECK(render::hasError(snapshotN.retainOwner(std::make_shared<int>(1)), render::Error::InvalidArgument));
+        alive.reset();
+        setN.reset();
+        ACCESS_CHECK(!weakAlive.expired());
+        ACCESS_CHECK(snapshotN.resourceSet<DummySet>() != nullptr && snapshotN.resourceSet<DummySet>()->value == 77);
+        const auto* bound = snapshotN.findLogicalResource("env.radiance");
+        ACCESS_CHECK(bound != nullptr && bound->backingAllocationId == 9001 && bound->version == v1);
+
+        // Building Frame N+1 snapshot must not disturb Frame N snapshot.
+        render::FrameExecutionResourceSnapshot snapshotN1;
+        snapshotN1.beginBuild(11, 1);
+        ACCESS_REQUIRE(snapshotN1.bindResourceSet<DummySet>(
+            std::make_shared<DummySet>(DummySet{.value = 88}), nullptr, idViewB, v2Rebuilt));
+        snapshotN1.freeze();
+        ACCESS_CHECK(snapshotN.resourceSet<DummySet>()->value == 77);
+        ACCESS_CHECK(snapshotN1.resourceSet<DummySet>()->value == 88);
+
+        // Temporal reflection validation contract.
+        static const bool registered = render::registerRenderGraphPassType("TemporalValidationTestPass",
+            "Temporal field validation contract", [] { return std::make_unique<TemporalValidationTestPass>(); });
+        (void)registered;
+        render::RenderGraph validTemporalGraph;
+        validTemporalGraph.addNode("TemporalValidationTestPass", "Accum");
+        validTemporalGraph.markOutput("Accum.color");
+        std::string log;
+        ACCESS_CHECK(validTemporalGraph.validate(log));
+
+        render::RenderGraph invalidTemporalEdgeGraph;
+        invalidTemporalEdgeGraph.addNode("ClearColorPass", "Clear");
+        invalidTemporalEdgeGraph.addNode("TemporalValidationTestPass", "Accum");
+        invalidTemporalEdgeGraph.addEdge("Clear.color", "Accum.prevHistory");
+        invalidTemporalEdgeGraph.markOutput("Accum.color");
+        ACCESS_CHECK(!invalidTemporalEdgeGraph.validate(log));
+
+        return RHITestResult::pass();
+    }
+};
+
+class CrossFrameTrackerAndVersionPoolTest final : public RHITest {
+public:
+    CrossFrameTrackerAndVersionPoolTest() { type = RHITestType::Rendering; name = "render_graph_cross_frame_tracker_and_pool"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = true, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {"graph.lifecycle.cross_frame_tracker", "graph.lifecycle.version_pool"}};
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto created = bench::createTestDevice(context, {.applicationName = "Cross-frame tracker and version pool",
+            .enableValidation = context.enableValidation, .enableAsyncCompute = true});
+        ACCESS_CHECK(created);
+        auto device = std::move(*created);
+        auto* graphics = device->getQueue(render::QueueType::Graphics);
+        auto* compute = device->getQueue(render::QueueType::Compute);
+        ACCESS_CHECK(graphics && compute);
+
+        std::unique_ptr<render::Semaphore> gateA, gateB;
+        ACCESS_REQUIRE(device->createSemaphore({.initialValue = 0})
+            .transform([&](auto s) { gateA = std::move(s); }));
+        ACCESS_REQUIRE(device->createSemaphore({.initialValue = 0})
+            .transform([&](auto s) { gateB = std::move(s); }));
+
+        render::QueueSubmissionTracker gfxTracker, cmpTracker;
+        ACCESS_REQUIRE(gfxTracker.initialize(*device, *graphics));
+        ACCESS_REQUIRE(cmpTracker.initialize(*device, *compute));
+
+        std::unique_ptr<render::CommandPool> gfxPool, cmpPool;
+        ACCESS_REQUIRE(device->createCommandPool(*graphics)
+            .transform([&](auto p) { gfxPool = std::move(p); }));
+        ACCESS_REQUIRE(device->createCommandPool(*compute)
+            .transform([&](auto p) { cmpPool = std::move(p); }));
+
+        auto submitGated = [&](render::QueueSubmissionTracker& tracker, render::CommandPool& pool,
+            render::Semaphore& gate, render::RenderFrameContext& frame) -> render::Result<render::GPUCompletionPoint> {
+            std::unique_ptr<render::CommandBuffer> cmd;
+            auto r = pool.createCommandBuffer().transform([&](auto c) { cmd = std::move(c); });
+            if (!r) { return render::makeError(r.error()); }
+            r = cmd->begin(frame.submissionContext());
+            if (!r) { return render::makeError(r.error()); }
+            r = cmd->end();
+            if (!r) { return render::makeError(r.error()); }
+            render::RecordedBatch batch;
+            render::CommandBuffer* raw = cmd.get();
+            r = batch.seal(frame, {&raw, 1});
+            if (!r) { return render::makeError(r.error()); }
+            frame.retain(std::shared_ptr<render::CommandBuffer>(std::move(cmd)));
+            const render::SemaphoreSubmitDesc wait{.semaphore = &gate, .value = 1,
+                .stages = PipelineStageBits::AllCommands};
+            render::SubmissionReceipt receipt;
+            r = tracker.submitBatch(batch, {.waitSemaphores = {&wait, 1}}, frame)
+                .transform([&](auto v) { receipt = std::move(v); });
+            if (!r) { return render::makeError(r.error()); }
+            return receipt.completion();
+        };
+
+        // Declare frames BEFORE gateGuard so gateGuard unwinds first and unblocks
+        // any in-flight GPU work before ~RenderFrameContext() waits on completion.
+        render::RenderFrameContext frameA(0), frameB(1);
+        struct GateReleaseGuard {
+            render::Semaphore* a = nullptr;
+            render::Semaphore* b = nullptr;
+            ~GateReleaseGuard()
+            {
+                if (a) { (void)a->signal(1); }
+                if (b) { (void)b->signal(1); }
+            }
+        } gateGuard{gateA.get(), gateB.get()};
+
+        ACCESS_REQUIRE(frameA.begin(0));
+        ACCESS_REQUIRE(frameB.begin(1));
+        render::GPUCompletionPoint compA, compB;
+        ACCESS_REQUIRE(submitGated(cmpTracker, *cmpPool, *gateA, frameA).transform([&](auto c) { compA = std::move(c); }));
+        ACCESS_REQUIRE(frameA.sealRecording());
+        ACCESS_REQUIRE(frameA.finishSubmission());
+        ACCESS_REQUIRE(submitGated(cmpTracker, *cmpPool, *gateB, frameB).transform([&](auto c) { compB = std::move(c); }));
+        ACCESS_REQUIRE(frameB.sealRecording());
+        ACCESS_REQUIRE(frameB.finishSubmission());
+
+        const uint64_t backingId = 777;
+        const auto logicalId = render::makeLogicalResourceId("test", "sharedTarget");
+        render::CrossFrameResourceTracker tracker;
+
+        // Multi-reader WAR: two concurrent readers on distinct completions.
+        tracker.commitAcceptedAccess({.backingAllocationId = backingId, .logicalId = logicalId,
+            .version = {.logicalId = logicalId, .version = 1, .contentRevision = 1, .allocationGeneration = 1},
+            .type = render::RenderGraphResourceType::Texture2D, .frameIndex = 0, .queue = compute,
+            .state = ResourceState::ShaderRead, .scope = kComputeRead, .writes = false,
+            .completion = compA, .passName = "ReaderA"});
+        tracker.commitAcceptedAccess({.backingAllocationId = backingId, .logicalId = logicalId,
+            .version = {.logicalId = logicalId, .version = 1, .contentRevision = 1, .allocationGeneration = 1},
+            .type = render::RenderGraphResourceType::Texture2D, .frameIndex = 1, .queue = compute,
+            .state = ResourceState::ShaderRead, .scope = kComputeRead, .writes = false,
+            .completion = compB, .passName = "ReaderB"});
+        ACCESS_CHECK(!tracker.isBackingIdle(backingId));
+        ACCESS_CHECK(tracker.activeCompletions(backingId).size() == 2);
+
+        // Write on a distinct queue must wait on BOTH readers, not just the last reader.
+        const auto warPlan = tracker.planAccess(backingId, "sharedTarget",
+            render::RenderGraphResourceType::Texture2D, graphics, ResourceState::ColorAttachment, true);
+        ACCESS_CHECK(!warPlan.requiresConservativeFallback);
+        if (!graphics->sameQueue(*compute)) {
+            ACCESS_CHECK(warPlan.waits.size() == 2);
+        }
+
+        // Read-only sharing with matching layout needs no wait on other readers.
+        const auto readPlan = tracker.planAccess(backingId, "sharedTarget",
+            render::RenderGraphResourceType::Texture2D, graphics, ResourceState::ShaderRead, false);
+        ACCESS_CHECK(!readPlan.requiresConservativeFallback);
+        ACCESS_CHECK(readPlan.waits.empty());
+
+        // #60 exclusive queue ownership cross-family access forces conservative fallback.
+        if (!graphics->sameQueue(*compute)) {
+            const auto exclPlan = tracker.planAccess(backingId, "sharedTarget",
+                render::RenderGraphResourceType::Texture2D, graphics, ResourceState::ShaderRead, false, true);
+            ACCESS_CHECK(exclPlan.requiresConservativeFallback && !exclPlan.conservativeReason.empty());
+        }
+
+        // Test RenderGraphResourceVersionPool under MinimizeMemory vs MaximizeOverlap.
+        render::DeferredReleaseQueue deferredReleases;
+        const render::TextureDesc texDesc{.type = render::TextureType::Texture2D,
+            .usage = render::TextureUsageBits::Storage | render::TextureUsageBits::Sampled,
+            .format = render::Format::RGBA8Unorm, .width = 64, .height = 64};
+        const render::TextureViewDesc viewDesc{.format = render::Format::RGBA8Unorm};
+        const uint64_t poolLogicalId = render::makeLogicalResourceId("test", "pooledTex").value;
+
+        render::RenderGraphResourceVersionPool pool;
+        pool.setPolicy({.mode = render::RenderGraphMemoryPolicy::MinimizeMemory, .extraVersionBudgetBytes = 0, .maxPhysicalVersionsPerResource = 2});
+        render::RenderGraphResourceVersionPool::AcquiredTexture first;
+        ACCESS_REQUIRE(pool.acquireTexture(*device, poolLogicalId, texDesc, viewDesc, 0, tracker, deferredReleases)
+            .transform([&](auto v) { first = std::move(v); }));
+        ACCESS_CHECK(first.texture != nullptr && first.physicalVersionCount == 1 && !first.extraVersion);
+
+        // Mark first backing busy on compA.
+        tracker.commitAcceptedAccess({.backingAllocationId = first.backingAllocationId,
+            .type = render::RenderGraphResourceType::Texture2D, .frameIndex = 0, .queue = graphics,
+            .state = ResourceState::General, .scope = kComputeWrite, .writes = true,
+            .completion = compA, .passName = "PoolWriter0"});
+
+        // MinimizeMemory must reuse the single backing (0 extra versions).
+        render::RenderGraphResourceVersionPool::AcquiredTexture secondMinMem;
+        ACCESS_REQUIRE(pool.acquireTexture(*device, poolLogicalId, texDesc, viewDesc, 1, tracker, deferredReleases)
+            .transform([&](auto v) { secondMinMem = std::move(v); }));
+        ACCESS_CHECK(secondMinMem.backingAllocationId == first.backingAllocationId);
+        ACCESS_CHECK(pool.stats().extraVersionCount == 0);
+
+        // MaximizeOverlap with zero budget still refuses extra allocation.
+        pool.setPolicy({.mode = render::RenderGraphMemoryPolicy::MaximizeOverlap, .extraVersionBudgetBytes = 1, .maxPhysicalVersionsPerResource = 2});
+        render::RenderGraphResourceVersionPool::AcquiredTexture secondOverBudget;
+        ACCESS_REQUIRE(pool.acquireTexture(*device, poolLogicalId, texDesc, viewDesc, 2, tracker, deferredReleases)
+            .transform([&](auto v) { secondOverBudget = std::move(v); }));
+        ACCESS_CHECK(secondOverBudget.backingAllocationId == first.backingAllocationId);
+        ACCESS_CHECK(pool.stats().extraVersionCount == 0);
+
+        // MaximizeOverlap with adequate budget allocates a second physical version while backing 0 is busy.
+        pool.setPolicy({.mode = render::RenderGraphMemoryPolicy::MaximizeOverlap,
+            .extraVersionBudgetBytes = 4ull * 1024 * 1024, .maxPhysicalVersionsPerResource = 2});
+        render::RenderGraphResourceVersionPool::AcquiredTexture secondOverlap;
+        ACCESS_REQUIRE(pool.acquireTexture(*device, poolLogicalId, texDesc, viewDesc, 3, tracker, deferredReleases)
+            .transform([&](auto v) { secondOverlap = std::move(v); }));
+        ACCESS_CHECK(secondOverlap.backingAllocationId != first.backingAllocationId);
+        ACCESS_CHECK(secondOverlap.extraVersion && secondOverlap.physicalVersionCount == 2);
+        ACCESS_CHECK(pool.stats().extraVersionCount == 1 && pool.stats().extraVersionBytes > 0);
+
+        // Signal Gate A only: backingId still busy via Gate B; first pooled backing becomes idle!
+        ACCESS_REQUIRE(gateA->signal(1));
+        gateGuard.a = nullptr;
+        ACCESS_REQUIRE(compA.wait(5'000'000'000ull));
+        ACCESS_CHECK(!tracker.isBackingIdle(backingId));
+        ACCESS_CHECK(tracker.isBackingIdle(first.backingAllocationId));
+
+        // Mark second backing busy on compB; acquiring again must reuse idle first backing (no 3rd alloc).
+        tracker.commitAcceptedAccess({.backingAllocationId = secondOverlap.backingAllocationId,
+            .type = render::RenderGraphResourceType::Texture2D, .frameIndex = 3, .queue = compute,
+            .state = ResourceState::General, .scope = kComputeWrite, .writes = true,
+            .completion = compB, .passName = "PoolWriter3"});
+        render::RenderGraphResourceVersionPool::AcquiredTexture thirdReused;
+        ACCESS_REQUIRE(pool.acquireTexture(*device, poolLogicalId, texDesc, viewDesc, 4, tracker, deferredReleases)
+            .transform([&](auto v) { thirdReused = std::move(v); }));
+        ACCESS_CHECK(thirdReused.backingAllocationId == first.backingAllocationId);
+        ACCESS_CHECK(pool.stats().totalPhysicalVersions == 2);
+
+        // Signal Gate B: now both readers are done and backingId is completely idle!
+        ACCESS_REQUIRE(gateB->signal(1));
+        gateGuard.b = nullptr;
+        ACCESS_REQUIRE(compB.wait(5'000'000'000ull));
+        ACCESS_CHECK(tracker.isBackingIdle(backingId));
+        const auto idleWarPlan = tracker.planAccess(backingId, "sharedTarget",
+            render::RenderGraphResourceType::Texture2D, graphics, ResourceState::ColorAttachment, true);
+        ACCESS_CHECK(idleWarPlan.waits.empty());
+
+        pool.retireAll(tracker, deferredReleases);
+        deferredReleases.collect();
+        ACCESS_REQUIRE(frameA.wait(5'000'000'000ull));
+        ACCESS_REQUIRE(frameB.wait(5'000'000'000ull));
+        ACCESS_REQUIRE(device->waitIdle());
+        return RHITestResult::pass();
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(AccessPlanWriterVisibilityTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanAccelerationStructureTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanQueueFanoutTest);
@@ -853,6 +1154,8 @@ METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityWriterGenerationTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityLayoutGenerationTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityInitialQueueTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanGPUFanoutTest);
+METALLIC_REGISTER_RHI_TEST(ResourceLifecycleContractTest);
+METALLIC_REGISTER_RHI_TEST(CrossFrameTrackerAndVersionPoolTest);
 
 #undef ACCESS_REQUIRE
 #undef ACCESS_CHECK

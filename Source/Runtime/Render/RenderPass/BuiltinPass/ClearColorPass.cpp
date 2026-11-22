@@ -10,6 +10,7 @@ public:
     bool supportsAsyncQueue() const override { return true; }
     CPURecordingPolicy cpuRecordingPolicy() const override { return CPURecordingPolicy::ParallelJoined; }
     bool supportsPipelinedSubmission() const override { return true; }
+    bool supportsCrossFrameResourceScheduling() const override { return true; }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;

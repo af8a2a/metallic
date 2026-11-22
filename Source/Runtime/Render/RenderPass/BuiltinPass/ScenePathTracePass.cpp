@@ -499,6 +499,14 @@ public:
                 .storageReadWrite()
                 .format = Format::R32Sfloat;
         }
+        if (!realtime_) {
+            auto& historyPrevious = reflection.addTextureInput("historyPrevious", "Previous frame path-trace accumulation")
+                .storageRead().setOptional().temporalRead("accumulation", -1);
+            historyPrevious.format = Format::RGBA32Sfloat;
+            auto& historyCurrent = reflection.addTextureOutput("historyCurrent", "Current frame path-trace accumulation")
+                .storageReadWrite().setOptional().temporalWrite("accumulation");
+            historyCurrent.format = Format::RGBA32Sfloat;
+        }
         return reflection;
     }
 
@@ -1363,6 +1371,55 @@ public:
         return {};
     }
 
+    Result<> declareResourceRequests(
+        const RenderGraphResourceRequestContext& context,
+        RenderGraphResourceRequestBuilder& builder,
+        std::string& log) override
+    {
+        EnvironmentLightingSubsystem* environmentSubsystem =
+            context.subsystem<EnvironmentLightingSubsystem>();
+        const scene::Scene* lightScene = context.runtimeScene();
+        if (environmentSubsystem == nullptr || lightScene == nullptr || context.subsystems() == nullptr) {
+            return {};
+        }
+        const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
+        std::array<double, 3> observer{0.0, 0.0, 0.0};
+        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
+            if ((visibilityDeferred_ || diagnosticUsesVisibilityStream())) {
+                if (const auto upstreamObserver = context.inputObserver("rasterInfo")) {
+                    observer = *upstreamObserver;
+                } else {
+                    ScenePathTracePush observerPush{};
+                    const auto& snap = environmentSubsystem->snapshot();
+                    buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
+                        snap.settings, snap.mapAvailable, observerPush);
+                    observer = {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]};
+                }
+            } else {
+                ScenePathTracePush observerPush{};
+                const auto& snap = environmentSubsystem->snapshot();
+                buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
+                    snap.settings, snap.mapAvailable, observerPush);
+                observer = {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]};
+            }
+        }
+        auto declared = environmentSubsystem->declareEnvironmentRequest(
+            context,
+            builder,
+            EnvironmentRequest{
+                .environment = worldEnvironment,
+                .observerWorldMetres = observer,
+                .viewId = context.viewKey(),
+                .needCelestial = true,
+            },
+            log);
+        if (!declared) {
+            spdlog::error("Physical environment: {}", log);
+            return makeError(declared.error());
+        }
+        return {};
+    }
+
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         std::string splitLog;
@@ -1439,12 +1496,11 @@ public:
             hasPreviousCamera_ = false;
             sharcClearPending_ = true;
         }
-        EnvironmentLightingSubsystem* environmentSubsystem =
-            context.subsystem<EnvironmentLightingSubsystem>();
-        if (environmentSubsystem == nullptr) {
+        const EnvironmentResourceSet* environmentResources = context.resources<EnvironmentResourceSet>();
+        if (environmentResources == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        EnvironmentLightingSnapshot environment = environmentSubsystem->snapshot();
+        const EnvironmentLightingSnapshot& environment = environmentResources->lighting;
         const scene::Scene* lightScene = context.runtimeScene();
         if (lightScene == nullptr || context.subsystems() == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -1476,37 +1532,10 @@ public:
             }
             diagnosticStream = *stream;
         }
-        const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
-        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
-            ScenePathTracePush observerPush;
-            buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
-                environment.settings, environment.mapAvailable, observerPush);
-            if (visibilityDeferred_) {
-                const auto rasterInfo = context.inputBuffer("rasterInfo");
-                if (!rasterInfo.valid() || rasterInfo.desc().size != sizeof(VisibilityBufferFrameInfo) ||
-                    rasterInfo.desc().memoryLocation != MemoryLocation::HostUpload) {
-                    return makeError(Error::InvalidArgument);
-                }
-                const auto* mapped = static_cast<const VisibilityBufferFrameInfo*>(rasterInfo.buffer()->map());
-                if (mapped == nullptr) { return makeError(Error::Failure); }
-                std::memcpy(observerPush.eye, mapped->eye, sizeof(observerPush.eye));
-                rasterInfo.buffer()->unmap();
-            }
-            if (diagnosticUsesVisibilityStream()) {
-                std::memcpy(observerPush.eye, diagnosticInfo.eye, sizeof(observerPush.eye));
-            }
-            auto resolved = environmentSubsystem->resolveRadiance(*device_, context.commandBuffer(), *context.subsystems(),
-                worldEnvironment, {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]}, syncLog)
-                .transform([&](auto value) { environment = std::move(value); });
-            if (!resolved) { spdlog::error("Physical environment: {}", syncLog); return makeError(resolved.error()); }
-        }
         if (!environment.valid()) { return {}; }
-        const auto celestialRecords = buildCelestialLightRecords(worldEnvironment);
-        CelestialLightingResources celestial;
-        auto celestialResult = environmentSubsystem->updateCelestial(*device_, context.commandBuffer(),
-            *context.subsystems(), worldEnvironment)
-            .transform([&](auto value) { celestial = std::move(value); });
-        if (!celestialResult) { return celestialResult; }
+        const auto& celestialRecords = environmentResources->celestialRecords;
+        const CelestialLightingResources& celestial = environmentResources->celestial;
+        if (celestial.buffer == nullptr) { return makeError(Error::InvalidArgument); }
         if (!celestialRecordsInitialized_ ||
             std::memcmp(celestialRecords.data(), celestialRecords_.data(), sizeof(celestialRecords)) != 0) {
             celestialRecords_ = celestialRecords;
@@ -2210,15 +2239,6 @@ public:
             if (!result) { return result; }
         }
 
-        profile.next("Publish shading history");
-        if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
-            const auto name = historyNameForContext(context);
-            result = context.historyResources()->publishTextureState(context.commandBuffer(), name,
-                HistorySlot::Current, ResourceState::General, true);
-            if (result) { result = context.historyResources()->publishTextureState(context.commandBuffer(), name,
-                HistorySlot::Previous, ResourceState::General); }
-            if (!result) { return result; }
-        }
         previousCamera_ = currentCamera;
         previousCameraWidth_ = context.width();
         previousCameraHeight_ = context.height();
@@ -2328,11 +2348,6 @@ private:
             }
         }
         if (push.enableAccumulation != 0) {
-            const auto name = historyNameForContext(context);
-            const auto current = context.historyResources()->texture(name, HistorySlot::Current);
-            const auto previous = context.historyResources()->texture(name, HistorySlot::Previous);
-            resources.textures.push_back({"historyCurrent", current.texture, current.view, current.state, ResourceState::General});
-            resources.textures.push_back({"historyPrevious", previous.texture, previous.view, previous.state, ResourceState::General});
             resources.uses.push_back({"historyCurrent", Access::TextureStorageReadWrite});
             resources.uses.push_back({"historyPrevious", Access::TextureStorageRead});
         }
@@ -2368,12 +2383,14 @@ private:
         TextureView*& outCurrentView,
         TextureView*& outPreviousView)
     {
-        HistoryResourceManager* history = context.historyResources();
+        const TextureHandle current = context.temporalTexture("historyCurrent").texture;
+        const TextureHandle previous = context.temporalTexture("historyPrevious").texture;
         const bool debugViewEnabled =
             useOpenPBRBsdf(context.properties()) && push.debugView != kScenePathTraceDebugViewFinal;
         const bool accumulationEnabled = !realtime_ && !debugViewEnabled &&
             boolProperty(context.properties(), "accumulate", true);
-        push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
+        push.enableAccumulation = accumulationEnabled && current.valid() && previous.valid() ? 1u : 0u;
+        context.setTemporalWritten("historyCurrent", push.enableAccumulation != 0);
         push.hasHistory = 0;
         push.accumulationFrame = 0;
         outCurrentView = &fallbackView;
@@ -2384,39 +2401,10 @@ private:
             return {};
         }
 
-        const Format historyFormat = Format::RGBA32Sfloat;
-        const TextureDesc historyDesc{
-            .type = TextureType::Texture2D,
-            .usage = TextureUsageBits::Sampled |
-                TextureUsageBits::Storage |
-                TextureUsageBits::TransferSource,
-            .format = historyFormat,
-            .width = context.width(),
-            .height = context.height(),
-            .depth = 1,
-            .mipCount = 1,
-            .layerCount = 1,
-            .memoryLocation = MemoryLocation::Device,
-        };
-        const std::string historyName = historyNameForContext(context);
-        Result<> result = history->ensureTexture(
-            historyName,
-            historyDesc,
-            TextureViewDesc{.format = historyFormat});
-        if (!result) {
-            return result;
-        }
+        outCurrentView = current.view();
+        outPreviousView = previous.view();
 
-        HistoryTextureRef current = history->texture(historyName, HistorySlot::Current);
-        HistoryTextureRef previous = history->texture(historyName, HistorySlot::Previous);
-        if (current.texture == nullptr || current.view == nullptr || previous.texture == nullptr || previous.view == nullptr) {
-            return makeError(Error::InvalidArgument);
-        }
-
-        outCurrentView = current.view;
-        outPreviousView = previous.view;
-
-        if (previous.valid && !resetAccumulation_) {
+        if (context.temporalValid("historyPrevious") && !resetAccumulation_) {
             ++accumulationFrame_;
             push.hasHistory = 1;
         } else {
@@ -3009,14 +2997,6 @@ private:
             return kScenePathTraceDebugViewShadingSide;
         }
         return kScenePathTraceDebugViewFinal;
-    }
-
-    static std::string historyNameForContext(const RenderGraphExecutionContext& context)
-    {
-        std::string name(kScenePathTraceHistoryPrefix);
-        name += context.passName();
-        name += ".accumulation";
-        return name;
     }
 
     static float finiteOr(float value, float fallback)

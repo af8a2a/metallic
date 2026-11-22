@@ -2,6 +2,8 @@
 
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
+#include "Runtime/Render/RenderGraph/RenderGraphResourceLifecycle.h"
+#include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <cstdint>
@@ -10,6 +12,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -67,7 +70,35 @@ struct CelestialLightingResources {
     uint64_t revision = 0;
 };
 
-class EnvironmentLightingSubsystem final : public IRenderSubsystem {
+struct EnvironmentRequest {
+    environment::EnvironmentSnapshot environment;
+    std::array<double, 3> observerWorldMetres{0.0, 0.0, 0.0};
+    uint64_t viewId = 0;
+    bool needCelestial = true;
+};
+
+// Immutable per-execution environment resource bundle resolved by
+// EnvironmentLightingSubsystem before pass recording begins.
+struct EnvironmentResourceSet {
+    LogicalResourceId logicalId;
+    ResourceVersionId version;
+    uint64_t contentKey = 0;
+    uint64_t mediumKey = 0;
+    bool cacheHit = false;
+    bool mediumShared = false;
+    bool producedThisFrame = false;
+    bool celestialNeedsHostBarrier = false;
+    EnvironmentLightingSnapshot lighting;
+    CelestialLightingResources celestial;
+    GPUCelestialLightRecords celestialRecords{};
+    GPUCompletionPoint producerCompletion;
+    uint64_t producerDedupKey = 0;
+    std::vector<ExternalResourcePublication> publications;
+
+    bool valid() const { return lighting.valid(); }
+};
+
+class EnvironmentLightingSubsystem final : public IRenderSubsystem, public IRenderGraphResourceProvider {
 public:
     struct Desc {
         uint32_t maxDecodeJobs = 2;
@@ -94,6 +125,26 @@ public:
     void shutdown() override;
     void appendDebugBindings(const RenderSubsystemFrameContext& context, std::vector<DebugResourceBinding>& bindings) override;
 
+    RenderSubsystemId providerSubsystemId() const override { return kSubsystemId; }
+    std::optional<RenderGraphExternalDomainContract> externalDomainContract() const override;
+
+    // Pure CPU selection/caching + GPU allocation without recording commands.
+    // On cache miss, populates outProducerWork for RenderGraph scheduling.
+    Result<std::shared_ptr<const EnvironmentResourceSet>> prepareEnvironmentResourceSet(
+        Device& device,
+        RenderSubsystemHost& host,
+        const EnvironmentRequest& request,
+        std::optional<RenderGraphProviderProducerWork>& outProducerWork,
+        std::string& log);
+
+    // Declarative RenderGraph provider entry point called during
+    // RenderGraphPass::declareResourceRequests().
+    Result<std::shared_ptr<const EnvironmentResourceSet>> declareEnvironmentRequest(
+        const RenderGraphResourceRequestContext& context,
+        RenderGraphResourceRequestBuilder& builder,
+        const EnvironmentRequest& request,
+        std::string& log);
+
     const EnvironmentLightingSnapshot& snapshot() const { return snapshot_; }
     Result<CelestialLightingResources> updateCelestial(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         const environment::EnvironmentSnapshot& environment);
@@ -101,6 +152,10 @@ public:
         RenderSubsystemHost& host, const environment::EnvironmentSnapshot& environment,
         const std::array<double, 3>& observerWorldMetres, std::string& log);
     uint64_t decodeCount() const { return decodeCount_; }
+    uint64_t physicalProducerCount() const { return physicalProducerCount_; }
+    uint64_t physicalCacheHitCount() const { return physicalCacheHitCount_; }
+    uint64_t mediumShareCount() const { return mediumShareCount_; }
+    uint64_t physicalAllocationGeneration() const { return nextPhysicalAllocationGeneration_; }
 
 private:
     struct DecodedEnvironment;
@@ -108,8 +163,15 @@ private:
     struct GPUPrecompute;
     struct Resources;
     struct PhysicalPublication;
+    struct MediumPublication;
     class ShaderReload;
 
+    Result<CelestialLightingResources> prepareCelestialResources(
+        Device& device,
+        RenderSubsystemHost& host,
+        const environment::EnvironmentSnapshot& environment,
+        GPUCelestialLightRecords& outRecords,
+        bool& outNewlyUploaded);
     void requestEnvironment(const EnvironmentSettings& settings, uint64_t settingsRevision);
     void startDecodeJob(const std::filesystem::path& path, uint64_t generation);
     void pollDecodeJobs(RenderChangeBits& changes);
@@ -127,7 +189,13 @@ private:
     std::unique_ptr<GPUPrecompute> gpuPrecompute_;
     std::shared_ptr<Resources> resources_;
     std::vector<std::shared_ptr<PhysicalPublication>> physicalPublications_;
+    std::vector<std::shared_ptr<PhysicalPublication>> pendingFramePublications_;
+    std::vector<MediumPublication> mediumPublications_;
     std::mutex physicalMutex_;
+    uint64_t nextPhysicalAllocationGeneration_ = 0;
+    uint64_t physicalProducerCount_ = 0;
+    uint64_t physicalCacheHitCount_ = 0;
+    uint64_t mediumShareCount_ = 0;
     std::shared_ptr<Buffer> celestialLightsBuffer_;
     struct CelestialPublication {
         GPUCelestialLightRecords records;

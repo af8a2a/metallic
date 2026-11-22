@@ -149,9 +149,21 @@ prologue/epilogue segments with dependencies on the graph. The always-present
 scene resource registry and upload subsystem have no GPU hooks of their own.
 
 The next frame's first submission on each queue waits on the previous graph's
-aggregate completion. This allows CPU recording overlap and independent queues
-within a frame while preserving shared render targets and history across frames.
-It does not yet overlap GPU work between frames that use these shared resources.
+aggregate completion by default (`Conservative` path). This allows CPU recording
+overlap and independent queues within a frame while preserving shared render
+targets and history across frames.
+
+When a graph proves complete opt-in across all passes (`supportsCrossFrameResourceScheduling()`),
+no opaque subsystem hooks or undeclared external domains (`RenderGraphExternalDomainContract`),
+and no `#60` exclusive queue-family ownership transfer, the executor enables
+selective per-resource cross-frame scheduling (`CrossFrameResourceTracker`) and
+configurable `maxFramesInFlight` (`1..3`, default `2`) alongside declarative
+temporal fields (`temporalRead` / `temporalWrite`), subsystem Resource Providers
+(`IRenderGraphResourceProvider`), and budgeted physical version pooling
+(`RenderGraphResourceVersionPool`, default `RenderGraphMemoryPolicy::MinimizeMemory`).
+See [RenderGraphResourceLifecycle.md](RenderGraphResourceLifecycle.md) for the
+full lifecycle contracts, conservative boundaries (`#58` writer visibility, `#60`
+exclusive ownership, and unmigrated subsystems/SDKs), and validation evidence.
 `historyResources`, when supplied, is advanced using the graph's frame index.
 
 ### GPU timing and completion

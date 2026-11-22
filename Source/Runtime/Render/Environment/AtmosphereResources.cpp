@@ -157,18 +157,24 @@ struct AtmosphereResourcesGPU::Impl {
 AtmosphereResourcesGPU::AtmosphereResourcesGPU() : impl_(std::make_unique<Impl>()) {}
 AtmosphereResourcesGPU::~AtmosphereResourcesGPU() = default;
 
-Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium)
+Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium,
+    const GPUAtmosphereParameters* expectedMediumParameters)
 {
     if (impl_->device != nullptr) { return makeError(Error::InvalidArgument); }
     impl_->device = &device;
     if (sharedMedium != nullptr) {
-        if (sharedMedium->impl_->device != &device || !sharedMedium->impl_->recorded) {
-            log = "Shared atmosphere medium must be a recorded publication on the same device";
+        if (sharedMedium->impl_->device != &device ||
+            (!sharedMedium->impl_->recorded && expectedMediumParameters == nullptr) ||
+            sharedMedium->impl_->transmittance == nullptr ||
+            sharedMedium->impl_->transmittance->texture == nullptr ||
+            sharedMedium->impl_->multiScattering == nullptr ||
+            sharedMedium->impl_->multiScattering->texture == nullptr) {
+            log = "Shared atmosphere medium must be a recorded or same-frame initialized publication on the same device";
             return makeError(Error::InvalidArgument);
         }
         impl_->transmittance = sharedMedium->impl_->transmittance;
         impl_->multiScattering = sharedMedium->impl_->multiScattering;
-        impl_->mediumParameters = sharedMedium->impl_->parameters;
+        impl_->mediumParameters = expectedMediumParameters != nullptr ? *expectedMediumParameters : sharedMedium->impl_->parameters;
         impl_->sharedMedium = true;
     }
     constexpr std::array<const char*, 6> modules{"Transmittance", "MultiScattering", "SkyView", "EnvironmentCapture", "AerialPerspective", "CloudShadow"};
@@ -295,6 +301,11 @@ void AtmosphereResourcesGPU::appendDebugBindings(std::vector<DebugResourceBindin
     bindings.push_back({.id = prefix + "parameters", .buffer = impl_->parameterBuffer.get(), .state = ResourceState::ShaderRead, .layout = "raw"});
 }
 
+Texture* AtmosphereResourcesGPU::radianceTexture() const { return impl_->radiance.texture.get(); }
+Texture* AtmosphereResourcesGPU::transmittanceTexture() const { return impl_->transmittance ? impl_->transmittance->texture.get() : nullptr; }
+Texture* AtmosphereResourcesGPU::multiScatteringTexture() const { return impl_->multiScattering ? impl_->multiScattering->texture.get() : nullptr; }
+Texture* AtmosphereResourcesGPU::skyViewTexture() const { return impl_->skyView.texture.get(); }
+Texture* AtmosphereResourcesGPU::cloudShadowTexture() const { return impl_->cloudShadow.texture.get(); }
 TextureView* AtmosphereResourcesGPU::radianceView() const { return impl_->radiance.view.get(); }
 TextureView* AtmosphereResourcesGPU::transmittanceView() const { return impl_->transmittance->view.get(); }
 TextureView* AtmosphereResourcesGPU::multiScatteringView() const { return impl_->multiScattering->view.get(); }
@@ -303,5 +314,7 @@ TextureView* AtmosphereResourcesGPU::cloudShadowView() const { return impl_->clo
 Buffer* AtmosphereResourcesGPU::aerialBuffer() const { return impl_->aerial.get(); }
 Buffer* AtmosphereResourcesGPU::parametersBuffer() const { return impl_->parameterBuffer.get(); }
 const GPUAtmosphereParameters& AtmosphereResourcesGPU::parameters() const { return impl_->parameters; }
+bool AtmosphereResourcesGPU::sharesMedium() const { return impl_->sharedMedium; }
+bool AtmosphereResourcesGPU::recorded() const { return impl_->recorded; }
 
 } // namespace metallic::render

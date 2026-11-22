@@ -97,6 +97,7 @@ const char* roleName(RenderGraphSegmentRole role)
     switch (role) {
     case RenderGraphSegmentRole::Pass: return "Pass";
     case RenderGraphSegmentRole::Prologue: return "Prologue";
+    case RenderGraphSegmentRole::ProviderProducer: return "Provider";
     case RenderGraphSegmentRole::ComputeBranch: return "Compute branch";
     case RenderGraphSegmentRole::GraphicsBranch: return "Graphics branch";
     case RenderGraphSegmentRole::Join: return "Join";
@@ -416,6 +417,13 @@ std::string captureJson(const Snapshot& snapshot)
     Json value{{"graph", snapshot.graphName}, {"generation", snapshot.graphGeneration},
         {"execution", snapshot.executionId}, {"status", statusName(snapshot.status)},
         {"success", snapshot.success}, {"pipelinedSubmission", snapshot.pipelinedSubmission},
+        {"crossFrameResourceScheduled", snapshot.crossFrameResourceScheduled},
+        {"memoryPolicy", renderGraphMemoryPolicyName(snapshot.memoryPolicy)},
+        {"maxFramesInFlight", snapshot.maxFramesInFlight},
+        {"extraVersionCount", snapshot.extraVersionCount},
+        {"extraVersionBytes", snapshot.extraVersionBytes},
+        {"peakManagedVramBytes", snapshot.peakManagedVramBytes},
+        {"conservativeFallbackReasons", snapshot.conservativeFallbackReasons},
         {"externalRecording", snapshot.externalRecording}, {"scope", "Declared graph and captured internal stages; opaque internals excluded"},
         {"resources", Json::array()}, {"passes", Json::array()}, {"queues", Json::array()},
         {"segments", Json::array()}, {"batches", Json::array()}};
@@ -442,6 +450,15 @@ std::string captureJson(const Snapshot& snapshot)
         value["resources"].push_back({{"id", resource.id}, {"name", resource.name}, {"aliases", resource.aliases},
             {"private", resource.privateResource}, {"buffer", resource.type == RenderGraphResourceType::Buffer},
             {"type", resourceTypeName(resource.type)},
+            {"ownership", renderGraphResourceOwnershipName(resource.ownership)},
+            {"logicalResourceId", resource.logicalResourceId},
+            {"contentRevision", resource.contentRevision},
+            {"allocationGeneration", resource.allocationGeneration},
+            {"versionId", resource.versionId},
+            {"physicalVersionCount", resource.physicalVersionCount},
+            {"extraPhysicalVersion", resource.extraPhysicalVersion},
+            {"producerName", resource.producerName},
+            {"consumerNames", resource.consumerNames},
             {"allocation", m.allocationId}, {"memoryBlock", std::to_string(m.memoryBlockId)}, {"memoryKnown", m.known},
             {"backingAllocationId", m.backingAllocationId}, {"backingSizeBytes", m.backingSizeBytes},
             {"offsetBytes", m.offsetBytes}, {"sizeBytes", m.sizeBytes}, {"memoryType", m.memoryTypeIndex}, {"heap", m.heapIndex}});
@@ -495,7 +512,8 @@ std::string captureJson(const Snapshot& snapshot)
         {"recorded", s.recorded}, {"accepted", s.accepted}, {"completionKnown", s.completionKnown}, {"completed", s.completed}}); }
     for (const auto& b : snapshot.batches) { value["batches"].push_back({{"id", b.id}, {"queue", b.queueId},
         {"segments", b.segmentIds}, {"waitPredecessors", b.waitPredecessors}, {"externalWaitCount", b.externalWaitCount},
-        {"semaphoreWaitCount", b.semaphoreWaitCount}, {"waitDetailsComplete", b.waitDetailsComplete}, {"accepted", b.accepted}}); }
+        {"semaphoreWaitCount", b.semaphoreWaitCount}, {"waitDetailsComplete", b.waitDetailsComplete}, {"accepted", b.accepted},
+        {"waitReasons", b.waitReasons}}); }
     return value.dump(2);
 }
 
@@ -797,9 +815,9 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
         }
     }
     ImGui::EndChild();
-    if (ImGui::BeginTable("SubmissionBatches", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+    if (ImGui::BeginTable("SubmissionBatches", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_ScrollY, ImVec2(0, 0))) {
-        for (const char* label : {"Batch / queue", "Segments", "Cross-queue waits", "External waits", "Receipt"}) { ImGui::TableSetupColumn(label); }
+        for (const char* label : {"Batch / queue", "Segments", "Cross-queue waits", "External waits", "Wait reasons", "Receipt"}) { ImGui::TableSetupColumn(label); }
         ImGui::TableHeadersRow();
         for (const auto& batch : snapshot_->batches) {
             ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("B%u / Q%u", batch.id, batch.queueId);
@@ -808,6 +826,11 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
             ImGui::TableNextColumn();
             for (const auto id : batch.waitPredecessors) { ImGui::Text("S%u", id); ImGui::SameLine(); }
             ImGui::TableNextColumn(); ImGui::Text("%u (%u explicit waits)", batch.externalWaitCount, batch.semaphoreWaitCount);
+            ImGui::TableNextColumn();
+            if (batch.waitReasons.empty()) { ImGui::TextDisabled("-"); }
+            else {
+                for (const auto& reason : batch.waitReasons) { ImGui::TextWrapped("%s", reason.c_str()); }
+            }
             ImGui::TableNextColumn(); ImGui::TextUnformatted(batch.accepted ? "Accepted" : "Not accepted");
         }
         ImGui::EndTable();
@@ -819,6 +842,21 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
     // Keep allocation statistics scrollable without crowding out the diagram.
     ImGui::BeginChild("MemorySummary", ImVec2(0, std::max(1.0f,
         std::min(300 * scale, ImGui::GetContentRegionAvail().y * 0.40f))), false);
+    ImGui::Text("Cross-frame scheduling: %s | Policy: %s | Max frames in flight: %u",
+        snapshot_->crossFrameResourceScheduled ? "Per-resource frontier" : "Conservative",
+        renderGraphMemoryPolicyName(snapshot_->memoryPolicy),
+        snapshot_->maxFramesInFlight);
+    ImGui::Text("Extra physical versions: %u (%s) | Peak managed VRAM: %s",
+        snapshot_->extraVersionCount,
+        bytesText(snapshot_->extraVersionBytes).c_str(),
+        bytesText(snapshot_->peakManagedVramBytes).c_str());
+    if (!snapshot_->conservativeFallbackReasons.empty() && ImGui::TreeNode("Conservative fallback reasons")) {
+        for (const auto& reason : snapshot_->conservativeFallbackReasons) {
+            ImGui::TextWrapped("- %s", reason.c_str());
+        }
+        ImGui::TreePop();
+    }
+    ImGui::Separator();
     const auto& textureMemory = snapshot_->textureMemory;
     drawAliasMemoryStats(textureMemory, "texture", "textures", textureMemory.textureCount,
         textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount,
@@ -945,8 +983,27 @@ void RenderGraphExecutionViewer::drawInspector()
     if (!resource && !pass) { ImGui::TextWrapped("Select a resource, pass, matrix cell or queue segment to inspect its declarations and synchronization."); }
     if (resource) {
         ImGui::TextWrapped("%s", resource->name.c_str());
-        ImGui::TextDisabled("%s / %s", resourceTypeName(resource->type),
+        ImGui::TextDisabled("%s / %s / %s", resourceTypeName(resource->type),
+            renderGraphResourceOwnershipName(resource->ownership),
             resource->privateResource ? "Private import" : "Graph resource");
+        if (resource->logicalResourceId != 0) {
+            ImGui::Text("Logical ID: 0x%016llx | Version #%llu",
+                static_cast<unsigned long long>(resource->logicalResourceId),
+                static_cast<unsigned long long>(resource->versionId));
+            ImGui::Text("Content rev: %llu | Alloc gen: %llu",
+                static_cast<unsigned long long>(resource->contentRevision),
+                static_cast<unsigned long long>(resource->allocationGeneration));
+            ImGui::Text("Physical versions: %u%s",
+                resource->physicalVersionCount,
+                resource->extraPhysicalVersion ? " (extra)" : "");
+        }
+        if (!resource->producerName.empty()) {
+            ImGui::TextWrapped("Producer: %s", resource->producerName.c_str());
+        }
+        if (!resource->consumerNames.empty() && ImGui::TreeNode("Consumers")) {
+            for (const auto& consumer : resource->consumerNames) { ImGui::TextWrapped("%s", consumer.c_str()); }
+            ImGui::TreePop();
+        }
         if (resource->type == RenderGraphResourceType::Buffer) {
             ImGui::Text("Logical size: %s", bytesText(resource->bufferDesc.size).c_str());
         } else if (resource->type == RenderGraphResourceType::AccelerationStructure) {

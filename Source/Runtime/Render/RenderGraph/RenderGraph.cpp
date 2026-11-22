@@ -239,6 +239,26 @@ RenderGraphField& RenderGraphField::transient(RenderGraphInitialization initiali
     return *this;
 }
 
+RenderGraphField& RenderGraphField::temporalRead(std::string key, int32_t frameOffset, bool graphOwned, bool perPassScope)
+{
+    temporal.key = std::move(key);
+    temporal.frameOffset = frameOffset;
+    temporal.access = RenderGraphTemporalAccess::ReadPrevious;
+    temporal.graphOwnedHistory = graphOwned;
+    temporal.perPassScope = perPassScope;
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::temporalWrite(std::string key, bool graphOwned, bool perPassScope)
+{
+    temporal.key = std::move(key);
+    temporal.frameOffset = 0;
+    temporal.access = RenderGraphTemporalAccess::WriteCurrent;
+    temporal.graphOwnedHistory = graphOwned;
+    temporal.perPassScope = perPassScope;
+    return *this;
+}
+
 RenderGraphField& RenderGraphField::accelerationStructure()
 {
     resourceType = RenderGraphResourceType::AccelerationStructure;
@@ -939,6 +959,64 @@ BufferHandle RenderGraphExecutionContext::outputBuffer(std::string_view fieldNam
         : BufferHandle();
 }
 
+TemporalResourceBinding RenderGraphExecutionContext::temporalTexture(std::string_view fieldName) const
+{
+    const auto iter = std::find_if(bindings_.begin(), bindings_.end(),
+        [fieldName](const Binding& binding) {
+            return binding.temporal && binding.fieldName == fieldName;
+        });
+    if (iter == bindings_.end() || iter->resource == nullptr ||
+        iter->resource->type != RenderGraphResourceType::Texture2D) {
+        return {};
+    }
+    return TemporalResourceBinding{
+        .logicalId = iter->logicalId,
+        .version = iter->version,
+        .texture = TextureHandle(iter->resource),
+        .valid = iter->temporalValid,
+        .invalidationRevision = iter->temporalInvalidationRevision,
+    };
+}
+
+TemporalResourceBinding RenderGraphExecutionContext::temporalBuffer(std::string_view fieldName) const
+{
+    const auto iter = std::find_if(bindings_.begin(), bindings_.end(),
+        [fieldName](const Binding& binding) {
+            return binding.temporal && binding.fieldName == fieldName;
+        });
+    if (iter == bindings_.end() || iter->resource == nullptr ||
+        iter->resource->type != RenderGraphResourceType::Buffer) {
+        return {};
+    }
+    return TemporalResourceBinding{
+        .logicalId = iter->logicalId,
+        .version = iter->version,
+        .buffer = BufferHandle(iter->resource),
+        .valid = iter->temporalValid,
+        .invalidationRevision = iter->temporalInvalidationRevision,
+    };
+}
+
+bool RenderGraphExecutionContext::temporalValid(std::string_view fieldName) const
+{
+    const auto iter = std::find_if(bindings_.begin(), bindings_.end(),
+        [fieldName](const Binding& binding) {
+            return binding.temporal && binding.fieldName == fieldName;
+        });
+    return iter != bindings_.end() && iter->temporalValid;
+}
+
+void RenderGraphExecutionContext::setTemporalWritten(std::string_view fieldName, bool written)
+{
+    for (Binding& binding : bindings_) {
+        if (binding.temporal &&
+            binding.visibility == RenderGraphFieldVisibility::Output &&
+            binding.fieldName == fieldName) {
+            binding.temporalWritten = written;
+        }
+    }
+}
+
 RayTracingAccelerationStructure* RenderGraphExecutionContext::inputAccelerationStructure(std::string_view fieldName) const
 {
     const auto* found = input(fieldName);
@@ -1459,6 +1537,38 @@ bool RenderGraph::validate(std::string& log) const
                     "'");
                 return false;
             }
+            if (field.isTemporal()) {
+                if (field.temporal.key.empty()) {
+                    log = validationPrefix(
+                        std::string("temporal field has empty key '") +
+                        makeRenderGraphFieldName(node.name, field.name) +
+                        "'");
+                    return false;
+                }
+                if (field.resourceType == RenderGraphResourceType::AccelerationStructure) {
+                    log = validationPrefix(
+                        std::string("temporal field does not support acceleration structures '") +
+                        makeRenderGraphFieldName(node.name, field.name) +
+                        "'");
+                    return false;
+                }
+                if (field.temporal.access == RenderGraphTemporalAccess::ReadPrevious &&
+                    (field.visibility != RenderGraphFieldVisibility::Input || field.temporal.frameOffset >= 0)) {
+                    log = validationPrefix(
+                        std::string("temporalRead field must be an input with negative frameOffset '") +
+                        makeRenderGraphFieldName(node.name, field.name) +
+                        "'");
+                    return false;
+                }
+                if (field.temporal.access == RenderGraphTemporalAccess::WriteCurrent &&
+                    (field.visibility != RenderGraphFieldVisibility::Output || field.temporal.frameOffset != 0)) {
+                    log = validationPrefix(
+                        std::string("temporalWrite field must be an output with frameOffset == 0 '") +
+                        makeRenderGraphFieldName(node.name, field.name) +
+                        "'");
+                    return false;
+                }
+            }
         }
         reflections.emplace(node.name, std::move(reflection));
     }
@@ -1507,6 +1617,15 @@ bool RenderGraph::validate(std::string& log) const
                 "'");
             return false;
         }
+        if (srcField->isTemporal() || dstField->isTemporal()) {
+            log = validationPrefix(
+                std::string("static graph edge cannot connect temporal field '") +
+                makeRenderGraphFieldName(edge.srcPass, edge.srcField) +
+                "' -> '" +
+                makeRenderGraphFieldName(edge.dstPass, edge.dstField) +
+                "'");
+            return false;
+        }
         if (srcField->resourceType != dstField->resourceType) {
             log = validationPrefix(
                 std::string("edge resource type mismatch '") +
@@ -1529,7 +1648,7 @@ bool RenderGraph::validate(std::string& log) const
 
     for (const auto& [passName, reflection] : reflections) {
         for (const RenderGraphField& field : reflection.fields()) {
-            if (field.visibility != RenderGraphFieldVisibility::Input || field.optional) {
+            if (field.visibility != RenderGraphFieldVisibility::Input || field.optional || field.isTemporal()) {
                 continue;
             }
             const bool connected = std::any_of(

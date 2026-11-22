@@ -44,6 +44,12 @@ struct RenderGraphCompileOptions {
     // Pins intermediate lifetimes; takes precedence over memory aliasing.
     bool enableDebugReadback = false;
     DisplayOutputParameters displayOutput;
+    // Cross-frame physical version pool policy. MinimizeMemory is the default;
+    // MaximizeOverlap allocates extra backings within versionPoolBudgetBytes.
+    RenderGraphMemoryPolicy memoryPolicy = RenderGraphMemoryPolicy::MinimizeMemory;
+    uint32_t maxFramesInFlight = 2;
+    uint64_t versionPoolBudgetBytes = 0;
+    uint32_t maxPhysicalVersionsPerResource = 2;
 };
 
 struct RenderGraphNodeExecutionStat {
@@ -89,6 +95,14 @@ struct RenderGraphExecutionStats {
     profiling::SchedulingMetrics scheduling;
     RenderGraphTextureMemoryStats textureMemory;
     RenderGraphBufferMemoryStats bufferMemory;
+    bool crossFrameResourceScheduled = false;
+    RenderGraphMemoryPolicy memoryPolicy = RenderGraphMemoryPolicy::MinimizeMemory;
+    uint32_t maxFramesInFlight = 2;
+    uint32_t crossFrameWaitCount = 0;
+    uint32_t extraVersionCount = 0;
+    uint64_t extraVersionBytes = 0;
+    uint64_t peakManagedVramBytes = 0;
+    std::vector<std::string> conservativeFallbackReasons;
 };
 
 class RenderGraphExecutor {

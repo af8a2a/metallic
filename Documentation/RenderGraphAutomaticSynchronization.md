@@ -390,3 +390,12 @@ GPUScene、ResidentLOD、HybridRasterizer、streaming、MaterialBinning 和 SDK 
 修复后的 5 项 profiling 测试与 SHaRC 小缓存取消重录测试通过；新增的 timeline gate 验证已接受但 GPU 未完成时不会发布无依据的时间戳。NRC gated 用例在包含 device teardown 后如实报告失败，原始日志保留于 `pass-stages-lifecycle.log`。仅初始化/关闭 Streamline 的反射对照正常退出（`pass-stages-streamline-control.log`）；因此尚未证明 realtime 退出异常是既有问题，也未把它归因于 barrier 推导。
 
 出口去重后的最终验证选择共 65 项：64 项在 `pass-stages-final-tests.log` 通过，bindless workflow 迁移到真实 frame/receipt 后在 `pass-stages-bindless-final.log` 单独复测通过，原有时间戳和像素断言保持。NRD 10 项、NRD 图 2 项、DLSS-NR 3 项与 MiniZorah 2 项均在 `pass-stages-*-final*.log` 复测通过；NRC 的最终 gated 运行仍因上述退出泄漏失败（`pass-stages-nrc-final.log`），帧内未发现同步验证错误。
+
+## 13. 已实现：Subsystem Resource Provider、透明资源版本化与跨帧生命周期（Issue #77）
+
+在既有共享 `ResourceRegistry` 与 `GraphAccessPlan` 之上，已落地跨帧资源生命周期与版本化体系（详见 [RenderGraphResourceLifecycle.md](RenderGraphResourceLifecycle.md)）：
+
+- **统一身份与版本语义**：`LogicalResourceId`、`ResourceVersionId`（区分 `contentRevision` 与 `allocationGeneration`）、`RenderGraphResourceOwnership` 与 `FrameExecutionResourceSnapshot`（录制前冻结，支持 `IRenderGraphResourceProvider` 与条件隐藏 `ProviderProducer` segment，cache 提交仅在队列接受回执 `onAccepted` 后生效）。
+- **Environment Resource Provider**：`EnvironmentLightingSubsystem` 实现 `IRenderGraphResourceProvider`，分离纯 CPU 选择与条件 GPU 预计算，`ScenePathTracePass` / `SceneRTXDIPass` 通过 `declareResourceRequests()` 声明 `EnvironmentRequest` 并在 `execute()` 消费冻结的 `EnvironmentResourceSet`，消除录制期缓存写入与热路径图重编译；同帧跨视图共享静态大气介质 LUT，且介质缓存独立于物理环境驱逐。
+- **声明式时序资源与按资源跨帧调度**：`RenderGraphField::temporalRead` / `temporalWrite` 纳入统一 `GraphAccessPlan` 与 2..3 槽环形 `HistoryResourceManager`（`ScenePathTracePass` accumulation 历史已迁移）；`CrossFrameResourceTracker` 仅在全部 pass 显式 opt-in `supportsCrossFrameResourceScheduling()` 且无未声明外部域时启用按资源跨帧 RAW/WAR/WAW 调度，否则回退前帧聚合 completion 并在 Execution Viewer 中记录精确回退原因。
+- **预算化物理版本池与保守边界**：`RenderGraphResourceVersionPool` 默认 `MinimizeMemory`（2 帧在途、0 额外版本），`MaximizeOverlap` 在字节预算内按忙闲为合格图资源分配额外物理版本。`GPUSceneSubsystem`、`LumenRadianceCachePass`、`VirtualShadowMapPass`、`NRDDenoisePass` 与 `StreamlineDLSSPass` 均显式声明 `RenderGraphExternalDomainContract` 保持保守边界，保留 `#58` 同队列写入可见性与 `#60` exclusive queue ownership 的保守回退。

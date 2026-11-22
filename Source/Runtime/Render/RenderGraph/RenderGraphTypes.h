@@ -9,18 +9,22 @@
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/DisplayOutput.h"
 #include "Runtime/Render/Core/RenderView.h"
+#include "Runtime/Render/RenderGraph/RenderGraphResourceLifecycle.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Render/Streamer/SceneStreamingTypes.h"
 
 #include "json.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <typeindex>
 #include <utility>
 #include <vector>
 
@@ -136,6 +140,22 @@ struct RenderGraphRuntimeSetting {
 enum class RenderGraphResourceLifetime : uint8_t { Persistent, Transient };
 enum class RenderGraphInitialization : uint8_t { Unknown, Clear, FullOverwrite };
 
+enum class RenderGraphTemporalAccess : uint8_t {
+    None,
+    ReadPrevious,
+    WriteCurrent,
+};
+
+struct RenderGraphTemporalDesc {
+    std::string key;
+    int32_t frameOffset = 0;
+    RenderGraphTemporalAccess access = RenderGraphTemporalAccess::None;
+    bool graphOwnedHistory = false;
+    bool perPassScope = false;
+    bool requiresExternalHistory = false;
+    bool operator==(const RenderGraphTemporalDesc&) const = default;
+};
+
 struct RenderGraphField {
     std::string name;
     std::string description;
@@ -176,6 +196,9 @@ struct RenderGraphField {
     MemoryLocation memoryLocation = MemoryLocation::Device;
     // Aggregate internal operations; access/state remain the stable pass boundary.
     std::vector<RenderGraphInternalAccess> internalAccesses;
+    RenderGraphTemporalDesc temporal;
+
+    bool isTemporal() const { return temporal.access != RenderGraphTemporalAccess::None; }
 
     bool operator==(const RenderGraphField&) const = default;
 
@@ -191,6 +214,8 @@ struct RenderGraphField {
     RenderGraphField& buildReadWrite();
     RenderGraphField& setOptional(bool value = true);
     RenderGraphField& transient(RenderGraphInitialization initialization);
+    RenderGraphField& temporalRead(std::string key, int32_t frameOffset = -1, bool graphOwned = false, bool perPassScope = true);
+    RenderGraphField& temporalWrite(std::string key, bool graphOwned = false, bool perPassScope = true);
     RenderGraphField& sampledRead();
     RenderGraphField& colorWrite();
     RenderGraphField& depthStencilWrite();
@@ -320,6 +345,118 @@ private:
     friend class RenderGraphExecutionContext;
 };
 
+struct TemporalResourceBinding {
+    LogicalResourceId logicalId;
+    ResourceVersionId version;
+    TextureHandle texture;
+    BufferHandle buffer;
+    bool valid = false;
+    uint64_t invalidationRevision = 0;
+};
+
+class RenderGraphResourceRequestContext {
+public:
+    RenderGraphResourceRequestContext(
+        Device* device,
+        uint64_t frameIndex,
+        uint64_t viewKey,
+        uint32_t width,
+        uint32_t height,
+        std::string passName,
+        const RenderGraphProperties& properties,
+        const scene::Scene* runtimeScene,
+        RenderWorld* world,
+        RenderSubsystemHost* subsystems,
+        const ViewConstants* viewConstants = nullptr,
+        std::function<std::optional<std::array<double, 3>>(std::string_view)> observerResolver = {})
+        : device_(device)
+        , frameIndex_(frameIndex)
+        , viewKey_(viewKey)
+        , width_(width)
+        , height_(height)
+        , passName_(std::move(passName))
+        , properties_(properties)
+        , runtimeScene_(runtimeScene)
+        , world_(world)
+        , subsystems_(subsystems)
+        , viewConstants_(viewConstants)
+        , observerResolver_(std::move(observerResolver))
+    {
+    }
+
+    Device* device() const { return device_; }
+    uint64_t frameIndex() const { return frameIndex_; }
+    uint64_t viewKey() const { return viewKey_; }
+    uint32_t width() const { return width_; }
+    uint32_t height() const { return height_; }
+    const std::string& passName() const { return passName_; }
+    const RenderGraphProperties& properties() const { return properties_; }
+    const scene::Scene* runtimeScene() const { return runtimeScene_; }
+    RenderWorld* world() const { return world_; }
+    RenderSubsystemHost* subsystems() const { return subsystems_; }
+    const ViewConstants* viewConstants() const { return viewConstants_; }
+
+    template <typename T>
+    T* subsystem() const
+    {
+        return subsystems_ != nullptr ? subsystems_->get<T>() : nullptr;
+    }
+
+    std::optional<std::array<double, 3>> inputObserver(std::string_view inputFieldName) const
+    {
+        return observerResolver_ ? observerResolver_(inputFieldName) : std::nullopt;
+    }
+
+private:
+    Device* device_ = nullptr;
+    uint64_t frameIndex_ = 0;
+    uint64_t viewKey_ = 0;
+    uint32_t width_ = 1;
+    uint32_t height_ = 1;
+    std::string passName_;
+    const RenderGraphProperties& properties_;
+    const scene::Scene* runtimeScene_ = nullptr;
+    RenderWorld* world_ = nullptr;
+    RenderSubsystemHost* subsystems_ = nullptr;
+    const ViewConstants* viewConstants_ = nullptr;
+    std::function<std::optional<std::array<double, 3>>(std::string_view)> observerResolver_;
+};
+
+class RenderGraphResourceRequestBuilder {
+public:
+    virtual ~RenderGraphResourceRequestBuilder() = default;
+
+    virtual void publishOutputObserver(
+        std::string_view outputFieldName,
+        const std::array<double, 3>& observerWorldMetres) = 0;
+    virtual Result<> bindResourceSetRaw(
+        std::type_index type,
+        std::shared_ptr<const void> data,
+        std::shared_ptr<void> owner,
+        LogicalResourceId setId,
+        ResourceVersionId version) = 0;
+    virtual Result<> registerProducerWork(RenderGraphProviderProducerWork work) = 0;
+    virtual Result<> requireProducer(uint64_t producerDedupKey) = 0;
+    virtual Result<> addExternalDependency(const GPUCompletionPoint& completion, std::string reason = {}) = 0;
+    virtual Result<> declareExternalDomain(RenderGraphExternalDomainContract contract) = 0;
+    virtual Result<> trackPublishedResource(const ExternalResourcePublication& publication, bool writes = false) = 0;
+
+    template <typename T>
+    Result<> bindResourceSet(
+        std::shared_ptr<const T> data,
+        std::shared_ptr<void> owner,
+        LogicalResourceId setId,
+        ResourceVersionId version)
+    {
+        return bindResourceSetRaw(
+            std::type_index(typeid(T)),
+            std::static_pointer_cast<const void>(std::move(data)),
+            std::move(owner),
+            std::move(setId),
+            std::move(version));
+    }
+};
+
 struct RenderPreparationTask {
     std::string name;
     uint32_t workload = 1;
@@ -398,6 +535,25 @@ public:
     {
         return subsystems_ != nullptr ? subsystems_->get<T>() : nullptr;
     }
+
+    const FrameExecutionResourceSnapshot* resourceSnapshot() const { return resourceSnapshot_.get(); }
+
+    template <typename T>
+    const T* resources() const
+    {
+        return resourceSnapshot_ != nullptr ? resourceSnapshot_->resourceSet<T>() : nullptr;
+    }
+
+    template <typename T>
+    const T* resourceSet() const
+    {
+        return resources<T>();
+    }
+
+    TemporalResourceBinding temporalTexture(std::string_view fieldName) const;
+    TemporalResourceBinding temporalBuffer(std::string_view fieldName) const;
+    bool temporalValid(std::string_view fieldName) const;
+    void setTemporalWritten(std::string_view fieldName, bool written);
 
     RenderGraphResource* resource(std::string_view fieldName) const;
     RenderGraphResource* input(std::string_view fieldName) const;
@@ -488,6 +644,12 @@ private:
         bool internalLayouts = false;
         BindlessHandle bindlessHandle;
         BindlessHandle sampledImageBindlessHandle;
+        LogicalResourceId logicalId;
+        ResourceVersionId version;
+        bool temporal = false;
+        bool temporalValid = false;
+        bool temporalWritten = true;
+        uint64_t temporalInvalidationRevision = 0;
     };
 
     RenderGraphExecutionContext(
@@ -531,6 +693,7 @@ private:
     const scene::Scene* runtimeScene_ = nullptr;
     RenderWorld* world_ = nullptr;
     RenderSubsystemHost* subsystems_ = nullptr;
+    std::shared_ptr<const FrameExecutionResourceSnapshot> resourceSnapshot_;
     const ViewConstants* viewConstants_ = nullptr;
     Buffer* viewConstantsBuffer_ = nullptr;
     IRenderDebugObserver* debugObserver_ = nullptr;
@@ -574,6 +737,22 @@ public:
     // resources are frozen for parallel recording. Only output metadata may
     // change here; do not issue commands or mutate input/pass/global state.
     virtual void prepareResourceMetadata(RenderGraphExecutionContext&) const {}
+    // Pure CPU/snapshot resource request declaration before pass recording.
+    // Must never record GPU commands directly; conditional producer work is
+    // registered with the builder and scheduled by RenderGraphExecutor.
+    virtual Result<> declareResourceRequests(
+        const RenderGraphResourceRequestContext&,
+        RenderGraphResourceRequestBuilder&,
+        std::string&)
+    {
+        return {};
+    }
+    // Optional explicit external/SDK domain contract for passes owning native
+    // resources or opaque SDK accesses outside reflected graph fields.
+    virtual std::optional<RenderGraphExternalDomainContract> externalDomainContract() const
+    {
+        return std::nullopt;
+    }
     // Render-only camera, HZB and descriptor setup before the subsystem's traversal.
     virtual Result<> prepareExecution(RenderGraphExecutionContext&) { return {}; }
     virtual void sceneTraversalCheckpoint(RenderGraphExecutionContext&, std::string_view) const {}
@@ -598,6 +777,11 @@ public:
     // recordings. Private resources must survive the aggregate frame completion.
     // Scene/SDK subsystems require a separate audit before graph-level opt-in.
     virtual bool supportsPipelinedSubmission() const { return false; }
+    // Opt in ONLY when every cross-frame GPU resource hazard (read/write, private
+    // allocations, history, bindless/BDA) is declared through graph fields,
+    // temporal fields, or RenderGraph resource providers. Independent of
+    // supportsFrameOverlap(), supportsAsyncQueue(), and supportsPipelinedSubmission().
+    virtual bool supportsCrossFrameResourceScheduling() const { return false; }
     // Independent of GPU queue selection and frame overlap. ParallelJoined may
     // touch only this pass's private state, immutable prepared inputs and its
     // command buffer. No frame/global mutation, SDK hooks or nested task waits.

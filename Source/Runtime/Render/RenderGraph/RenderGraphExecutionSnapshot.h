@@ -10,7 +10,7 @@
 namespace metallic::render {
 
 enum class RenderGraphExecutionSnapshotStatus : uint8_t { Planned, Recording, Recorded, Submitted, Failed };
-enum class RenderGraphSegmentRole : uint8_t { Pass, Prologue, ComputeBranch, GraphicsBranch, Join, Epilogue };
+enum class RenderGraphSegmentRole : uint8_t { Pass, Prologue, ProviderProducer, ComputeBranch, GraphicsBranch, Join, Epilogue };
 
 struct RenderGraphTextureAliasSlotMemoryStats {
     bool complete = false;
@@ -90,6 +90,15 @@ struct RenderGraphExecutionResourceSnapshot {
     RayTracingAccelerationStructureDesc accelerationStructureDesc;
     ResourceMemoryInfo memory;
     bool privateResource = false;
+    uint64_t logicalResourceId = 0;
+    uint64_t contentRevision = 0;
+    uint64_t allocationGeneration = 0;
+    uint64_t versionId = 0;
+    uint32_t physicalVersionCount = 1;
+    bool extraPhysicalVersion = false;
+    RenderGraphResourceOwnership ownership = RenderGraphResourceOwnership::GraphOwned;
+    std::string producerName;
+    std::vector<std::string> consumerNames;
 };
 
 struct RenderGraphExecutionUseSnapshot {
@@ -158,6 +167,7 @@ struct RenderGraphExecutionBatchSnapshot {
     uint32_t semaphoreWaitCount = 0; // Explicit executor waits, before frame/command dependency merging.
     bool waitDetailsComplete = false; // Opaque command dependencies are not inspected by this capture.
     bool accepted = false;
+    std::vector<std::string> waitReasons;
 };
 
 // Immutable diagnostic values. Enabling capture does not attach a debug observer,
@@ -170,6 +180,13 @@ struct RenderGraphExecutionSnapshot {
     bool externalRecording = false;
     bool success = false;
     bool pipelinedSubmission = false;
+    bool crossFrameResourceScheduled = false;
+    RenderGraphMemoryPolicy memoryPolicy = RenderGraphMemoryPolicy::MinimizeMemory;
+    uint32_t maxFramesInFlight = 2;
+    uint32_t extraVersionCount = 0;
+    uint64_t extraVersionBytes = 0;
+    uint64_t peakManagedVramBytes = 0;
+    std::vector<std::string> conservativeFallbackReasons;
     std::vector<RenderGraphExecutionQueueSnapshot> queues;
     std::vector<RenderGraphExecutionResourceSnapshot> resources;
     std::vector<RenderGraphExecutionPassSnapshot> passes;
