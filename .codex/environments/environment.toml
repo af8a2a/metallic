@@ -25,6 +25,21 @@ icon = "run"
 command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'cornell-box-compare')\""
 
 [[actions]]
+name = "Sponza with GI - Realtime GI + VSM"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'sponza-gi-realtime')\""
+
+[[actions]]
+name = "Sponza with GI - Path Tracing"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'sponza-gi-path-tracing')\""
+
+[[actions]]
+name = "Sponza with GI - GI Comparison"
+icon = "run"
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/RunMetallic.ps1' -Target LookDev -ProgramArguments @('--sample', 'sponza-gi-compare')\""
+
+[[actions]]
 name = "Build Metallic"
 icon = "run"
 command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/RunMetallic.ps1 -Target Metallic -BuildOnly"

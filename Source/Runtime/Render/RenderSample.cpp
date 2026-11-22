@@ -271,17 +271,18 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/lumen_single_bounce.metallic_graph.json"; }
 };
 
-class CornellBoxSample final : public RenderSample {
+class GIPlaygroundSample final : public RenderSample {
 public:
-    CornellBoxSample(std::string_view id, std::string_view name, std::string_view description, std::string_view graphPath)
-        : id_(id), name_(name), description_(description), graphPath_(graphPath)
+    GIPlaygroundSample(std::string_view id, std::string_view name, std::string_view description,
+        std::string_view scenePath, std::string_view graphPath)
+        : id_(id), name_(name), description_(description), scenePath_(scenePath), graphPath_(graphPath)
     {}
 
     std::string_view id() const override { return id_; }
     std::string_view name() const override { return name_; }
     std::string_view category() const override { return "GI Playground"; }
     std::string_view description() const override { return description_; }
-    std::string scenePath() const override { return "Asset/Lumen/CornellBox.metallic_scene.json"; }
+    std::string scenePath() const override { return std::string(scenePath_); }
     std::string graphPath() const override { return std::string(graphPath_); }
     std::vector<std::string> scenePathTargets() const override { return {}; }
     std::string previewOutput() const override { return "FinalBlit.color"; }
@@ -290,6 +291,7 @@ private:
     std::string_view id_;
     std::string_view name_;
     std::string_view description_;
+    std::string_view scenePath_;
     std::string_view graphPath_;
 };
 
@@ -1143,15 +1145,26 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LumenSurfaceCacheSample lumenSurfaceCache;
     static const LumenGlobalTracingSample lumenGlobalTracing;
     static const LumenSingleBounceSample lumenSingleBounce;
-    static const CornellBoxSample cornellBoxPathTracing{"cornell-box-path-tracing", "Cornell Box / Path Tracing",
+    constexpr std::string_view cornellBoxScene = "Asset/Lumen/CornellBox.metallic_scene.json";
+    constexpr std::string_view sponzaGIScene = "Asset/Sponza/SponzaGI.metallic_scene.json";
+    static const GIPlaygroundSample cornellBoxPathTracing{"cornell-box-path-tracing", "Cornell Box / Path Tracing",
         "Progressive path tracing of the Cornell Box with its emissive ceiling panel.",
-        "Pipelines/Samples/cornell_box_path_tracing.metallic_graph.json"};
-    static const CornellBoxSample cornellBoxRealtime{"lumen-cornell-box", "Cornell Box / Realtime GI",
+        cornellBoxScene, "Pipelines/Samples/cornell_box_path_tracing.metallic_graph.json"};
+    static const GIPlaygroundSample cornellBoxRealtime{"lumen-cornell-box", "Cornell Box / Realtime GI",
         "Rasterized Cornell Box with Lumen screen probes and multi-bounce card lighting.",
-        "Pipelines/Samples/lumen_cornell_box.metallic_graph.json"};
-    static const CornellBoxSample cornellBoxCompare{"cornell-box-compare", "Cornell Box / GI Comparison",
+        cornellBoxScene, "Pipelines/Samples/lumen_cornell_box.metallic_graph.json"};
+    static const GIPlaygroundSample cornellBoxCompare{"cornell-box-compare", "Cornell Box / GI Comparison",
         "Compare path tracing and realtime GI with a draggable divider and a shared camera and exposure.",
-        "Pipelines/Samples/cornell_box_compare.metallic_graph.json"};
+        cornellBoxScene, "Pipelines/Samples/cornell_box_compare.metallic_graph.json"};
+    static const GIPlaygroundSample sponzaGIRealtime{"sponza-gi-realtime", "Sponza with GI / Realtime GI + VSM",
+        "Rasterized Sponza with Virtual Shadow Maps and Lumen indirect lighting.",
+        sponzaGIScene, "Pipelines/Samples/sponza_gi_realtime.metallic_graph.json"};
+    static const GIPlaygroundSample sponzaGIPathTracing{"sponza-gi-path-tracing", "Sponza with GI / Path Tracing",
+        "Progressive OpenPBR path tracing of the sunlit Sponza atrium.",
+        sponzaGIScene, "Pipelines/Samples/sponza_gi_path_tracing.metallic_graph.json"};
+    static const GIPlaygroundSample sponzaGICompare{"sponza-gi-compare", "Sponza with GI / GI Comparison",
+        "Compare path tracing and realtime GI with VSM in the same view.",
+        sponzaGIScene, "Pipelines/Samples/sponza_gi_compare.metallic_graph.json"};
     static const LumenLargeSceneSample lumenLargeScene;
     static const LumenRadianceCacheSample lumenRadianceCache;
     static const LumenDetailTracingSample lumenDetailTracing;
@@ -1186,6 +1199,9 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &cornellBoxPathTracing,
         &cornellBoxRealtime,
         &cornellBoxCompare,
+        &sponzaGIRealtime,
+        &sponzaGIPathTracing,
+        &sponzaGICompare,
         &realtimeLighting,
         &realtimeLightingVSM,
         &gpuDrivenVSM,

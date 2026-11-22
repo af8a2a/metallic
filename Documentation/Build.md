@@ -1031,6 +1031,20 @@ $meshes = @('CornellBoxFloor', 'CornellBoxCeiling', 'CornellBoxBackWall', 'Corne
     'CornellBoxRightWall', 'CornellBoxShortBlock', 'CornellBoxTallBlock', 'CornellBoxCeilingEmitter')
 ```
 
+### Sponza with GI
+
+Select **Sponza with GI** in the Render Graph Editor's **Built-in Sample** selector or use the matching **Environment** action. The three entries share `Asset/Sponza/SponzaGI.metallic_scene.json`, the Sponza VSM camera, a 1280 × 720 render extent and fixed exposure. The scene uses a 24 lx sun with the sky and HDRI disabled.
+
+| Sample | ID | Rendering |
+| --- | --- | --- |
+| Sponza with GI / Realtime GI + VSM | `sponza-gi-realtime` | VBuffer, cached SMRT Virtual Shadow Maps for direct sunlight, and Lumen Surface Cache, Radiosity and Final Gather for indirect diffuse lighting. |
+| Sponza with GI / Path Tracing | `sponza-gi-path-tracing` | Progressive OpenPBR path tracing with four samples per pixel per frame and a maximum path depth of 12. |
+| Sponza with GI / GI Comparison | `sponza-gi-compare` | Path tracing on the left and realtime GI + VSM on the right. Drag the divider to reveal the same pixels under the shared display transform. |
+
+`SponzaGI.gltf` reuses the original Sponza geometry buffers and materials. It places the opaque single-sided sections and the alpha-masked double-sided sections in separate meshes. The bundled Mesh SDF and Mesh Cards in `Asset/Sponza/SponzaGIBakes/` cover the opaque mesh for world tracing. Raster visibility, VSM and path tracing use both meshes. Inspect `Shadows.shadows` for direct-light visibility and `Temporal.indirectDiffuse` for accumulated scene-linear GI.
+
+To regenerate the pair, bake mesh index 0 of `Asset/Sponza/glTF/SponzaGI.gltf` with the default Mesh SDF and Mesh Card options. Pass `--distance-field=Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshdf` to the card baker. The opaque mesh has open edges, so its signed-distance field uses the baker's normal sign estimation on the original triangles.
+
 ### Lumen Large Scene
 
 **Lighting / Lumen / Large Scene** places four emissive rooms at X = 0, 40, 82 and 156 m. Their geometry instances reuse the eight Cornell Box mesh bakes. Each room has a suspended, uniformly scaled ceiling panel for coarse GDF coverage. The Mesh SDF instance path requires orthogonal, equal-length transform axes. The sample uses the same world lighting settings as Cornell Box.

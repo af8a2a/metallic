@@ -1,0 +1,117 @@
+{
+    "name": "Sponza with GI / Realtime GI + VSM",
+    "version": 1,
+    "nodes": [
+        {"id": 1, "name": "VBuffer", "type": "VisibilityBufferPass", "position": {"x": 50, "y": 140},
+            "properties": {
+                "path": "Asset/Sponza/SponzaGI.metallic_scene.json",
+                "visualization": "none", "enableClusterRtx": false, "initialLoad": true,
+                "autoLod": false, "lodLevel": 0, "instanceFrustumCull": true, "enableClas": false,
+                "hybridRaster": false, "instanceHzbCull": true, "meshletFrustumCull": true,
+                "meshletNormalConeCull": true
+            }},
+        {"id": 2, "name": "Shadows", "type": "VirtualShadowMapLightsPass", "position": {"x": 370, "y": -140},
+            "properties": {
+                "enabled": true, "benchmarkGPUProfile": false, "benchmarkBuildSubstages": false,
+                "pageSize": 128, "virtualPagesPerAxis": 128, "clipmapCount": 6, "maxWorkItems": 1048576,
+                "firstClipmapExtent": 1.0, "shadowBias": 0.002, "cacheEnabled": true, "cacheLayering": true,
+                "lightCapacity": 2, "physicalPageBudget": 2048, "nearPlane": 0.001,
+                "filter": "smrt", "pcfRadius": 1.0, "smrtRayCount": 2, "smrtSamplesPerRay": 16,
+                "smrtMaxRayLength": 10.0, "smrtRayLengthScale": 0.0, "smrtMaxRayAngle": 0.03,
+                "smrtTemporalEnabled": true, "smrtTemporalMaxFrames": 32, "receiverFootprint": true,
+                "tessellationFactor": 4, "tessellationSubdivisionDepth": 0, "compactOutputs": true,
+                "debugOutput": false
+            }},
+        {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 680, "y": 140},
+            "properties": {
+                "path": "Asset/Sponza/SponzaGI.metallic_scene.json",
+                "materialBinning": true, "outputLinear": true, "exportLumenReceivers": true
+            }},
+        {"id": 4, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass",
+            "position": {"x": 50, "y": 470}, "properties": {
+                "distanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshdf"],
+                "center": [0, 5, 0], "extent": 16, "resolution": 252,
+                "maxPhysicalPages": 12288, "quantized": true, "clipmapCount": 1, "buildObjectGrid": true
+            }},
+        {"id": 5, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 370, "y": 470},
+            "properties": {
+                "meshCardPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshcards"],
+                "atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true
+            }},
+        {"id": 6, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 680, "y": 470},
+            "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40}},
+        {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 680, "y": -140},
+            "properties": {"historySource": "composited", "historyProducer": "Temporal"}},
+        {"id": 8, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 990, "y": 140},
+            "properties": {
+                "maxTraceDistance": 40, "finalGather": true, "screenTraces": true,
+                "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "SH3", "maxRayDirections": 64
+            }},
+        {"id": 9, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 1310, "y": 140},
+            "properties": {"publishScreenTraceHistory": true, "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},
+        {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1630, "y": 140}}
+    ],
+    "edges": [
+        {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
+        {"id": 2, "src": "VBuffer.depth", "dst": "Deferred.depth"},
+        {"id": 3, "src": "VBuffer.rasterInfo", "dst": "Deferred.rasterInfo"},
+        {"id": 4, "src": "VBuffer.domain", "dst": "Deferred.domain"},
+        {"id": 5, "src": "VBuffer.visibility", "dst": "Shadows.visibility"},
+        {"id": 6, "src": "VBuffer.depth", "dst": "Shadows.depth"},
+        {"id": 7, "src": "VBuffer.rasterInfo", "dst": "Shadows.rasterInfo"},
+        {"id": 8, "src": "Shadows.shadows", "dst": "Deferred.virtualShadows"},
+        {"id": 9, "src": "Shadows.lights", "dst": "Deferred.virtualShadowLights"},
+        {"id": 10, "src": "VBuffer.depth", "dst": "ScreenTrace.depth"},
+        {"id": 11, "src": "VBuffer.depth", "dst": "Temporal.sceneDepth"},
+        {"id": 12, "src": "Deferred.lumenPosition", "dst": "Gather.position"},
+        {"id": 13, "src": "Deferred.lumenNormal", "dst": "Gather.normal"},
+        {"id": 14, "src": "Deferred.lumenDiffuse", "dst": "Gather.diffuse"},
+        {"id": 15, "src": "Deferred.color", "dst": "Gather.directColor"},
+        {"id": 16, "src": "GlobalDistanceFieldPages.pageTable", "dst": "SurfaceCache.pageTable"},
+        {"id": 17, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "SurfaceCache.pageAtlas"},
+        {"id": 18, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "SurfaceCache.coarseMip"},
+        {"id": 19, "src": "GlobalDistanceFieldPages.domain", "dst": "SurfaceCache.domain"},
+        {"id": 20, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Gather.pageTable"},
+        {"id": 21, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Gather.pageAtlas"},
+        {"id": 22, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Gather.coarseMip"},
+        {"id": 23, "src": "GlobalDistanceFieldPages.domain", "dst": "Gather.domain"},
+        {"id": 24, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Gather.objectGrid"},
+        {"id": 25, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Gather.objectGridScene"},
+        {"id": 26, "src": "SurfaceCache.cards", "dst": "Gather.cards"},
+        {"id": 27, "src": "SurfaceCache.scene", "dst": "Gather.cardScene"},
+        {"id": 28, "src": "SurfaceCache.depth", "dst": "Gather.cardDepth"},
+        {"id": 29, "src": "Radiosity.lighting", "dst": "Gather.cardLighting"},
+        {"id": 30, "src": "ScreenTrace.closestHZB", "dst": "Gather.closestHZB"},
+        {"id": 31, "src": "ScreenTrace.previousDepth", "dst": "Gather.previousDepth"},
+        {"id": 32, "src": "ScreenTrace.previousColor", "dst": "Gather.previousColor"},
+        {"id": 33, "src": "ScreenTrace.traceView", "dst": "Gather.traceView"},
+        {"id": 34, "src": "Gather.indirectDiffuse", "dst": "Temporal.currentIndirectDiffuse"},
+        {"id": 35, "src": "Deferred.lumenPosition", "dst": "Temporal.position"},
+        {"id": 36, "src": "Deferred.lumenNormal", "dst": "Temporal.normal"},
+        {"id": 37, "src": "Deferred.color", "dst": "Temporal.directColor"},
+        {"id": 38, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Radiosity.pageTable"},
+        {"id": 39, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Radiosity.pageAtlas"},
+        {"id": 40, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Radiosity.coarseMip"},
+        {"id": 41, "src": "GlobalDistanceFieldPages.domain", "dst": "Radiosity.domain"},
+        {"id": 42, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Radiosity.objectGrid"},
+        {"id": 43, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Radiosity.objectGridScene"},
+        {"id": 44, "src": "SurfaceCache.cards", "dst": "Radiosity.cards"},
+        {"id": 45, "src": "SurfaceCache.scene", "dst": "Radiosity.cardScene"},
+        {"id": 46, "src": "SurfaceCache.depth", "dst": "Radiosity.cardDepth"},
+        {"id": 47, "src": "SurfaceCache.lighting", "dst": "Radiosity.cardLighting"},
+        {"id": 48, "src": "SurfaceCache.normal", "dst": "Radiosity.cardNormal"},
+        {"id": 49, "src": "SurfaceCache.albedo", "dst": "Radiosity.cardAlbedo"},
+        {"id": 50, "src": "SurfaceCache.emissive", "dst": "Radiosity.cardEmissive"},
+        {"id": 51, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"},
+        {"id": 52, "src": "Temporal.color", "dst": "FinalBlit.source"}
+    ],
+    "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse"],
+    "view": {
+        "camera": {
+            "eye": [8.7, 1.65, 0.15], "center": [-8.0, 1.3, -0.3], "up": [0, 1, 0],
+            "projection": "perspective", "fovDegrees": 60, "znear": 0.05, "zfar": 100
+        },
+        "temporalJitter": false,
+        "renderResolution": {"width": 1280, "height": 720, "adaptive": false}
+    }
+}

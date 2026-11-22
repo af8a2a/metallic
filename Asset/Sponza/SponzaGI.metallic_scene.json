@@ -1,0 +1,45 @@
+{
+    "version": 4,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": false,
+            "visible": false,
+            "sun": {
+                "enabled": true,
+                "direction": [
+                    -0.3,
+                    -0.94,
+                    -0.16
+                ],
+                "color": [
+                    1.0,
+                    0.93,
+                    0.82
+                ],
+                "illuminance": 24.0,
+                "angularRadius": 0.00465
+            },
+            "moon": {
+                "enabled": false
+            }
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {
+                "enabled": false,
+                "compensation": 0.0
+            }
+        }
+    },
+    "sources": [
+        {
+            "id": "sponza",
+            "path": "glTF/SponzaGI.gltf"
+        },
+        {
+            "id": "view",
+            "path": "SponzaVSMCamera.gltf"
+        }
+    ]
+}
