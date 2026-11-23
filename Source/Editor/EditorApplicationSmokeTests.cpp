@@ -21,6 +21,45 @@
 
 namespace metallic {
 
+bool EditorApplication::runExitSmokeTest()
+{
+    const auto render = [&] {
+        auto profileFrame = profiler_.beginFrame();
+        return renderFrame();
+    };
+    const auto requestClose = [&] {
+        SDL_Event event{};
+        event.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+        event.window.windowID = SDL_GetWindowID(window_);
+        if (!SDL_PushEvent(&event)) { return false; }
+        pollEvents();
+        return running_ && pendingSceneAction_ == PendingSceneAction::Exit;
+    };
+
+    if (!render() || !viewportPreviewValid_) { return false; }
+    scene_.setDirty(true);
+    if (!requestClose() || !render()) { return false; }
+
+    ImGuiWindow* modal = ImGui::FindWindowByName("Unsaved Scene Changes");
+    if (!modal) { return false; }
+    ImGui::ActivateItemByID(modal->GetID("Cancel"));
+    if (!render() || !running_ || !scene_.dirty() || pendingSceneAction_ != PendingSceneAction::None) {
+        spdlog::error("[Smoke Exit] Cancel did not keep the dirty scene open");
+        return false;
+    }
+
+    if (!requestClose() || !render()) { return false; }
+    const uint64_t framesBeforeDiscard = submittedFrameIndex_;
+    ImGui::ActivateItemByID(modal->GetID("Discard"));
+    if (!render() || running_ || !scene_.dirty() || submittedFrameIndex_ != framesBeforeDiscard ||
+        frameSlots_[currentFrameSlot_].context.recording()) {
+        spdlog::error("[Smoke Exit] Discard did not stop without reloading the scene or submitting a frame");
+        return false;
+    }
+    spdlog::info("[Smoke Exit] Cancel kept the scene open and Discard stopped before rendering another frame");
+    return true;
+}
+
 bool EditorApplication::runNsightCaptureSmokeTest()
 {
     using render::profiling::NsightGraphicsCaptureState;

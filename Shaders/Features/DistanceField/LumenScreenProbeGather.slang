@@ -5,8 +5,9 @@ import ParameterRoot;
 import LumenGlobalRay;
 import LumenProbeMath;
 import GlobalDistanceField;
-#if defined(METALLIC_LUMEN_FINAL_GATHER)
 import LumenAdaptiveProbes;
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+import LumenScreenProbeWork;
 #endif
 #if defined(METALLIC_LUMEN_SCREEN_TRACES) || defined(METALLIC_LUMEN_DETAIL_TRACING)
 import LumenScreenTrace;
@@ -168,7 +169,76 @@ struct LumenScreenProbeGatherParams
     float screenTraceRelativeDepthThickness;
     ResourceHandle<Texture2D<float4>> shDirectional;
     uint rayDirectionFrameIndex;
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    ResourceHandle<StructuredBuffer<uint>> probeWorkList;
+    ResourceHandle<StructuredBuffer<uint>> probeWorkState;
+#endif
 };
+
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+typealias LumenProbeIrradianceStorage = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 5>;
+
+struct LumenScreenProbeClearParams
+{
+    ResourceHandle<StructuredBuffer<uint>> workList;
+    ResourceHandle<StructuredBuffer<uint>> workState;
+    ResourceHandle<RWStructuredBuffer<float4>> traceRadiance;
+    ResourceHandle<RWStructuredBuffer<float>> traceDistance;
+    ResourceHandle<RWStructuredBuffer<float4>> filteredRadiance;
+    ResourceHandle<RWStructuredBuffer<float4>> scratch;
+    ResourceHandle<RWStructuredBuffer<float>> compositedDistance;
+    ResourceHandle<LumenProbeIrradianceStorage> irradiance;
+    ResourceHandle<LumenSceneColorTexture> shDirectional;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+    ResourceHandle<RWStructuredBuffer<LumenProbeTraceReadback>> traceReadback;
+#else
+    uint unusedTraceReadback;
+#endif
+    uint4 traceReadbackTiles;
+    uint probeWidth;
+    uint probeHeight;
+};
+
+[shader("compute")]
+[numthreads(kProbeRayResolution, kProbeRayResolution, 1)]
+void lumenClearInactiveScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+{
+    let params = getParameters<LumenScreenProbeClearParams>();
+    const uint index = group.y * kLumenProbeDispatchWidth + group.x;
+    if (index >= resolveUniform(params.workState)[1]) { return; }
+    const uint capacity = params.probeWidth * params.probeHeight * kLumenProbeSlotsPerTile;
+    const uint probeIndex = resolveUniform(params.workList)[capacity + index];
+    const uint traceAddress = lumenProbeTraceAddress(probeIndex, lane.xy);
+    resolveUniform(params.traceRadiance)[traceAddress] = 0.0f;
+    resolveUniform(params.traceDistance)[traceAddress] = -1.0f;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+    const uint2 tile = lumenProbeTileForIndex(probeIndex, params.probeWidth) - params.traceReadbackTiles.xy;
+    if (all(tile < params.traceReadbackTiles.zw)) {
+        const uint slot = probeIndex % kLumenProbeSlotsPerTile;
+        const uint address = lumenProbeTraceAddress(lumenProbeIndex(tile, slot, params.traceReadbackTiles.z), lane.xy);
+        const LumenProbeTraceReadback readback = {-1.0f, -1.0f, -1.0f, -1.0f, float3(0.0f), -1.0f, ~0u, ~0u, 0u, 0u};
+        writeProbeTraceReadback(params.traceReadback, address, readback);
+    }
+#endif
+    if (any(lane.xy >= kLumenProbeGatherResolution)) { return; }
+    const uint gatherAddress = lumenProbeGatherAddress(probeIndex, lane.xy);
+    resolveUniform(params.filteredRadiance)[gatherAddress] = 0.0f;
+    resolveUniform(params.scratch)[gatherAddress] = 0.0f;
+#if defined(METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS)
+    resolveUniform(params.compositedDistance)[gatherAddress] = -1.0f;
+    const uint2 probeCoord = lumenProbeAtlasCoord(probeIndex, params.probeWidth);
+#if defined(METALLIC_LUMEN_IRRADIANCE_SH3)
+    if (all(lane.xy == 0u)) { resolveUniform(params.irradiance)[probeCoord] = 0.0f; }
+    if (lane.y == 0u && lane.x < 6u) {
+        const uint atlasWidth = params.probeWidth * kLumenProbeSlotsPerTileAxis;
+        resolveUniform(params.shDirectional)[probeCoord + uint2(lane.x * atlasWidth, 0u)] = 0.0f;
+    }
+#else
+    resolveUniform(params.irradiance)[probeCoord * kLumenIrradianceProbeWithBorderResolution + lane.xy] = 0.0f;
+#endif
+#endif
+}
+#endif
 
 // UE 5.7.4 GetUniformScreenProbeScreenPosition at Hammersley phase zero.
 uint2 uniformProbePosition(uint2 tile, uint2 viewSize)
@@ -196,6 +266,12 @@ float3 storeTraceLighting(float3 lighting)
 void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
 {
     LumenScreenProbeGatherParams params = getParameters<LumenScreenProbeGatherParams>();
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    uint originalProbeIndex;
+    if (!resolveLumenActiveProbe(group, resolveUniform(params.probeWorkList), resolveUniform(params.probeWorkState),
+            originalProbeIndex)) { return; }
+    group = uint3(lumenProbeTileForIndex(originalProbeIndex, params.probeWidth), originalProbeIndex % kLumenProbeSlotsPerTile);
+#endif
     Texture2D<float4> position = resolveUniform(params.position);
     RWStructuredBuffer<float4> traceOutput = resolveUniform(params.traceOutput);
 #if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
@@ -212,6 +288,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
     RWStructuredBuffer<float> distances = resolveUniform(params.traceDistance);
     uint2 probePixel = probes[probeIndex];
     uint address = lumenProbeTraceAddress(probeIndex, lane.xy);
+#if !defined(METALLIC_LUMEN_ACTIVE_PROBES)
     if (probePixel.x == kLumenInvalidProbe) {
         traceOutput[address] = 0.0f;
         distances[address] = -1.0f;
@@ -220,6 +297,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
         return;
     }
+#endif
 #else
     uint2 probePixel = uniformProbePosition(group.xy, uint2(params.width, params.height));
     uint address = lumenProbeTraceAddress(probeIndex, lane.xy);

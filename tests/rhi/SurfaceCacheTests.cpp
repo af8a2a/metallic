@@ -2,8 +2,10 @@
 #include "RHITest.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"
+#include "Runtime/Render/Debug/LumenProbeTraceReadback.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenProbePlacement.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/MeshCards.h"
 #include "Runtime/Scene/MeshDistanceField.h"
@@ -707,6 +709,54 @@ std::optional<BounceImageStats> readSingleBounceStats(const render::RenderGraphP
     return stats;
 }
 
+bool loadSingleBounceFixture(RHITestContext& context, scene::SceneDocument& document,
+    render::RenderGraph& graph, std::string& log)
+{
+    const std::filesystem::path root(PROJECT_SOURCE_DIR);
+    const auto fixture = context.outputDirectory / "LumenSingleBounce.gltf";
+    std::error_code fileError;
+    std::filesystem::copy_file(root / "Asset/Lumen/SingleBounce.gltf", fixture,
+        std::filesystem::copy_options::overwrite_existing, fileError);
+    if (fileError) {
+        log = "Could not copy the single-bounce fixture: " + fileError.message();
+        return false;
+    }
+    if (!document.load(fixture)) {
+        log = document.lastLoadResult().error;
+        return false;
+    }
+    std::vector<std::string> fieldPaths, cardPaths;
+    for (int32_t mesh = 0; mesh < 3; ++mesh) {
+        const auto base = "LumenSingleBounce" + std::to_string(mesh);
+        const auto field = context.outputDirectory / (base + ".meshdf");
+        const auto cards = context.outputDirectory / (base + ".meshcards");
+        if (!writeAnalyticBoxField(field, document, log, mesh) || !writeAnalyticBoxCards(cards, document, mesh, log)) {
+            return false;
+        }
+        fieldPaths.push_back(field.generic_string());
+        cardPaths.push_back(cards.generic_string());
+    }
+    if (!loadRenderGraphFromFile(root / "Pipelines/Samples/lumen_single_bounce.metallic_graph.json", graph, log)) {
+        return false;
+    }
+    const auto* fieldNode = graph.findNode("GlobalDistanceFieldPages");
+    const auto* surfaceNode = graph.findNode("SurfaceCache");
+    if (!fieldNode || !surfaceNode) {
+        log = "Missing one of the single-bounce sample producers";
+        return false;
+    }
+    auto fieldProperties = fieldNode->properties;
+    fieldProperties["distanceFieldPaths"] = std::move(fieldPaths);
+    auto cardProperties = surfaceNode->properties;
+    cardProperties["meshCardPaths"] = std::move(cardPaths);
+    if (!graph.setNodeProperties(fieldNode->id, std::move(fieldProperties)) ||
+        !graph.setNodeProperties(surfaceNode->id, std::move(cardProperties))) {
+        log = "Could not bind fixture fields and cards to the single-bounce sample";
+        return false;
+    }
+    return true;
+}
+
 class LumenSingleBounceTest final : public RHITest {
 public:
     LumenSingleBounceTest()
@@ -718,27 +768,10 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
-        const std::filesystem::path root(PROJECT_SOURCE_DIR);
-        const auto asset = root / "Asset/Lumen/SingleBounce.gltf";
-        const auto fixture = context.outputDirectory / "LumenSingleBounce.gltf";
-        std::error_code fileError;
-        std::filesystem::copy_file(asset, fixture, std::filesystem::copy_options::overwrite_existing, fileError);
-        if (fileError) { return RHITestResult::fail("Could not copy the single-bounce fixture: " + fileError.message()); }
         scene::SceneDocument document;
-        if (!document.load(fixture)) { return RHITestResult::fail(document.lastLoadResult().error); }
-
+        RenderGraph graph;
         std::string log;
-        std::vector<std::string> fieldPaths, cardPaths;
-        for (int32_t mesh = 0; mesh < 3; ++mesh) {
-            const auto base = "LumenSingleBounce" + std::to_string(mesh);
-            const auto field = context.outputDirectory / (base + ".meshdf");
-            const auto cards = context.outputDirectory / (base + ".meshcards");
-            if (!writeAnalyticBoxField(field, document, log, mesh) || !writeAnalyticBoxCards(cards, document, mesh, log)) {
-                return RHITestResult::fail(log);
-            }
-            fieldPaths.push_back(field.generic_string());
-            cardPaths.push_back(cards.generic_string());
-        }
+        if (!loadSingleBounceFixture(context, document, graph, log)) { return RHITestResult::fail(log); }
 
         scene::SceneEntity blocker = scene::kNullSceneEntity;
         scene::SceneEntity emitter = scene::kNullSceneEntity;
@@ -756,24 +789,8 @@ public:
             return RHITestResult::fail("Expected separately editable emitter and blocker objects");
         }
 
-        RenderGraph graph;
-        if (!loadRenderGraphFromFile(root / "Pipelines/Samples/lumen_single_bounce.metallic_graph.json", graph, log)) {
-            return RHITestResult::fail(log);
-        }
-        const auto* fieldNode = graph.findNode("GlobalDistanceFieldPages");
         const auto* surfaceNode = graph.findNode("SurfaceCache");
-        if (!fieldNode || !surfaceNode) {
-            return RHITestResult::fail("Missing one of the single-bounce sample producers");
-        }
-        auto fieldProperties = fieldNode->properties;
-        fieldProperties["distanceFieldPaths"] = fieldPaths;
-        auto cardProperties = surfaceNode->properties;
-        cardProperties["meshCardPaths"] = cardPaths;
-        const uint32_t tileResolution = cardProperties.value("tileResolution", kTileEdge);
-        if (!graph.setNodeProperties(fieldNode->id, std::move(fieldProperties)) ||
-            !graph.setNodeProperties(surfaceNode->id, std::move(cardProperties))) {
-            return RHITestResult::fail("Could not bind fixture fields and cards to the single-bounce sample");
-        }
+        const uint32_t tileResolution = surfaceNode->properties.value("tileResolution", kTileEdge);
 
         RenderView view;
         ViewCamera camera;
@@ -1023,6 +1040,225 @@ debug::DebugValue cardBufferCapture(std::string id, uint32_t count)
 {
     return {{"id", std::move(id)}, {"layout", "u32"}, {"count", count}};
 }
+
+class LumenActiveProbeDispatchTest final : public RHITest {
+public:
+    LumenActiveProbeDispatchTest()
+    {
+        name = "lumen_active_probe_dispatch";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        scene::SceneDocument document;
+        RenderGraph graph;
+        std::string log;
+        if (!loadSingleBounceFixture(context, document, graph, log)) { return RHITestResult::fail(log); }
+        if (!prepareGraph(graph)) { return RHITestResult::fail("Could not wire both Gather dispatch paths"); }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {0.0f, 0.0f, 3.0f};
+        camera.orthographic = true;
+        camera.orthoHeight = 1.25f;
+        camera.farPlane = 8.0f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kSingleBounceEdge, kSingleBounceEdge)) {
+            return RHITestResult::fail("Invalid active-probe test camera");
+        }
+        bench::ValidationRecorder validation;
+        CardUpdateInspector inspector;
+        RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.bindRenderView(&view);
+        if (!preview.initialize(context.enableValidation, false, false, context.enableValidation, validation.sink())) {
+            return RHITestResult::fail("Active-probe preview setup: " + preview.lastLog());
+        }
+        preview.setEnvironment({.enabled = false, .visible = false});
+        if (!preview.setWorldEnvironment(environment::WorldEnvironment{})) {
+            return RHITestResult::fail("Could not select an emissive-only world");
+        }
+        preview.setLighting(document.lighting());
+        preview.setDebugObserver(&inspector);
+        preview.setRecordingWorkerLimit(1);
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+            {{"pass", "Gather"}, {"resources", captureResources("Gather")}},
+            {{"pass", "ActiveGather"}, {"resources", captureResources("ActiveGather")}},
+        })}}}};
+
+        auto emptyCamera = camera;
+        emptyCamera.eye[0] += 20.0f;
+        emptyCamera.center[0] += 20.0f;
+        constexpr std::array frames{"initial", "repeated", "all invalid", "restored"};
+        for (size_t frame = 0; frame < frames.size(); ++frame) {
+            const bool empty = frame == 2;
+            if (frame >= 2) {
+                if (!view.setCamera(empty ? emptyCamera : camera)) { return RHITestResult::fail("Could not change camera"); }
+                view.cameraCut();
+            }
+            if (!preview.render(graph, kSingleBounceEdge, kSingleBounceEdge, "Gather.indirectDiffuse", false)) {
+                return RHITestResult::fail(preview.lastLog());
+            }
+            log = compareFrame(inspector, empty);
+            if (!log.empty()) { return RHITestResult::fail(std::string(frames[frame]) + ": " + log); }
+        }
+        if (validation.failed()) {
+            return RHITestResult::fail("Active-probe Vulkan validation: " + validation.snapshot().dump());
+        }
+        return RHITestResult::pass("Dense and active Gather matched through repeated frames and zero valid probes");
+    }
+
+private:
+    static constexpr uint32_t kTileAxis = render::builtin_pass::lumenScreenProbeTiles(kSingleBounceEdge);
+    static constexpr uint32_t kSlotsPerTile = render::builtin_pass::kLumenScreenProbeSlotsPerTile;
+    static constexpr uint32_t kProbeSlots = kTileAxis * kTileAxis * kSlotsPerTile;
+    static constexpr uint32_t kRaysPerSlot = 8 * 8;
+    static constexpr uint32_t kProbeRays = kProbeSlots * kRaysPerSlot;
+    static constexpr uint32_t kSHAtlasEdge = kTileAxis * 3;
+    static constexpr std::array<uint32_t, 4> kReadbackROI{1, 1, 6, 6};
+    static constexpr uint32_t kReadbackRays = kReadbackROI[2] * kReadbackROI[3] * kSlotsPerTile * kRaysPerSlot;
+    static constexpr size_t kReadbackStride = sizeof(render::LumenProbeTraceReadbackRecord);
+    static constexpr std::array kBufferedResources{
+        std::pair{"probePositions", 2 * kProbeSlots}, std::pair{"probeRadiance", 4 * kProbeRays},
+        std::pair{"probeDistance", kProbeRays}, std::pair{"compositedProbeDistance", kProbeRays},
+        std::pair{"filteredProbeRadiance", 4 * kProbeRays}};
+    static constexpr std::array kTextures{
+        std::pair{"probeSHAmbient", std::array{kSHAtlasEdge, kSHAtlasEdge, 4u}},
+        std::pair{"probeSHDirectional", std::array{kSHAtlasEdge * 6, kSHAtlasEdge, 8u}},
+        std::pair{"indirectDiffuse", std::array{kSingleBounceEdge, kSingleBounceEdge, 8u}},
+        std::pair{"color", std::array{kSingleBounceEdge, kSingleBounceEdge, 16u}}};
+
+    static bool prepareGraph(render::RenderGraph& graph)
+    {
+        using render::makeRenderGraphFieldName;
+        const auto* gather = graph.findNode("Gather");
+        if (!gather) { return false; }
+        auto properties = gather->properties;
+        properties["finalGather"] = true;
+        properties["screenTraces"] = true;
+        properties["irradianceFormat"] = "SH3";
+        properties["tracingOctahedronResolution"] = 8;
+        properties["probeTraceReadback"] = kReadbackROI;
+        properties["activeProbeDispatch"] = false;
+        if (!graph.setNodeProperties(gather->id, properties)) { return false; }
+        properties["activeProbeDispatch"] = true;
+        if (!graph.addNode("LumenScreenProbeGatherPass", "ActiveGather", properties) ||
+            !graph.markOutput("ActiveGather.indirectDiffuse") ||
+            !graph.addNode("LumenScreenTraceSetupPass", "ScreenTrace", {{"historySource", "deferred"}}) ||
+            !graph.addEdge("VBuffer.depth", "ScreenTrace.depth") || !graph.addEdge("Deferred.color", "ScreenTrace.color")) {
+            return false;
+        }
+        for (const std::string_view field : {"closestHZB", "previousDepth", "previousColor", "traceView"}) {
+            if (!graph.addEdge(makeRenderGraphFieldName("ScreenTrace", field), makeRenderGraphFieldName("Gather", field))) {
+                return false;
+            }
+        }
+        const auto edges = graph.edges();
+        for (const auto& edge : edges) {
+            if (edge.dstPass == "Gather" &&
+                !graph.addEdge(makeRenderGraphFieldName(edge.srcPass, edge.srcField),
+                    makeRenderGraphFieldName("ActiveGather", edge.dstField))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static debug::DebugValue captureResources(std::string_view pass)
+    {
+        using render::makeRenderGraphFieldName;
+        auto resources = debug::DebugValue::array();
+        for (const auto& [field, words] : kBufferedResources) {
+            resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, field), words));
+        }
+        for (const auto& [field, layout] : kTextures) {
+            resources.push_back({{"id", makeRenderGraphFieldName(pass, field)},
+                {"roi", {{"x", 0}, {"y", 0}, {"width", layout[0]}, {"height", layout[1]}}}});
+        }
+        resources.push_back({{"id", makeRenderGraphFieldName(pass, "probeTraceReadback")},
+            {"layout", render::kLumenProbeTraceReadbackLayout}, {"count", kReadbackRays}});
+        if (pass == "ActiveGather") {
+            resources.push_back(cardBufferCapture("ActiveGather.probeWorkState", 2));
+            resources.push_back(cardBufferCapture("ActiveGather.probeIndirectArgs", 6));
+        }
+        return resources;
+    }
+
+    static std::string compareFrame(CardUpdateInspector& inspector, bool empty)
+    {
+        inspector.runtime.poll();
+        if (inspector.response.value("status", "") != "ok") { return inspector.response.dump(); }
+        auto& core = inspector.runtime.core();
+        const auto& jobs = inspector.response.at("result").at("jobs");
+        std::array<CardCapture, 2> captures;
+        for (size_t index = 0; index < captures.size(); ++index) {
+            const auto id = jobs.at(index).at("job").get<std::string>();
+            captures[index] = core.completedCapture(id);
+            if (!captures[index]) { return core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump(); }
+            const size_t modeResources = index == 1 ? 2 : 0;
+            if (captures[index]->artifacts.size() != kBufferedResources.size() + kTextures.size() + 1 + modeResources) {
+                return "Unexpected Gather artifact count";
+            }
+        }
+        const auto& dense = captures[0]->artifacts;
+        const auto& active = captures[1]->artifacts;
+        const auto compare = [&](size_t index, std::string_view field, size_t expectedBytes) -> std::string {
+            if (dense[index].bytes.size() != expectedBytes || active[index].bytes.size() != expectedBytes) {
+                return "Unexpected readback size for " + std::string(field);
+            }
+            const auto mismatch = std::mismatch(dense[index].bytes.begin(), dense[index].bytes.end(), active[index].bytes.begin());
+            if (mismatch.first != dense[index].bytes.end()) {
+                return "Active and dense differ in " + std::string(field) + " at byte " +
+                    std::to_string(mismatch.first - dense[index].bytes.begin());
+            }
+            return {};
+        };
+        size_t index = 0;
+        for (const auto& [field, words] : kBufferedResources) {
+            if (auto error = compare(index++, field, words * sizeof(uint32_t)); !error.empty()) { return error; }
+        }
+        for (const auto& [field, layout] : kTextures) {
+            if (auto error = compare(index++, field, layout[0] * layout[1] * layout[2]); !error.empty()) { return error; }
+        }
+        if (auto error = compare(index++, "probeTraceReadback", kReadbackRays * kReadbackStride); !error.empty()) { return error; }
+
+        uint32_t valid = 0;
+        for (uint32_t probe = 0; probe < kProbeSlots; ++probe) {
+            const auto pixel = readSurfaceValue<std::array<uint32_t, 2>>(active[0].bytes, probe);
+            if (pixel[0] != std::numeric_limits<uint32_t>::max()) { ++valid; continue; }
+            for (uint32_t ray = probe * kRaysPerSlot; ray < (probe + 1) * kRaysPerSlot; ++ray) {
+                if (readSurfaceValue<std::array<float, 4>>(active[1].bytes, ray) != std::array<float, 4>{} ||
+                    readSurfaceValue<float>(active[2].bytes, ray) != -1.0f ||
+                    readSurfaceValue<float>(active[3].bytes, ray) != -1.0f ||
+                    readSurfaceValue<std::array<float, 4>>(active[4].bytes, ray) != std::array<float, 4>{}) {
+                    return "Invalid probe did not retain its radiance and distance sentinels";
+                }
+            }
+        }
+        if ((empty && valid != 0) || (!empty && (valid == 0 || valid == kProbeSlots))) {
+            return "Unexpected number of valid probe slots: " + std::to_string(valid);
+        }
+        using ProbeCounts = std::array<uint32_t, 2>;
+        using DispatchArgs = std::array<uint32_t, 3>;
+        const ProbeCounts expectedCounts{valid, kProbeSlots - valid};
+        const auto& counts = active[index++].bytes;
+        const auto& args = active[index].bytes;
+        if (counts.size() != sizeof(ProbeCounts) || args.size() != 2 * sizeof(DispatchArgs) ||
+            readSurfaceValue<ProbeCounts>(counts, 0) != expectedCounts) {
+            return "Compaction counts do not match the placed probes";
+        }
+        for (size_t mode = 0; mode < expectedCounts.size(); ++mode) {
+            const auto dispatch = readSurfaceValue<DispatchArgs>(args, mode);
+            if (dispatch[0] * dispatch[1] != expectedCounts[mode] || dispatch[2] != 1u) {
+                return "Indirect dispatch does not match the compacted probe count";
+            }
+        }
+        return {};
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenActiveProbeDispatchTest);
 
 debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
 {

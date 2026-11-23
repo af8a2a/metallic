@@ -2216,6 +2216,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_EXIT")) {
+            const bool passed = runExitSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         uint32_t smokeFrameCount = 1;
         if (const char* count = std::getenv("METALLIC_SMOKE_TEST_FRAMES")) {
             smokeFrameCount = static_cast<uint32_t>(std::clamp(std::strtoul(count, nullptr, 10), 1ul, 256ul));
@@ -2308,6 +2313,9 @@ int EditorApplication::run(
         {
             auto profileScope = profiler_.scope("Poll Events");
             pollEvents();
+        }
+        if (!running_) {
+            break;
         }
 
         if (debugRuntime_) {
@@ -3208,6 +3216,11 @@ bool EditorApplication::renderFrame()
     {
         auto profileScope = profiler_.editorScope("Dockspace");
         drawDockspace();
+    }
+    if (!running_) {
+        ImGui::EndFrame();
+        frame.context.cancel();
+        return true;
     }
     {
         auto profileScope = profiler_.editorScope("Panels");
@@ -5643,6 +5656,12 @@ void EditorApplication::drawUnsavedSceneModal()
     }
     ImGui::SameLine();
     if (ImGui::Button("Discard", ImVec2(100.0f * mainScale_, 0.0f))) {
+        if (pendingSceneAction_ == PendingSceneAction::Exit) {
+            ImGui::CloseCurrentPopup();
+            executePendingSceneAction();
+            ImGui::EndPopup();
+            return;
+        }
         std::string message;
         if (!scene_.revert(message)) {
             sceneStatus_ = message.empty()
@@ -7763,7 +7782,8 @@ void EditorApplication::resetDefaultRenderGraph()
         loadBuiltInSample(id ? id : render::kDefaultGPUDrivenSampleId);
         return;
     }
-    loadBuiltInSample(kDefaultRenderSampleId);
+    loadBuiltInSample(render::vulkan::deviceCapabilities(*device_).streamlineDlssRr
+        ? kDefaultRenderSampleId : "pathtracing-sample");
 }
 
 void EditorApplication::saveRenderGraph()

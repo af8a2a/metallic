@@ -4,6 +4,9 @@ import ShaderCore;
 import ParameterRoot;
 import LumenAdaptiveProbes;
 import LumenProbeMath;
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+import LumenScreenProbeWork;
+#endif
 
 using Metallic;
 using Metallic.Lumen;
@@ -35,7 +38,19 @@ struct LumenScreenProbeFilterParams
     ResourceHandle<ProbeIrradianceImage> irradianceOutput;
     ResourceHandle<SHDirectionalImage> shDirectionalOutput;
     uint rayDirectionFrameIndex;
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    ResourceHandle<StructuredBuffer<uint>> probeWorkList;
+    ResourceHandle<StructuredBuffer<uint>> probeWorkState;
+#endif
 };
+
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+bool resolveFilterProbeIndex(LumenScreenProbeFilterParams params, uint3 group, out uint probeIndex)
+{
+    return resolveLumenActiveProbe(group, resolveUniform(params.probeWorkList),
+        resolveUniform(params.probeWorkState), probeIndex);
+}
+#endif
 
 [shader("compute")]
 [numthreads(9, 1, 1)]
@@ -62,7 +77,12 @@ groupshared uint sharedMinHitDistance[kRaysPerProbe];
 void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
 {
     LumenScreenProbeFilterParams params = getParameters<LumenScreenProbeFilterParams>();
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    uint probeIndex;
+    if (!resolveFilterProbeIndex(params, group, probeIndex)) { return; }
+#else
     uint probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
+#endif
     uint traceAddress = lumenProbeTraceAddress(probeIndex, lane.xy);
     bool writeGather = all(lane.xy < kLumenProbeGatherResolution);
     uint gatherThread = lane.y * kLumenProbeGatherResolution + lane.x;
@@ -70,6 +90,7 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
     RWStructuredBuffer<float4> radiance = resolveUniform(params.outputRadiance);
     RWStructuredBuffer<float> distance = resolveUniform(params.outputDistance);
     uint2 probePixel = resolveUniform(params.probeInput)[probeIndex];
+#if !defined(METALLIC_LUMEN_ACTIVE_PROBES)
     if (probePixel.x == kLumenInvalidProbe) {
         if (writeGather) {
             radiance[address] = 0.0f;
@@ -77,6 +98,7 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
         }
         return;
     }
+#endif
 
     // Metallic stores unencoded meters; +infinity distinguishes a gather bin with no valid ray.
     const uint emptyDistance = 0x7f800000u;
@@ -186,13 +208,20 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     LumenScreenProbeFilterParams params = getParameters<LumenScreenProbeFilterParams>();
     StructuredBuffer<uint2> probes = resolveUniform(params.probeInput);
     RWStructuredBuffer<float4> outputRadiance = resolveUniform(params.outputRadiance);
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    uint probeIndex;
+    if (!resolveFilterProbeIndex(params, group, probeIndex)) { return; }
+#else
     uint probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
+#endif
     uint address = lumenProbeGatherAddress(probeIndex, lane.xy);
     uint2 probePixel = probes[probeIndex];
+#if !defined(METALLIC_LUMEN_ACTIVE_PROBES)
     if (probePixel.x == kLumenInvalidProbe) {
         outputRadiance[address] = 0.0f;
         return;
     }
+#endif
 
     Texture2D<float4> position = resolveUniform(params.position);
     StructuredBuffer<float4> inputRadiance = resolveUniform(params.inputRadiance);
@@ -203,7 +232,11 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     float2 probeTexelCenter = lumenProbeBlueNoiseVec2(resolveUniform(params.blueNoiseVec2), screenTileCoord,
         params.rayDirectionFrameIndex);
 #else
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    uint2 screenTileCoord = lumenProbeTileForIndex(probeIndex, params.probeWidth);
+#else
     uint2 screenTileCoord = group.xy;
+#endif
     float2 probeTexelCenter = 0.5f;
 #endif
     float3 coneDirection = lumenEquiAreaSphericalMapping((float2(lane.xy) + probeTexelCenter) / float(kLumenProbeGatherResolution));
@@ -240,7 +273,12 @@ void lumenConvertScreenProbesToIrradianceMain(uint3 group : SV_GroupID, uint3 la
     uint threadIndex : SV_GroupIndex)
 {
     LumenScreenProbeFilterParams params = getParameters<LumenScreenProbeFilterParams>();
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    uint probeIndex;
+    if (!resolveFilterProbeIndex(params, group, probeIndex)) { return; }
+#else
     uint probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
+#endif
     uint2 probeCoord = lumenProbeAtlasCoord(probeIndex, params.probeWidth);
 #if defined(METALLIC_LUMEN_IRRADIANCE_SH3)
     uint atlasWidth = params.probeWidth * kLumenProbeSlotsPerTileAxis;
@@ -249,6 +287,7 @@ void lumenConvertScreenProbesToIrradianceMain(uint3 group : SV_GroupID, uint3 la
     uint2 outputCoord = probeCoord * kLumenIrradianceProbeWithBorderResolution + lane.xy;
 #endif
     ProbeIrradianceImage irradianceOutput = resolveUniform(params.irradianceOutput);
+#if !defined(METALLIC_LUMEN_ACTIVE_PROBES)
     if (resolveUniform(params.probeInput)[probeIndex].x == kLumenInvalidProbe) {
 #if defined(METALLIC_LUMEN_IRRADIANCE_SH3)
         if (threadIndex == 0u) { irradianceOutput[probeCoord] = 0.0f; }
@@ -258,6 +297,7 @@ void lumenConvertScreenProbesToIrradianceMain(uint3 group : SV_GroupID, uint3 la
 #endif
         return;
     }
+#endif
 
     float2 probeUV = (float2(lane.xy) + 0.5f) / float(kLumenProbeGatherResolution);
     ThreeBandSHVector basis = shBasisFunction3(lumenEquiAreaSphericalMapping(probeUV));

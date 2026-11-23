@@ -61,6 +61,7 @@ private:
     bool runMultiViewportSmokeTest();
     bool runSliderDebugSmokeTest();
     bool runSceneSwitchSmokeTest();
+    bool runExitSmokeTest();
     bool runZorahFullRoamBenchmark();
     bool configureCPUJobBenchmark(uint32_t& workerCount);
     bool runCPUJobBenchmark();

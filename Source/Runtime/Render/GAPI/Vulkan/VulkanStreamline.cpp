@@ -24,6 +24,12 @@
 #endif
 
 #if METALLIC_HAS_STREAMLINE
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#endif
 #include <sl.h>
 #include <sl_dlss.h>
 #include <sl_dlss_d.h>
@@ -1170,6 +1176,24 @@ Result<> initializeStreamlinePreDevice(std::string& log)
     if (state.initialized) {
         return {};
     }
+
+#ifdef _WIN32
+    alignas(TOKEN_MANDATORY_LABEL) std::array<BYTE, TOKEN_INTEGRITY_LEVEL_MAX_SIZE> integrityInfo;
+    DWORD bytesWritten = 0;
+    if (!GetTokenInformation(GetCurrentProcessToken(), TokenIntegrityLevel, integrityInfo.data(),
+            static_cast<DWORD>(integrityInfo.size()), &bytesWritten)) {
+        log = "GetTokenInformation(TokenIntegrityLevel) failed with Win32 error " + std::to_string(GetLastError());
+        return makeError(Error::Failure);
+    }
+    const auto* integrity = reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(integrityInfo.data());
+    const auto sid = integrity->Label.Sid;
+    const auto subAuthorityCount = *GetSidSubAuthorityCount(sid);
+    // NGX telemetry cannot open its pipe at low integrity, which can leave slShutdown waiting indefinitely.
+    if (*GetSidSubAuthority(sid, subAuthorityCount - 1) < SECURITY_MANDATORY_MEDIUM_RID) {
+        log = "NVIDIA NGX can hang during shutdown in a low-integrity Windows process";
+        return makeError(Error::Unsupported);
+    }
+#endif
 
     const sl::Feature features[] = {
         sl::kFeatureDLSS,
