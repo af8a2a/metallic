@@ -15,7 +15,26 @@ struct LumenScreenProbeScheduleParams
     ResourceHandle<RWStructuredBuffer<uint>> workState;
     ResourceHandle<RWStructuredBuffer<uint>> indirectArgs;
     uint capacity;
+#if defined(METALLIC_LUMEN_SPLIT_PROBE_TRACING)
+    ResourceHandle<StructuredBuffer<float4>> traceRadiance;
+    ResourceHandle<RWStructuredBuffer<uint>> rayWorkList;
+    ResourceHandle<RWStructuredBuffer<uint>> rayWorkCount;
+    ResourceHandle<RWStructuredBuffer<uint>> rayIndirectArgs;
+#endif
 };
+
+#if defined(METALLIC_LUMEN_SPLIT_PROBE_TRACING)
+static const uint kRayCompactThreadGroupSize = 16u;
+static const uint kRayCompactThreads = kRayCompactThreadGroupSize * kRayCompactThreadGroupSize;
+static const uint kRaysPerProbe = kLumenProbeTraceResolution * kLumenProbeTraceResolution;
+
+void writeScreenProbeRayDispatch(RWStructuredBuffer<uint> args, uint offset, uint groups)
+{
+    args[offset] = min(groups, kLumenProbeDispatchWidth);
+    args[offset + 1u] = (groups + kLumenProbeDispatchWidth - 1u) / kLumenProbeDispatchWidth;
+    args[offset + 2u] = 1u;
+}
+#endif
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
@@ -77,4 +96,100 @@ void lumenBuildScreenProbeIndirectArgsMain()
         args[index * 3u + 1u] = (count + kLumenProbeDispatchWidth - 1u) / kLumenProbeDispatchWidth;
         args[index * 3u + 2u] = 1u;
     }
+#if defined(METALLIC_LUMEN_SPLIT_PROBE_TRACING)
+    const uint rayCount = state[0] * kRaysPerProbe;
+    resolveUniform(params.rayWorkCount)[0] = 0u;
+    writeScreenProbeRayDispatch(resolveUniform(params.rayIndirectArgs), 0u,
+        (rayCount + kRayCompactThreads - 1u) / kRayCompactThreads);
+#endif
 }
+
+#if defined(METALLIC_LUMEN_SPLIT_PROBE_TRACING)
+groupshared uint SharedGlobalTraceTexelStartOffset;
+#if defined(METALLIC_LUMEN_PROBE_COMPACTION_WAVE_OPS)
+groupshared uint SharedGroupSum;
+#else
+groupshared uint SharedTraceTexelAllocator;
+groupshared uint SharedTraceTexels[kRayCompactThreads];
+#endif
+
+// UE ScreenProbeCompactTracesCS, using Metallic's placed probe indices and screen miss marker.
+[shader("compute")]
+[numthreads(kRayCompactThreadGroupSize, kRayCompactThreadGroupSize, 1)]
+void lumenCompactScreenProbeRaysMain(uint3 group : SV_GroupID, uint linearThreadIndex : SV_GroupIndex)
+{
+    let params = getParameters<LumenScreenProbeScheduleParams>();
+#if defined(METALLIC_LUMEN_PROBE_COMPACTION_WAVE_OPS)
+    if (linearThreadIndex == 0u) { SharedGroupSum = 0u; }
+#else
+    if (linearThreadIndex == 0u) { SharedTraceTexelAllocator = 0u; }
+    GroupMemoryBarrierWithGroupSync();
+#endif
+
+    bool bTraceValid = false;
+    uint traceTexelForThisThread = 0u;
+    const uint rayIndex = (group.y * kLumenProbeDispatchWidth + group.x) * kRayCompactThreads + linearThreadIndex;
+    const uint activeProbeIndex = rayIndex / kRaysPerProbe;
+    if (activeProbeIndex < resolveUniform(params.workState)[0]) {
+        const uint probeIndex = resolveUniform(params.workList)[activeProbeIndex];
+        traceTexelForThisThread = probeIndex * kRaysPerProbe + rayIndex % kRaysPerProbe;
+        bTraceValid = resolveUniform(params.traceRadiance)[traceTexelForThisThread].w == kLumenProbeRayPending;
+    }
+#if !defined(METALLIC_LUMEN_PROBE_COMPACTION_WAVE_OPS)
+    if (bTraceValid) {
+        uint sharedTexelOffset;
+        InterlockedAdd(SharedTraceTexelAllocator, 1u, sharedTexelOffset);
+        SharedTraceTexels[sharedTexelOffset] = traceTexelForThisThread;
+    }
+#endif
+
+    GroupMemoryBarrierWithGroupSync();
+
+    let compactedTraceTexelAllocator = resolveUniform(params.rayWorkCount);
+    let compactedTraceTexelData = resolveUniform(params.rayWorkList);
+#if defined(METALLIC_LUMEN_PROBE_COMPACTION_WAVE_OPS)
+    const uint lastLaneIndex = WaveGetLaneCount() - 1u;
+    const uint laneIndex = WaveGetLaneIndex();
+    const uint offsetInWave = WavePrefixCountBits(bTraceValid);
+    uint offsetInGroup = 0u;
+    if (laneIndex == lastLaneIndex) {
+        const uint thisWaveSum = offsetInWave + (bTraceValid ? 1u : 0u);
+        InterlockedAdd(SharedGroupSum, thisWaveSum, offsetInGroup);
+    }
+    offsetInGroup = WaveReadLaneAt(offsetInGroup, lastLaneIndex) + offsetInWave;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (linearThreadIndex == 0u) {
+        InterlockedAdd(compactedTraceTexelAllocator[0], SharedGroupSum, SharedGlobalTraceTexelStartOffset);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (bTraceValid) {
+        compactedTraceTexelData[SharedGlobalTraceTexelStartOffset + offsetInGroup] = traceTexelForThisThread;
+    }
+#else
+    if (linearThreadIndex == 0u) {
+        InterlockedAdd(compactedTraceTexelAllocator[0], SharedTraceTexelAllocator, SharedGlobalTraceTexelStartOffset);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (linearThreadIndex < SharedTraceTexelAllocator) {
+        compactedTraceTexelData[SharedGlobalTraceTexelStartOffset + linearThreadIndex] = SharedTraceTexels[linearThreadIndex];
+    }
+#endif
+}
+
+// UE SetupCompactedTracesIndirectArgsCS for the 64-thread software trace.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void lumenBuildScreenProbeRayIndirectArgsMain()
+{
+    let params = getParameters<LumenScreenProbeScheduleParams>();
+    const uint rayCount = resolveUniform(params.rayWorkCount)[0];
+    writeScreenProbeRayDispatch(resolveUniform(params.rayIndirectArgs), 3u,
+        (rayCount + kLumenProbeFallbackGroupSize - 1u) / kLumenProbeFallbackGroupSize);
+}
+#endif

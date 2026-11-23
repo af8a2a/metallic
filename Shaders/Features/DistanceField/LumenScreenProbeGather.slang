@@ -173,6 +173,10 @@ struct LumenScreenProbeGatherParams
     ResourceHandle<StructuredBuffer<uint>> probeWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeWorkState;
 #endif
+#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+    ResourceHandle<StructuredBuffer<uint>> probeRayWorkList;
+    ResourceHandle<StructuredBuffer<uint>> probeRayWorkCount;
+#endif
 };
 
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
@@ -262,15 +266,32 @@ float3 storeTraceLighting(float3 lighting)
 }
 
 [shader("compute")]
+#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+[numthreads(kLumenProbeFallbackGroupSize, 1, 1)]
+void lumenTraceScreenProbeFallbackMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+#else
 [numthreads(kProbeRayResolution, kProbeRayResolution, 1)]
 void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+#endif
 {
     LumenScreenProbeGatherParams params = getParameters<LumenScreenProbeGatherParams>();
-#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
-    uint originalProbeIndex;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+    const uint compactedIndex = (group.y * kLumenProbeDispatchWidth + group.x) * kLumenProbeFallbackGroupSize + lane.x;
+    if (compactedIndex >= resolveUniform(params.probeRayWorkCount)[0]) { return; }
+    const uint denseRay = resolveUniform(params.probeRayWorkList)[compactedIndex];
+    const uint probeIndex = denseRay / kRaysPerProbe;
+    const uint rayIndex = denseRay % kRaysPerProbe;
+    lane = uint3(rayIndex % kProbeRayResolution, rayIndex / kProbeRayResolution, 0u);
+    group = uint3(lumenProbeTileForIndex(probeIndex, params.probeWidth), probeIndex % kLumenProbeSlotsPerTile);
+#elif defined(METALLIC_LUMEN_ACTIVE_PROBES)
+    uint probeIndex;
     if (!resolveLumenActiveProbe(group, resolveUniform(params.probeWorkList), resolveUniform(params.probeWorkState),
-            originalProbeIndex)) { return; }
-    group = uint3(lumenProbeTileForIndex(originalProbeIndex, params.probeWidth), originalProbeIndex % kLumenProbeSlotsPerTile);
+            probeIndex)) { return; }
+    group = uint3(lumenProbeTileForIndex(probeIndex, params.probeWidth), probeIndex % kLumenProbeSlotsPerTile);
+#elif defined(METALLIC_LUMEN_FINAL_GATHER)
+    const uint probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
+#else
+    const uint probeIndex = group.y * params.probeWidth + group.x;
 #endif
     Texture2D<float4> position = resolveUniform(params.position);
     RWStructuredBuffer<float4> traceOutput = resolveUniform(params.traceOutput);
@@ -280,14 +301,17 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         lumenProbeTraceAddress(lumenProbeIndex(readbackTile, group.z, params.traceReadbackTiles.z), lane.xy) :
         kInvalidProbeTraceReadbackIndex;
     LumenProbeTraceReadback readback = {-1.0f, -1.0f, -1.0f, -1.0f, float3(0.0f), -1.0f, ~0u, ~0u, 0u, 0u};
+#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+    if (readbackIndex != kInvalidProbeTraceReadbackIndex) {
+        readback = resolveUniform(params.traceReadback)[readbackIndex];
+    }
 #endif
-    uint probeIndex = group.y * params.probeWidth + group.x;
+#endif
+    const uint address = lumenProbeTraceAddress(probeIndex, lane.xy);
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
-    probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
     StructuredBuffer<uint2> probes = resolveUniform(params.probePositions);
     RWStructuredBuffer<float> distances = resolveUniform(params.traceDistance);
     uint2 probePixel = probes[probeIndex];
-    uint address = lumenProbeTraceAddress(probeIndex, lane.xy);
 #if !defined(METALLIC_LUMEN_ACTIVE_PROBES)
     if (probePixel.x == kLumenInvalidProbe) {
         traceOutput[address] = 0.0f;
@@ -300,7 +324,6 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
 #else
     uint2 probePixel = uniformProbePosition(group.xy, uint2(params.width, params.height));
-    uint address = lumenProbeTraceAddress(probeIndex, lane.xy);
 #endif
     float4 receiver = position.Load(int3(probePixel, 0));
     float4 trace = 0.0f;
@@ -341,6 +364,12 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         float screenContinuationDistance = 0.0f;
 #endif
 #if defined(METALLIC_LUMEN_SCREEN_TRACES)
+#if defined(METALLIC_LUMEN_PROBE_TRACE_FALLBACK_ONLY)
+#if defined(METALLIC_LUMEN_DETAIL_TRACING) && defined(METALLIC_LUMEN_RADIANCE_CACHE)
+        screenDistance = traceOutput[address].x;
+#endif
+        screenContinuationDistance = distances[address];
+#else
         LumenScreenTraceInputs screenInputs = {resolveUniform(params.closestHZB), resolveUniform(params.previousDepth),
             resolveUniform(params.previousColor), resolveUniform(params.traceView)};
         float3 screenRadiance;
@@ -361,6 +390,17 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #endif
             return;
         }
+#endif
+#if defined(METALLIC_LUMEN_PROBE_TRACE_SCREEN_ONLY)
+        // A pending ray temporarily uses the final atlas for its screen continuation state.
+        // The compacted fallback overwrites both outputs at this original address.
+        traceOutput[address] = float4(screenDistance, 0.0f, 0.0f, kLumenProbeRayPending);
+        distances[address] = screenContinuationDistance;
+#if defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+        writeProbeTraceReadback(params.traceReadback, readbackIndex, readback);
+#endif
+        return;
+#else
 #if defined(METALLIC_LUMEN_DETAIL_TRACING) || defined(METALLIC_LUMEN_SCREEN_GDF_CONTINUATION)
         voxelStartDistance = max(kMinTraceDistance, screenContinuationDistance - kSurfaceBias * 2.0f);
 #elif defined(METALLIC_LUMEN_RADIANCE_CACHE)
@@ -370,6 +410,8 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
         }
 #endif
 #endif
+#endif
+#if !defined(METALLIC_LUMEN_PROBE_TRACE_SCREEN_ONLY)
         LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
 #if defined(METALLIC_LUMEN_DETAIL_TRACING)
         const LumenMeshSDFGatherBindings detail = params.detail;
@@ -504,6 +546,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             // TraceVoxels with USE_VOXEL_TRACE_HIT_DISTANCE and SCREEN_PROBE_EXTRA_AO disabled.
             distances[address] = transparency <= 0.5f ? traceDistance : params.maxTraceDistance;
         }
+#endif
 #endif
 #endif
     } else {

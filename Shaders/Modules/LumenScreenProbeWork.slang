@@ -5,6 +5,8 @@ import LumenAdaptiveProbes;
 namespace Metallic.Lumen
 {
 public static const uint kLumenProbeDispatchWidth = 1024u;
+public static const uint kLumenProbeFallbackGroupSize = 64u;
+public static const float kLumenProbeRayPending = -1.0f;
 
 public uint2 lumenProbeTileForIndex(uint probeIndex, uint probeWidth)
 {
