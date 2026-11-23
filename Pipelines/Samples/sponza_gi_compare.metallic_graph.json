@@ -48,7 +48,8 @@
         {"id": 8, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 990, "y": 140},
             "properties": {
                 "maxTraceDistance": 40, "finalGather": true, "screenTraces": true,
-                "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "SH3", "maxRayDirections": 64
+                "screenTraceRelativeDepthThickness": 0.003, "irradianceFormat": "SH3", "maxRayDirections": 64,
+                "structuredImportanceSampling": true
             }},
         {"id": 9, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 1310, "y": 140},
             "properties": {"publishScreenTraceHistory": true, "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},

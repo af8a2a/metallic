@@ -1043,18 +1043,20 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     EncodedParameters importanceParams;
     bool importanceHistoryValid = false;
     if (compiledStructuredImportance_) {
-        auto* view = context.viewConstantsBuffer();
-        if (!view) {
+        auto* viewBuffer = context.viewConstantsBuffer();
+        if (!viewBuffer) {
             spdlog::error("Lumen structured probe importance sampling requires graph view constants");
             return makeError(Error::InvalidArgument);
         }
         structuredRayInfo = writer.buffer(context.outputBuffer("structuredRayInfo").buffer());
-        importanceHistoryValid = context.temporalValid("previousImportanceRadiance") &&
+        // A camera cut invalidates reprojection even when the graph history slots remain valid.
+        importanceHistoryValid = context.viewConstants()->frame[1] != 0u &&
+            context.temporalValid("previousImportanceRadiance") &&
             context.temporalValid("previousImportanceGeometry");
         const auto historyBuffer = [&](const char* name) { return writer.buffer(context.temporalBuffer(name).buffer.buffer()); };
         auto result = writer.encode(LumenScreenProbeImportanceParams{
             params.position, params.normal, params.blueNoiseVec2, params.probePositions, schedule.workList, schedule.workState,
-            writer.buffer(view), params.cacheIndirection, params.cacheClipmaps, params.cacheRadiance,
+            writer.buffer(viewBuffer), params.cacheIndirection, params.cacheClipmaps, params.cacheRadiance,
             writer.buffer(context.outputBuffer("probeBrdfPdfSH").buffer()),
             writer.buffer(context.outputBuffer("probeLightingPdf").buffer()), structuredRayInfo, params.traceInput,
             importanceHistoryValid ? historyBuffer("previousImportanceRadiance") : ShaderBuffer{},
