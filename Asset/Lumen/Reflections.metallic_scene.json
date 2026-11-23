@@ -1,0 +1,24 @@
+{
+    "version": 4,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "enabled": false,
+            "visible": false,
+            "sun": {"enabled": false},
+            "moon": {"enabled": false}
+        },
+        "lighting": {
+            "exposureEV100": 0.0,
+            "autoExposure": {"enabled": false},
+            "lights": []
+        }
+    },
+    "sources": [{"id": "large-scene", "path": "LargeScene.gltf"}],
+    "materials": [
+        {"sourceId": "large-scene", "materialIndex": 0, "sourceName": "Neutral Plaster",
+            "properties": {"roughnessFactor": 0.0, "metallicFactor": 0.8}},
+        {"sourceId": "large-scene", "materialIndex": 3, "sourceName": "Neutral Block",
+            "properties": {"roughnessFactor": 0.22, "metallicFactor": 0.8}}
+    ]
+}

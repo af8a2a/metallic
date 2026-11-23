@@ -1,5 +1,7 @@
 module LumenSurfaceCache;
 
+#include "../Interop/LumenCardUpdate.h"
+
 namespace Metallic.Lumen
 {
 public struct SurfaceCacheCard

@@ -140,6 +140,7 @@ struct HistoryResourceManager::Impl {
     uint64_t frameIndex = 0;
     uint64_t invalidationRevision = 1;
     uint64_t reprojectionInvalidationRevision = 1;
+    uint64_t motionReprojectionInvalidationRevision = 1;
     uint64_t geometryReprojectionInvalidationRevision = 1;
     std::unordered_map<std::string, std::shared_ptr<Record>> records;
 
@@ -338,6 +339,7 @@ HistoryResourceManager& HistoryResourceManager::operator=(HistoryResourceManager
 Result<> HistoryResourceManager::initialize(Device& device, uint32_t slotCount)
 {
     ++impl_->reprojectionInvalidationRevision;
+    ++impl_->motionReprojectionInvalidationRevision;
     ++impl_->geometryReprojectionInvalidationRevision;
     impl_->records.clear();
     impl_->device = &device;
@@ -352,6 +354,7 @@ Result<> HistoryResourceManager::initialize(Device& device, uint32_t slotCount)
 void HistoryResourceManager::reset()
 {
     ++impl_->reprojectionInvalidationRevision;
+    ++impl_->motionReprojectionInvalidationRevision;
     ++impl_->geometryReprojectionInvalidationRevision;
     impl_->records.clear();
     impl_->device = nullptr;
@@ -406,6 +409,9 @@ void HistoryResourceManager::invalidateAll(HistoryInvalidationReason reason)
     }
     impl_->advanceInvalidationRevision();
     if (reason != HistoryInvalidationReason::CameraMotion) { ++impl_->reprojectionInvalidationRevision; }
+    if (reason != HistoryInvalidationReason::CameraMotion && reason != HistoryInvalidationReason::GeometryMotion) {
+        ++impl_->motionReprojectionInvalidationRevision;
+    }
     if (reason != HistoryInvalidationReason::CameraMotion && reason != HistoryInvalidationReason::LightingChange) {
         ++impl_->geometryReprojectionInvalidationRevision;
     }
@@ -424,6 +430,11 @@ uint64_t HistoryResourceManager::invalidationRevision() const
 uint64_t HistoryResourceManager::reprojectionInvalidationRevision() const
 {
     return impl_->reprojectionInvalidationRevision;
+}
+
+uint64_t HistoryResourceManager::motionReprojectionInvalidationRevision() const
+{
+    return impl_->motionReprojectionInvalidationRevision;
 }
 
 uint64_t HistoryResourceManager::geometryReprojectionInvalidationRevision() const

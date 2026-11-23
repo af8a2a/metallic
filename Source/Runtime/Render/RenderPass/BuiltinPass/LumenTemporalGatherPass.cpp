@@ -17,7 +17,7 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030004ull;
+constexpr uint64_t kLumenTemporalGatherABI = 0x4c554d454e030005ull;
 
 struct LumenTemporalGatherParams {
     ShaderSampledImage indirectDiffuse, position, normal, directColor;
@@ -33,12 +33,17 @@ struct LumenTemporalGatherParams {
     float maxFramesAccumulated;
     ShaderSampledImage blueNoiseScalar;
     uint32_t frameIndex;
+    ShaderSampledImage previousPosition;
 };
-static_assert(sizeof(LumenTemporalGatherParams) == 256 && offsetof(LumenTemporalGatherParams, maxFramesAccumulated) == 240);
+static_assert(sizeof(LumenTemporalGatherParams) == 256 &&
+    offsetof(LumenTemporalGatherParams, maxFramesAccumulated) == 240 &&
+    offsetof(LumenTemporalGatherParams, previousPosition) == 252);
 
 struct HistoryContent {
     uint64_t reprojectionRevision = 0;
     uint64_t sceneIdentity = 0;
+    uint64_t sceneLifetimeRevision = 0;
+    uint64_t sceneStructuralRevision = 0;
     uint64_t sceneContentRevision = 0;
     uint64_t geometryTransformRevision = 0;
     uint64_t visibilityRevision = 0;
@@ -59,6 +64,12 @@ public:
     bool supportsExternalFrameOverlap() const override { return false; }
 
 private:
+    bool dynamicReprojection() const
+    {
+        const auto value = properties().find("dynamicReprojection");
+        return value != properties().end() && *value == true;
+    }
+
     bool publishesScreenTraceHistory() const
     {
         const auto value = properties().find("publishScreenTraceHistory");
@@ -84,6 +95,10 @@ RenderPassReflection LumenTemporalGatherPass::reflect(const RenderGraphCompileCo
     reflection.addTextureInput("position", "Receiver world position and positive linear view depth")
         .sampledRead().format = Format::RGBA32Sfloat;
     reflection.addTextureInput("normal", "Receiver shading normal").sampledRead().format = Format::RGBA16Sfloat;
+    if (dynamicReprojection()) {
+        reflection.addTextureInput("previousPosition", "Previous world position of the current receiver and validity")
+            .sampledRead().format = Format::RGBA32Sfloat;
+    }
     reflection.addTextureInput("directColor", "Unexposed scene color before indirect diffuse")
         .sampledRead().format = Format::RGBA32Sfloat;
     if (publishesScreenTraceHistory()) {
@@ -111,6 +126,11 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
         log = "Lumen Temporal Gather publishScreenTraceHistory must be a boolean";
         return makeError(Error::InvalidArgument);
     }
+    const auto dynamic = properties().find("dynamicReprojection");
+    if (dynamic != properties().end() && !dynamic->is_boolean()) {
+        log = "Lumen Temporal Gather dynamicReprojection must be a boolean";
+        return makeError(Error::InvalidArgument);
+    }
     const auto frames = properties().find("maxFramesAccumulated");
     if (frames != properties().end() && (!frames->is_number_integer() || *frames < 1 ||
         *frames > std::numeric_limits<int32_t>::max())) {
@@ -136,12 +156,15 @@ Result<> LumenTemporalGatherPass::compile(const RenderGraphCompileContext& conte
     } else {
         blueNoiseScalar_.reset();
     }
-    const SlangMacroDefine ditherDefine{"METALLIC_LUMEN_DITHER_HISTORY", "1"};
+    std::array<SlangMacroDefine, 2> defines{};
+    size_t defineCount = 0;
+    if (ditherHistory) { defines[defineCount++] = {"METALLIC_LUMEN_DITHER_HISTORY", "1"}; }
+    if (dynamicReprojection()) { defines[defineCount++] = {"METALLIC_LUMEN_DYNAMIC_REPROJECTION", "1"}; }
     lastContent_.reset();
     if (auto result = history_.initialize(*device_); !result) { return result; }
     return ShaderRegistry::instance().getComputeKernel(*device_,
         {.moduleName = "Features/DistanceField/LumenTemporalGather", .entryPointName = "lumenTemporalGatherMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = {&ditherDefine, ditherHistory ? 1u : 0u}},
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = {defines.data(), defineCount}},
         {.parameters = parameterAbi<LumenTemporalGatherParams>(kLumenTemporalGatherABI),
             .debugName = "LumenTemporalGather"}, kernel_, log);
 }
@@ -154,11 +177,17 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     const auto* world = context.world();
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const auto* globalHistory = context.historyResources();
+    const bool dynamic = dynamicReprojection();
+    const uint64_t reprojectionRevision = globalHistory
+        ? (dynamic ? globalHistory->motionReprojectionInvalidationRevision() : globalHistory->reprojectionInvalidationRevision())
+        : 0;
     const HistoryContent content{
-        .reprojectionRevision = globalHistory ? globalHistory->reprojectionInvalidationRevision() : 0,
+        .reprojectionRevision = reprojectionRevision,
         .sceneIdentity = scene ? scene->resourceIdentity() : 0,
+        .sceneLifetimeRevision = dynamic && scene ? scene->sceneGraph().lifetimeRevision() : 0,
+        .sceneStructuralRevision = dynamic && scene ? scene->sceneGraph().structuralRevision() : 0,
         .sceneContentRevision = scene ? scene->contentRevision() : 0,
-        .geometryTransformRevision = scene ? scene->geometryTransformRevision() : 0,
+        .geometryTransformRevision = !dynamic && scene ? scene->geometryTransformRevision() : 0,
         .visibilityRevision = scene ? scene->visibilityRevision() : 0,
         .lightingRevision = world ? world->lightingRevision() : 0,
         .environmentRevision = world ? world->environmentRevision() : 0,
@@ -233,6 +262,10 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
         {"historyWeight", Access::TextureStorageWrite}, {"currentDiffuse", Access::TextureStorageWrite},
         {"currentGeometry", Access::TextureStorageWrite},
     };
+    if (dynamic) {
+        params.previousPosition = writer.sampledImageHandle(context.inputTexture("previousPosition").view());
+        uses.push_back({"previousPosition", Access::TextureSampleRead});
+    }
     const auto import = [](std::string_view name, const HistoryTextureRef& texture) {
         return RenderGraphTextureImport{name, texture.texture, texture.view, texture.state, ResourceState::ShaderRead};
     };

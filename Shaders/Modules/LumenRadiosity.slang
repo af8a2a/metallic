@@ -12,7 +12,13 @@ namespace Metallic.Lumen
 public static const uint kRadiosityProbeSpacing = 4u;
 public static const uint kRadiosityRayResolution = 4u;
 public static const uint kRadiosityMaxFrames = 4u;
+public static const uint kRadiosityDispatchCardsPerRow = 256u;
+public static const uint kRadiosityScheduledCount = 0u;
+public static const uint kRadiosityRefreshCount = 1u;
 
+// The last _Texture argument is the SPIR-V Rgba16f image format (2). The
+// persistent atlas reads its own texel through the typed UAV before overwriting
+// it, which avoids requiring Vulkan's formatless storage image read feature.
 public typealias RadiosityImage = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 2>;
 
 public struct LumenRadiosityParams
@@ -44,7 +50,60 @@ public struct LumenRadiosityParams
     public uint temporalIndex;
     public float maxTraceDistance;
     public uint viewFrameIndex;
+#ifdef METALLIC_LUMEN_PERSISTENT_CARDS
+    public ResourceHandle<StructuredBuffer<uint2>> scheduledCards;
+    public ResourceHandle<StructuredBuffer<uint2>> refreshCards;
+    public ResourceHandle<StructuredBuffer<uint>> updateState;
+#endif
 };
+
+public bool getRadiosityDispatchTexel(inout LumenRadiosityParams params, uint3 thread, uint stride,
+    out uint2 atlasCoord)
+{
+#ifdef METALLIC_LUMEN_PERSISTENT_CARDS
+    const uint edge = params.tileResolution / stride;
+    const uint width = (edge + 7u) / 8u * 8u;
+    const uint listIndex = thread.x / width + thread.z * kRadiosityDispatchCardsPerRow;
+    const uint2 localCoord = uint2(thread.x % width, thread.y);
+    if (any(localCoord >= edge) ||
+        listIndex >= resolveUniform(params.updateState)[kRadiosityScheduledCount]) {
+        atlasCoord = 0u;
+        return false;
+    }
+    const uint2 scheduled = resolveUniform(params.scheduledCards)[listIndex];
+    const uint tilesPerRow = params.atlasSize / params.tileResolution;
+    atlasCoord = uint2(scheduled.x % tilesPerRow, scheduled.x / tilesPerRow) * edge + localCoord;
+    params.temporalIndex = scheduled.y;
+#else
+    atlasCoord = thread.xy;
+    if (any(atlasCoord >= params.atlasSize / stride)) { return false; }
+#endif
+    return true;
+}
+
+#ifdef METALLIC_LUMEN_PERSISTENT_CARDS
+public bool getRadiosityRefreshTexel(LumenRadiosityParams params, uint3 thread, out uint2 atlasCoord,
+    out bool reset, out bool active)
+{
+    const uint edge = params.tileResolution;
+    const uint width = (edge + 7u) / 8u * 8u;
+    const uint listIndex = thread.x / width + thread.z * kRadiosityDispatchCardsPerRow;
+    const uint2 localCoord = uint2(thread.x % width, thread.y);
+    if (any(localCoord >= edge) ||
+        listIndex >= resolveUniform(params.updateState)[kRadiosityRefreshCount]) {
+        atlasCoord = 0u;
+        reset = false;
+        active = false;
+        return false;
+    }
+    const uint2 selected = resolveUniform(params.refreshCards)[listIndex];
+    const uint tilesPerRow = params.atlasSize / edge;
+    atlasCoord = uint2(selected.x % tilesPerRow, selected.x / tilesPerRow) * edge + localCoord;
+    reset = (selected.y & 1u) != 0u;
+    active = (selected.y & 2u) != 0u;
+    return true;
+}
+#endif
 
 public struct RadiosityTexel
 {

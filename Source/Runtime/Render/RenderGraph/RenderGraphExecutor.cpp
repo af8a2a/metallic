@@ -1175,8 +1175,15 @@ struct RenderGraphExecutor::Impl {
         if (!result) { return result; }
         const bool forceRefresh = !sceneBindingsReady;
         bool changed = forceRefresh;
+        bool geometryMotion = !forceRefresh;
         for (size_t index = 0; index < executionList.size(); ++index) {
-            changed |= bindings[index] != executionList[index].sceneBinding;
+            const auto& previous = executionList[index].sceneBinding;
+            if (bindings[index] == previous) { continue; }
+            changed = true;
+            auto withCurrentTransform = previous;
+            // SceneBinding::version[4] is the world transform revision.
+            withCurrentTransform.version[4] = bindings[index].version[4];
+            geometryMotion &= bindings[index] == withCurrentTransform;
         }
         if (!changed) { return {}; }
         // Prepare the entire scene dependency set before recording any pass. Old
@@ -1184,8 +1191,9 @@ struct RenderGraphExecutor::Impl {
         result = waitForSubmittedWork(UINT64_MAX);
         if (!result) { return result; }
         sceneBindingsReady = false;
-        if (history != nullptr) { history->invalidateAll(); }
-        graphHistoryResources.invalidateAll();
+        const auto reason = geometryMotion ? HistoryInvalidationReason::GeometryMotion : HistoryInvalidationReason::Discontinuity;
+        if (history != nullptr) { history->invalidateAll(reason); }
+        graphHistoryResources.invalidateAll(reason);
         const RenderGraphCompileContext context{
             .device = device, .graphicsQueue = device->getQueue(QueueType::Graphics),
             .runtimeScene = runtimeScene,
@@ -4765,19 +4773,22 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex, .graphGeneration = impl_->profilingGeneration};
     impl_->lastExecutionStats.textureMemory = impl_->textureMemory;
     impl_->lastExecutionStats.bufferMemory = impl_->bufferMemory;
-    struct ExternalPooledStateRecord {
+    struct ExternalResourceStateRecord {
         std::string key;
         uint64_t backingId = 0;
         ResourceState beforeState = ResourceState::Undefined;
         ResourceState afterState = ResourceState::Undefined;
     };
-    std::vector<ExternalPooledStateRecord> externalPooledStates;
-    externalPooledStates.reserve(impl_->resources.size());
+    std::vector<ExternalResourceStateRecord> externalResourceStates;
+    externalResourceStates.reserve(impl_->resources.size());
+    // Serialized external frames also reuse ordinary graph backing. A cancelled
+    // command buffer must leave that backing in its last submitted layout.
+    const bool restoreSharedBacking = requiresCompletedFrame && frameResources != nullptr;
     for (const auto& [name, slot] : impl_->resources) {
-        if (slot.versionPoolEligible && !slot.aliasTransient) {
-            externalPooledStates.push_back({
+        if ((slot.versionPoolEligible || restoreSharedBacking) && !slot.aliasTransient) {
+            externalResourceStates.push_back({
                 .key = name,
-                .backingId = Impl::backingAllocationIdFor(slot.resource),
+                .backingId = slot.versionPoolEligible ? Impl::backingAllocationIdFor(slot.resource) : 0,
                 .beforeState = slot.resource.state,
             });
         }
@@ -4819,8 +4830,8 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         impl_->subsystemHost->publishDebugResources(commandBuffer, upload != nullptr ? upload->streamer() : nullptr,
             requiredSubsystems, *impl_->debugObserver);
     }
-    if (graphResult && postResult && !externalPooledStates.empty()) {
-        for (auto& rec : externalPooledStates) {
+    if (graphResult && postResult && !externalResourceStates.empty()) {
+        for (auto& rec : externalResourceStates) {
             if (auto iter = impl_->resources.find(rec.key); iter != impl_->resources.end()) {
                 rec.afterState = iter->second.resource.state;
             }
@@ -4828,8 +4839,8 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         std::shared_ptr<bool> alive = impl_->aliveToken;
         Impl* impl = impl_.get();
         const uint64_t compileGen = impl_->profilingGeneration;
-        auto poolTx = std::make_shared<SubmissionTransaction>(
-            [alive, impl, compileGen, records = externalPooledStates]() {
+        auto backingTx = std::make_shared<SubmissionTransaction>(
+            [alive, impl, compileGen, records = externalResourceStates]() {
                 if (!alive || !*alive || impl->profilingGeneration != compileGen) { return; }
                 for (const auto& rec : records) {
                     if (rec.backingId != 0) {
@@ -4838,7 +4849,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
                     }
                 }
             },
-            [alive, impl, compileGen, records = std::move(externalPooledStates)]() {
+            [alive, impl, compileGen, records = std::move(externalResourceStates)]() {
                 if (!alive || !*alive || impl->profilingGeneration != compileGen) { return; }
                 for (const auto& rec : records) {
                     if (auto iter = impl->resources.find(rec.key); iter != impl->resources.end()) {
@@ -4848,7 +4859,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
                     }
                 }
             });
-        (void)commandBuffer.addSubmissionTransaction(std::move(poolTx));
+        (void)commandBuffer.addSubmissionTransaction(std::move(backingTx));
     }
     const auto cpuEnd = std::chrono::steady_clock::now();
     impl_->lastExecutionStats.cpuMilliseconds =

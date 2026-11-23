@@ -60,6 +60,8 @@ void registerBuiltInRenderGraphPasses()
         []() { return builtin_pass::createLumenRadianceCachePass(); });
     registerRenderGraphPassType("LumenGlobalTracingPass", "Trace fixed world rays against the GDF and sample Surface Cache radiance",
         []() { return builtin_pass::createLumenGlobalTracingPass(); });
+    registerRenderGraphPassType("LumenReflectionPass", "Trace opaque mirror and rough reflections against the GDF",
+        []() { return builtin_pass::createLumenReflectionPass(); });
     registerRenderGraphPassType("LumenScreenProbeGatherPass", "Gather single-bounce Surface Cache lighting for visible diffuse receivers",
         []() { return builtin_pass::createLumenScreenProbeGatherPass(); });
     registerRenderGraphPassType("LumenScreenTraceSetupPass", "Build the current closest depth hierarchy and retain screen trace history",

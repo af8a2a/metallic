@@ -101,8 +101,8 @@ float3 computeLumenGlobalDistanceFieldNormal(QuantizedGlobalDistanceFieldSampler
     return gradientLength > 0.001f ? gradient / gradientLength : fallbackNormal;
 }
 
-public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
-    bool rejectRecedingExpansion, out bool recedingExpansionRejected)
+LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
+    bool rejectRecedingExpansion, GlobalDistanceFieldTraceOptions options, out bool recedingExpansionRejected)
 {
     LumenGlobalTraceResult result = (LumenGlobalTraceResult)0;
     result.metrics.x = -1.0f;
@@ -120,11 +120,10 @@ public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, L
     float3 origin = ray.originAndMinDistance.xyz;
     float3 rayDirection = ray.directionAndMaxDistance.xyz;
     uint hitClipmapIndex;
-    // UE 5.7.4 FConeTraceInput: unit SDF step factors, full coverage and expansion
-    // from ray time. The existing quantized tracer uses this same specialization.
+    // UE 5.7.4 FConeTraceInput, specialized to opaque full-coverage pages.
     GlobalDistanceFieldTrace hit = traceGlobalDistanceFieldClipmaps(field, scene.domains, scene.clipmapCount,
         origin, rayDirection, ray.originAndMinDistance.w, ray.directionAndMaxDistance.w, hitClipmapIndex,
-        0.0f, 0.0f, rejectRecedingExpansion);
+        0.0f, 0.0f, rejectRecedingExpansion, options);
     recedingExpansionRejected = hit.recedingExpansionRejected;
     result.metrics.xy = float2(hit.hitDistance, hit.surfaceExpansion);
     result.state.xyz = uint3(hit.classification, hitClipmapIndex, hit.stepCount);
@@ -132,14 +131,17 @@ public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, L
         return result;
     }
 
-    // UE 5.7.4 LumenSoftwareRayTracing.ush:649, opaque diffuse path.
+    // UE 5.7.4 LumenSoftwareRayTracing.ush:649, EvaluateGlobalDistanceFieldHit.
     field.domain = scene.domains[hitClipmapIndex];
     field.clipmapIndex = hitClipmapIndex;
     const float3 sampleWorldPosition = origin + rayDirection * hit.hitDistance;
     const float3 sampleWorldNormal = computeLumenGlobalDistanceFieldNormal(field, sampleWorldPosition, -rayDirection);
     const float clipmapVoxelExtent = field.domain.minAndVoxelSize.w * 0.5f;
     const float3 gridSampleWorldPosition = sampleWorldPosition + sampleWorldNormal * clipmapVoxelExtent;
-    const float radianceFactor = smoothstep(1.5f * clipmapVoxelExtent, 2.0f * clipmapVoxelExtent, hit.hitDistance);
+    float radianceFactor = 1.0f;
+    if (options.expandSurfaceUsingRayTime) {
+        radianceFactor = smoothstep(1.5f * clipmapVoxelExtent, 2.0f * clipmapVoxelExtent, hit.hitDistance);
+    }
     result.normal.xyz = sampleWorldNormal;
     result.metrics.w = radianceFactor;
     if (radianceFactor <= 0.0f) {
@@ -172,6 +174,21 @@ public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, L
         result.card.zw = asuint(accumulator.physicalAtlasUV);
     }
     return result;
+}
+
+public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
+    bool rejectRecedingExpansion, out bool recedingExpansionRejected)
+{
+    GlobalDistanceFieldTraceOptions options = {1.0f, true};
+    return traceLumenGlobalRay(scene, ray, rejectRecedingExpansion, options, recedingExpansionRejected);
+}
+
+public LumenGlobalTraceResult traceLumenReflectionGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray,
+    float stepFactor)
+{
+    GlobalDistanceFieldTraceOptions options = {stepFactor, false};
+    bool recedingExpansionRejected;
+    return traceLumenGlobalRay(scene, ray, false, options, recedingExpansionRejected);
 }
 
 public LumenGlobalTraceResult traceLumenGlobalRay(LumenGlobalTraceScene scene, LumenGlobalTraceRay ray)

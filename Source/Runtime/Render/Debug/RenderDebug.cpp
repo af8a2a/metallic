@@ -54,6 +54,7 @@ std::string textureLayout(Format format)
 {
     switch (format) {
     case Format::R8Unorm: return "R8";
+    case Format::R16Unorm: return "R16";
     case Format::RGBA8Unorm: case Format::RGBA8sRGB: return "RGBA8";
     case Format::BGRA8Unorm: case Format::BGRA8sRGB: return "BGRA8";
     case Format::B10G11R11UfloatPack32: return "B10G11R11_UFLOAT_PACK32";
@@ -403,8 +404,12 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
                 metadata["slice"] = copy.z;
                 metadata["sliceCount"] = copy.depth;
                 metadata["completeCoverage"] = copy.width == desc.width && copy.height == desc.height && copy.depth == depth;
-                metadata["encoding"] = (layoutName == "R8" || layoutName == "RGBA8" || layoutName == "BGRA8")
-                    ? "unorm8-storage-values" : "native";
+                if (layoutName == "R16") {
+                    metadata["encoding"] = "unorm16-storage-values";
+                } else {
+                    metadata["encoding"] = (layoutName == "R8" || layoutName == "RGBA8" || layoutName == "BGRA8")
+                        ? "unorm8-storage-values" : "native";
+                }
             } else {
                 const auto& desc = source.buffer->desc();
                 if ((uint32_t(desc.usage) & uint32_t(BufferUsageBits::TransferSource)) == 0) {

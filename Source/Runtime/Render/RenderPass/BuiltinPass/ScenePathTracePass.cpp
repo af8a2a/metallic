@@ -31,6 +31,7 @@
 
 #include <chrono>
 #include <limits>
+#include <ranges>
 
 #ifndef METALLIC_HAS_RTXCR
 #define METALLIC_HAS_RTXCR 0
@@ -104,6 +105,7 @@ struct LumenReceiverOutput {
     const char* description;
     Format format;
     ComputeResourceMember member;
+    const char* optIn = nullptr;
 };
 constexpr LumenReceiverOutput kLumenReceiverOutputs[] = {
     {"lumenPosition", "World position and positive linear view depth", Format::RGBA32Sfloat,
@@ -112,7 +114,18 @@ constexpr LumenReceiverOutput kLumenReceiverOutputs[] = {
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, normalCurrent)},
     {"lumenDiffuse", "Diffuse response including material occlusion and view transmittance", Format::RGBA16Sfloat,
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, baseColorMetalness)},
+    {"lumenPreviousPosition", "Previous world position of the current receiver and validity",
+        Format::RGBA32Sfloat, METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positionPrevious), "exportLumenPreviousPosition"},
+    {"lumenSpecular", "Integrated single-lobe specular response and perceptual roughness",
+        Format::RGBA16Sfloat, METALLIC_RESOURCE_MEMBER(SceneResourceParameters, noisySpecular), "exportLumenSpecular"},
 };
+
+auto lumenReceiverOutputs(const RenderGraphProperties& properties)
+{
+    return std::span{kLumenReceiverOutputs} | std::views::filter([&properties](const LumenReceiverOutput& output) {
+        return output.optIn == nullptr || boolProperty(&properties, output.optIn, false);
+    });
+}
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 struct OpenPBRLutTexture {
@@ -472,7 +485,7 @@ public:
                 .storageReadWrite().format = Format::R32Sfloat;
         }
         if (visibilityDeferred_ && boolProperty(properties(), "exportLumenReceivers", false)) {
-            for (const auto& receiver : kLumenReceiverOutputs) {
+            for (const auto& receiver : lumenReceiverOutputs(properties())) {
                 reflection.addTextureOutput(receiver.name, receiver.description).storageWrite().format = receiver.format;
             }
         }
@@ -723,7 +736,9 @@ public:
                 compiledHalfPrecision_ != boolProperty(properties(), "halfPrecision", true) ||
                 compiledStochasticFiltering_ != boolProperty(properties(), "stochasticTextureFiltering", false) ||
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false) ||
-                compiledExportLumenReceivers_ != boolProperty(properties(), "exportLumenReceivers", false))) {
+                compiledExportLumenReceivers_ != boolProperty(properties(), "exportLumenReceivers", false) ||
+                compiledExportLumenPreviousPosition_ != boolProperty(properties(), "exportLumenPreviousPosition", false) ||
+                compiledExportLumenSpecular_ != boolProperty(properties(), "exportLumenSpecular", false))) {
             return compile(context, log);
         }
         return {};
@@ -848,6 +863,12 @@ public:
         const bool globalView = visibilityDeferred_ && context.renderView != nullptr &&
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const bool exportLumenReceivers = visibilityDeferred_ && boolProperty(properties(), "exportLumenReceivers", false);
+        const bool exportLumenPreviousPosition = visibilityDeferred_ && boolProperty(properties(), "exportLumenPreviousPosition", false);
+        const bool exportLumenSpecular = visibilityDeferred_ && boolProperty(properties(), "exportLumenSpecular", false);
+        if ((exportLumenPreviousPosition || exportLumenSpecular) && !exportLumenReceivers) {
+            log = "Deferred exportLumenPreviousPosition and exportLumenSpecular require exportLumenReceivers";
+            return makeError(Error::InvalidArgument);
+        }
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|pathDiagnostics=" + (pathDiagnosticsEnabled() ? properties().at("diagnosticPixels").dump() : "off") +
             "|valuePrograms=" + std::to_string(hasValuePrograms() ? valuePrograms->key() : 0) +
@@ -867,7 +888,9 @@ public:
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|stochasticTextureFiltering=" + (visibilityDeferred_ && boolProperty(properties(), "stochasticTextureFiltering", false) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0") +
-            (exportLumenReceivers ? "|lumenReceivers=1" : "");
+            (exportLumenReceivers ? "|lumenReceivers=1" : "") +
+            (exportLumenPreviousPosition ? "|lumenPreviousPosition=1" : "") +
+            (exportLumenSpecular ? "|lumenSpecular=1" : "");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
             if (!result) {
@@ -999,7 +1022,7 @@ public:
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             if (exportLumenReceivers) {
-                for (const auto& receiver : kLumenReceiverOutputs) {
+                for (const auto& receiver : lumenReceiverOutputs(properties())) {
                     baseBindings.push_back({.binding = receiver.member, .kind = ComputeResourceBindingKind::StorageImage});
                 }
             }
@@ -1128,6 +1151,8 @@ public:
             // multi-sample integrator in its live program. Training is unchanged.
             std::vector<SlangMacroDefine> defines(extraDefines.begin(), extraDefines.end());
             if (exportLumenReceivers) { defines.push_back({"METALLIC_DEFERRED_LUMEN_RECEIVERS", "1"}); }
+            if (exportLumenPreviousPosition) { defines.push_back({"METALLIC_DEFERRED_LUMEN_PREVIOUS_POSITION", "1"}); }
+            if (exportLumenSpecular) { defines.push_back({"METALLIC_DEFERRED_LUMEN_SPECULAR", "1"}); }
             std::array<std::pair<std::string, std::string>, 17> diagnosticDefines;
             if (pathDiagnosticsEnabled()) {
                 const auto& pixels = properties().at("diagnosticPixels");
@@ -1380,6 +1405,8 @@ public:
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
         compiledExportLumenReceivers_ = exportLumenReceivers;
+        compiledExportLumenPreviousPosition_ = exportLumenPreviousPosition;
+        compiledExportLumenSpecular_ = exportLumenSpecular;
         return {};
     }
 
@@ -2021,7 +2048,7 @@ public:
                 push.deferredSettings |= kScenePathTraceExportUpscalerGuides;
             }
             if (compiledExportLumenReceivers_) {
-                for (const auto& receiver : kLumenReceiverOutputs) {
+                for (const auto& receiver : lumenReceiverOutputs(properties())) {
                     bindings.push_back({.binding = receiver.member, .textureView = context.outputTexture(receiver.name).view()});
                 }
             }
@@ -2348,7 +2375,7 @@ private:
                 resources.uses.push_back({"deviceDepth", Access::TextureStorageWrite});
             }
             if (compiledExportLumenReceivers_) {
-                for (const auto& receiver : kLumenReceiverOutputs) {
+                for (const auto& receiver : lumenReceiverOutputs(properties())) {
                     resources.uses.push_back({receiver.name, Access::TextureStorageWrite});
                 }
             }
@@ -3245,6 +3272,8 @@ private:
     bool compiledStochasticFiltering_ = false;
     bool compiledExportUpscalerGuides_ = false;
     bool compiledExportLumenReceivers_ = false;
+    bool compiledExportLumenPreviousPosition_ = false;
+    bool compiledExportLumenSpecular_ = false;
     bool compiledGlobalView_ = false;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;

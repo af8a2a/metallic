@@ -5165,10 +5165,10 @@ int32_t EditorApplication::selectedNodeIndex() const
 void EditorApplication::notifySceneTransformChanged(bool geometryChanged)
 {
     renderWorld_.notifySceneChanged(
-        render::RenderChangeBits::Lighting |
         render::RenderChangeBits::InvalidateTemporalHistory |
-        (geometryChanged ? render::RenderChangeBits::Geometry : render::RenderChangeBits::None));
-    historyResources_.invalidateAll();
+        (geometryChanged ? render::RenderChangeBits::Geometry : render::RenderChangeBits::Lighting));
+    historyResources_.invalidateAll(geometryChanged ? render::HistoryInvalidationReason::GeometryMotion :
+        render::HistoryInvalidationReason::Discontinuity);
     historyFrameIndex_ = 0;
     if (graphExecutor_ == nullptr || !graphExecutor_->compiled()) {
         viewportPreviewValid_ = false;

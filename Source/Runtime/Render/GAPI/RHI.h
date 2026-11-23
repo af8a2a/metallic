@@ -1930,6 +1930,7 @@ class CommandBuffer {
     // Native SDK consumers retain the view itself as well as its image.
     Result<> useNativeTextureView(TextureView& view);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
+    void clearDepthAttachment(float depth, const Rect& rect);
     void endRendering();
     [[nodiscard]] Result<> setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);

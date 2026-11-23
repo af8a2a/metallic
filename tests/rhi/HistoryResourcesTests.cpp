@@ -544,18 +544,19 @@ public:
         HistoryResourceManager manager;
         const auto revisions = [&]() {
             return std::array{manager.invalidationRevision(), manager.reprojectionInvalidationRevision(),
-                manager.geometryReprojectionInvalidationRevision()};
+                manager.geometryReprojectionInvalidationRevision(), manager.motionReprojectionInvalidationRevision()};
         };
         auto before = revisions();
         if (!manager.initialize(context.device) || revisions()[0] == before[0] ||
-            revisions()[1] == before[1] || revisions()[2] == before[2]) {
+            revisions()[1] == before[1] || revisions()[2] == before[2] || revisions()[3] == before[3]) {
             return RHITestResult::fail("Initialize must invalidate every history scope");
         }
         if (!manager.ensureBuffer("visibility", {.size = 64, .usage = BufferUsageBits::Storage})) {
             return RHITestResult::fail("Could not create scoped history validity fixture");
         }
         uint64_t frameIndex = 0;
-        for (const auto reason : {HistoryInvalidationReason::CameraMotion, HistoryInvalidationReason::LightingChange,
+        for (const auto reason : {HistoryInvalidationReason::CameraMotion, HistoryInvalidationReason::GeometryMotion,
+                HistoryInvalidationReason::LightingChange,
                 HistoryInvalidationReason::Discontinuity}) {
             manager.beginFrame(frameIndex++);
             manager.markWritten("visibility");
@@ -566,7 +567,10 @@ public:
             const auto after = revisions();
             if (after[0] == before[0] || manager.hasPrevious("visibility") ||
                 (after[1] != before[1]) != (reason != HistoryInvalidationReason::CameraMotion) ||
-                (after[2] != before[2]) != (reason == HistoryInvalidationReason::Discontinuity)) {
+                (after[2] != before[2]) != (reason == HistoryInvalidationReason::Discontinuity ||
+                    reason == HistoryInvalidationReason::GeometryMotion) ||
+                (after[3] != before[3]) != (reason == HistoryInvalidationReason::Discontinuity ||
+                    reason == HistoryInvalidationReason::LightingChange)) {
                 return RHITestResult::fail("Invalidation reason changed an unrelated reprojection scope or retained resource validity");
             }
         }
@@ -577,7 +581,8 @@ public:
         if (!host.initialize(context.device, 1, log)) { return RHITestResult::fail(log); }
         host.setWorld(&world);
         const auto lightingOnly = RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
-        for (const auto changes : {lightingOnly, lightingOnly | RenderChangeBits::Geometry,
+        const auto motionOnly = RenderChangeBits::Geometry | RenderChangeBits::InvalidateTemporalHistory;
+        for (const auto changes : {lightingOnly, motionOnly, lightingOnly | RenderChangeBits::Geometry,
                 lightingOnly | RenderChangeBits::Material, lightingOnly | RenderChangeBits::Residency,
                 RenderChangeBits::InvalidateTemporalHistory}) {
             before = revisions();
@@ -586,8 +591,9 @@ public:
             host.endFrame();
             const auto after = revisions();
             if (after[0] == before[0] || after[1] == before[1] ||
-                (after[2] != before[2]) != (changes != lightingOnly)) {
-                return RHITestResult::fail("Subsystem host failed to distinguish pure lighting from mixed or explicit discontinuity");
+                (after[2] != before[2]) != (changes != lightingOnly) ||
+                (after[3] != before[3]) != (changes != motionOnly)) {
+                return RHITestResult::fail("Subsystem host failed to distinguish motion or lighting from a discontinuity");
             }
         }
         before = revisions();
@@ -600,12 +606,13 @@ public:
         }
         before = revisions();
         manager.reset();
-        if (revisions()[0] == before[0] || revisions()[1] == before[1] || revisions()[2] == before[2]) {
+        if (revisions()[0] == before[0] || revisions()[1] == before[1] || revisions()[2] == before[2] ||
+            revisions()[3] == before[3]) {
             return RHITestResult::fail("Reset must invalidate every history scope");
         }
         before = revisions();
         if (!manager.initialize(context.device) || revisions()[0] == before[0] ||
-            revisions()[1] == before[1] || revisions()[2] == before[2]) {
+            revisions()[1] == before[1] || revisions()[2] == before[2] || revisions()[3] == before[3]) {
             return RHITestResult::fail("Reinitialize must invalidate every history scope");
         }
         return RHITestResult::pass();

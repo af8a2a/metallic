@@ -44,6 +44,22 @@ struct GlobalDistanceFieldPageBuildParams
     uint padding0;
     uint padding1;
     GlobalDistanceFieldDomain domains[6];
+#if defined(METALLIC_GLOBAL_DISTANCE_FIELD_PERSISTENT_PAGES)
+    ResourceHandle<RWTexture3D<uint>> pageHistory;
+    ResourceHandle<RWStructuredBuffer<int>> freeCount;
+    ResourceHandle<RWStructuredBuffer<uint>> freePages;
+    uint fullUpdate;
+    int4 pageMovements[6];
+#endif
+};
+
+struct GlobalDistanceFieldUpdateStatsParams
+{
+    ResourceHandle<RWStructuredBuffer<uint>> updateStatistics;
+    uint fullUpdate;
+    uint updatedPages;
+    uint preservedPages;
+    uint updatedLevels;
 };
 
 static const uint kRequiredPages = 0u;
@@ -74,6 +90,95 @@ void globalDistanceFieldClearPageStatsMain()
 }
 
 [shader("compute")]
+[numthreads(1, 1, 1)]
+void globalDistanceFieldPublishUpdateStatsMain()
+{
+    GlobalDistanceFieldUpdateStatsParams params = getParameters<GlobalDistanceFieldUpdateStatsParams>();
+    RWStructuredBuffer<uint> updateStatistics = resolveUniform(params.updateStatistics);
+    updateStatistics[0] = params.fullUpdate;
+    updateStatistics[1] = params.updatedPages;
+    updateStatistics[2] = params.preservedPages;
+    updateStatistics[3] = params.updatedLevels;
+}
+
+#if defined(METALLIC_GLOBAL_DISTANCE_FIELD_PERSISTENT_PAGES)
+static const uint kFreePageInitRowSize = 65536u;
+
+bool isLocalPageInRange(int3 page, uint pageCountPerAxis)
+{
+    return all(page >= 0) && all(page < int(pageCountPerAxis));
+}
+
+void countRetainedPage(RWStructuredBuffer<uint> statistics, uint pageIndex)
+{
+    if (pageIndex == kGlobalDistanceFieldPositivePage) {
+        InterlockedAdd(statistics[kPositivePages], 1u);
+    } else if (pageIndex == kGlobalDistanceFieldNegativePage) {
+        InterlockedAdd(statistics[kNegativePages], 1u);
+    } else {
+        InterlockedAdd(statistics[kRequiredPages], 1u);
+        InterlockedAdd(statistics[pageIndex < kGlobalDistanceFieldOverflowPage ? kResidentPages : kOverflowPages], 1u);
+    }
+}
+
+// UE 5.7.4 GlobalDistanceField.usf:351, InitPageFreeListCS.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void globalDistanceFieldInitFreePagesMain(uint3 thread : SV_DispatchThreadID)
+{
+    GlobalDistanceFieldPageBuildParams params = getParameters<GlobalDistanceFieldPageBuildParams>();
+    uint listIndex = thread.x + thread.y * kFreePageInitRowSize;
+    if (listIndex < params.maxPhysicalPages) {
+        resolveUniform(params.freePages)[listIndex] = params.maxPhysicalPages - 1u - listIndex;
+    }
+    if (listIndex == 0u) {
+        resolveUniform(params.freeCount)[0] = int(params.maxPhysicalPages);
+    }
+}
+
+// The published table uses logical coordinates. Snapshot moved levels before
+// overwriting them and return only pages whose old coordinates leave the clipmap.
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void globalDistanceFieldPreparePageScrollMain(uint3 thread : SV_DispatchThreadID)
+{
+    GlobalDistanceFieldPageBuildParams params = getParameters<GlobalDistanceFieldPageBuildParams>();
+    RWTexture3D<uint> pageTable = resolveUniform(params.pageTable);
+    uint3 tableDimensions;
+    pageTable.GetDimensions(tableDimensions.x, tableDimensions.y, tableDimensions.z);
+    if (any(thread >= tableDimensions)) {
+        return;
+    }
+
+    uint clipmapIndex = thread.z / tableDimensions.x;
+    int4 movement = params.pageMovements[clipmapIndex];
+    if (movement.w == 0) {
+        return;
+    }
+
+    uint pageIndex = pageTable[thread];
+    resolveUniform(params.pageHistory)[thread] = pageIndex;
+    int3 oldLocalPage = int3(thread.xy, thread.z % tableDimensions.x);
+    if (pageIndex < kGlobalDistanceFieldOverflowPage &&
+        !isLocalPageInRange(oldLocalPage - movement.xyz, tableDimensions.x)) {
+        int freeListLastElementIndex;
+        InterlockedAdd(resolveUniform(params.freeCount)[0], 1, freeListLastElementIndex);
+        resolveUniform(params.freePages)[freeListLastElementIndex] = pageIndex;
+    }
+}
+
+// UE 5.7.4 GlobalDistanceField.usf:582, after potentially failed pops.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void globalDistanceFieldFinalizeFreePagesMain()
+{
+    GlobalDistanceFieldPageBuildParams params = getParameters<GlobalDistanceFieldPageBuildParams>();
+    RWStructuredBuffer<int> freeCount = resolveUniform(params.freeCount);
+    freeCount[0] = max(freeCount[0], 0);
+}
+#endif
+
+[shader("compute")]
 [numthreads(4, 4, 4)]
 void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 cellCoordinate : SV_GroupThreadID,
     uint threadIndex : SV_GroupIndex)
@@ -97,6 +202,27 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 
         }
 #endif
     }
+
+#if defined(METALLIC_GLOBAL_DISTANCE_FIELD_PERSISTENT_PAGES)
+    if (params.fullUpdate == 0u) {
+        int4 movement = params.pageMovements[clipmapIndex];
+        int3 oldLocalPage = int3(localPage) + movement.xyz;
+        if (isLocalPageInRange(oldLocalPage, tableDimensions.x)) {
+            if (threadIndex == 0u) {
+                uint pageIndex;
+                if (movement.w != 0) {
+                    uint3 oldPage = uint3(oldLocalPage) + uint3(0, 0, clipmapIndex * tableDimensions.x);
+                    pageIndex = resolveUniform(params.pageHistory)[oldPage];
+                    pageTable[pageCoordinate] = pageIndex;
+                } else {
+                    pageIndex = pageTable[pageCoordinate];
+                }
+                countRetainedPage(statistics, pageIndex);
+            }
+            return;
+        }
+    }
+#endif
 
     if (params.instanceCount == 0u) {
         if (threadIndex == 0u) {
@@ -143,10 +269,19 @@ void globalDistanceFieldBuildPagesMain(uint3 pageCoordinate : SV_GroupID, uint3 
             pageIndex = kGlobalDistanceFieldNegativePage;
             InterlockedAdd(statistics[kNegativePages], 1u);
         } else {
+#if defined(METALLIC_GLOBAL_DISTANCE_FIELD_PERSISTENT_PAGES)
+            // UE 5.7.4 GlobalDistanceField.usf:504, pop the last free element.
+            int freeListSize;
+            InterlockedAdd(statistics[kRequiredPages], 1u);
+            InterlockedAdd(resolveUniform(params.freeCount)[0], -1, freeListSize);
+            if (freeListSize > 0) {
+                pageIndex = resolveUniform(params.freePages)[freeListSize - 1];
+#else
             uint allocation;
             InterlockedAdd(statistics[kRequiredPages], 1u, allocation);
             if (allocation < params.maxPhysicalPages) {
                 pageIndex = allocation;
+#endif
                 InterlockedAdd(statistics[kResidentPages], 1u);
             } else {
                 pageIndex = kGlobalDistanceFieldOverflowPage;

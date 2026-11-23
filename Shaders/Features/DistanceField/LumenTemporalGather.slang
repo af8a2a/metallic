@@ -37,6 +37,7 @@ struct LumenTemporalGatherParams
     float maxFramesAccumulated;
     ResourceHandle<Texture2D<float>> blueNoiseScalar;
     uint frameIndex;
+    ResourceHandle<Texture2D<float4>> previousPosition;
 };
 
 static const float kLumenHistoryDistanceThreshold = 0.01f;
@@ -100,9 +101,11 @@ float4 unpackNumFramesAccumulated(float4 packed, float maxFramesAccumulated)
         encodedNumFramesAccumulated / 15.0f * min(maxFramesAccumulated, 15.0f));
 }
 
-// Reprojection for static opaque surfaces in
-// UE 5.7.4 StochasticLightingTileClassification.usf, the linear-depth branch.
-void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, float3 normal, float4 newDiffuseLighting, float randomScalar,
+// UE 5.7.4 StochasticLightingTileClassification.usf, the opaque linear-depth branch.
+// With instance motion, the previous world point supplies the same two values
+// as GetHistoryScreenPosition: previous screen UV and previous scene depth.
+void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, float3 previousWorldPosition,
+    float3 normal, float4 newDiffuseLighting, float randomScalar,
     out float3 outDiffuseIndirect, out float newNumFramesAccumulated, out float outHistoryWeight)
 {
     outDiffuseIndirect = newDiffuseLighting.rgb;
@@ -110,10 +113,10 @@ void accumulateDiffuse(LumenTemporalGatherParams params, float3 worldPosition, f
     outHistoryWeight = 0.0f;
     ViewCameraConstants previousCamera = params.previousCamera;
     float3 previousForward = cameraForwardFrom(previousCamera.eye, previousCamera.center);
-    float reprojectedSceneDepth = dot(worldPosition - previousCamera.eye.xyz, previousForward);
+    float reprojectedSceneDepth = dot(previousWorldPosition - previousCamera.eye.xyz, previousForward);
     float2 historyScreenUV;
     if (reprojectedSceneDepth < previousCamera.clipOrtho.x || reprojectedSceneDepth > previousCamera.clipOrtho.y
-        || !projectWorldToUv(worldPosition, previousCamera.eye, previousCamera.center,
+        || !projectWorldToUv(previousWorldPosition, previousCamera.eye, previousCamera.center,
             previousCamera.upProjection, previousCamera.viewport, previousCamera.clipOrtho, historyScreenUV)) {
         return;
     }
@@ -199,8 +202,14 @@ void lumenTemporalGatherMain(uint3 thread : SV_DispatchThreadID)
     const float randomScalar = 0.0f;
 #endif
     if (params.historyValid != 0u && surface.w > 0.0f) {
-        accumulateDiffuse(params, surface.xyz, surfaceNormal, newDiffuseLighting, randomScalar, outDiffuseIndirect,
-            newNumFramesAccumulated, outHistoryWeight);
+        float4 previousSurface = surface;
+#if defined(METALLIC_LUMEN_DYNAMIC_REPROJECTION)
+        previousSurface = resolveUniform(params.previousPosition).Load(texel);
+#endif
+        if (previousSurface.w > 0.0f) {
+            accumulateDiffuse(params, surface.xyz, previousSurface.xyz, surfaceNormal, newDiffuseLighting, randomScalar,
+                outDiffuseIndirect, newNumFramesAccumulated, outHistoryWeight);
+        }
     }
 
     DiffuseTexture indirectOutput = resolveUniform(params.indirectOutput);

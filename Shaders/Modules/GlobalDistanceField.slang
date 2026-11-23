@@ -34,6 +34,12 @@ public interface IGlobalDistanceFieldSampler
     bool sample(float3 worldPosition, out float distance);
 };
 
+public struct GlobalDistanceFieldTraceOptions
+{
+    public float stepFactor;
+    public bool expandSurfaceUsingRayTime;
+};
+
 public float3 globalDistanceFieldVoxelCenter(GlobalDistanceFieldDomain domain, uint3 texel)
 {
     // UE's half-voxel composition bias cancels the half-voxel physical page border.
@@ -91,7 +97,8 @@ public float2 clipGlobalDistanceFieldRay(GlobalDistanceFieldDomain domain, float
 // UE 5.7.4 GlobalDistanceFieldUtils.ush:127, with the opaque visualization settings.
 public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDistanceFieldSampler>(T distanceField,
     GlobalDistanceFieldDomain domain, float3 rayStart, float3 rayDirection, float2 intersectionTimes,
-    float clipmapRayBias = 0.0f, bool rejectRecedingExpansion = false)
+    float clipmapRayBias, bool rejectRecedingExpansion, GlobalDistanceFieldTraceOptions options,
+    inout float maxDistance)
 {
     GlobalDistanceFieldTrace result = {-1.0f, 0u, kGlobalDistanceFieldStepLimit, 0.0f, false};
     const float voxelExtent = domain.minAndVoxelSize.w * 0.5f;
@@ -105,7 +112,11 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDista
             break;
         }
         ++result.stepCount;
-        float surfaceExpansion = voxelExtent * saturate((sampleRayTime - clipmapRayBias) / expandSurfaceFalloff);
+        if (!options.expandSurfaceUsingRayTime) {
+            maxDistance = max(distance, maxDistance);
+        }
+        float expandSurfaceTime = options.expandSurfaceUsingRayTime ? sampleRayTime - clipmapRayBias : maxDistance;
+        float surfaceExpansion = voxelExtent * saturate(expandSurfaceTime / expandSurfaceFalloff);
         if (distance < surfaceExpansion) {
             // An exterior sample moving away from the field surface only intersects its expansion.
             if (rejectRecedingExpansion && distance > 0.0f &&
@@ -120,7 +131,7 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDista
             }
         }
 
-        float stepDistance = max(distance, voxelExtent);
+        float stepDistance = max(distance * options.stepFactor, voxelExtent);
         sampleRayTime += stepDistance;
         if (sampleRayTime > intersectionTimes.y) {
             result.classification = kGlobalDistanceFieldMiss;
@@ -128,6 +139,16 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDista
         }
     }
     return result;
+}
+
+public GlobalDistanceFieldTrace traceGlobalDistanceFieldSegment<T : IGlobalDistanceFieldSampler>(T distanceField,
+    GlobalDistanceFieldDomain domain, float3 rayStart, float3 rayDirection, float2 intersectionTimes,
+    float clipmapRayBias = 0.0f, bool rejectRecedingExpansion = false)
+{
+    GlobalDistanceFieldTraceOptions options = {1.0f, true};
+    float maxDistance = 0.0f;
+    return traceGlobalDistanceFieldSegment(distanceField, domain, rayStart, rayDirection, intersectionTimes,
+        clipmapRayBias, rejectRecedingExpansion, options, maxDistance);
 }
 
 // Preserve the one-level diagnostic's classification when it only covers part of the ray.

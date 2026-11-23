@@ -5277,21 +5277,9 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
     return {};
 }
 
-void CommandBuffer::clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect)
+static void clearAttachment(detail::CommandBufferImpl& commands, const VkClearAttachment& attachment, const Rect& rect)
 {
-    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
-        return;
-    }
-
-    VkClearAttachment attachment{
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .colorAttachment = attachmentIndex,
-        .clearValue = {
-            .color = {{color.r, color.g, color.b, color.a}},
-        },
-    };
-
-    VkClearRect clearRect{
+    const VkClearRect clearRect{
         .rect = {
             .offset = {rect.x, rect.y},
             .extent = {rect.width, rect.height},
@@ -5299,8 +5287,36 @@ void CommandBuffer::clearColorAttachment(uint32_t attachmentIndex, const ColorVa
         .baseArrayLayer = 0,
         .layerCount = 1,
     };
+    commands.device->functions.vkCmdClearAttachments(commands.commandBuffer, 1, &attachment, 1, &clearRect);
+}
 
-    impl_->device->functions.vkCmdClearAttachments(impl_->commandBuffer, 1, &attachment, 1, &clearRect);
+void CommandBuffer::clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect)
+{
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
+        return;
+    }
+
+    const VkClearAttachment attachment{
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .colorAttachment = attachmentIndex,
+        .clearValue = {
+            .color = {{color.r, color.g, color.b, color.a}},
+        },
+    };
+
+    clearAttachment(*impl_, attachment, rect);
+}
+
+void CommandBuffer::clearDepthAttachment(float depth, const Rect& rect)
+{
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
+        return;
+    }
+    const VkClearAttachment attachment{
+        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+        .clearValue = {.depthStencil = {depth, 0}},
+    };
+    clearAttachment(*impl_, attachment, rect);
 }
 
 void CommandBuffer::endRendering()

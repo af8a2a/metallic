@@ -62,6 +62,7 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
         {"gdfPrefixMeshSDFConfirmed", "u32", offsetof(ProbeTrace, flags), 1, 16, 1},
         {"gdfPrefixMeshSDFInconclusive", "u32", offsetof(ProbeTrace, flags), 1, 17, 1}}});
     add({"R8", 1, {{"r", "u8", 0}}});
+    add({"R16", 2, {{"r", "u16", 0}}});
     add({"RGBA8", 4, {{"r", "u8", 0}, {"g", "u8", 1}, {"b", "u8", 2}, {"a", "u8", 3}}});
     add({"BGRA8", 4, {{"b", "u8", 0}, {"g", "u8", 1}, {"r", "u8", 2}, {"a", "u8", 3}}});
     add({"B10G11R11_UFLOAT_PACK32", 4, {{"packed", "u32", 0}}});

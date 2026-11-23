@@ -148,9 +148,11 @@ float rasterHandedness(GPUDrivenPreviewInstance instance)
     return dot(instance.world0.xyz, cross(instance.world1.xyz, instance.world2.xyz)) < 0.0 ? -1.0 : 1.0;
 }
 
-bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex, Ray ray, ScenePathTracePush push, out HitInfo hit)
+bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex, Ray ray, ScenePathTracePush push,
+    out HitInfo hit, out float3 previousPosition)
 {
     hit = (HitInfo)0;
+    previousPosition = 0.0f;
     VisibleClusterRecord record;
     float3 a, b, c;
     StreamTriangleDecodeContext decodeContext;
@@ -188,6 +190,16 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
         bary = float3(1.0 - yz.x - yz.y, yz);
     }
 
+#if METALLIC_DEFERRED_LUMEN_PREVIOUS_POSITION
+    // Add rigid mesh motion to the actual current raster hit, preserving its
+    // depth and jitter convention when the two instance transforms match.
+    float3 localPosition = a * bary.x + b * bary.y + c * bary.z;
+    previousPosition = hit.position + (
+        (instance.previousWorld0.xyz - instance.world0.xyz) * localPosition.x +
+        (instance.previousWorld1.xyz - instance.world1.xyz) * localPosition.y +
+        (instance.previousWorld2.xyz - instance.world2.xyz) * localPosition.z +
+        (instance.previousWorld3.xyz - instance.world3.xyz));
+#endif
     float3 normals[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributes(gStreamPages, decodeContext, normals, uv, tangents, !hasDomain);
     if (!hasDomain) {
@@ -244,12 +256,14 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     return true;
 }
 
-bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push, out HitInfo hit)
+bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push, out HitInfo hit,
+    out float3 previousPosition)
 {
     hit = (HitInfo)0;
+    previousPosition = 0.0f;
     uint recordIndex, triangleIndex;
     if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return false; }
-    return reconstructStreamSurface(pixel, recordIndex, triangleIndex, ray, push, hit);
+    return reconstructStreamSurface(pixel, recordIndex, triangleIndex, ray, push, hit, previousPosition);
 }
 
 // Both schedules resolve the same raster surface. The RNG is used only by
@@ -310,11 +324,12 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
     float2 rayPixel = samplePixel + float2(push.jitterOffsetX, push.jitterOffsetY);
     Ray ray = cameraRayFromPixel(basis, rayPixel);
     HitInfo hit;
+    float3 previousPosition = 0.0f;
     float3 radiance;
     DeferredLumenReceiver receiver = {};
 #if MATERIAL_CLASS == 0
     bool hasSurface = ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u ||
-        push.debugView != kOpenPBRDebugViewFinal) && reconstructVisibilitySurface(pixel, ray, push, hit);
+        push.debugView != kOpenPBRDebugViewFinal) && reconstructVisibilitySurface(pixel, ray, push, hit, previousPosition);
     if ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u) {
         float deviceDepth = gVisibilityDepth.Load(int3(pixel, 0));
         // Upscaler guides retain the standard-depth contract.
@@ -326,7 +341,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
         ? float3(0.0)
         : environmentRadiance(ray.direction, push, true, ray.origin);
 #else
-    bool hasSurface = reconstructVisibilitySurface(pixel, ray, push, hit);
+    bool hasSurface = reconstructVisibilitySurface(pixel, ray, push, hit, previousPosition);
     if ((push.deferredSettings & kScenePathTraceExportUpscalerGuides) != 0u) {
         float deviceDepth = gVisibilityDepth.Load(int3(pixel, 0));
         // Upscaler guides retain the standard-depth contract.
@@ -366,6 +381,13 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push, CameraRayBasis b
         resolveUniform(resources.positionCurrent)[pixel] = receiver.positionAndDepth;
         resolveUniform(resources.normalCurrent)[pixel] = float4(receiver.normal, 0.0f);
         resolveUniform(resources.baseColorMetalness)[pixel] = float4(receiver.diffuse, 0.0f);
+#if METALLIC_DEFERRED_LUMEN_SPECULAR
+        resolveUniform(resources.noisySpecular)[pixel] = receiver.specularAndRoughness;
+#endif
+#if METALLIC_DEFERRED_LUMEN_PREVIOUS_POSITION
+        resolveUniform(resources.positionPrevious)[pixel] = receiver.positionAndDepth.w > 0.0f && push.previousCameraValid != 0u
+            ? float4(previousPosition, 1.0f) : 0.0f;
+#endif
     }
     sceneOutput()[pixel] = float4(max(radiance, float3(0.0)), 1.0);
 }

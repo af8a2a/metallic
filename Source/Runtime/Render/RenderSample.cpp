@@ -304,6 +304,15 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/lumen_large_scene.metallic_graph.json"; }
 };
 
+class LumenReflectionSample final : public MeshDistanceFieldSample {
+public:
+    std::string_view id() const override { return "lumen-reflections"; }
+    std::string_view name() const override { return "Lumen / Reflections"; }
+    std::string_view description() const override { return "Trace mirror and rough reflections in the Lumen rooms."; }
+    std::string scenePath() const override { return "Asset/Lumen/Reflections.metallic_scene.json"; }
+    std::string graphPath() const override { return "Pipelines/Samples/lumen_large_scene.metallic_graph.json"; }
+};
+
 class LumenRadianceCacheSample final : public MeshDistanceFieldSample {
 public:
     std::string_view id() const override { return "lumen-radiance-cache"; }
@@ -1166,6 +1175,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         "Compare path tracing and realtime GI with VSM in the same view.",
         sponzaGIScene, "Pipelines/Samples/sponza_gi_compare.metallic_graph.json"};
     static const LumenLargeSceneSample lumenLargeScene;
+    static const LumenReflectionSample lumenReflection;
     static const LumenRadianceCacheSample lumenRadianceCache;
     static const LumenDetailTracingSample lumenDetailTracing;
     static const GlobalDistanceFieldClipmapsSample globalDistanceFieldClipmaps;
@@ -1199,6 +1209,8 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &cornellBoxPathTracing,
         &cornellBoxRealtime,
         &cornellBoxCompare,
+        &lumenLargeScene,
+        &lumenReflection,
         &sponzaGIRealtime,
         &sponzaGIPathTracing,
         &sponzaGICompare,
@@ -1269,7 +1281,6 @@ std::vector<const RenderSample*> builtInRenderSamples()
         samples.push_back(&lumenSingleBounce);
     }
     if (std::ranges::all_of(cornellBoxMeshes, hasLumenMeshCache)) {
-        samples.push_back(&lumenLargeScene);
         samples.push_back(&lumenRadianceCache);
         samples.push_back(&lumenDetailTracing);
     }

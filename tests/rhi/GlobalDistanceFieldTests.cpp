@@ -1,6 +1,8 @@
 #include "MeshDistanceFieldFixture.h"
 #include "RHITest.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/HistoryResources.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -1304,6 +1306,299 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(GlobalDistanceFieldClipmapTest);
+
+constexpr uint32_t kPersistentClipmapCount = 3;
+constexpr uint32_t kPersistentResolution = 28;
+constexpr float kPersistentExtent = 1.75f;
+constexpr uint32_t kPersistentPageEdge = kPersistentResolution / kLogicalPageWidth;
+constexpr uint32_t kPersistentMipEdge = kPersistentResolution / kCoarseFactor;
+constexpr uint32_t kPersistentAtlasPages = 6;
+constexpr uint32_t kPersistentAtlasEdge = kPersistentAtlasPages * kPhysicalPageWidth;
+constexpr uint32_t kPersistentCapacity = kPersistentAtlasPages * kPersistentAtlasPages * kPersistentAtlasPages;
+constexpr uint32_t kPersistentPageSlab = kPersistentPageEdge * kPersistentPageEdge;
+constexpr uint32_t kPersistentVirtualPages = kPersistentClipmapCount * kPersistentPageSlab * kPersistentPageEdge;
+constexpr size_t kObjectGridWordsPerPage = 64 * 4;
+constexpr std::string_view kPersistentPass = "PersistentGDF";
+constexpr std::string_view kFullReferencePass = "FullGDF";
+
+debug::DebugValue persistentCaptureResources(std::string_view pass, bool persistent)
+{
+    const auto field = [&](std::string_view name) { return render::makeRenderGraphFieldName(pass, name); };
+    auto resources = debug::DebugValue::array({
+        textureCapture(field("pageTable"), kPersistentPageEdge, kPersistentPageEdge,
+            kPersistentPageEdge * kPersistentClipmapCount),
+        textureCapture(field("pageAtlas"), kPersistentAtlasEdge, kPersistentAtlasEdge, kPersistentAtlasEdge),
+        textureCapture(field("coarseMip"), kPersistentMipEdge, kPersistentMipEdge,
+            kPersistentMipEdge * kPersistentClipmapCount),
+        {{"id", field("domain")}, {"layout", "f32"}, {"count", kPersistentClipmapCount * 8}},
+        {{"id", field("statistics")}, {"layout", "u32"}, {"count", 5}},
+        {{"id", field("objectGrid")}, {"layout", "u32"}, {"count", kPersistentCapacity * kObjectGridWordsPerPage}},
+    });
+    if (persistent) {
+        resources.push_back({{"id", field("updateStatistics")}, {"layout", "u32"}, {"count", 4}});
+        resources.push_back({{"id", field("freeCount")}, {"layout", "u32"}, {"count", 1}});
+    }
+    return resources;
+}
+
+std::string checkPersistentClipmaps(const debug::DebugCapture& persistent, const debug::DebugCapture& reference,
+    const std::array<uint32_t, 4>& expectedUpdate)
+{
+    if (persistent.artifacts.size() != 8 || reference.artifacts.size() != 6 ||
+        persistent.artifacts[6].bytes.size() != sizeof(expectedUpdate) ||
+        persistent.artifacts[7].bytes.size() != sizeof(uint32_t)) {
+        return "Expected distance fields, object grids, update counters and free page count";
+    }
+    const auto update = readGdfElement<std::array<uint32_t, 4>>(persistent.artifacts[6].bytes, 0);
+    if (update != expectedUpdate) {
+        return "Unexpected GDF update counters [full, updated, preserved, coarse levels]: " +
+            nlohmann::json(update).dump() + ", expected " + nlohmann::json(expectedUpdate).dump();
+    }
+    for (const auto* capture : {&persistent, &reference}) {
+        const auto& fields = capture->artifacts;
+        if (!matchesVolumeLayout(fields[0], kPersistentPageEdge, "u32", kPersistentClipmapCount) ||
+            !matchesVolumeLayout(fields[1], kPersistentAtlasEdge, "R8") ||
+            !matchesVolumeLayout(fields[2], kPersistentMipEdge, "R8", kPersistentClipmapCount) ||
+            fields[3].bytes.size() != kPersistentClipmapCount * 8 * sizeof(float) ||
+            fields[4].bytes.size() != 5 * sizeof(uint32_t) ||
+            fields[5].bytes.size() != kPersistentCapacity * kObjectGridWordsPerPage * sizeof(uint32_t)) {
+            return "Unexpected persistent clipmap capture layout";
+        }
+    }
+    const auto& actual = persistent.artifacts;
+    const auto& full = reference.artifacts;
+    if (actual[2].bytes != full[2].bytes || actual[3].bytes != full[3].bytes || actual[4].bytes != full[4].bytes) {
+        return "Persistent GDF coarse mip, domains, or page statistics differ from a full rebuild";
+    }
+    const uint32_t residentCount = readGdfElement<uint32_t>(actual[4].bytes, 1);
+    const uint32_t freeCount = readGdfElement<uint32_t>(actual[7].bytes, 0);
+    if (residentCount > kPersistentCapacity || freeCount != kPersistentCapacity - residentCount) {
+        return "The persistent page pool lost or duplicated a physical slot";
+    }
+    std::array<bool, kPersistentCapacity> physicalPages{};
+    for (uint32_t virtualPage = 0; virtualPage < kPersistentVirtualPages; ++virtualPage) {
+        const uint32_t page = readGdfElement<uint32_t>(actual[0].bytes, virtualPage);
+        const uint32_t fullPage = readGdfElement<uint32_t>(full[0].bytes, virtualPage);
+        if (page == kPositivePage || page == kNegativePage) {
+            if (page != fullPage) { return "Persistent GDF constant page differs at " + std::to_string(virtualPage); }
+            continue;
+        }
+        if (page >= kPersistentCapacity || fullPage >= kPersistentCapacity || physicalPages[page]) {
+            return "Persistent GDF physical page missing or aliased at " + std::to_string(virtualPage);
+        }
+        physicalPages[page] = true;
+        for (uint32_t z = 0; z < kPhysicalPageWidth; ++z) {
+            for (uint32_t y = 0; y < kPhysicalPageWidth; ++y) {
+                const size_t offset = atlasVoxelIndex(page, 0, y, z, kPersistentAtlasPages);
+                const size_t fullOffset = atlasVoxelIndex(fullPage, 0, y, z, kPersistentAtlasPages);
+                if (std::memcmp(actual[1].bytes.data() + offset, full[1].bytes.data() + fullOffset, kPhysicalPageWidth)) {
+                    return "Persistent GDF R8 texels differ at virtual page " + std::to_string(virtualPage);
+                }
+            }
+        }
+        constexpr size_t objectGridBytesPerPage = kObjectGridWordsPerPage * sizeof(uint32_t);
+        if (std::memcmp(actual[5].bytes.data() + page * objectGridBytesPerPage,
+                full[5].bytes.data() + fullPage * objectGridBytesPerPage, objectGridBytesPerPage)) {
+            return "Persistent GDF object cells differ at virtual page " + std::to_string(virtualPage);
+        }
+    }
+    return {};
+}
+
+std::string checkPersistentScrollPageIds(const debug::DebugCapture& before, const debug::DebugCapture& after)
+{
+    const auto& previousTable = before.artifacts[0].bytes;
+    const auto& currentTable = after.artifacts[0].bytes;
+    uint32_t preservedResidentPages = 0;
+    for (uint32_t z = 0; z < kPersistentPageEdge * kPersistentClipmapCount; ++z) {
+        const uint32_t scrollX = z < kPersistentPageEdge ? 1u : 0u;
+        for (uint32_t y = 0; y < kPersistentPageEdge; ++y) {
+            for (uint32_t x = 0; x < kPersistentPageEdge - scrollX; ++x) {
+                const uint32_t previous = readGdfElement<uint32_t>(previousTable,
+                    linearVoxelIndex(x + scrollX, y, z, kPersistentPageEdge));
+                const uint32_t current = readGdfElement<uint32_t>(currentTable,
+                    linearVoxelIndex(x, y, z, kPersistentPageEdge));
+                if (previous != current) { return "A retained virtual page changed its physical ID or sentinel"; }
+                preservedResidentPages += uint32_t(scrollX != 0 && current < kPersistentCapacity);
+            }
+        }
+    }
+    return preservedResidentPages == 0 ? "The scroll fixture did not retain a resident fine page" : std::string();
+}
+
+class GlobalDistanceFieldPersistentPagesTest final : public RHITest {
+public:
+    GlobalDistanceFieldPersistentPagesTest()
+    {
+        name = "global_distance_field_persistent_pages";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto fixtureDirectory = context.outputDirectory / "PersistentGlobalDistanceField";
+        std::error_code directoryError;
+        std::filesystem::create_directories(fixtureDirectory, directoryError);
+        if (directoryError) { return RHITestResult::fail(directoryError.message()); }
+        scene::SceneDocument document;
+        std::array<std::string, 2> paths;
+        std::string log;
+        if (!prepareFieldPaths(fixtureDirectory, document, paths, log)) { return RHITestResult::fail(log); }
+
+        bench::ValidationRecorder validation;
+        auto device = bench::createTestDevice(context, {.applicationName = "Persistent GDF pages",
+            .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true, .validationSink = validation.sink()});
+        if (!device) { return RHITestResult::fail("Could not initialize the persistent GDF device"); }
+        auto& gpu = **device;
+        if (!gpu.capabilities().shaderStorageImageExtendedFormats) {
+            return RHITestResult::skip("Persistent GDF requires R8 storage image support");
+        }
+
+        RenderGraph graph;
+        nlohmann::json properties{{"distanceFieldPaths", paths}, {"extent", kPersistentExtent},
+            {"resolution", kPersistentResolution}, {"quantized", true}, {"clipmapCount", kPersistentClipmapCount},
+            {"maxPhysicalPages", kPersistentCapacity}, {"buildObjectGrid", true}};
+        if (!graph.addNode("GlobalDistanceFieldPagesPass", std::string(kFullReferencePass), properties) ||
+            !graph.markOutput(makeRenderGraphFieldName(kFullReferencePass, "coarseMip"))) {
+            return RHITestResult::fail("Could not configure the full-rebuild GDF reference");
+        }
+        properties["persistentPages"] = true;
+        if (!graph.addNode("GlobalDistanceFieldPagesPass", std::string(kPersistentPass), std::move(properties)) ||
+            !graph.markOutput(makeRenderGraphFieldName(kPersistentPass, "coarseMip"))) {
+            return RHITestResult::fail("Could not configure the persistent GDF candidate");
+        }
+
+        ViewCamera camera;
+        camera.nearPlane = kNearPlane;
+        camera.farPlane = 12.0f;
+        camera.orthographic = true;
+        camera.orthoHeight = kClipmapOrthoHeight;
+        RenderView view;
+        const auto moveCamera = [&](float x, float y = 0.0f) {
+            camera.eye = {x, y, 1.4f};
+            camera.center = {x, y, 0.4f};
+            return view.setCamera(camera);
+        };
+        if (!view.setRenderResolution(kWidth, kHeight) || !moveCamera(0.0f)) {
+            return RHITestResult::fail("Invalid persistent GDF test view");
+        }
+        HistoryResourceManager history;
+        if (!history.initialize(gpu)) { return RHITestResult::fail("Could not initialize graph history"); }
+        RenderDebugRuntime inspector{{}, RenderDebugDetail::Resources};
+        RenderGraphExecutor executor;
+        executor.bindRuntimeScene(&document);
+        executor.bindRenderView(&view);
+        executor.setDebugObserver(&inspector);
+        if (!executor.compile(gpu, graph, kWidth, kHeight, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+            return RHITestResult::fail("Persistent GDF compile: " + log);
+        }
+
+        auto* queue = gpu.getQueue(QueueType::Graphics);
+        {
+            // Cancel the first recording before its initial image transitions
+            // or page state have reached the queue.
+            auto pool = gpu.createCommandPool(*queue);
+            if (!pool) { return RHITestResult::fail("Could not allocate a GDF cancellation command pool"); }
+            auto commands = (*pool)->createCommandBuffer();
+            RenderFrameContext frame;
+            if (!commands || !frame.begin(0) || !(*commands)->begin(frame.submissionContext()) ||
+                !executor.execute(**commands, &history) || !(*commands)->end()) {
+                return RHITestResult::fail("Could not record the GDF frame to cancel");
+            }
+            frame.cancel();
+            if (!executor.waitForSubmittedWork()) { return RHITestResult::fail("Could not retire the cancelled GDF frame"); }
+        }
+        const RenderGraphSubmitDesc submission{.graphicsQueue = queue,
+            .historyResources = &history, .recordingWorkerLimit = 1};
+        const auto runFrame = [&](const std::array<uint32_t, 4>& expected) -> std::shared_ptr<const debug::DebugCapture> {
+            const auto request = inspector.core().dispatch({{"method", "capture.batch"}, {"params", {
+                {"batches", debug::DebugValue::array({
+                    {{"pass", kPersistentPass}, {"resources", persistentCaptureResources(kPersistentPass, true)}},
+                    {{"pass", kFullReferencePass}, {"resources", persistentCaptureResources(kFullReferencePass, false)}},
+                })},
+            }}});
+            if (request.value("status", "") != "ok") { log = "Persistent GDF capture: " + request.dump(); return {}; }
+            if (auto result = executor.execute(submission); !result) {
+                log = "Persistent GDF execute: " + std::string(resultToString(result));
+                return {};
+            }
+            if (!executor.waitForSubmittedWork()) { log = "Persistent GDF completion failed"; return {}; }
+            inspector.poll();
+            const auto& jobs = request.at("result").at("jobs");
+            const auto readCapture = [&](size_t i) {
+                const auto id = jobs.at(i).at("job").get<std::string>();
+                auto capture = inspector.core().completedCapture(id);
+                if (!capture) {
+                    const auto status = inspector.core().dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}});
+                    log = "Persistent GDF readback failed: " + status.dump();
+                }
+                return capture;
+            };
+            auto persistent = readCapture(0);
+            const auto reference = readCapture(1);
+            if (!persistent || !reference) { return {}; }
+            log = checkPersistentClipmaps(*persistent, *reference, expected);
+            return log.empty() ? persistent : nullptr;
+        };
+
+        constexpr std::array full{1u, kPersistentVirtualPages, 0u, kPersistentClipmapCount};
+        constexpr std::array unchanged{0u, 0u, kPersistentVirtualPages, 0u};
+        const auto initial = runFrame(full);
+        if (!initial) { return RHITestResult::fail("Initial frame: " + log); }
+        const auto stationary = runFrame(unchanged);
+        if (!stationary) { return RHITestResult::fail("Stationary frame: " + log); }
+        if (!moveCamera(0.1f)) { return RHITestResult::fail("Could not move the camera by a fraction of a page"); }
+        const auto subPage = runFrame(unchanged);
+        if (!subPage) { return RHITestResult::fail("Sub-page frame: " + log); }
+        if (initial->artifacts[0].bytes != stationary->artifacts[0].bytes ||
+            initial->artifacts[0].bytes != subPage->artifacts[0].bytes) {
+            return RHITestResult::fail("The stationary or sub-page frame changed page IDs");
+        }
+
+        if (!moveCamera(0.5f)) { return RHITestResult::fail("Could not scroll the finest clipmap by one page"); }
+        const auto scrolled = runFrame({0u, kPersistentPageSlab, kPersistentVirtualPages - kPersistentPageSlab, 1u});
+        if (!scrolled) { return RHITestResult::fail("One-page scroll: " + log); }
+        if (const auto error = checkPersistentScrollPageIds(*subPage, *scrolled); !error.empty()) {
+            return RHITestResult::fail(error);
+        }
+
+        if (!moveCamera(0.0f, 0.5f)) { return RHITestResult::fail("Could not scroll the finest clipmap diagonally"); }
+        constexpr uint32_t diagonalPages = 2 * kPersistentPageSlab - kPersistentPageEdge;
+        const auto diagonal = runFrame({0u, diagonalPages, kPersistentVirtualPages - diagonalPages, 1u});
+        if (!diagonal) { return RHITestResult::fail("Diagonal scroll: " + log); }
+
+        float4x4 movedBox = document.nodes()[0].worldMatrix;
+        movedBox.a13 += 1.0f;
+        const auto box = document.objectForNode(0).entity();
+        if (!document.setObjectWorldMatrix(box, movedBox)) {
+            return RHITestResult::fail("Could not move the GDF fixture's first box");
+        }
+        const auto moved = runFrame(full);
+        if (!moved) { return RHITestResult::fail("Moved-instance frame: " + log); }
+        if (moved->artifacts[2].bytes == diagonal->artifacts[2].bytes) {
+            return RHITestResult::fail("Moving the instance did not change the rebuilt coarse distance field");
+        }
+        if (!document.setObjectVisible(box, false)) { return RHITestResult::fail("Could not hide a GDF fixture box"); }
+        const auto hidden = runFrame(full);
+        if (!hidden) { return RHITestResult::fail("Hidden-instance frame: " + log); }
+        if (hidden->artifacts[2].bytes == moved->artifacts[2].bytes) {
+            return RHITestResult::fail("Hiding the instance did not change the rebuilt coarse distance field");
+        }
+
+        if (!moveCamera(20.0f)) { return RHITestResult::fail("Could not teleport the clipmaps beyond their overlap"); }
+        const auto teleported = runFrame(full);
+        if (!teleported) { return RHITestResult::fail("Teleported frame: " + log); }
+        if (readGdfElement<uint32_t>(teleported->artifacts[4].bytes, 2) != kPersistentVirtualPages) {
+            return RHITestResult::fail("The teleported clipmaps retained stale geometry in an empty area");
+        }
+        if (validation.failed()) { return RHITestResult::fail("Persistent GDF Vulkan validation: " + validation.snapshot().dump()); }
+        return RHITestResult::pass("Verified page reuse, physical pool conservation, scrolling and full refresh against a same-frame rebuild.");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(GlobalDistanceFieldPersistentPagesTest);
 
 struct GdfContinuationResources {
     render::ShaderSampledImage pageTable, coarseMip;

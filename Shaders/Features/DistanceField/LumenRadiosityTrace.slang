@@ -21,12 +21,13 @@ static const float kRadiosityMaxRayIntensity = 40.0f;
 void lumenTraceRadiosityMain(uint3 thread : SV_DispatchThreadID)
 {
     LumenRadiosityParams params = getParameters<LumenRadiosityParams>();
-    if (any(thread.xy >= params.atlasSize)) {
+    uint2 atlasCoord;
+    if (!getRadiosityDispatchTexel(params, thread, 1u, atlasCoord)) {
         return;
     }
 
-    uint2 probeCoord = thread.xy / kRadiosityRayResolution;
-    uint2 traceTexelCoord = thread.xy % kRadiosityRayResolution;
+    uint2 probeCoord = atlasCoord / kRadiosityRayResolution;
+    uint2 traceTexelCoord = atlasCoord % kRadiosityRayResolution;
     uint2 probeAtlasTexel = probeCoord * kRadiosityProbeSpacing + radiosityProbeJitter(params.temporalIndex);
 
     float3 radiance = 0.0f;
@@ -56,7 +57,7 @@ void lumenTraceRadiosityMain(uint3 thread : SV_DispatchThreadID)
     }
 
     RadiosityImage outputTrace = resolveUniform(params.outputTrace);
-    outputTrace[thread.xy] = float4(radiance, float(traceClass));
+    outputTrace[atlasCoord] = float4(radiance, float(traceClass));
 }
 
 // UE 5.7.4 LumenRadiosity.usf:184. Each Metallic card occupies a single mapped tile.
@@ -87,21 +88,22 @@ void sampleTraceRadianceAtlas(LumenRadiosityParams params, Texture2D<float4> tra
 void lumenFilterRadiosityMain(uint3 thread : SV_DispatchThreadID)
 {
     LumenRadiosityParams params = getParameters<LumenRadiosityParams>();
-    if (any(thread.xy >= params.atlasSize)) {
+    uint2 atlasCoord;
+    if (!getRadiosityDispatchTexel(params, thread, 1u, atlasCoord)) {
         return;
     }
 
     RadiosityImage outputFiltered = resolveUniform(params.outputFiltered);
     if (params.historyValid == 0u) {
-        outputFiltered[thread.xy] = float4(0.0f);
+        outputFiltered[atlasCoord] = float4(0.0f);
         return;
     }
 
     Texture2D<float4> traceRadiance = resolveUniform(params.traceRadiance);
-    float4 trace = traceRadiance.Load(int3(thread.xy, 0));
+    float4 trace = traceRadiance.Load(int3(atlasCoord, 0));
     float3 radiance = trace.xyz;
-    uint2 probeCoord = thread.xy / kRadiosityRayResolution;
-    uint2 traceTexelCoord = thread.xy % kRadiosityRayResolution;
+    uint2 probeCoord = atlasCoord / kRadiosityRayResolution;
+    uint2 traceTexelCoord = atlasCoord % kRadiosityRayResolution;
     uint2 probeAtlasTexel = probeCoord * kRadiosityProbeSpacing + radiosityProbeJitter(params.temporalIndex);
     RadiosityTexel texel = radiosityGetTexel(params, probeAtlasTexel);
     if (texel.valid) {
@@ -123,5 +125,5 @@ void lumenFilterRadiosityMain(uint3 thread : SV_DispatchThreadID)
         radiance = radiosityQuantizeForRenderTarget(radiance / totalWeight, 0.0f);
     }
 
-    outputFiltered[thread.xy] = float4(radiance, trace.w);
+    outputFiltered[atlasCoord] = float4(radiance, trace.w);
 }

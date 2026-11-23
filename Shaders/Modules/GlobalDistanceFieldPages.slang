@@ -154,7 +154,8 @@ uint computeGlobalDistanceFieldClipmapIndex(StructuredBuffer<GlobalDistanceField
 public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobalDistanceFieldSampler distanceField,
     StructuredBuffer<GlobalDistanceFieldDomain> domains, uint clipmapCount, float3 rayStart, float3 rayDirection,
     float minTraceDistance, float maxTraceDistance, out uint hitClipmapIndex,
-    float voxelSizeRelativeBias = 0.0f, float voxelSizeRelativeRayEndBias = 0.0f, bool rejectRecedingExpansion = false)
+    float voxelSizeRelativeBias, float voxelSizeRelativeRayEndBias, bool rejectRecedingExpansion,
+    GlobalDistanceFieldTraceOptions options)
 {
     hitClipmapIndex = ~0u;
     if (minTraceDistance >= maxTraceDistance) {
@@ -164,6 +165,7 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobal
     uint minClipmapIndex = computeGlobalDistanceFieldClipmapIndex(domains, clipmapCount,
         rayStart + minTraceDistance * rayDirection);
     float minRayTime = minTraceDistance;
+    float maxDistance = 0.0f;
     bool fullyCovered = true;
 
     for (uint clipmapIndex = minClipmapIndex; clipmapIndex < clipmapCount; ++clipmapIndex) {
@@ -186,7 +188,7 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobal
         fullyCovered = fullyCovered && intersectionTimes.x <= max(minRayTime, clipmapRayBias);
         minRayTime = intersectionTimes.y;
         GlobalDistanceFieldTrace segment = traceGlobalDistanceFieldSegment(clipmap, clipmap.domain,
-            rayStart, rayDirection, intersectionTimes, clipmapRayBias, rejectRecedingExpansion);
+            rayStart, rayDirection, intersectionTimes, clipmapRayBias, rejectRecedingExpansion, options, maxDistance);
         result.stepCount += segment.stepCount;
         result.recedingExpansionRejected = result.recedingExpansionRejected || segment.recedingExpansionRejected;
         if (segment.classification == kGlobalDistanceFieldHit) {
@@ -208,5 +210,16 @@ public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobal
         result.classification = kGlobalDistanceFieldMiss;
     }
     return result;
+}
+
+public GlobalDistanceFieldTrace traceGlobalDistanceFieldClipmaps(QuantizedGlobalDistanceFieldSampler distanceField,
+    StructuredBuffer<GlobalDistanceFieldDomain> domains, uint clipmapCount, float3 rayStart, float3 rayDirection,
+    float minTraceDistance, float maxTraceDistance, out uint hitClipmapIndex,
+    float voxelSizeRelativeBias = 0.0f, float voxelSizeRelativeRayEndBias = 0.0f, bool rejectRecedingExpansion = false)
+{
+    GlobalDistanceFieldTraceOptions options = {1.0f, true};
+    return traceGlobalDistanceFieldClipmaps(distanceField, domains, clipmapCount, rayStart, rayDirection,
+        minTraceDistance, maxTraceDistance, hitClipmapIndex, voxelSizeRelativeBias, voxelSizeRelativeRayEndBias,
+        rejectRecedingExpansion, options);
 }
 } // namespace Metallic.DistanceField

@@ -53,8 +53,8 @@ float4 radiosityDiffuseTransferSH(float3 normal, float exponent)
 void lumenRadiosityConvertToSHMain(uint3 thread : SV_DispatchThreadID)
 {
     LumenRadiosityParams params = getParameters<LumenRadiosityParams>();
-    uint2 probeAtlasCoord = thread.xy;
-    if (any(probeAtlasCoord >= params.atlasSize / kRadiosityProbeSpacing)) {
+    uint2 probeAtlasCoord;
+    if (!getRadiosityDispatchTexel(params, thread, kRadiosityProbeSpacing, probeAtlasCoord)) {
         return;
     }
 
@@ -129,13 +129,23 @@ float3 combineRadiosityLighting(float3 encodedAlbedo, float3 emissive, float3 di
     return max(select(!finiteLighting, 0.0f, finalLighting), 0.0f);
 }
 
+float3 loadAndCombineRadiosityLighting(LumenRadiosityParams params, uint2 atlasCoord, float3 texelRadiance)
+{
+    const int3 address = int3(atlasCoord, 0);
+    float3 albedo = resolveUniform(params.cardAlbedo).Load(address).xyz;
+    float3 emissive = resolveUniform(params.cardEmissive).Load(address).xyz;
+    float3 directLighting = resolveUniform(params.cardDirectLighting).Load(address).xyz;
+    float3 finalLighting = combineRadiosityLighting(albedo, emissive, directLighting, texelRadiance);
+    return radiosityQuantizeForRenderTarget(finalLighting, int3(atlasCoord, params.viewFrameIndex % 8u + 2u));
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void lumenRadiosityIntegrateMain(uint3 thread : SV_DispatchThreadID)
 {
     LumenRadiosityParams params = getParameters<LumenRadiosityParams>();
-    uint2 atlasCoord = thread.xy;
-    if (any(atlasCoord >= params.atlasSize)) {
+    uint2 atlasCoord;
+    if (!getRadiosityDispatchTexel(params, thread, 1u, atlasCoord)) {
         return;
     }
 
@@ -145,7 +155,6 @@ void lumenRadiosityIntegrateMain(uint3 thread : SV_DispatchThreadID)
     float newNumFramesAccumulated = 0.0f;
     float3 finalLighting = 0.0f;
     if (texel.valid) {
-        int3 address = int3(atlasCoord, 0);
         if (params.historyValid != 0u) {
             // UE 5.7.4 LumenRadiosity.usf, LumenRadiosityIntegrateCS.
             uint2 coordInCard = atlasCoord % params.tileResolution;
@@ -178,7 +187,11 @@ void lumenRadiosityIntegrateMain(uint3 thread : SV_DispatchThreadID)
                 texelRadiance /= weightSum;
             }
 
-            float4 history = resolveUniform(params.previousIndirect).Load(address);
+#ifdef METALLIC_LUMEN_PERSISTENT_CARDS
+            float4 history = resolveUniform(params.outputIndirect)[atlasCoord];
+#else
+            float4 history = resolveUniform(params.previousIndirect).Load(int3(atlasCoord, 0));
+#endif
             float numFramesAccumulated = history.w;
             newNumFramesAccumulated = min(numFramesAccumulated + 1.0f, float(kRadiosityMaxFrames));
             float alpha = 1.0f / (1.0f + numFramesAccumulated);
@@ -191,18 +204,50 @@ void lumenRadiosityIntegrateMain(uint3 thread : SV_DispatchThreadID)
                 unpackHalf2x16ToFloat(packHalf2x16(float2(texelRadiance.z, 0.0f))).x);
         }
 
-        float3 albedo = resolveUniform(params.cardAlbedo).Load(address).xyz;
-        float3 emissive = resolveUniform(params.cardEmissive).Load(address).xyz;
-        float3 directLighting = resolveUniform(params.cardDirectLighting).Load(address).xyz;
-        finalLighting = combineRadiosityLighting(albedo, emissive, directLighting, texelRadiance);
-        finalLighting = radiosityQuantizeForRenderTarget(finalLighting, int3(atlasCoord, params.viewFrameIndex % 8u + 2u));
+        finalLighting = loadAndCombineRadiosityLighting(params, atlasCoord, texelRadiance);
     }
 
     // Alpha holds the exact integer represented by UE's separate UNORM8
     // accumulation count. RGB holds the incoming irradiance before albedo.
     float4 indirect = float4(texelRadiance, newNumFramesAccumulated);
     resolveUniform(params.outputIndirect)[atlasCoord] = indirect;
-    resolveUniform(params.currentIndirect)[atlasCoord] = indirect;
     resolveUniform(params.finalLighting)[atlasCoord] = float4(finalLighting, 0.0f);
+#ifndef METALLIC_LUMEN_PERSISTENT_CARDS
+    resolveUniform(params.currentIndirect)[atlasCoord] = indirect;
     resolveUniform(params.currentLighting)[atlasCoord] = float4(finalLighting, 0.0f);
+#endif
 }
+
+#ifdef METALLIC_LUMEN_PERSISTENT_CARDS
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenRadiosityRefreshCardsMain(uint3 thread : SV_DispatchThreadID)
+{
+    LumenRadiosityParams params = getParameters<LumenRadiosityParams>();
+    uint2 atlasCoord;
+    bool reset;
+    bool active;
+    if (!getRadiosityRefreshTexel(params, thread, atlasCoord, reset, active)) { return; }
+
+    RadiosityImage indirect = resolveUniform(params.outputIndirect);
+    if (reset) {
+        indirect[atlasCoord] = 0.0f;
+        resolveUniform(params.outputTrace)[atlasCoord] = 0.0f;
+        resolveUniform(params.outputFiltered)[atlasCoord] = 0.0f;
+        if (all(atlasCoord % kRadiosityProbeSpacing == 0u)) {
+            const uint2 probeAtlasCoord = atlasCoord / kRadiosityProbeSpacing;
+            const uint probeAddress = probeAtlasCoord.x + probeAtlasCoord.y * (params.atlasSize / kRadiosityProbeSpacing);
+            resolveUniform(params.outputSHRed)[probeAddress] = 0u;
+            resolveUniform(params.outputSHGreen)[probeAddress] = 0u;
+            resolveUniform(params.outputSHBlue)[probeAddress] = 0u;
+        }
+    }
+
+    float3 finalLighting = 0.0f;
+    if (active && resolveUniform(params.scene.cardDepth).Load(int3(atlasCoord, 0)) < 1.0f) {
+        const float3 texelRadiance = reset ? float3(0.0f) : indirect[atlasCoord].xyz;
+        finalLighting = loadAndCombineRadiosityLighting(params, atlasCoord, texelRadiance);
+    }
+    resolveUniform(params.finalLighting)[atlasCoord] = float4(finalLighting, 0.0f);
+}
+#endif

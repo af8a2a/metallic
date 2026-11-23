@@ -47,6 +47,9 @@ public struct DeferredLumenReceiver
     public float4 positionAndDepth;
     public float3 normal;
     public float3 diffuse;
+#if METALLIC_DEFERRED_LUMEN_SPECULAR
+    public float4 specularAndRoughness;
+#endif
 };
 
 [ForceInline]
@@ -338,6 +341,11 @@ internal float3 shadeSceneVisibilitySurfaceRadiance<TProgram : ISceneSurfaceMate
         if (replaceDiffuse) {
             receiver.positionAndDepth = float4(hit.position, cameraLinearDepth(hit.position, push));
             receiver.normal = normal;
+#if METALLIC_DEFERRED_LUMEN_SPECULAR
+            if (!summary.numericalEnvironment) {
+                receiver.specularAndRoughness = float4(float3(specularWeight) * summary.occlusion, roughness);
+            }
+#endif
         }
         if (!hasEnvironment) { return radiance; }
 
@@ -375,6 +383,9 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
         let resources = getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
         let segment = physicalAerialSegment(resources, hit.position, ray.origin);
         receiver.diffuse *= segment.transmittance;
+#if METALLIC_DEFERRED_LUMEN_SPECULAR
+        receiver.specularAndRoughness.rgb *= segment.transmittance;
+#endif
         return segment.transmittance * radiance + segment.radiance;
     }
     return applyAerial ? applyPrimaryAerialPerspective(radiance, hit.position, ray.origin) : radiance;

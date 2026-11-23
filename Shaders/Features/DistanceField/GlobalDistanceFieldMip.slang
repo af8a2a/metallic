@@ -16,6 +16,7 @@ struct GlobalDistanceFieldMipParams
     uint logicalResolution;
     uint coarseResolution;
     uint clipmapCount;
+    uint updateMask;
 };
 
 static const float kMipDownsampleFactor = 4.0f;
@@ -139,6 +140,9 @@ void globalDistanceFieldSeedMipMain(uint3 packedCoord : SV_DispatchThreadID)
     uint mipSize = params.coarseResolution;
     if (all(packedCoord.xy < mipSize) && packedCoord.z < mipSize * params.clipmapCount) {
         uint clipmapIndex = packedCoord.z / mipSize;
+        if ((params.updateMask & (1u << clipmapIndex)) == 0u) {
+            return;
+        }
         int3 mipCoord = int3(packedCoord.xy, packedCoord.z % mipSize);
         FinePageDistanceSource source = {resolveUniform(params.pageTable), resolveUniform(params.pageAtlas),
             resolveUniform(params.sampler), params.logicalResolution, 1.0f / float(mipSize), clipmapIndex};
@@ -154,8 +158,12 @@ void globalDistanceFieldPropagateMipMain(uint3 packedCoord : SV_DispatchThreadID
     GlobalDistanceFieldMipParams params = getParameters<GlobalDistanceFieldMipParams>();
     uint mipSize = params.coarseResolution;
     if (all(packedCoord.xy < mipSize) && packedCoord.z < mipSize * params.clipmapCount) {
-        int3 mipCoord = int3(packedCoord.xy, packedCoord.z % mipSize);
-        int clipmapOffsetZ = int(packedCoord.z) - mipCoord.z;
+        uint clipmapIndex = packedCoord.z / mipSize;
+        if ((params.updateMask & (1u << clipmapIndex)) == 0u) {
+            return;
+        }
+        int clipmapOffsetZ = int(clipmapIndex * mipSize);
+        int3 mipCoord = int3(packedCoord.xy, int(packedCoord.z) - clipmapOffsetZ);
         PreviousMipDistanceSource source = {resolveUniform(params.previousMip), clipmapOffsetZ};
         RWTexture3D<unorm float> outputMip = resolveUniform(params.outputMip);
         outputMip[packedCoord] = quantizeMipDistanceR8(propagateMipDistance(source, mipCoord, int(mipSize) - 1));

@@ -19,6 +19,7 @@ enum class HistoryInvalidationReason : uint8_t {
     Discontinuity,
     CameraMotion,
     LightingChange,
+    GeometryMotion,
 };
 
 struct HistoryTextureRef {
@@ -70,6 +71,9 @@ public:
     void invalidateAll(HistoryInvalidationReason reason = HistoryInvalidationReason::Discontinuity);
     uint64_t invalidationRevision() const;
     uint64_t reprojectionInvalidationRevision() const;
+    // Consumers with previous surface positions can retain their private
+    // history across rigid geometry motion and validate samples individually.
+    uint64_t motionReprojectionInvalidationRevision() const;
     // Reprojected visibility can validate light changes independently. Such
     // consumers still own their camera, light and geometry content signatures.
     uint64_t geometryReprojectionInvalidationRevision() const;

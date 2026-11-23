@@ -469,7 +469,7 @@ public:
             {"lumen_surface_cache.metallic_graph.json", {"SurfaceCache.lighting", true}},
             {"lumen_global_tracing.metallic_graph.json", {"Trace.radiance", true}},
             {"lumen_single_bounce.metallic_graph.json", {"Gather.color", true}},
-            {"lumen_large_scene.metallic_graph.json", {"Temporal.color", true}},
+            {"lumen_large_scene.metallic_graph.json", {"Reflections.color", true}},
             {"lumen_radiance_cache.metallic_graph.json", {"Temporal.color", true}},
             {"lumen_detail_tracing.metallic_graph.json", {"Temporal.color", true}},
         };

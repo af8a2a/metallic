@@ -1,11 +1,14 @@
 #include "MeshDistanceFieldFixture.h"
 #include "RHITest.h"
+#include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/MeshCards.h"
 #include "Runtime/Scene/MeshDistanceField.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "harness/Fixtures.h"
 #include "harness/ValidationRecorder.h"
 
 #include <algorithm>
@@ -958,6 +961,991 @@ private:
 };
 
 METALLIC_REGISTER_RHI_TEST(LumenSingleBounceTest);
+
+constexpr uint32_t kPersistentCardCapacity = (kAtlasEdge / kTileEdge) * (kAtlasEdge / kTileEdge);
+constexpr uint32_t kPersistentResidentCards = 3 * kCardsPerBox;
+constexpr uint32_t kRadiosityCardBudget = 3;
+constexpr std::string_view kPersistentSurface = "PersistentSurface";
+constexpr std::string_view kFullSurface = "FullSurface";
+constexpr std::string_view kPersistentRadiosity = "PersistentRadiosity";
+constexpr uint32_t kCardCaptured = 1u;
+constexpr uint32_t kCardRelit = 2u;
+constexpr uint32_t kCardLightingChanged = 4u;
+
+constexpr std::array kSurfaceAtlases{
+    std::pair{"albedo", 4u}, std::pair{"normal", 4u}, std::pair{"emissive", 8u},
+    std::pair{"depth", 2u}, std::pair{"lighting", 8u}, std::pair{"directIrradiance", 16u}};
+constexpr size_t kCardRecords = kSurfaceAtlases.size();
+constexpr size_t kCardScene = kCardRecords + 1;
+constexpr size_t kSurfaceUpdateStats = kCardScene + 1;
+constexpr size_t kSurfaceUpdateFlags = kSurfaceUpdateStats + 1;
+constexpr size_t kRadiosityUpdateStats = 2;
+constexpr size_t kRadiosityCardState = 3;
+
+using CardCapture = std::shared_ptr<const debug::DebugCapture>;
+
+struct CardUpdateFrame {
+    CardCapture surface, fullSurface, radiosity;
+};
+
+class CardUpdateInspector final : public render::IRenderDebugObserver {
+public:
+    bool detailedSnapshots() const override { return false; }
+    void compiled(debug::DebugValue graph) override { runtime.compiled(std::move(graph)); }
+    void beginExecution(render::Device& device, debug::DebugEvidenceStamp evidence,
+        render::RenderSubsystemHost* subsystems) override
+    {
+        // Material edits can advance the debug generation just before this
+        // boundary. Request the readback for that execution's generation.
+        response = runtime.core().dispatch(request);
+        runtime.beginExecution(device, std::move(evidence), subsystems);
+    }
+    void boundary(render::CommandBuffer& commands, std::string_view checkpoint, uint32_t passId,
+        std::string_view pass, std::span<const render::DebugResourceBinding> resources,
+        const debug::DebugValue& values) override
+    {
+        runtime.boundary(commands, checkpoint, passId, pass, resources, values);
+    }
+    void endExecution(bool success) override { runtime.endExecution(success); }
+
+    render::RenderDebugRuntime runtime{{}, render::RenderDebugDetail::Resources};
+    debug::DebugValue request, response;
+};
+
+debug::DebugValue cardAtlasCapture(std::string id)
+{
+    return {{"id", std::move(id)}, {"roi", {{"x", 0}, {"y", 0}, {"width", kAtlasEdge}, {"height", kAtlasEdge}}}};
+}
+
+debug::DebugValue cardBufferCapture(std::string id, uint32_t count)
+{
+    return {{"id", std::move(id)}, {"layout", "u32"}, {"count", count}};
+}
+
+debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
+{
+    using render::makeRenderGraphFieldName;
+    auto captures = debug::DebugValue::array();
+    for (const auto& atlas : kSurfaceAtlases) {
+        captures.push_back(cardAtlasCapture(makeRenderGraphFieldName(pass, atlas.first)));
+    }
+    captures.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "cards"),
+        kPersistentCardCapacity * sizeof(CapturedCard) / sizeof(uint32_t)));
+    captures.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "scene"), 4));
+    if (pass == kPersistentSurface) {
+        captures.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "updateStatistics"), 3));
+        captures.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "cardUpdates"), kPersistentCardCapacity));
+    }
+    return captures;
+}
+
+std::string compareSurfaceUpdate(const CardUpdateFrame& frame, const std::array<uint32_t, 3>& expectedStats,
+    uint32_t expectedResident)
+{
+    const auto& surface = frame.surface->artifacts;
+    const auto& full = frame.fullSurface->artifacts;
+    const auto& radiosity = frame.radiosity->artifacts;
+    if (surface.size() != kSurfaceUpdateFlags + 1 || full.size() != kCardScene + 1 ||
+        radiosity.size() != kRadiosityCardState + 1 ||
+        surface[kSurfaceUpdateStats].bytes.size() != sizeof(expectedStats) ||
+        surface[kSurfaceUpdateFlags].bytes.size() != kPersistentCardCapacity * sizeof(uint32_t) ||
+        surface[kCardRecords].bytes.size() != kPersistentCardCapacity * sizeof(CapturedCard) ||
+        surface[kCardScene].bytes.size() != 4 * sizeof(uint32_t) ||
+        radiosity[0].bytes.size() != kAtlasPixels * 8 || radiosity[1].bytes.size() != kAtlasPixels * 8 ||
+        radiosity[kRadiosityUpdateStats].bytes.size() != 4 * sizeof(uint32_t) ||
+        radiosity[kRadiosityCardState].bytes.size() != kPersistentCardCapacity * 2 * sizeof(uint32_t)) {
+        return "Unexpected Surface Cache or Radiosity readback layout";
+    }
+    if (readSurfaceValue<uint32_t>(surface[kCardScene].bytes, 0) != expectedResident) {
+        return "Unexpected resident card count";
+    }
+    const auto stats = readSurfaceValue<std::array<uint32_t, 3>>(surface[kSurfaceUpdateStats].bytes, 0);
+    if (stats != expectedStats) {
+        return "Unexpected Surface Cache update statistics " + nlohmann::json(stats).dump() +
+            ", expected " + nlohmann::json(expectedStats).dump();
+    }
+    for (size_t atlas = 0; atlas < kSurfaceAtlases.size(); ++atlas) {
+        const auto& [name, stride] = kSurfaceAtlases[atlas];
+        if (surface[atlas].bytes.size() != kAtlasPixels * stride || surface[atlas].bytes != full[atlas].bytes) {
+            return std::string("Persistent atlas differs from a same-frame full rebuild: ") + name;
+        }
+    }
+    if (surface[kCardRecords].bytes != full[kCardRecords].bytes || surface[kCardScene].bytes != full[kCardScene].bytes) {
+        return "Persistent card transforms or scene metadata differ from a same-frame full rebuild";
+    }
+    return {};
+}
+
+uint32_t cardPixelOffset(uint32_t slot, uint32_t row)
+{
+    constexpr uint32_t tilesPerAxis = kAtlasEdge / kTileEdge;
+    return ((slot / tilesPerAxis) * kTileEdge + row) * kAtlasEdge + (slot % tilesPerAxis) * kTileEdge;
+}
+
+std::string checkCardFlags(const CardUpdateFrame& frame, uint32_t resident, scene::SceneEntity object,
+    uint32_t flagsForObject, uint32_t flagsForOthers)
+{
+    const auto& resources = frame.surface->artifacts;
+    for (uint32_t slot = 0; slot < kPersistentCardCapacity; ++slot) {
+        const auto card = readSurfaceValue<CapturedCard>(resources[kCardRecords].bytes, slot);
+        const uint32_t expected = slot >= resident ? 0u :
+            (card.metadata[0] == uint32_t(object) ? flagsForObject : flagsForOthers);
+        const uint32_t actual = readSurfaceValue<uint32_t>(resources[kSurfaceUpdateFlags].bytes, slot);
+        if (actual != expected) {
+            return "Incorrect Surface Cache update flags for slot " + std::to_string(slot) + ": " +
+                std::to_string(actual) + " versus " + std::to_string(expected);
+        }
+    }
+    return {};
+}
+
+std::string checkRadiositySchedule(const CardUpdateFrame& previous, const CardUpdateFrame& current,
+    std::array<bool, kPersistentCardCapacity>& refreshed)
+{
+    const auto& previousRadiosity = previous.radiosity->artifacts;
+    const auto& currentRadiosity = current.radiosity->artifacts;
+    constexpr std::array expectedStats{kRadiosityCardBudget, 0u, kPersistentResidentCards, kRadiosityCardBudget};
+    const auto stats = readSurfaceValue<std::array<uint32_t, 4>>(currentRadiosity[kRadiosityUpdateStats].bytes, 0);
+    if (stats != expectedStats) {
+        return "Stationary Radiosity did not respect its card budget: " + nlohmann::json(stats).dump();
+    }
+    uint32_t updated = 0;
+    for (uint32_t slot = 0; slot < kPersistentCardCapacity; ++slot) {
+        using CardState = std::array<uint32_t, 2>;
+        const auto before = readSurfaceValue<CardState>(previousRadiosity[kRadiosityCardState].bytes, slot);
+        const auto after = readSurfaceValue<CardState>(currentRadiosity[kRadiosityCardState].bytes, slot);
+        if (before != after) {
+            if (slot >= kPersistentResidentCards) { return "Radiosity scheduled an unused atlas tile"; }
+            refreshed[slot] = true;
+            ++updated;
+            continue;
+        }
+        for (size_t atlas = 0; atlas < 2; ++atlas) {
+            for (uint32_t row = 0; row < kTileEdge; ++row) {
+                constexpr uint32_t stride = 8;
+                const size_t offset = size_t(cardPixelOffset(slot, row)) * stride;
+                if (std::memcmp(previousRadiosity[atlas].bytes.data() + offset,
+                        currentRadiosity[atlas].bytes.data() + offset, kTileEdge * stride) != 0) {
+                    return "An unscheduled Radiosity tile changed: " + std::to_string(slot);
+                }
+            }
+        }
+    }
+    return updated == kRadiosityCardBudget ? std::string() :
+        "Radiosity card state did not identify the expected number of updates";
+}
+
+float maxCardIndirect(const CardUpdateFrame& frame, scene::SceneEntity object, uint32_t resident)
+{
+    using Pixel = std::array<uint16_t, 4>;
+    float maximum = 0.0f;
+    for (uint32_t slot = 0; slot < resident; ++slot) {
+        const auto card = readSurfaceValue<CapturedCard>(frame.surface->artifacts[kCardRecords].bytes, slot);
+        if (card.metadata[0] != uint32_t(object)) { continue; }
+        for (uint32_t row = 0; row < kTileEdge; ++row) {
+            const uint32_t offset = cardPixelOffset(slot, row);
+            for (uint32_t column = 0; column < kTileEdge; ++column) {
+                const auto sample = readSurfaceValue<Pixel>(frame.radiosity->artifacts[0].bytes, offset + column);
+                maximum = std::max(maximum, halfToFloat(sample[0]));
+            }
+        }
+    }
+    return maximum;
+}
+
+class LumenPersistentCardUpdateTest final : public RHITest {
+public:
+    LumenPersistentCardUpdateTest()
+    {
+        name = "lumen_persistent_card_updates";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto fixture = context.outputDirectory / "LumenCardUpdateBoxes.gltf";
+        std::error_code error;
+        std::filesystem::copy_file(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Lumen/SingleBounce.gltf", fixture,
+            std::filesystem::copy_options::overwrite_existing, error);
+        if (error) { return RHITestResult::fail("Could not copy the card update fixture: " + error.message()); }
+        scene::SceneDocument document;
+        if (!document.load(fixture)) { return RHITestResult::fail(document.lastLoadResult().error); }
+        const auto receiver = document.objectForNode(0).entity();
+        const auto emitter = document.objectForNode(1).entity();
+        const auto blocker = document.objectForNode(2).entity();
+        if (receiver == scene::kNullSceneEntity || emitter == scene::kNullSceneEntity || blocker == scene::kNullSceneEntity) {
+            return RHITestResult::fail("Expected independently editable card fixture objects");
+        }
+        auto offsideBlocker = document.nodes()[2].worldMatrix;
+        offsideBlocker.a[12] += 1.3f;
+        if (!document.setObjectWorldMatrix(blocker, offsideBlocker)) {
+            return RHITestResult::fail("Could not expose the receiver to the emitter in the card fixture");
+        }
+
+        std::string log;
+        std::vector<std::string> fieldPaths, cardPaths;
+        for (int32_t mesh = 0; mesh < 3; ++mesh) {
+            const auto base = "LumenCardUpdate" + std::to_string(mesh);
+            const auto field = context.outputDirectory / (base + ".meshdf");
+            const auto cards = context.outputDirectory / (base + ".meshcards");
+            if (!writeAnalyticBoxField(field, document, log, mesh) || !writeAnalyticBoxCards(cards, document, mesh, log)) {
+                return RHITestResult::fail(log);
+            }
+            fieldPaths.push_back(field.generic_string());
+            cardPaths.push_back(cards.generic_string());
+        }
+
+        RenderGraph graph;
+        if (!makeGraph(graph, fieldPaths, cardPaths)) {
+            return RHITestResult::fail("Could not configure paired Surface Caches and persistent Radiosity");
+        }
+        bench::ValidationRecorder validation;
+        auto device = bench::createTestDevice(context, {.applicationName = "Lumen card update regression",
+            .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true, .validationSink = validation.sink()});
+        if (!device) { return RHITestResult::fail("Could not initialize the card update test device"); }
+        auto& gpu = **device;
+        if (!gpu.capabilities().shaderStorageImageExtendedFormats) {
+            return RHITestResult::skip("Lumen card updates require the R8 GDF and R16 depth storage formats");
+        }
+        RenderWorld renderWorld;
+        renderWorld.setScene(&document);
+        renderWorld.setEnvironment({.enabled = false, .visible = false});
+        environment::WorldEnvironment world;
+        world.sun.enabled = false;
+        if (!renderWorld.setWorldEnvironment(world)) { return RHITestResult::fail("Could not disable the fixture sun"); }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {0.0f, 0.0f, 3.0f};
+        camera.orthographic = true;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
+            return RHITestResult::fail("Invalid card update test camera");
+        }
+        HistoryResourceManager history;
+        if (!history.initialize(gpu)) { return RHITestResult::fail("Could not initialize graph history"); }
+        CardUpdateInspector inspector;
+        RenderGraphExecutor executor;
+        executor.bindRenderWorld(&renderWorld);
+        executor.bindRenderView(&view);
+        executor.setDebugObserver(&inspector);
+        if (!executor.compile(gpu, graph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+            return RHITestResult::fail("Card update graph compile: " + log);
+        }
+        const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics),
+            .historyResources = &history, .recordingWorkerLimit = 1};
+
+        const auto runFrame = [&](std::string_view stage, const std::array<uint32_t, 3>& stats,
+            uint32_t resident = kPersistentResidentCards) -> std::optional<CardUpdateFrame> {
+            auto frame = captureFrame(inspector, executor, submission, log);
+            if (frame) { log = compareSurfaceUpdate(*frame, stats, resident); }
+            if (!frame || !log.empty()) {
+                log = std::string(stage) + ": " + log;
+                return std::nullopt;
+            }
+            return frame;
+        };
+
+        auto previous = runFrame("Initial frame", {1u, kPersistentResidentCards, kPersistentResidentCards});
+        if (!previous) { return RHITestResult::fail(log); }
+        const auto initialStats = readSurfaceValue<std::array<uint32_t, 4>>(
+            previous->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
+        if (initialStats[0] != kPersistentResidentCards || initialStats[1] != kPersistentResidentCards ||
+            initialStats[2] != kPersistentResidentCards || initialStats[3] != kRadiosityCardBudget) {
+            return RHITestResult::fail("First Radiosity frame failed to initialize all resident tiles");
+        }
+        if (const auto message = checkCardFlags(*previous, kPersistentResidentCards, emitter,
+                kCardCaptured | kCardRelit, kCardCaptured | kCardRelit);
+            !message.empty()) { return RHITestResult::fail(message); }
+
+        std::array<bool, kPersistentCardCapacity> refreshed{};
+        constexpr uint32_t framesPerSweep = kPersistentResidentCards / kRadiosityCardBudget;
+        for (uint32_t i = 0; i < 2 * framesPerSweep; ++i) {
+            auto current = runFrame("Stationary frame", {0u, 0u, 0u});
+            if (!current) { return RHITestResult::fail(log); }
+            if (const auto message = checkRadiositySchedule(*previous, *current, refreshed); !message.empty()) {
+                return RHITestResult::fail(message);
+            }
+            previous = std::move(current);
+        }
+        if (!std::ranges::all_of(std::span{refreshed}.first(kPersistentResidentCards), [](bool updated) { return updated; })) {
+            return RHITestResult::fail("The Radiosity priority failed to revisit every resident card across two sweeps");
+        }
+        if (!(maxCardIndirect(*previous, receiver, kPersistentResidentCards) > 0.005f)) {
+            return RHITestResult::fail("Budgeted Radiosity never transported the off-screen emitter to the receiver");
+        }
+
+        auto dark = document.materials()[1];
+        dark.emissiveFactor = float3(0.0f);
+        if (!document.setMaterialProperties(1, dark)) { return RHITestResult::fail("Could not edit the emitter material"); }
+        const auto material = runFrame("Emitter material edit", {0u, kCardsPerBox, kCardsPerBox});
+        if (!material) { return RHITestResult::fail(log); }
+        if (const auto message = checkCardFlags(*material, kPersistentResidentCards, emitter, kCardCaptured | kCardRelit, 0);
+            !message.empty()) { return RHITestResult::fail(message); }
+        const auto materialStats = readSurfaceValue<std::array<uint32_t, 4>>(
+            material->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
+        if (materialStats[1] != kCardsPerBox) {
+            return RHITestResult::fail("Emitter edit did not reset precisely its six Radiosity cards");
+        }
+
+        world.sun.enabled = true;
+        world.sun.direction = {0.0f, -0.8f, -0.6f};
+        world.sun.illuminance = 4.0f;
+        if (!renderWorld.setWorldEnvironment(world)) { return RHITestResult::fail("Could not enable the fixture Sun"); }
+        const auto sunlight = runFrame("Sun change", {0u, 0u, kPersistentResidentCards});
+        if (!sunlight) { return RHITestResult::fail(log); }
+        if (const auto message = checkCardFlags(*sunlight, kPersistentResidentCards, emitter,
+                kCardRelit | kCardLightingChanged, kCardRelit | kCardLightingChanged);
+            !message.empty()) { return RHITestResult::fail(message); }
+
+        // A uniform shrink triggers the minimum card depth extent. This moves
+        // new fragments farther from the reversed-Z near plane in the same tile.
+        auto movedBlocker = document.nodes()[2].worldMatrix;
+        for (size_t axis = 0; axis < 3; ++axis) { movedBlocker.a[axis * 5] *= 0.03f; }
+        movedBlocker.a[12] += 0.1f;
+        if (!document.setObjectWorldMatrix(blocker, movedBlocker)) {
+            return RHITestResult::fail("Could not move and shrink the GDF blocker");
+        }
+        const auto geometry = runFrame("Blocker geometry change", {0u, kCardsPerBox, kPersistentResidentCards});
+        if (!geometry) { return RHITestResult::fail(log); }
+        bool deeperFragment = false;
+        for (uint32_t slot = 0; slot < kPersistentResidentCards; ++slot) {
+            const auto card = readSurfaceValue<CapturedCard>(geometry->surface->artifacts[kCardRecords].bytes, slot);
+            if (card.metadata[0] != uint32_t(blocker)) { continue; }
+            constexpr size_t kDepth = 3;
+            const uint16_t before = readSurfaceValue<uint16_t>(sunlight->surface->artifacts[kDepth].bytes, tileCenter(slot));
+            const uint16_t after = readSurfaceValue<uint16_t>(geometry->surface->artifacts[kDepth].bytes, tileCenter(slot));
+            deeperFragment |= after != UINT16_MAX && after > before + 1024;
+        }
+        if (!deeperFragment) { return RHITestResult::fail("The recapture fixture did not exercise a farther reversed-Z fragment"); }
+
+        if (!document.setObjectVisible(blocker, false)) { return RHITestResult::fail("Could not hide the GDF blocker"); }
+        constexpr uint32_t remaining = kPersistentResidentCards - kCardsPerBox;
+        const auto hidden = runFrame("Blocker visibility change", {1u, remaining, remaining}, remaining);
+        if (!hidden) { return RHITestResult::fail(log); }
+        const auto hiddenStats = readSurfaceValue<std::array<uint32_t, 4>>(
+            hidden->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
+        if (hiddenStats[1] != kPersistentResidentCards || hiddenStats[2] != remaining) {
+            return RHITestResult::fail("The Radiosity roster change did not reset captured and retired tiles");
+        }
+        for (uint32_t slot = remaining; slot < kPersistentResidentCards; ++slot) {
+            const auto state = readSurfaceValue<std::array<uint32_t, 2>>(hidden->radiosity->artifacts[kRadiosityCardState].bytes, slot);
+            if (state != std::array<uint32_t, 2>{}) { return RHITestResult::fail("Retired Radiosity state survived"); }
+            for (size_t atlas = 0; atlas < 2; ++atlas) {
+                for (uint32_t row = 0; row < kTileEdge; ++row) {
+                    constexpr uint32_t stride = 8;
+                    const size_t offset = size_t(cardPixelOffset(slot, row)) * stride;
+                    const auto bytes = std::span{hidden->radiosity->artifacts[atlas].bytes}.subspan(offset, kTileEdge * stride);
+                    if (!std::ranges::all_of(bytes, [](uint8_t value) { return value == 0; })) {
+                        return RHITestResult::fail("Retired Radiosity atlas tile retained stale lighting");
+                    }
+                }
+            }
+        }
+        if (!executor.compile(gpu, graph, kAtlasEdge * 2, kAtlasEdge * 2, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+            return RHITestResult::fail("Card update graph resize: " + log);
+        }
+        const auto resized = runFrame("Graph resize", {1u, remaining, remaining}, remaining);
+        if (!resized) { return RHITestResult::fail(log); }
+        const auto resizedStats = readSurfaceValue<std::array<uint32_t, 4>>(
+            resized->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
+        if (resizedStats != std::array{remaining, remaining, remaining, kRadiosityCardBudget}) {
+            return RHITestResult::fail("Graph resize did not reinitialize the Radiosity atlas");
+        }
+        if (validation.failed()) {
+            return RHITestResult::fail("Persistent card Vulkan validation: " + validation.snapshot().dump());
+        }
+        return RHITestResult::pass("Surface tiles match a full rebuild across edits; Radiosity respects its budget and clears retired tiles.");
+    }
+
+private:
+    static bool makeGraph(render::RenderGraph& graph, const std::vector<std::string>& fields,
+        const std::vector<std::string>& cards)
+    {
+        using render::makeRenderGraphFieldName;
+        const auto edge = [&](std::string_view from, std::string_view source, std::string_view to, std::string_view target) {
+            return graph.addEdge(makeRenderGraphFieldName(from, source), makeRenderGraphFieldName(to, target));
+        };
+        constexpr std::string_view gdf = "GDF";
+        if (!graph.addNode("GlobalDistanceFieldPagesPass", std::string(gdf), {{"distanceFieldPaths", fields},
+                {"center", {0.0, 0.5, 0.65}}, {"extent", 2.2}, {"resolution", 84}, {"maxPhysicalPages", 1728},
+                {"quantized", true}, {"buildObjectGrid", true}, {"persistentPages", true}})) { return false; }
+        for (const auto name : {kFullSurface, kPersistentSurface}) {
+            if (!graph.addNode("LumenSurfaceCachePass", std::string(name), {{"meshCardPaths", cards},
+                    {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"shadowedLighting", true},
+                    {"exportDirectIrradiance", true}, {"persistentCards", name == kPersistentSurface}})) { return false; }
+            for (const auto* input : {"pageTable", "pageAtlas", "coarseMip", "domain"}) {
+                if (!edge(gdf, input, name, input)) { return false; }
+            }
+        }
+        if (!graph.addNode("LumenRadiosityPass", std::string(kPersistentRadiosity), {{"atlasSize", kAtlasEdge},
+                {"tileResolution", kTileEdge}, {"maxTraceDistance", 4.0}, {"persistentCards", true},
+                {"maxCardsPerFrame", kRadiosityCardBudget}})) { return false; }
+        for (const auto* input : {"pageTable", "pageAtlas", "coarseMip", "domain", "objectGrid", "objectGridScene"}) {
+            if (!edge(gdf, input, kPersistentRadiosity, input)) { return false; }
+        }
+        constexpr std::array surfaceBindings{std::pair{"cards", "cards"}, std::pair{"scene", "cardScene"},
+            std::pair{"depth", "cardDepth"}, std::pair{"lighting", "cardLighting"}, std::pair{"normal", "cardNormal"},
+            std::pair{"albedo", "cardAlbedo"}, std::pair{"emissive", "cardEmissive"},
+            std::pair{"directIrradiance", "cardDirectLighting"}, std::pair{"cardUpdates", "cardUpdates"}};
+        for (const auto& [source, target] : surfaceBindings) {
+            if (!edge(kPersistentSurface, source, kPersistentRadiosity, target)) { return false; }
+        }
+        return graph.markOutput(makeRenderGraphFieldName(kFullSurface, "lighting")) &&
+            graph.markOutput(makeRenderGraphFieldName(kPersistentRadiosity, "lighting"));
+    }
+
+    static std::optional<CardUpdateFrame> captureFrame(CardUpdateInspector& inspector,
+        render::RenderGraphExecutor& executor, const render::RenderGraphSubmitDesc& submission, std::string& log)
+    {
+        using render::makeRenderGraphFieldName;
+        log.clear();
+        const auto radiosityField = [](std::string_view name) { return makeRenderGraphFieldName(kPersistentRadiosity, name); };
+        inspector.request = {{"method", "capture.batch"}, {"params", {
+            {"batches", debug::DebugValue::array({
+                {{"pass", kPersistentSurface}, {"resources", surfaceUpdateCaptures(kPersistentSurface)}},
+                {{"pass", kFullSurface}, {"resources", surfaceUpdateCaptures(kFullSurface)}},
+                {{"pass", kPersistentRadiosity}, {"resources", debug::DebugValue::array({
+                    cardAtlasCapture(radiosityField("indirectIrradiance")), cardAtlasCapture(radiosityField("lighting")),
+                    cardBufferCapture(radiosityField("updateStatistics"), 4),
+                    cardBufferCapture(radiosityField("cardState"), 2 * kPersistentCardCapacity)})}},
+            })},
+        }}};
+        if (const auto result = executor.execute(submission); !result) {
+            log = std::string(render::resultToString(result));
+            return std::nullopt;
+        }
+        if (!executor.waitForSubmittedWork()) { log = "Could not wait for the card update frame"; return std::nullopt; }
+        inspector.runtime.poll();
+        const auto& response = inspector.response;
+        if (response.value("status", "") != "ok") { log = response.dump(); return std::nullopt; }
+        auto& core = inspector.runtime.core();
+        const auto& jobs = response.at("result").at("jobs");
+        const auto read = [&](size_t index) {
+            const auto id = jobs.at(index).at("job").get<std::string>();
+            auto capture = core.completedCapture(id);
+            if (!capture) { log = core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump(); }
+            return capture;
+        };
+        auto surface = read(0);
+        auto full = read(1);
+        auto radiosity = read(2);
+        if (!surface || !full || !radiosity) { return std::nullopt; }
+        return CardUpdateFrame{std::move(surface), std::move(full), std::move(radiosity)};
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenPersistentCardUpdateTest);
+
+class LumenTemporalInputPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureOutput("indirectDiffuse").transferWrite().format = render::Format::RGBA16Sfloat;
+        return reflection;
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        return context.commandBuffer().clearColorTexture(*context.outputTexture("indirectDiffuse").texture(),
+            render::TextureLayout::TransferDestination, {0.5f, 0.25f, 0.125f, 1.0f});
+    }
+};
+
+struct LumenTemporalFrame {
+    CardCapture deferred, temporal;
+
+    std::array<float, 4> position(size_t pixel) const
+    {
+        return readSurfaceValue<std::array<float, 4>>(deferred->artifacts[0].bytes, pixel);
+    }
+
+    std::array<float, 4> previousPosition(size_t pixel) const
+    {
+        return readSurfaceValue<std::array<float, 4>>(deferred->artifacts[1].bytes, pixel);
+    }
+
+    float historyWeight(size_t pixel) const
+    {
+        return readSurfaceValue<float>(temporal->artifacts[0].bytes, pixel);
+    }
+};
+
+class LumenDynamicTemporalTest final : public RHITest {
+public:
+    LumenDynamicTemporalTest()
+    {
+        name = "lumen_dynamic_temporal";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        constexpr float startX = -0.28f;
+        constexpr float destinationX = 0.28f;
+        const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Lumen/SingleBounce.gltf";
+        const auto fixturePath = context.outputDirectory / "LumenDynamicTemporal.gltf";
+        std::ifstream input(source);
+        if (!input) { return RHITestResult::fail("Could not read the temporal test geometry"); }
+        auto asset = nlohmann::json::parse(input, nullptr, false);
+        if (asset.is_discarded()) { return RHITestResult::fail("Could not parse the temporal test geometry"); }
+        auto& movingNode = asset.at("nodes").at(2);
+        movingNode["scale"] = {0.25f, 2.0f, 0.4f};
+        movingNode["translation"] = {startX, 0.0f, 0.8f};
+        {
+            std::ofstream output(fixturePath);
+            output << asset.dump();
+            if (!output) { return RHITestResult::fail("Could not write the moving-object fixture"); }
+        }
+        scene::SceneDocument document;
+        if (!document.load(fixturePath)) { return RHITestResult::fail(document.lastLoadResult().error); }
+        const auto movingObject = std::ranges::find_if(document.renderNodes(), [&](const auto& node) {
+            return document.renderPrimitives()[node.renderPrimitiveIndex].meshIndex == 2;
+        });
+        if (movingObject == document.renderNodes().end()) { return RHITestResult::fail("Missing moving receiver"); }
+        const auto blocker = movingObject->object;
+
+        RenderGraph graph;
+        if (!makeGraph(graph)) { return RHITestResult::fail("Could not build the dynamic Lumen temporal graph"); }
+        bench::ValidationRecorder validation;
+        auto device = render::createDevice({.applicationName = "Lumen dynamic temporal regression",
+            .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true, .enableMeshShader = true, .enableTaskShader = true,
+            .enableTaskShaderSubgroupBallot = true, .enableGeometryShader = true, .validationSink = validation.sink()});
+        if (!device) { return RHITestResult::fail("Could not initialize the Lumen temporal test device"); }
+        auto& gpu = **device;
+        const auto& caps = gpu.capabilities();
+        if (!caps.meshShader || !caps.taskShader || !caps.geometryShader) {
+            return RHITestResult::skip("Lumen temporal fixture requires mesh, task and geometry shader support");
+        }
+        RenderWorld world;
+        world.setScene(&document);
+        world.setEnvironment({.enabled = false, .visible = false});
+        environment::WorldEnvironment environment;
+        environment.moon.enabled = false;
+        environment.sun.enabled = false;
+        if (!world.setWorldEnvironment(environment)) { return RHITestResult::fail("Could not disable the fixture sun"); }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {0.0f, 0.0f, 3.0f};
+        camera.orthographic = true;
+        camera.orthoHeight = 1.25f;
+        camera.farPlane = 8.0f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
+            return RHITestResult::fail("Could not initialize the temporal test camera");
+        }
+        HistoryResourceManager history;
+        if (!history.initialize(gpu)) { return RHITestResult::fail("Could not initialize graph history"); }
+        CardUpdateInspector inspector;
+        RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        executor.bindRenderView(&view);
+        executor.setDebugObserver(&inspector);
+        std::string log;
+        if (!executor.compile(gpu, graph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+            return RHITestResult::fail("Dynamic temporal graph compile: " + log);
+        }
+        const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics),
+            .historyResources = &history, .recordingWorkerLimit = 1};
+        const auto renderFrame = [&]() { return captureFrame(inspector, executor, submission, log); };
+
+        const auto initial = renderFrame();
+        if (!initial || !historyEmpty(*initial)) {
+            return RHITestResult::fail(initial ? "First frame unexpectedly used temporal history" : log);
+        }
+        auto stationary = renderFrame();
+        if (!stationary) { return RHITestResult::fail(log); }
+        stationary = renderFrame();
+        if (!stationary) { return RHITestResult::fail(log); }
+
+        auto transform = document.nodes()[2].worldMatrix;
+        transform.a[12] += destinationX - startX;
+        if (!document.setObjectWorldMatrix(blocker, transform)) { return RHITestResult::fail("Could not move the receiver"); }
+        const auto moved = renderFrame();
+        if (!moved) { return RHITestResult::fail(log); }
+        uint32_t shiftedPixels = 0, revealedPixels = 0, staticPixels = 0;
+        for (size_t pixel = 0; pixel < kAtlasPixels; ++pixel) {
+            const auto current = moved->position(pixel);
+            if (current[3] <= 0.0f || std::abs(current[1]) > 0.09f) { continue; }
+            const auto before = stationary->position(pixel);
+            const auto previous = moved->previousPosition(pixel);
+            const float weight = moved->historyWeight(pixel);
+            if (current[2] > 0.75f && std::abs(current[0] - destinationX) < 0.06f && before[2] < 0.5f) {
+                ++shiftedPixels;
+                if (previous[3] <= 0.0f || std::abs(previous[0] - current[0] + destinationX - startX) > 0.002f ||
+                    std::abs(previous[1] - current[1]) > 0.002f || std::abs(previous[2] - current[2]) > 0.002f ||
+                    !(weight > 0.6f)) {
+                    return RHITestResult::fail("Translated receiver did not reproject to its previous world-space surface");
+                }
+            } else if (before[2] > 0.75f && current[2] < 0.5f && std::abs(current[0] - startX) < 0.06f) {
+                ++revealedPixels;
+                if (weight != 0.0f) { return RHITestResult::fail("Newly revealed receiver retained foreground GI history"); }
+            } else if (std::abs(current[0]) < 0.08f && before[2] < 0.5f && current[2] < 0.5f) {
+                ++staticPixels;
+                if (previous[3] <= 0.0f || !(weight > 0.6f)) {
+                    return RHITestResult::fail("Moving one object discarded unrelated static receiver history");
+                }
+            }
+        }
+        if (std::min({shiftedPixels, revealedPixels, staticPixels}) < 80u) {
+            return RHITestResult::fail("Insufficient dynamic temporal coverage for moved, revealed and static pixels: " +
+                std::to_string(shiftedPixels) + ", " + std::to_string(revealedPixels) + ", " + std::to_string(staticPixels));
+        }
+
+        environment.sun.enabled = true;
+        environment.sun.direction = {0.0f, -0.8f, -0.6f};
+        environment.sun.illuminance = 4.0f;
+        if (!world.setWorldEnvironment(environment)) { return RHITestResult::fail("Could not edit the fixture lighting"); }
+        const auto relit = renderFrame();
+        if (!relit || !historyEmpty(*relit)) {
+            return RHITestResult::fail(relit ? "A lighting change retained stale diffuse history" : log);
+        }
+        const auto recovered = renderFrame();
+        if (!recovered || !hasRetainedHistory(*recovered)) {
+            return RHITestResult::fail(recovered ? "Diffuse history did not recover after the lighting reset" : log);
+        }
+        camera.eye[0] += 0.12f;
+        camera.center[0] += 0.12f;
+        if (!view.setCamera(camera)) { return RHITestResult::fail("Could not move the camera for its cut"); }
+        view.cameraCut();
+        const auto cut = renderFrame();
+        if (!cut || !historyEmpty(*cut)) {
+            return RHITestResult::fail(cut ? "Camera cut retained stale diffuse history" : log);
+        }
+        if (validation.failed()) {
+            return RHITestResult::fail("Dynamic temporal Vulkan validation: " + validation.snapshot().dump());
+        }
+        return RHITestResult::pass("Rigid motion kept valid history, revealed surfaces rejected it, and lighting edits and camera cuts reset it.");
+    }
+
+private:
+    static bool makeGraph(render::RenderGraph& graph)
+    {
+        using namespace render;
+        static const bool registered = registerRenderGraphPassType("LumenTemporalInputPass", "Constant diffuse test input",
+            [] { return std::make_unique<LumenTemporalInputPass>(); });
+        if (!registered || !graph.addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "none"}, {"enableClusterRtx", false}}) ||
+            !graph.addNode("VisibilityBufferDeferredPass", "Deferred", {{"materialBinning", false}, {"outputLinear", true},
+                {"exportLumenReceivers", true}, {"exportLumenPreviousPosition", true}}) ||
+            !graph.addNode("LumenTemporalInputPass", "Fixture") ||
+            !graph.addNode("LumenTemporalGatherPass", "Temporal", {{"dynamicReprojection", true}})) {
+            return false;
+        }
+        return graph.addEdge("VBuffer.visibility", "Deferred.visibility") && graph.addEdge("VBuffer.depth", "Deferred.depth") &&
+            graph.addEdge("VBuffer.rasterInfo", "Deferred.rasterInfo") && graph.addEdge("Deferred.lumenPosition", "Temporal.position") &&
+            graph.addEdge("Deferred.lumenPreviousPosition", "Temporal.previousPosition") &&
+            graph.addEdge("Deferred.lumenNormal", "Temporal.normal") && graph.addEdge("Deferred.color", "Temporal.directColor") &&
+            graph.addEdge("Fixture.indirectDiffuse", "Temporal.currentIndirectDiffuse") && graph.markOutput("Temporal.historyWeight");
+    }
+
+    static std::optional<LumenTemporalFrame> captureFrame(CardUpdateInspector& inspector, render::RenderGraphExecutor& executor,
+        const render::RenderGraphSubmitDesc& submission, std::string& log)
+    {
+        using namespace render;
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+            {{"pass", "Deferred"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Deferred.lumenPosition"),
+                cardAtlasCapture("Deferred.lumenPreviousPosition")})}},
+            {{"pass", "Temporal"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Temporal.historyWeight")})}},
+        })}}}};
+        if (const auto result = executor.execute(submission); !result) {
+            log = std::string(resultToString(result));
+            return std::nullopt;
+        }
+        if (!executor.waitForSubmittedWork()) { log = "Could not wait for the Lumen temporal frame"; return std::nullopt; }
+        inspector.runtime.poll();
+        if (inspector.response.value("status", "") != "ok") { log = inspector.response.dump(); return std::nullopt; }
+        auto& core = inspector.runtime.core();
+        const auto& jobs = inspector.response.at("result").at("jobs");
+        const auto read = [&](size_t index) {
+            const auto id = jobs.at(index).at("job").get<std::string>();
+            auto capture = core.completedCapture(id);
+            if (!capture) { log = core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump(); }
+            return capture;
+        };
+        auto deferred = read(0);
+        auto temporal = read(1);
+        if (!deferred || !temporal) { return std::nullopt; }
+        if (deferred->artifacts.size() != 2 || temporal->artifacts.size() != 1 ||
+            deferred->artifacts[0].bytes.size() != kAtlasPixels * sizeof(std::array<float, 4>) ||
+            deferred->artifacts[1].bytes.size() != kAtlasPixels * sizeof(std::array<float, 4>) ||
+            temporal->artifacts[0].bytes.size() != kAtlasPixels * sizeof(float)) {
+            log = "Unexpected Lumen dynamic temporal readback layout";
+            return std::nullopt;
+        }
+        return LumenTemporalFrame{std::move(deferred), std::move(temporal)};
+    }
+
+    static bool historyEmpty(const LumenTemporalFrame& frame)
+    {
+        size_t visiblePixels = 0;
+        for (size_t pixel = 0; pixel < kAtlasPixels; ++pixel) {
+            if (frame.position(pixel)[3] <= 0.0f) { continue; }
+            ++visiblePixels;
+            if (frame.historyWeight(pixel) != 0.0f) { return false; }
+        }
+        return visiblePixels >= 100u;
+    }
+
+    static bool hasRetainedHistory(const LumenTemporalFrame& frame)
+    {
+        for (size_t pixel = 0; pixel < kAtlasPixels; ++pixel) {
+            if (frame.position(pixel)[3] > 0.0f && frame.historyWeight(pixel) > 0.45f) { return true; }
+        }
+        return false;
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenDynamicTemporalTest);
+
+class LumenReflectionTest final : public RHITest {
+public:
+    LumenReflectionTest()
+    {
+        name = "lumen_software_reflections";
+        type = RHITestType::Rendering;
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Lumen/SingleBounce.gltf";
+        const auto fixture = context.outputDirectory / "LumenReflection.gltf";
+        const auto field = context.outputDirectory / "LumenReflectionEmitter.meshdf";
+        const auto cards = context.outputDirectory / "LumenReflectionEmitter.meshcards";
+        std::ifstream input(source);
+        if (!input) { return RHITestResult::fail("Could not read the reflection fixture"); }
+        auto asset = nlohmann::json::parse(input, nullptr, false);
+        if (asset.is_discarded()) { return RHITestResult::fail("Could not parse the reflection fixture"); }
+
+        // Tilt the receiver 22.5 degrees around X. Its mirror ray travels
+        // toward the emitter above the visible orthographic rectangle.
+        constexpr float halfAngle = -0.19634954084936207f;
+        asset["nodes"][0]["rotation"] = {std::sin(halfAngle), 0.0f, 0.0f, std::cos(halfAngle)};
+        asset["nodes"][1]["translation"][2] = 1.35f;
+        asset["scenes"][0]["nodes"] = {0, 1, 3};
+        auto& material = asset["materials"][0];
+        material["pbrMetallicRoughness"]["metallicFactor"] = 1.0f;
+        material["pbrMetallicRoughness"]["roughnessFactor"] = 0.0f;
+        material["extensions"]["KHR_materials_specular"]["specularFactor"] = 1.0f;
+        {
+            std::ofstream output(fixture);
+            output << asset.dump();
+            if (!output) { return RHITestResult::fail("Could not write the reflection fixture"); }
+        }
+        scene::SceneDocument document;
+        if (!document.load(fixture)) { return RHITestResult::fail(document.lastLoadResult().error); }
+        std::string log;
+        // Keep only the off-screen emitter in the tracing representation so
+        // this fixture tests incoming radiance independently of receiver self-hits.
+        if (!writeAnalyticBoxField(field, document, log, 1) || !writeAnalyticBoxCards(cards, document, 1, log)) {
+            return RHITestResult::fail(log);
+        }
+
+        RenderGraph graph;
+        if (!makeGraph(graph, field, cards)) { return RHITestResult::fail("Could not build the software reflection graph"); }
+        bench::ValidationRecorder validation;
+        auto device = render::createDevice({.applicationName = "Lumen software reflection regression",
+            .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true, .enableMeshShader = true, .enableTaskShader = true,
+            .enableTaskShaderSubgroupBallot = true, .enableGeometryShader = true, .validationSink = validation.sink()});
+        if (!device) { return RHITestResult::fail("Could not initialize the Lumen reflection test device"); }
+        auto& gpu = **device;
+        const auto& caps = gpu.capabilities();
+        if (!caps.meshShader || !caps.taskShader || !caps.geometryShader || !caps.shaderStorageImageExtendedFormats) {
+            return RHITestResult::skip("Lumen reflection fixture requires mesh, task and geometry shaders and extended storage image formats");
+        }
+        RenderWorld world;
+        world.setScene(&document);
+        world.setEnvironment({.enabled = false, .visible = false});
+        environment::WorldEnvironment environment;
+        environment.moon.enabled = false;
+        environment.sun.enabled = false;
+        if (!world.setWorldEnvironment(environment)) { return RHITestResult::fail("Could not disable the fixture sun"); }
+
+        RenderView view;
+        ViewCamera camera;
+        camera.eye = {0.0f, 0.0f, 3.0f};
+        camera.orthographic = true;
+        camera.orthoHeight = 1.25f;
+        camera.farPlane = 8.0f;
+        if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
+            return RHITestResult::fail("Could not initialize the reflection test camera");
+        }
+        HistoryResourceManager history;
+        if (!history.initialize(gpu)) { return RHITestResult::fail("Could not initialize reflection graph history"); }
+        CardUpdateInspector inspector;
+        RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        executor.bindRenderView(&view);
+        executor.setDebugObserver(&inspector);
+        if (!executor.compile(gpu, graph, kAtlasEdge, kAtlasEdge, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
+            return RHITestResult::fail("Software reflection graph compile: " + log);
+        }
+        const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics),
+            .historyResources = &history, .recordingWorkerLimit = 1};
+        const auto runFrame = [&](float roughness, bool unlit, uint32_t minHits) {
+            auto frame = captureFrame(inspector, executor, submission, log);
+            if (frame) { log = verifyFrame(*frame, roughness, unlit, minHits); }
+            return frame && log.empty();
+        };
+
+        if (!runFrame(0.0f, false, 144u)) { return RHITestResult::fail("Mirror: " + log); }
+        auto receiver = document.materials()[0];
+        receiver.roughnessFactor = 0.2f;
+        if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set the rough receiver material"); }
+        if (!runFrame(0.2f, false, 64u)) { return RHITestResult::fail("Rough reflection: " + log); }
+
+        receiver.roughnessFactor = 0.65f;
+        if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set the roughness cutoff fixture"); }
+        if (!runFrame(0.65f, false, 0u)) { return RHITestResult::fail("Roughness cutoff: " + log); }
+
+        receiver.roughnessFactor = 0.0f;
+        receiver.unlit = true;
+        if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set the unlit receiver material"); }
+        if (!runFrame(0.0f, true, 0u)) { return RHITestResult::fail("Unlit receiver: " + log); }
+        if (validation.failed()) { return RHITestResult::fail("Lumen reflection Vulkan validation: " + validation.snapshot().dump()); }
+        return RHITestResult::pass("The mirror and rough receiver reflected an off-screen emissive card. Roughness cutoff, unlit surfaces and background bypassed tracing.");
+    }
+
+private:
+    static constexpr float kMaxRoughness = 0.25f;
+    using ReflectionFrame = std::array<CardCapture, 2>;
+    using Pixel = std::array<float, 4>;
+
+    static bool makeGraph(render::RenderGraph& graph, const std::filesystem::path& field, const std::filesystem::path& cards)
+    {
+        using render::makeRenderGraphFieldName;
+        const auto edge = [&](std::string_view from, std::string_view source, std::string_view to, std::string_view target) {
+            return graph.addEdge(makeRenderGraphFieldName(from, source), makeRenderGraphFieldName(to, target));
+        };
+        if (!graph.addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "none"}, {"enableClusterRtx", false}}) ||
+            !graph.addNode("VisibilityBufferDeferredPass", "Deferred", {{"materialBinning", false}, {"outputLinear", true},
+                {"exportLumenReceivers", true}, {"exportLumenSpecular", true}}) ||
+            !graph.addNode("GlobalDistanceFieldPagesPass", "GDF", {{"distanceFieldPaths", {field.generic_string()}},
+                {"center", {0.0f, 0.5f, 0.75f}}, {"extent", 2.5f}, {"resolution", 112}, {"maxPhysicalPages", 1728},
+                {"quantized", true}, {"buildObjectGrid", true}, {"persistentPages", true}}) ||
+            !graph.addNode("LumenSurfaceCachePass", "SurfaceCache", {{"meshCardPaths", {cards.generic_string()}},
+                {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"persistentCards", true}}) ||
+            !graph.addNode("LumenReflectionPass", "Reflections", {{"maxTraceDistance", 4.0f}, {"maxRoughness", kMaxRoughness}})) {
+            return false;
+        }
+        for (const auto* name : {"visibility", "depth", "rasterInfo"}) {
+            if (!edge("VBuffer", name, "Deferred", name)) { return false; }
+        }
+        for (const auto* name : {"pageTable", "pageAtlas", "coarseMip", "domain", "objectGrid", "objectGridScene"}) {
+            if (!edge("GDF", name, "Reflections", name)) { return false; }
+        }
+        constexpr std::array surfaceBindings{std::pair{"cards", "cards"}, std::pair{"scene", "cardScene"},
+            std::pair{"depth", "cardDepth"}, std::pair{"lighting", "cardLighting"}};
+        for (const auto& [from, to] : surfaceBindings) {
+            if (!edge("SurfaceCache", from, "Reflections", to)) { return false; }
+        }
+        return edge("Deferred", "lumenPosition", "Reflections", "position") &&
+            edge("Deferred", "lumenNormal", "Reflections", "normal") &&
+            edge("Deferred", "lumenSpecular", "Reflections", "specular") &&
+            edge("Deferred", "color", "Reflections", "sceneColor") && graph.markOutput("Reflections.color");
+    }
+
+    static std::optional<ReflectionFrame> captureFrame(CardUpdateInspector& inspector, render::RenderGraphExecutor& executor,
+        const render::RenderGraphSubmitDesc& submission, std::string& log)
+    {
+        inspector.request = {{"method", "capture.batch"}, {"params", {{"batches", debug::DebugValue::array({
+            {{"pass", "Deferred"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Deferred.lumenPosition"),
+                cardAtlasCapture("Deferred.lumenSpecular"), cardAtlasCapture("Deferred.color")})}},
+            {{"pass", "Reflections"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Reflections.reflections"),
+                cardAtlasCapture("Reflections.trace"), cardAtlasCapture("Reflections.color")})}},
+        })}}}};
+        if (const auto result = executor.execute(submission); !result) {
+            log = std::string(render::resultToString(result));
+            return std::nullopt;
+        }
+        if (!executor.waitForSubmittedWork()) { log = "Could not wait for the reflection frame"; return std::nullopt; }
+        inspector.runtime.poll();
+        if (inspector.response.value("status", "") != "ok") { log = inspector.response.dump(); return std::nullopt; }
+        auto& core = inspector.runtime.core();
+        const auto& jobs = inspector.response.at("result").at("jobs");
+        ReflectionFrame captures;
+        for (size_t index = 0; index < captures.size(); ++index) {
+            const auto id = jobs.at(index).at("job").get<std::string>();
+            captures[index] = core.completedCapture(id);
+            if (!captures[index]) {
+                log = core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump();
+                return std::nullopt;
+            }
+        }
+        return captures;
+    }
+
+    static Pixel readHalfPixel(const debug::DebugArtifact& artifact, size_t pixel)
+    {
+        const auto halfValues = readSurfaceValue<std::array<uint16_t, 4>>(artifact.bytes, pixel);
+        return {halfToFloat(halfValues[0]), halfToFloat(halfValues[1]), halfToFloat(halfValues[2]), halfToFloat(halfValues[3])};
+    }
+
+    static std::string verifyFrame(const ReflectionFrame& frame, float roughness, bool unlit, uint32_t minHits)
+    {
+        constexpr std::array strides{std::array{16u, 8u, 16u}, std::array{8u, 16u, 16u}};
+        for (size_t group = 0; group < frame.size(); ++group) {
+            if (frame[group]->artifacts.size() != strides[group].size()) { return "Incomplete reflection readback"; }
+            for (size_t output = 0; output < strides[group].size(); ++output) {
+                if (frame[group]->artifacts[output].bytes.size() != kAtlasPixels * strides[group][output]) {
+                    return "Unexpected reflection readback layout";
+                }
+            }
+        }
+        const auto& deferred = frame[0]->artifacts;
+        const auto& reflections = frame[1]->artifacts;
+        constexpr Pixel untraced{-1.0f, 8.0f, -1.0f, 0.0f};
+        uint32_t hits = 0, background = 0;
+        for (uint32_t y = 0; y < kAtlasEdge; ++y) {
+            for (uint32_t x = 0; x < kAtlasEdge; ++x) {
+                const size_t pixel = size_t(y) * kAtlasEdge + x;
+                const auto position = readSurfaceValue<Pixel>(deferred[0].bytes, pixel);
+                const auto specular = readHalfPixel(deferred[1], pixel);
+                const auto baseColor = readSurfaceValue<Pixel>(deferred[2].bytes, pixel);
+                const auto raw = readHalfPixel(reflections[0], pixel);
+                const auto trace = readSurfaceValue<Pixel>(reflections[1].bytes, pixel);
+                const auto color = readSurfaceValue<Pixel>(reflections[2].bytes, pixel);
+                const bool center = x >= 52 && x < 76 && y >= 52 && y < 76;
+                if (!center && position[3] <= 0.0f) { ++background; }
+                if (center && !unlit && (!(position[3] > 0.0f) || !(specular[0] > 0.0f) ||
+                    std::abs(specular[3] - roughness) >= 0.001f)) {
+                    return "Deferred did not export the expected reflective material at the receiver";
+                }
+                if (center && unlit && (specular[0] != 0.0f || specular[1] != 0.0f || specular[2] != 0.0f)) {
+                    return "Deferred exported a specular lobe for the unlit receiver";
+                }
+                const bool traced = !unlit && position[3] > 0.0f && specular[3] < kMaxRoughness &&
+                    (specular[0] > 0.0f || specular[1] > 0.0f || specular[2] > 0.0f);
+                if (!traced && (raw != Pixel{} || trace != untraced)) {
+                    return "Invalid, unlit or roughness-filtered pixel produced a reflection ray";
+                }
+                if (traced) {
+                    const float fade = std::clamp((kMaxRoughness - specular[3]) * 10.0f, 0.0f, 1.0f);
+                    if (!(std::abs(raw[3] - fade) < 0.001f)) { return "Incorrect roughness fade"; }
+                    if (center && trace[0] > 0.5f && trace[0] < 3.0f && trace[1] == 2.0f && trace[2] == 0.0f &&
+                        trace[3] == 3.0f && raw[0] > 1.0f && raw[1] > 0.0f && raw[2] > 0.0f) {
+                        ++hits;
+                    }
+                }
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    const float expected = baseColor[channel] + std::max(raw[channel] * raw[3] * specular[channel], 0.0f);
+                    if (!(std::abs(color[channel] - expected) <= 0.0001f)) { return "Reflection composite differs from scene color plus weighted radiance"; }
+                }
+                if (color[3] != baseColor[3]) { return "Reflection composite changed scene alpha"; }
+            }
+        }
+        if (background < 64) { return "The reflection fixture did not contain uncovered pixels"; }
+        if (hits < minHits) { return "Too few reflected off-screen emitter pixels: " + std::to_string(hits); }
+        return {};
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(LumenReflectionTest);
 
 } // namespace
 } // namespace metallic::tests

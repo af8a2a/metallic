@@ -155,7 +155,33 @@ struct SurfaceCacheResolveParams
     uint tileResolution;
     float4 lightDirection;
     float4 illuminance;
+    ResourceHandle<StructuredBuffer<uint>> updateTiles;
+    uint updateCount;
 };
+
+// Fixed-resolution cards have equal-sized rectangles. Pack the update list
+// across X and Z so even the largest supported atlas fits the dispatch limits.
+bool surfaceCacheUpdateTexel(uint3 threadID, uint atlasSize, uint tileResolution,
+    ResourceHandle<StructuredBuffer<uint>> updateTiles, uint updateCount, out uint2 texel)
+{
+    texel = threadID.xy;
+    if (updateCount == 0u) {
+        return all(texel < atlasSize);
+    }
+
+    const uint groupsPerTile = (tileResolution + 7u) / 8u;
+    const uint paddedTileWidth = groupsPerTile * 8u;
+    const uint listIndex = threadID.z * 128u + threadID.x / paddedTileWidth;
+    const uint2 tileTexel = uint2(threadID.x % paddedTileWidth, threadID.y);
+    if (listIndex >= updateCount || any(tileTexel >= tileResolution)) {
+        return false;
+    }
+
+    const uint slot = resolveUniform(updateTiles)[listIndex];
+    const uint tilesPerAxis = atlasSize / tileResolution;
+    texel = uint2(slot % tilesPerAxis, slot / tilesPerAxis) * tileResolution + tileTexel;
+    return true;
+}
 
 // UE 5.7.4 SurfaceCache/LumenSurfaceCache.ush:13. Reserve 1 for invalid texels.
 float encodeSurfaceCacheDepth(float depth)
@@ -185,8 +211,8 @@ void surfaceCacheResolveMain(uint3 threadID : SV_DispatchThreadID)
     Texture2D<float4> normalAtlas = resolveUniform(params.normal);
     uint width, height;
     normalAtlas.GetDimensions(width, height);
-    uint2 texel = threadID.xy;
-    if (texel.x >= width || texel.y >= height) {
+    uint2 texel;
+    if (!surfaceCacheUpdateTexel(threadID, width, params.tileResolution, params.updateTiles, params.updateCount, texel)) {
         return;
     }
 
@@ -219,6 +245,9 @@ struct SurfaceCacheEncodeDepthParams
     ResourceHandle<Texture2D<float>> hardwareDepth;
     ResourceHandle<SurfaceCacheDepthTexture> depth;
     uint atlasSize;
+    uint tileResolution;
+    ResourceHandle<StructuredBuffer<uint>> updateTiles;
+    uint updateCount;
 };
 
 [shader("compute")]
@@ -226,14 +255,14 @@ struct SurfaceCacheEncodeDepthParams
 void surfaceCacheEncodeDepthMain(uint3 threadID : SV_DispatchThreadID)
 {
     SurfaceCacheEncodeDepthParams params = getParameters<SurfaceCacheEncodeDepthParams>();
-    if (any(threadID.xy >= params.atlasSize)) {
+    uint2 texel;
+    if (!surfaceCacheUpdateTexel(threadID, params.atlasSize, params.tileResolution, params.updateTiles, params.updateCount, texel)) {
         return;
     }
 
     Texture2D<float4> normalAtlas = resolveUniform(params.normal);
     Texture2D<float> hardwareDepthAtlas = resolveUniform(params.hardwareDepth);
     SurfaceCacheDepthTexture depthAtlas = resolveUniform(params.depth);
-    uint2 texel = threadID.xy;
     depthAtlas[texel] = normalAtlas.Load(int3(texel, 0)).w > 0.5f
         ? encodeSurfaceCacheDepth(1.0f - hardwareDepthAtlas.Load(int3(texel, 0))) : 1.0f;
 }
@@ -260,7 +289,8 @@ struct SurfaceCacheShadowedLightingParams
     uint atlasSize;
     ResourceHandle<_Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 1>> directIrradiance;
     uint exportDirectIrradiance;
-    uint2 padding;
+    ResourceHandle<StructuredBuffer<uint>> updateTiles;
+    uint updateCount;
 };
 
 // UE 5.7.4 defaults in Scene.cpp (20000 cm) and LumenSceneDirectLighting.cpp.
@@ -299,11 +329,11 @@ float3 shadowedSurfaceCacheLight(QuantizedGlobalDistanceFieldSampler distanceFie
 void surfaceCacheShadowedLightingMain(uint3 threadID : SV_DispatchThreadID)
 {
     SurfaceCacheShadowedLightingParams params = getParameters<SurfaceCacheShadowedLightingParams>();
-    if (any(threadID.xy >= params.atlasSize)) {
+    uint2 texel;
+    if (!surfaceCacheUpdateTexel(threadID, params.atlasSize, params.tileResolution, params.updateTiles, params.updateCount, texel)) {
         return;
     }
 
-    uint2 texel = threadID.xy;
     Texture2D<float> depthAtlas = resolveUniform(params.depth);
     SurfaceCacheLightingTexture finalLightingAtlas = resolveUniform(params.lighting);
     float depth = depthAtlas.Load(int3(texel, 0));
