@@ -4,6 +4,9 @@ import ShaderCore;
 import ParameterRoot;
 import LumenAdaptiveProbes;
 import LumenProbeMath;
+#if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
+import LumenProbeImportance;
+#endif
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
 import LumenScreenProbeWork;
 #endif
@@ -45,6 +48,9 @@ struct LumenScreenProbeFilterParams
 #if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
     ResourceHandle<StructuredBuffer<uint>> probeOrigins;
 #endif
+#if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
+    ResourceHandle<StructuredBuffer<uint>> structuredRayInfo;
+#endif
 };
 
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
@@ -74,7 +80,7 @@ static const uint kTraceSamples = kLumenProbeTraceResolution * kLumenProbeTraceR
 groupshared uint sharedLighting[kRaysPerProbe][3];
 groupshared uint sharedMinHitDistance[kRaysPerProbe];
 
-// UE 5.7.4 ScreenProbeCompositeTracesWithScatterCS, uniform trace directions scattered to the gather grid.
+// UE 5.7.4 ScreenProbeCompositeTracesWithScatterCS.
 [shader("compute")]
 [numthreads(kLumenProbeTraceResolution, kLumenProbeTraceResolution, 1)]
 void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
@@ -119,15 +125,23 @@ void lumenCompositeScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Gr
         uint2 screenTileCoord = lumenScreenTileCoord(probePixel, params.frameIndex);
         uint rayDirectionFrameIndex = params.rayDirectionFrameIndex;
         float2 probeTexelCenter = lumenProbeBlueNoiseVec2(noise, screenTileCoord, rayDirectionFrameIndex);
-        float2 gatherTexelCoord = (float2(lane.xy) + probeTexelCenter) * kLumenProbeGatherResolution /
-            kLumenProbeTraceResolution - 0.5f;
+#if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
+        uint rayInfo = resolveUniform(params.structuredRayInfo)[traceAddress];
+        uint2 rayTexelCoord;
+        uint rayLevel;
+        lumenUnpackProbeRayInfo(rayInfo, rayTexelCoord, rayLevel);
+        uint mipSize = lumenProbeRayMipSize(rayLevel);
+#else
+        uint2 rayTexelCoord = lane.xy;
+        const uint mipSize = kLumenProbeTraceResolution;
+#endif
+        float2 gatherTexelCoord = (float2(rayTexelCoord) + probeTexelCenter) * kLumenProbeGatherResolution / mipSize - 0.5f;
         float2 random = lumenProbeBlueNoiseVec2(noise, screenTileCoord, rayDirectionFrameIndex + 63u / 2u);
         int2 quantizedCoord = int2(floor(gatherTexelCoord)) +
             select(frac(gatherTexelCoord) < random, int2(0), int2(1));
         uint2 gatherCoord = wrapOctahedralBorder(uint2(quantizedCoord + 1), kLumenProbeGatherResolution + 2u, 1u);
         uint dest = gatherCoord.y * kLumenProbeGatherResolution + gatherCoord.x;
-        float sampleWeight = float(kLumenProbeGatherResolution) / kLumenProbeTraceResolution
-            * kLumenProbeGatherResolution / kLumenProbeTraceResolution;
+        float sampleWeight = float(kLumenProbeGatherResolution) / mipSize * kLumenProbeGatherResolution / mipSize;
         uint3 lighting = lumenQuantizeProbeLighting(resolveUniform(params.inputRadiance)[traceAddress].xyz * sampleWeight, kTraceSamples);
         InterlockedAdd(sharedLighting[dest][0], lighting.x);
         InterlockedAdd(sharedLighting[dest][1], lighting.y);

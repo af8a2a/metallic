@@ -6,6 +6,9 @@ import LumenGlobalRay;
 import LumenProbeMath;
 import GlobalDistanceField;
 import LumenAdaptiveProbes;
+#if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
+import LumenProbeImportance;
+#endif
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
 import LumenScreenProbeWork;
 #endif
@@ -191,6 +194,9 @@ struct LumenScreenProbeGatherParams
     ResourceHandle<StructuredBuffer<uint>> probeOrigins;
     ResourceHandle<StructuredBuffer<uint>> probeTileAdaptiveCounts;
     ResourceHandle<StructuredBuffer<uint>> probeTileAdaptiveIndices;
+#endif
+#if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
+    ResourceHandle<StructuredBuffer<uint>> structuredRayInfo;
 #endif
 };
 
@@ -400,7 +406,20 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
 #else
         float2 probeTexelCenter = 0.5f;
 #endif
+#if defined(METALLIC_LUMEN_STRUCTURED_IMPORTANCE_SAMPLING)
+        // UE 5.7.4 GetProbeTracingUV. The destination remains the original trace lane.
+        const uint rayInfo = resolveUniform(params.structuredRayInfo)[address];
+        uint2 rayTexelCoord;
+        uint rayLevel;
+        lumenUnpackProbeRayInfo(rayInfo, rayTexelCoord, rayLevel);
+        const uint mipSize = lumenProbeRayMipSize(rayLevel);
+        const float numSupersamples = 1.0f;
+        const float invSupersampledMipSize = 1.0f / (mipSize * numSupersamples);
+        const float2 probeUV = (rayTexelCoord * numSupersamples + probeTexelCenter) * invSupersampledMipSize;
+        const float3 rayDirection = lumenEquiAreaSphericalMapping(probeUV);
+#else
         float3 rayDirection = probeRayDirection(lane.xy, probeTexelCenter);
+#endif
         float3 receiverNormal = normalize(normal.Load(int3(probePixel, 0)).xyz);
         // UE 5.7.4 TraceVoxels, opaque software tracing.
         float3 samplePosition = receiver.xyz + kSurfaceBias * rayDirection;
