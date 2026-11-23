@@ -544,11 +544,13 @@ public:
         HistoryResourceManager manager;
         const auto revisions = [&]() {
             return std::array{manager.invalidationRevision(), manager.reprojectionInvalidationRevision(),
-                manager.geometryReprojectionInvalidationRevision(), manager.motionReprojectionInvalidationRevision()};
+                manager.geometryReprojectionInvalidationRevision(), manager.motionReprojectionInvalidationRevision(),
+                manager.sunLightingReprojectionInvalidationRevision()};
         };
         auto before = revisions();
         if (!manager.initialize(context.device) || revisions()[0] == before[0] ||
-            revisions()[1] == before[1] || revisions()[2] == before[2] || revisions()[3] == before[3]) {
+            revisions()[1] == before[1] || revisions()[2] == before[2] ||
+            revisions()[3] == before[3] || revisions()[4] == before[4]) {
             return RHITestResult::fail("Initialize must invalidate every history scope");
         }
         if (!manager.ensureBuffer("visibility", {.size = 64, .usage = BufferUsageBits::Storage})) {
@@ -556,7 +558,7 @@ public:
         }
         uint64_t frameIndex = 0;
         for (const auto reason : {HistoryInvalidationReason::CameraMotion, HistoryInvalidationReason::GeometryMotion,
-                HistoryInvalidationReason::LightingChange,
+                HistoryInvalidationReason::LightingChange, HistoryInvalidationReason::SunLightingChange,
                 HistoryInvalidationReason::Discontinuity}) {
             manager.beginFrame(frameIndex++);
             manager.markWritten("visibility");
@@ -570,12 +572,16 @@ public:
                 (after[2] != before[2]) != (reason == HistoryInvalidationReason::Discontinuity ||
                     reason == HistoryInvalidationReason::GeometryMotion) ||
                 (after[3] != before[3]) != (reason == HistoryInvalidationReason::Discontinuity ||
-                    reason == HistoryInvalidationReason::LightingChange)) {
+                    reason == HistoryInvalidationReason::LightingChange) ||
+                (after[4] != before[4]) != (reason != HistoryInvalidationReason::CameraMotion &&
+                    reason != HistoryInvalidationReason::SunLightingChange)) {
                 return RHITestResult::fail("Invalidation reason changed an unrelated reprojection scope or retained resource validity");
             }
         }
 
         RenderWorld world;
+        world.setEnvironment({.enabled = false, .visible = false});
+        (void)world.consumeChanges();
         RenderSubsystemHost host;
         std::string log;
         if (!host.initialize(context.device, 1, log)) { return RHITestResult::fail(log); }
@@ -592,10 +598,36 @@ public:
             const auto after = revisions();
             if (after[0] == before[0] || after[1] == before[1] ||
                 (after[2] != before[2]) != (changes != lightingOnly) ||
-                (after[3] != before[3]) != (changes != motionOnly)) {
+                (after[3] != before[3]) != (changes != motionOnly) || after[4] == before[4]) {
                 return RHITestResult::fail("Subsystem host failed to distinguish motion or lighting from a discontinuity");
             }
         }
+        auto environment = world.worldEnvironment();
+        environment.sun.enabled = true;
+        environment.sun.illuminance = 24.0f;
+        before = revisions();
+        if (!world.setWorldEnvironment(environment) || !host.beginFrame(frameIndex++, 0, &manager, log)) {
+            return RHITestResult::fail("Could not publish an isolated Sun change: " + log);
+        }
+        host.endFrame();
+        auto after = revisions();
+        if (host.lastChanges() != lightingOnly || after[0] == before[0] || after[1] == before[1] ||
+            after[2] != before[2] || after[3] != before[3] || after[4] != before[4]) {
+            return RHITestResult::fail("An isolated Sun change must preserve only the reprojectable private scopes");
+        }
+
+        environment.sun.illuminance = 48.0f;
+        before = after;
+        if (!world.setWorldEnvironment(environment) || !world.setLighting(world.lighting()) ||
+            !host.beginFrame(frameIndex++, 0, &manager, log)) {
+            return RHITestResult::fail("Could not publish mixed lighting changes: " + log);
+        }
+        host.endFrame();
+        after = revisions();
+        if (after[3] == before[3] || after[4] == before[4]) {
+            return RHITestResult::fail("A Sun change must not mask another lighting invalidation");
+        }
+
         before = revisions();
         manager.invalidateAll();
         world.notifySceneChanged(lightingOnly);
@@ -607,12 +639,13 @@ public:
         before = revisions();
         manager.reset();
         if (revisions()[0] == before[0] || revisions()[1] == before[1] || revisions()[2] == before[2] ||
-            revisions()[3] == before[3]) {
+            revisions()[3] == before[3] || revisions()[4] == before[4]) {
             return RHITestResult::fail("Reset must invalidate every history scope");
         }
         before = revisions();
         if (!manager.initialize(context.device) || revisions()[0] == before[0] ||
-            revisions()[1] == before[1] || revisions()[2] == before[2] || revisions()[3] == before[3]) {
+            revisions()[1] == before[1] || revisions()[2] == before[2] ||
+            revisions()[3] == before[3] || revisions()[4] == before[4]) {
             return RHITestResult::fail("Reinitialize must invalidate every history scope");
         }
         return RHITestResult::pass();

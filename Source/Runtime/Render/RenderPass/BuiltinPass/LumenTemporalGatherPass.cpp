@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenLightingHistory.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenTraceHistory.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenBlueNoise.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -47,7 +48,7 @@ struct HistoryContent {
     uint64_t sceneContentRevision = 0;
     uint64_t geometryTransformRevision = 0;
     uint64_t visibilityRevision = 0;
-    uint64_t lightingRevision = 0;
+    uint64_t nonSunLightingRevision = 0;
     uint64_t environmentRevision = 0;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -85,6 +86,7 @@ private:
     HistoryResourceManager history_;
     std::optional<HistoryContent> lastContent_;
     uint64_t lastFrame_ = 0;
+    float previousSunIrradianceMax_ = 0.0f;
 };
 
 RenderPassReflection LumenTemporalGatherPass::reflect(const RenderGraphCompileContext&) const
@@ -179,8 +181,10 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     const auto* globalHistory = context.historyResources();
     const bool dynamic = dynamicReprojection();
     const uint64_t reprojectionRevision = globalHistory
-        ? (dynamic ? globalHistory->motionReprojectionInvalidationRevision() : globalHistory->reprojectionInvalidationRevision())
+        ? (dynamic ? globalHistory->motionReprojectionInvalidationRevision() :
+            globalHistory->sunLightingReprojectionInvalidationRevision())
         : 0;
+    const float sunIrradianceMax = world ? world->sunIrradianceMax() : 0.0f;
     const HistoryContent content{
         .reprojectionRevision = reprojectionRevision,
         .sceneIdentity = scene ? scene->resourceIdentity() : 0,
@@ -189,7 +193,7 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
         .sceneContentRevision = scene ? scene->contentRevision() : 0,
         .geometryTransformRevision = !dynamic && scene ? scene->geometryTransformRevision() : 0,
         .visibilityRevision = scene ? scene->visibilityRevision() : 0,
-        .lightingRevision = world ? world->lightingRevision() : 0,
+        .nonSunLightingRevision = world ? world->nonSunLightingRevision() : 0,
         .environmentRevision = world ? world->environmentRevision() : 0,
         .width = context.width(),
         .height = context.height(),
@@ -200,7 +204,8 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     const std::array names{historyScope + "diffuse", historyScope + "geometry"};
     const std::array formats{Format::RGBA16Sfloat, Format::RGBA32Sfloat};
     history_.beginFrame(context.frameIndex());
-    if (lastContent_ != content || lastFrame_ + 1 != context.frameIndex() || !view || view->frame[1] == 0) {
+    if (lastContent_ != content || lastFrame_ + 1 != context.frameIndex() || !view || view->frame[1] == 0 ||
+        lumenGlobalSunLightingChanged(previousSunIrradianceMax_, sunIrradianceMax)) {
         history_.invalidateAll();
     }
 
@@ -318,6 +323,7 @@ Result<> LumenTemporalGatherPass::execute(RenderGraphExecutionContext& context)
     }
     lastContent_ = content;
     lastFrame_ = context.frameIndex();
+    previousSunIrradianceMax_ = sunIrradianceMax;
     return {};
 }
 

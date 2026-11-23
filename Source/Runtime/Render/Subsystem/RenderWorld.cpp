@@ -1,4 +1,5 @@
 #include "Runtime/Render/Subsystem/RenderWorld.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Scene/Scene.h"
 
 #include <utility>
@@ -53,6 +54,7 @@ void RenderWorld::notifySceneChanged(RenderChangeBits changes)
         hasRenderChange(changes, RenderChangeBits::Material)) {
         ++sceneContentRevision_;
     }
+    if (hasRenderChange(changes, RenderChangeBits::Lighting)) { ++nonSunLightingRevision_; }
     pendingChanges_ |= changes;
 }
 
@@ -63,16 +65,32 @@ void RenderWorld::setEnvironment(EnvironmentSettings settings)
     }
     environment_ = std::move(settings);
     ++environmentRevision_;
-    ++lightingRevision_;
-    pendingChanges_ |= RenderChangeBits::Lighting |
-        RenderChangeBits::InvalidateTemporalHistory;
+    markLightingChanged();
 }
 
-RenderChangeBits RenderWorld::consumeChanges()
+RenderChangeBits RenderWorld::consumeChanges(bool* sunLightingOnly)
 {
-    const RenderChangeBits changes = pendingChanges_;
+    if (sunLightingOnly != nullptr) {
+        *sunLightingOnly = pendingSunLightingChange_ && pendingChanges_ == RenderChangeBits::None;
+    }
+    auto changes = pendingChanges_;
+    if (pendingSunLightingChange_) {
+        changes |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+    }
     pendingChanges_ = RenderChangeBits::None;
+    pendingSunLightingChange_ = false;
     return changes;
+}
+
+void RenderWorld::markLightingChanged(bool sunOnly)
+{
+    ++lightingRevision_;
+    if (sunOnly) {
+        pendingSunLightingChange_ = true;
+    } else {
+        ++nonSunLightingRevision_;
+        pendingChanges_ |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+    }
 }
 
 bool RenderWorld::setLighting(scene::LightingSettings lighting)
@@ -82,8 +100,7 @@ bool RenderWorld::setLighting(scene::LightingSettings lighting)
     }
     scene::normalizePunctualLightIdentities(lighting);
     lighting_ = std::move(lighting);
-    ++lightingRevision_;
-    pendingChanges_ |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+    markLightingChanged();
     return true;
 }
 
@@ -103,8 +120,13 @@ bool RenderWorld::setWorldEnvironment(environment::WorldEnvironment environment)
     if (worldEnvironment_.time.julianDateUTC != environment.time.julianDateUTC) {
         environmentJulianDateUTC_ = environment.time.julianDateUTC;
     }
+    auto previousWithNewSun = worldEnvironment_;
+    previousWithNewSun.sun = environment.sun;
+    const bool sunOnly = !environment_.enabled && environment.source == environment::EnvironmentSource::HDRI &&
+        environment.astronomy.mode == environment::AstronomyMode::Manual && !environment.moon.enabled &&
+        previousWithNewSun == environment;
     worldEnvironment_ = std::move(environment);
-    updateEvaluatedEnvironment(true);
+    updateEvaluatedEnvironment(true, sunOnly);
     return true;
 }
 
@@ -134,7 +156,7 @@ bool RenderWorld::setEnvironmentElapsedSeconds(double elapsedSeconds)
     return true;
 }
 
-void RenderWorld::updateEvaluatedEnvironment(bool authoredChange)
+void RenderWorld::updateEvaluatedEnvironment(bool authoredChange, bool sunOnly)
 {
     auto next = worldEnvironment_.snapshot(celestialRevision_, lightingRevision_, atmosphereRevision_,
         weatherRevision_, astronomyRevision_, environmentElapsedSeconds_, environmentJulianDateUTC_);
@@ -159,8 +181,12 @@ void RenderWorld::updateEvaluatedEnvironment(bool authoredChange)
     if (weatherChanged) { ++weatherRevision_; }
     if (atmosphereChanged || weatherChanged) { ++environmentRevision_; }
     if (authoredChange || celestialChanged || atmosphereChanged || astronomyChanged || weatherChanged) {
-        ++lightingRevision_;
-        pendingChanges_ |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
+        markLightingChanged(sunOnly);
+    }
+    if (celestialChanged || atmosphereChanged) {
+        const auto lights = buildCelestialLightRecords(next);
+        const auto& irradiance = lights[static_cast<uint32_t>(environment::CelestialLightIndex::Sun)].irradiance;
+        sunIrradianceMax_ = std::max({irradiance[0], irradiance[1], irradiance[2]});
     }
     next.celestialRevision = celestialRevision_;
     next.atmosphereRevision = atmosphereRevision_;

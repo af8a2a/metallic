@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenLightingHistory.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenScreenTraceHistory.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -83,6 +84,7 @@ private:
     std::array<std::string, 2> historyNames_;
     HistoryContent previousContent_{};
     uint64_t previousFrame_ = 0;
+    float previousSunIrradianceMax_ = 0.0f;
     ComputeKernel snapshot_, reduce_;
 };
 
@@ -156,20 +158,22 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
     const auto* world = context.world();
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const auto* globalHistory = context.historyResources();
+    const float sunIrradianceMax = world ? world->sunIrradianceMax() : 0.0f;
     const HistoryContent content{
-        globalHistory ? globalHistory->reprojectionInvalidationRevision() : 0,
+        globalHistory ? globalHistory->sunLightingReprojectionInvalidationRevision() : 0,
         scene ? scene->resourceIdentity() : 0,
         scene ? scene->contentRevision() : 0,
         scene ? scene->geometryTransformRevision() : 0,
         scene ? scene->visibilityRevision() : 0,
-        world ? world->lightingRevision() : 0,
+        world ? world->nonSunLightingRevision() : 0,
         world ? world->environmentRevision() : 0,
         extent[0], extent[1],
     };
     const bool compositedHistory = usesCompositedHistory();
     auto& history = compositedHistory ? context.graphHistoryResources() : history_;
+    // Reject stale scene color on the frame that resets diffuse accumulation.
     const bool previousContentValid = previousContent_ == content && previousFrame_ + 1 == context.frameIndex() &&
-        view->frame[1] != 0u;
+        view->frame[1] != 0u && !lumenGlobalSunLightingChanged(previousSunIrradianceMax_, sunIrradianceMax);
     if (!compositedHistory) {
         // Keep the Deferred comparison path reprojectable during ordinary camera motion.
         history.beginFrame(context.frameIndex());
@@ -264,6 +268,7 @@ Result<> LumenScreenTraceSetupPass::execute(RenderGraphExecutionContext& context
     }
     previousContent_ = content;
     previousFrame_ = context.frameIndex();
+    previousSunIrradianceMax_ = sunIrradianceMax;
     return {};
 }
 

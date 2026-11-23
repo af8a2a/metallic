@@ -37,10 +37,12 @@
         {"id": 5, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 370, "y": 470},
             "properties": {
                 "meshCardPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshcards"],
-                "atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true
+                "atlasSize": 512, "tileResolution": 64, "shadowedLighting": true, "exportDirectIrradiance": true,
+                "persistentCards": true
             }},
         {"id": 6, "name": "Radiosity", "type": "LumenRadiosityPass", "position": {"x": 680, "y": 470},
-            "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40}},
+            "properties": {"atlasSize": 512, "tileResolution": 64, "maxTraceDistance": 40,
+                "persistentCards": true, "maxCardsPerFrame": 4}},
         {"id": 7, "name": "ScreenTrace", "type": "LumenScreenTraceSetupPass", "position": {"x": 680, "y": -140},
             "properties": {"historySource": "composited", "historyProducer": "Temporal"}},
         {"id": 8, "name": "Gather", "type": "LumenScreenProbeGatherPass", "position": {"x": 990, "y": 140},
@@ -130,7 +132,8 @@
         {"id": 65, "src": "SurfaceCache.cards", "dst": "Reflections.cards"},
         {"id": 66, "src": "SurfaceCache.scene", "dst": "Reflections.cardScene"},
         {"id": 67, "src": "SurfaceCache.depth", "dst": "Reflections.cardDepth"},
-        {"id": 68, "src": "Radiosity.lighting", "dst": "Reflections.cardLighting"}
+        {"id": 68, "src": "Radiosity.lighting", "dst": "Reflections.cardLighting"},
+        {"id": 69, "src": "SurfaceCache.cardUpdates", "dst": "Radiosity.cardUpdates"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Reflections.reflections", "Reflections.trace"],
     "view": {

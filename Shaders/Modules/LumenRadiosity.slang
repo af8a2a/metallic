@@ -50,6 +50,7 @@ public struct LumenRadiosityParams
     public uint temporalIndex;
     public float maxTraceDistance;
     public uint viewFrameIndex;
+    public uint traceValid;
 #ifdef METALLIC_LUMEN_PERSISTENT_CARDS
     public ResourceHandle<StructuredBuffer<uint2>> scheduledCards;
     public ResourceHandle<StructuredBuffer<uint2>> refreshCards;

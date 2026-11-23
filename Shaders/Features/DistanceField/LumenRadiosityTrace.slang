@@ -32,7 +32,7 @@ void lumenTraceRadiosityMain(uint3 thread : SV_DispatchThreadID)
 
     float3 radiance = 0.0f;
     uint traceClass = 0u;
-    if (params.historyValid != 0u) {
+    if (params.traceValid != 0u) {
         RadiosityTexel texel = radiosityGetTexel(params, probeAtlasTexel);
         if (texel.valid) {
             float3 worldPosition = texel.worldPosition;
@@ -94,7 +94,7 @@ void lumenFilterRadiosityMain(uint3 thread : SV_DispatchThreadID)
     }
 
     RadiosityImage outputFiltered = resolveUniform(params.outputFiltered);
-    if (params.historyValid == 0u) {
+    if (params.traceValid == 0u) {
         outputFiltered[atlasCoord] = float4(0.0f);
         return;
     }

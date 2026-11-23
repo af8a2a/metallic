@@ -20,6 +20,7 @@ enum class HistoryInvalidationReason : uint8_t {
     CameraMotion,
     LightingChange,
     GeometryMotion,
+    SunLightingChange,
 };
 
 struct HistoryTextureRef {
@@ -71,8 +72,10 @@ public:
     void invalidateAll(HistoryInvalidationReason reason = HistoryInvalidationReason::Discontinuity);
     uint64_t invalidationRevision() const;
     uint64_t reprojectionInvalidationRevision() const;
+    // Lumen validates the effective Sun intensity against the last rendered frame.
+    uint64_t sunLightingReprojectionInvalidationRevision() const;
     // Consumers with previous surface positions can retain their private
-    // history across rigid geometry motion and validate samples individually.
+    // history across rigid motion and Sun changes with independent validation.
     uint64_t motionReprojectionInvalidationRevision() const;
     // Reprojected visibility can validate light changes independently. Such
     // consumers still own their camera, light and geometry content signatures.

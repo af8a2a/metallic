@@ -202,7 +202,8 @@ Result<> RenderSubsystemHost::beginFrame(
     }
     lastWorldFrameTime_ = worldFrameTime;
     hasWorldFrameTime_ = true;
-    lastChanges_ = world_ != nullptr ? world_->consumeChanges() : RenderChangeBits::None;
+    bool sunLightingOnly = false;
+    lastChanges_ = world_ != nullptr ? world_->consumeChanges(&sunLightingOnly) : RenderChangeBits::None;
 
     const RenderSubsystemFrameContext context = frameContext(nullptr, nullptr);
     for (const std::string& id : activeOrder_) {
@@ -212,6 +213,8 @@ Result<> RenderSubsystemHost::beginFrame(
         hookProfile.end();
         ++begunSubsystemCount_;
         lastChanges_ |= subsystemChanges;
+        sunLightingOnly &= !hasRenderChange(subsystemChanges,
+            RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory);
         if (!result) {
             log = "Render subsystem '" + id + "' beginFrame failed: " + log;
             phaseProfile.end();
@@ -224,7 +227,9 @@ Result<> RenderSubsystemHost::beginFrame(
             const auto lightingOnly = RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
             const auto geometryOnly = RenderChangeBits::Geometry | RenderChangeBits::InvalidateTemporalHistory;
             auto reason = HistoryInvalidationReason::Discontinuity;
-            if (lastChanges_ == lightingOnly) { reason = HistoryInvalidationReason::LightingChange; }
+            if (lastChanges_ == lightingOnly) {
+                reason = sunLightingOnly ? HistoryInvalidationReason::SunLightingChange : HistoryInvalidationReason::LightingChange;
+            }
             if (lastChanges_ == geometryOnly) { reason = HistoryInvalidationReason::GeometryMotion; }
             historyResources_->invalidateAll(reason);
         }

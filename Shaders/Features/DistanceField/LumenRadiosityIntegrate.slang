@@ -62,7 +62,7 @@ void lumenRadiosityConvertToSHMain(uint3 thread : SV_DispatchThreadID)
     RadiosityTexel texel = radiosityGetTexel(params, probeTexel);
     RadiositySH irradianceSH = {};
     float numValidSamples = 0.0f;
-    if (texel.valid && params.historyValid != 0u) {
+    if (texel.valid && params.traceValid != 0u) {
         Texture2D<float4> radianceAtlas = resolveUniform(params.filteredRadiance);
         for (uint traceY = 0u; traceY < kRadiosityRayResolution; ++traceY) {
             for (uint traceX = 0u; traceX < kRadiosityRayResolution; ++traceX) {
@@ -139,6 +139,26 @@ float3 loadAndCombineRadiosityLighting(LumenRadiosityParams params, uint2 atlasC
     return radiosityQuantizeForRenderTarget(finalLighting, int3(atlasCoord, params.viewFrameIndex % 8u + 2u));
 }
 
+#ifndef METALLIC_LUMEN_PERSISTENT_CARDS
+// UE combines direct and retained indirect before tracing updated card probes.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenRadiosityRefreshDenseLightingMain(uint3 thread : SV_DispatchThreadID)
+{
+    LumenRadiosityParams params = getParameters<LumenRadiosityParams>();
+    uint2 atlasCoord = thread.xy;
+    if (any(atlasCoord >= params.atlasSize)) { return; }
+
+    const int3 address = int3(atlasCoord, 0);
+    float3 finalLighting = 0.0f;
+    if (resolveUniform(params.scene.cardDepth).Load(address) < 1.0f) {
+        const float3 history = resolveUniform(params.previousIndirect).Load(address).xyz;
+        finalLighting = loadAndCombineRadiosityLighting(params, atlasCoord, history);
+    }
+    resolveUniform(params.currentLighting)[atlasCoord] = float4(finalLighting, 0.0f);
+}
+#endif
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void lumenRadiosityIntegrateMain(uint3 thread : SV_DispatchThreadID)
@@ -155,7 +175,7 @@ void lumenRadiosityIntegrateMain(uint3 thread : SV_DispatchThreadID)
     float newNumFramesAccumulated = 0.0f;
     float3 finalLighting = 0.0f;
     if (texel.valid) {
-        if (params.historyValid != 0u) {
+        if (params.traceValid != 0u) {
             // UE 5.7.4 LumenRadiosity.usf, LumenRadiosityIntegrateCS.
             uint2 coordInCard = atlasCoord % params.tileResolution;
             uint2 cardAtlasOrigin = atlasCoord - coordInCard;
@@ -190,7 +210,10 @@ void lumenRadiosityIntegrateMain(uint3 thread : SV_DispatchThreadID)
 #ifdef METALLIC_LUMEN_PERSISTENT_CARDS
             float4 history = resolveUniform(params.outputIndirect)[atlasCoord];
 #else
-            float4 history = resolveUniform(params.previousIndirect).Load(int3(atlasCoord, 0));
+            float4 history = 0.0f;
+            if (params.historyValid != 0u) {
+                history = resolveUniform(params.previousIndirect).Load(int3(atlasCoord, 0));
+            }
 #endif
             float numFramesAccumulated = history.w;
             newNumFramesAccumulated = min(numFramesAccumulated + 1.0f, float(kRadiosityMaxFrames));

@@ -8,6 +8,7 @@
 #include "Runtime/Render/GAPI/CommandSubmission.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/MeshCards.h"
 #include "Runtime/Scene/MeshDistanceField.h"
 #include "../../../../../Shaders/Interop/LumenCardUpdate.h"
@@ -216,13 +217,18 @@ struct CaptureLighting {
     std::vector<GPUPunctualLight> punctual;
     std::array<float, 3> clipmapEye{};
 
-    bool sameLights(const CaptureLighting& other) const
+    bool samePunctualLights(const CaptureLighting& other) const
     {
         // The first punctual row only contains the count and exposure.
-        return direction == other.direction && illuminance == other.illuminance &&
-            sunCastsShadow == other.sunCastsShadow && punctual.size() == other.punctual.size() &&
+        return punctual.size() == other.punctual.size() &&
             (punctual.size() <= 1 || std::memcmp(punctual.data() + 1, other.punctual.data() + 1,
                 (punctual.size() - 1) * sizeof(GPUPunctualLight)) == 0);
+    }
+
+    bool sameLights(const CaptureLighting& other) const
+    {
+        return direction == other.direction && illuminance == other.illuminance &&
+            sunCastsShadow == other.sunCastsShadow && samePunctualLights(other);
     }
 
     bool tracesShadows() const
@@ -236,6 +242,7 @@ struct PublishedSurfaceCache {
     std::shared_ptr<const CaptureGeometry> geometry;
     std::shared_ptr<const CaptureMaterials> materials;
     CaptureLighting lighting;
+    std::optional<uint64_t> nonSunLightingRevision;
 };
 
 struct SurfaceCacheUpdate {
@@ -644,8 +651,11 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
     update.uploadCards = update.fullCapture;
     update.flags.resize(capacity);
     const bool changedLights = previous && !previous->lighting.sameLights(next.lighting);
+    const bool changedNonSunLighting = previous && previous->nonSunLightingRevision != next.nonSunLightingRevision;
+    const bool resetIndirect = changedLights && (!next.nonSunLightingRevision || changedNonSunLighting ||
+        !previous->lighting.samePunctualLights(next.lighting));
     update.publish = !previous || previous->geometry != next.geometry || previous->materials != next.materials ||
-        changedLights || previous->lighting.clipmapEye != next.lighting.clipmapEye;
+        changedLights || changedNonSunLighting || previous->lighting.clipmapEye != next.lighting.clipmapEye;
     if (!update.publish) { return update; }
     const bool allLighting = update.fullCapture || changedLights || (next.lighting.tracesShadows() &&
         (previous->geometry->revision != next.geometry->revision || previous->lighting.clipmapEye != next.lighting.clipmapEye));
@@ -665,7 +675,7 @@ SurfaceCacheUpdate planSurfaceCacheUpdate(const PublishedSurfaceCache* previous,
             update.lightingTiles.push_back(slot);
             update.flags[slot] |= kLumenCardRelit;
         }
-        if (changedLights) { update.flags[slot] |= kLumenCardResetLighting; }
+        if (resetIndirect) { update.flags[slot] |= kLumenCardResetLighting; }
     }
     return update;
 }
@@ -786,6 +796,9 @@ Result<> LumenSurfaceCachePass::execute(RenderGraphExecutionContext& context)
         .illuminance = {sun.irradiance[0], sun.irradiance[1], sun.irradiance[2], 0.0f},
         .sunCastsShadow = shadowed && (sun.flags & kGPUCelestialLightCastsShadow) != 0u,
     }};
+    if (const auto* world = context.world(); world && world->scene() == &scene) {
+        next.nonSunLightingRevision = world->nonSunLightingRevision();
+    }
     auto& lighting = next.lighting;
     TextureHandle pageTable, coarseMip;
     BufferHandle domains;

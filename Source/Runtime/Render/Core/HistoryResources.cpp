@@ -140,6 +140,7 @@ struct HistoryResourceManager::Impl {
     uint64_t frameIndex = 0;
     uint64_t invalidationRevision = 1;
     uint64_t reprojectionInvalidationRevision = 1;
+    uint64_t sunLightingReprojectionInvalidationRevision = 1;
     uint64_t motionReprojectionInvalidationRevision = 1;
     uint64_t geometryReprojectionInvalidationRevision = 1;
     std::unordered_map<std::string, std::shared_ptr<Record>> records;
@@ -339,6 +340,7 @@ HistoryResourceManager& HistoryResourceManager::operator=(HistoryResourceManager
 Result<> HistoryResourceManager::initialize(Device& device, uint32_t slotCount)
 {
     ++impl_->reprojectionInvalidationRevision;
+    ++impl_->sunLightingReprojectionInvalidationRevision;
     ++impl_->motionReprojectionInvalidationRevision;
     ++impl_->geometryReprojectionInvalidationRevision;
     impl_->records.clear();
@@ -354,6 +356,7 @@ Result<> HistoryResourceManager::initialize(Device& device, uint32_t slotCount)
 void HistoryResourceManager::reset()
 {
     ++impl_->reprojectionInvalidationRevision;
+    ++impl_->sunLightingReprojectionInvalidationRevision;
     ++impl_->motionReprojectionInvalidationRevision;
     ++impl_->geometryReprojectionInvalidationRevision;
     impl_->records.clear();
@@ -408,12 +411,13 @@ void HistoryResourceManager::invalidateAll(HistoryInvalidationReason reason)
         Impl::invalidateRecord(*record);
     }
     impl_->advanceInvalidationRevision();
-    if (reason != HistoryInvalidationReason::CameraMotion) { ++impl_->reprojectionInvalidationRevision; }
-    if (reason != HistoryInvalidationReason::CameraMotion && reason != HistoryInvalidationReason::GeometryMotion) {
-        ++impl_->motionReprojectionInvalidationRevision;
-    }
-    if (reason != HistoryInvalidationReason::CameraMotion && reason != HistoryInvalidationReason::LightingChange) {
-        ++impl_->geometryReprojectionInvalidationRevision;
+    if (reason != HistoryInvalidationReason::CameraMotion) {
+        ++impl_->reprojectionInvalidationRevision;
+        if (reason != HistoryInvalidationReason::SunLightingChange) {
+            ++impl_->sunLightingReprojectionInvalidationRevision;
+            if (reason != HistoryInvalidationReason::GeometryMotion) { ++impl_->motionReprojectionInvalidationRevision; }
+            if (reason != HistoryInvalidationReason::LightingChange) { ++impl_->geometryReprojectionInvalidationRevision; }
+        }
     }
 }
 
@@ -430,6 +434,11 @@ uint64_t HistoryResourceManager::invalidationRevision() const
 uint64_t HistoryResourceManager::reprojectionInvalidationRevision() const
 {
     return impl_->reprojectionInvalidationRevision;
+}
+
+uint64_t HistoryResourceManager::sunLightingReprojectionInvalidationRevision() const
+{
+    return impl_->sunLightingReprojectionInvalidationRevision;
 }
 
 uint64_t HistoryResourceManager::motionReprojectionInvalidationRevision() const

@@ -74,15 +74,19 @@ public:
     bool setLighting(scene::LightingSettings lighting);
     const scene::LightingSettings& lighting() const { return lighting_; }
     uint64_t lightingRevision() const { return lightingRevision_; }
+    uint64_t nonSunLightingRevision() const { return nonSunLightingRevision_; }
+    float sunIrradianceMax() const { return sunIrradianceMax_; }
 
     uint64_t sceneRevision() const { return sceneRevision_; }
     // Only geometry/material changes require GPUScene content fingerprints.
     uint64_t sceneContentRevision() const { return sceneContentRevision_; }
     uint64_t environmentRevision() const { return environmentRevision_; }
-    RenderChangeBits consumeChanges();
+    // Surface Cache and legacy consumers still receive all Lighting bits.
+    RenderChangeBits consumeChanges(bool* sunLightingOnly = nullptr);
 
 private:
-    void updateEvaluatedEnvironment(bool authoredChange = false);
+    void markLightingChanged(bool sunOnly = false);
+    void updateEvaluatedEnvironment(bool authoredChange = false, bool sunOnly = false);
     const scene::Scene* scene_ = nullptr;
     uint64_t sceneResourceIdentity_ = 0;
     uint64_t sceneGraphLifetimeRevision_ = 0;
@@ -98,10 +102,13 @@ private:
     uint64_t weatherRevision_ = 0;
     uint64_t astronomyRevision_ = 0;
     uint64_t lightingRevision_ = 1;
+    uint64_t nonSunLightingRevision_ = 1;
+    float sunIrradianceMax_ = 0.0f;
     uint64_t sceneRevision_ = 1;
     uint64_t sceneContentRevision_ = 1;
     uint64_t environmentRevision_ = 1;
     RenderChangeBits pendingChanges_ = RenderChangeBits::None;
+    bool pendingSunLightingChange_ = false;
 };
 
 } // namespace metallic::render

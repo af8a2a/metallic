@@ -16,8 +16,8 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kRadiosityABI = 0x4c554d454e040001ull;
-constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e040002ull;
+constexpr uint64_t kRadiosityABI = 0x4c554d454e040004ull;
+constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e040005ull;
 constexpr uint64_t kRadiosityScheduleABI = 0x4c554d454e040003ull;
 constexpr uint32_t kProbeSpacing = 4;
 constexpr uint32_t kScheduleStateWords = 24;
@@ -36,16 +36,16 @@ struct LumenRadiosityParams {
     ShaderStorageImage outputIndirect, finalLighting, currentIndirect, currentLighting;
     uint32_t atlasSize, tileResolution, clipmapCount, historyValid, temporalIndex;
     float maxTraceDistance;
-    uint32_t viewFrameIndex;
+    uint32_t viewFrameIndex, traceValid;
 };
-static_assert(sizeof(LumenRadiosityParams) == 148 && offsetof(LumenRadiosityParams, atlasSize) == 120);
+static_assert(sizeof(LumenRadiosityParams) == 152 && offsetof(LumenRadiosityParams, atlasSize) == 120);
 
 struct PersistentRadiosityParams {
     LumenRadiosityParams lighting;
     ShaderBuffer scheduledCards, refreshCards, updateState;
 };
-static_assert(sizeof(PersistentRadiosityParams) == 160 &&
-    offsetof(PersistentRadiosityParams, scheduledCards) == 148);
+static_assert(sizeof(PersistentRadiosityParams) == 164 &&
+    offsetof(PersistentRadiosityParams, scheduledCards) == 152);
 
 struct RadiosityScheduleParams {
     ShaderBuffer cards, cardScene, domains, cardUpdates;
@@ -117,12 +117,13 @@ private:
 
     Device* device_ = nullptr;
     RadiosityLayout layout_;
-    ComputeKernel trace_, filter_, convertToSH_, integrate_;
+    ComputeKernel refreshDenseLighting_, trace_, filter_, convertToSH_, integrate_;
     ComputeKernel clearSchedule_, buildPriority_, selectPriority_, buildCardLists_, finishSchedule_, refreshCards_;
     std::shared_ptr<uint64_t> initializedAtlas_;
     HistoryResourceManager history_;
     std::optional<RadiosityContent> lastContent_;
     uint64_t lastFrame_ = 0;
+    uint64_t lastLightingRevision_ = 0;
     uint32_t lastTemporalIndex_ = 0;
 };
 
@@ -218,7 +219,9 @@ Result<> LumenRadiosityPass::compile(const RenderGraphCompileContext& context, s
     if (auto result = compileKernel(traceModule, "lumenFilterRadiosityMain", filter_); !result) { return result; }
     if (auto result = compileKernel(integrateModule, "lumenRadiosityConvertToSHMain", convertToSH_); !result) { return result; }
     if (auto result = compileKernel(integrateModule, "lumenRadiosityIntegrateMain", integrate_); !result) { return result; }
-    if (!layout_.persistentCards) { return {}; }
+    if (!layout_.persistentCards) {
+        return compileKernel(integrateModule, "lumenRadiosityRefreshDenseLightingMain", refreshDenseLighting_);
+    }
     if (auto result = compileKernel(integrateModule, "lumenRadiosityRefreshCardsMain", refreshCards_); !result) { return result; }
     constexpr char scheduleModule[] = "Features/DistanceField/LumenRadiositySchedule";
     const std::pair<const char*, ComputeKernel*> entries[]{
@@ -274,9 +277,13 @@ Result<> LumenRadiosityPass::execute(RenderGraphExecutionContext& context)
 
     // Card history is world-space. Camera cuts affect the screen histories only.
     const RadiosityContent content{scene->resourceIdentity(), scene->contentRevision(),
-        scene->geometryTransformRevision(), scene->visibilityRevision(), world ? world->lightingRevision() : 0,
+        scene->geometryTransformRevision(), scene->visibilityRevision(), world ? world->nonSunLightingRevision() : 0,
         world ? world->environmentRevision() : 0};
+    const uint64_t lightingRevision = world ? world->lightingRevision() : 0;
     history_.beginFrame(context.frameIndex());
+    // Match UE's direct-only bootstrap. Later feedback invalidation can still
+    // trace the freshly relit Surface Cache supplied by the graph.
+    const bool traceValid = history_.texture(kHistoryNames[1], HistorySlot::Previous).valid;
     if (lastContent_ != content || lastFrame_ + 1 != context.frameIndex()) { history_.invalidateAll(); }
     const TextureDesc historyDesc{
         .type = TextureType::Texture2D, .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
@@ -292,25 +299,34 @@ Result<> LumenRadiosityPass::execute(RenderGraphExecutionContext& context)
     const auto currentIndirect = history_.texture(kHistoryNames[0], HistorySlot::Current);
     const auto currentLighting = history_.texture(kHistoryNames[1], HistorySlot::Current);
     const bool historyValid = previousIndirect.valid && previousLighting.valid;
+    const bool refreshLighting = historyValid && lastLightingRevision_ != lightingRevision;
     const uint32_t temporalIndex = historyValid ? lastTemporalIndex_ + 1u : 1u;
 
     auto params = bindParams(context, writer, *clipmapCount);
-    if (historyValid) { params.scene.cardLighting = writer.sampledImageHandle(previousLighting.view); }
-    if (historyValid) { params.previousIndirect = writer.sampledImageHandle(previousIndirect.view); }
+    if (historyValid) {
+        params.scene.cardLighting = writer.sampledImageHandle(refreshLighting ? currentLighting.view : previousLighting.view);
+        params.previousIndirect = writer.sampledImageHandle(previousIndirect.view);
+    }
     params.currentIndirect = writer.storageImageHandle(currentIndirect.view);
     params.currentLighting = writer.storageImageHandle(currentLighting.view);
     params.historyValid = historyValid;
+    params.traceValid = traceValid;
     params.temporalIndex = temporalIndex;
     const auto encoded = writer.encode(params, kRadiosityABI);
     if (!encoded) { return makeError(encoded.error()); }
 
     using Access = RenderGraphResourceAccess;
+    const RenderGraphStageUse refreshUses[]{{"cardDepth", Access::TextureSampleRead},
+        {"cardAlbedo", Access::TextureSampleRead}, {"cardEmissive", Access::TextureSampleRead},
+        {"cardDirectLighting", Access::TextureSampleRead}, {"previousIndirect", Access::TextureSampleRead},
+        {"currentLighting", Access::TextureStorageWrite}};
+    const char* traceSource = refreshLighting ? "currentLighting" : historyValid ? "previousLighting" : "cardLighting";
     const RenderGraphStageUse traceUses[] = {{"pageTable", Access::TextureSampleRead}, {"pageAtlas", Access::TextureSampleRead},
         {"coarseMip", Access::TextureSampleRead}, {"domain", Access::BufferStorageRead}, {"objectGrid", Access::BufferStorageRead},
         {"objectGridScene", Access::BufferStorageRead}, {"cardScene", Access::BufferStorageRead}, {"cards", Access::BufferStorageRead},
         {"cardDepth", Access::TextureSampleRead}, {"cardNormal", Access::TextureSampleRead},
         {"traceRadiance", Access::TextureStorageWrite},
-        {historyValid ? "previousLighting" : "cardLighting", Access::TextureSampleRead}};
+        {traceSource, Access::TextureSampleRead}};
     const RenderGraphStageUse filterUses[] = {{"cards", Access::BufferStorageRead},
         {"cardDepth", Access::TextureSampleRead}, {"cardNormal", Access::TextureSampleRead},
         {"traceRadiance", Access::TextureSampleRead}, {"filteredRadiance", Access::TextureStorageWrite}};
@@ -333,6 +349,8 @@ Result<> LumenRadiosityPass::execute(RenderGraphExecutionContext& context)
     const uint32_t groups = (edge + 7u) / 8u;
     const uint32_t probeGroups = (edge / kProbeSpacing + 7u) / 8u;
     const RenderGraphStage stages[] = {
+        {"Combine fresh card direct lighting with retained irradiance", refreshUses,
+            [&](CommandBuffer& cmd) { return refreshDenseLighting_.dispatch(cmd, *encoded, groups, groups, 1); }},
         {"Trace card probes", traceUses, [&](CommandBuffer& cmd) { return trace_.dispatch(cmd, *encoded, groups, groups, 1); }},
         {"Filter card probes", filterUses, [&](CommandBuffer& cmd) { return filter_.dispatch(cmd, *encoded, groups, groups, 1); }},
         {"Convert card probes to SH", shUses,
@@ -341,7 +359,9 @@ Result<> LumenRadiosityPass::execute(RenderGraphExecutionContext& context)
             std::span{integrateUses}.first(std::size(integrateUses) - (historyValid ? 0u : 1u)),
             [&](CommandBuffer& cmd) { return integrate_.dispatch(cmd, *encoded, groups, groups, 1); }},
     };
-    if (auto result = context.executeStages(stages, {}, std::span{imports}.first(historyValid ? 4u : 2u)); !result) {
+    const size_t importCount = historyValid ? (refreshLighting ? 3u : 4u) : 2u;
+    if (auto result = context.executeStages(std::span{stages}.subspan(refreshLighting ? 0u : 1u), {},
+            std::span{imports}.first(importCount)); !result) {
         return result;
     }
     for (const auto name : kHistoryNames) {
@@ -350,6 +370,7 @@ Result<> LumenRadiosityPass::execute(RenderGraphExecutionContext& context)
     }
     lastContent_ = content;
     lastFrame_ = context.frameIndex();
+    lastLightingRevision_ = lightingRevision;
     lastTemporalIndex_ = temporalIndex;
     return {};
 }
@@ -408,6 +429,7 @@ Result<> LumenRadiosityPass::executePersistent(RenderGraphExecutionContext& cont
     params.lighting.scene.cardLighting = writer.sampledImageHandle(context.outputTexture("lighting").view());
     // Fresh/reset cards use the direct-only prepass until they have a valid phase.
     params.lighting.historyValid = 1u;
+    params.lighting.traceValid = 1u;
     RadiosityScheduleParams schedule{
         .cards = params.lighting.scene.cards,
         .cardScene = params.lighting.scene.cardScene,
