@@ -20,7 +20,7 @@ public struct LumenScreenTraceInputs
     public StructuredBuffer<LumenScreenTraceView> view;
 };
 
-struct ScreenTraceProjection
+public struct ScreenTraceProjection
 {
     float3 eye, right, up, forward;
     float2 halfExtent, extent, jitter;
@@ -28,7 +28,7 @@ struct ScreenTraceProjection
     bool orthographic;
 };
 
-ScreenTraceProjection makeScreenTraceProjection(ViewCameraConstants camera, float2 jitter)
+public ScreenTraceProjection makeScreenTraceProjection(ViewCameraConstants camera, float2 jitter)
 {
     ScreenTraceProjection result;
     result.eye = camera.eye.xyz;
@@ -45,7 +45,7 @@ ScreenTraceProjection makeScreenTraceProjection(ViewCameraConstants camera, floa
     return result;
 }
 
-float4 screenTraceWorldToClip(ScreenTraceProjection view, float3 worldPosition)
+public float4 screenTraceWorldToClip(ScreenTraceProjection view, float3 worldPosition)
 {
     float3 eyeRelativePosition = worldPosition - view.eye;
     float viewZ = dot(eyeRelativePosition, view.forward);
@@ -57,25 +57,25 @@ float4 screenTraceWorldToClip(ScreenTraceProjection view, float3 worldPosition)
     return float4(clipXY, clipZ, clipW);
 }
 
-float screenTraceConvertFromDeviceZ(ScreenTraceProjection view, float deviceZ)
+public float screenTraceConvertFromDeviceZ(ScreenTraceProjection view, float deviceZ)
 {
     return view.orthographic ? lerp(view.farPlane, view.nearPlane, deviceZ)
         : view.nearPlane * view.farPlane / (view.nearPlane + deviceZ * (view.farPlane - view.nearPlane));
 }
 
-float3 screenTraceScreenToWorld(ScreenTraceProjection view, float2 screen, float sceneDepth)
+public float3 screenTraceScreenToWorld(ScreenTraceProjection view, float2 screen, float sceneDepth)
 {
     float2 unjitteredScreen = screen + view.jitter / view.extent * float2(2.0f, -2.0f);
     float2 offset = unjitteredScreen * view.halfExtent * (view.orthographic ? 1.0f : sceneDepth);
     return view.eye + view.forward * sceneDepth + view.right * offset.x + view.up * offset.y;
 }
 
-float2 screenTraceScreenUV(float2 screenPosition)
+public float2 screenTraceScreenUV(float2 screenPosition)
 {
     return screenPosition * float2(0.5f, -0.5f) + 0.5f;
 }
 
-float2 screenTraceScreenPosition(float2 screenUV)
+public float2 screenTraceScreenPosition(float2 screenUV)
 {
     return (screenUV - 0.5f) * float2(2.0f, -2.0f);
 }

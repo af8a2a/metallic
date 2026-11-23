@@ -26,7 +26,7 @@
             "properties": {
                 "path": "Asset/Sponza/SponzaGI.metallic_scene.json",
                 "materialBinning": true, "outputLinear": true, "exportLumenReceivers": true,
-                "exportLumenSpecular": true
+                "exportLumenPreviousPosition": true, "exportLumenSpecular": true
             }},
         {"id": 4, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass",
             "position": {"x": 50, "y": 470}, "properties": {
@@ -54,7 +54,7 @@
             "properties": {"publishScreenTraceHistory": true, "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},
         {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1950, "y": 140}},
         {"id": 11, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
-            "properties": {"maxTraceDistance": 40}}
+            "properties": {"maxTraceDistance": 40, "dynamicReprojection": true}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -123,7 +123,8 @@
         {"id": 64, "src": "SurfaceCache.scene", "dst": "Reflections.cardScene"},
         {"id": 65, "src": "SurfaceCache.depth", "dst": "Reflections.cardDepth"},
         {"id": 66, "src": "Radiosity.lighting", "dst": "Reflections.cardLighting"},
-        {"id": 67, "src": "SurfaceCache.cardUpdates", "dst": "Radiosity.cardUpdates"}
+        {"id": 67, "src": "SurfaceCache.cardUpdates", "dst": "Radiosity.cardUpdates"},
+        {"id": 68, "src": "Deferred.lumenPreviousPosition", "dst": "Reflections.previousPosition"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Reflections.reflections", "Reflections.trace"],
     "view": {

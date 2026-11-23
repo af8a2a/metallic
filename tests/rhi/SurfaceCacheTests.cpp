@@ -2630,7 +2630,7 @@ public:
         ViewCamera camera;
         camera.eye = {0.0f, 0.0f, 3.0f};
         camera.orthographic = true;
-        camera.orthoHeight = 1.25f;
+        camera.orthoHeight = kOrthoHeight;
         camera.farPlane = 8.0f;
         if (!view.setCamera(camera) || !view.setRenderResolution(kAtlasEdge, kAtlasEdge)) {
             return RHITestResult::fail("Could not initialize the reflection test camera");
@@ -2647,34 +2647,78 @@ public:
         }
         const RenderGraphSubmitDesc submission{.graphicsQueue = gpu.getQueue(QueueType::Graphics),
             .historyResources = &history, .recordingWorkerLimit = 1};
-        const auto runFrame = [&](float roughness, bool unlit, uint32_t minHits) {
+        const auto runFrame = [&](float roughness, bool unlit, uint32_t minHits,
+                                  ReflectionHistory expectedHistory = ReflectionHistory::Absent) {
             auto frame = captureFrame(inspector, executor, submission, log);
-            if (frame) { log = verifyFrame(*frame, roughness, unlit, minHits); }
+            if (frame) { log = verifyFrame(*frame, roughness, unlit, minHits, expectedHistory); }
             return frame && log.empty();
         };
 
         if (!runFrame(0.0f, false, 144u)) { return RHITestResult::fail("Mirror: " + log); }
         auto receiver = document.materials()[0];
-        receiver.roughnessFactor = 0.2f;
+        receiver.roughnessFactor = kGlossyRoughness;
         if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set the rough receiver material"); }
-        if (!runFrame(0.2f, false, 64u)) { return RHITestResult::fail("Rough reflection: " + log); }
+        view.cameraCut();
+        if (!runFrame(kGlossyRoughness, false, 64u)) { return RHITestResult::fail("Rough reflection: " + log); }
+        if (!runFrame(kGlossyRoughness, false, 0u, ReflectionHistory::FirstVirtual)) {
+            return RHITestResult::fail("First accepted reflection history: " + log);
+        }
+        if (!runFrame(kGlossyRoughness, false, 0u, ReflectionHistory::Accumulated)) {
+            return RHITestResult::fail("Accumulated reflection history: " + log);
+        }
 
-        receiver.roughnessFactor = 0.65f;
+        // Pan far enough to crop the receiver at the left edge, then reveal it again.
+        auto panned = camera;
+        panned.eye[0] += kPanDistance;
+        panned.center[0] += kPanDistance;
+        if (!view.setCamera(panned)) { return RHITestResult::fail("Could not pan the reflection camera"); }
+        if (!runFrame(kGlossyRoughness, false, 0u, ReflectionHistory::Accumulated)) {
+            return RHITestResult::fail("Reflection history after camera pan: " + log);
+        }
+        if (!view.setCamera(camera)) { return RHITestResult::fail("Could not restore the reflection camera"); }
+        if (!runFrame(kGlossyRoughness, false, 0u, ReflectionHistory::Disoccluded)) {
+            return RHITestResult::fail("Reflection history after revealing the receiver: " + log);
+        }
+        view.cameraCut();
+        if (!runFrame(kGlossyRoughness, false, 0u)) {
+            return RHITestResult::fail("Reflection history after camera cut: " + log);
+        }
+
+        // The dominant-direction factor drops below 0.5 at this roughness.
+        receiver.roughnessFactor = kSurfaceHistoryRoughness;
+        if (!document.setMaterialProperties(0, receiver)) {
+            return RHITestResult::fail("Could not set the surface history fixture");
+        }
+        view.cameraCut();
+        if (!runFrame(kSurfaceHistoryRoughness, false, 0u)) {
+            return RHITestResult::fail("Surface reflection history seed: " + log);
+        }
+        if (!runFrame(kSurfaceHistoryRoughness, false, 0u, ReflectionHistory::FirstSurface)) {
+            return RHITestResult::fail("Surface-depth reflection history: " + log);
+        }
+
+        receiver.roughnessFactor = 0.8f;
         if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set the roughness cutoff fixture"); }
-        if (!runFrame(0.65f, false, 0u)) { return RHITestResult::fail("Roughness cutoff: " + log); }
+        if (!runFrame(0.8f, false, 0u)) { return RHITestResult::fail("Roughness cutoff: " + log); }
 
         receiver.roughnessFactor = 0.0f;
         receiver.unlit = true;
         if (!document.setMaterialProperties(0, receiver)) { return RHITestResult::fail("Could not set the unlit receiver material"); }
         if (!runFrame(0.0f, true, 0u)) { return RHITestResult::fail("Unlit receiver: " + log); }
         if (validation.failed()) { return RHITestResult::fail("Lumen reflection Vulkan validation: " + validation.snapshot().dump()); }
-        return RHITestResult::pass("The mirror and rough receiver reflected an off-screen emissive card. Roughness cutoff, unlit surfaces and background bypassed tracing.");
+        return RHITestResult::pass("Resolve reused neighboring hits. Reflection history reprojected, and Bilateral filtered rough reflections before composite.");
     }
 
 private:
-    static constexpr float kMaxRoughness = 0.25f;
+    static constexpr float kMaxRoughness = 0.75f;
+    static constexpr float kGlossyRoughness = 0.2f;
+    static constexpr float kSurfaceHistoryRoughness = 0.68f;
+    static constexpr float kMaxTraceDistance = 4.0f;
+    static constexpr float kOrthoHeight = 1.25f;
+    static constexpr float kPanDistance = 0.12f;
     using ReflectionFrame = std::array<CardCapture, 2>;
     using Pixel = std::array<float, 4>;
+    enum class ReflectionHistory { Absent, FirstVirtual, Accumulated, Disoccluded, FirstSurface };
 
     static bool makeGraph(render::RenderGraph& graph, const std::filesystem::path& field, const std::filesystem::path& cards)
     {
@@ -2684,13 +2728,14 @@ private:
         };
         if (!graph.addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "none"}, {"enableClusterRtx", false}}) ||
             !graph.addNode("VisibilityBufferDeferredPass", "Deferred", {{"materialBinning", false}, {"outputLinear", true},
-                {"exportLumenReceivers", true}, {"exportLumenSpecular", true}}) ||
+                {"exportLumenReceivers", true}, {"exportLumenSpecular", true}, {"exportLumenPreviousPosition", true}}) ||
             !graph.addNode("GlobalDistanceFieldPagesPass", "GDF", {{"distanceFieldPaths", {field.generic_string()}},
                 {"center", {0.0f, 0.5f, 0.75f}}, {"extent", 2.5f}, {"resolution", 112}, {"maxPhysicalPages", 1728},
                 {"quantized", true}, {"buildObjectGrid", true}, {"persistentPages", true}}) ||
             !graph.addNode("LumenSurfaceCachePass", "SurfaceCache", {{"meshCardPaths", {cards.generic_string()}},
                 {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"persistentCards", true}}) ||
-            !graph.addNode("LumenReflectionPass", "Reflections", {{"maxTraceDistance", 4.0f}, {"maxRoughness", kMaxRoughness}})) {
+            !graph.addNode("LumenReflectionPass", "Reflections",
+                {{"maxTraceDistance", kMaxTraceDistance}, {"maxRoughness", kMaxRoughness}, {"dynamicReprojection", true}})) {
             return false;
         }
         for (const auto* name : {"visibility", "depth", "rasterInfo"}) {
@@ -2707,6 +2752,7 @@ private:
         return edge("Deferred", "lumenPosition", "Reflections", "position") &&
             edge("Deferred", "lumenNormal", "Reflections", "normal") &&
             edge("Deferred", "lumenSpecular", "Reflections", "specular") &&
+            edge("Deferred", "lumenPreviousPosition", "Reflections", "previousPosition") &&
             edge("Deferred", "color", "Reflections", "sceneColor") && graph.markOutput("Reflections.color");
     }
 
@@ -2717,7 +2763,11 @@ private:
             {{"pass", "Deferred"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Deferred.lumenPosition"),
                 cardAtlasCapture("Deferred.lumenSpecular"), cardAtlasCapture("Deferred.color")})}},
             {{"pass", "Reflections"}, {"resources", debug::DebugValue::array({cardAtlasCapture("Reflections.reflections"),
-                cardAtlasCapture("Reflections.trace"), cardAtlasCapture("Reflections.color")})}},
+                cardAtlasCapture("Reflections.trace"), cardAtlasCapture("Reflections.rayData"),
+                cardAtlasCapture("Reflections.rayHitDistance"), cardAtlasCapture("Reflections.resolvedReflections"),
+                cardAtlasCapture("Reflections.resolvedHitDistance"), cardAtlasCapture("Reflections.temporalReflections"),
+                cardAtlasCapture("Reflections.temporalState"), cardAtlasCapture("Reflections.bilateralReflections"),
+                cardAtlasCapture("Reflections.color")})}},
         })}}}};
         if (const auto result = executor.execute(submission); !result) {
             log = std::string(render::resultToString(result));
@@ -2746,21 +2796,57 @@ private:
         return {halfToFloat(halfValues[0]), halfToFloat(halfValues[1]), halfToFloat(halfValues[2]), halfToFloat(halfValues[3])};
     }
 
-    static std::string verifyFrame(const ReflectionFrame& frame, float roughness, bool unlit, uint32_t minHits)
+    static bool withinBilateralNeighborhood(const debug::DebugArtifact& input, uint32_t x, uint32_t y,
+        const Pixel& temporal, const Pixel& bilateral)
     {
-        constexpr std::array strides{std::array{16u, 8u, 16u}, std::array{8u, 16u, 16u}};
-        for (size_t group = 0; group < frame.size(); ++group) {
-            if (frame[group]->artifacts.size() != strides[group].size()) { return "Incomplete reflection readback"; }
-            for (size_t output = 0; output < strides[group].size(); ++output) {
-                if (frame[group]->artifacts[output].bytes.size() != kAtlasPixels * strides[group][output]) {
-                    return "Unexpected reflection readback layout";
+        constexpr uint32_t kRadius = 8;
+        Pixel minimum = temporal;
+        Pixel maximum = temporal;
+        for (uint32_t tapY = y - kRadius; tapY <= y + kRadius; ++tapY) {
+            for (uint32_t tapX = x - kRadius; tapX <= x + kRadius; ++tapX) {
+                const Pixel tap = readHalfPixel(input, size_t(tapY) * kAtlasEdge + tapX);
+                if (tap[3] <= 0.0f) { continue; }
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    minimum[channel] = std::min(minimum[channel], tap[channel]);
+                    maximum[channel] = std::max(maximum[channel], tap[channel]);
                 }
             }
         }
+        // The reversible luminance tonemap rescales positive sample weights and preserves their convex hull.
+        for (size_t channel = 0; channel < 3; ++channel) {
+            const float tolerance = std::max(0.0001f, maximum[channel] * 0.001f);
+            if (bilateral[channel] < minimum[channel] - tolerance || bilateral[channel] > maximum[channel] + tolerance) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static std::string verifyFrame(const ReflectionFrame& frame, float roughness, bool unlit, uint32_t minHits,
+        ReflectionHistory expectedHistory)
+    {
         const auto& deferred = frame[0]->artifacts;
         const auto& reflections = frame[1]->artifacts;
+        const auto matchesLayout = [](const auto& artifacts, const auto& strides) {
+            return std::ranges::equal(artifacts, strides, [](const auto& artifact, size_t stride) {
+                return artifact.bytes.size() == kAtlasPixels * stride;
+            });
+        };
+        if (!matchesLayout(deferred, std::array{16u, 8u, 16u}) ||
+            !matchesLayout(reflections, std::array{8u, 16u, 8u, 2u, 8u, 2u, 8u, 4u, 8u, 16u})) {
+            return "Unexpected reflection readback layout";
+        }
         constexpr Pixel untraced{-1.0f, 8.0f, -1.0f, 0.0f};
-        uint32_t hits = 0, background = 0;
+        constexpr Pixel invalidResolve{65024.0f, 65024.0f, 64512.0f, 0.0f};
+        constexpr uint16_t halfMaxFinite = 0x7bffu;
+        constexpr uint16_t halfPositiveInfinity = 0x7c00u;
+        constexpr float maxHitDistance = kMaxTraceDistance * 100.0f;
+        const bool firstHistory = expectedHistory == ReflectionHistory::FirstVirtual ||
+            expectedHistory == ReflectionHistory::FirstSurface;
+        const float expectedMethod = expectedHistory == ReflectionHistory::FirstSurface ? 2.0f : 1.0f;
+        const bool checkFreshBilateral = expectedHistory == ReflectionHistory::Absent && roughness == kGlossyRoughness;
+        uint32_t hits = 0, background = 0, reconstructedMisses = 0;
+        uint32_t acceptedHistoryPixels = 0, blendedPixels = 0, revealedPixels = 0, filteredPixels = 0;
         for (uint32_t y = 0; y < kAtlasEdge; ++y) {
             for (uint32_t x = 0; x < kAtlasEdge; ++x) {
                 const size_t pixel = size_t(y) * kAtlasEdge + x;
@@ -2769,7 +2855,16 @@ private:
                 const auto baseColor = readSurfaceValue<Pixel>(deferred[2].bytes, pixel);
                 const auto raw = readHalfPixel(reflections[0], pixel);
                 const auto trace = readSurfaceValue<Pixel>(reflections[1].bytes, pixel);
-                const auto color = readSurfaceValue<Pixel>(reflections[2].bytes, pixel);
+                const auto ray = readHalfPixel(reflections[2], pixel);
+                const auto rawDistanceBits = readSurfaceValue<uint16_t>(reflections[3].bytes, pixel);
+                const auto resolved = readHalfPixel(reflections[4], pixel);
+                const auto resolvedDistanceBits = readSurfaceValue<uint16_t>(reflections[5].bytes, pixel);
+                const auto temporal = readHalfPixel(reflections[6], pixel);
+                const auto state = readSurfaceValue<std::array<uint16_t, 2>>(reflections[7].bytes, pixel);
+                const float age = halfToFloat(state[0]);
+                const float method = halfToFloat(state[1]);
+                const auto bilateral = readHalfPixel(reflections[8], pixel);
+                const auto color = readSurfaceValue<Pixel>(reflections[9].bytes, pixel);
                 const bool center = x >= 52 && x < 76 && y >= 52 && y < 76;
                 if (!center && position[3] <= 0.0f) { ++background; }
                 if (center && !unlit && (!(position[3] > 0.0f) || !(specular[0] > 0.0f) ||
@@ -2781,26 +2876,132 @@ private:
                 }
                 const bool traced = !unlit && position[3] > 0.0f && specular[3] < kMaxRoughness &&
                     (specular[0] > 0.0f || specular[1] > 0.0f || specular[2] > 0.0f);
-                if (!traced && (raw != Pixel{} || trace != untraced)) {
-                    return "Invalid, unlit or roughness-filtered pixel produced a reflection ray";
-                }
-                if (traced) {
+                if (!traced) {
+                    if (raw != Pixel{} || trace != untraced || ray != Pixel{} || rawDistanceBits != 0) {
+                        return "Invalid, unlit or roughness-filtered pixel produced a reflection ray";
+                    }
+                    // Resolve writes FLT_MAX, which overflows the R16F image conversion.
+                    if (resolved != invalidResolve ||
+                        (resolvedDistanceBits != halfMaxFinite && resolvedDistanceBits != halfPositiveInfinity)) {
+                        return "Untraced pixel did not write the invalid Resolve values at " + std::to_string(pixel) +
+                            " (RGB " + std::to_string(resolved[0]) + ", " + std::to_string(resolved[1]) + ", " +
+                            std::to_string(resolved[2]) + ", fade " + std::to_string(resolved[3]) +
+                            ", half distance bits " + std::to_string(resolvedDistanceBits) + ")";
+                    }
+                    if (temporal != invalidResolve || age != 0.0f || method != 0.0f) {
+                        return "Untraced pixel did not write the invalid reflection history values";
+                    }
+                    if (bilateral != invalidResolve) { return "Bilateral changed the invalid reflection sentinel"; }
+                } else {
                     const float fade = std::clamp((kMaxRoughness - specular[3]) * 10.0f, 0.0f, 1.0f);
-                    if (!(std::abs(raw[3] - fade) < 0.001f)) { return "Incorrect roughness fade"; }
-                    if (center && trace[0] > 0.5f && trace[0] < 3.0f && trace[1] == 2.0f && trace[2] == 0.0f &&
+                    if (!(std::abs(raw[3] - fade) < 0.001f) || raw[3] != resolved[3]) {
+                        return "Incorrect roughness fade";
+                    }
+                    const float directionLengthSq = ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2];
+                    if (!(std::abs(directionLengthSq - 1.0f) < 0.002f && ray[3] > 0.0f && std::isfinite(ray[3]))) {
+                        return "Trace did not preserve a unit ray direction and positive reciprocal PDF";
+                    }
+                    const float rawDistance = halfToFloat(rawDistanceBits);
+                    const float resolvedDistance = halfToFloat(resolvedDistanceBits);
+                    const bool hit = trace[1] == 2.0f;
+                    if (hit) {
+                        if (!std::signbit(rawDistance) ||
+                            !(std::abs(-rawDistance - trace[0] * 100.0f) <= 0.1251f)) {
+                            return "Packed ray distance did not match the signed centimeter hit";
+                        }
+                    } else if (rawDistance != maxHitDistance || raw[0] != 0.0f || raw[1] != 0.0f || raw[2] != 0.0f) {
+                        return "A valid miss did not retain its maximum ray distance and black radiance";
+                    }
+                    if (!(resolvedDistance >= 0.0f && resolvedDistance <= std::abs(rawDistance))) {
+                        return "Resolve distance exceeded the center ray distance";
+                    }
+                    if (center && trace[0] > 0.5f && trace[0] < 3.0f && hit && trace[2] == 0.0f &&
                         trace[3] == 3.0f && raw[0] > 1.0f && raw[1] > 0.0f && raw[2] > 0.0f) {
                         ++hits;
                     }
+                    if (roughness == 0.0f && resolvedDistance != std::abs(rawDistance)) {
+                        return "Mirror Resolve changed the center hit distance";
+                    }
+                    if (!hit && resolvedDistance < maxHitDistance && resolved[0] > 0.01f) { ++reconstructedMisses; }
+                    const bool validState = (age == 0.0f && method == 0.0f) ||
+                        (age >= 1.0f && age <= 12.0f && (method == 1.0f || method == 2.0f));
+                    if (!validState || temporal[3] != resolved[3]) { return "Invalid reflection history state or fade"; }
+                    if (bilateral[3] != temporal[3]) { return "Bilateral changed the roughness fade"; }
+                    if (expectedHistory == ReflectionHistory::Absent && age != 0.0f) {
+                        return "Reflection history survived a first frame or camera cut";
+                    }
+                    // The reference's half-code R8 bias can round zero to one UNORM step.
+                    constexpr float kFirstHistoryAgeLimit = 1.0f + 32.0f / 255.0f + 0.0005f;
+                    if (firstHistory && age > kFirstHistoryAgeLimit) {
+                        return "New reflection history advanced beyond the seed and R8 quantization";
+                    }
+                    if (center && method == expectedMethod) { ++acceptedHistoryPixels; }
+                    constexpr float kPreviousLeftEdge = kPanDistance - kOrthoHeight * 0.5f;
+                    constexpr float kEdgeMargin = kOrthoHeight / kAtlasEdge;
+                    if (expectedHistory == ReflectionHistory::Disoccluded && position[0] < kPreviousLeftEdge - kEdgeMargin) {
+                        ++revealedPixels;
+                        if (age != 0.0f) { return "Newly revealed receiver reused off-screen reflection history"; }
+                    }
                 }
+                bool blended = false, filtered = false;
                 for (size_t channel = 0; channel < 3; ++channel) {
-                    const float expected = baseColor[channel] + std::max(raw[channel] * raw[3] * specular[channel], 0.0f);
-                    if (!(std::abs(color[channel] - expected) <= 0.0001f)) { return "Reflection composite differs from scene color plus weighted radiance"; }
+                    if (traced && roughness == 0.0f &&
+                        !(std::abs(resolved[channel] - raw[channel]) <= std::max(0.0001f, raw[channel] * 0.001f))) {
+                        return "Mirror Resolve changed the center radiance";
+                    }
+                    if (!(temporal[channel] >= 0.0f && std::isfinite(temporal[channel]))) {
+                        return "Temporal produced invalid radiance";
+                    }
+                    const float temporalDifference = std::abs(temporal[channel] - resolved[channel]);
+                    const float colorTolerance = std::max(0.0001f, resolved[channel] * 0.001f);
+                    if (traced && age <= 1.0f && !(temporalDifference <= colorTolerance)) {
+                        return "Temporal modified radiance before reflection history acquired weight";
+                    }
+                    blended |= age > 1.0f && temporalDifference > colorTolerance;
+                    if (!(bilateral[channel] >= 0.0f && std::isfinite(bilateral[channel]))) {
+                        return "Bilateral produced invalid radiance";
+                    }
+                    const float filterDifference = std::abs(bilateral[channel] - temporal[channel]);
+                    const float filterTolerance = std::max(0.0001f, temporal[channel] * 0.001f);
+                    if (traced && roughness == 0.0f && filterDifference > filterTolerance) {
+                        return "Bilateral changed a mirror reflection";
+                    }
+                    filtered |= filterDifference > filterTolerance;
+                    const float expected = baseColor[channel] +
+                        std::max(bilateral[channel] * bilateral[3] * specular[channel], 0.0f);
+                    if (!(std::abs(color[channel] - expected) <= 0.0001f)) {
+                        return "Reflection composite differs from scene color plus weighted bilateral radiance";
+                    }
                 }
                 if (color[3] != baseColor[3]) { return "Reflection composite changed scene alpha"; }
+                if (center && blended) { ++blendedPixels; }
+                if (center && traced && checkFreshBilateral) {
+                    if (!withinBilateralNeighborhood(reflections[6], x, y, temporal, bilateral)) {
+                        return "Bilateral radiance fell outside its eight-pixel neighborhood";
+                    }
+                    if (filtered) { ++filteredPixels; }
+                }
             }
         }
         if (background < 64) { return "The reflection fixture did not contain uncovered pixels"; }
         if (hits < minHits) { return "Too few reflected off-screen emitter pixels: " + std::to_string(hits); }
+        if (roughness == kGlossyRoughness && reconstructedMisses == 0) {
+            return "Rough Resolve did not reconstruct radiance and distance for any valid miss from neighboring hits";
+        }
+        if (expectedHistory != ReflectionHistory::Absent && acceptedHistoryPixels < 64u) {
+            return "Too few receiver pixels retained the expected reflection history method: " +
+                std::to_string(acceptedHistoryPixels);
+        }
+        if ((expectedHistory == ReflectionHistory::Accumulated || expectedHistory == ReflectionHistory::Disoccluded) &&
+            blendedPixels < 16u) {
+            return "Too few receiver pixels blended with accumulated reflection history: " + std::to_string(blendedPixels);
+        }
+        if (expectedHistory == ReflectionHistory::Disoccluded && revealedPixels < 16u) {
+            return "Fixture did not reveal enough reflective pixels after panning";
+        }
+        if (checkFreshBilateral && filteredPixels < 16u) {
+            return "Too few freshly traced receiver pixels were filtered by Bilateral: " + std::to_string(filteredPixels);
+        }
         return {};
     }
 };

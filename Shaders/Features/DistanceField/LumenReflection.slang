@@ -8,6 +8,9 @@ import LumenGlobalRay;
 import LumenProbeMath;
 import LumenScreenTrace;
 
+__include "LumenReflectionTemporal.slang";
+__include "LumenReflectionBilateral.slang";
+
 using Metallic;
 using Metallic.DistanceField;
 using Metallic.Lumen;
@@ -22,6 +25,13 @@ struct LumenReflectionParams
     ViewCameraConstants camera;
     uint width, height, clipmapCount, frameIndex;
     float maxTraceDistance, maxRoughness;
+    ResourceHandle<RWTexture2D<float4>> outputRayData;
+    ResourceHandle<RWTexture2D<float>> outputRayHitDistance;
+    ResourceHandle<RWTexture2D<float4>> outputResolvedReflections;
+    ResourceHandle<RWTexture2D<float>> outputResolvedHitDistance;
+    ResourceHandle<Texture2D<float4>> rayData;
+    ResourceHandle<Texture2D<float>> rayHitDistance;
+    ResourceHandle<Texture2D<float4>> bilateralReflections;
 };
 
 static const float kGGXSamplingBias = 0.1f;
@@ -122,9 +132,11 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
     const float fadeAlpha = saturate((params.maxRoughness - specular.w) * kInvRoughnessFadeLength);
     float4 reflections = 0.0f;
     float4 debugTrace = float4(-1.0f, float(kGlobalDistanceFieldEmpty), -1.0f, 0.0f);
+    float4 rayData = 0.0f;
+    float rayHitDistance = 0.0f;
     if (position.w > 0.0f && any(specular.xyz > 0.0f) && fadeAlpha > 0.0f) {
         const float3 normal = normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz);
-        const float4 rayData = generateReflectionRay(params, pixel, position.xyz, normal, specular.w);
+        rayData = generateReflectionRay(params, pixel, position.xyz, normal, specular.w);
 
         // UE 5.7.4 LumenReflectionTracing.usf, TraceVoxels without screen or mesh-SDF methods.
         // Their disabled permutations leave no prefix distance to pull back.
@@ -132,12 +144,15 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
         const float stepFactorNoise = lerp(0.95f, 1.0f / 0.95f, screenTraceNoise(float2(pixel),
             float(params.frameIndex % 8u)));
         const float stepFactor = lerp(stepFactorNoise, 1.0f, saturate(rayData.w / (kLumenProbePi / 256.0f)));
-        const float maxTraceDistance = f16tof32(f32tof16(min(params.maxTraceDistance * 100.0f, 65504.0f))
-            & 0x7fffu) * 0.01f;
+        const float maxTraceDistanceCm = min(params.maxTraceDistance * 100.0f, 65504.0f);
+        const float maxTraceDistance = f16tof32(f32tof16(maxTraceDistanceCm) & 0x7fffu) * 0.01f;
         LumenGlobalTraceRay ray = {float4(samplePosition, 0.0f), float4(rayData.xyz, maxTraceDistance)};
         const LumenGlobalTraceResult hit = traceLumenReflectionGlobalRay(
             resolveLumenGlobalTraceScene(params.scene, params.clipmapCount), ray, stepFactor);
 
+        // UE TraceVoxels and EncodeRayDistance. The storage image quantizes signed centimeters.
+        rayHitDistance = hit.state.x == kGlobalDistanceFieldHit
+            ? -max(hit.metrics.x * 100.0f, 0.0f) : maxTraceDistanceCm;
         float3 lighting = hit.radiance.xyz;
         float maxLighting = max(lighting.x, max(lighting.y, lighting.z));
         if (maxLighting > kMaxRayIntensity) {
@@ -149,6 +164,146 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
     }
     resolveUniform(params.outputReflections)[pixel] = reflections;
     resolveUniform(params.trace)[pixel] = debugTrace;
+    resolveUniform(params.outputRayData)[pixel] = rayData;
+    resolveUniform(params.outputRayHitDistance)[pixel] = rayHitDistance;
+}
+
+static const uint kSpatialReconstructionNumSamples = 5u;
+static const float kSpatialReconstructionKernelRadius = 8.0f;
+static const float kDenoiserOneOverTonemapRange = 1.0f / 10.0f;
+static const float3 kInvalidReflectionLighting = float3(65024.0f, 65024.0f, 64512.0f);
+
+// UE 5.7.4 MonteCarlo.ush, UniformSampleDiskConcentric.
+float2 uniformSampleDiskConcentric(float2 e)
+{
+    float2 p = 2.0f * e - 0.99999994f;
+    float2 a = abs(p);
+    float lo = min(a.x, a.y);
+    float hi = max(a.x, a.y);
+    float epsilon = 5.42101086243e-20f;
+    float phi = (kLumenProbePi / 4.0f) * (lo / (hi + epsilon) + 2.0f * float(a.y >= a.x));
+    const uint signMask = 0x80000000u;
+    float2 disk = asfloat((asuint(float2(cos(phi), sin(phi))) & ~signMask) | (asuint(p) & signMask));
+    return disk * hi;
+}
+
+// UE 5.7.4 LumenReflectionResolve.usf, GetSampleWeight and BRDF.ush, D_GGX.
+float getReflectionSampleWeight(float3 rayDirection, float rayPDF, float3x3 tangentBasis, float3 v, float a2)
+{
+    float3 h = mul(tangentBasis, normalize(v + rayDirection));
+    float d = (h.z * a2 - h.z) * h.z + 1.0f;
+    float sampleNDF = a2 / (kLumenProbePi * d * d);
+    return sampleNDF / rayPDF;
+}
+
+// UE 5.7.4 LumenReflectionDenoiserCommon.ush. Callers supply valid lighting in the working color space.
+float3 reflectionRGBToDenoiserSpace(float3 lighting)
+{
+    float weight = 1.0f / (1.0f + WorkingColor.luminance(lighting) * kDenoiserOneOverTonemapRange);
+    return lighting * weight;
+}
+
+float3 reflectionDenoiserSpaceToRGB(float3 lighting)
+{
+    float invWeight = 1.0f / (1.0f - WorkingColor.luminance(lighting) * kDenoiserOneOverTonemapRange);
+    return lighting * invWeight;
+}
+
+// UE 5.7.4 LumenReflectionResolve.usf, 1x1, opaque single-lobe spatial reconstruction.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void lumenReflectionResolveMain(uint3 thread : SV_DispatchThreadID)
+{
+    LumenReflectionParams params = getParameters<LumenReflectionParams>();
+    uint2 pixel = thread.xy;
+    uint2 extent = uint2(params.width, params.height);
+    if (any(pixel >= extent)) { return; }
+
+    let reflections = resolveUniform(params.reflections);
+    let rayData = resolveUniform(params.rayData);
+    float4 centerRay = rayData.Load(int3(pixel, 0));
+    float4 centerReflection = reflections.Load(int3(pixel, 0));
+    float3 centerLighting = kInvalidReflectionLighting;
+    float minRayHitT = asfloat(0x7f7fffffu);
+    // Trace writes a positive cone for every emitted ray, including valid black misses.
+    if (centerRay.w > 0.0f) {
+        let rayHitDistance = resolveUniform(params.rayHitDistance);
+        centerLighting = reflectionRGBToDenoiserSpace(centerReflection.rgb);
+        float centerWeightSum = 1.0f;
+        minRayHitT = abs(rayHitDistance.Load(int3(pixel, 0)));
+
+        float roughness = resolveUniform(params.specular).Load(int3(pixel, 0)).w;
+        float kernelRadiusInPixels = 0.0f;
+        if (roughness > 0.05f) {
+            kernelRadiusInPixels = kSpatialReconstructionKernelRadius * saturate(roughness * 8.0f);
+        }
+
+        if (kernelRadiusInPixels > 1.0f) {
+            uint2 randomSeed = lumenRand3DPCG16(int3(pixel, params.frameIndex % 8u)).xy;
+            let position = resolveUniform(params.position);
+            float3 translatedWorldPosition = position.Load(int3(pixel, 0)).xyz - params.camera.eye.xyz;
+            float3 v = -normalize(translatedWorldPosition);
+            float3x3 tangentBasis = getReflectionTangentBasis(
+                normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz));
+            float effectiveRoughness = clamp(roughness, 0.0f, 1.0f);
+            float alpha = effectiveRoughness * effectiveRoughness;
+            float a2 = alpha * alpha;
+            float2 kernelMajorAxis = float2(kernelRadiusInPixels, 0.0f);
+            float2 kernelMinorAxis = float2(0.0f, kernelRadiusInPixels);
+
+            float centerRayHitT = minRayHitT;
+            float centerSampleWeight = getReflectionSampleWeight(centerRay.xyz, 1.0f / abs(centerRay.w),
+                tangentBasis, v, a2);
+            centerSampleWeight = max(centerSampleWeight, 0.001f);
+            centerLighting *= centerSampleWeight;
+            centerWeightSum = centerSampleWeight;
+
+            float3 neighborLighting = 0.0f;
+            float neighborWeightSum = 0.0f;
+            for (uint neighborIndex = 0u; neighborIndex < kSpatialReconstructionNumSamples; ++neighborIndex) {
+                float2 neighborOffsetInRect = lumenHammersley16(neighborIndex, kSpatialReconstructionNumSamples, randomSeed);
+                float2 neighborOffset = uniformSampleDiskConcentric(neighborOffsetInRect);
+                neighborOffset = neighborOffset.x * kernelMajorAxis + neighborOffset.y * kernelMinorAxis;
+                int2 neighborPixel = int2(float2(pixel) + neighborOffset + 0.5f);
+                if (all(neighborPixel >= 0) && all(neighborPixel < int2(extent))) {
+                    float4 neighborRay = rayData.Load(int3(neighborPixel, 0));
+                    if (neighborRay.w > 0.0f) {
+                        float3 neighborTranslatedWorldPosition = position.Load(int3(neighborPixel, 0)).xyz - params.camera.eye.xyz;
+                        float traceHitDistance = abs(rayHitDistance.Load(int3(neighborPixel, 0)));
+                        traceHitDistance = min(traceHitDistance, centerRayHitT);
+
+                        float3 neighborHitPosition = neighborTranslatedWorldPosition + neighborRay.xyz * (traceHitDistance * 0.01f);
+                        float distanceToNeighborHit = length(neighborHitPosition - translatedWorldPosition);
+                        float3 directionToNeighborHit = neighborRay.xyz;
+                        if (distanceToNeighborHit > 0.0f) {
+                            directionToNeighborHit = (neighborHitPosition - translatedWorldPosition) / distanceToNeighborHit;
+                        }
+
+                        float sampleWeight = getReflectionSampleWeight(directionToNeighborHit, 1.0f / abs(neighborRay.w),
+                            tangentBasis, v, a2);
+                        if (sampleWeight > 1e-6f) {
+                            float3 sampleRadiance = reflectionRGBToDenoiserSpace(reflections.Load(int3(neighborPixel, 0)).rgb);
+                            neighborLighting += sampleRadiance * sampleWeight;
+                            neighborWeightSum += sampleWeight;
+                            minRayHitT = min(minRayHitT, traceHitDistance);
+                        }
+                    }
+                }
+            }
+
+            // The UE 5.7.4 default SpatialReconstruction.MinWeight is zero.
+            centerLighting += neighborLighting;
+            centerWeightSum += neighborWeightSum;
+        }
+
+        if (centerWeightSum > 1e-6f) {
+            centerLighting = centerLighting / centerWeightSum;
+        }
+        centerLighting = reflectionDenoiserSpaceToRGB(centerLighting);
+    }
+
+    resolveUniform(params.outputResolvedReflections)[pixel] = float4(centerLighting, centerReflection.a);
+    resolveUniform(params.outputResolvedHitDistance)[pixel] = minRayHitT;
 }
 
 [shader("compute")]
@@ -160,7 +315,7 @@ void lumenReflectionCompositeMain(uint3 thread : SV_DispatchThreadID)
     if (any(pixel >= uint2(params.width, params.height))) { return; }
 
     const float4 sceneColor = resolveUniform(params.sceneColor).Load(int3(pixel, 0));
-    const float4 reflection = resolveUniform(params.reflections).Load(int3(pixel, 0));
+    const float4 reflection = resolveUniform(params.bilateralReflections).Load(int3(pixel, 0));
     float3 lighting = 0.0f;
     // UE 5.7.4 ReflectionEnvironmentPixelShader.usf, standalone Lumen
     // reflection composite. The supported permutation has no sky or probe fallback.

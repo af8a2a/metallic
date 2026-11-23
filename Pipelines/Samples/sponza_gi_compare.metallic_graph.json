@@ -26,7 +26,7 @@
             "properties": {
                 "path": "Asset/Sponza/SponzaGI.metallic_scene.json",
                 "materialBinning": true, "outputLinear": true, "exportLumenReceivers": true,
-                "exportLumenSpecular": true
+                "exportLumenPreviousPosition": true, "exportLumenSpecular": true
             }},
         {"id": 4, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass",
             "position": {"x": 50, "y": 470}, "properties": {
@@ -62,7 +62,7 @@
         {"id": 12, "name": "Slider", "type": "SliderDebugPass", "position": {"x": 1950, "y": 140},
             "properties": {"splitPosition": 0.5, "orientation": "vertical", "swapSides": false}},
         {"id": 13, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
-            "properties": {"maxTraceDistance": 40}}
+            "properties": {"maxTraceDistance": 40, "dynamicReprojection": true}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -133,7 +133,8 @@
         {"id": 66, "src": "SurfaceCache.scene", "dst": "Reflections.cardScene"},
         {"id": 67, "src": "SurfaceCache.depth", "dst": "Reflections.cardDepth"},
         {"id": 68, "src": "Radiosity.lighting", "dst": "Reflections.cardLighting"},
-        {"id": 69, "src": "SurfaceCache.cardUpdates", "dst": "Radiosity.cardUpdates"}
+        {"id": 69, "src": "SurfaceCache.cardUpdates", "dst": "Radiosity.cardUpdates"},
+        {"id": 70, "src": "Deferred.lumenPreviousPosition", "dst": "Reflections.previousPosition"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Reflections.reflections", "Reflections.trace"],
     "view": {
