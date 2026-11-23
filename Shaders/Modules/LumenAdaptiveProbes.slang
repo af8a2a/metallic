@@ -12,13 +12,13 @@ public static const uint kLumenProbeTraceResolution = 16u;
 public static const uint kLumenProbeTraceResolution = 8u;
 #endif
 public static const uint kLumenProbeSlotsPerTile = 9u;
+public static const uint kLumenAdaptiveProbesPerTile = kLumenProbeSlotsPerTile - 1u;
 public static const uint kLumenIrradianceProbeResolution = 6u;
 public static const uint kLumenIrradianceProbeWithBorderResolution = kLumenIrradianceProbeResolution + 2u;
 public static const uint kLumenProbeSlotsPerTileAxis = 3u;
 public static const uint kLumenIrradianceProbeTileStride = kLumenProbeSlotsPerTileAxis * kLumenIrradianceProbeWithBorderResolution;
 public static const uint kLumenInvalidProbe = ~0u;
 
-static const uint kAdaptiveProbesPerTile = kLumenProbeSlotsPerTile - 1u;
 static const float kProbeInterpolationDepthWeight = -200.0f;
 static const float kMinProbeInterpolationWeight = 0.01f;
 static const float kMinProbeInterpolationFallbackWeight = 0.0001f;
@@ -33,6 +33,16 @@ public struct LumenProbeSample
 public uint lumenProbeIndex(uint2 tile, uint slot, uint probeWidth)
 {
     return (tile.y * probeWidth + tile.x) * kLumenProbeSlotsPerTile + slot;
+}
+
+public uint lumenPackedUniformProbeIndex(uint2 tile, uint probeWidth)
+{
+    return tile.y * probeWidth + tile.x;
+}
+
+public uint2 lumenPackedProbeAtlasCoord(uint probeIndex, uint probeWidth)
+{
+    return uint2(probeIndex % probeWidth, probeIndex / probeWidth);
 }
 
 // A screen tile owns one uniform and eight adaptive slots, packed into 3x3 bordered probes.
@@ -70,11 +80,11 @@ public uint2 lumenUniformProbePosition(uint2 tile, uint2 viewSize, uint frameInd
     return min(tile * kLumenProbeDownsampleFactor + probeTileJitter(frameIndex), viewSize - 1u);
 }
 
-uint2 adaptiveProbePosition(uint2 tile, uint sampleIndex, uint frameIndex)
+public uint2 adaptiveProbePosition(uint2 tile, uint sampleIndex, uint frameIndex)
 {
     uint2 uniformPosition = tile * kLumenProbeDownsampleFactor + probeTileJitter(frameIndex);
     uint2 sampleSeed = lumenRand3DPCG16(int3(tile, frameIndex % 8u)).xy;
-    return uniformPosition + uint2(clamp(lumenHammersley16(sampleIndex, kAdaptiveProbesPerTile, sampleSeed) *
+    return uniformPosition + uint2(clamp(lumenHammersley16(sampleIndex, kLumenAdaptiveProbesPerTile, sampleSeed) *
         kLumenProbeDownsampleFactor, 0.0f, float(kLumenProbeDownsampleFactor - 1u)));
 }
 
@@ -129,7 +139,7 @@ float getAdaptiveProbeWeight(uint2 pixel, float4 scenePlane, float sceneDepth, u
 }
 
 // UE 5.7.4 ScreenProbeAdaptivePlacementMarkCS. Positions and linear depth come from Deferred.
-bool markAdaptiveProbe(uint2 pixel, uint2 viewSize, uint2 probeSize, Texture2D<float4> position,
+public bool markAdaptiveProbe(uint2 pixel, uint2 viewSize, uint2 probeSize, Texture2D<float4> position,
     Texture2D<float4> normal, uint frameIndex, out float4 receiver, out float3 receiverNormal, out uint2 firstCorner)
 {
     receiver = 0.0f;
@@ -146,6 +156,38 @@ bool markAdaptiveProbe(uint2 pixel, uint2 viewSize, uint2 probeSize, Texture2D<f
     LumenProbeSample sample = calculateUniformProbeWeights(pixel, viewSize, probeSize, receiver, receiverNormal,
         position, frameIndex, firstCorner);
     return dot(sample.weights, 1.0f) < kMinProbeInterpolationWeight;
+}
+
+// UE 5.7.4 ScreenProbeAdaptivePlacementSpawnCS, reading Metallic's tile placement masks.
+public bool shouldSpawnPackedAdaptiveProbe(uint2 pixel, uint sampleIndex, uint2 viewSize, uint2 probeSize,
+    Texture2D<float4> position, Texture2D<float4> normal, RWStructuredBuffer<uint> placementMasks, uint frameIndex)
+{
+    uint2 screenCoord;
+    uint2 firstCorner = firstUniformCorner(pixel, viewSize, probeSize, frameIndex, screenCoord);
+    float4 receiver = position.Load(int3(pixel, 0));
+    float3 receiverNormal = normalize(normal.Load(int3(pixel, 0)).xyz);
+    float4 scenePlane = float4(receiverNormal, dot(receiver.xyz, receiverNormal));
+    float4 cornerWeights = 0.0f;
+    for (uint corner = 0u; corner < 4u; ++corner) {
+        uint2 cornerTile = uniformCornerTile(firstCorner, corner, probeSize);
+        uint cornerPlacementMask = placementMasks[lumenPackedUniformProbeIndex(cornerTile, probeSize.x)];
+        while (cornerPlacementMask != 0u) {
+            const uint cornerSampleIndex = uint(firstbitlow(cornerPlacementMask));
+            const uint cornerBitMask = 1u << cornerSampleIndex;
+            cornerPlacementMask ^= cornerBitMask;
+            if (cornerSampleIndex >= sampleIndex) {
+                break;
+            }
+            uint2 cornerPixel = adaptiveProbePosition(cornerTile, cornerSampleIndex, frameIndex);
+            float3 cornerPosition = position.Load(int3(cornerPixel, 0)).xyz;
+            const float weight = getAdaptiveProbeWeight(pixel, scenePlane, receiver.w, cornerPixel, cornerPosition);
+            cornerWeights[corner] = max(cornerWeights[corner], weight);
+            if (dot(cornerWeights, 1.0f) >= kMinProbeInterpolationWeight) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // UE 5.7.4 ScreenProbeAdaptivePlacementSpawnCS. Evaluate the lower-index Mark predicates
@@ -190,6 +232,17 @@ public uint2 placeLumenAdaptiveProbe(uint2 tile, uint slot, uint2 viewSize, uint
     return pixel;
 }
 
+void normalizeLumenProbeSample(inout LumenProbeSample sample)
+{
+    float weightSum = dot(sample.weights, 1.0f);
+    sample.lightingValid = weightSum >= kMinProbeInterpolationWeight;
+    if (weightSum >= kMinProbeInterpolationFallbackWeight) {
+        sample.weights /= max(weightSum, kMinProbeInterpolationFallbackWeight);
+    } else {
+        sample.weights = 0.0f;
+    }
+}
+
 // UE 5.7.4 CalculateUpsampleInterpolationWeights. Substitute the best adaptive probe for a weak uniform corner.
 public LumenProbeSample calculateLumenAdaptiveInterpolation(uint2 pixel, uint2 viewSize, uint2 probeSize, float4 receiver,
     float3 normal, Texture2D<float4> position, StructuredBuffer<uint2> probes, uint frameIndex)
@@ -219,13 +272,40 @@ public LumenProbeSample calculateLumenAdaptiveInterpolation(uint2 pixel, uint2 v
         }
     }
 
-    float weightSum = dot(sample.weights, 1.0f);
-    sample.lightingValid = weightSum >= kMinProbeInterpolationWeight;
-    if (weightSum >= kMinProbeInterpolationFallbackWeight) {
-        sample.weights /= max(weightSum, kMinProbeInterpolationFallbackWeight);
-    } else {
-        sample.weights = 0.0f;
+    normalizeLumenProbeSample(sample);
+    return sample;
+}
+
+// UE 5.7.4 CalculateUpsampleInterpolationWeights with a global adaptive suffix and a per-tile reverse list.
+public LumenProbeSample calculateLumenPackedAdaptiveInterpolation(uint2 pixel, uint2 viewSize, uint2 probeSize,
+    float4 receiver, float3 normal, Texture2D<float4> position, StructuredBuffer<uint2> probes,
+    StructuredBuffer<uint> tileCounts, StructuredBuffer<uint> tileIndices, uint frameIndex)
+{
+    uint2 firstCorner;
+    LumenProbeSample sample = calculateUniformProbeWeights(pixel, viewSize, probeSize, receiver, normal, position,
+        frameIndex, firstCorner);
+    const uint uniformCount = probeSize.x * probeSize.y;
+    float4 scenePlane = float4(normal, dot(receiver.xyz, normal));
+    [unroll]
+    for (uint corner = 0u; corner < 4u; ++corner) {
+        uint2 tile = uniformCornerTile(firstCorner, corner, probeSize);
+        uint tileIndex = lumenPackedUniformProbeIndex(tile, probeSize.x);
+        sample.indices[corner] = tileIndex;
+        if (sample.weights[corner] < kMinProbeInterpolationWeight) {
+            uint count = tileCounts[tileIndex];
+            for (uint listIndex = 0u; listIndex < count; ++listIndex) {
+                uint index = uniformCount + tileIndices[tileIndex * kLumenAdaptiveProbesPerTile + listIndex];
+                uint2 probePixel = probes[index];
+                float3 probePosition = position.Load(int3(probePixel, 0)).xyz;
+                const float weight = getAdaptiveProbeWeight(pixel, scenePlane, receiver.w, probePixel, probePosition);
+                if (weight > sample.weights[corner]) {
+                    sample.weights[corner] = weight;
+                    sample.indices[corner] = index;
+                }
+            }
+        }
     }
+    normalizeLumenProbeSample(sample);
     return sample;
 }
 } // namespace Metallic.Lumen

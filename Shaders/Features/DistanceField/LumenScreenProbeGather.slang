@@ -181,7 +181,35 @@ struct LumenScreenProbeGatherParams
     ResourceHandle<StructuredBuffer<uint>> probeRayWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeRayWorkCount;
 #endif
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    ResourceHandle<StructuredBuffer<uint>> probeOrigins;
+    ResourceHandle<StructuredBuffer<uint>> probeTileAdaptiveCounts;
+    ResourceHandle<StructuredBuffer<uint>> probeTileAdaptiveIndices;
+#endif
 };
+
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS) && defined(METALLIC_LUMEN_PROBE_TRACE_READBACK)
+// The debug ROI keeps tile/slot addresses even when no atlas entry owns that slot.
+[shader("compute")]
+[numthreads(kProbeRayResolution, kProbeRayResolution, 1)]
+void lumenClearCompactProbeTraceReadbackMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID)
+{
+    let params = getParameters<LumenScreenProbeGatherParams>();
+    const uint address = lumenProbeTraceAddress(lumenProbeIndex(group.xy, group.z, params.traceReadbackTiles.z), lane.xy);
+    const LumenProbeTraceReadback invalid = {-1.0f, -1.0f, -1.0f, -1.0f, float3(0.0f), -1.0f, ~0u, ~0u, 0u, 0u};
+    resolveUniform(params.traceReadback)[address] = invalid;
+}
+#endif
+
+#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+uint3 lumenTraceProbeGroupForIndex(LumenScreenProbeGatherParams params, uint probeIndex)
+{
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    probeIndex = resolveUniform(params.probeOrigins)[probeIndex];
+#endif
+    return uint3(lumenProbeTileForIndex(probeIndex, params.probeWidth), probeIndex % kLumenProbeSlotsPerTile);
+}
+#endif
 
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
 typealias LumenProbeIrradianceStorage = _Texture<float4, __Shape2D, 0, 0, 0, 1, 0, 0, 5>;
@@ -308,12 +336,12 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
     const uint probeIndex = denseRay / kRaysPerProbe;
     const uint rayIndex = denseRay % kRaysPerProbe;
     lane = uint3(rayIndex % kProbeRayResolution, rayIndex / kProbeRayResolution, 0u);
-    group = uint3(lumenProbeTileForIndex(probeIndex, params.probeWidth), probeIndex % kLumenProbeSlotsPerTile);
+    group = lumenTraceProbeGroupForIndex(params, probeIndex);
 #elif defined(METALLIC_LUMEN_ACTIVE_PROBES)
     uint probeIndex;
     if (!resolveLumenActiveProbe(group, resolveUniform(params.probeWorkList), resolveUniform(params.probeWorkState),
             probeIndex)) { return; }
-    group = uint3(lumenProbeTileForIndex(probeIndex, params.probeWidth), probeIndex % kLumenProbeSlotsPerTile);
+    group = lumenTraceProbeGroupForIndex(params, probeIndex);
 #elif defined(METALLIC_LUMEN_FINAL_GATHER)
     const uint probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
 #else
@@ -658,7 +686,11 @@ float3 interpolateScreenProbeSH(uint4 probeIndices, float4 weights, float3 norma
     uint probeWidth, Texture2D<float4> ambient, Texture2D<float4> directional)
 {
     const ThreeBandSHVector transfer = calcDiffuseTransferSH3(normal, 1.0f);
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    uint atlasWidth = probeWidth;
+#else
     uint atlasWidth = probeWidth * kLumenProbeSlotsPerTileAxis;
+#endif
     ThreeBandSHVector lighting[3];
     [unroll]
     for (uint c = 0u; c < 3u; ++c) {
@@ -671,7 +703,12 @@ float3 interpolateScreenProbeSH(uint4 probeIndices, float4 weights, float3 norma
 #endif
     [unroll]
     for (uint corner = 0u; corner < numCorners; ++corner) {
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+        if (weights[corner] <= 0.0f) { continue; }
+        uint2 coord = lumenPackedProbeAtlasCoord(probeIndices[corner], probeWidth);
+#else
         uint2 coord = lumenProbeAtlasCoord(probeIndices[corner], probeWidth);
+#endif
         float3 ambientRGB = ambient.Load(int3(coord, 0)).xyz;
         [unroll]
         for (uint c = 0u; c < 3u; ++c) {
@@ -699,7 +736,13 @@ float3 interpolateScreenProbeIrradiance(uint4 probeIndices, float4 weights, floa
 {
     float2 probeUV = lumenInverseEquiAreaSphericalMapping(normal);
     float2 probeUVCoord = probeUV * kLumenIrradianceProbeResolution + 1.0f;
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    uint atlasWidth, atlasHeight;
+    irradiance.GetDimensions(atlasWidth, atlasHeight);
+    float2 atlasExtent = float2(atlasWidth, atlasHeight);
+#else
     float2 atlasExtent = float2(probeSize * kLumenIrradianceProbeTileStride);
+#endif
     float3 result = 0.0f;
 #if defined(METALLIC_LUMEN_STOCHASTIC_INTERPOLATION)
     const uint numCorners = 1u;
@@ -708,7 +751,13 @@ float3 interpolateScreenProbeIrradiance(uint4 probeIndices, float4 weights, floa
 #endif
     [unroll]
     for (uint corner = 0u; corner < numCorners; ++corner) {
-        float2 atlasUV = (lumenProbeAtlasCoord(probeIndices[corner], probeSize.x) * kLumenIrradianceProbeWithBorderResolution + probeUVCoord) / atlasExtent;
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+        if (weights[corner] <= 0.0f) { continue; }
+        uint2 coord = lumenPackedProbeAtlasCoord(probeIndices[corner], probeSize.x);
+#else
+        uint2 coord = lumenProbeAtlasCoord(probeIndices[corner], probeSize.x);
+#endif
+        float2 atlasUV = (coord * kLumenIrradianceProbeWithBorderResolution + probeUVCoord) / atlasExtent;
         result += irradiance.SampleLevel(bilinearSampler, atlasUV, 0.0f).xyz * weights[corner];
     }
     return result;
@@ -777,8 +826,14 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
         Texture2D<float4> diffuse = resolveUniform(params.diffuse);
 #if defined(METALLIC_LUMEN_FINAL_GATHER)
         StructuredBuffer<uint2> probes = resolveUniform(params.probePositions);
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+        LumenProbeSample sample = calculateLumenPackedAdaptiveInterpolation(thread.xy, viewSize,
+            uint2(params.probeWidth, params.probeHeight), receiver, normal, position, probes,
+            resolveUniform(params.probeTileAdaptiveCounts), resolveUniform(params.probeTileAdaptiveIndices), params.frameIndex);
+#else
         LumenProbeSample sample = calculateLumenAdaptiveInterpolation(thread.xy, viewSize,
             uint2(params.probeWidth, params.probeHeight), receiver, normal, position, probes, params.frameIndex);
+#endif
         uint4 probeIndices = sample.indices;
         // UE 5.7.4 InterpolateAndIntegrate, static lighting with zero moving fraction.
         encodedAlpha = sample.lightingValid ? 0.004f : 0.0f;
@@ -811,7 +866,12 @@ void lumenIntegrateScreenProbesMain(uint3 thread : SV_DispatchThreadID)
         }
 #endif
 #if defined(METALLIC_LUMEN_PROBE_INTERPOLATION_READBACK)
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+        let origins = resolveUniform(params.probeOrigins);
+        readback.indices = uint4(origins[probeIndices.x], origins[probeIndices.y], origins[probeIndices.z], origins[probeIndices.w]);
+#else
         readback.indices = probeIndices;
+#endif
         readback.weights = sample.weights;
 #endif
         if (any(sample.weights > 0.0f)) {

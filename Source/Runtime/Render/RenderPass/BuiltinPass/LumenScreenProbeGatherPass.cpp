@@ -29,6 +29,14 @@ constexpr uint64_t kScreenProbeScheduleABI = 0x4c554d454e010017ull;
 constexpr uint64_t kScreenProbeClearABI = 0x4c554d454e010018ull;
 constexpr uint64_t kScreenProbeRayScheduleABI = 0x4c554d454e010019ull;
 constexpr uint64_t kScreenProbeFallbackABI = 0x4c554d454e01001aull;
+constexpr uint64_t kCompactScreenProbeScheduleABI = 0x4c554d454e01001bull;
+constexpr uint64_t kCompactScreenProbeRayScheduleABI = 0x4c554d454e01001cull;
+constexpr uint64_t kCompactScreenProbeGatherABI = 0x4c554d454e01001dull;
+constexpr uint64_t kCompactScreenProbeFallbackABI = 0x4c554d454e01001eull;
+constexpr uint64_t kCompactScreenProbeFilterABI = 0x4c554d454e01001full;
+constexpr uint64_t kCompactProbeAtlasPlacementABI = 0x4c554d454e010020ull;
+constexpr double kAdaptiveProbeAllocationFraction = 0.5;
+constexpr uint32_t kAdaptiveProbesPerTile = kLumenScreenProbeSlotsPerTile - 1;
 constexpr uint32_t kProbeCompactionThreads = 64;
 constexpr uint32_t kProbeDispatchArgumentBytes = 3 * sizeof(uint32_t);
 constexpr uint64_t kMeshSDFCullingABI = 0x4c554d454e060001ull;
@@ -157,6 +165,40 @@ struct LumenScreenProbeFallbackParams {
 };
 static_assert(sizeof(LumenScreenProbeFallbackParams) == 288);
 
+template <typename Params>
+struct CompactScreenProbeScheduleParams {
+    Params base;
+    ShaderBuffer adaptiveCount;
+    uint32_t uniformCount;
+};
+
+struct CompactProbeAtlasBindings {
+    ShaderBuffer origins, tileCounts, tileIndices;
+};
+
+template <typename Params>
+struct CompactScreenProbeGatherParams {
+    Params base;
+    CompactProbeAtlasBindings atlas;
+};
+
+struct CompactScreenProbeFilterParams {
+    LumenActiveScreenProbeParams<LumenScreenProbeFilterParams> base;
+    ShaderBuffer probeOrigins;
+};
+
+struct CompactProbeAtlasPlacementParams {
+    ShaderSampledImage position, normal;
+    ShaderBuffer positions, origins, masks, adaptiveCount, tileCounts, tileIndices;
+    uint32_t width, height, probeWidth, probeHeight, maxAdaptiveProbes, frameIndex;
+};
+using ActiveGatherParams = LumenActiveScreenProbeParams<LumenScreenProbeGatherParams>;
+static_assert(sizeof(CompactScreenProbeScheduleParams<LumenScreenProbeScheduleParams>) == 28);
+static_assert(sizeof(CompactScreenProbeScheduleParams<LumenScreenProbeRayScheduleParams>) == 44);
+static_assert(sizeof(CompactScreenProbeGatherParams<ActiveGatherParams>) == 292);
+static_assert(sizeof(CompactScreenProbeGatherParams<LumenScreenProbeFallbackParams>) == 300);
+static_assert(sizeof(CompactScreenProbeFilterParams) == 80 && sizeof(CompactProbeAtlasPlacementParams) == 56);
+
 struct LumenScreenProbeClearParams {
     ShaderBuffer workList, workState, traceRadiance, traceDistance, filteredRadiance, scratch, compositedDistance;
     ShaderStorageImage irradiance, shDirectional;
@@ -177,9 +219,13 @@ public:
         const auto requested = properties().value("tracingOctahedronResolution", RenderGraphProperties(8));
         const auto active = properties().value("activeProbeDispatch", RenderGraphProperties(false));
         const auto split = properties().value("splitProbeTracing", RenderGraphProperties(false));
+        const auto compact = properties().value("compactProbeAtlas", RenderGraphProperties(false));
+        const auto fraction = properties().value("adaptiveProbeAllocationFraction", RenderGraphProperties(kAdaptiveProbeAllocationFraction));
         if (compiledTraceResolution_ && (!requested.is_number_integer() || requested != compiledTraceResolution_ ||
                 !active.is_boolean() || active != compiledActiveProbeDispatch_ ||
-                !split.is_boolean() || split != compiledSplitProbeTracing_)) {
+                !split.is_boolean() || split != compiledSplitProbeTracing_ ||
+                !compact.is_boolean() || compact != compiledCompactProbeAtlas_ || !fraction.is_number() ||
+                fraction != compiledAdaptiveProbeAllocationFraction_)) {
             return compile(context, log);
         }
         return {};
@@ -221,6 +267,15 @@ private:
         return kLumenScreenProbeSlotsPerTile * resolution * resolution * sizeof(LumenProbeTraceReadbackRecord);
     }
 
+    uint32_t adaptiveProbeCapacity(uint32_t uniformCount) const
+    {
+        const auto fraction = properties().find("adaptiveProbeAllocationFraction");
+        const double value = fraction != properties().end() && fraction->is_number() ?
+            fraction->get<double>() : kAdaptiveProbeAllocationFraction;
+        // Reflection runs before compile validates properties.
+        return value >= 0.0 && value <= kAdaptiveProbesPerTile ? uint32_t(float(uniformCount) * float(value)) : 0u;
+    }
+
     Device* device_ = nullptr;
     ComputeKernel trace_;
     ComputeKernel integrate_;
@@ -231,12 +286,15 @@ private:
     ComputeKernel resetProbeSchedule_, compactProbes_, buildProbeDispatch_, clearInactiveProbes_;
     ComputeKernel compactProbeRays_, buildRayDispatch_, traceFallback_;
     ComputeKernel compactDetailRays_, buildDetailDispatch_, traceDetail_;
+    ComputeKernel resetAtlas_, markAtlas_, spawnAtlas_, clearCompactReadback_;
     std::unique_ptr<TextureView> blueNoise_;
     MeshDistanceFieldGPU meshFields_;
     ComputeKernel meshGridClear_, meshGridDepth_, meshGridScatter_, meshGridAllocate_, meshGridCompact_;
     uint32_t compiledTraceResolution_ = 0;
     bool compiledActiveProbeDispatch_ = false;
     bool compiledSplitProbeTracing_ = false;
+    bool compiledCompactProbeAtlas_ = false;
+    double compiledAdaptiveProbeAllocationFraction_ = kAdaptiveProbeAllocationFraction;
     uint32_t maxRayDirections_ = 8;
     float maxTraceDistance_ = 4.0f;
     float screenTraceRelativeDepthThickness_ = kScreenTraceRelativeDepthThickness;
@@ -284,9 +342,14 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
             .buffer(4 * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32");
     }
 
-    const uint64_t probeCount = uint64_t(lumenScreenProbeTiles(context.width)) * lumenScreenProbeTiles(context.height);
+    const uint32_t probeWidth = lumenScreenProbeTiles(context.width);
+    const uint32_t probeHeight = lumenScreenProbeTiles(context.height);
+    const uint32_t probeCount = probeWidth * probeHeight;
     const bool finalGather = optionEnabled("finalGather");
-    const uint64_t probePositionsBytes = probeCount * kLumenScreenProbeSlotsPerTile * 2 * sizeof(uint32_t);
+    const bool compactAtlas = finalGather && optionEnabled("activeProbeDispatch") && optionEnabled("compactProbeAtlas");
+    const uint64_t slots = compactAtlas ? probeCount + adaptiveProbeCapacity(probeCount) :
+        uint64_t(probeCount) * (finalGather ? kLumenScreenProbeSlotsPerTile : 1u);
+    const uint64_t probePositionsBytes = slots * 2 * sizeof(uint32_t);
     const bool radianceCache = optionEnabled("radianceCache");
     if (radianceCache) {
         reflection.addBufferInput("placedProbes", "Uniform and adaptive receiver pixels used to mark the World Radiance Cache")
@@ -300,16 +363,17 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
         cacheRadiance.format = Format::RGBA16Sfloat;
         cacheRadiance.matchOutputExtent = false;
     }
-    const uint64_t slots = probeCount * (finalGather ? kLumenScreenProbeSlotsPerTile : 1u);
     const uint64_t rayCount = slots * traceResolution() * traceResolution();
     const uint64_t gatherCount = slots * kGatherSamplesPerProbe;
-    reflection.addBufferOutput("probeRadiance", "Probe ray RGB and trace classification in tile order")
-        .buffer(rayCount * kTraceStride, kTraceStride).storageReadWrite()
-        .transient(RenderGraphInitialization::FullOverwrite);
+    const auto initializeLegacyAllocation = [&](auto& field) {
+        if (!compactAtlas) { field.transient(RenderGraphInitialization::FullOverwrite); }
+    };
+    initializeLegacyAllocation(reflection.addBufferOutput("probeRadiance", "Probe ray RGB and trace classification in atlas order")
+        .buffer(rayCount * kTraceStride, kTraceStride).storageReadWrite());
     if (finalGather) {
         if (optionEnabled("activeProbeDispatch")) {
             reflection.addBufferOutput("probeWorkList", "Compacted original indices for active and inactive probe slots")
-                .buffer(slots * 2 * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite();
+                .buffer(slots * (compactAtlas ? 1u : 2u) * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite();
             reflection.addBufferOutput("probeWorkState", "Active and inactive probe counts")
                 .buffer(2 * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite()
                 .transient(RenderGraphInitialization::FullOverwrite);
@@ -330,24 +394,38 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
                 .stageAccess(RenderGraphResourceAccess::BufferIndirectRead)
                 .transient(RenderGraphInitialization::FullOverwrite);
         }
-        if (!radianceCache) {
-            reflection.addBufferOutput("probePositions", "Uniform and adaptive receiver pixels by tile and slot")
-                .buffer(probePositionsBytes, 2 * sizeof(uint32_t)).storageReadWrite()
+        if (compactAtlas) {
+            reflection.addBufferOutput("probeOrigins", "Original tile and candidate slot per allocated atlas probe")
+                .buffer(slots * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32");
+            reflection.addBufferOutput("probePlacementMasks", "Marked adaptive probe candidates per screen tile")
+                .buffer(uint64_t(probeCount) * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite()
                 .transient(RenderGraphInitialization::FullOverwrite);
+            reflection.addBufferOutput("probeAdaptiveCount", "Attempted adaptive allocations before the global cap")
+                .buffer(sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32")
+                .transient(RenderGraphInitialization::FullOverwrite);
+            reflection.addBufferOutput("probeTileAdaptiveCounts", "Admitted adaptive probes per screen tile")
+                .buffer(uint64_t(probeCount) * sizeof(uint32_t), sizeof(uint32_t)).storageReadWrite().bufferLayout("u32")
+                .transient(RenderGraphInitialization::FullOverwrite);
+            reflection.addBufferOutput("probeTileAdaptiveIndices", "Per-tile list of admitted adaptive suffix indices")
+                .buffer(uint64_t(probeCount) * kAdaptiveProbesPerTile * sizeof(uint32_t), sizeof(uint32_t))
+                .storageReadWrite().bufferLayout("u32");
         }
-        reflection.addBufferOutput("probeDistance", "Per-direction trace distance in meters")
-            .buffer(rayCount * sizeof(float), sizeof(float)).storageReadWrite()
-            .transient(RenderGraphInitialization::FullOverwrite);
+        if (!radianceCache) {
+            initializeLegacyAllocation(reflection.addBufferOutput("probePositions", "Uniform and adaptive receiver pixels in atlas order")
+                .buffer(probePositionsBytes, 2 * sizeof(uint32_t)).storageReadWrite());
+        }
+        initializeLegacyAllocation(reflection.addBufferOutput("probeDistance", "Per-direction trace distance in meters")
+            .buffer(rayCount * sizeof(float), sizeof(float)).storageReadWrite());
         if (!optionEnabled("fixedProbeDirections")) {
-            reflection.addBufferOutput("compositedProbeDistance", "Minimum trace distance per gather direction in meters")
-                .buffer(gatherCount * sizeof(float), sizeof(float)).storageReadWrite()
-                .transient(RenderGraphInitialization::FullOverwrite);
-            const uint32_t atlasWidth = lumenScreenProbeTiles(context.width) * kProbeSlotsPerTileAxis;
-            const uint32_t atlasHeight = lumenScreenProbeTiles(context.height) * kProbeSlotsPerTileAxis;
+            initializeLegacyAllocation(reflection.addBufferOutput("compositedProbeDistance", "Minimum trace distance per gather direction in meters")
+                .buffer(gatherCount * sizeof(float), sizeof(float)).storageReadWrite());
+            const uint32_t atlasWidth = compactAtlas ? probeWidth : probeWidth * kProbeSlotsPerTileAxis;
+            const uint32_t atlasHeight = compactAtlas ? uint32_t((slots + probeWidth - 1u) / probeWidth) :
+                probeHeight * kProbeSlotsPerTileAxis;
             const auto addAtlas = [&](const char* name, const char* description, uint32_t width, uint32_t height, Format format) {
                 auto& atlas = reflection.addTextureOutput(name, description).texture2D(width, height)
-                    .storageWrite().stageAccess(RenderGraphResourceAccess::TextureSampleRead)
-                    .transient(RenderGraphInitialization::FullOverwrite);
+                    .storageWrite().stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+                initializeLegacyAllocation(atlas);
                 atlas.format = format;
                 atlas.matchOutputExtent = false;
             };
@@ -378,10 +456,10 @@ RenderPassReflection LumenScreenProbeGatherPass::reflect(const RenderGraphCompil
                     .storageWrite().transient(RenderGraphInitialization::FullOverwrite);
             }
         }
-        reflection.addBufferOutput("filteredProbeRadiance", "Spatially filtered probe ray RGB")
-            .buffer(gatherCount * kTraceStride, kTraceStride).storageReadWrite().transient(RenderGraphInitialization::FullOverwrite);
-        reflection.addBufferOutput("probeFilterScratch", "Spatial filtering ping-pong buffer")
-            .buffer(gatherCount * kTraceStride, kTraceStride).storageReadWrite().transient(RenderGraphInitialization::FullOverwrite);
+        initializeLegacyAllocation(reflection.addBufferOutput("filteredProbeRadiance", "Spatially filtered probe ray RGB")
+            .buffer(gatherCount * kTraceStride, kTraceStride).storageReadWrite());
+        initializeLegacyAllocation(reflection.addBufferOutput("probeFilterScratch", "Spatial filtering ping-pong buffer")
+            .buffer(gatherCount * kTraceStride, kTraceStride).storageReadWrite());
     }
 
     auto& indirect = reflection.addTextureOutput("indirectDiffuse", "Unexposed indirect diffuse after receiver response")
@@ -400,7 +478,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     device_ = context.device;
     for (std::string_view name : {"finalGather", "screenTraces", "stochasticInterpolation", "radianceCache",
             "detailTracing", "screenGDFContinuation", "gdfPrefixValidation", "gdfPrefixRejectReceding",
-            "gdfPrefixMeshValidation", "fixedProbeDirections", "activeProbeDispatch", "splitProbeTracing"}) {
+            "gdfPrefixMeshValidation", "fixedProbeDirections", "activeProbeDispatch", "splitProbeTracing", "compactProbeAtlas"}) {
         const auto value = properties().find(name);
         if (value != properties().end() && !value->is_boolean()) {
             log += "Lumen Screen Probe Gather requires a boolean " + std::string(name);
@@ -423,6 +501,17 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     const bool stochasticInterpolation = optionEnabled("stochasticInterpolation");
     const bool radianceCache = optionEnabled("radianceCache");
     const bool detailTracing = optionEnabled("detailTracing");
+    const bool compactAtlas = optionEnabled("compactProbeAtlas");
+    if (compactAtlas && (!activeProbeDispatch || radianceCache)) {
+        log = "Lumen compactProbeAtlas requires activeProbeDispatch and Gather-owned probe placement";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto fraction = properties().find("adaptiveProbeAllocationFraction");
+    if (fraction != properties().end() && (!compactAtlas || !fraction->is_number() ||
+        !std::isfinite(fraction->get<double>()) || *fraction < 0.0 || *fraction > kAdaptiveProbesPerTile)) {
+        log = "Lumen adaptiveProbeAllocationFraction requires compactProbeAtlas and a value from 0 to 8";
+        return makeError(Error::InvalidArgument);
+    }
     if (const auto format = properties().find("irradianceFormat"); format != properties().end() &&
         *format != "SH3" && *format != "OCT") {
         log = "Lumen irradianceFormat must be OCT or SH3";
@@ -436,6 +525,8 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     compiledTraceResolution_ = traceResolution();
     compiledActiveProbeDispatch_ = activeProbeDispatch;
     compiledSplitProbeTracing_ = splitProbeTracing;
+    compiledCompactProbeAtlas_ = compactAtlas;
+    compiledAdaptiveProbeAllocationFraction_ = properties().value("adaptiveProbeAllocationFraction", kAdaptiveProbeAllocationFraction);
     const bool screenGDFContinuation = optionEnabled("screenGDFContinuation");
     const bool gdfPrefixValidation = optionEnabled("gdfPrefixValidation");
     const bool gdfPrefixRejectReceding = optionEnabled("gdfPrefixRejectReceding");
@@ -522,6 +613,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     std::vector<SlangMacroDefine> defines;
     if (finalGather) { defines.push_back({"METALLIC_LUMEN_FINAL_GATHER", "1"}); }
     if (activeProbeDispatch) { defines.push_back({"METALLIC_LUMEN_ACTIVE_PROBES", "1"}); }
+    if (compactAtlas) { defines.push_back({"METALLIC_LUMEN_COMPACT_PROBE_ATLAS", "1"}); }
     if (jitterDirections) {
         if (!context.graphicsQueue) {
             log = "Lumen Screen Probe Gather requires a graphics queue to upload blue noise";
@@ -584,9 +676,9 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
             if (!result) { return result; }
         }
     }
-    const auto gatherABI = activeProbeDispatch ?
-        parameterAbi<LumenActiveScreenProbeParams<LumenScreenProbeGatherParams>>(kActiveScreenProbeGatherABI) :
+    auto gatherABI = activeProbeDispatch ? parameterAbi<ActiveGatherParams>(kActiveScreenProbeGatherABI) :
         parameterAbi<LumenScreenProbeGatherParams>(kScreenProbeGatherABI);
+    if (compactAtlas) { gatherABI = parameterAbi<CompactScreenProbeGatherParams<ActiveGatherParams>>(kCompactScreenProbeGatherABI); }
     const auto createGather = [&](const char* entry, const char* name, ComputeKernel& kernel, ParameterABI abi) {
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = "Features/DistanceField/LumenScreenProbeGather", .entryPointName = entry,
@@ -596,7 +688,9 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
     };
     if (splitProbeTracing) {
         if (detailTracing) { defines.push_back({"METALLIC_LUMEN_SPLIT_DETAIL_TRACING", "1"}); }
-        const auto fallbackABI = parameterAbi<LumenScreenProbeFallbackParams>(kScreenProbeFallbackABI);
+        const auto fallbackABI = compactAtlas ?
+            parameterAbi<CompactScreenProbeGatherParams<LumenScreenProbeFallbackParams>>(kCompactScreenProbeFallbackABI) :
+            parameterAbi<LumenScreenProbeFallbackParams>(kScreenProbeFallbackABI);
         defines.push_back({"METALLIC_LUMEN_PROBE_TRACE_SCREEN_ONLY", "1"});
         if (auto result = createGather("lumenTraceScreenProbesMain", "LumenTraceScreenProbeHZB", trace_, gatherABI); !result) {
             return result;
@@ -624,6 +718,23 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
         !result || !finalGather) {
         return result;
     }
+    if (compactAtlas) {
+        const std::pair<const char*, ComputeKernel*> placementKernels[]{
+            {"lumenResetCompactProbeAtlasMain", &resetAtlas_}, {"lumenMarkCompactProbeAtlasMain", &markAtlas_},
+            {"lumenSpawnCompactProbeAtlasMain", &spawnAtlas_},
+        };
+        for (const auto& [entry, kernel] : placementKernels) {
+            if (auto result = ShaderRegistry::instance().getComputeKernel(*device_,
+                    {.moduleName = "Features/DistanceField/LumenScreenProbeAtlasPlacement", .entryPointName = entry,
+                        .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                    {.parameters = parameterAbi<CompactProbeAtlasPlacementParams>(kCompactProbeAtlasPlacementABI), .debugName = entry},
+                    *kernel, log); !result) { return result; }
+        }
+        if (traceReadbackTiles_) {
+            if (auto result = createGather("lumenClearCompactProbeTraceReadbackMain", "LumenClearCompactProbeTraceReadback",
+                    clearCompactReadback_, gatherABI); !result) { return result; }
+        }
+    }
 
     if (activeProbeDispatch) {
         std::vector<std::pair<const char*, ComputeKernel*>> scheduleKernels{
@@ -632,6 +743,7 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
             {"lumenBuildScreenProbeIndirectArgsMain", &buildProbeDispatch_},
         };
         std::vector<SlangMacroDefine> scheduleDefines;
+        if (compactAtlas) { scheduleDefines.push_back({"METALLIC_LUMEN_COMPACT_PROBE_ATLAS", "1"}); }
         const auto& caps = device_->capabilities();
         if (caps.computeSubgroupBallotArithmetic && (!splitProbeTracing || (caps.subgroupSize == 32u && caps.computeSubgroupShuffle))) {
             scheduleDefines.push_back({"METALLIC_LUMEN_PROBE_COMPACTION_WAVE_OPS", "1"});
@@ -643,8 +755,13 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
             scheduleKernels.emplace_back("lumenCompactScreenProbeRaysMain", &compactProbeRays_);
             scheduleKernels.emplace_back("lumenBuildScreenProbeRayIndirectArgsMain", &buildRayDispatch_);
         }
-        const auto scheduleABI = splitProbeTracing ? parameterAbi<LumenScreenProbeRayScheduleParams>(kScreenProbeRayScheduleABI) :
+        auto scheduleABI = splitProbeTracing ? parameterAbi<LumenScreenProbeRayScheduleParams>(kScreenProbeRayScheduleABI) :
             parameterAbi<LumenScreenProbeScheduleParams>(kScreenProbeScheduleABI);
+        if (compactAtlas) {
+            scheduleABI = splitProbeTracing ?
+                parameterAbi<CompactScreenProbeScheduleParams<LumenScreenProbeRayScheduleParams>>(kCompactScreenProbeRayScheduleABI) :
+                parameterAbi<CompactScreenProbeScheduleParams<LumenScreenProbeScheduleParams>>(kCompactScreenProbeScheduleABI);
+        }
         const auto createSchedule = [&](const char* entry, const char* name, ComputeKernel& kernel) {
             return ShaderRegistry::instance().getComputeKernel(*device_,
                 {.moduleName = "Features/DistanceField/LumenScreenProbeSchedule", .entryPointName = entry,
@@ -661,30 +778,35 @@ Result<> LumenScreenProbeGatherPass::compile(const RenderGraphCompileContext& co
             if (auto result = createSchedule("lumenBuildScreenProbeRayIndirectArgsMain", "LumenBuildDetailDispatch", buildDetailDispatch_);
                 !result) { return result; }
         }
-        if (auto result = ShaderRegistry::instance().getComputeKernel(*device_,
+        if (!compactAtlas) {
+            if (auto result = ShaderRegistry::instance().getComputeKernel(*device_,
                 {.moduleName = "Features/DistanceField/LumenScreenProbeGather",
                     .entryPointName = "lumenClearInactiveScreenProbesMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
                     .macroDefines = defines},
                 {.parameters = parameterAbi<LumenScreenProbeClearParams>(kScreenProbeClearABI),
                     .debugName = "LumenClearInactiveScreenProbes"}, clearInactiveProbes_, log); !result) {
-            return result;
+                return result;
+            }
         }
     }
 
     std::vector<SlangMacroDefine> filterDefines;
     if (activeProbeDispatch) { filterDefines.push_back({"METALLIC_LUMEN_ACTIVE_PROBES", "1"}); }
+    if (compactAtlas) { filterDefines.push_back({"METALLIC_LUMEN_COMPACT_PROBE_ATLAS", "1"}); }
     if (jitterDirections) { filterDefines.push_back({"METALLIC_LUMEN_JITTER_PROBE_DIRECTIONS", "1"}); }
     if (compiledTraceResolution_ == 16u) { filterDefines.push_back({"METALLIC_LUMEN_TRACE_RESOLUTION_16", "1"}); }
     if (jitterDirections && useSH3()) { filterDefines.push_back({"METALLIC_LUMEN_IRRADIANCE_SH3", "1"}); }
+    auto filterABI = activeProbeDispatch ?
+        parameterAbi<LumenActiveScreenProbeParams<LumenScreenProbeFilterParams>>(kActiveScreenProbeFilterABI) :
+        parameterAbi<LumenScreenProbeFilterParams>(kScreenProbeFilterABI);
+    if (compactAtlas) { filterABI = parameterAbi<CompactScreenProbeFilterParams>(kCompactScreenProbeFilterABI); }
     const auto createFilter = [&](const char* entry, const char* name, ComputeKernel& kernel) {
         return ShaderRegistry::instance().getComputeKernel(*device_,
             {.moduleName = "Features/DistanceField/LumenScreenProbeFilter", .entryPointName = entry,
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = filterDefines},
-            {.parameters = activeProbeDispatch ?
-                parameterAbi<LumenActiveScreenProbeParams<LumenScreenProbeFilterParams>>(kActiveScreenProbeFilterABI) :
-                parameterAbi<LumenScreenProbeFilterParams>(kScreenProbeFilterABI), .debugName = name}, kernel, log);
+            {.parameters = filterABI, .debugName = name}, kernel, log);
     };
-    if (!radianceCache) {
+    if (!radianceCache && !compactAtlas) {
         if (auto result = createFilter("lumenPlaceAdaptiveProbesMain", "LumenPlaceAdaptiveProbes", place_); !result) {
             return result;
         }
@@ -731,6 +853,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     const bool finalGather = optionEnabled("finalGather");
     const bool activeProbeDispatch = compiledActiveProbeDispatch_;
     const bool splitProbeTracing = compiledSplitProbeTracing_;
+    const bool compactAtlas = compiledCompactProbeAtlas_;
     const bool jitterDirections = finalGather && !optionEnabled("fixedProbeDirections");
     const bool screenTraces = optionEnabled("screenTraces");
     const bool radianceCache = optionEnabled("radianceCache");
@@ -841,15 +964,26 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
         params.detail.bricksPerAxis = meshFields_.bricksPerAxis();
     }
     LumenScreenProbeScheduleParams schedule{};
+    CompactProbeAtlasBindings atlas{};
+    ShaderBuffer adaptiveCount, placementMasks;
+    const uint32_t uniformCount = params.probeWidth * params.probeHeight;
+    const uint32_t adaptiveCapacity = compactAtlas ? adaptiveProbeCapacity(uniformCount) : 0u;
+    if (compactAtlas) {
+        const auto bindOutput = [&](const char* name) { return writer.buffer(context.outputBuffer(name).buffer()); };
+        atlas = {bindOutput("probeOrigins"), bindOutput("probeTileAdaptiveCounts"), bindOutput("probeTileAdaptiveIndices")};
+        adaptiveCount = bindOutput("probeAdaptiveCount");
+        placementMasks = bindOutput("probePlacementMasks");
+    }
     if (activeProbeDispatch) {
         schedule = {params.probePositions, writer.buffer(context.outputBuffer("probeWorkList").buffer()),
             writer.buffer(context.outputBuffer("probeWorkState").buffer()),
             writer.buffer(context.outputBuffer("probeIndirectArgs").buffer()),
-            params.probeWidth * params.probeHeight * kLumenScreenProbeSlotsPerTile};
+            compactAtlas ? uniformCount + adaptiveCapacity : uniformCount * kLumenScreenProbeSlotsPerTile};
     }
-    const LumenActiveScreenProbeParams<LumenScreenProbeGatherParams> activeParams{params, schedule.workList, schedule.workState};
-    const auto encoded = activeProbeDispatch ? writer.encode(activeParams, kActiveScreenProbeGatherABI) :
-        writer.encode(params, kScreenProbeGatherABI);
+    const ActiveGatherParams activeParams{params, schedule.workList, schedule.workState};
+    const auto encoded = compactAtlas ?
+        writer.encode(CompactScreenProbeGatherParams<ActiveGatherParams>{activeParams, atlas}, kCompactScreenProbeGatherABI) :
+        activeProbeDispatch ? writer.encode(activeParams, kActiveScreenProbeGatherABI) : writer.encode(params, kScreenProbeGatherABI);
     if (!encoded) { return makeError(encoded.error()); }
     LumenScreenProbeRayScheduleParams raySchedule{};
     EncodedParameters fallbackParams;
@@ -858,8 +992,9 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             writer.buffer(context.outputBuffer("probeRayWorkList").buffer()),
             writer.buffer(context.outputBuffer("probeRayWorkCount").buffer()),
             writer.buffer(context.outputBuffer("probeRayIndirectArgs").buffer())};
-        const auto fallback = writer.encode(
-            LumenScreenProbeFallbackParams{activeParams, raySchedule.rayWorkList, raySchedule.rayWorkCount}, kScreenProbeFallbackABI);
+        const LumenScreenProbeFallbackParams fallbackBindings{activeParams, raySchedule.rayWorkList, raySchedule.rayWorkCount};
+        const auto fallback = compactAtlas ? writer.encode(CompactScreenProbeGatherParams<LumenScreenProbeFallbackParams>{
+            fallbackBindings, atlas}, kCompactScreenProbeFallbackABI) : writer.encode(fallbackBindings, kScreenProbeFallbackABI);
         if (!fallback) { return makeError(fallback.error()); }
         fallbackParams = *fallback;
     }
@@ -907,11 +1042,27 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
     if (interpolationReadbackPixels_) {
         integrateUses.push_back({"probeInterpolationReadback", Access::BufferStorageWrite});
     }
+    if (compactAtlas) {
+        traceUses.push_back({"probeOrigins", Access::BufferStorageRead});
+        if (splitProbeTracing) { screenUses.push_back({"probeOrigins", Access::BufferStorageRead}); }
+        integrateUses.insert(integrateUses.end(), {{"probeTileAdaptiveCounts", Access::BufferStorageRead},
+            {"probeTileAdaptiveIndices", Access::BufferStorageRead}});
+        if (interpolationReadbackPixels_) { integrateUses.push_back({"probeOrigins", Access::BufferStorageRead}); }
+    }
 
     const RenderGraphStageUse placeUses[] = {{"position", Access::TextureSampleRead},
         {"normal", Access::TextureSampleRead}, {"probePositions", Access::BufferStorageWrite}};
+    const RenderGraphStageUse resetAtlasUses[]{{"probeAdaptiveCount", Access::BufferStorageWrite}};
+    const RenderGraphStageUse markAtlasUses[]{{"position", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
+        {"probePlacementMasks", Access::BufferStorageWrite}, {"probeTileAdaptiveCounts", Access::BufferStorageWrite},
+        {"probePositions", Access::BufferStorageWrite}, {"probeOrigins", Access::BufferStorageWrite}};
+    const RenderGraphStageUse spawnAtlasUses[]{{"position", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
+        {"probePlacementMasks", Access::BufferStorageRead}, {"probeAdaptiveCount", Access::BufferStorageReadWrite},
+        {"probeTileAdaptiveCounts", Access::BufferStorageReadWrite}, {"probeTileAdaptiveIndices", Access::BufferStorageWrite},
+        {"probePositions", Access::BufferStorageWrite}, {"probeOrigins", Access::BufferStorageWrite}};
+    const RenderGraphStageUse clearCompactReadbackUses[]{{"probeTraceReadback", Access::BufferStorageWrite}};
     std::array<std::vector<RenderGraphStageUse>, kSpatialPassCount> filterUses;
-    EncodedParameters placeParams;
+    EncodedParameters placeParams, packedPlacementParams;
     EncodedParameters compositeParams;
     EncodedParameters irradianceParams;
     std::vector<RenderGraphStageUse> irradianceUses = {{probePositionsName, Access::BufferStorageRead},
@@ -940,8 +1091,9 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             finalGather ? kLumenScreenProbeSlotsPerTile : 1u);
     };
     const RenderGraphStageUse resetProbeUses[]{{"probeWorkState", Access::BufferStorageWrite}};
-    const RenderGraphStageUse compactProbeUses[]{{probePositionsName, Access::BufferStorageRead},
+    std::vector<RenderGraphStageUse> compactProbeUses{{probePositionsName, Access::BufferStorageRead},
         {"probeWorkState", Access::BufferStorageReadWrite}, {"probeWorkList", Access::BufferStorageWrite}};
+    if (compactAtlas) { compactProbeUses.push_back({"probeAdaptiveCount", Access::BufferStorageRead}); }
     std::vector<RenderGraphStageUse> buildProbeDispatchUses{{"probeWorkState", Access::BufferStorageRead},
         {"probeIndirectArgs", Access::BufferStorageWrite}};
     std::vector<RenderGraphStageUse> clearProbeUses;
@@ -990,12 +1142,30 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             params.probeHeight, params.frameIndex, params.blueNoiseVec2, {}};
         filterParams.rayDirectionFrameIndex = params.rayDirectionFrameIndex;
         const auto encodeFilter = [&] {
-            return activeProbeDispatch ? writer.encode(
-                LumenActiveScreenProbeParams<LumenScreenProbeFilterParams>{filterParams, schedule.workList, schedule.workState},
-                kActiveScreenProbeFilterABI) :
+            const LumenActiveScreenProbeParams<LumenScreenProbeFilterParams> bindings{filterParams, schedule.workList, schedule.workState};
+            if (compactAtlas) { return writer.encode(CompactScreenProbeFilterParams{bindings, atlas.origins}, kCompactScreenProbeFilterABI); }
+            return activeProbeDispatch ? writer.encode(bindings, kActiveScreenProbeFilterABI) :
                 writer.encode(filterParams, kScreenProbeFilterABI);
         };
-        if (!radianceCache) {
+        if (compactAtlas) {
+            const auto placement = writer.encode(CompactProbeAtlasPlacementParams{params.position, params.normal, params.probePositions,
+                atlas.origins, placementMasks, adaptiveCount, atlas.tileCounts, atlas.tileIndices, params.width, params.height,
+                params.probeWidth, params.probeHeight, adaptiveCapacity, params.frameIndex}, kCompactProbeAtlasPlacementABI);
+            if (!placement) { return makeError(placement.error()); }
+            packedPlacementParams = *placement;
+            stages.push_back({"Reset adaptive probe counter", resetAtlasUses, [&](CommandBuffer& cmd) {
+                return resetAtlas_.dispatch(cmd, packedPlacementParams, 1, 1, 1);
+            }});
+            // UE's 8x8 placement group covers 2x4 screen tiles with eight samples per tile.
+            stages.push_back({"Mark adaptive probe candidates", markAtlasUses, [&](CommandBuffer& cmd) {
+                return markAtlas_.dispatch(cmd, packedPlacementParams, (params.probeWidth + 1u) / 2u, (params.probeHeight + 3u) / 4u, 1);
+            }});
+            if (adaptiveCapacity != 0u) {
+                stages.push_back({"Allocate adaptive probes in the global atlas", spawnAtlasUses, [&](CommandBuffer& cmd) {
+                    return spawnAtlas_.dispatch(cmd, packedPlacementParams, (params.probeWidth + 1u) / 2u, (params.probeHeight + 3u) / 4u, 1);
+                }});
+            }
+        } else if (!radianceCache) {
             auto placement = encodeFilter();
             if (!placement) { return makeError(placement.error()); }
             placeParams = std::move(*placement);
@@ -1024,6 +1194,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
                 {inputNames[index], Access::BufferStorageRead},
                 {outputNames[index], Access::BufferStorageWrite}};
             useProbeSchedule(filterUses[index]);
+            if (compactAtlas && !jitterDirections) { filterUses[index].push_back({"probeOrigins", Access::BufferStorageRead}); }
             filterParams.inputRadiance = inputs[index];
             filterParams.outputRadiance = outputs[index];
             auto filter = encodeFilter();
@@ -1041,30 +1212,22 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             irradianceParams = std::move(*irradiance);
         }
         if (activeProbeDispatch) {
-            const auto encodedSchedule = splitProbeTracing ? writer.encode(raySchedule, kScreenProbeRayScheduleABI) :
-                writer.encode(schedule, kScreenProbeScheduleABI);
+            const auto encodeProbeSchedule = [&] {
+                if (compactAtlas) {
+                    return splitProbeTracing ? writer.encode(CompactScreenProbeScheduleParams<LumenScreenProbeRayScheduleParams>{
+                        raySchedule, adaptiveCount, uniformCount}, kCompactScreenProbeRayScheduleABI) :
+                        writer.encode(CompactScreenProbeScheduleParams<LumenScreenProbeScheduleParams>{
+                            schedule, adaptiveCount, uniformCount}, kCompactScreenProbeScheduleABI);
+                }
+                return splitProbeTracing ? writer.encode(raySchedule, kScreenProbeRayScheduleABI) : writer.encode(schedule, kScreenProbeScheduleABI);
+            };
+            const auto encodedSchedule = encodeProbeSchedule();
             if (!encodedSchedule) { return makeError(encodedSchedule.error()); }
             scheduleParams = *encodedSchedule;
             if (splitProbeTracing) {
                 buildProbeDispatchUses.insert(buildProbeDispatchUses.end(), {{"probeRayWorkCount", Access::BufferStorageWrite},
                     {"probeRayIndirectArgs", Access::BufferStorageWrite}});
             }
-            const auto encodedClear = writer.encode(LumenScreenProbeClearParams{schedule.workList, schedule.workState,
-                params.traceOutput, params.traceDistance, params.traceInput, scratch, compositedDistance,
-                filterParams.irradianceOutput, filterParams.shDirectionalOutput, params.traceReadback,
-                params.traceReadbackTiles, params.probeWidth, params.probeHeight}, kScreenProbeClearABI);
-            if (!encodedClear) { return makeError(encodedClear.error()); }
-            clearParams = *encodedClear;
-
-            clearProbeUses = {{"probeRadiance", Access::BufferStorageWrite}, {"probeDistance", Access::BufferStorageWrite},
-                {"filteredProbeRadiance", Access::BufferStorageWrite}, {"probeFilterScratch", Access::BufferStorageWrite}};
-            if (jitterDirections) {
-                clearProbeUses.insert(clearProbeUses.end(), {{"compositedProbeDistance", Access::BufferStorageWrite},
-                    {irradianceName, Access::TextureStorageWrite}});
-                if (sh3) { clearProbeUses.push_back({"probeSHDirectional", Access::TextureStorageWrite}); }
-            }
-            if (traceReadbackTiles_) { clearProbeUses.push_back({"probeTraceReadback", Access::BufferStorageWrite}); }
-            useProbeSchedule(clearProbeUses);
             stages.push_back({"Reset screen probe work counts", resetProbeUses, [&](CommandBuffer& cmd) {
                 return resetProbeSchedule_.dispatch(cmd, scheduleParams, 1, 1, 1);
             }});
@@ -1075,9 +1238,33 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             stages.push_back({"Build screen probe indirect dispatches", buildProbeDispatchUses, [&](CommandBuffer& cmd) {
                 return buildProbeDispatch_.dispatch(cmd, scheduleParams, 1, 1, 1);
             }});
-            stages.push_back({"Clear inactive screen probes", clearProbeUses, [&](CommandBuffer& cmd) {
-                return dispatchIndirect(clearInactiveProbes_, clearParams, "probeIndirectArgs", 1, cmd);
-            }});
+            if (compactAtlas) {
+                if (traceReadbackTiles_) {
+                    stages.push_back({"Initialize compact probe debug ROI", clearCompactReadbackUses, [&](CommandBuffer& cmd) {
+                        return clearCompactReadback_.dispatch(cmd, *encoded, params.traceReadbackTiles[2],
+                            params.traceReadbackTiles[3], kLumenScreenProbeSlotsPerTile);
+                    }});
+                }
+            } else {
+                const auto encodedClear = writer.encode(LumenScreenProbeClearParams{schedule.workList, schedule.workState,
+                    params.traceOutput, params.traceDistance, params.traceInput, scratch, compositedDistance,
+                    filterParams.irradianceOutput, filterParams.shDirectionalOutput, params.traceReadback,
+                    params.traceReadbackTiles, params.probeWidth, params.probeHeight}, kScreenProbeClearABI);
+                if (!encodedClear) { return makeError(encodedClear.error()); }
+                clearParams = *encodedClear;
+                clearProbeUses = {{"probeRadiance", Access::BufferStorageWrite}, {"probeDistance", Access::BufferStorageWrite},
+                    {"filteredProbeRadiance", Access::BufferStorageWrite}, {"probeFilterScratch", Access::BufferStorageWrite}};
+                if (jitterDirections) {
+                    clearProbeUses.insert(clearProbeUses.end(), {{"compositedProbeDistance", Access::BufferStorageWrite},
+                        {irradianceName, Access::TextureStorageWrite}});
+                    if (sh3) { clearProbeUses.push_back({"probeSHDirectional", Access::TextureStorageWrite}); }
+                }
+                if (traceReadbackTiles_) { clearProbeUses.push_back({"probeTraceReadback", Access::BufferStorageWrite}); }
+                useProbeSchedule(clearProbeUses);
+                stages.push_back({"Clear inactive screen probes", clearProbeUses, [&](CommandBuffer& cmd) {
+                    return dispatchIndirect(clearInactiveProbes_, clearParams, "probeIndirectArgs", 1, cmd);
+                }});
+            }
         }
     }
     const RenderGraphStageUse compactRayUses[]{{"probeWorkList", Access::BufferStorageRead},
@@ -1105,6 +1292,7 @@ Result<> LumenScreenProbeGatherPass::execute(RenderGraphExecutionContext& contex
             if (traceReadbackTiles_) {
                 detailUses.push_back({"probeTraceReadback", Access::BufferStorageReadWrite});
             }
+            if (compactAtlas) { detailUses.push_back({"probeOrigins", Access::BufferStorageRead}); }
         }
         stages.push_back({"Trace screen probe rays against HZB", screenUses, [&](CommandBuffer& cmd) {
             return dispatchProbes(trace_, *encoded, cmd);

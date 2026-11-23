@@ -1044,10 +1044,10 @@ debug::DebugValue cardBufferCapture(std::string id, uint32_t count)
 
 class LumenProbeDispatchComparison : public RHITest {
 protected:
-    enum class Variant { ActiveProbes, SplitTracing, SplitDetail };
+    enum class Variant { ActiveProbes, SplitTracing, SplitDetail, CompactAtlas, CompactAtlasSaturated };
 
     LumenProbeDispatchComparison(const char* testName, Variant variant)
-        : variant_(variant), candidatePass_(splitTracing() ? "SplitGather" : "ActiveGather")
+        : variant_(variant), candidatePass_(compactAtlas() ? "CompactGather" : splitTracing() ? "SplitGather" : "ActiveGather")
     {
         name = testName;
         type = RHITestType::Rendering;
@@ -1124,11 +1124,17 @@ public:
         if (splitDetail() && (!coverage.detailHit || !coverage.detailMiss)) {
             return RHITestResult::fail("Expected both accepted and rejected Mesh SDF rays");
         }
+        if (compactAtlas() && (!coverage.adaptiveProbes || (saturatedAtlas() && !coverage.adaptiveOverflow))) {
+            return RHITestResult::fail("Fixture did not exercise the requested adaptive admission and budget");
+        }
         if (validation.failed()) {
             return RHITestResult::fail("Probe dispatch Vulkan validation: " + validation.snapshot().dump());
         }
         if (splitDetail()) {
             return RHITestResult::pass("Fused and split Detail matched across Screen, Mesh SDF and compacted GDF");
+        }
+        if (compactAtlas()) {
+            return RHITestResult::pass("Verified packed probe membership, atlas addresses, ray dispatch and empty-frame recovery");
         }
         if (splitTracing()) {
             return RHITestResult::pass("Fused and split Gather matched with invalid history, mixed tracing and zero rays");
@@ -1141,11 +1147,15 @@ private:
         bool mixedScreenAndGDF = false;
         bool detailHit = false;
         bool detailMiss = false;
+        bool adaptiveProbes = false;
+        bool adaptiveOverflow = false;
     };
 
     static constexpr uint32_t kTileAxis = render::builtin_pass::lumenScreenProbeTiles(kSingleBounceEdge);
     static constexpr uint32_t kSlotsPerTile = render::builtin_pass::kLumenScreenProbeSlotsPerTile;
-    static constexpr uint32_t kProbeSlots = kTileAxis * kTileAxis * kSlotsPerTile;
+    static constexpr uint32_t kTileCount = kTileAxis * kTileAxis;
+    static constexpr uint32_t kAdaptivePerTile = kSlotsPerTile - 1;
+    static constexpr uint32_t kProbeSlots = kTileCount * kSlotsPerTile;
     static constexpr uint32_t kRaysPerSlot = 8 * 8;
     static constexpr uint32_t kProbeRays = kProbeSlots * kRaysPerSlot;
     static constexpr uint32_t kSHAtlasEdge = kTileAxis * 3;
@@ -1164,6 +1174,11 @@ private:
 
     bool splitTracing() const { return variant_ != Variant::ActiveProbes; }
     bool splitDetail() const { return variant_ == Variant::SplitDetail; }
+    bool compactAtlas() const { return variant_ == Variant::CompactAtlas || saturatedAtlas(); }
+    bool saturatedAtlas() const { return variant_ == Variant::CompactAtlasSaturated; }
+    uint32_t adaptiveBudget() const { return saturatedAtlas() ? 1u : kTileCount * kAdaptivePerTile; }
+    uint32_t packedCapacity() const { return kTileCount + adaptiveBudget(); }
+    uint32_t packedAtlasHeight() const { return (packedCapacity() + kTileAxis - 1u) / kTileAxis; }
 
     uint32_t readbackRayCount() const
     {
@@ -1184,6 +1199,7 @@ private:
         properties["probeTraceReadback"] = splitDetail() ? kFullReadbackROI : kReadbackROI;
         properties["activeProbeDispatch"] = splitTracing();
         if (splitTracing()) { properties["screenGDFContinuation"] = true; }
+        if (compactAtlas()) { properties["splitProbeTracing"] = true; }
         if (splitDetail()) {
             const auto* fields = graph.findNode("GlobalDistanceFieldPages");
             if (!fields || !graph.addEdge("VBuffer.depth", "Gather.detailDepth")) { return false; }
@@ -1193,6 +1209,10 @@ private:
         if (!graph.setNodeProperties(gather->id, properties)) { return false; }
         properties["activeProbeDispatch"] = true;
         if (splitTracing()) { properties["splitProbeTracing"] = true; }
+        if (compactAtlas()) {
+            properties["compactProbeAtlas"] = true;
+            properties["adaptiveProbeAllocationFraction"] = double(adaptiveBudget()) / kTileCount;
+        }
         if (!graph.addNode("LumenScreenProbeGatherPass", candidatePass_, properties) ||
             !graph.markOutput(makeRenderGraphFieldName(candidatePass_, "indirectDiffuse")) ||
             !graph.addNode("LumenScreenTraceSetupPass", "ScreenTrace", {{"historySource", "deferred"}}) ||
@@ -1219,12 +1239,16 @@ private:
     {
         using render::makeRenderGraphFieldName;
         auto resources = debug::DebugValue::array();
+        const bool packed = compactAtlas() && pass == candidatePass_;
         for (const auto& [field, words] : kBufferedResources) {
-            resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, field), words));
+            const uint32_t count = packed ? words / kProbeSlots * packedCapacity() : words;
+            resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, field), count));
         }
         for (const auto& [field, layout] : kTextures) {
+            const bool packedSH = packed && std::string_view(field).starts_with("probeSH");
             resources.push_back({{"id", makeRenderGraphFieldName(pass, field)},
-                {"roi", {{"x", 0}, {"y", 0}, {"width", layout[0]}, {"height", layout[1]}}}});
+                {"roi", {{"x", 0}, {"y", 0}, {"width", packedSH ? layout[0] / 3u : layout[0]},
+                    {"height", packedSH ? packedAtlasHeight() : layout[1]}}}});
         }
         resources.push_back({{"id", makeRenderGraphFieldName(pass, "probeTraceReadback")},
             {"layout", render::kLumenProbeTraceReadbackLayout}, {"count", readbackRayCount()}});
@@ -1234,6 +1258,13 @@ private:
             if (splitTracing()) {
                 resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeRayWorkCount"), splitDetail() ? 2 : 1));
                 resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeRayIndirectArgs"), splitDetail() ? 9 : 6));
+            }
+            if (packed) {
+                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeOrigins"), packedCapacity()));
+                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeAdaptiveCount"), 1));
+                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeTileAdaptiveCounts"), kTileCount));
+                resources.push_back(cardBufferCapture(makeRenderGraphFieldName(pass, "probeTileAdaptiveIndices"),
+                    kTileCount * kAdaptivePerTile));
             }
         }
         return resources;
@@ -1265,6 +1296,176 @@ private:
         return {};
     }
 
+    std::string compareCompactAtlas(const debug::DebugCapture& baselineCapture, const debug::DebugCapture& candidateCapture,
+        bool empty, bool historyExpected, RayHandoffCoverage& coverage) const
+    {
+        const auto& baseline = baselineCapture.artifacts;
+        const auto& candidate = candidateCapture.artifacts;
+        constexpr size_t kTraceRecords = kBufferedResources.size() + kTextures.size();
+        constexpr size_t kWorkState = kTraceRecords + 1;
+        constexpr size_t kOrigins = kWorkState + 4;
+        const auto& positions = candidate[0].bytes;
+        const auto& origins = candidate[kOrigins].bytes;
+        const auto& adaptiveCounter = candidate[kOrigins + 1].bytes;
+        const auto& counts = candidate[kOrigins + 2].bytes;
+        const auto& indices = candidate[kOrigins + 3].bytes;
+        if (origins.size() != packedCapacity() * sizeof(uint32_t) || adaptiveCounter.size() != sizeof(uint32_t) ||
+            counts.size() != kTileCount * sizeof(uint32_t) || indices.size() != kTileCount * kAdaptivePerTile * sizeof(uint32_t)) {
+            return "Unexpected packed placement buffer size";
+        }
+        for (size_t i = 0; i < kBufferedResources.size(); ++i) {
+            const auto words = kBufferedResources[i].second;
+            if (baseline[i].bytes.size() != words * sizeof(uint32_t) ||
+                candidate[i].bytes.size() != words / kProbeSlots * packedCapacity() * sizeof(uint32_t)) {
+                return "Unexpected probe buffer size for " + std::string(kBufferedResources[i].first);
+            }
+        }
+        for (size_t i = 0; i < 2; ++i) {
+            const auto& [field, layout] = kTextures[i];
+            if (baseline[kBufferedResources.size() + i].bytes.size() != size_t(layout[0]) * layout[1] * layout[2] ||
+                candidate[kBufferedResources.size() + i].bytes.size() != size_t(layout[0] / 3u) * packedAtlasHeight() * layout[2]) {
+                return "Unexpected packed irradiance atlas size for " + std::string(field);
+            }
+        }
+
+        using Pixel = std::array<uint32_t, 2>;
+        constexpr uint32_t invalid = std::numeric_limits<uint32_t>::max();
+        uint32_t expectedAdaptive = 0;
+        for (uint32_t tile = 0; tile < kTileCount; ++tile) {
+            for (uint32_t slot = 1; slot < kSlotsPerTile; ++slot) {
+                expectedAdaptive += readSurfaceValue<Pixel>(baseline[0].bytes, tile * kSlotsPerTile + slot)[0] != invalid;
+            }
+        }
+        const uint32_t requested = readSurfaceValue<uint32_t>(adaptiveCounter, 0);
+        const uint32_t admitted = std::min(requested, adaptiveBudget());
+        if (requested != expectedAdaptive) {
+            return "Packed placement requested " + std::to_string(requested) + " adaptive probes against " +
+                std::to_string(expectedAdaptive) + " in fixed slots";
+        }
+        coverage.adaptiveProbes |= admitted != 0u;
+        coverage.adaptiveOverflow |= requested > admitted;
+
+        std::array<bool, kProbeSlots> mapped{};
+        std::array<bool, kProbeSlots> validOrigin{};
+        uint32_t active = 0;
+        uint32_t screenHits = 0;
+        for (uint32_t packed = 0; packed < kTileCount + admitted; ++packed) {
+            const uint32_t origin = readSurfaceValue<uint32_t>(origins, packed);
+            if (origin >= kProbeSlots || mapped[origin] ||
+                (packed < kTileCount ? origin != packed * kSlotsPerTile : origin % kSlotsPerTile == 0u)) {
+                return "Packed probe origin is duplicated or outside its uniform/adaptive range";
+            }
+            mapped[origin] = true;
+            const auto pixel = readSurfaceValue<Pixel>(positions, packed);
+            if (pixel != readSurfaceValue<Pixel>(baseline[0].bytes, origin) ||
+                (packed >= kTileCount && pixel[0] == invalid)) {
+                return "Probe receiver differs after remapping packed probe " + std::to_string(packed);
+            }
+            if (pixel[0] == invalid) { continue; }
+            validOrigin[origin] = true;
+            ++active;
+            for (size_t i = 1; i < kBufferedResources.size(); ++i) {
+                const size_t stride = kBufferedResources[i].second / kProbeSlots * sizeof(uint32_t);
+                if (std::memcmp(baseline[i].bytes.data() + origin * stride, candidate[i].bytes.data() + packed * stride, stride) != 0) {
+                    return "Remapped probe differs in " + std::string(kBufferedResources[i].first) +
+                        " at origin " + std::to_string(origin);
+                }
+            }
+            const uint32_t tile = origin / kSlotsPerTile;
+            const uint32_t slot = origin % kSlotsPerTile;
+            const uint32_t oldX = (tile % kTileAxis) * 3u + slot % 3u;
+            const uint32_t oldY = (tile / kTileAxis) * 3u + slot / 3u;
+            for (size_t i = 0; i < 2; ++i) {
+                const auto& [field, layout] = kTextures[i];
+                const auto& oldData = baseline[kBufferedResources.size() + i].bytes;
+                const auto& newData = candidate[kBufferedResources.size() + i].bytes;
+                const uint32_t planes = layout[0] / kSHAtlasEdge;
+                for (uint32_t plane = 0; plane < planes; ++plane) {
+                    const uint32_t oldOffset = oldY * layout[0] + plane * kSHAtlasEdge + oldX;
+                    const uint32_t newOffset = (packed / kTileAxis) * (layout[0] / 3u) + plane * kTileAxis + packed % kTileAxis;
+                    if (std::memcmp(oldData.data() + oldOffset * layout[2], newData.data() + newOffset * layout[2], layout[2]) != 0) {
+                        return "Remapped probe differs in " + std::string(field) + " at origin " + std::to_string(origin);
+                    }
+                }
+            }
+            for (uint32_t lane = 0; lane < kRaysPerSlot; ++lane) {
+                const auto radiance = readSurfaceValue<std::array<float, 4>>(candidate[1].bytes, packed * kRaysPerSlot + lane);
+                screenHits += radiance[3] == 5.0f;
+            }
+        }
+
+        std::array<bool, kProbeSlots> listed{};
+        uint32_t listedCount = 0;
+        for (uint32_t tile = 0; tile < kTileCount; ++tile) {
+            const uint32_t count = readSurfaceValue<uint32_t>(counts, tile);
+            if (count > kAdaptivePerTile) { return "Tile has too many adaptive probe indices"; }
+            for (uint32_t index = 0; index < count; ++index) {
+                const uint32_t ordinal = readSurfaceValue<uint32_t>(indices, tile * kAdaptivePerTile + index);
+                if (ordinal >= admitted || listed[ordinal]) { return "Tile references an invalid or duplicate adaptive probe"; }
+                if (readSurfaceValue<uint32_t>(origins, kTileCount + ordinal) / kSlotsPerTile != tile) {
+                    return "Adaptive probe is listed under the wrong tile";
+                }
+                listed[ordinal] = true;
+                ++listedCount;
+            }
+        }
+        if (listedCount != admitted || (empty ? active != 0u : active == 0u)) {
+            return "Packed probe count does not match the active tile lists";
+        }
+
+        for (size_t i = 2; i < kTextures.size(); ++i) {
+            const auto& [field, layout] = kTextures[i];
+            const auto& oldData = baseline[kBufferedResources.size() + i].bytes;
+            const auto& newData = candidate[kBufferedResources.size() + i].bytes;
+            const size_t bytes = size_t(layout[0]) * layout[1] * layout[2];
+            if (oldData.size() != bytes || newData.size() != bytes ||
+                ((!saturatedAtlas() || empty) && oldData != newData)) {
+                return "Packed integration differs in " + std::string(field);
+            }
+        }
+
+        using Record = render::LumenProbeTraceReadbackRecord;
+        constexpr Record invalidRecord{-1.0f, -1.0f, -1.0f, -1.0f, {}, -1.0f, invalid, invalid, 0u, 0u};
+        const auto& beforeTrace = baseline[kTraceRecords].bytes;
+        const auto& afterTrace = candidate[kTraceRecords].bytes;
+        if (beforeTrace.size() != readbackRayCount() * sizeof(Record) || beforeTrace.size() != afterTrace.size()) {
+            return "Unexpected packed trace ROI size";
+        }
+        for (uint32_t y = 0; y < kReadbackROI[3]; ++y) {
+            for (uint32_t x = 0; x < kReadbackROI[2]; ++x) {
+                const uint32_t originTile = (kReadbackROI[1] + y) * kTileAxis + kReadbackROI[0] + x;
+                const uint32_t localTile = y * kReadbackROI[2] + x;
+                for (uint32_t slot = 0; slot < kSlotsPerTile; ++slot) {
+                    const bool valid = validOrigin[originTile * kSlotsPerTile + slot];
+                    for (uint32_t lane = 0; lane < kRaysPerSlot; ++lane) {
+                        const size_t address = (localTile * kSlotsPerTile + slot) * kRaysPerSlot + lane;
+                        const auto actual = readSurfaceValue<Record>(afterTrace, address);
+                        const auto expected = valid ? readSurfaceValue<Record>(beforeTrace, address) : invalidRecord;
+                        if (std::memcmp(&actual, &expected, sizeof(Record)) != 0) {
+                            return "Packed trace ROI differs at logical ray " + std::to_string(address);
+                        }
+                    }
+                }
+            }
+        }
+
+        using ProbeCounts = std::array<uint32_t, 2>;
+        const ProbeCounts workCount{active, 0u};
+        const auto& state = candidate[kWorkState].bytes;
+        const auto& args = candidate[kWorkState + 1].bytes;
+        if (state.size() != sizeof(ProbeCounts) || readSurfaceValue<ProbeCounts>(state, 0) != workCount ||
+            args.size() != 2u * sizeof(DispatchArgs) ||
+            readSurfaceValue<DispatchArgs>(args, 0) != DispatchArgs{active, active != 0u ? 1u : 0u, 1u} ||
+            readSurfaceValue<DispatchArgs>(args, 1) != DispatchArgs{0u, 0u, 1u}) {
+            return "Packed probe dispatch did not match its active count and empty inactive list";
+        }
+        if (!historyExpected && screenHits != 0u) { return "Packed screen rays hit without valid history"; }
+        const uint32_t validRays = active * kRaysPerSlot;
+        const uint32_t gdfRays = validRays - screenHits;
+        coverage.mixedScreenAndGDF |= historyExpected && screenHits != 0u && gdfRays != 0u;
+        return compareRayDispatch(candidate[kWorkState + 2].bytes, candidate[kWorkState + 3].bytes, validRays, gdfRays, 0u);
+    }
+
     std::string compareFrame(CardUpdateInspector& inspector, bool empty, bool historyExpected,
         RayHandoffCoverage& coverage) const
     {
@@ -1277,13 +1478,14 @@ private:
             const auto id = jobs.at(index).at("job").get<std::string>();
             captures[index] = core.completedCapture(id);
             if (!captures[index]) { return core.dispatch({{"method", "jobs.get"}, {"params", {{"job", id}}}}).dump(); }
-            const size_t modeResources = index == 1 ? (splitTracing() ? 4 : 2) : 0;
+            const size_t modeResources = index == 1 ? (compactAtlas() ? 8 : splitTracing() ? 4 : 2) : 0;
             if (captures[index]->artifacts.size() != kBufferedResources.size() + kTextures.size() + 1 + modeResources) {
                 return "Unexpected Gather artifact count";
             }
         }
         const auto& baseline = captures[0]->artifacts;
         const auto& candidate = captures[1]->artifacts;
+        if (compactAtlas()) { return compareCompactAtlas(*captures[0], *captures[1], empty, historyExpected, coverage); }
         const auto compare = [&](size_t index, std::string_view field, size_t expectedBytes) -> std::string {
             if (baseline[index].bytes.size() != expectedBytes || candidate[index].bytes.size() != expectedBytes) {
                 return "Unexpected readback size for " + std::string(field);
@@ -1427,9 +1629,22 @@ public:
     LumenSplitDetailTracingTest() : LumenProbeDispatchComparison("lumen_split_detail_tracing", Variant::SplitDetail) {}
 };
 
+class LumenCompactProbeAtlasTest final : public LumenProbeDispatchComparison {
+public:
+    LumenCompactProbeAtlasTest() : LumenProbeDispatchComparison("lumen_compact_probe_atlas", Variant::CompactAtlas) {}
+};
+
+class LumenCompactProbeAtlasSaturationTest final : public LumenProbeDispatchComparison {
+public:
+    LumenCompactProbeAtlasSaturationTest()
+        : LumenProbeDispatchComparison("lumen_compact_probe_atlas_saturation", Variant::CompactAtlasSaturated) {}
+};
+
 METALLIC_REGISTER_RHI_TEST(LumenActiveProbeDispatchTest);
 METALLIC_REGISTER_RHI_TEST(LumenSplitProbeTracingTest);
 METALLIC_REGISTER_RHI_TEST(LumenSplitDetailTracingTest);
+METALLIC_REGISTER_RHI_TEST(LumenCompactProbeAtlasTest);
+METALLIC_REGISTER_RHI_TEST(LumenCompactProbeAtlasSaturationTest);
 
 debug::DebugValue surfaceUpdateCaptures(std::string_view pass)
 {

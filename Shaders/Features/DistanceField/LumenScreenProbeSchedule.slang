@@ -21,6 +21,10 @@ struct LumenScreenProbeScheduleParams
     ResourceHandle<RWStructuredBuffer<uint>> rayWorkCount;
     ResourceHandle<RWStructuredBuffer<uint>> rayIndirectArgs;
 #endif
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    ResourceHandle<StructuredBuffer<uint>> adaptiveCount;
+    uint uniformCount;
+#endif
 };
 
 #if defined(METALLIC_LUMEN_SPLIT_PROBE_TRACING)
@@ -59,6 +63,23 @@ void lumenCompactScreenProbesMain(uint3 thread : SV_DispatchThreadID)
 {
     let params = getParameters<LumenScreenProbeScheduleParams>();
     const uint slot = thread.x;
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    const uint placed = params.uniformCount + min(resolveUniform(params.adaptiveCount)[0],
+        params.capacity - params.uniformCount);
+    if (slot >= placed || resolveUniform(params.probePositions)[slot].x == kLumenInvalidProbe) { return; }
+    let state = resolveUniform(params.workState);
+    uint rank;
+#if defined(METALLIC_LUMEN_PROBE_COMPACTION_WAVE_OPS)
+    const uint waveCount = WaveActiveCountBits(true);
+    const uint offset = WavePrefixCountBits(true);
+    uint base = 0u;
+    if (WaveIsFirstLane()) { InterlockedAdd(state[0], waveCount, base); }
+    rank = WaveReadLaneFirst(base) + offset;
+#else
+    InterlockedAdd(state[0], 1u, rank);
+#endif
+    resolveUniform(params.workList)[rank] = slot;
+#else
     if (slot >= params.capacity) { return; }
     const bool active = resolveUniform(params.probePositions)[slot].x != kLumenInvalidProbe;
     let state = resolveUniform(params.workState);
@@ -86,6 +107,7 @@ void lumenCompactScreenProbesMain(uint3 thread : SV_DispatchThreadID)
     const uint index = rank + (active ? 0u : params.capacity);
 #endif
     list[index] = slot;
+#endif
 }
 
 // UE SetupAdaptiveProbeIndirectArgsCS derives the dispatch from the actual

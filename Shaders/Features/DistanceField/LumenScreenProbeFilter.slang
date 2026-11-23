@@ -42,6 +42,9 @@ struct LumenScreenProbeFilterParams
     ResourceHandle<StructuredBuffer<uint>> probeWorkList;
     ResourceHandle<StructuredBuffer<uint>> probeWorkState;
 #endif
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    ResourceHandle<StructuredBuffer<uint>> probeOrigins;
+#endif
 };
 
 #if defined(METALLIC_LUMEN_ACTIVE_PROBES)
@@ -166,7 +169,11 @@ void gatherNeighborRadiance(int2 neighborTile, uint2 probeSize, uint2 ray, float
     if (any(neighborTile < 0) || any(neighborTile >= int2(probeSize))) {
         return;
     }
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    uint neighborIndex = lumenPackedUniformProbeIndex(uint2(neighborTile), probeSize.x);
+#else
     uint neighborIndex = lumenProbeIndex(uint2(neighborTile), 0u, probeSize.x);
+#endif
     uint2 neighborPixel = probes[neighborIndex];
     if (neighborPixel.x == kLumenInvalidProbe) {
         return;
@@ -232,7 +239,9 @@ void lumenFilterScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_Group
     float2 probeTexelCenter = lumenProbeBlueNoiseVec2(resolveUniform(params.blueNoiseVec2), screenTileCoord,
         params.rayDirectionFrameIndex);
 #else
-#if defined(METALLIC_LUMEN_ACTIVE_PROBES)
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    uint2 screenTileCoord = lumenProbeTileForIndex(resolveUniform(params.probeOrigins)[probeIndex], params.probeWidth);
+#elif defined(METALLIC_LUMEN_ACTIVE_PROBES)
     uint2 screenTileCoord = lumenProbeTileForIndex(probeIndex, params.probeWidth);
 #else
     uint2 screenTileCoord = group.xy;
@@ -279,9 +288,17 @@ void lumenConvertScreenProbesToIrradianceMain(uint3 group : SV_GroupID, uint3 la
 #else
     uint probeIndex = lumenProbeIndex(group.xy, group.z, params.probeWidth);
 #endif
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    uint2 probeCoord = lumenPackedProbeAtlasCoord(probeIndex, params.probeWidth);
+#else
     uint2 probeCoord = lumenProbeAtlasCoord(probeIndex, params.probeWidth);
+#endif
 #if defined(METALLIC_LUMEN_IRRADIANCE_SH3)
+#if defined(METALLIC_LUMEN_COMPACT_PROBE_ATLAS)
+    uint atlasWidth = params.probeWidth;
+#else
     uint atlasWidth = params.probeWidth * kLumenProbeSlotsPerTileAxis;
+#endif
     SHDirectionalImage directionalOutput = resolveUniform(params.shDirectionalOutput);
 #else
     uint2 outputCoord = probeCoord * kLumenIrradianceProbeWithBorderResolution + lane.xy;
