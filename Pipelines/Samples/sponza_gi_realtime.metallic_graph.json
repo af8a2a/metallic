@@ -32,7 +32,7 @@
             "position": {"x": 50, "y": 470}, "properties": {
                 "distanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshdf"],
                 "center": [0, 5, 0], "extent": 16, "resolution": 252,
-                "maxPhysicalPages": 12288, "quantized": true, "clipmapCount": 1, "buildObjectGrid": true
+                "maxPhysicalPages": 12288, "quantized": true, "clipmapCount": 1, "buildObjectGrid": true, "persistentPages": true
             }},
         {"id": 5, "name": "SurfaceCache", "type": "LumenSurfaceCachePass", "position": {"x": 370, "y": 470},
             "properties": {

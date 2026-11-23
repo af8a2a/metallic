@@ -1005,7 +1005,7 @@ constexpr size_t kRadiosityCardState = 3;
 using CardCapture = std::shared_ptr<const debug::DebugCapture>;
 
 struct CardUpdateFrame {
-    CardCapture surface, fullSurface, radiosity, denseRadiosity;
+    CardCapture surface, fullSurface, radiosity, denseRadiosity, gdf;
 };
 
 class CardUpdateInspector final : public render::IRenderDebugObserver {
@@ -1699,9 +1699,19 @@ public:
             .historyResources = &history, .recordingWorkerLimit = 1};
 
         const auto runFrame = [&](std::string_view stage, const std::array<uint32_t, 3>& stats,
-            uint32_t resident = kPersistentResidentCards) -> std::optional<CardUpdateFrame> {
+            uint32_t resident = kPersistentResidentCards, std::optional<bool> rebuildGdf = false) -> std::optional<CardUpdateFrame> {
             auto frame = captureFrame(inspector, executor, submission, log);
             if (frame) { log = compareSurfaceUpdate(*frame, stats, resident); }
+            if (frame && log.empty() && rebuildGdf.has_value()) {
+                constexpr uint32_t pageEdge = kGdfResolution / 7;
+                constexpr uint32_t pageCount = pageEdge * pageEdge * pageEdge;
+                constexpr std::array rebuilt{1u, pageCount, 0u, 1u};
+                constexpr std::array reused{0u, 0u, pageCount, 0u};
+                const auto counters = readSurfaceValue<std::array<uint32_t, 4>>(frame->gdf->artifacts[0].bytes, 0);
+                if (counters != (*rebuildGdf ? rebuilt : reused)) {
+                    log = "Unexpected persistent GDF update statistics " + nlohmann::json(counters).dump();
+                }
+            }
             if (!frame || !log.empty()) {
                 log = std::string(stage) + ": " + log;
                 return std::nullopt;
@@ -1709,7 +1719,8 @@ public:
             return frame;
         };
 
-        auto previous = runFrame("Initial frame", {1u, kPersistentResidentCards, kPersistentResidentCards});
+        auto previous = runFrame("Initial frame", {1u, kPersistentResidentCards, kPersistentResidentCards},
+            kPersistentResidentCards, true);
         if (!previous) { return RHITestResult::fail(log); }
         if (const auto message = checkDenseRadiosity(*previous, 0.0f, false); !message.empty()) {
             return RHITestResult::fail(message);
@@ -1765,6 +1776,9 @@ public:
             }
             auto current = runFrame(edit.name, {0u, 0u, kPersistentResidentCards});
             if (!current) { return RHITestResult::fail(log); }
+            if (current->gdf->artifacts[1].bytes != previous->gdf->artifacts[1].bytes) {
+                return RHITestResult::fail(std::string(edit.name) + ": Sun edit changed the coarse distance field");
+            }
             const auto check = [&]() {
                 if (auto message = checkCardFlags(*current, kPersistentResidentCards, emitter, kCardRelit, kCardRelit);
                     !message.empty()) { return message; }
@@ -1812,7 +1826,8 @@ public:
         auto dark = document.materials()[1];
         dark.emissiveFactor = float3(0.0f);
         if (!document.setMaterialProperties(1, dark)) { return RHITestResult::fail("Could not edit the emitter material"); }
-        const auto material = runFrame("Emitter material edit", {0u, kCardsPerBox, kCardsPerBox});
+        const auto material = runFrame("Emitter material edit", {0u, kCardsPerBox, kCardsPerBox},
+            kPersistentResidentCards, true);
         if (!material) { return RHITestResult::fail(log); }
         if (const auto message = checkCardFlags(*material, kPersistentResidentCards, emitter, kCardCaptured | kCardRelit, 0);
             !message.empty()) { return RHITestResult::fail(message); }
@@ -1830,8 +1845,12 @@ public:
         if (!document.setObjectWorldMatrix(blocker, movedBlocker)) {
             return RHITestResult::fail("Could not move and shrink the GDF blocker");
         }
-        const auto geometry = runFrame("Blocker geometry change", {0u, kCardsPerBox, kPersistentResidentCards});
+        const auto geometry = runFrame("Blocker geometry change", {0u, kCardsPerBox, kPersistentResidentCards},
+            kPersistentResidentCards, true);
         if (!geometry) { return RHITestResult::fail(log); }
+        if (geometry->gdf->artifacts[1].bytes == material->gdf->artifacts[1].bytes) {
+            return RHITestResult::fail("Moving the blocker did not change the coarse distance field");
+        }
         bool deeperFragment = false;
         for (uint32_t slot = 0; slot < kPersistentResidentCards; ++slot) {
             const auto card = readSurfaceValue<CapturedCard>(geometry->surface->artifacts[kCardRecords].bytes, slot);
@@ -1845,7 +1864,7 @@ public:
 
         if (!document.setObjectVisible(blocker, false)) { return RHITestResult::fail("Could not hide the GDF blocker"); }
         constexpr uint32_t remaining = kPersistentResidentCards - kCardsPerBox;
-        const auto hidden = runFrame("Blocker visibility change", {1u, remaining, remaining}, remaining);
+        const auto hidden = runFrame("Blocker visibility change", {1u, remaining, remaining}, remaining, true);
         if (!hidden) { return RHITestResult::fail(log); }
         const auto hiddenStats = readSurfaceValue<std::array<uint32_t, 4>>(
             hidden->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
@@ -1869,7 +1888,7 @@ public:
         if (!executor.compile(gpu, graph, kAtlasEdge * 2, kAtlasEdge * 2, RenderGraphCompileOptions{.enableDebugReadback = true}, log)) {
             return RHITestResult::fail("Card update graph resize: " + log);
         }
-        const auto resized = runFrame("Graph resize", {1u, remaining, remaining}, remaining);
+        const auto resized = runFrame("Graph resize", {1u, remaining, remaining}, remaining, std::nullopt);
         if (!resized) { return RHITestResult::fail(log); }
         const auto resizedStats = readSurfaceValue<std::array<uint32_t, 4>>(
             resized->radiosity->artifacts[kRadiosityUpdateStats].bytes, 0);
@@ -1879,11 +1898,14 @@ public:
         if (validation.failed()) {
             return RHITestResult::fail("Persistent card Vulkan validation: " + validation.snapshot().dump());
         }
-        return RHITestResult::pass("Sun edits relight current cards while indirect history advances within its budget. "
+        return RHITestResult::pass("Sun edits reuse GDF pages and relight current cards while indirect history advances within its budget. "
             "Dense Radiosity traces on reset, and retired persistent tiles clear.");
     }
 
 private:
+    static constexpr std::string_view kGdfPass = "GDF";
+    static constexpr uint32_t kGdfResolution = 84;
+
     static bool makeGraph(render::RenderGraph& graph, const std::vector<std::string>& fields,
         const std::vector<std::string>& cards)
     {
@@ -1891,16 +1913,15 @@ private:
         const auto edge = [&](std::string_view from, std::string_view source, std::string_view to, std::string_view target) {
             return graph.addEdge(makeRenderGraphFieldName(from, source), makeRenderGraphFieldName(to, target));
         };
-        constexpr std::string_view gdf = "GDF";
-        if (!graph.addNode("GlobalDistanceFieldPagesPass", std::string(gdf), {{"distanceFieldPaths", fields},
-                {"center", {0.0, 0.5, 0.65}}, {"extent", 2.2}, {"resolution", 84}, {"maxPhysicalPages", 1728},
+        if (!graph.addNode("GlobalDistanceFieldPagesPass", std::string(kGdfPass), {{"distanceFieldPaths", fields},
+                {"center", {0.0, 0.5, 0.65}}, {"extent", 2.2}, {"resolution", kGdfResolution}, {"maxPhysicalPages", 1728},
                 {"quantized", true}, {"buildObjectGrid", true}, {"persistentPages", true}})) { return false; }
         for (const auto name : {kFullSurface, kPersistentSurface}) {
             if (!graph.addNode("LumenSurfaceCachePass", std::string(name), {{"meshCardPaths", cards},
                     {"atlasSize", kAtlasEdge}, {"tileResolution", kTileEdge}, {"shadowedLighting", true},
                     {"exportDirectIrradiance", true}, {"persistentCards", name == kPersistentSurface}})) { return false; }
             for (const auto* input : {"pageTable", "pageAtlas", "coarseMip", "domain"}) {
-                if (!edge(gdf, input, name, input)) { return false; }
+                if (!edge(kGdfPass, input, name, input)) { return false; }
             }
         }
         constexpr std::array surfaceBindings{std::pair{"cards", "cards"}, std::pair{"scene", "cardScene"},
@@ -1913,7 +1934,7 @@ private:
                     {"tileResolution", kTileEdge}, {"maxTraceDistance", 4.0}, {"persistentCards", persistent},
                     {"maxCardsPerFrame", kRadiosityCardBudget}})) { return false; }
             for (const auto* input : {"pageTable", "pageAtlas", "coarseMip", "domain", "objectGrid", "objectGridScene"}) {
-                if (!edge(gdf, input, name, input)) { return false; }
+                if (!edge(kGdfPass, input, name, input)) { return false; }
             }
             const auto surface = persistent ? kPersistentSurface : kFullSurface;
             for (const auto& [source, target] : surfaceBindings) {
@@ -1930,6 +1951,7 @@ private:
     {
         using render::makeRenderGraphFieldName;
         log.clear();
+        constexpr uint32_t mipEdge = kGdfResolution / 4;
         const auto radiosityField = [](std::string_view name) { return makeRenderGraphFieldName(kPersistentRadiosity, name); };
         inspector.request = {{"method", "capture.batch"}, {"params", {
             {"batches", debug::DebugValue::array({
@@ -1942,6 +1964,11 @@ private:
                 {{"pass", kDenseRadiosity}, {"resources", debug::DebugValue::array({
                     cardAtlasCapture(makeRenderGraphFieldName(kDenseRadiosity, "indirectIrradiance")),
                     cardAtlasCapture(makeRenderGraphFieldName(kDenseRadiosity, "traceRadiance"))})}},
+                {{"pass", kGdfPass}, {"resources", debug::DebugValue::array({
+                    cardBufferCapture(makeRenderGraphFieldName(kGdfPass, "updateStatistics"), 4),
+                    {{"id", makeRenderGraphFieldName(kGdfPass, "coarseMip")},
+                        {"roi", {{"x", 0}, {"y", 0}, {"width", mipEdge}, {"height", mipEdge}}},
+                        {"slice", 0}, {"sliceCount", mipEdge}}})}},
             })},
         }}};
         if (const auto result = executor.execute(submission); !result) {
@@ -1964,8 +1991,15 @@ private:
         auto full = read(1);
         auto radiosity = read(2);
         auto denseRadiosity = read(3);
-        if (!surface || !full || !radiosity || !denseRadiosity) { return std::nullopt; }
-        return CardUpdateFrame{std::move(surface), std::move(full), std::move(radiosity), std::move(denseRadiosity)};
+        auto gdf = read(4);
+        if (!surface || !full || !radiosity || !denseRadiosity || !gdf) { return std::nullopt; }
+        if (gdf->artifacts.size() != 2 || gdf->artifacts[0].bytes.size() != 4 * sizeof(uint32_t) ||
+            gdf->artifacts[1].bytes.size() != size_t(mipEdge) * mipEdge * mipEdge) {
+            log = "Unexpected persistent GDF readback layout";
+            return std::nullopt;
+        }
+        return CardUpdateFrame{std::move(surface), std::move(full), std::move(radiosity), std::move(denseRadiosity),
+            std::move(gdf)};
     }
 };
 
