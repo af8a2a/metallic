@@ -877,13 +877,7 @@ All three variants open the same 2 m room, with red and green side walls, two ne
 
 The Cornell Box graph enables Final Gather and multi-bounce card lighting for static opaque diffuse GI. `ScreenTrace` builds a closest-depth HZB from current reversed-Z depth and reads the previous frame's composited color and depth. `Gather` places adaptive probes, tries screen tracing with previous-depth validation, falls back to the GDF and Surface Cache, and runs three spatial filtering passes. `Temporal` accumulates the integrated diffuse with reprojected depth and normal rejection. Camera cuts, extent changes and scene or lighting edits invalidate both screen-space histories.
 
-Final Gather uses UE 5.7.4 vector blue noise for screen-probe directions. The Cornell Box also uses scalar blue noise when storing diffuse history in FP16. On Windows, import both textures from a local engine installation.
-
-```powershell
-python -B Tools/ImportLumenProbeBlueNoise.py E:/UnrealEngine
-```
-
-The importer verifies the decoded pixels by SHA-256 and writes `Asset/Lumen/FastBlueNoiseVec2.rg8` and `Asset/Lumen/FastBlueNoiseScalar.r8`. The vector package uses the installation's Oodle decoder. An original 128 × 8192 source PNG export also works with Pillow installed. Use `--scalar` for a renamed scalar export.
+Final Gather reads `Asset/Lumen/FastBlueNoiseVec2.rg8` for screen-probe directions. Temporal Gather reads `Asset/Lumen/FastBlueNoiseScalar.r8` when stochastic FP16 history quantization is enabled. Both 128 × 8192 textures are stored as raw bytes in the project asset directory. The assets were imported from UE 5.7.4 and verified by SHA-256 at import time.
 
 The Cornell Box realtime and comparison graphs default to 64 rays (8 × 8) per active probe. For a higher-sample reference, select the `Gather` node and set **Runtime Settings → Rays per Probe → 256 (Reference)**, or set `Gather.tracingOctahedronResolution` to `16` in the graph. Select **64 (Standard)** to switch back. Both modes scatter into 8 × 8 gather directions before spatial filtering.
 

@@ -21,7 +21,7 @@ inline Result<std::unique_ptr<TextureView>> loadLumenBlueNoise(
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file || file.tellg() != byteSize) {
         log = "Expected a " + std::to_string(byteSize) + "-byte blue-noise texture at " + path.string() +
-            ". Import it with: python Tools/ImportLumenProbeBlueNoise.py <UE5.7.4-root>";
+            ". Restore the texture from the project assets.";
         return makeError(Error::InvalidArgument);
     }
     auto staging = device.createBuffer({.size = byteSize, .usage = BufferUsageBits::TransferSource,
