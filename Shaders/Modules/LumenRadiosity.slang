@@ -31,6 +31,7 @@ public struct LumenRadiosityParams
     public ResourceHandle<Texture2D<float4>> previousIndirect;
     public ResourceHandle<Texture2D<float4>> traceRadiance;
     public ResourceHandle<Texture2D<float4>> filteredRadiance;
+    public ResourceHandle<Texture2D<float2>> blueNoiseVec2;
     public ResourceHandle<StructuredBuffer<uint2>> probeSHRed;
     public ResourceHandle<StructuredBuffer<uint2>> probeSHGreen;
     public ResourceHandle<StructuredBuffer<uint2>> probeSHBlue;
@@ -111,12 +112,13 @@ public struct RadiosityTexel
     public bool valid;
     public float3 worldPosition;
     public float3 worldNormal;
+    public uint2 cardCoord;
 };
 
 // UE 5.7.4 LumenRadiosity.ush:145, full-resolution indirect atlas.
 public RadiosityTexel radiosityGetTexel(LumenRadiosityParams params, uint2 atlasTexel)
 {
-    RadiosityTexel texel = {false, float3(0.0f), float3(0.0f)};
+    RadiosityTexel texel = {false, float3(0.0f), float3(0.0f), uint2(0u)};
     Texture2D<float> depthAtlas = resolveUniform(params.scene.cardDepth);
     float depth = depthAtlas.Load(int3(atlasTexel, 0));
     if (depth < 1.0f) {
@@ -125,7 +127,8 @@ public RadiosityTexel radiosityGetTexel(LumenRadiosityParams params, uint2 atlas
         StructuredBuffer<SurfaceCacheCard> cards = resolveUniform(params.scene.cards);
         SurfaceCacheCard card = cards[cardIndex];
         Texture2D<float4> normalAtlas = resolveUniform(params.cardNormal);
-        float2 cardUV = (float2(atlasTexel - tile * params.tileResolution) + 0.5f) / float(params.tileResolution);
+        texel.cardCoord = atlasTexel - tile * params.tileResolution;
+        float2 cardUV = (float2(texel.cardCoord) + 0.5f) / float(params.tileResolution);
         texel.valid = true;
         texel.worldPosition = surfaceCacheWorldPosition(card, cardUV, depth);
         texel.worldNormal = decodeSurfaceCacheNormal(card, normalAtlas.Load(int3(atlasTexel, 0)).xy);
@@ -157,11 +160,16 @@ float3x3 radiosityTangentBasisFrisvad(float3 tangentZ)
     return float3x3(tangentX, tangentY, tangentZ);
 }
 
-// UE 5.7.4 LumenRadiosity.ush:236,283 and MonteCarlo.ush:231, default uniform hemisphere branch.
-public float4 radiosityRay(RadiosityTexel texel, uint2 traceTexelCoord)
+// UE 5.7.4 LumenRadiosity.ush:236. Each Metallic card occupies one atlas tile.
+public float2 radiosityProbeTexelCenter(LumenRadiosityParams params, RadiosityTexel texel)
 {
-    // GetBlueNoiseDummyParameters supplies BlackDummy for rendering commandlets.
-    const float2 probeTexelCenter = 0.0f;
+    uint2 probeCoord = texel.cardCoord / kRadiosityProbeSpacing;
+    return lumenProbeBlueNoiseVec2(resolveUniform(params.blueNoiseVec2), probeCoord, params.temporalIndex);
+}
+
+// UE 5.7.4 LumenRadiosity.ush:283 and MonteCarlo.ush:231, default uniform hemisphere branch.
+public float4 radiosityRay(RadiosityTexel texel, uint2 traceTexelCoord, float2 probeTexelCenter)
+{
     float2 probeUV = (float2(traceTexelCoord) + probeTexelCenter) / float(kRadiosityRayResolution);
     float phi = 2.0f * kLumenProbePi * probeUV.x;
     float cosTheta = probeUV.y;

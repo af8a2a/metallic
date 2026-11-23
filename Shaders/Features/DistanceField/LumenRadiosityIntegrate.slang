@@ -64,12 +64,13 @@ void lumenRadiosityConvertToSHMain(uint3 thread : SV_DispatchThreadID)
     float numValidSamples = 0.0f;
     if (texel.valid && params.traceValid != 0u) {
         Texture2D<float4> radianceAtlas = resolveUniform(params.filteredRadiance);
+        float2 probeTexelCenter = radiosityProbeTexelCenter(params, texel);
         for (uint traceY = 0u; traceY < kRadiosityRayResolution; ++traceY) {
             for (uint traceX = 0u; traceX < kRadiosityRayResolution; ++traceX) {
                 uint2 traceTexelCoord = uint2(traceX, traceY);
                 uint2 traceAtlasCoord = probeAtlasCoord * kRadiosityRayResolution + traceTexelCoord;
                 float3 traceRadiance = radianceAtlas.Load(int3(traceAtlasCoord, 0)).xyz;
-                float4 ray = radiosityRay(texel, traceTexelCoord); // Direction and PDF.
+                float4 ray = radiosityRay(texel, traceTexelCoord, probeTexelCenter); // Direction and PDF.
                 float4 basis = radiositySHBasis(ray.xyz);
                 float3 radianceOverPDF = traceRadiance / ray.w;
                 irradianceSH.red += basis * radianceOverPDF.r;

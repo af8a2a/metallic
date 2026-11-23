@@ -37,7 +37,8 @@ void lumenTraceRadiosityMain(uint3 thread : SV_DispatchThreadID)
         if (texel.valid) {
             float3 worldPosition = texel.worldPosition;
             float3 worldNormal = texel.worldNormal;
-            float3 worldRayDirection = radiosityRay(texel, traceTexelCoord).xyz;
+            float2 probeTexelCenter = radiosityProbeTexelCenter(params, texel);
+            float3 worldRayDirection = radiosityRay(texel, traceTexelCoord, probeTexelCenter).xyz;
             worldPosition += worldNormal * kRadiositySurfaceBias;
             float3 samplePosition = worldPosition + kRadiositySurfaceBias * worldRayDirection;
             LumenGlobalTraceRay ray = {float4(samplePosition, kRadiosityMinTraceDistance),

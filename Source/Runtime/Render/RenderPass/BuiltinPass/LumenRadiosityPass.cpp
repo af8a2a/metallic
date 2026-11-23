@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenBlueNoise.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenGlobalTraceBindings.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -16,8 +17,8 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kRadiosityABI = 0x4c554d454e040004ull;
-constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e040005ull;
+constexpr uint64_t kRadiosityABI = 0x4c554d454e040006ull;
+constexpr uint64_t kRadiosityPersistentABI = 0x4c554d454e040007ull;
 constexpr uint64_t kRadiosityScheduleABI = 0x4c554d454e040003ull;
 constexpr uint32_t kProbeSpacing = 4;
 constexpr uint32_t kScheduleStateWords = 24;
@@ -29,7 +30,7 @@ constexpr std::array kHistoryNames{"indirectIrradiance", "lighting"};
 struct LumenRadiosityParams {
     ShaderLumenGlobalTraceBindings scene;
     ShaderSampledImage cardNormal, cardAlbedo, cardEmissive, cardDirectLighting, previousIndirect;
-    ShaderSampledImage traceRadiance, filteredRadiance;
+    ShaderSampledImage traceRadiance, filteredRadiance, blueNoiseVec2;
     ShaderBuffer probeSHRed, probeSHGreen, probeSHBlue;
     ShaderStorageImage outputTrace, outputFiltered;
     ShaderBuffer outputSHRed, outputSHGreen, outputSHBlue;
@@ -38,14 +39,14 @@ struct LumenRadiosityParams {
     float maxTraceDistance;
     uint32_t viewFrameIndex, traceValid;
 };
-static_assert(sizeof(LumenRadiosityParams) == 152 && offsetof(LumenRadiosityParams, atlasSize) == 120);
+static_assert(sizeof(LumenRadiosityParams) == 156 && offsetof(LumenRadiosityParams, atlasSize) == 124);
 
 struct PersistentRadiosityParams {
     LumenRadiosityParams lighting;
     ShaderBuffer scheduledCards, refreshCards, updateState;
 };
-static_assert(sizeof(PersistentRadiosityParams) == 164 &&
-    offsetof(PersistentRadiosityParams, scheduledCards) == 152);
+static_assert(sizeof(PersistentRadiosityParams) == 168 &&
+    offsetof(PersistentRadiosityParams, scheduledCards) == 156);
 
 struct RadiosityScheduleParams {
     ShaderBuffer cards, cardScene, domains, cardUpdates;
@@ -116,6 +117,7 @@ private:
     Result<> executePersistent(RenderGraphExecutionContext& context, ParameterWriter& writer, uint32_t clipmapCount);
 
     Device* device_ = nullptr;
+    std::unique_ptr<TextureView> blueNoiseVec2_;
     RadiosityLayout layout_;
     ComputeKernel refreshDenseLighting_, trace_, filter_, convertToSH_, integrate_;
     ComputeKernel clearSchedule_, buildPriority_, selectPriority_, buildCardLists_, finishSchedule_, refreshCards_;
@@ -193,8 +195,15 @@ Result<> LumenRadiosityPass::compile(const RenderGraphCompileContext& context, s
             "and any maxCardsPerFrame setting within the atlas capacity";
         return makeError(Error::InvalidArgument);
     }
+    if (!context.graphicsQueue) {
+        log = "Lumen Radiosity requires a graphics queue to upload blue noise";
+        return makeError(Error::InvalidArgument);
+    }
     layout_ = *layout;
     device_ = context.device;
+    auto blueNoise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Vec2, log);
+    if (!blueNoise) { return makeError(blueNoise.error()); }
+    blueNoiseVec2_ = std::move(*blueNoise);
     lastContent_.reset();
     if (layout_.persistentCards) {
         if (!initializedAtlas_) { initializedAtlas_ = std::make_shared<uint64_t>(0); }
@@ -390,6 +399,7 @@ LumenRadiosityParams LumenRadiosityPass::bindParams(RenderGraphExecutionContext&
     params.cardDirectLighting = sampled("cardDirectLighting");
     params.traceRadiance = readOutput("traceRadiance");
     params.filteredRadiance = readOutput("filteredRadiance");
+    params.blueNoiseVec2 = writer.sampledImageHandle(blueNoiseVec2_.get());
     params.probeSHRed = outputBuffer(kSHNames[0]);
     params.probeSHGreen = outputBuffer(kSHNames[1]);
     params.probeSHBlue = outputBuffer(kSHNames[2]);
