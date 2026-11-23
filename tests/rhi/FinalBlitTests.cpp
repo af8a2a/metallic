@@ -458,7 +458,7 @@ public:
             {"cornell_box_path_tracing.metallic_graph.json", {"PathTrace.color", true}},
             {"lumen_cornell_box.metallic_graph.json", {"Temporal.color", true}},
             {"cornell_box_compare.metallic_graph.json", {"Slider.color", true}},
-            {"sponza_gi_realtime.metallic_graph.json", {"Temporal.color", true}},
+            {"sponza_gi_realtime.metallic_graph.json", {"Reflections.color", true}},
             {"sponza_gi_path_tracing.metallic_graph.json", {"PathTrace.color", true}},
             {"sponza_gi_compare.metallic_graph.json", {"Slider.color", true}},
             {"mesh_distance_field_debug.metallic_graph.json", {"MeshDistanceField.color", true}},
@@ -487,6 +487,13 @@ public:
             const auto expected = expectedSources.find(filename);
             if (expected == expectedSources.end() || !hasFinalOutput(graph, expected->second)) {
                 return RHITestResult::fail(filename + " must present its final color through FinalBlit");
+            }
+            if (filename == "sponza_gi_compare.metallic_graph.json" &&
+                std::none_of(graph.edges().begin(), graph.edges().end(), [](const auto& edge) {
+                    return edge.srcPass == "Reflections" && edge.srcField == "color" &&
+                        edge.dstPass == "Slider" && edge.dstField == "sourceB";
+                })) {
+                return RHITestResult::fail(filename + " must present the reflected color on the realtime side");
             }
             ++graphCount;
         }

@@ -25,7 +25,8 @@
         {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass", "position": {"x": 680, "y": 140},
             "properties": {
                 "path": "Asset/Sponza/SponzaGI.metallic_scene.json",
-                "materialBinning": true, "outputLinear": true, "exportLumenReceivers": true
+                "materialBinning": true, "outputLinear": true, "exportLumenReceivers": true,
+                "exportLumenSpecular": true
             }},
         {"id": 4, "name": "GlobalDistanceFieldPages", "type": "GlobalDistanceFieldPagesPass",
             "position": {"x": 50, "y": 470}, "properties": {
@@ -49,7 +50,9 @@
             }},
         {"id": 9, "name": "Temporal", "type": "LumenTemporalGatherPass", "position": {"x": 1310, "y": 140},
             "properties": {"publishScreenTraceHistory": true, "maxFramesAccumulated": 32, "stochasticHistoryQuantization": true}},
-        {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1630, "y": 140}}
+        {"id": 10, "name": "FinalBlit", "type": "FinalBlitPass", "position": {"x": 1950, "y": 140}},
+        {"id": 11, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
+            "properties": {"maxTraceDistance": 40}}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -103,9 +106,23 @@
         {"id": 49, "src": "SurfaceCache.albedo", "dst": "Radiosity.cardAlbedo"},
         {"id": 50, "src": "SurfaceCache.emissive", "dst": "Radiosity.cardEmissive"},
         {"id": 51, "src": "SurfaceCache.directIrradiance", "dst": "Radiosity.cardDirectLighting"},
-        {"id": 52, "src": "Temporal.color", "dst": "FinalBlit.source"}
+        {"id": 52, "src": "Reflections.color", "dst": "FinalBlit.source"},
+        {"id": 53, "src": "Temporal.color", "dst": "Reflections.sceneColor"},
+        {"id": 54, "src": "Deferred.lumenPosition", "dst": "Reflections.position"},
+        {"id": 55, "src": "Deferred.lumenNormal", "dst": "Reflections.normal"},
+        {"id": 56, "src": "Deferred.lumenSpecular", "dst": "Reflections.specular"},
+        {"id": 57, "src": "GlobalDistanceFieldPages.pageTable", "dst": "Reflections.pageTable"},
+        {"id": 58, "src": "GlobalDistanceFieldPages.pageAtlas", "dst": "Reflections.pageAtlas"},
+        {"id": 59, "src": "GlobalDistanceFieldPages.coarseMip", "dst": "Reflections.coarseMip"},
+        {"id": 60, "src": "GlobalDistanceFieldPages.domain", "dst": "Reflections.domain"},
+        {"id": 61, "src": "GlobalDistanceFieldPages.objectGrid", "dst": "Reflections.objectGrid"},
+        {"id": 62, "src": "GlobalDistanceFieldPages.objectGridScene", "dst": "Reflections.objectGridScene"},
+        {"id": 63, "src": "SurfaceCache.cards", "dst": "Reflections.cards"},
+        {"id": 64, "src": "SurfaceCache.scene", "dst": "Reflections.cardScene"},
+        {"id": 65, "src": "SurfaceCache.depth", "dst": "Reflections.cardDepth"},
+        {"id": 66, "src": "Radiosity.lighting", "dst": "Reflections.cardLighting"}
     ],
-    "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse"],
+    "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Reflections.reflections", "Reflections.trace"],
     "view": {
         "camera": {
             "eye": [8.7, 1.65, 0.15], "center": [-8.0, 1.3, -0.3], "up": [0, 1, 0],

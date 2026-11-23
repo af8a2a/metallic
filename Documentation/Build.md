@@ -1031,11 +1031,13 @@ Select **Sponza with GI** in the Render Graph Editor's **Built-in Sample** selec
 
 | Sample | ID | Rendering |
 | --- | --- | --- |
-| Sponza with GI / Realtime GI + VSM | `sponza-gi-realtime` | VBuffer, cached SMRT Virtual Shadow Maps for direct sunlight, and Lumen Surface Cache, Radiosity and Final Gather for indirect diffuse lighting. |
+| Sponza with GI / Realtime GI + VSM | `sponza-gi-realtime` | VBuffer, cached SMRT Virtual Shadow Maps for direct sunlight, Lumen Final Gather for indirect diffuse lighting, and software Lumen Reflections. |
 | Sponza with GI / Path Tracing | `sponza-gi-path-tracing` | Progressive OpenPBR path tracing with four samples per pixel per frame and a maximum path depth of 12. |
-| Sponza with GI / GI Comparison | `sponza-gi-compare` | Path tracing on the left and realtime GI + VSM on the right. Drag the divider to reveal the same pixels under the shared display transform. |
+| Sponza with GI / GI Comparison | `sponza-gi-compare` | Path tracing on the left and realtime GI, reflections and VSM on the right. Drag the divider to reveal the same pixels under the shared display transform. |
 
 `SponzaGI.gltf` reuses the original Sponza geometry buffers and materials. It places the opaque single-sided sections and the alpha-masked double-sided sections in separate meshes. The bundled Mesh SDF and Mesh Cards in `Asset/Sponza/SponzaGIBakes/` cover the opaque mesh for world tracing. Raster visibility, VSM and path tracing use both meshes. Inspect `Shadows.shadows` for direct-light visibility and `Temporal.indirectDiffuse` for accumulated scene-linear GI.
+
+The realtime and comparison graphs composite reflections after diffuse temporal accumulation. Reflections trace the same GDF and sample `Radiosity.lighting` with a 40 m limit. The diffuse screen history still comes from `Temporal`. Inspect `Reflections.reflections` for raw radiance and roughness fade or `Reflections.trace` for the GDF and card hit classifications.
 
 To regenerate the pair, bake mesh index 0 of `Asset/Sponza/glTF/SponzaGI.gltf` with the default Mesh SDF and Mesh Card options. Pass `--distance-field=Asset/Sponza/SponzaGIBakes/SponzaOpaque.meshdf` to the card baker. The opaque mesh has open edges, so its signed-distance field uses the baker's normal sign estimation on the original triangles.
 
