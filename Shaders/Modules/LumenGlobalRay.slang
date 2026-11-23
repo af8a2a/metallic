@@ -27,8 +27,8 @@ public struct LumenGlobalTraceResult
 };
 
 static const uint kCacheSuppressed = 1u;
-static const uint kCacheUncovered = 2u;
-static const uint kCacheSampled = 3u;
+public static const uint kCacheUncovered = 2u;
+public static const uint kCacheSampled = 3u;
 static const uint kCacheSceneMismatch = 4u;
 public struct LumenGlobalTraceBindings
 {

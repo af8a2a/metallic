@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenBlueNoise.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenGlobalTraceBindings.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/LumenLightingHistory.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/LumenMeshSDFGrid.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <cmath>
+#include <filesystem>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -19,12 +21,19 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-constexpr uint64_t kLumenReflectionABI = 0x4c554d454e050002ull;
+constexpr uint64_t kLumenReflectionABI = 0x4c554d454e050003ull;
 constexpr uint64_t kLumenReflectionTemporalABI = 0x4c554d454e060001ull;
 constexpr uint64_t kLumenReflectionBilateralABI = 0x4c554d454e070002ull;
 constexpr char kShaderModule[] = "Features/DistanceField/LumenReflection";
 constexpr std::array kHistoryNames{"lighting", "depth", "age"};
 constexpr std::array kHistoryFormats{Format::RGBA16Sfloat, Format::R32Sfloat, Format::R8Unorm};
+constexpr uint32_t kScreenTraceViewStride = sizeof(ViewConstants) + 4 * sizeof(uint32_t);
+
+struct LumenReflectionScreenBindings {
+    ShaderBuffer closestHZB;
+    ShaderSampledImage previousDepth, previousColor;
+    ShaderBuffer traceView;
+};
 
 struct LumenReflectionParams {
     ShaderLumenGlobalTraceBindings scene;
@@ -36,11 +45,14 @@ struct LumenReflectionParams {
     float maxTraceDistance, maxRoughness;
     ShaderStorageImage outputRayData, outputRayHitDistance, outputResolvedReflections, outputResolvedHitDistance;
     ShaderSampledImage rayData, rayHitDistance, bilateralReflections;
+    LumenReflectionScreenBindings screen;
+    ShaderLumenMeshSDFGridBindings detail;
 };
 static_assert(offsetof(LumenReflectionParams, camera) == 80 && offsetof(LumenReflectionParams, width) == 160 &&
     offsetof(LumenReflectionParams, maxTraceDistance) == 176 &&
     offsetof(LumenReflectionParams, outputRayData) == 184 && offsetof(LumenReflectionParams, rayData) == 200 &&
-    sizeof(LumenReflectionParams) == 224);
+    offsetof(LumenReflectionParams, screen) == 212 && offsetof(LumenReflectionParams, detail) == 228 &&
+    sizeof(LumenReflectionParams) == 304);
 
 struct LumenReflectionTemporalParams {
     ShaderSampledImage position, normal, specular, previousPosition;
@@ -92,9 +104,9 @@ public:
     bool supportsExternalFrameOverlap() const override { return false; }
 
 private:
-    bool dynamicReprojection() const
+    bool optionEnabled(std::string_view name) const
     {
-        const auto value = properties().find("dynamicReprojection");
+        const auto value = properties().find(name);
         return value != properties().end() && *value == true;
     }
 
@@ -105,8 +117,11 @@ private:
     ComputeKernel temporal_;
     ComputeKernel bilateral_;
     ComputeKernel composite_;
+    MeshDistanceFieldGPU meshFields_;
+    LumenMeshSDFGrid meshGrid_;
     float maxTraceDistance_ = 200.0f;
     float maxRoughness_ = 0.4f;
+    float meshSDFTraceDistance_ = kLumenDefaultMeshSDFTraceDistance;
     // Preserve reprojectable history across ordinary camera motion, as diffuse gather does.
     HistoryResourceManager history_;
     std::optional<HistoryContent> lastContent_;
@@ -114,7 +129,7 @@ private:
     float previousSunIrradianceMax_ = 0.0f;
 };
 
-RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContext&) const
+RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContext& context) const
 {
     using Access = RenderGraphResourceAccess;
     using Initialization = RenderGraphInitialization;
@@ -126,18 +141,28 @@ RenderPassReflection LumenReflectionPass::reflect(const RenderGraphCompileContex
         .sampledRead().format = Format::RGBA16Sfloat;
     reflection.addTextureInput("specular", "Integrated receiver specular response and perceptual roughness")
         .sampledRead().format = Format::RGBA16Sfloat;
-    if (dynamicReprojection()) {
+    if (optionEnabled("dynamicReprojection")) {
         reflection.addTextureInput("previousPosition", "Previous world position of the current receiver and validity")
             .sampledRead().format = Format::RGBA32Sfloat;
     }
     reflection.addTextureInput("sceneColor", "Scene-linear color before specular reflections")
         .sampledRead().format = Format::RGBA32Sfloat;
+    if (optionEnabled("screenTraces")) {
+        reflection.addBufferInput("closestHZB", "Current closest reversed-Z depth hierarchy")
+            .buffer(0, sizeof(float)).storageRead();
+        reflection.addTextureInput("previousDepth", "Previous device depth").sampledRead().format = Format::R32Sfloat;
+        reflection.addTextureInput("previousColor", "Previous scene-linear color for reflection screen hits")
+            .sampledRead().format = Format::RGBA32Sfloat;
+        reflection.addBufferInput("traceView", "Screen trace view and history validity")
+            .buffer(kScreenTraceViewStride, kScreenTraceViewStride).storageRead();
+    }
+    if (optionEnabled("detailTracing")) { LumenMeshSDFGrid::reflect(reflection, context); }
 
     auto& reflections = reflection.addTextureOutput("reflections", "Raw scene-linear reflection radiance and roughness fade")
         .storageWrite().stageAccess(Access::TextureSampleRead);
     reflections.format = Format::RGBA16Sfloat;
     reflections.colorEncoding = DisplayColorEncoding::SceneLinear;
-    reflection.addTextureOutput("trace", "Hit distance in meters, GDF classification, clipmap index and card cache classification")
+    reflection.addTextureOutput("trace", "Hit distance in meters, trace classification (5 Screen, 9 Mesh SDF), GDF clipmap and card cache classification")
         .storageWrite().format = Format::RGBA32Sfloat;
     reflection.addTextureOutput("rayData", "Reflection ray direction and reciprocal PDF")
         .storageWrite().stageAccess(Access::TextureSampleRead).transient(Initialization::FullOverwrite)
@@ -177,15 +202,18 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
         log = "Lumen Reflection requires a rendering device and a graphics queue";
         return makeError(Error::InvalidArgument);
     }
-    const auto dynamic = properties().find("dynamicReprojection");
-    if (dynamic != properties().end() && !dynamic->is_boolean()) {
-        log = "Lumen Reflection dynamicReprojection must be a boolean";
-        return makeError(Error::InvalidArgument);
+    for (std::string_view option : {"dynamicReprojection", "screenTraces", "detailTracing"}) {
+        const auto value = properties().find(option);
+        if (value != properties().end() && !value->is_boolean()) {
+            log = "Lumen Reflection " + std::string(option) + " must be a boolean";
+            return makeError(Error::InvalidArgument);
+        }
     }
     try {
         // UE 5.7.4 FPostProcessSettings defaults to 20000 cm and roughness 0.4.
         maxTraceDistance_ = properties().value("maxTraceDistance", 200.0f);
         maxRoughness_ = properties().value("maxRoughness", 0.4f);
+        meshSDFTraceDistance_ = properties().value("meshSDFTraceDistance", kLumenDefaultMeshSDFTraceDistance);
     } catch (const RenderGraphProperties::exception& error) {
         log = "Invalid Lumen Reflection properties: " + std::string(error.what());
         return makeError(Error::InvalidArgument);
@@ -197,6 +225,33 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
     }
 
     device_ = context.device;
+    std::vector<SlangMacroDefine> traceDefines;
+    if (optionEnabled("screenTraces")) { traceDefines.push_back({"METALLIC_LUMEN_REFLECTION_SCREEN_TRACES", "1"}); }
+    if (optionEnabled("detailTracing")) {
+        const auto paths = properties().find("detailDistanceFieldPaths");
+        if (!context.runtimeScene || paths == properties().end() || !paths->is_array() || paths->empty()) {
+            log = "Lumen Reflection detail tracing requires a scene and detailDistanceFieldPaths";
+            return makeError(Error::InvalidArgument);
+        }
+        if (!(std::isfinite(meshSDFTraceDistance_) && meshSDFTraceDistance_ >= 0.0001f)) {
+            log = "Lumen Reflection meshSDFTraceDistance must be finite and at least 0.0001 m";
+            return makeError(Error::InvalidArgument);
+        }
+        meshSDFTraceDistance_ = std::min(meshSDFTraceDistance_, maxTraceDistance_);
+        std::vector<std::filesystem::path> fields;
+        for (const auto& path : *paths) {
+            if (!path.is_string()) {
+                log = "Lumen Reflection detailDistanceFieldPaths must contain paths";
+                return makeError(Error::InvalidArgument);
+            }
+            fields.push_back(std::filesystem::path(PROJECT_SOURCE_DIR) / path.get_ref<const std::string&>());
+        }
+        if (auto result = meshFields_.initialize(*device_, *context.graphicsQueue, *context.runtimeScene, fields, log); !result) {
+            return result;
+        }
+        if (auto result = meshGrid_.compile(*device_, log); !result) { return result; }
+        traceDefines.push_back({"METALLIC_LUMEN_REFLECTION_DETAIL_TRACING", "1"});
+    }
     lastContent_.reset();
     if (auto result = history_.initialize(*device_); !result) { return result; }
     auto blueNoise = loadLumenBlueNoise(*device_, *context.graphicsQueue, LumenBlueNoise::Vec2, log);
@@ -205,7 +260,7 @@ Result<> LumenReflectionPass::compile(const RenderGraphCompileContext& context, 
     auto& registry = ShaderRegistry::instance();
     auto result = registry.getComputeKernel(*device_,
         {.moduleName = kShaderModule, .entryPointName = "lumenReflectionTraceMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = traceDefines},
         {.parameters = parameterAbi<LumenReflectionParams>(kLumenReflectionABI), .debugName = "LumenReflectionTrace"},
         trace_, log);
     if (!result) { return result; }
@@ -239,7 +294,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     const auto* world = context.world();
     if (world && (world->environment().enabled ||
         world->worldEnvironment().source == environment::EnvironmentSource::PhysicalAtmosphere)) {
-        spdlog::error("The opaque Lumen Reflection GDF branch requires skylight to be disabled");
+        spdlog::error("The opaque Lumen Reflection software path requires skylight to be disabled");
         return makeError(Error::Unsupported);
     }
     const auto* view = context.viewConstants();
@@ -252,7 +307,8 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     const auto& output = context.outputTexture("color").desc();
     const auto* scene = world ? world->scene() : context.runtimeScene();
     const auto* globalHistory = context.historyResources();
-    const bool dynamic = dynamicReprojection();
+    const bool dynamic = optionEnabled("dynamicReprojection");
+    const bool screenTraces = optionEnabled("screenTraces");
     const uint64_t reprojectionRevision = globalHistory
         ? (dynamic ? globalHistory->motionReprojectionInvalidationRevision() :
             globalHistory->sunLightingReprojectionInvalidationRevision())
@@ -308,7 +364,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     const auto sampled = [&](const char* name) { return writer.sampledImageHandle(context.inputTexture(name).view()); };
     const auto sampledOutput = [&](const char* name) { return writer.sampledImageHandle(context.outputTexture(name).view()); };
     const auto storage = [&](const char* name) { return writer.storageImageHandle(context.outputTexture(name).view()); };
-    const LumenReflectionParams parameters{
+    LumenReflectionParams parameters{
         .scene = bindLumenGlobalTrace(context, writer),
         .position = sampled("position"),
         .normal = sampled("normal"),
@@ -334,6 +390,17 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         .rayHitDistance = sampledOutput("rayHitDistance"),
         .bilateralReflections = sampledOutput("bilateralReflections"),
     };
+    if (screenTraces) {
+        parameters.screen = {writer.buffer(context.inputBuffer("closestHZB").buffer()), sampled("previousDepth"),
+            sampled("previousColor"), writer.buffer(context.inputBuffer("traceView").buffer())};
+    }
+    std::optional<LumenMeshSDFGrid::Frame> meshGridFrame;
+    if (optionEnabled("detailTracing")) {
+        auto grid = meshGrid_.prepare(context, writer, meshFields_, meshSDFTraceDistance_, kLumenCardTraceEndDistance);
+        if (!grid) { return makeError(grid.error()); }
+        meshGridFrame.emplace(std::move(*grid));
+        parameters.detail = meshGridFrame->bindings;
+    }
     const auto encoded = writer.encode(parameters, kLumenReflectionABI);
     if (!encoded) { return makeError(encoded.error()); }
 
@@ -382,7 +449,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     if (!encodedBilateral) { return makeError(encodedBilateral.error()); }
 
     using Access = RenderGraphResourceAccess;
-    const RenderGraphStageUse traceUses[]{
+    std::vector<RenderGraphStageUse> traceUses{
         {"position", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
         {"specular", Access::TextureSampleRead}, {"pageTable", Access::TextureSampleRead},
         {"pageAtlas", Access::TextureSampleRead}, {"coarseMip", Access::TextureSampleRead},
@@ -393,6 +460,11 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         {"trace", Access::TextureStorageWrite}, {"rayData", Access::TextureStorageWrite},
         {"rayHitDistance", Access::TextureStorageWrite},
     };
+    if (screenTraces) {
+        traceUses.insert(traceUses.end(), {{"closestHZB", Access::BufferStorageRead},
+            {"previousDepth", Access::TextureSampleRead}, {"previousColor", Access::TextureSampleRead},
+            {"traceView", Access::BufferStorageRead}});
+    }
     const RenderGraphStageUse resolveUses[]{
         {"position", Access::TextureSampleRead}, {"normal", Access::TextureSampleRead},
         {"specular", Access::TextureSampleRead}, {"reflections", Access::TextureSampleRead},
@@ -415,8 +487,8 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     };
     if (historyValid) {
         temporalUses.insert(temporalUses.end(), {{"previousLighting", Access::TextureSampleRead},
-            {"previousDepth", Access::TextureSampleRead}, {"previousAge", Access::TextureSampleRead}});
-        textures.insert(textures.end(), {import("previousLighting", previousLighting), import("previousDepth", previousDepth),
+            {"previousReflectionDepth", Access::TextureSampleRead}, {"previousAge", Access::TextureSampleRead}});
+        textures.insert(textures.end(), {import("previousLighting", previousLighting), import("previousReflectionDepth", previousDepth),
             import("previousAge", previousAge)});
     }
     const RenderGraphStageUse bilateralUses[]{
@@ -431,7 +503,12 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
     };
     const uint32_t groupsX = (parameters.width + 7u) / 8u;
     const uint32_t groupsY = (parameters.height + 7u) / 8u;
-    const RenderGraphStage stages[]{
+    std::vector<RenderGraphStage> stages;
+    if (meshGridFrame) {
+        LumenMeshSDFGrid::appendTraceUses(traceUses);
+        meshGrid_.appendStages(stages, *meshGridFrame);
+    }
+    stages.insert(stages.end(), {
         {"Trace software reflections", traceUses, [&](CommandBuffer& cmd) {
             return trace_.dispatch(cmd, *encoded, groupsX, groupsY);
         }},
@@ -447,7 +524,7 @@ Result<> LumenReflectionPass::execute(RenderGraphExecutionContext& context)
         {"Composite reflections", compositeUses, [&](CommandBuffer& cmd) {
             return composite_.dispatch(cmd, *encoded, groupsX, groupsY);
         }},
-    };
+    });
     auto result = context.executeStages(stages, {}, textures);
     if (!result) { return result; }
     for (const auto* name : kHistoryNames) {

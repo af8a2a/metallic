@@ -7,9 +7,9 @@
 
 int main(int argc, char** argv)
 {
-    if (argc != 4 && argc != 5) {
+    if (argc < 4 || argc > 6) {
         std::fprintf(stderr, "Usage: MetallicMeshDistanceFieldBake <source.gltf|source.glb> <mesh-index> "
-            "<output.meshdf> [resolution-scale]\n");
+            "<output.meshdf> [resolution-scale [max-resolution]]\n");
         return 1;
     }
     int32_t meshIndex = -1;
@@ -22,12 +22,21 @@ int main(int argc, char** argv)
     }
 
     metallic::scene::MeshDistanceFieldBakeOptions options;
-    if (argc == 5) {
+    if (argc >= 5) {
         const std::string_view scaleArgument = argv[4];
         const char* scaleEnd = scaleArgument.data() + scaleArgument.size();
         const auto scale = std::from_chars(scaleArgument.data(), scaleEnd, options.resolutionScale);
         if (scale.ec != std::errc{} || scale.ptr != scaleEnd) {
             std::fprintf(stderr, "Expected a positive resolution scale\n");
+            return 1;
+        }
+    }
+    if (argc == 6) {
+        const std::string_view resolutionArgument = argv[5];
+        const char* resolutionEnd = resolutionArgument.data() + resolutionArgument.size();
+        const auto resolution = std::from_chars(resolutionArgument.data(), resolutionEnd, options.maxResolution);
+        if (resolution.ec != std::errc{} || resolution.ptr != resolutionEnd || options.maxResolution < 8) {
+            std::fprintf(stderr, "Expected a maximum resolution of at least 8 voxels\n");
             return 1;
         }
     }

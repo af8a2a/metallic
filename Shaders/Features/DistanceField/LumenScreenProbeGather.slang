@@ -523,7 +523,7 @@ void lumenTraceScreenProbesMain(uint3 group : SV_GroupID, uint3 lane : SV_GroupT
             LumenMeshSDFTraceScene meshScene = {meshes, resolveUniform(detail.instances),
                 resolveUniform(detail.gridIndices), scene.cache};
             LumenMeshSDFTraceInput meshRay = {samplePosition, rayDirection, voxelStartDistance,
-                params.maxTraceDistance, min(detail.maxMeshSDFTraceDistance, params.maxTraceDistance), cell.x, cell.y};
+                params.maxTraceDistance, min(detail.maxMeshSDFTraceDistance, params.maxTraceDistance), cell.x, cell.y, true};
             LumenMeshSDFTraceResult detailHit = traceLumenMeshSDFs(meshScene, meshRay);
             float distanceFromViewpoint = length(detail.cameraPosition - receiver.xyz);
             float distanceFade = saturate(6.0f * distanceFromViewpoint / detail.cardTraceEndDistance - 5.0f);

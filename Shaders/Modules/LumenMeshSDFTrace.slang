@@ -24,6 +24,7 @@ public struct LumenMeshSDFTraceInput
     public float voxelTraceStartDistance;
     public uint meshSDFStartOffset;
     public uint numMeshSDFs;
+    public bool expandUsingRayTime;
 };
 
 public struct LumenMeshSDFTraceResult
@@ -32,15 +33,17 @@ public struct LumenMeshSDFTraceResult
     public float transparency;
     public float hitDistance;
     public float3 normal;
+    public bool cardCovered;
 };
 
 float3 sampleLumenMeshSDFRadiance(LumenSurfaceCache cache, MeshDistanceFieldInstance instance,
-    float3 hitPosition, float3 hitNormal)
+    float3 hitPosition, float3 hitNormal, out bool cardCovered)
 {
     // The fixed-resolution atlas uses a single resident tile per card.
     const float surfaceCacheBias = 0.20f; // 20 cm in UE.
     LumenCardSampleAccumulator accumulator = initLumenCardSampleAccumulator();
     sampleLumenMeshCards(cache, instance.indices.z, hitPosition, hitNormal, surfaceCacheBias, accumulator);
+    cardCovered = accumulator.cardIndex != ~0u;
     return evaluateLumenCardRadiance(accumulator);
 }
 
@@ -87,7 +90,8 @@ public bool validateLumenMeshSDFPrefix(MeshDistanceFieldResources meshes,
     const MeshDistanceFieldInstance instance = instances[hitObject];
     const float3 hitPosition = origin + direction * hitDistance;
     const float3 hitNormal = calculateMeshSDFWorldNormal(meshes, instance, hitPosition);
-    radiance = sampleLumenMeshSDFRadiance(cache, instance, hitPosition, hitNormal);
+    bool cardCovered;
+    radiance = sampleLumenMeshSDFRadiance(cache, instance, hitPosition, hitNormal, cardCovered);
     return true;
 }
 
@@ -107,7 +111,7 @@ public LumenMeshSDFTraceResult traceLumenMeshSDFs(LumenMeshSDFTraceScene scene, 
             const uint objectIndex = scene.candidateIndices[input.meshSDFStartOffset + gridCulledMeshSDFIndex];
             uint stepCount;
             if (rayTraceSingleMeshSDF(scene.meshes, scene.instances[objectIndex], input.origin, input.direction,
-                    input.minTraceDistance, maxTraceDistance, true, 0.0f, hitDistance, stepCount)) {
+                    input.minTraceDistance, maxTraceDistance, input.expandUsingRayTime, 0.0f, hitDistance, stepCount)) {
                 hitObject = objectIndex;
             }
         }
@@ -117,7 +121,8 @@ public LumenMeshSDFTraceResult traceLumenMeshSDFs(LumenMeshSDFTraceScene scene, 
             const float3 interpolatePosition = input.origin + input.direction * hitDistance;
             result.normal = calculateMeshSDFWorldNormal(scene.meshes, instance, interpolatePosition);
 
-            result.radiance = sampleLumenMeshSDFRadiance(scene.cache, instance, interpolatePosition, result.normal);
+            result.radiance = sampleLumenMeshSDFRadiance(scene.cache, instance, interpolatePosition, result.normal,
+                result.cardCovered);
             result.transparency = 0.0f;
         }
 

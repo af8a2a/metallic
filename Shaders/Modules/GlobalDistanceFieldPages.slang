@@ -132,7 +132,7 @@ public struct QuantizedGlobalDistanceFieldSampler : IGlobalDistanceFieldSampler
 };
 
 // UE 5.7.4 GlobalDistanceFieldUtils.ush:15 and Common.ush:1931.
-uint computeGlobalDistanceFieldClipmapIndex(StructuredBuffer<GlobalDistanceFieldDomain> domains, uint clipmapCount,
+public uint computeGlobalDistanceFieldClipmapIndex(StructuredBuffer<GlobalDistanceFieldDomain> domains, uint clipmapCount,
     float3 worldPosition)
 {
     for (uint clipmapIndex = 0u; clipmapIndex < clipmapCount; ++clipmapIndex) {

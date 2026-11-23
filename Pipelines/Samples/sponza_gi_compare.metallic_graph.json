@@ -62,7 +62,10 @@
         {"id": 12, "name": "Slider", "type": "SliderDebugPass", "position": {"x": 1950, "y": 140},
             "properties": {"splitPosition": 0.5, "orientation": "vertical", "swapSides": false}},
         {"id": 13, "name": "Reflections", "type": "LumenReflectionPass", "position": {"x": 1630, "y": 140},
-            "properties": {"maxTraceDistance": 40, "dynamicReprojection": true}}
+            "properties": {
+                "maxTraceDistance": 40, "dynamicReprojection": true, "screenTraces": true, "detailTracing": true,
+                "detailDistanceFieldPaths": ["Asset/Sponza/SponzaGIBakes/SponzaOpaqueReflection.meshdf"]
+            }}
     ],
     "edges": [
         {"id": 1, "src": "VBuffer.visibility", "dst": "Deferred.visibility"},
@@ -134,7 +137,12 @@
         {"id": 67, "src": "SurfaceCache.depth", "dst": "Reflections.cardDepth"},
         {"id": 68, "src": "Radiosity.lighting", "dst": "Reflections.cardLighting"},
         {"id": 69, "src": "SurfaceCache.cardUpdates", "dst": "Radiosity.cardUpdates"},
-        {"id": 70, "src": "Deferred.lumenPreviousPosition", "dst": "Reflections.previousPosition"}
+        {"id": 70, "src": "Deferred.lumenPreviousPosition", "dst": "Reflections.previousPosition"},
+        {"id": 71, "src": "ScreenTrace.closestHZB", "dst": "Reflections.closestHZB"},
+        {"id": 72, "src": "ScreenTrace.previousDepth", "dst": "Reflections.previousDepth"},
+        {"id": 73, "src": "ScreenTrace.previousColor", "dst": "Reflections.previousColor"},
+        {"id": 74, "src": "ScreenTrace.traceView", "dst": "Reflections.traceView"},
+        {"id": 75, "src": "VBuffer.depth", "dst": "Reflections.detailDepth"}
     ],
     "outputs": ["FinalBlit.color", "Temporal.indirectDiffuse", "Reflections.reflections", "Reflections.trace"],
     "view": {

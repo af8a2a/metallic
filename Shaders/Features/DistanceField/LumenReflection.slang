@@ -4,9 +4,13 @@ import ShaderCore;
 import ParameterRoot;
 import ScenePathMath;
 import GlobalDistanceField;
+import GlobalDistanceFieldPages;
 import LumenGlobalRay;
+import LumenMeshSDFGrid;
+import LumenMeshSDFTrace;
 import LumenProbeMath;
 import LumenScreenTrace;
+import MeshDistanceField;
 
 __include "LumenReflectionTemporal.slang";
 __include "LumenReflectionBilateral.slang";
@@ -14,6 +18,30 @@ __include "LumenReflectionBilateral.slang";
 using Metallic;
 using Metallic.DistanceField;
 using Metallic.Lumen;
+
+struct LumenReflectionScreenBindings
+{
+    ResourceHandle<StructuredBuffer<float>> closestHZB;
+    ResourceHandle<Texture2D<float>> previousDepth;
+    ResourceHandle<Texture2D<float4>> previousColor;
+    ResourceHandle<StructuredBuffer<LumenScreenTraceView>> traceView;
+};
+
+struct LumenReflectionMeshSDFBindings
+{
+    ResourceHandle<StructuredBuffer<MeshDistanceFieldMip>> mips;
+    ResourceHandle<StructuredBuffer<uint>> indirection;
+    ResourceHandle<Texture3D<float>> atlas;
+    SamplerHandle atlasSampler;
+    ResourceHandle<StructuredBuffer<MeshDistanceFieldInstance>> instances;
+    ResourceHandle<StructuredBuffer<uint2>> gridCells;
+    ResourceHandle<StructuredBuffer<uint>> gridIndices;
+    uint4 grid;
+    float3 cameraPosition;
+    float maxMeshSDFTraceDistance;
+    float cardTraceEndDistance;
+    uint bricksPerAxis;
+};
 
 struct LumenReflectionParams
 {
@@ -32,6 +60,8 @@ struct LumenReflectionParams
     ResourceHandle<Texture2D<float4>> rayData;
     ResourceHandle<Texture2D<float>> rayHitDistance;
     ResourceHandle<Texture2D<float4>> bilateralReflections;
+    LumenReflectionScreenBindings screen;
+    LumenReflectionMeshSDFBindings detail;
 };
 
 static const float kGGXSamplingBias = 0.1f;
@@ -39,6 +69,8 @@ static const float kMinReflectionConeAngle = 0.00001f;
 static const float kSurfaceBias = 0.05f; // UE SurfaceBias defaults to 5 cm.
 static const float kMaxRayIntensity = 40.0f;
 static const float kInvRoughnessFadeLength = 1.0f / 0.1f;
+static const uint kReflectionScreenHit = 5u;
+static const uint kReflectionMeshSDFHit = 9u;
 
 // UE 5.7.4 MonteCarlo.ush, isotropic material tangent basis.
 float3x3 getReflectionTangentBasis(float3 tangentZ)
@@ -118,6 +150,85 @@ float4 generateReflectionRay(LumenReflectionParams params, uint2 pixel, float3 w
     return f16tof32(f32tof16(float4(rayDirection, coneAngle)));
 }
 
+float reflectionTraceDistanceThroughR16(float distance)
+{
+    return f16tof32(f32tof16(distance * 100.0f)) * 0.01f;
+}
+
+float3 traceSoftwareReflection(LumenReflectionParams params, uint2 pixel, float4 position, float3 normal,
+    float4 rayData, out float4 debugTrace, out float rayHitDistance)
+{
+    const float maxTraceDistanceCm = min(params.maxTraceDistance * 100.0f, 65504.0f);
+    const float maxTraceDistance = f16tof32(f32tof16(maxTraceDistanceCm) & 0x7fffu) * 0.01f;
+    float traceHitDistance = 0.0f;
+#if defined(METALLIC_LUMEN_REFLECTION_SCREEN_TRACES)
+    const LumenScreenTraceInputs screen = {resolveUniform(params.screen.closestHZB),
+        resolveUniform(params.screen.previousDepth), resolveUniform(params.screen.previousColor),
+        resolveUniform(params.screen.traceView)};
+    float3 screenLighting;
+    if (traceLumenReflectionScreenRay(screen, pixel, position.xyz, normal, rayData.xyz, maxTraceDistance,
+            params.frameIndex, screenLighting, traceHitDistance)) {
+        debugTrace = float4(traceHitDistance, float(kReflectionScreenHit), -1.0f, 0.0f);
+        rayHitDistance = -max(traceHitDistance * 100.0f, 0.0f);
+        return screenLighting;
+    }
+    traceHitDistance = reflectionTraceDistanceThroughR16(traceHitDistance);
+#endif
+
+    const float3 samplePosition = position.xyz + kSurfaceBias * rayData.xyz;
+    const LumenGlobalTraceScene scene = resolveLumenGlobalTraceScene(params.scene, params.clipmapCount);
+#if defined(METALLIC_LUMEN_REFLECTION_DETAIL_TRACING)
+    const LumenReflectionMeshSDFBindings detail = params.detail;
+    const float maxMeshSDFTraceDistance = detail.maxMeshSDFTraceDistance;
+    const float cardTraceEndDistance = detail.cardTraceEndDistance;
+    // UE 5.7.4 ReflectionCompactTracesCS, then TraceMeshSDFs for the unresolved near rays.
+    if (scene.identityMatches && detail.grid.w != 0u && position.w < cardTraceEndDistance &&
+        traceHitDistance <= maxMeshSDFTraceDistance) {
+        const uint cellIndex = lumenMeshSDFGridCellIndex(pixel, position.w, detail.grid.xyz);
+        const uint2 cell = resolveUniform(detail.gridCells)[cellIndex];
+        const MeshDistanceFieldResources meshes = {resolveUniform(detail.mips), resolveUniform(detail.indirection),
+            resolveUniform(detail.atlas), resolveUniform(detail.atlasSampler), detail.bricksPerAxis};
+        const LumenMeshSDFTraceScene meshScene = {meshes, resolveUniform(detail.instances),
+            resolveUniform(detail.gridIndices), scene.cache};
+        const LumenMeshSDFTraceInput meshRay = {samplePosition, rayData.xyz,
+            max(traceHitDistance - kSurfaceBias, 0.0f), maxTraceDistance, maxMeshSDFTraceDistance,
+            cell.x, cell.y, false};
+        const LumenMeshSDFTraceResult meshHit = traceLumenMeshSDFs(meshScene, meshRay);
+        const float opaqueHitDistance = meshHit.hitDistance;
+        const float distanceFromViewpoint = length(detail.cameraPosition - position.xyz);
+        float distanceFade = saturate(4.0f * distanceFromViewpoint / cardTraceEndDistance - 3.0f);
+        distanceFade = max(distanceFade, saturate((opaqueHitDistance - maxMeshSDFTraceDistance * .7f) /
+            (maxMeshSDFTraceDistance * .3f)));
+        const float transparency = lerp(meshHit.transparency, 1.0f, distanceFade);
+        if (transparency < screenTraceNoise(float2(pixel) + 0.5f, 0.0f)) {
+            const uint cardState = meshHit.cardCovered ? kCacheSampled : kCacheUncovered;
+            debugTrace = float4(opaqueHitDistance, float(kReflectionMeshSDFHit), -1.0f, float(cardState));
+            rayHitDistance = -max(opaqueHitDistance * 100.0f, 0.0f);
+            return meshHit.radiance;
+        }
+        traceHitDistance = reflectionTraceDistanceThroughR16(opaqueHitDistance);
+    }
+#endif
+
+    float startDistance = 0.0f;
+#if defined(METALLIC_LUMEN_REFLECTION_SCREEN_TRACES) || defined(METALLIC_LUMEN_REFLECTION_DETAIL_TRACING)
+    // UE TraceVoxels pulls back four half-voxel extents from the previous method's endpoint.
+    const uint clipmapForSurfaceExpand = computeGlobalDistanceFieldClipmapIndex(scene.domains, scene.clipmapCount,
+        position.xyz + traceHitDistance * rayData.xyz);
+    const float pullbackForSurfaceExpand = scene.domains[clipmapForSurfaceExpand].minAndVoxelSize.w * 2.0f;
+    startDistance = max(traceHitDistance - pullbackForSurfaceExpand, 0.0f);
+#endif
+    const float stepFactorNoise = lerp(0.95f, 1.0f / 0.95f, screenTraceNoise(float2(pixel),
+        float(params.frameIndex % 8u)));
+    const float stepFactor = lerp(stepFactorNoise, 1.0f, saturate(rayData.w / (kLumenProbePi / 256.0f)));
+    const LumenGlobalTraceRay ray = {float4(samplePosition, startDistance), float4(rayData.xyz, maxTraceDistance)};
+    const LumenGlobalTraceResult hit = traceLumenReflectionGlobalRay(scene, ray, stepFactor);
+    rayHitDistance = hit.state.x == kGlobalDistanceFieldHit ? -max(hit.metrics.x * 100.0f, 0.0f) : maxTraceDistanceCm;
+    debugTrace = float4(hit.metrics.x, float(hit.state.x),
+        hit.state.y == ~0u ? -1.0f : float(hit.state.y), float(hit.state.w));
+    return hit.radiance.xyz;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
@@ -138,29 +249,12 @@ void lumenReflectionTraceMain(uint3 thread : SV_DispatchThreadID)
         const float3 normal = normalize(resolveUniform(params.normal).Load(int3(pixel, 0)).xyz);
         rayData = generateReflectionRay(params, pixel, position.xyz, normal, specular.w);
 
-        // UE 5.7.4 LumenReflectionTracing.usf, TraceVoxels without screen or mesh-SDF methods.
-        // Their disabled permutations leave no prefix distance to pull back.
-        const float3 samplePosition = position.xyz + kSurfaceBias * rayData.xyz;
-        const float stepFactorNoise = lerp(0.95f, 1.0f / 0.95f, screenTraceNoise(float2(pixel),
-            float(params.frameIndex % 8u)));
-        const float stepFactor = lerp(stepFactorNoise, 1.0f, saturate(rayData.w / (kLumenProbePi / 256.0f)));
-        const float maxTraceDistanceCm = min(params.maxTraceDistance * 100.0f, 65504.0f);
-        const float maxTraceDistance = f16tof32(f32tof16(maxTraceDistanceCm) & 0x7fffu) * 0.01f;
-        LumenGlobalTraceRay ray = {float4(samplePosition, 0.0f), float4(rayData.xyz, maxTraceDistance)};
-        const LumenGlobalTraceResult hit = traceLumenReflectionGlobalRay(
-            resolveLumenGlobalTraceScene(params.scene, params.clipmapCount), ray, stepFactor);
-
-        // UE TraceVoxels and EncodeRayDistance. The storage image quantizes signed centimeters.
-        rayHitDistance = hit.state.x == kGlobalDistanceFieldHit
-            ? -max(hit.metrics.x * 100.0f, 0.0f) : maxTraceDistanceCm;
-        float3 lighting = hit.radiance.xyz;
+        float3 lighting = traceSoftwareReflection(params, pixel, position, normal, rayData, debugTrace, rayHitDistance);
         float maxLighting = max(lighting.x, max(lighting.y, lighting.z));
         if (maxLighting > kMaxRayIntensity) {
             lighting *= kMaxRayIntensity / maxLighting;
         }
         reflections = float4(lighting, fadeAlpha);
-        debugTrace = float4(hit.metrics.x, float(hit.state.x),
-            hit.state.y == ~0u ? -1.0f : float(hit.state.y), float(hit.state.w));
     }
     resolveUniform(params.outputReflections)[pixel] = reflections;
     resolveUniform(params.trace)[pixel] = debugTrace;

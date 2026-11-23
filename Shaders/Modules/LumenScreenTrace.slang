@@ -142,10 +142,13 @@ float screenTraceLineBoxExit(float3 rayOrigin, float3 rayEnd, float3 boxMax)
 // UE 5.7.4 HZBTracing.ush TraceHZB, default hierarchical full-resolution opaque path.
 bool traceScreenHZB(StructuredBuffer<float> hzb, ScreenTraceProjection view, uint2 hzbExtent,
     uint mipCount, float3 rayOrigin, float3 rayDirection, float maxTraceDistance,
-    float relativeDepthThickness, out float3 hitUVz, out bool hasEndpoint)
+    float relativeDepthThickness, out float3 hitUVz, out bool hasEndpoint,
+    out float3 lastVisibleUVz, out float hitTileZ)
 {
     hitUVz = 0.0f;
     hasEndpoint = false;
+    lastVisibleUVz = 0.0f;
+    hitTileZ = 0.0f;
     float4 rayStartClip = screenTraceWorldToClip(view, rayOrigin);
     if (any(abs(rayStartClip.xy) > rayStartClip.w) || rayStartClip.w <= 0.0f) {
         return false;
@@ -228,6 +231,7 @@ bool traceScreenHZB(StructuredBuffer<float> hzb, ScreenTraceProjection view, uin
     if (mipLevel < baseMipLevel && currentIntersectionTime < 1.0f) {
         float2 sampleUV = rayScreenUV.xy * hzbUvInvFactor;
         float tileZ = sampleScreenTraceFullDepth(hzb, uint2(view.extent), sampleUV);
+        hitTileZ = tileZ;
         float hitSceneDepth = screenTraceConvertFromDeviceZ(view, tileZ);
         float raySceneDepth = screenTraceConvertFromDeviceZ(view, rayScreenUV.z);
         hit = tileZ > 0.0f && (raySceneDepth - hitSceneDepth) < relativeDepthThickness * max(hitSceneDepth, 0.0000001f);
@@ -236,6 +240,8 @@ bool traceScreenHZB(StructuredBuffer<float> hzb, ScreenTraceProjection view, uin
         }
     }
     hitUVz = float3(rayScreenUV.xy * hzbUvInvFactor, rayScreenUV.z);
+    float3 lastVisibleScreenUV = rayStartScreenUV + lastAboveSurfaceTime * rayDirectionScreenUV;
+    lastVisibleUVz = float3(lastVisibleScreenUV.xy * hzbUvInvFactor, lastVisibleScreenUV.z);
     return hit;
 }
 
@@ -253,6 +259,27 @@ public float screenTraceNoise(float2 uv, float frameId)
     return frac(magic.z * frac(dot(uv, magic.xy)));
 }
 
+float3 screenTraceBiasedOrigin(ScreenTraceProjection view, uint2 receiverPixel, float3 receiverPosition,
+    float3 receiverNormal)
+{
+    float receiverDepth = dot(receiverPosition - view.eye, view.forward);
+    float2 invViewSize = 1.0f / view.extent;
+    float2 screenUV = (float2(receiverPixel) + 0.5f) * invViewSize;
+    float2 cornerScreenPosition = screenTraceScreenPosition(screenUV + 0.5f * invViewSize);
+    float3 cornerWorldPosition = screenTraceScreenToWorld(view, cornerScreenPosition, receiverDepth);
+    float normalBias = abs(dot(cornerWorldPosition - receiverPosition, receiverNormal)) * 2.0f;
+    return receiverPosition + normalBias * receiverNormal;
+}
+
+float screenTraceDepthThicknessScale(ScreenTraceProjection view)
+{
+    if (view.orthographic) {
+        int exponent = int(-clamp(log10(abs(view.farPlane - view.nearPlane) * 100.0f), 0.0f, 9.0f));
+        return pow(10.0f, float(exponent));
+    }
+    return 1.0f;
+}
+
 // UE 5.7.4 LumenScreenProbeTracing.usf, camera reprojection for static opaque surfaces.
 public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPixel, float3 receiverPosition,
     float3 receiverNormal, float3 rayDirection, float traceDistance, float maxTraceDistance, float relativeDepthThickness,
@@ -268,23 +295,16 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPix
     }
 
     ScreenTraceProjection current = makeScreenTraceProjection(traceView.cameras.current, traceView.cameras.jitter.xy);
-    float receiverDepth = dot(receiverPosition - current.eye, current.forward);
-    float2 invViewSize = 1.0f / current.extent;
-    float2 screenUV = (float2(receiverPixel) + 0.5f) * invViewSize;
-    float2 cornerScreenPosition = screenTraceScreenPosition(screenUV + 0.5f * invViewSize);
-    float3 cornerWorldPosition = screenTraceScreenToWorld(current, cornerScreenPosition, receiverDepth);
-    float normalBias = abs(dot(cornerWorldPosition - receiverPosition, receiverNormal)) * 2.0f;
-    float3 rayOrigin = receiverPosition + normalBias * receiverNormal;
-    float depthThicknessScale = 1.0f;
-    if (current.orthographic) {
-        int exponent = int(-clamp(log10(abs(current.farPlane - current.nearPlane) * 100.0f), 0.0f, 9.0f));
-        depthThicknessScale = pow(10.0f, float(exponent));
-    }
+    float3 rayOrigin = screenTraceBiasedOrigin(current, receiverPixel, receiverPosition, receiverNormal);
+    float depthThicknessScale = screenTraceDepthThicknessScale(current);
 
     float3 hitUVz;
     bool hasEndpoint;
+    float3 lastVisibleUVz;
+    float hitTileZ;
     bool hit = traceScreenHZB(inputs.closestHZB, current, traceView.state.yz, traceView.state.w, rayOrigin,
-        rayDirection, traceDistance, relativeDepthThickness * depthThicknessScale, hitUVz, hasEndpoint);
+        rayDirection, traceDistance, relativeDepthThickness * depthThicknessScale, hitUVz, hasEndpoint,
+        lastVisibleUVz, hitTileZ);
     if (!hasEndpoint) {
         return false;
     }
@@ -331,6 +351,73 @@ public bool traceLumenScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPix
     uint2 colorPixel = pointClampedPixel(clamp(historyUV, colorHalfTexel, 1.0f - colorHalfTexel), extent);
     radiance = -min(-inputs.previousColor.Load(int3(colorPixel, 0)).rgb, 0.0f);
     return true;
+}
+
+// UE 5.7.4 LumenReflectionTracing.usf, ReflectionTraceScreenTexturesCS, for static opaque surfaces.
+public bool traceLumenReflectionScreenRay(LumenScreenTraceInputs inputs, uint2 receiverPixel, float3 receiverPosition,
+    float3 receiverNormal, float3 rayDirection, float maxTraceDistance, uint frameIndex,
+    out float3 radiance, out float traceDistance)
+{
+    radiance = 0.0f;
+    traceDistance = 0.0f;
+    LumenScreenTraceView traceView = inputs.view[0];
+    if (traceView.state.x == 0u) {
+        return false;
+    }
+
+    ScreenTraceProjection current = makeScreenTraceProjection(traceView.cameras.current, traceView.cameras.jitter.xy);
+    float3 rayOrigin = screenTraceBiasedOrigin(current, receiverPixel, receiverPosition, receiverNormal);
+    float depthThickness = 0.005f * screenTraceDepthThicknessScale(current);
+    float3 hitUVz, lastVisibleUVz;
+    float hitTileZ;
+    bool hasEndpoint;
+    bool hit = traceScreenHZB(inputs.closestHZB, current, traceView.state.yz, traceView.state.w, rayOrigin,
+        rayDirection, maxTraceDistance, depthThickness, hitUVz, hasEndpoint, lastVisibleUVz, hitTileZ);
+    if (!hasEndpoint) {
+        return false;
+    }
+
+    if (hit) {
+        float2 hitScreenPosition = screenTraceScreenPosition(hitUVz.xy);
+        // Reproject the actual depth texel with both cameras unjittered, as in ClipToPrevClip.
+        ScreenTraceProjection currentUnjittered = current;
+        currentUnjittered.jitter = 0.0f;
+        float hitSceneDepth = screenTraceConvertFromDeviceZ(currentUnjittered, hitTileZ);
+        float3 reprojectWorldPosition = screenTraceScreenToWorld(currentUnjittered, hitScreenPosition, hitSceneDepth);
+        ScreenTraceProjection previous = makeScreenTraceProjection(traceView.cameras.previous, 0.0f);
+        float4 historyClip = screenTraceWorldToClip(previous, reprojectWorldPosition);
+        hit = historyClip.w > 0.0f;
+        if (hit) {
+            float3 historyScreenPosition = historyClip.xyz / historyClip.w;
+            float vignette = min(screenTraceHitVignette(hitScreenPosition), screenTraceHitVignette(historyScreenPosition.xy));
+            float noise = screenTraceNoise(float2(receiverPixel) + 0.5f, float(frameIndex % 8u));
+            hit = vignette >= noise;
+            if (hit) {
+                float2 historyUV = screenTraceScreenUV(historyScreenPosition.xy);
+                uint2 extent = uint2(previous.extent);
+                uint2 depthPixel = pointClampedPixel(historyUV, extent);
+                float historyDeviceZ = inputs.previousDepth.Load(int3(depthPixel, 0));
+                hit = abs(historyDeviceZ - historyScreenPosition.z) < depthThickness * lerp(0.5f, 2.0f, noise);
+                if (hit) {
+                    float2 colorHalfTexel = 0.5f / previous.extent;
+                    uint2 colorPixel = pointClampedPixel(clamp(historyUV, colorHalfTexel, 1.0f - colorHalfTexel), extent);
+                    radiance = -min(-inputs.previousColor.Load(int3(colorPixel, 0)).rgb, 0.0f);
+                }
+            }
+        }
+        if (!hit) {
+            // The next method resumes from the last position known to be in front of the HZB.
+            hitUVz = lastVisibleUVz;
+        }
+    }
+
+    float2 hitScreenPosition = screenTraceScreenPosition(hitUVz.xy);
+    float hitSceneDepth = screenTraceConvertFromDeviceZ(current, hitUVz.z);
+    float3 hitWorldPosition = screenTraceScreenToWorld(current, hitScreenPosition, hitSceneDepth);
+    float3 receiverToHitCm = (receiverPosition - hitWorldPosition) * 100.0f;
+    float hitDistanceOffset = hit ? 0.0f : 2.0f;
+    traceDistance = min(sqrt(dot(receiverToHitCm, receiverToHitCm)) + hitDistanceOffset, maxTraceDistance * 100.0f) * 0.01f;
+    return hit;
 }
 
 } // namespace Metallic.Lumen
